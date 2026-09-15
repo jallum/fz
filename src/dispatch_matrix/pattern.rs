@@ -2,19 +2,18 @@ use self::source::{collect_pinned_names, direct_bitfield_bindings};
 use super::{
     BitstringEndian, BitstringFieldKind, BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue,
     DispatchCompileError, DispatchGraph, DispatchMatrix, DispatchMatrixBuilder, DispatchMatrixError, EdgeEvidence,
-    GroundValue, GuardId, OutcomeId, OutcomeMultiplicity, PinnedValueId, PreparedKeyId, ProjectionKind, Region,
-    RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
+    GroundValue, GuardId, GuardLeaf, OutcomeId, OutcomeMultiplicity, PinnedValueId, PlanInputs, PreparedKeyId,
+    ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
+    demand::DispatchDemand,
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned};
 use crate::function_surface::CallableSurface;
 use crate::source::Span;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub(crate) mod source;
-pub(crate) use source::{
-    PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows, collect_bound_names_in_pattern,
-    collect_guard_capture_names,
-};
+pub(crate) use source::{PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternDispatchPlan<TypeHandle> {
@@ -32,8 +31,27 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
         self.outcomes.iter().find(|entry| entry.outcome == id)
     }
 
+    /// The body a winning outcome names. Every outcome the graph can reach is
+    /// one this plan carries, so a decision always has a body.
+    pub(crate) fn body_id(&self, outcome: OutcomeId) -> PatternBodyId {
+        self.outcome(outcome).expect("a winning outcome names a body").body_id
+    }
+
     pub(crate) fn subject(&self, id: SubjectId) -> &super::SubjectSource {
         &self.matrix.subjects[id.0 as usize].source
+    }
+
+    /// What this plan reads of each of its inputs, one slot per declared input.
+    pub(crate) fn input_demand(&self) -> &[DispatchDemand] {
+        &self.graph.input_demand
+    }
+
+    /// Whether deciding a clause reads this input at all. A caller is free to
+    /// pass anything else as nil.
+    pub(crate) fn required_input(&self, ordinal: usize) -> bool {
+        self.input_demand()
+            .get(ordinal)
+            .is_some_and(DispatchDemand::asks_anything)
     }
 
     pub(crate) fn prepared_key_id(&self, key: &GroundValue) -> Option<PreparedKeyId> {
@@ -69,11 +87,42 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
     }
 }
 
+/// A name a pattern reaches for but does not bind. Its value was bound before
+/// the pattern began: `input` names the plan input that delivers that binding
+/// when the rows carry a prematch, and is `None` when the lowerer resolves the
+/// name in the scope enclosing the match instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternPinnedInput {
     pub(crate) name: String,
     pub(crate) input: Option<u32>,
     pub(crate) span: Span,
+    pub(crate) kind: PinnedKind,
+}
+
+impl PatternPinnedInput {
+    /// What a reader is told when this name was never bound. The wording is
+    /// Elixir's: a pin says which pin and why, a plain variable is just an
+    /// undefined variable.
+    pub(crate) fn undefined_message(&self) -> String {
+        match self.kind {
+            PinnedKind::Pin => format!(
+                "undefined variable ^{}. No variable \"{}\" has been defined before the current pattern",
+                self.name, self.name
+            ),
+            PinnedKind::Variable => format!("undefined variable \"{}\"", self.name),
+        }
+    }
+}
+
+/// How a pattern reached for the name, which is what a diagnostic has to say
+/// back to the author.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PinnedKind {
+    /// `^name` in a pattern.
+    Pin,
+    /// A name spelled without a pin: a guard variable no pattern in the same
+    /// row binds, or a bitstring `size(name)` no earlier field binds.
+    Variable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,12 +167,15 @@ pub(crate) trait PatternResolver<TypeHandle> {
         &mut self,
         name: &crate::ast::CallableName,
         arity: usize,
-    ) -> Result<Option<PatternGuardDispatch<TypeHandle>>, SourcePatternError>;
+    ) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError>;
 }
 
 impl<TypeHandle, F> PatternResolver<TypeHandle> for F
 where
-    F: FnMut(&crate::ast::CallableName, usize) -> Result<Option<PatternGuardDispatch<TypeHandle>>, SourcePatternError>,
+    F: FnMut(
+        &crate::ast::CallableName,
+        usize,
+    ) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError>,
 {
     fn struct_type(
         &mut self,
@@ -137,7 +189,7 @@ where
         &mut self,
         name: &crate::ast::CallableName,
         arity: usize,
-    ) -> Result<Option<PatternGuardDispatch<TypeHandle>>, SourcePatternError> {
+    ) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError> {
         self(name, arity)
     }
 }
@@ -158,22 +210,46 @@ pub(crate) enum PatternGuardExpr<TypeHandle> {
     },
     Dispatch {
         inputs: Vec<PatternGuardExpr<TypeHandle>>,
-        bindings: PatternGuardBindings,
-        dispatch: Box<PatternGuardDispatch<TypeHandle>>,
+        /// The caller-owned operands the helper call needs. A helper is fed
+        /// only by its call arguments, so the one thing it borrows from its
+        /// caller is the prepared constants its plan compares against.
+        prepared: Vec<PreparedKeyId>,
+        /// The helper this call decides. Every reference to a helper names the
+        /// same plan, so the node shares it rather than carrying a copy. The
+        /// share is atomic because a plan travels between scheduler threads
+        /// inside `fz_ir::Term::ReceiveMatched`.
+        dispatch: Arc<PatternGuardDispatch<TypeHandle>>,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PatternGuardBindings {
-    pub(crate) pinned: Vec<GuardArgumentId>,
-    pub(crate) prepared: Vec<PreparedKeyId>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// An evaluated argument of this helper call, not a caller subject ordinal.
-pub(crate) struct GuardArgumentId(pub(crate) u32);
-
 impl<TypeHandle> PatternGuardExpr<TypeHandle> {
+    /// Every value this expression reads: the subjects and pins that reach it.
+    /// A nested helper call contributes only what its argument expressions
+    /// read, because the helper's own plan is closed over its own input space.
+    fn leaves(&self) -> Vec<GuardLeaf> {
+        let mut leaves = Vec::new();
+        self.collect_leaves(&mut leaves);
+        leaves
+    }
+
+    fn collect_leaves(&self, leaves: &mut Vec<GuardLeaf>) {
+        match self {
+            PatternGuardExpr::Const(_) => {}
+            PatternGuardExpr::Subject(subject) => leaves.push(GuardLeaf::Subject(*subject)),
+            PatternGuardExpr::Pinned(pinned) => leaves.push(GuardLeaf::Pinned(*pinned)),
+            PatternGuardExpr::Unary { expr, .. } => expr.collect_leaves(leaves),
+            PatternGuardExpr::Binary { lhs, rhs, .. } => {
+                lhs.collect_leaves(leaves);
+                rhs.collect_leaves(leaves);
+            }
+            PatternGuardExpr::Dispatch { inputs, .. } => {
+                for input in inputs {
+                    input.collect_leaves(leaves);
+                }
+            }
+        }
+    }
+
     pub(crate) fn map_type_handle<MappedHandle>(
         &self,
         map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
@@ -193,12 +269,12 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
             },
             PatternGuardExpr::Dispatch {
                 inputs,
-                bindings,
+                prepared,
                 dispatch,
             } => PatternGuardExpr::Dispatch {
                 inputs: inputs.iter().map(|input| input.map_type_handle(map)).collect(),
-                bindings: bindings.clone(),
-                dispatch: Box::new(dispatch.map_type_handle(map)),
+                prepared: prepared.clone(),
+                dispatch: Arc::new(dispatch.map_type_handle(map)),
             },
         }
     }
@@ -265,9 +341,12 @@ where
         return Err(SourcePatternError::UnsupportedGuardExpr);
     }
 
-    let source_patterns = SourcePatternRows {
-        input_count: arity,
-        rows: surface
+    // A helper is an ordinary function, entered with nothing bound before its
+    // patterns, so a pin in one of its heads names a binding that never
+    // existed and its own plan is where that is found.
+    let source_patterns = SourcePatternRows::entry(
+        arity,
+        surface
             .clauses()
             .iter()
             .enumerate()
@@ -278,51 +357,18 @@ where
                 body_id: i as PatternBodyId,
             })
             .collect(),
-    };
-    let mut plan = pattern_dispatch_from_source_with_resolver(source_patterns, resolver)
-        .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?;
+        Vec::new(),
+    );
+    let mut plan = pattern_dispatch_from_source_with_resolver(source_patterns, resolver).map_err(|err| match err {
+        PatternDispatchError::SourcePattern(err) => err,
+        other => SourcePatternError::DispatchMatrix(format!("{other:?}")),
+    })?;
 
-    let param_input_by_name: HashMap<String, u32> = surface.clauses()[0]
-        .params
-        .iter()
-        .enumerate()
-        .filter_map(|(i, pattern)| match &pattern.node {
-            Pattern::Var(name) => Some((name.clone(), i as u32)),
-            _ => None,
-        })
-        .collect();
-    for pinned in &mut plan.pinned {
-        if let Some(input) = param_input_by_name.get(&pinned.name) {
-            pinned.input = Some(*input);
-        }
-    }
-
-    let mut pinned_by_name: HashMap<String, PinnedValueId> = plan
-        .pinned
-        .iter()
-        .enumerate()
-        .map(|(i, pinned)| (pinned.name.clone(), PinnedValueId(i as u32)))
-        .collect();
-    for clause in surface.clauses() {
-        let mut bound = std::collections::BTreeSet::new();
-        for pattern in &clause.params {
-            collect_bound_names_in_pattern(&pattern.node, &mut bound);
-        }
-        let mut captures = Vec::new();
-        collect_guard_capture_names(&clause.body.node, &bound, &mut captures);
-        for capture in captures {
-            if pinned_by_name.contains_key(&capture) {
-                continue;
-            }
-            let id = PinnedValueId(plan.pinned.len() as u32);
-            plan.pinned.push(PatternPinnedInput {
-                name: capture.clone(),
-                input: None,
-                span: clause.body.span,
-            });
-            pinned_by_name.insert(capture, id);
-        }
-    }
+    // The plan above carries no pin, because a helper's rows have nothing
+    // bound before them. So a name in a helper body is either one its own head
+    // bound or one that was never bound at all, and lowering the body says
+    // which.
+    let pinned_by_name = HashMap::new();
 
     let mut bodies = Vec::with_capacity(surface.clauses().len());
     for clause in surface.clauses() {
@@ -351,7 +397,8 @@ where
     })
 }
 
-pub(crate) fn guard_expr_from_ast<F, TypeHandle>(
+/// Builds one guard expression from its source form.
+fn guard_expr_from_ast<F, TypeHandle>(
     expr: &Expr,
     bindings: &HashMap<String, SubjectId>,
     pinned_by_name: &HashMap<String, PinnedValueId>,
@@ -450,19 +497,6 @@ where
             let dispatch = resolver
                 .guard_call(&name, arity)?
                 .ok_or(SourcePatternError::UnsupportedGuardExpr)?;
-            let pinned = dispatch
-                .plan
-                .pinned
-                .iter()
-                .map(|pin| {
-                    let input = pin
-                        .input
-                        .ok_or_else(|| SourcePatternError::UnknownPinned(pin.name.clone()))?;
-                    args.get(input as usize)
-                        .map(|_| GuardArgumentId(input))
-                        .ok_or(SourcePatternError::UnsupportedGuardExpr)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
             let prepared = dispatch
                 .plan
                 .prepared_keys
@@ -471,8 +505,8 @@ where
                 .collect();
             PatternGuardExpr::Dispatch {
                 inputs: args,
-                bindings: PatternGuardBindings { pinned, prepared },
-                dispatch: Box::new(dispatch),
+                prepared,
+                dispatch,
             }
         }
         _ => return Err(SourcePatternError::UnsupportedGuardExpr),
@@ -484,7 +518,7 @@ pub(crate) fn pattern_dispatch_from_source<TypeHandle: Clone + PartialEq + Eq>(
 ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
     let mut resolver = |_name: &crate::ast::CallableName,
                         _arity: usize|
-     -> Result<Option<PatternGuardDispatch<TypeHandle>>, SourcePatternError> { Ok(None) };
+     -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError> { Ok(None) };
     pattern_dispatch_from_source_with_resolver(patterns, &mut resolver)
 }
 
@@ -506,6 +540,7 @@ where
 struct PatternDispatchProducer<TypeHandle> {
     builder: DispatchMatrixBuilder<TypeHandle>,
     input_count: usize,
+    prematch: source::Prematch,
     subjects: HashMap<PatternSubjectRef, SubjectId>,
     guard_subject: SubjectId,
     pinned: Vec<PatternPinnedInput>,
@@ -530,23 +565,16 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             .get(&PatternSubjectRef::Input(0))
             .copied()
             .unwrap_or_else(|| builder.add_input_subject());
-        let pinned_names = collect_pinned_names(patterns);
-        let pinned = pinned_names
+        let pinned = collect_pinned_names(patterns);
+        let pinned_by_name = pinned
             .iter()
-            .map(|name| PatternPinnedInput {
-                name: name.clone(),
-                input: None,
-                span: Span::DUMMY,
-            })
-            .collect::<Vec<_>>();
-        let pinned_by_name = pinned_names
-            .into_iter()
             .enumerate()
-            .map(|(index, name)| (name, PinnedValueId(index as u32)))
+            .map(|(index, pin)| (pin.name.clone(), PinnedValueId(index as u32)))
             .collect();
         Ok(Self {
             builder,
             input_count: patterns.input_count,
+            prematch: patterns.prematch.clone(),
             subjects,
             guard_subject,
             pinned,
@@ -627,8 +655,26 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     }
 
     fn finish(self) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
+        let undefined = self.prematch.undefined_pins(&self.pinned);
+        if !undefined.is_empty() {
+            return Err(PatternDispatchError::SourcePattern(SourcePatternError::UndefinedPins(
+                undefined,
+            )));
+        }
         let matrix = self.builder.build().map_err(PatternDispatchError::MatrixBuild)?;
-        let graph = compile_dispatch_matrix(&matrix)
+        let pinned_inputs = self.pinned.iter().map(|pin| pin.input).collect::<Vec<_>>();
+        // A guard question rides a carrier subject, so only its leaves say
+        // which inputs the guard demands.
+        let guard_leaves = self.guards.iter().map(PatternGuardExpr::leaves).collect::<Vec<_>>();
+        let inputs = PlanInputs {
+            // The DECLARED input count, not the matrix's subject count: a plan
+            // that declares no inputs still mints one subject to carry guards.
+            count: self.input_count,
+            subjects: &matrix.subjects,
+            pinned: &pinned_inputs,
+            guard_leaves: &guard_leaves,
+        };
+        let graph = compile_dispatch_matrix(&matrix, inputs)
             .map_err(PatternDispatchError::Compile)?
             .graph;
         Ok(PatternDispatchPlan {
@@ -818,10 +864,9 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                 Some(BitSize::Literal(value)) => Some(BitstringFieldSize::Literal(*value)),
                 Some(BitSize::Var(name)) => Some(match binding_subjects.get(name).copied() {
                     Some(subject) => BitstringFieldSize::Binding(subject),
-                    // Not bound by an earlier field, so it comes from the
-                    // enclosing scope. That is what a PIN is for, and the
-                    // existing pass that binds a pin to its parameter index
-                    // covers this one too (fz-5xp.54).
+                    // A size name no earlier field of this bitstring binds is a
+                    // pin: it names a binding that existed before the pattern
+                    // began.
                     None => BitstringFieldSize::Pinned(self.pin_for_name(name, field.value.span)),
                 }),
             };
@@ -888,11 +933,8 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         Ok(())
     }
 
-    /// A pin for a name the pattern does not bind, created on first use.
-    ///
-    /// The pass that binds a pin to its parameter index runs after the whole
-    /// plan is produced, so a pin registered here is connected the same way a
-    /// guard capture's is.
+    /// A pin for a name the pattern does not bind, created on first use and
+    /// resolved against the rows' prematch like every other pin.
     fn pin_for_name(&mut self, name: &str, span: Span) -> PinnedValueId {
         if let Some(id) = self.pinned_by_name.get(name) {
             return *id;
@@ -900,8 +942,9 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         let id = PinnedValueId(self.pinned.len() as u32);
         self.pinned.push(PatternPinnedInput {
             name: name.to_string(),
-            input: None,
+            input: self.prematch.input_for(name),
             span,
+            kind: PinnedKind::Variable,
         });
         self.pinned_by_name.insert(name.to_string(), id);
         id

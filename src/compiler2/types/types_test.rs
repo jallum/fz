@@ -3,7 +3,7 @@ use std::mem;
 use std::slice;
 
 use super::*;
-use crate::compiler2::keying::DispatchDemand;
+use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::finite_set::FiniteSet;
 use crate::runtime_type_predicate::{CallableShape, ListShape, ListShapes, RuntimeTypePredicate};
 

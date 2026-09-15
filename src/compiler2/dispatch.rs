@@ -2,9 +2,14 @@
 //!
 //! These slots hold compiler-owned `dispatch_matrix::pattern` artifacts keyed
 //! by function id. They are facts, not work queues: identity lives in the
-//! owning map, and each slot only tracks lifecycle state plus revision.
+//! owning map, and each slot only tracks lifecycle state plus revision. A
+//! defined artifact never changes, so a slot holds a shared pointer and a
+//! reader takes a handle on the producer's value rather than a copy of it.
 //! SourcePatternResolver supplies the shared producer with World-owned struct
 //! identity and the caller's guard-helper resolution.
+
+use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::ast::{CallableName, ModuleTarget};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternResolver, SourcePatternError};
@@ -26,8 +31,11 @@ pub(crate) struct FunctionDispatchMap<T> {
     slots: Vec<DispatchState<T>>,
 }
 
-pub(crate) type GuardDispatchMap = FunctionDispatchMap<PatternGuardDispatch<Ty>>;
-pub(crate) type EntryDispatchMap = FunctionDispatchMap<PatternDispatchPlan<Ty>>;
+/// A reified helper is shared atomically because callers embed it in their own
+/// plans, and a plan travels between scheduler threads inside
+/// `fz_ir::Term::ReceiveMatched`. An entry plan stays inside the compiler.
+pub(crate) type GuardDispatchMap = FunctionDispatchMap<Arc<PatternGuardDispatch<Ty>>>;
+pub(crate) type EntryDispatchMap = FunctionDispatchMap<Rc<PatternDispatchPlan<Ty>>>;
 
 impl<T> FunctionDispatchMap<T>
 where
@@ -86,7 +94,7 @@ pub(crate) struct SourcePatternResolver<'a, F> {
 
 impl<F> PatternResolver<Ty> for SourcePatternResolver<'_, F>
 where
-    F: FnMut(&mut World, &CallableName, usize) -> Result<Option<PatternGuardDispatch<Ty>>, SourcePatternError>,
+    F: FnMut(&mut World, &CallableName, usize) -> Result<Option<Arc<PatternGuardDispatch<Ty>>>, SourcePatternError>,
 {
     fn struct_type(&mut self, module: &ModuleTarget, _span: Span) -> Result<Ty, SourcePatternError> {
         let module_id = self
@@ -100,7 +108,7 @@ where
         &mut self,
         name: &CallableName,
         arity: usize,
-    ) -> Result<Option<PatternGuardDispatch<Ty>>, SourcePatternError> {
+    ) -> Result<Option<Arc<PatternGuardDispatch<Ty>>>, SourcePatternError> {
         (self.guard)(self.world, name, arity)
     }
 }

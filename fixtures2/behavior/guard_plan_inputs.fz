@@ -1,6 +1,11 @@
 #---
-# purpose: "Nested guard plans own their prepared keys independently of caller key and pin layouts"
+# purpose: "Nested guard plans own their prepared keys independently of caller key layouts"
 #---
+#
+# A helper called from a guard is an ordinary function, and a function head
+# has no bindings before it, so a helper cannot pin. `sized/1` still tests a
+# variable-size bitstring region inside a nested plan: its size names an
+# earlier field of the same bitstring, which is bound before the size is read.
 def wanted(%{"key" => value}), do: value == 42
 def wanted(_), do: false
 
@@ -10,12 +15,12 @@ def alternative(%{"alt" => value}), do: value == 42
 def alternative(_), do: false
 def either(value), do: wanted(value) or alternative(value)
 
-def sized(size, <<value::integer-size(size)>>), do: value == 42
-def sized(_, _), do: false
+def sized(<<n, value::integer-size(n)>>), do: value == 42
+def sized(_), do: false
 
 def receive_sized() do
   receive do
-    value when sized(8, value) -> 42
+    value when sized(value) -> 42
   after
     1000 -> 0
   end
@@ -105,12 +110,12 @@ def main() do
   assert(receive_only_wanted() == 42)
   count_after = Process.heap_alloc_stats().bitstring_allocs
   assert(count_after - before == 1)
-  send(self(), <<42>>)
+  send(self(), <<8, 42>>)
   assert(receive_sized() == 42)
   send(self(), %{"alt" => 42})
   assert(receive_either() == 42)
-  assert(case <<42>> do
-    value when sized(8, value) -> true
+  assert(case <<8, 42>> do
+    value when sized(value) -> true
     _ -> false
   end)
 end

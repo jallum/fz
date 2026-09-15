@@ -53,15 +53,15 @@ mod types;
 mod world;
 
 pub use agenda::Agenda;
+pub(crate) use artifact::NativeEntryAbi;
 pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
     BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
     BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReceive, BackendReturnLayout,
     BackendSemanticInputLayout, BackendStep, BackendTail, CallEdge, CallTarget, DirectCallEdge, DispatchCallArm,
-    DispatchCallEdge, DispatchCallMiss, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
+    DispatchCallEdge, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
-pub(crate) use artifact::{NativeEntryAbi, required_dispatch_input_ordinals};
 pub use body::{
     BodyState, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
     LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredBodyMap, LoweredClause, LoweredEntry,

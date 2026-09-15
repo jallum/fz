@@ -2283,7 +2283,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     ) -> Result<ValueId, FatalError> {
         let subject_value = self.lower_expr(subject, env, steps)?;
         let plan = self.compile_match_dispatch("case", span, match_rows(clauses))?;
-        let bindings = self.lower_dispatch_bindings(&plan, &[subject_value], env, steps, span)?;
+        let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
         let arm_blocks = clauses
             .iter()
             .enumerate()
@@ -2403,7 +2403,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 let arguments = self.bind_outcome_arguments(&plan.outcomes[0], &mut success_env);
                 let success_block = self.lower_with_block(span, rest, body, else_clauses, success_env)?;
                 let miss_block = self.lower_with_fail_block(span, matched, else_clauses, env.clone())?;
-                let bindings = self.lower_dispatch_bindings(&plan, &[matched], &env, &mut steps, pattern.span)?;
+                let bindings = self.lower_dispatch_bindings(&plan, &env, &mut steps)?;
                 let value = self.fresh_value();
                 steps.push(ExprStep::Dispatch {
                     value,
@@ -2444,7 +2444,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         }
         let plan = self.compile_match_dispatch("with else", span, match_rows(else_clauses))?;
         let mut steps = Vec::new();
-        let bindings = self.lower_dispatch_bindings(&plan, &[failed], &env, &mut steps, span)?;
+        let bindings = self.lower_dispatch_bindings(&plan, &env, &mut steps)?;
         let arm_blocks = else_clauses
             .iter()
             .enumerate()
@@ -2493,7 +2493,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             .map(|after| self.lower_expr(&after.timeout, env, steps))
             .transpose()?;
         let plan = self.compile_match_dispatch("receive", span, match_rows(clauses))?;
-        let bindings = self.lower_dispatch_bindings(&plan, &[], env, steps, span)?;
+        let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
         let captures = self.receive_capture_values(clauses, after, env);
         let outcomes = plan
             .outcomes
@@ -2556,7 +2556,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         span: Span,
         rows: Vec<PatternRow<super::super::types::Ty>>,
     ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
-        let source = SourcePatternRows { input_count: 1, rows };
+        let source = SourcePatternRows::lexical(1, rows);
         let namespace = self.namespace;
         let mut resolver = super::super::dispatch::SourcePatternResolver {
             world: self.world,
@@ -2593,50 +2593,34 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         span: Span,
     ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
-        pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 1,
-            rows: vec![PatternRow {
+        pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![PatternRow {
                 patterns: vec![Spanned::new(Pattern::Bool(true), span)],
                 preconditions: Vec::new(),
                 guard: None,
                 body_id: 0,
             }],
-        })
+        ))
         .map_err(|error| emit_local_dispatch_error(self.telemetry, "cond", span, error))
     }
 
+    /// Local dispatch rows carry no prematch, so every pin names a binding the
+    /// enclosing environment already holds and resolves there by name.
     fn lower_dispatch_bindings(
         &mut self,
         plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
-        inputs: &[ValueId],
         env: &HashMap<String, ValueId>,
         steps: &mut Vec<ExprStep>,
-        span: Span,
     ) -> Result<DispatchBindings, FatalError> {
         let pinned = plan
             .pinned
             .iter()
             .map(|pinned| {
-                if let Some(input) = pinned.input {
-                    return inputs.get(input as usize).copied().ok_or_else(|| {
-                        emit_job_diagnostic(
-                            self.telemetry,
-                            Diagnostic::error(
-                                codes::LOWER_UNSUPPORTED,
-                                format!("compiler2 local dispatch input {} is out of bounds", input),
-                                span,
-                            ),
-                        )
-                    });
-                }
                 env.get(&pinned.name).copied().ok_or_else(|| {
                     emit_job_diagnostic(
                         self.telemetry,
-                        Diagnostic::error(
-                            codes::LOWER_UNBOUND,
-                            format!("compiler2 local dispatch pinned name `{}` is unresolved", pinned.name),
-                            pinned.span,
-                        ),
+                        Diagnostic::error(codes::LOWER_UNBOUND, pinned.undefined_message(), pinned.span),
                     )
                 })
             })
@@ -4432,6 +4416,13 @@ fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<String> {
     let mut free = HashSet::new();
     for clause in clauses {
         let mut bound = HashSet::new();
+        // A pin in a parameter names a value bound before the clause began, so
+        // the lambda has to close over it just like a body reference. Free
+        // names come first, against the empty pre-pattern scope, because the
+        // parameters bind nothing a sibling parameter's pin may reach.
+        for param in &clause.params {
+            collect_pattern_free_names(&param.node, &mut bound, &mut free);
+        }
         for param in &clause.params {
             bind_pattern_names(&param.node, &mut bound);
         }
@@ -4745,11 +4736,15 @@ fn emit_local_dispatch_error(
                 span,
             ),
         ),
+        // Local rows are matched inside a live scope, so their pins are carried
+        // to `lower_dispatch_bindings` and resolved by name there; the producer
+        // never refuses one here.
         PatternDispatchError::SourcePattern(
             SourcePatternError::UnknownSubject(_)
             | SourcePatternError::UnresolvedStruct(_)
             | SourcePatternError::RowPatternArity { .. }
-            | SourcePatternError::NonMonotonicBodyId { .. },
+            | SourcePatternError::NonMonotonicBodyId { .. }
+            | SourcePatternError::UndefinedPins(_),
         ) => {
             panic!("compiler2 built an invalid local dispatch row set: {error:?}")
         }

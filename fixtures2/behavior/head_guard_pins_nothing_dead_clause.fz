@@ -1,0 +1,18 @@
+#---
+# purpose: "a guard naming an undefined name is rejected even in a clause nothing can reach"
+# expect: diagnostic
+#---
+#
+# # head_guard_pins_nothing_dead_clause
+#
+# The same undefined guard name as head_guard_pins_nothing, but behind a first
+# clause that matches everything, so the guarded clause can never be selected.
+# Pins are collected from every row before any of them is pruned, so a name
+# that is bound nowhere is still a diagnostic. The alternative would let a
+# reachability decision determine whether a program compiles.
+def main() do
+  dbg(dead(1, 0))
+end
+
+defp dead(a, _), do: :first
+defp dead(_, y) when a > y, do: :other

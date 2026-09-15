@@ -1,43 +1,14 @@
 //! Stable facts used to canonicalize activation keys.
 //!
-//! `DispatchDemand` is the lattice both halves of [`InputDemand`] live in: what
-//! a body asks about one input, shaped like the type it asks about. `Ignore` is
-//! the bottom (nothing is asked), `Whole` the top (the value itself is the
-//! answer), and `ListShape`/`TupleFields` say the question descends into one
-//! structural position. It is a lattice because a slot can be asked about from
-//! more than one place -- two clauses of one body, and, since fz-kdt.183, every
-//! callee this body hands the slot on to -- and `join_assign` is its least
-//! upper bound.
+//! Every vector in [`InputDemand`] holds [`DispatchDemand`]: what a body asks
+//! about one input, shaped like the type it asks about. A slot is asked about
+//! from more than one place -- two clauses of one body, and every callee this
+//! body hands the slot on to -- so what is published here is the join of all
+//! of them over that lattice.
 
-use std::collections::BTreeMap;
+use crate::dispatch_matrix::demand::DispatchDemand;
 
 use super::identity::FunctionId;
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) enum DispatchDemand {
-    #[default]
-    Ignore,
-    Whole,
-    TupleFields(BTreeMap<u32, DispatchDemand>),
-    ListShape(Box<DispatchDemand>),
-}
-
-impl DispatchDemand {
-    pub(crate) fn join_assign(&mut self, other: DispatchDemand) {
-        match (self, other) {
-            (Self::Whole, _) | (_, Self::Ignore) => {}
-            (slot @ Self::Ignore, next) => *slot = next,
-            (slot, Self::Whole) => *slot = Self::Whole,
-            (Self::ListShape(current), Self::ListShape(next)) => current.join_assign(*next),
-            (Self::TupleFields(current), Self::TupleFields(next)) => {
-                for (field, demand) in next {
-                    current.entry(field).or_default().join_assign(demand);
-                }
-            }
-            (slot, _) => *slot = Self::Whole,
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct FunctionFactMap<T> {

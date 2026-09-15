@@ -25,6 +25,7 @@ use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
 
@@ -636,7 +637,7 @@ fn compiler2_inline_forwarding_preserves_input_return_demand() {
             .input_demand(forward)
             .expect("forward demand settled")
             .returned,
-        [crate::compiler2::keying::DispatchDemand::Whole],
+        [crate::dispatch_matrix::demand::DispatchDemand::Whole],
         "a winning whole-input binding forwards the original input into the return"
     );
 }
@@ -1130,8 +1131,8 @@ fn equal_range_closure_replacement_keeps_one_typed_occurrence_identity() {
 }
 type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
 type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, DependencyKey>>>>;
-type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan<Ty>>>>>;
-type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch<Ty>>>>>;
+type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<Rc<PatternDispatchPlan<Ty>>>>>>;
+type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<Arc<PatternGuardDispatch<Ty>>>>>>;
 type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
 type FunctionDefs = Rc<RefCell<HashMap<FunctionId, FunctionDefinedRecord>>>;
 type SourceNotes = Rc<RefCell<Vec<FunctionRef>>>;
@@ -9858,8 +9859,9 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
             .world()
             .executable_facts(&count_result.key)
             .expect("count-result executable facts should be settled")
-            .entry_dispatch_inputs
-            .is_empty(),
+            .entry_dispatch_demand()
+            .iter()
+            .all(|demand| !demand.asks_anything()),
         "the directly selected ok clause must not consume the omitted variant tag",
     );
 
@@ -16759,8 +16761,8 @@ fn compiler2_entry_dispatch_requires_only_its_own_inputs_when_a_helper_is_wider(
         "the guard should have been reified as a nested helper plan",
     );
     assert_eq!(
-        crate::compiler2::artifact::required_dispatch_input_ordinals(&plan),
-        HashSet::from([0]),
+        plan.input_demand(),
+        [crate::dispatch_matrix::demand::DispatchDemand::Whole],
         "the helper's own ordinals must not become demands on the caller",
     );
 }
@@ -16789,11 +16791,11 @@ fn compiler2_nested_guard_demand_names_only_caller_arguments() {
             .unwrap()
             .local_dispatch,
         [
-            crate::compiler2::keying::DispatchDemand::Whole,
-            crate::compiler2::keying::DispatchDemand::Ignore,
-            crate::compiler2::keying::DispatchDemand::Whole
+            crate::dispatch_matrix::demand::DispatchDemand::Ignore,
+            crate::dispatch_matrix::demand::DispatchDemand::Ignore,
+            crate::dispatch_matrix::demand::DispatchDemand::Whole
         ],
-        "helper subject one receives caller input two; it cannot demand unused caller input one"
+        "a guard demands what it reads, not the subject that carries the question"
     );
 }
 
@@ -16839,7 +16841,7 @@ fn compiler2_nested_guard_bindings_preserve_owner_ids_and_reject_missing_operand
     );
     assert_eq!(**dispatch, dispatch.map_type_handle(&mut |ty| ty.clone()));
     let PatternGuardExpr::Dispatch {
-        bindings,
+        prepared,
         dispatch: child,
         ..
     } = &dispatch.guards[0]
@@ -16847,16 +16849,16 @@ fn compiler2_nested_guard_bindings_preserve_owner_ids_and_reject_missing_operand
         panic!("relayed edge")
     };
     assert_eq!(
-        bindings.prepared,
-        [PreparedKeyId(1)],
+        prepared,
+        &[PreparedKeyId(1)],
         "helper key is caller key one, not caller key zero"
     );
-    let PatternGuardExpr::Dispatch { bindings, .. } = &child.bodies[0] else {
+    let PatternGuardExpr::Dispatch { prepared, .. } = &child.bodies[0] else {
         panic!("wanted edge")
     };
     assert_eq!(
-        bindings.prepared,
-        [PreparedKeyId(0)],
+        prepared,
+        &[PreparedKeyId(0)],
         "nested key is local to the intermediate helper"
     );
 
@@ -16864,10 +16866,10 @@ fn compiler2_nested_guard_bindings_preserve_owner_ids_and_reject_missing_operand
     let IrTerm::ReceiveMatched { dispatch, .. } = &mut invalid.module.fns[function].blocks[block].terminator else {
         unreachable!()
     };
-    let PatternGuardExpr::Dispatch { bindings, .. } = &mut std::sync::Arc::make_mut(dispatch).guards[0] else {
+    let PatternGuardExpr::Dispatch { prepared, .. } = &mut std::sync::Arc::make_mut(dispatch).guards[0] else {
         unreachable!()
     };
-    bindings.prepared[0] = PreparedKeyId(99);
+    prepared[0] = PreparedKeyId(99);
     assert_ne!(
         *program, invalid,
         "operand edges participate in native artifact equality"
@@ -16888,9 +16890,13 @@ fn compiler2_nested_guard_bindings_preserve_owner_ids_and_reject_missing_operand
     );
 }
 
+/// A named helper called from a guard has no lexical edge to its caller: it is
+/// an ordinary function, entered with nothing bound before its patterns. A name
+/// its own head does not bind was never bound, and that is found where the
+/// helper is built, even when the caller happens to hold the same spelling.
 #[test]
 fn compiler2_nested_guard_missing_lexical_pin_is_a_construction_diagnostic() {
-    for (label, source) in [
+    for (site, source) in [
         (
             "receive",
             "def wanted(value), do: value == missing\ndef main() do\n receive do\n value when wanted(value) -> 42\n after\n 1000 -> 0\n end\nend\n",
@@ -16914,14 +16920,15 @@ fn compiler2_nested_guard_missing_lexical_pin_is_a_construction_diagnostic() {
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        assert!(compiler.run_root_interp(root).is_err());
+        assert!(compiler.run_root_interp(root).is_err(), "{site} guard");
         let diagnostic = capture
             .last(&["fz", "diag", "error"])
             .expect("missing lexical pin diagnostic");
         assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNBOUND.0);
         assert_eq!(
             metadata_str(&diagnostic, "message"),
-            format!("compiler2 {label} guard references unknown name `missing`")
+            "compiler2 helper `wanted/1` references unknown guard name `missing`",
+            "the helper is where the unbound name is, whatever the {site} guard holds"
         );
     }
 }
@@ -18695,7 +18702,7 @@ impl GuardDispatchCapture {
         );
     }
 
-    fn take(&self, function: FunctionId) -> Option<PatternGuardDispatch<Ty>> {
+    fn take(&self, function: FunctionId) -> Option<Arc<PatternGuardDispatch<Ty>>> {
         let mut dispatches = self.dispatches.borrow_mut();
         let matches = dispatches.get_mut(&function)?;
         let dispatch = matches.pop();
@@ -18705,7 +18712,7 @@ impl GuardDispatchCapture {
         dispatch
     }
 
-    fn last(&self, function: FunctionId) -> Option<PatternGuardDispatch<Ty>> {
+    fn last(&self, function: FunctionId) -> Option<Arc<PatternGuardDispatch<Ty>>> {
         self.dispatches
             .borrow()
             .get(&function)
@@ -18735,7 +18742,7 @@ impl EntryDispatchCapture {
         );
     }
 
-    fn take(&self, function: FunctionId) -> Option<PatternDispatchPlan<Ty>> {
+    fn take(&self, function: FunctionId) -> Option<Rc<PatternDispatchPlan<Ty>>> {
         let mut plans = self.plans.borrow_mut();
         let matches = plans.get_mut(&function)?;
         let plan = matches.pop();
@@ -18745,7 +18752,7 @@ impl EntryDispatchCapture {
         plan
     }
 
-    fn last(&self, function: FunctionId) -> Option<PatternDispatchPlan<Ty>> {
+    fn last(&self, function: FunctionId) -> Option<Rc<PatternDispatchPlan<Ty>>> {
         self.plans
             .borrow()
             .get(&function)
@@ -18856,25 +18863,25 @@ fn assert_primary_span_contains(diagnostic: &Diagnostic, source: &str, needle: &
     );
 }
 
-fn guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> PatternGuardDispatch<Ty> {
+fn guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> Arc<PatternGuardDispatch<Ty>> {
     capture
         .take(function)
         .unwrap_or_else(|| panic!("guard_dispatch.defined for {function:?}"))
 }
 
-fn entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> PatternDispatchPlan<Ty> {
+fn entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> Rc<PatternDispatchPlan<Ty>> {
     capture
         .take(function)
         .unwrap_or_else(|| panic!("entry_dispatch.defined for {function:?}"))
 }
 
-fn latest_guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> PatternGuardDispatch<Ty> {
+fn latest_guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> Arc<PatternGuardDispatch<Ty>> {
     capture
         .last(function)
         .unwrap_or_else(|| panic!("guard_dispatch.defined for {function:?}"))
 }
 
-fn latest_entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> PatternDispatchPlan<Ty> {
+fn latest_entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> Rc<PatternDispatchPlan<Ty>> {
     capture
         .last(function)
         .unwrap_or_else(|| panic!("entry_dispatch.defined for {function:?}"))
@@ -21182,10 +21189,10 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
                             continue;
                         }
                         readings += 1;
-                        let ignored = |axis: &Vec<crate::compiler2::keying::DispatchDemand>| {
+                        let ignored = |axis: &Vec<crate::dispatch_matrix::demand::DispatchDemand>| {
                             matches!(
                                 axis.get(slot),
-                                None | Some(crate::compiler2::keying::DispatchDemand::Ignore)
+                                None | Some(crate::dispatch_matrix::demand::DispatchDemand::Ignore)
                             )
                         };
                         // A rung may sit on a slot EITHER axis names: the

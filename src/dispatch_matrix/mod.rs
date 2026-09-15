@@ -42,10 +42,21 @@
 //! `dispatch_matrix::pattern` is now just a producer on top of this model. Its
 //! `SourcePatternRows` are AST-facing input rows; they are not a second matcher
 //! model, and they do not own executable dispatch semantics.
+//!
+//! `dispatch_matrix::demand` is the lattice a question is measured in: what a
+//! test asks of one input, shaped like the value it asks about. It lives here
+//! because the questions define it; the keying jobs only join it across bodies.
+//! The graph builder folds every question it is handed into
+//! `DispatchGraph::input_demand`, one slot per declared input, so a finished
+//! plan states what it reads of its inputs and no reader walks the graph to
+//! rediscover it.
 
 use std::collections::BTreeMap;
 
+pub(crate) mod demand;
 pub(crate) mod pattern;
+
+use demand::{DemandPathStep, DispatchDemand, demand_at_step};
 
 /// The dispatch/pattern constant carrier. `dispatch_matrix` is otherwise
 /// generic over an opaque `TypeHandle` and has no dependency on any concrete
@@ -252,10 +263,9 @@ pub(crate) enum BitstringFieldSize {
     /// A size bound by an EARLIER FIELD of the same bitstring, which the
     /// dispatch has already extracted: `<<n, s :: binary-size(n)>>`.
     Binding(SubjectId),
-    /// A size from the ENCLOSING SCOPE -- a function parameter, or anything
-    /// bound before the `case`. It reaches dispatch the same way a pinned
-    /// value does, because that is the same question: a name the pattern uses
-    /// but does not bind (fz-5xp.54).
+    /// A size bound BEFORE THE PATTERN BEGAN, never a parameter of the same
+    /// head. It reaches dispatch the same way a pinned value does, because
+    /// that is the same question: a name the pattern uses but does not bind.
     Pinned(PinnedValueId),
 }
 
@@ -469,6 +479,9 @@ impl<TypeHandle> RegionQuestion<TypeHandle> {
 pub(crate) struct DispatchGraph<TypeHandle> {
     pub(crate) nodes: Vec<DispatchNode<TypeHandle>>,
     pub(crate) root: GraphNodeId,
+    /// What the graph's questions ask of each declared input, one slot per
+    /// input, folded as the nodes were added.
+    pub(crate) input_demand: Vec<DispatchDemand>,
 }
 
 impl<TypeHandle> DispatchGraph<TypeHandle> {
@@ -483,6 +496,7 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
         DispatchGraph {
             nodes: self.nodes.iter().map(|node| node.map_type_handle(map)).collect(),
             root: self.root,
+            input_demand: self.input_demand.clone(),
         }
     }
 }
@@ -589,21 +603,48 @@ struct ArmCompileState<'a, TypeHandle> {
     questions: Vec<RegionQuestion<TypeHandle>>,
 }
 
+/// Everything a question's demand is resolved against: how many inputs the
+/// plan declares, the subjects that name them, the input each pin arrives on,
+/// and what each guard reads.
+///
+/// `count` is the DECLARED input count, not the number of input subjects the
+/// matrix holds: a producer may mint a subject to carry a guard on a plan that
+/// declares no inputs at all.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlanInputs<'a> {
+    pub(crate) count: usize,
+    pub(crate) subjects: &'a [Subject],
+    /// The input each pinned value arrives on, when the rows' prematch bound it.
+    pub(crate) pinned: &'a [Option<u32>],
+    /// What each guard reads, in the plan's own subject and pin space.
+    pub(crate) guard_leaves: &'a [Vec<GuardLeaf>],
+}
+
+/// One value a guard reads. A guard question rides a carrier subject, so what
+/// a guard asks of the declared inputs is exactly its leaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GuardLeaf {
+    Subject(SubjectId),
+    Pinned(PinnedValueId),
+}
+
 pub(crate) fn compile_dispatch_matrix<TypeHandle: Clone + Eq>(
     matrix: &DispatchMatrix<TypeHandle>,
+    inputs: PlanInputs<'_>,
 ) -> Result<CompiledDispatchGraph<TypeHandle>, DispatchCompileError> {
     let ordered_arms = matrix.arms.iter().collect();
-    compile_ordered_arms(ordered_arms)
+    compile_ordered_arms(ordered_arms, inputs)
 }
 
 fn compile_ordered_arms<TypeHandle: Clone + Eq>(
     ordered_arms: Vec<&DispatchArm<TypeHandle>>,
+    inputs: PlanInputs<'_>,
 ) -> Result<CompiledDispatchGraph<TypeHandle>, DispatchCompileError> {
     let mut stats = DispatchCompileStats {
         arms: ordered_arms.len(),
         ..DispatchCompileStats::default()
     };
-    let mut builder = DispatchGraphBuilder::typed();
+    let mut builder = DispatchGraphBuilder::typed(inputs);
     let fallback = fallback_node(&mut builder, &mut stats);
     let states = ordered_arms
         .into_iter()
@@ -618,7 +659,7 @@ fn compile_ordered_arms<TypeHandle: Clone + Eq>(
 }
 
 fn fallback_node<TypeHandle: Clone + Eq>(
-    builder: &mut DispatchGraphBuilder<TypeHandle>,
+    builder: &mut DispatchGraphBuilder<'_, TypeHandle>,
     stats: &mut DispatchCompileStats,
 ) -> GraphNodeId {
     stats.fail_nodes += 1;
@@ -628,7 +669,7 @@ fn fallback_node<TypeHandle: Clone + Eq>(
 fn compile_arm_sequence<TypeHandle: Clone + Eq>(
     arms: &[ArmCompileState<'_, TypeHandle>],
     fallback: GraphNodeId,
-    builder: &mut DispatchGraphBuilder<TypeHandle>,
+    builder: &mut DispatchGraphBuilder<'_, TypeHandle>,
     stats: &mut DispatchCompileStats,
 ) -> GraphNodeId {
     let Some(first) = arms.first() else {
@@ -663,7 +704,7 @@ fn compile_arm_sequence<TypeHandle: Clone + Eq>(
 fn compile_single_arm<TypeHandle: Clone + Eq>(
     arm: &ArmCompileState<'_, TypeHandle>,
     on_miss: GraphNodeId,
-    builder: &mut DispatchGraphBuilder<TypeHandle>,
+    builder: &mut DispatchGraphBuilder<'_, TypeHandle>,
     stats: &mut DispatchCompileStats,
 ) -> GraphNodeId {
     let mut current = outcome_node(arm.arm, builder, stats);
@@ -675,7 +716,7 @@ fn compile_single_arm<TypeHandle: Clone + Eq>(
 
 fn outcome_node<TypeHandle: Clone + Eq>(
     arm: &DispatchArm<TypeHandle>,
-    builder: &mut DispatchGraphBuilder<TypeHandle>,
+    builder: &mut DispatchGraphBuilder<'_, TypeHandle>,
     stats: &mut DispatchCompileStats,
 ) -> GraphNodeId {
     stats.outcome_nodes += 1;
@@ -689,7 +730,7 @@ fn test_node<TypeHandle: Clone + Eq>(
     question: RegionQuestion<TypeHandle>,
     on_match: GraphNodeId,
     on_miss: GraphNodeId,
-    builder: &mut DispatchGraphBuilder<TypeHandle>,
+    builder: &mut DispatchGraphBuilder<'_, TypeHandle>,
     stats: &mut DispatchCompileStats,
 ) -> GraphNodeId {
     stats.test_nodes += 1;
@@ -830,22 +871,23 @@ pub(crate) enum DispatchGraphError {
     UnknownNode(GraphNodeId),
 }
 
-pub(crate) struct DispatchGraphBuilder<TypeHandle> {
+pub(crate) struct DispatchGraphBuilder<'a, TypeHandle> {
     nodes: Vec<DispatchNode<TypeHandle>>,
+    inputs: PlanInputs<'a>,
+    input_demand: Vec<DispatchDemand>,
 }
 
-impl<TypeHandle> DispatchGraphBuilder<TypeHandle> {
-    fn empty() -> Self {
-        Self { nodes: Vec::new() }
-    }
-}
-
-impl<TypeHandle: Clone + Eq> DispatchGraphBuilder<TypeHandle> {
-    pub(crate) fn typed() -> Self {
-        Self::empty()
+impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
+    pub(crate) fn typed(inputs: PlanInputs<'a>) -> Self {
+        Self {
+            nodes: Vec::new(),
+            input_demand: vec![DispatchDemand::Ignore; inputs.count],
+            inputs,
+        }
     }
 
     pub(crate) fn add_node(&mut self, node: DispatchNode<TypeHandle>) -> GraphNodeId {
+        self.charge_node(&node);
         let id = GraphNodeId(self.nodes.len() as u32);
         self.nodes.push(node);
         id
@@ -859,9 +901,11 @@ impl<TypeHandle: Clone + Eq> DispatchGraphBuilder<TypeHandle> {
                 self.ensure_node(on_miss.target)?;
             }
         }
+        self.ensure_projections_ride_a_charged_input();
         Ok(DispatchGraph {
             nodes: self.nodes,
             root,
+            input_demand: self.input_demand,
         })
     }
 
@@ -870,6 +914,186 @@ impl<TypeHandle: Clone + Eq> DispatchGraphBuilder<TypeHandle> {
             .get(id.0 as usize)
             .map(|_| ())
             .ok_or(DispatchGraphError::UnknownNode(id))
+    }
+
+    /// Charges what one node asks of the declared inputs.
+    ///
+    /// Only a test asks anything. Edge evidence does not: a proof restates the
+    /// test's own predicate, and a projection is a binding reached by a test
+    /// that already charged its root.
+    fn charge_node(&mut self, node: &DispatchNode<TypeHandle>) {
+        let DispatchNode::Test { predicate, .. } = node else {
+            return;
+        };
+        // A guard question rides a carrier subject the guard need not read, so
+        // the carrier is not charged: the guard's leaves say what it reads.
+        if let Region::Guard(guard) = &predicate.region {
+            self.charge_guard(*guard);
+            return;
+        }
+        self.charge_subject(predicate.subject, demand_for_region(&predicate.region));
+        match &predicate.region {
+            Region::Equal(ComparisonValue::Pinned(pinned)) => self.charge_pin(*pinned),
+            Region::Bitstring(shape) => self.charge_bitstring_sizes(shape),
+            _ => {}
+        }
+    }
+
+    fn charge_guard(&mut self, guard: GuardId) {
+        let guard_leaves = self.inputs.guard_leaves;
+        let Some(leaves) = guard_leaves.get(guard.0 as usize) else {
+            return;
+        };
+        for leaf in leaves {
+            match leaf {
+                GuardLeaf::Subject(subject) => self.charge_subject(*subject, DispatchDemand::Whole),
+                GuardLeaf::Pinned(pinned) => self.charge_pin(*pinned),
+            }
+        }
+    }
+
+    /// A bitstring field whose size was bound before the pattern began reads
+    /// the input that delivers the pin, on top of the bitstring itself.
+    fn charge_bitstring_sizes(&mut self, shape: &BitstringShape) {
+        let subjects = self.inputs.subjects;
+        for field in &shape.fields {
+            let Some(Subject {
+                source: SubjectSource::Projection(projection),
+                ..
+            }) = subjects.get(field.0 as usize)
+            else {
+                continue;
+            };
+            let ProjectionKind::BitstringField(extraction) = &projection.kind else {
+                continue;
+            };
+            if let Some(BitstringFieldSize::Pinned(pinned)) = &extraction.spec.size {
+                self.charge_pin(*pinned);
+            }
+        }
+    }
+
+    /// A pin the rows' prematch bound reads the input that delivers it.
+    fn charge_pin(&mut self, pinned: PinnedValueId) {
+        if let Some(Some(input)) = self.inputs.pinned.get(pinned.0 as usize).copied() {
+            self.charge_input(input, DispatchDemand::Whole);
+        }
+    }
+
+    fn charge_subject(&mut self, subject: SubjectId, demand: DispatchDemand) {
+        let (ordinal, demand) = self.subject_demand(subject, demand);
+        self.charge_input(ordinal, demand);
+    }
+
+    /// The input a subject descends from, and what a demand on that subject
+    /// asks of that input.
+    fn subject_demand(&self, subject: SubjectId, demand: DispatchDemand) -> (u32, DispatchDemand) {
+        subject_demand(self.inputs.subjects, subject, demand).unwrap_or_else(|| missing_subject(subject))
+    }
+
+    /// The input a subject descends from, for a caller that asks nothing of it.
+    fn subject_root(&self, subject: SubjectId) -> u32 {
+        subject_root(self.inputs.subjects, subject).unwrap_or_else(|| missing_subject(subject))
+    }
+
+    /// Every ordinal charged here names a declared input of THIS plan. A
+    /// backend is entitled to pass anything else as nil, so an ordinal that
+    /// escapes the declared count is not a conservative over-approximation --
+    /// it is a demand no caller can meet. The assertion keeps that failure at
+    /// the plan that produced it instead of at whichever door reads it first.
+    fn charge_input(&mut self, ordinal: u32, demand: DispatchDemand) {
+        let count = self.inputs.count;
+        let slot = self
+            .input_demand
+            .get_mut(ordinal as usize)
+            .unwrap_or_else(|| panic!("dispatch plan requires input {ordinal} but has only {count} semantic input(s)"));
+        slot.join_assign(demand);
+    }
+
+    /// A projection is a binding, not a question: it names where a value comes
+    /// from once a test on its source has succeeded. Every projection therefore
+    /// sits under a test that charged its root input, which is what entitles
+    /// the fold to ignore evidence.
+    fn ensure_projections_ride_a_charged_input(&self) {
+        for node in &self.nodes {
+            let (first, second) = match node {
+                DispatchNode::Fail => (None, None),
+                DispatchNode::Outcome { evidence, .. } => (Some(evidence), None),
+                DispatchNode::Test { on_match, on_miss, .. } => (Some(&on_match.evidence), Some(&on_miss.evidence)),
+            };
+            for projection in first
+                .into_iter()
+                .chain(second)
+                .flat_map(|evidence| &evidence.projections)
+            {
+                let ordinal = self.subject_root(*projection);
+                assert!(
+                    self.input_demand
+                        .get(ordinal as usize)
+                        .is_some_and(DispatchDemand::asks_anything),
+                    "dispatch projects from input {ordinal}, which no question charged",
+                );
+            }
+        }
+    }
+}
+
+/// What one question asks of the value it tests.
+fn demand_for_region<TypeHandle>(region: &Region<TypeHandle>) -> DispatchDemand {
+    match region {
+        Region::List(ListRegion::Empty | ListRegion::Cons) => {
+            DispatchDemand::ListShape(Box::new(DispatchDemand::Ignore))
+        }
+        Region::TupleArity(_) => DispatchDemand::TupleFields(BTreeMap::new()),
+        Region::Equal(_)
+        | Region::Type(_)
+        | Region::MapKind
+        | Region::MapKeyPresent { .. }
+        | Region::Bitstring(_)
+        | Region::Guard(_) => DispatchDemand::Whole,
+    }
+}
+
+/// A question the matrix accepted names a subject the matrix holds, so an
+/// unknown subject is a producer that built the graph from another plan's
+/// questions.
+fn missing_subject(subject: SubjectId) -> ! {
+    panic!(
+        "dispatch question names subject s{}, which its matrix does not hold",
+        subject.0
+    )
+}
+
+/// The input a subject descends from. A projection names its source, so the
+/// chain climbs to the input the subject was carved out of.
+fn subject_root(subjects: &[Subject], mut subject: SubjectId) -> Option<u32> {
+    loop {
+        match &subjects.get(subject.0 as usize)?.source {
+            SubjectSource::Input { ordinal } => return Some(*ordinal),
+            SubjectSource::Projection(projection) => subject = projection.source,
+        }
+    }
+}
+
+/// The input a subject descends from, and what a demand on that subject asks
+/// of that input.
+///
+/// The walk climbs the same chain as `subject_root`, and each step it climbs
+/// wraps the demand in the projection that reached it, so the demand that
+/// arrives at the input is the one the input carries.
+fn subject_demand(
+    subjects: &[Subject],
+    mut subject: SubjectId,
+    mut demand: DispatchDemand,
+) -> Option<(u32, DispatchDemand)> {
+    loop {
+        match &subjects.get(subject.0 as usize)?.source {
+            SubjectSource::Input { ordinal } => return Some((*ordinal, demand)),
+            SubjectSource::Projection(projection) => {
+                demand = demand_at_step(&DemandPathStep::from(&projection.kind), demand);
+                subject = projection.source;
+            }
+        }
     }
 }
 

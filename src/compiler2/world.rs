@@ -12,11 +12,13 @@ use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 
 use crate::FunctionSurface;
 use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
+use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
 use crate::modules::identity::{Mfa, ModuleDenotation, ModuleName};
 use crate::modules::runtime_library;
@@ -39,9 +41,7 @@ use super::identity::{
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
-use super::keying::{
-    BodyKeying, BodyKeyingMap, CallGraphComponentMap, DispatchDemand, InputDemand, InputDemandMap, StaticCalleeMap,
-};
+use super::keying::{BodyKeying, BodyKeyingMap, CallGraphComponentMap, InputDemand, InputDemandMap, StaticCalleeMap};
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap,
@@ -1502,7 +1502,9 @@ impl World {
             .expect("static callees should only be read after their fact is defined")
     }
 
-    pub(crate) fn entry_dispatch(&self, function: FunctionId) -> PatternDispatchPlan<Ty> {
+    /// The function's clause plan. Readers share the one the producer built:
+    /// a plan is immutable once defined, so every reader sees the same value.
+    pub(crate) fn entry_dispatch(&self, function: FunctionId) -> Rc<PatternDispatchPlan<Ty>> {
         self.entry_dispatches
             .get(function)
             .cloned()
@@ -2105,7 +2107,9 @@ impl World {
             .min()
     }
 
-    pub(crate) fn guard_dispatch(&self, function: FunctionId) -> PatternGuardDispatch<Ty> {
+    /// The reified guard helper. Callers embed the handle in their own plans,
+    /// so one helper is one artifact however many guards name it.
+    pub(crate) fn guard_dispatch(&self, function: FunctionId) -> Arc<PatternGuardDispatch<Ty>> {
         #[cfg(test)]
         self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
         self.guard_dispatches
@@ -3214,11 +3218,15 @@ impl World {
         self.bodies.define(function, body)
     }
 
-    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch<Ty>) -> bool {
+    pub(crate) fn define_guard_dispatch(
+        &mut self,
+        function: FunctionId,
+        dispatch: Arc<PatternGuardDispatch<Ty>>,
+    ) -> bool {
         self.guard_dispatches.define(function, dispatch)
     }
 
-    pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan<Ty>) -> bool {
+    pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: Rc<PatternDispatchPlan<Ty>>) -> bool {
         self.entry_dispatches.define(function, plan)
     }
 
@@ -3636,7 +3644,11 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         changed
     }
 
-    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch<Ty>) -> bool {
+    pub(crate) fn define_guard_dispatch(
+        &mut self,
+        function: FunctionId,
+        dispatch: Arc<PatternGuardDispatch<Ty>>,
+    ) -> bool {
         let changed = self.world.define_guard_dispatch(function, dispatch);
         if changed {
             self.emit_world_key(&["fz", "compiler2", "guard_dispatch", "defined"], &function);
@@ -3644,7 +3656,7 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         changed
     }
 
-    pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan<Ty>) -> bool {
+    pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: Rc<PatternDispatchPlan<Ty>>) -> bool {
         let changed = self.world.define_entry_dispatch(function, plan);
         if changed {
             self.emit_world_key(&["fz", "compiler2", "entry_dispatch", "defined"], &function);

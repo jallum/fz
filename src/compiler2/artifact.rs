@@ -12,11 +12,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use crate::ast::{BinOp, UnOp};
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
-use crate::dispatch_matrix::{
-    ComparisonValue, DispatchEdge, DispatchNode, EdgeEvidence, GraphNodeId, PinnedValueId, Region, RegionPredicate,
-    SubjectId, SubjectSource,
-};
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{
     Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternMarshalSite, ExternTy,
     ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter as IrReceiveAfter,
@@ -207,7 +203,6 @@ pub struct DirectCallEdge<T, F = CallReturnFlow> {
 pub struct DispatchCallEdge<T, F = CallReturnFlow> {
     pub(crate) plan: PatternDispatchPlan<Ty>,
     pub arms: Vec<DispatchCallArm<T, F>>,
-    pub miss: DispatchCallMiss,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,11 +211,6 @@ pub struct DispatchCallArm<T, F = CallReturnFlow> {
     pub callee: CallTarget<T>,
     pub return_flow: F,
     pub extern_marshals: Option<Vec<ExternTy>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DispatchCallMiss {
-    Unreachable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1055,12 +1045,12 @@ pub enum BackendBody {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutableDispatch {
-    plan: PatternDispatchPlan<Ty>,
+    plan: Rc<PatternDispatchPlan<Ty>>,
     clause_ids: Vec<u32>,
 }
 
 impl ExecutableDispatch {
-    pub(crate) fn new(plan: PatternDispatchPlan<Ty>, clause_ids: Vec<u32>) -> Self {
+    pub(crate) fn new(plan: Rc<PatternDispatchPlan<Ty>>, clause_ids: Vec<u32>) -> Self {
         Self { plan, clause_ids }
     }
 
@@ -1074,139 +1064,6 @@ impl ExecutableDispatch {
 
     pub(crate) fn clause_index(&self, body_id: u32) -> Option<usize> {
         self.clause_ids.iter().position(|candidate| *candidate == body_id)
-    }
-
-    pub(crate) fn required_input_ordinals(&self) -> HashSet<usize> {
-        required_dispatch_input_ordinals(&self.plan)
-    }
-}
-
-/// The semantic inputs a plan must be handed to decide a clause.
-///
-/// Every ordinal here names an input of THIS plan. A backend is entitled to
-/// pass anything else as nil, so an ordinal that escapes `plan.input_count` is
-/// not a conservative over-approximation -- it is a demand no caller can meet,
-/// and the doors disagree about it (native skips the out-of-range ordinal,
-/// interpreted dispatch refuses the call). The assertion keeps that failure at
-/// the plan that produced it instead of at whichever door reads it first.
-pub(crate) fn required_dispatch_input_ordinals(plan: &PatternDispatchPlan<Ty>) -> HashSet<usize> {
-    let mut required = HashSet::new();
-    let mut visited = HashSet::new();
-    collect_dispatch_node_inputs(plan, plan.graph.root, &mut visited, &mut required);
-    assert!(
-        required.iter().all(|ordinal| *ordinal < plan.input_count),
-        "dispatch plan requires inputs {required:?} but has only {} semantic input(s)",
-        plan.input_count,
-    );
-    required
-}
-
-fn collect_dispatch_node_inputs(
-    plan: &PatternDispatchPlan<Ty>,
-    node_id: GraphNodeId,
-    visited: &mut HashSet<GraphNodeId>,
-    out: &mut HashSet<usize>,
-) {
-    if !visited.insert(node_id) {
-        return;
-    }
-    let Some(node) = plan.graph.node(node_id) else {
-        return;
-    };
-    match node {
-        DispatchNode::Fail | DispatchNode::Outcome { .. } => {}
-        DispatchNode::Test {
-            predicate,
-            on_match,
-            on_miss,
-        } => {
-            collect_region_predicate_inputs(plan, predicate, out);
-            collect_dispatch_edge_inputs(plan, on_match, out);
-            collect_dispatch_edge_inputs(plan, on_miss, out);
-            collect_dispatch_node_inputs(plan, on_match.target, visited, out);
-            collect_dispatch_node_inputs(plan, on_miss.target, visited, out);
-        }
-    }
-}
-
-fn collect_dispatch_edge_inputs(plan: &PatternDispatchPlan<Ty>, edge: &DispatchEdge<Ty>, out: &mut HashSet<usize>) {
-    collect_edge_evidence_inputs(plan, &edge.evidence, out);
-}
-
-fn collect_edge_evidence_inputs(plan: &PatternDispatchPlan<Ty>, evidence: &EdgeEvidence<Ty>, out: &mut HashSet<usize>) {
-    for proof in &evidence.proofs {
-        collect_region_predicate_inputs(plan, &proof.predicate, out);
-    }
-    for projection in &evidence.projections {
-        collect_subject_inputs(plan, *projection, out);
-    }
-}
-
-fn collect_region_predicate_inputs(
-    plan: &PatternDispatchPlan<Ty>,
-    predicate: &RegionPredicate<Ty>,
-    out: &mut HashSet<usize>,
-) {
-    collect_subject_inputs(plan, predicate.subject, out);
-    match &predicate.region {
-        Region::Equal(ComparisonValue::Pinned(pinned)) => collect_pinned_input(plan, *pinned, out),
-        Region::Guard(guard_id) => {
-            if let Some(guard) = plan.guards.get(guard_id.0 as usize) {
-                collect_guard_expr_inputs(plan, guard, out);
-            }
-        }
-        Region::Type(_)
-        | Region::Equal(ComparisonValue::Const(_))
-        | Region::TupleArity(_)
-        | Region::List(_)
-        | Region::MapKind
-        | Region::MapKeyPresent { .. }
-        | Region::Bitstring(_) => {}
-    }
-}
-
-fn collect_guard_expr_inputs(plan: &PatternDispatchPlan<Ty>, expr: &PatternGuardExpr<Ty>, out: &mut HashSet<usize>) {
-    match expr {
-        PatternGuardExpr::Const(_) => {}
-        PatternGuardExpr::Subject(subject) => collect_subject_inputs(plan, *subject, out),
-        PatternGuardExpr::Pinned(pinned) => collect_pinned_input(plan, *pinned, out),
-        PatternGuardExpr::Unary { expr, .. } => collect_guard_expr_inputs(plan, expr, out),
-        PatternGuardExpr::Binary { lhs, rhs, .. } => {
-            collect_guard_expr_inputs(plan, lhs, out);
-            collect_guard_expr_inputs(plan, rhs, out);
-        }
-        // A reified helper is a plan closed over its OWN input space: its
-        // subjects, pins and clause bodies are numbered `0..helper arity` and
-        // are fed only by `inputs`. Walking that plan against the caller would
-        // label the caller's ordinals with the helper's numbers -- a 3-input
-        // helper called from a 1-input clause made the caller "require"
-        // semantic input 2, which `interp` then refused to supply while `run`
-        // and `build` answered correctly (fz-5xp.74). Collecting the argument
-        // expressions is complete on its own: every caller input the guard can
-        // reach flows through one of them.
-        PatternGuardExpr::Dispatch { inputs, .. } => {
-            for input in inputs {
-                collect_guard_expr_inputs(plan, input, out);
-            }
-        }
-    }
-}
-
-fn collect_subject_inputs(plan: &PatternDispatchPlan<Ty>, subject: SubjectId, out: &mut HashSet<usize>) {
-    let Some(subject_data) = plan.matrix.subjects.get(subject.0 as usize) else {
-        return;
-    };
-    match &subject_data.source {
-        SubjectSource::Input { ordinal } => {
-            out.insert(*ordinal as usize);
-        }
-        SubjectSource::Projection(projection) => collect_subject_inputs(plan, projection.source, out),
-    }
-}
-
-fn collect_pinned_input(plan: &PatternDispatchPlan<Ty>, pinned: PinnedValueId, out: &mut HashSet<usize>) {
-    if let Some(input) = plan.pinned.get(pinned.0 as usize).and_then(|pinned| pinned.input) {
-        out.insert(input as usize);
     }
 }
 

@@ -31,7 +31,7 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
-        runtime_demand_walks: 1112,
+        runtime_demand_walks: 1125,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -45,7 +45,7 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
         golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 234,
+        runtime_demand_walks: 237,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -1135,7 +1135,7 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
             })
             .sum::<u64>();
         assert_eq!(
-            aggregate_walks, 1957,
+            aggregate_walks, 1973,
             "the same retained observations own the aggregate work pin"
         );
         assert!(
@@ -2146,4 +2146,37 @@ fn fz2_stall_diagnostic_is_byte_identical_across_runs() {
             "run {run} rendered the same stall differently than run 0"
         );
     }
+}
+
+/// One entry-dispatch plan is defined per function this fixture compiles. The
+/// plan now carries what it reads of its inputs, so the two counts moving apart
+/// would mean a function stopped planning its own dispatch, not that a reader
+/// asked a different question.
+#[test]
+fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
+    let output = run_fz2(&[
+        OsStr::new("--emit=stats"),
+        OsStr::new("interp"),
+        OsStr::new("fixtures2/behavior/tail_recursion.fz"),
+    ]);
+    assert!(
+        output.status.success(),
+        "the fixture must run for its stats to mean anything; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stats = String::from_utf8(output.stderr).expect("fz2 stderr is utf-8");
+    let counter = |name: &str| {
+        stats
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(name))
+            .and_then(|count| count.trim().parse::<u64>().ok())
+            .unwrap_or_else(|| panic!("the stats summary must count {name}; got:\n{stats}"))
+    };
+    let functions = counter("fz.compiler2.function.defined");
+    assert_eq!(
+        counter("fz.compiler2.entry_dispatch.defined"),
+        functions,
+        "every compiled function plans its own entry dispatch"
+    );
+    assert_eq!(functions, 24, "the fixture compiles its known function population");
 }

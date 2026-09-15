@@ -317,13 +317,7 @@ fn native_inventory_closes_calls_continuations_and_receive_outcomes_transitively
             body: FnId(6),
             span: Span::DUMMY,
         }],
-        dispatch: std::sync::Arc::new(
-            pattern_dispatch_from_source(SourcePatternRows {
-                input_count: 1,
-                rows: Vec::new(),
-            })
-            .unwrap(),
-        ),
+        dispatch: std::sync::Arc::new(pattern_dispatch_from_source(SourcePatternRows::lexical(1, Vec::new())).unwrap()),
         after: Some(ReceiveAfter {
             ident: CallsiteIdent::synthetic(),
             timeout: Var(0),

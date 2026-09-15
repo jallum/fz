@@ -334,8 +334,13 @@ enum Kind {
 /// goldens. The two failure modes pin *negative* claims — a program that must
 /// be rejected or must abort — which the matrix otherwise cannot express,
 /// because it scores any nonzero exit as a failure before comparing output.
-/// Abort fixtures pin stderr; diagnostic fixtures pin the telemetry diagnostic
-/// code so rendered wording can improve without changing the semantic oracle.
+/// Abort fixtures pin stderr. A diagnostic fixture pins one of two things.
+/// Declaring `diagnostic.code` pins the telemetry diagnostic code, so rendered
+/// wording can improve without changing the semantic oracle; that is the right
+/// pin when the code is what distinguishes this rejection from its neighbours.
+/// Leaving it out falls back to the `expected.stderr` substring, which is the
+/// right pin when several rejections share one code and the wording carries the
+/// claim — a family of unbound-name diagnostics whose text is the contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Expect {
     /// Exit 0; stdout + diagnostics compared against goldens. The default.

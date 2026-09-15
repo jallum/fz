@@ -65,10 +65,7 @@ pub(crate) fn call_destinations(
         .enumerate()
         .map(|(index, inputs)| dispatch_row(&inputs, arity, &discriminating_inputs, index as PatternBodyId))
         .collect::<Vec<_>>();
-    let plan = pattern_dispatch_from_source(SourcePatternRows {
-        input_count: arity,
-        rows,
-    })?;
+    let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(arity, rows))?;
     let arm_body_ids = (0..targets.len() as u32).collect();
     Ok(CallDestinations::Dispatch(Box::new(CallSiteDispatch {
         plan,
@@ -891,10 +888,7 @@ pub(crate) fn construction_member_selection(
         .enumerate()
         .map(|(index, inputs)| dispatch_row(inputs, arity, &discriminating_inputs, index as PatternBodyId))
         .collect::<Vec<_>>();
-    let plan = pattern_dispatch_from_source(SourcePatternRows {
-        input_count: arity,
-        rows,
-    })?;
+    let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(arity, rows))?;
     Ok(ConstructionSelection {
         members,
         plan: Some(plan),

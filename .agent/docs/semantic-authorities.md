@@ -167,22 +167,37 @@ reached from every door. But the CLAUSE HEAD is lowered twice — once into a
 dispatch region to select the clause, once into body steps to bind — so each
 field is read twice: fz-5xp.56.
 
-**What a dispatch plan demands** — owner `required_dispatch_input_ordinals`
-(`compiler2/artifact.rs`). A plan names the inputs it must be handed to decide a
-clause; a backend may pass anything else as nil. Only one authority answers it,
-so this is not a second-answer entry — it is the other failure shape, where ONE
-wrong answer reaches two readers with different tolerance and only one of them
-complains. A guard helper is reified as a NESTED plan numbered in its own input
-space and fed only through the call's argument list, and the collector used to
-walk that nested plan against the caller, labelling the caller's ordinals with
-the helper's numbers. A 3-input helper called from a 1-input clause therefore
-demanded semantic input 2. Native dispatch iterates its own inputs and asks
-whether each is required, so it never looked at the impossible ordinal; the
-interpreter iterates the demands and indexes the arguments, so it refused the
-call. `run` and `build` answered `:low`, `interp` aborted (fz-5xp.74). The
-function now asserts every ordinal it returns is inside its own plan, which
-keeps a recurrence at the plan that produced it rather than at whichever door
-reads it first.
+**What a dispatch plan demands** — owner `DispatchGraphBuilder`
+(`dispatch_matrix/mod.rs`). The builder folds each question into
+`DispatchGraph::input_demand` as the node is added, one slot per DECLARED input,
+and every reader reads that recorded fact: the interpreter through
+`PatternDispatchPlan::input_demand`/`required_input`, native lowering through
+`required_input`, the executable facts through
+`ExecutableFacts::entry_dispatch_demand`, and activation keying by taking the
+slice as a body's local demand. A slot that stays `Ignore` is an input the plan
+never reads, and a backend is free to pass it as nil.
+
+Three rules decide what a question charges. A test charges its own subject at
+the demand its region asks for, plus the input that delivers any pin it names --
+a pinned equality, or a bitstring field whose size was bound before the pattern
+began. A guard rides a CARRIER subject that it need not read -- input 0 when
+the plan declares one, and a subject minted for the purpose when it declares
+none -- so the carrier is not charged and the guard's leaves, the subjects and
+pins its expression reads, are charged instead. Edge evidence is
+not charged at all: a proof restates its test's predicate, and a projection is a
+binding under a test that already charged its root, which `build` asserts before
+it hands the graph over.
+
+A guard helper is reified as a NESTED plan numbered in its own input space and
+fed only through the call's argument list. Its leaves are the caller's, derived
+from the finished expression when the plan is finished, so the helper's own
+numbers never reach the caller's slots. A collector that walked the nested plan
+instead made a 3-input helper called from a 1-input clause demand semantic input
+2; native dispatch iterates its own inputs and asks whether each is required, so
+it never looked at the impossible ordinal, while the interpreter iterated the
+demands and indexed the arguments, so it refused the call (fz-5xp.74). Charging
+asserts every ordinal is inside the declared count, which keeps a recurrence at
+the plan that produced it rather than at whichever door reads it first.
 
 **Map key identity and order** — `TermComparator` in `Strict` mode owns both.
 Tuple/list/map keys compare structurally; binary storage kinds share bit

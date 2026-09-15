@@ -48,12 +48,18 @@ reaches: a pinned equality, a guard, and the map, list and bitstring regions.
 Those build the value at the question that asks for it and keep it for the rest
 of that branch. `DispatchDemand::Whole` does not decide any of this: that lattice
 governs type collapsing and activation keying, not the physical layout a
-parameter arrives in.
+parameter arrives in. The lattice is defined in `dispatch_matrix::demand`; the keying jobs in
+`compiler2::jobs::keying` join it across bodies into the published input demand.
 
 `compile_dispatch_matrix` is pure and side-effect-free. It compiles ordered arms
 into a deterministic graph and returns `DispatchCompileStats` so tests can assert
 shape signals such as test count, fallback count, and shared-prefix tests without
-depending on formatted graph dumps.
+depending on formatted graph dumps. It takes the producer's `DeclaredInputs` --
+the declared input count, where each pin arrives, and what each guard reads --
+because `DispatchGraphBuilder::add_node` folds every question into
+`DispatchGraph::input_demand` as the node is added. The declared count is the
+producer's, not the matrix's: a plan that declares no inputs still mints one
+subject to carry its guards.
 
 `compile_dispatch_matrix_with_type_order` handles `Order::Specificity` for
 type-region arms. It uses `Types` operations only: pairwise relations are

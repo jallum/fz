@@ -1,0 +1,20 @@
+#---
+# purpose: "a pin in a def head names nothing, because nothing was bound before it"
+# expect: diagnostic
+#---
+#
+# # head_pins_nothing
+#
+# A pin resolves against the bindings that existed before the pattern began.
+# A `def` head begins with nothing bound: its own parameters are the names it
+# binds, and they are bound by this pattern, not before it. So `^a` reaches for
+# a binding that does not exist. Elixir rejects the same head.
+#
+# Each shape of this reach is its own fixture because the first rejected head
+# ends the compile.
+def main() do
+  dbg(same(1, 1))
+end
+
+defp same(a, ^a), do: :same
+defp same(_, _), do: :different

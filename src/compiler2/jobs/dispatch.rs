@@ -6,6 +6,8 @@
 //! `FunctionId`.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::sync::Arc;
 
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
@@ -18,8 +20,8 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    PatternBodyId, PatternDispatchError, PatternGuardDispatch, PatternRow, PatternSubjectRef, SourcePatternError,
-    SourcePatternRows, guard_dispatch_from_surface, pattern_dispatch_from_source_with_resolver,
+    PatternBodyId, PatternDispatchError, PatternGuardDispatch, PatternPinnedInput, PatternRow, PatternSubjectRef,
+    SourcePatternError, SourcePatternRows, guard_dispatch_from_surface, pattern_dispatch_from_source_with_resolver,
 };
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
@@ -183,7 +185,7 @@ pub(super) fn plan_entry_dispatch(
     };
     let plan = pattern_dispatch_from_source_with_resolver(source_patterns, &mut resolver)
         .map_err(|error| emit_entry_dispatch_error(tel, world, function, fn_span, error))?;
-    let changed = super::super::drive::ExecutionContext::new(world, tel).define_entry_dispatch(function, plan);
+    let changed = super::super::drive::ExecutionContext::new(world, tel).define_entry_dispatch(function, Rc::new(plan));
     Ok(JobEffects {
         reads: current_uses(reads),
         outputs: vec![FactKey::EntryDispatch(function)],
@@ -244,9 +246,9 @@ fn collect_requirements(
 fn build_guard_dispatch(
     world: &mut World,
     function: FunctionId,
-    cache: &mut HashMap<FunctionId, PatternGuardDispatch<Ty>>,
+    cache: &mut HashMap<FunctionId, Arc<PatternGuardDispatch<Ty>>>,
     stack: &mut Vec<FunctionId>,
-) -> Result<PatternGuardDispatch<Ty>, SourcePatternError> {
+) -> Result<Arc<PatternGuardDispatch<Ty>>, SourcePatternError> {
     if let Some(dispatch) = cache.get(&function) {
         return Ok(dispatch.clone());
     }
@@ -271,9 +273,9 @@ fn build_guard_dispatch(
             Ok(Some(dispatch))
         },
     };
-    let dispatch = guard_dispatch_from_surface(&surface, &mut resolver)?;
+    let dispatch = Arc::new(guard_dispatch_from_surface(&surface, &mut resolver)?);
     stack.pop();
-    cache.insert(function, dispatch.clone());
+    cache.insert(function, Arc::clone(&dispatch));
     Ok(dispatch)
 }
 
@@ -296,10 +298,19 @@ fn entry_source_patterns(
         .collect::<Vec<_>>();
     let macro_offset = macro_caller_patterns.len();
     let input_count = macro_offset + capture_patterns.len() + surface.arity();
+    // A function entry has no enclosing scope of its own. What a lambda closed
+    // over arrives as its leading inputs, and that capture prefix is the whole
+    // of the snapshot its patterns may pin against.
+    let captures = source
+        .capture_params
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.clone(), (macro_offset + index) as u32))
+        .collect::<Vec<_>>();
     if surface.extern_abi.is_some() {
-        return Ok(SourcePatternRows {
+        return Ok(SourcePatternRows::entry(
             input_count,
-            rows: vec![PatternRow {
+            vec![PatternRow {
                 patterns: (0..input_count)
                     .map(|_| Spanned::new(Pattern::Wildcard, surface.span))
                     .collect(),
@@ -307,7 +318,8 @@ fn entry_source_patterns(
                 guard: None,
                 body_id: 0,
             }],
-        });
+            captures,
+        ));
     }
 
     let mut rows = Vec::with_capacity(surface.clauses.len());
@@ -351,7 +363,7 @@ fn entry_source_patterns(
         });
     }
 
-    Ok(SourcePatternRows { input_count, rows })
+    Ok(SourcePatternRows::entry(input_count, rows, captures))
 }
 
 fn collect_guard_calls_in_guards(def: &FunctionSurface) -> Result<Vec<GuardCall>, Span> {
@@ -515,6 +527,7 @@ fn emit_guard_dispatch_error(
                 span,
             ),
         ),
+        SourcePatternError::UndefinedPins(pinned) => emit_undefined_pins(tel, &pinned),
         SourcePatternError::UnknownPinned(name) | SourcePatternError::UnknownGuardVar(name) => emit_job_diagnostic(
             tel,
             Diagnostic::error(
@@ -588,6 +601,9 @@ fn emit_entry_dispatch_error(
         PatternDispatchError::SourcePattern(SourcePatternError::UnsupportedGuardExpr) => {
             emit_entry_guard_error(tel, world, function, span, "are not dispatch-pure")
         }
+        PatternDispatchError::SourcePattern(SourcePatternError::UndefinedPins(pinned)) => {
+            emit_undefined_pins(tel, &pinned)
+        }
         PatternDispatchError::SourcePattern(SourcePatternError::UnknownPinned(name))
         | PatternDispatchError::SourcePattern(SourcePatternError::UnknownGuardVar(name)) => emit_job_diagnostic(
             tel,
@@ -630,6 +646,19 @@ fn emit_entry_dispatch_error(
             ),
         ),
     }
+}
+
+/// Every name the patterns reached for that was never bound, each reported at
+/// the place that reached for it.
+fn emit_undefined_pins(tel: &impl crate::telemetry::Telemetry, pinned: &[PatternPinnedInput]) -> FatalError {
+    let mut error = FatalError;
+    for pin in pinned {
+        error = emit_job_diagnostic(
+            tel,
+            Diagnostic::error(codes::LOWER_UNBOUND, pin.undefined_message(), pin.span),
+        );
+    }
+    error
 }
 
 fn function_label(def: &FunctionSurface) -> String {

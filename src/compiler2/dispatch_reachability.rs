@@ -438,9 +438,9 @@ mod tests {
             guard: |_world: &mut World, _name: &crate::ast::CallableName, _arity: usize| Ok(None),
         };
         let plan = pattern_dispatch_from_source_with_resolver(
-            SourcePatternRows {
-                input_count: 1,
-                rows: vec![
+            SourcePatternRows::lexical(
+                1,
+                vec![
                     row(
                         Pattern::Tuple(vec![Spanned::dummy(Pattern::Struct {
                             module: crate::ast::ModuleTarget::Unresolved(name),
@@ -450,7 +450,7 @@ mod tests {
                     ),
                     row(Pattern::Wildcard, 1),
                 ],
-            },
+            ),
             &mut resolver,
         )
         .unwrap();
@@ -500,19 +500,19 @@ mod tests {
 
     #[test]
     fn proper_list_domain_is_exhausted_by_zero_one_and_two_plus_rows() {
-        let total = pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 1,
-            rows: vec![
+        let total = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![
                 row(list_pattern(0, false), 0),
                 row(list_pattern(1, false), 1),
                 row(list_pattern(2, true), 2),
             ],
-        })
+        ))
         .expect("list length partitions should compile");
-        let partial = pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 1,
-            rows: vec![row(list_pattern(0, false), 0), row(list_pattern(2, true), 1)],
-        })
+        let partial = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![row(list_pattern(0, false), 0), row(list_pattern(2, true), 1)],
+        ))
         .expect("partial list length partitions should compile");
         let mut types = Types::new();
         let any = types.any();
@@ -533,10 +533,10 @@ mod tests {
 
     #[test]
     fn bare_template_inputs_are_refined_as_runtime_values() {
-        let plan = pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 1,
-            rows: vec![row(Pattern::Atom("x".to_string()), 0), row(Pattern::Wildcard, 1)],
-        })
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![row(Pattern::Atom("x".to_string()), 0), row(Pattern::Wildcard, 1)],
+        ))
         .expect("atom patterns should compile");
         let mut types = Types::new();
         let input = types.type_var(TypeVarId(0));
@@ -555,9 +555,9 @@ mod tests {
 
     #[test]
     fn nested_template_inputs_keep_their_runtime_structure() {
-        let plan = pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 1,
-            rows: vec![
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![
                 row(
                     Pattern::Tuple(vec![
                         Spanned::dummy(Pattern::Atom("x".to_string())),
@@ -567,7 +567,7 @@ mod tests {
                 ),
                 row(Pattern::Wildcard, 1),
             ],
-        })
+        ))
         .expect("tuple patterns should compile");
         let mut types = Types::new();
         let alpha = types.type_var(TypeVarId(0));
@@ -605,11 +605,8 @@ mod tests {
 
     #[test]
     fn callable_template_inputs_keep_their_callable_correlation() {
-        let plan = pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 1,
-            rows: vec![row(Pattern::Wildcard, 0)],
-        })
-        .expect("wildcard patterns should compile");
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(1, vec![row(Pattern::Wildcard, 0)]))
+            .expect("wildcard patterns should compile");
         let mut types = Types::new();
         let input = types.closure_lit(crate::compiler2::types::ClosureTarget(7), Vec::new(), 2);
 
@@ -621,10 +618,10 @@ mod tests {
 
     #[test]
     fn ground_dispatch_inputs_are_unchanged() {
-        let plan = pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 1,
-            rows: vec![row(Pattern::Atom("x".to_string()), 0), row(Pattern::Wildcard, 1)],
-        })
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![row(Pattern::Atom("x".to_string()), 0), row(Pattern::Wildcard, 1)],
+        ))
         .expect("atom patterns should compile");
         let mut types = Types::new();
         let input = types.atom_lit("x");
@@ -651,7 +648,7 @@ mod tests {
             Pattern::Tuple((0..width).map(|_| Spanned::dummy(Pattern::Wildcard)).collect()),
             width as u32,
         ));
-        let plan = pattern_dispatch_from_source(SourcePatternRows { input_count: 1, rows })
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(1, rows))
             .expect("wide tuple patterns should compile through the production pattern builder");
         let mut types = Types::new();
         let boolean = types.bool();
@@ -676,9 +673,9 @@ mod tests {
 
     #[test]
     fn negative_tuple_conjunction_remains_a_conservative_root_alternative() {
-        let plan = pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 1,
-            rows: vec![
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![
                 row(
                     Pattern::Tuple(vec![
                         Spanned::dummy(Pattern::Atom("a".to_string())),
@@ -688,7 +685,7 @@ mod tests {
                 ),
                 row(Pattern::Wildcard, 1),
             ],
-        })
+        ))
         .expect("tuple patterns should compile");
         let mut types = Types::new();
         let atom = types.atom();
@@ -709,9 +706,9 @@ mod tests {
 
     #[test]
     fn unresolved_negative_tuple_exclusion_keeps_both_dispatch_rows_reachable() {
-        let plan = pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 1,
-            rows: vec![
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![
                 row(
                     Pattern::Tuple(vec![
                         Spanned::dummy(Pattern::Atom("a".to_string())),
@@ -721,7 +718,7 @@ mod tests {
                 ),
                 row(Pattern::Wildcard, 1),
             ],
-        })
+        ))
         .expect("tuple patterns should compile");
         let mut types = Types::new();
         let any = types.any();
@@ -927,9 +924,9 @@ mod tests {
         let mut types = Types::new();
         let int = types.int();
         let resource_int = types.resource(int);
-        let plan = pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 1,
-            rows: vec![
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![
                 PatternRow {
                     patterns: vec![Spanned::dummy(Pattern::Wildcard)],
                     preconditions: vec![(PatternSubjectRef::Input(0), resource_int)],
@@ -938,7 +935,7 @@ mod tests {
                 },
                 row(Pattern::Wildcard, 1),
             ],
-        })
+        ))
         .expect("resource preconditions should compile");
         let alpha = types.type_var(TypeVarId(0));
         let input = types.resource(alpha);
@@ -951,9 +948,9 @@ mod tests {
 
     #[test]
     fn mixed_axis_union_remains_conservative_through_tuple_projection() {
-        let plan = pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 1,
-            rows: vec![
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![
                 row(
                     Pattern::Tuple(vec![
                         Spanned::dummy(Pattern::Atom("a".to_string())),
@@ -963,7 +960,7 @@ mod tests {
                 ),
                 row(Pattern::Wildcard, 1),
             ],
-        })
+        ))
         .expect("tuple patterns should compile");
         let mut types = Types::new();
         let a = types.atom_lit("a");
@@ -992,13 +989,13 @@ mod tests {
     /// needs no envelope at all.
     #[test]
     fn a_slot_no_test_looks_at_keeps_its_type_variable() {
-        let plan = pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 2,
-            rows: vec![
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            2,
+            vec![
                 row2(Pattern::Atom("x".to_string()), Pattern::Wildcard, 0),
                 row2(Pattern::Wildcard, Pattern::Wildcard, 1),
             ],
-        })
+        ))
         .expect("atom patterns should compile");
         let mut types = Types::new();
         let tested = types.type_var(TypeVarId(0));
