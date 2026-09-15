@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-acn",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Collapse pass over the epic's code: fold the duplicated constant table, one operand context, derived guard leaves, and the small ones",
   "type": "task",
-  "updated_at": "2026-09-15T05:56:23Z"
+  "updated_at": "2026-09-15T05:56:24Z"
 }
