@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.177.1",
-    "fz-kdt.177.2"
+    "fz-kdt.177.2",
+    "fz-kdt.48.8"
   ],
   "blocks": [],
   "created": "2026-09-15T20:29:55Z",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "Two-phase intern and a terminating clause order on regular trees",
   "type": "task",
-  "updated_at": "2026-09-15T20:30:01Z"
+  "updated_at": "2026-09-15T20:30:10Z"
 }
