@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T06:08:38Z",
+  "description": "capture_called_with_own_surface (semantic.rs ~570) is computed by executable_facts.rs ~492-514, cloned into every activation row (~262), carried through ExecutableFacts to ExecutableRuntimeDemand (runtime_demand.rs ~887), and read by nothing but canon (canon.rs ~669-677); it drives no decision. ReceiveClause::guard's sole production producer (jobs/native.rs ~1786) sets None; only native_inventory_test.rs ~316 sets Some. Delete both, with their canon lines and the test that pins the dead field; canon goldens move by the removed line only.",
+  "id": "fz-kdt.224",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 4,
+  "status": "open",
+  "title": "Dead facts: CallableActivationInput.capture_called_with_own_surface is read only by canon; ReceiveClause::guard has no production producer",
+  "type": "task",
+  "updated_at": "2026-09-15T06:08:38Z"
+}
