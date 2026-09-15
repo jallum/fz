@@ -19568,6 +19568,322 @@ fn compiler2_productive_deepening_terminates_by_widening() {
 }
 
 #[test]
+fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
+    // def build(0), do: :start
+    // def build(n), do: {n, build(n - 1)}
+    // The true return is the recursive type mu t.(:start | {integer, t}). The
+    // lattice cannot name it, so every round joins one more level of nesting and
+    // the stored return climbs a ladder — {integer, :start}, then
+    // {integer, :start | {integer, :start}}, and so on — until the widening
+    // budget tops it out at `any`. Each rung re-analyzes the activation and
+    // revises its return. The counts below are that ladder as it stands, taken
+    // through the product pull every door makes, and they measure what recursive
+    // denotations remove rather than a target to keep.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let widened = Rc::new(Cell::new(false));
+    let widened_sink = Rc::clone(&widened);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "return_type", "widened"],
+        move |_, _, _, _, _| widened_sink.set(true),
+    );
+    let revisions: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+    let revision_sink = Rc::clone(&revisions);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "return_type", "defined"],
+        move |_, _, _, _, activation| *revision_sink.borrow_mut().entry(activation.clone()).or_default() += 1,
+    );
+    let analyses: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+    let analysis_sink = Rc::clone(&analyses);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "activation_analysis", "defined"],
+        move |_, _, _, _, activation| *analysis_sink.borrow_mut().entry(activation.clone()).or_default() += 1,
+    );
+
+    let (mut compiler, root) = submit_main_root(
+        tel,
+        "return_tuple_ladder.fz",
+        include_str!("../../fixtures2/behavior/return_tuple_ladder.fz"),
+    );
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("the tuple ladder reaches a backend program");
+
+    let counts_for = |counts: &HashMap<ActivationKey, u64>, function: FunctionId| {
+        counts
+            .iter()
+            .filter(|(key, _)| key.function == function)
+            .map(|(_, count)| *count)
+            .collect::<Vec<_>>()
+    };
+    let build = function_id(&functions, "build", 1);
+    assert_eq!(
+        counts_for(&analyses.borrow(), build),
+        vec![TUPLE_LADDER_BUILD_ANALYSES],
+        "build/1 has one activation, re-analyzed once per rung of the ladder",
+    );
+    assert_eq!(
+        counts_for(&revisions.borrow(), build),
+        vec![TUPLE_LADDER_BUILD_RETURN_REVISIONS],
+        "each rung revises the activation's return with one more level of nesting",
+    );
+    // The caller pays for the ladder without climbing one. `main/0` sees a new
+    // argument type for `dbg/1` on every rung, so it is re-analyzed as often as
+    // `build/1` is, while its own return — what `dbg/1` gives back — moves
+    // twice. Re-analysis and ascent are separate costs and only one of them is
+    // the ladder.
+    let main = function_id(&functions, "main", 0);
+    assert_eq!(
+        counts_for(&analyses.borrow(), main),
+        vec![TUPLE_LADDER_MAIN_ANALYSES],
+        "main/0 is re-analyzed once per rung, because each rung retypes its argument",
+    );
+    assert_eq!(
+        counts_for(&revisions.borrow(), main),
+        vec![TUPLE_LADDER_MAIN_RETURN_REVISIONS],
+        "main/0's own return does not climb: it is not the recursive one",
+    );
+    assert!(
+        widened.get(),
+        "the ladder never lands on its own denotation, so it ends at the widening budget",
+    );
+}
+
+/// What `return_tuple_ladder.fz` costs today, through the product pull, on one
+/// cold compile. `RETURN_WIDENING_BUDGET` is 8 strict ascents before the join
+/// widens the growing spine and twice that before it stores `any`; the ladder
+/// climbs past both, so `build/1`'s one activation is analyzed 19 times and its
+/// return revised 17, and `main/0` is re-analyzed 22 times for a return that
+/// moves twice.
+///
+/// These are whole-compile totals, not the ladder's own round counter. A rebase
+/// resets `ActivationSlot::ascents` to zero and starts the climb again, and
+/// every revision in the new epoch still fires `return_type.defined`, so a
+/// warm or re-driven world counts the epochs together while `ascents` does not.
+const TUPLE_LADDER_BUILD_ANALYSES: u64 = 19;
+const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 17;
+const TUPLE_LADDER_MAIN_ANALYSES: u64 = 22;
+const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 2;
+
+#[test]
+fn compiler2_recursive_typedef_deadlocks_on_its_own_definition() {
+    // @type t :: :start | {integer, t} is a legal recursive declaration, and
+    // resolving it needs a type whose definition names itself. There is no such
+    // denotation, so DeriveTypeDef(t) waits on TypeDefined(t) — its own output —
+    // and the product pull every door makes fails on a stall rather than on a
+    // diagnostic. The stalled waits name the cycle.
+    let (mut compiler, root) = submit_main_root(
+        ConfiguredTelemetry::new(),
+        "recursive_typedef.fz",
+        include_str!("../../fixtures2/behavior/recursive_typedef.fz"),
+    );
+    let outcome = compiler.drive_root_to_dump_stage(root, super::dump::DumpStage::Backend);
+    assert!(
+        outcome.is_err(),
+        "a self-referential typedef must stall the product, not deliver one",
+    );
+    let waits = compiler.world().unresolved_waits();
+    let self_wait = waits
+        .iter()
+        .find(|wait| {
+            wait.jobs
+                .iter()
+                .any(|job| matches!(job, Job::DeriveTypeDef(name) if name.name == "t"))
+        })
+        .expect("DeriveTypeDef(t) is among the stalled jobs");
+    let FactUse::Current(DependencyKey::Fact(FactKey::TypeDefined(awaited))) = &self_wait.fact else {
+        panic!("DeriveTypeDef(t) stalls on the current TypeDefined fact: {self_wait:?}");
+    };
+    assert_eq!(
+        awaited.name, "t",
+        "the fact DeriveTypeDef(t) waits on is the one it is itself the producer of",
+    );
+}
+
+/// Submits one source and its `main/0` root, the way the doors do before they
+/// ask for a product.
+fn submit_main_root(
+    telemetry: ConfiguredTelemetry,
+    name: &str,
+    text: &str,
+) -> (Compiler2<ConfiguredTelemetry>, crate::compiler2::RootId) {
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.submit_code(CodeSubmission {
+        name: Some(name.to_string()),
+        text: text.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    (compiler, root)
+}
+
+/// One activation's return ascent: the label the canon events name its function
+/// by — which carries the arity, so `build/1` and `Json.array_item/2` are whole
+/// identities — how many times that activation's `ReturnType` was revised, and
+/// whether the widening budget engaged on that same activation. The three
+/// describe one activation, so "something widened" can never be read as "this
+/// row widened".
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ActivationAscent {
+    function: String,
+    revisions: u64,
+    widened: bool,
+}
+
+/// A return settles once its activation is analyzed and its callees' returns
+/// arrive; a handful of joins is the whole cost. Climbing past this is a return
+/// driven by the program's own shape — a recursive type the lattice cannot name.
+const RETURN_LADDER_CEILING: u64 = 5;
+
+/// One climbing activation, as pinned: the canon function label (which carries
+/// the arity), the revisions its return took, and whether it widened.
+type PinnedAscent = (&'static str, u64, bool);
+
+/// One fixture's ladder: the fixture path, and every activation of it that
+/// climbs past `RETURN_LADDER_CEILING`.
+type PinnedLadder = (&'static str, &'static [PinnedAscent]);
+
+/// Every activation that climbs past that ceiling in the two fixtures below,
+/// measured through the product pull on one cold compile.
+///
+/// This is the ladder as it stands on the compiler the doors run, a defect
+/// measured rather than a budget to spend; recursive denotations delete the
+/// table along with the climb. The ladder is a population as much as a height.
+/// `return_tuple_ladder` is the bare case: one activation, seventeen revisions,
+/// widened. `json_roundtrip` is the goal program, and there the climb spreads
+/// sideways first — `Json.array_item/2` and `Json.array_next/2` each key a dozen
+/// activations, one per level of the recursive value type, and the returns they
+/// share climb to the ceiling on the evidence those levels publish. Reaching
+/// seventeen is not one outcome but two: a widened row ran out of budget and was
+/// coarsened, while an unwidened row arrived at its answer on its own evidence
+/// before the budget could fire.
+const RETURN_LADDERS: &[PinnedLadder] = &[
+    ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
+    (
+        "fixtures2/behavior/json_roundtrip.fz",
+        &[
+            ("Json.array/2", 17, true),
+            ("Json.array_element/2", 17, true),
+            ("Json.array_item/2", 6, false),
+            ("Json.array_item/2", 7, false),
+            ("Json.array_item/2", 8, false),
+            ("Json.array_item/2", 9, false),
+            ("Json.array_item/2", 10, false),
+            ("Json.array_item/2", 11, false),
+            ("Json.array_item/2", 12, false),
+            ("Json.array_item/2", 13, false),
+            ("Json.array_item/2", 14, false),
+            ("Json.array_item/2", 15, false),
+            ("Json.array_item/2", 16, false),
+            ("Json.array_item/2", 17, false),
+            ("Json.array_item/2", 17, false),
+            ("Json.array_next/2", 6, false),
+            ("Json.array_next/2", 7, false),
+            ("Json.array_next/2", 8, false),
+            ("Json.array_next/2", 9, false),
+            ("Json.array_next/2", 10, false),
+            ("Json.array_next/2", 11, false),
+            ("Json.array_next/2", 12, false),
+            ("Json.array_next/2", 13, false),
+            ("Json.array_next/2", 14, false),
+            ("Json.array_next/2", 15, false),
+            ("Json.array_next/2", 16, false),
+            ("Json.array_next/2", 17, false),
+            ("Json.decode/1", 17, true),
+            ("Json.val/1", 17, true),
+            ("Json.value/1", 17, true),
+        ],
+    ),
+];
+
+/// The other four `json_*` fixtures share this one's decode loop and measure the
+/// same climb, so pinning the goal program pins them too.
+const RETURN_LADDER_FIXTURES: &[(&str, &str)] = &[
+    (
+        "fixtures2/behavior/return_tuple_ladder.fz",
+        include_str!("../../fixtures2/behavior/return_tuple_ladder.fz"),
+    ),
+    (
+        "fixtures2/behavior/json_roundtrip.fz",
+        include_str!("../../fixtures2/behavior/json_roundtrip.fz"),
+    ),
+];
+
+#[test]
+fn return_ladders_are_pinned_per_activation() {
+    for (name, text) in RETURN_LADDER_FIXTURES {
+        let measured = measure_return_ascents(name, text);
+        let (climbing, settled): (Vec<_>, Vec<_>) = measured
+            .into_iter()
+            .partition(|ascent| ascent.revisions > RETURN_LADDER_CEILING);
+        let settled_but_widened = settled.iter().filter(|ascent| ascent.widened).collect::<Vec<_>>();
+        assert!(
+            settled_but_widened.is_empty(),
+            "{name}: widening can only fire past the budget, so no settled return may carry it: {settled_but_widened:?}",
+        );
+        let pinned = RETURN_LADDERS
+            .iter()
+            .find(|(pinned, _)| pinned == name)
+            .map(|(_, rows)| {
+                rows.iter()
+                    .map(|(function, revisions, widened)| ActivationAscent {
+                        function: (*function).to_string(),
+                        revisions: *revisions,
+                        widened: *widened,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| panic!("{name} has no row in RETURN_LADDERS"));
+        assert_eq!(climbing, pinned, "{name}: the ladder moved");
+    }
+}
+
+/// Drives one fixture the way every door does — pulling the root's
+/// `BackendProgram` product, the stage `run_root_interp` and `run_root_jit`
+/// reach before they execute anything — and reports every activation whose
+/// return was revised, sorted.
+fn measure_return_ascents(name: &str, text: &str) -> Vec<ActivationAscent> {
+    let tel = ConfiguredTelemetry::new();
+    let widened: Rc<RefCell<HashSet<ActivationKey>>> = Rc::new(RefCell::new(HashSet::new()));
+    let widened_sink = Rc::clone(&widened);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "return_type", "widened"],
+        move |_, _, _, _, activation| {
+            widened_sink.borrow_mut().insert(activation.clone());
+        },
+    );
+    let revisions: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+    let revision_sink = Rc::clone(&revisions);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "return_type", "defined"],
+        move |_, _, _, _, activation| *revision_sink.borrow_mut().entry(activation.clone()).or_default() += 1,
+    );
+
+    let (mut compiler, root) = submit_main_root(tel, name, text);
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
+    let world = compiler.world();
+    let widened = widened.borrow();
+    let mut ascents = revisions
+        .borrow()
+        .iter()
+        .map(|(activation, revisions)| ActivationAscent {
+            function: super::canon::function_label(world, activation.function),
+            revisions: *revisions,
+            widened: widened.contains(activation),
+        })
+        .collect::<Vec<_>>();
+    ascents.sort();
+    ascents
+}
+
+#[test]
 fn compiler2_quicksort_return_revisions_stay_bounded() {
     // THE runaway invariant (fz-rh2.21): in the oscillating engine, one
     // activation's ReturnType was re-defined 32,356 times and job counts hit
@@ -19609,88 +19925,6 @@ fn compiler2_quicksort_return_revisions_stay_bounded() {
             stats.define_calls,
         );
     }
-}
-
-fn sweep_corpus_for_return_widening(shard: usize, shards: usize) {
-    let mut swept = 0u32;
-    let mut corpus_max_return_changes = 0u64;
-    let mut entries = std::fs::read_dir("fixtures2")
-        .expect("fixtures2 corpus")
-        .map(|entry| entry.expect("corpus entry").path())
-        .collect::<Vec<_>>();
-    entries.sort();
-    for (index, path) in entries.into_iter().enumerate() {
-        if index % shards != shard {
-            continue;
-        }
-        if path.extension().is_none_or(|ext| ext != "fz") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).expect("fixture source");
-        if !text.contains("def main()") {
-            continue;
-        }
-        swept += 1;
-
-        let tel = ConfiguredTelemetry::new();
-        let widened = Rc::new(Cell::new(false));
-        let widened_sink = Rc::clone(&widened);
-        tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-            &["fz", "compiler2", "return_type", "widened"],
-            move |_, _, _, _, _| widened_sink.set(true),
-        );
-        let return_changes: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
-        let sink = Rc::clone(&return_changes);
-        tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-            &["fz", "compiler2", "return_type", "defined"],
-            move |_, _, _, _, activation| {
-                *sink.borrow_mut().entry(activation.clone()).or_default() += 1;
-            },
-        );
-
-        let mut world = crate::compiler2::World::new();
-        world.submit_code(Some(path.display().to_string()), text);
-        world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-        // Diagnostics are fixture-specific; the corpus invariants are that
-        // the drive terminates (it returned) and never widened a return.
-        let _ = super::drive::ExecutionContext::new(&mut world, &tel).drive();
-        assert!(
-            !widened.get(),
-            "return widening engaged on corpus fixture {}",
-            path.display(),
-        );
-        let fixture_max_return_changes = return_changes.borrow().values().copied().max().unwrap_or_default();
-        corpus_max_return_changes = corpus_max_return_changes.max(fixture_max_return_changes);
-    }
-    assert!(
-        swept >= 25,
-        "corpus shard {shard}/{shards} swept only {swept} fixtures — wrong path?"
-    );
-    assert!(
-        corpus_max_return_changes <= 5,
-        "corpus max return changes grew to {corpus_max_return_changes} — \
-         re-derive RETURN_WIDENING_BUDGET's headroom before loosening this",
-    );
-}
-
-#[test]
-fn compiler2_corpus_never_engages_return_widening_shard_0() {
-    sweep_corpus_for_return_widening(0, 4);
-}
-
-#[test]
-fn compiler2_corpus_never_engages_return_widening_shard_1() {
-    sweep_corpus_for_return_widening(1, 4);
-}
-
-#[test]
-fn compiler2_corpus_never_engages_return_widening_shard_2() {
-    sweep_corpus_for_return_widening(2, 4);
-}
-
-#[test]
-fn compiler2_corpus_never_engages_return_widening_shard_3() {
-    sweep_corpus_for_return_widening(3, 4);
 }
 
 #[test]

@@ -858,6 +858,14 @@ impl World {
         self.activations.get(key).and_then(|slot| slot.return_ty().copied())
     }
 
+    /// How many strict ascents the activation's return evidence has taken
+    /// since its last rebase. An activation with no slot has taken none.
+    pub(crate) fn activation_return_ascents(&self, key: &ActivationKey) -> u32 {
+        #[cfg(test)]
+        self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
+        self.activations.get(key).map_or(0, |slot| slot.return_ascents())
+    }
+
     fn conclude_activation_input_contributions(
         &mut self,
         job: &Job,

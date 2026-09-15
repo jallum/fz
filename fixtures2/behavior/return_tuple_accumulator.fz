@@ -1,0 +1,18 @@
+#---
+# purpose: "a tail recursion that grows a tuple accumulator: each rung is a new activation"
+# defer: "inferring build/2's return does not terminate: every rung is a fresh activation key with a fresh widening budget, so the ladder never reaches its own top"
+# oracle: oracle.exs
+#---
+#
+# The accumulator variant of `return_tuple_ladder`. Here the nesting grows in an
+# argument rather than in the return, so each recursive call arrives with a
+# wider accumulator type and keys a new activation. A new activation starts a
+# fresh widening budget, so the budget that ends the ladder in
+# `return_tuple_ladder` never applies and the drive does not terminate. The
+# fixture is deferred for that reason: it runs on no door.
+def build(0, acc), do: acc
+def build(n, acc), do: build(n - 1, {n, acc})
+
+def main() do
+  dbg(build(3, :start))
+end

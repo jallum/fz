@@ -261,6 +261,59 @@ it tops out at `any`. Every widening that coarsens the stored value emits
 visible regression, never silent precision loss. The key ops
 live in [`type-world`](type-world.md).
 
+What the ladder costs is measured rather than assumed, and **which driver does
+the measuring decides the answer**. `Compiler2::drive()` alone is a shorter
+calculation than any door takes: on `json_roundtrip.fz` it reaches 277
+activations that revise a return, 843 analyses, a deepest climb of nine, and no
+widening at all. Every door instead pulls the root's `BackendProgram` product —
+the stage `run_root_interp` and `run_root_jit` reach before executing anything —
+and that same file reaches 380 activations, 1,476 analyses, a deepest climb of
+seventeen, and five widenings.
+
+The extra climb is a population, not an edge. The pull does not add a demand
+that pushes `Json.value/1` higher; it adds 103 activations, and their evidence
+flows into returns they share. Three keys carry it: `Json.decode/1` goes from 9
+to 17, `Json.val/1` from 8 to 17, and `Json.value/1` from 8 to 17, all three on
+the same arrow. A recursive value type keys a new activation per level, each new
+activation publishes into the shared return, and the shared return climbs again.
+That is why a number taken from the standalone drive describes no door, and why
+`PublicTrace::compile` — which drives the standalone path — says so in its own
+documentation.
+
+`return_ladders_are_pinned_per_activation` in `drive_test.rs` is the pin. It
+pulls two fixtures through that product path and compares, per activation, every
+return revised more than five times against a table of (function label,
+revisions, widened), asserting nothing else in those compiles climbs or widens.
+
+`return_tuple_ladder.fz` is the bare reproducer: `def build(n), do: {n,
+build(n - 1)}` has one activation, analyzed 19 times, with a return revised 17
+times that ends at the widening budget. Its caller pays too, without climbing:
+`main/0` is re-analyzed 22 times because each rung retypes the argument it hands
+`dbg/1`, while its own return moves twice. Re-analysis and ascent are separate
+costs and only one of them is the ladder.
+
+`json_roundtrip.fz` is the goal program and shows the same defect at scale:
+thirty-one activations past the ceiling, of which `Json.array_item/2` and
+`Json.array_next/2` supply a dozen each — one per level of the recursive value
+type — and five reach seventeen and widen (`Json.value/1`, `Json.val/1`,
+`Json.decode/1`, `Json.array/2`, `Json.array_element/2`). The other four `json_*`
+fixtures share its decode loop and measure the same climb, so pinning the goal
+program pins them too.
+
+Two companions fail from opposite ends. `behavior/recursive_typedef.fz` declares
+the type the ladder is reaching for, `@type t :: :start | {integer, t}`, and
+stalls before any return can climb: `DeriveTypeDef(t)` waits on the
+`TypeDefined(t)` it alone produces, so the product pull fails on a stall rather
+than on a diagnostic. `behavior/return_tuple_accumulator.fz` grows the same
+nesting in an argument instead, so each rung keys a new activation with a fresh
+budget and the drive does not terminate, which is why that fixture is deferred.
+
+These counts are whole-compile totals on one cold compile, not the ladder's own
+round counter. `ActivationSlot::ascents` resets to zero when an activation is
+rebased and the climb starts again, while every revision in the new epoch still
+fires `return_type.defined`, so a warm or re-driven world counts the epochs
+together and `ascents` does not.
+
 ```text
 fib(0,0,1), fib(1,0,1), fib(10,0,1), fib(20,0,1)
   n is a dispatch slot (matched 0,1); a,b are accumulators

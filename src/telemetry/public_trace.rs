@@ -55,6 +55,12 @@ impl PublicTrace {
     /// `fz2 run`/`interp`/`build` place on their input — through a fresh
     /// `Compiler2` wired to a public-only `JsonlBackend`, and returns the
     /// outcome plus the fully flushed public stream it produced.
+    ///
+    /// This is `Compiler2::drive()`, the standalone semantic drive, and no door
+    /// takes it: `run`, `interp` and `build` each pull a root's product, whose
+    /// added demand keeps the semantic fixpoint working after the standalone
+    /// drive has settled. A stream captured here is a true public stream but a
+    /// shorter compile than a user's.
     pub fn compile(source: &str) -> Self {
         let telemetry = ConfiguredTelemetry::new();
         let (buf, writer) = vec_writer();
