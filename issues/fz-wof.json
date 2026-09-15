@@ -7,9 +7,15 @@
   "id": "fz-wof",
   "labels": [],
   "parent": "fz-gee",
+  "comments": [
+    {
+      "text": "Committed 17b606d0d on fz-gee/fold-arc-2; draft PR https://github.com/jallum/fz/pull/172 stacked on #170 (stack #171). Cold review found the receive rerouting fixed a real interp/JIT/AOT parity break (unregistered tuple arity crashed native), now pinned by receive_unconstructed_tuple_arity; AssertTuple fallback no longer rebuilds the named-schema table per call (88s -\u003e 14s on the 48-struct probe); follow-ups fz-gee.11/.12.",
+      "timestamp": "2026-09-15T15:27:34Z"
+    }
+  ],
   "priority": 3,
   "status": "in_progress",
   "title": "[BUG] allow_other_structs admits different arities on the interpreter matcher and the native boxed emitter when the tuple axis names a nested arity",
   "type": "bug",
-  "updated_at": "2026-09-15T13:35:07Z"
+  "updated_at": "2026-09-15T15:27:34Z"
 }
