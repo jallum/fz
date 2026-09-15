@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T09:35:22Z",
+  "description": "After fz-gee.1 both are Named { target, return_ty } / Closure { form, target, return_ty } related by a field-for-field conversion in jobs/artifact.rs / jobs/backend.rs. They name two products (materialized vs ABI-ready) that differ only in the target's representation. Fold: one generic over the target type, or one type with the ABI-ready stage carrying the resolved symbol in place; delete the conversion. Same shape as the BoundValue\u003cW\u003e fold in fz-gee.2.",
+  "id": "fz-gee.9",
+  "labels": [],
+  "parent": "fz-gee",
+  "priority": 4,
+  "status": "open",
+  "title": "MaterializedCallEdge and AbiReadyCallEdge are one two-variant enum spelled twice",
+  "type": "task",
+  "updated_at": "2026-09-15T09:35:22Z"
+}
