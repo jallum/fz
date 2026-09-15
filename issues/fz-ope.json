@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-15T22:40:40Z",
@@ -7,8 +7,8 @@
   "id": "fz-ope",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Runtime library: add File surface",
   "type": "task",
-  "updated_at": "2026-09-15T22:40:40Z"
+  "updated_at": "2026-09-15T22:40:44Z"
 }
