@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T05:56:23Z",
+  "description": "Production grew by 233 net lines across the epic while concepts fell; a survey of the four files that grew found folds that keep every semantic answer, diagnostic string, golden and recorded input_demand. One commit, review-driven.\n\nStructure: PatternGuardExpr::leaves() derived once in finish replaces the \u0026mut Vec\u003cGuardLeaf\u003e out-parameter threaded through seven arms of guard_expr_from_ast, the parallel guard_leaves vector kept by push discipline, and the discarded body_leaves. Fix the two stale doc references in src/runtime_type_predicate.rs that still name the moved whole-value matcher.\n\nFolds: const_key_value and dispatch_const_to_value share five identical arms, fold to one with the binary arm as the only special case; DispatchValues::over(transport, inputs) builds the DispatchOperands the five call sites write by hand; region_hit's seven identical \"get the word or miss\" gates become one split of the match by what the question needs (guard, type, arity ask nothing of a word); delete word_of; PinnedKind collapses to Pin | Variable (two messages); the subject-path fold in the graph builder folds upward without building a Vec; the two asserts in dispatch_values move into the Bound arm; Decided::eval_guard's one-caller forwarder goes; the duplicated prepared-key doc paragraph is said once; the two-function projection invariant loop is one loop.\n\nRejected, with reasons: dissolving TypeTest would put back a lane-vector clone per type test; the two \"did this input arrive\" checks are two layers with two pinned strings and a native twin; PreparedValues' Bound and Constants cells have different emptiness invariants; Decided, PlanInputs and the Caller variant are load-bearing.\n\nTests: one Door harness for the executor tests (seven rebuild the same runtime, world, transport and a twelve-line Dispatch::new literal); dispatch_matrix_test's two builder helpers become one; the undo/keep/bitstring trio stays as three named claims.\n\nExpected: about 110 production and 80 test lines out, no new concept, two invariants moved from convention to construction.",
+  "id": "fz-acn.14",
+  "labels": [],
+  "parent": "fz-acn",
+  "priority": 2,
+  "status": "open",
+  "title": "Collapse pass over the epic's code: fold the duplicated constant table, one operand context, derived guard leaves, and the small ones",
+  "type": "task",
+  "updated_at": "2026-09-15T05:56:23Z"
+}
