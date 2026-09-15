@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T22:29:34Z",
+  "description": "After fz-kdt.48.1 (every provably empty descriptor interns to none) a clause pinning two or more closure literals can never survive interning: MergeSig for ArrowSig merges every literal pair that can name one value, so a surviving multi-literal clause names at least two distinct brands and func_clause_empty calls it empty. The multi-literal fallback in the callable runtime-test projection (the arm the old test a_multi_literal_callable_clause_admits_every_capture_layout_of_its_targets exercised) therefore has no interned input. Delete the fallback and its tests; if a reader still constructs such a clause outside intern, make it go through intern. Signal: the projection has one arm per reachable clause shape and a test proves a two-brand clause is the bottom.",
+  "id": "fz-kdt.48.9",
+  "labels": [],
+  "parent": "fz-kdt.48",
+  "priority": 3,
+  "status": "open",
+  "title": "Multi-literal callable clause fallback is unreachable from an interned Ty",
+  "type": "task",
+  "updated_at": "2026-09-15T22:29:34Z"
+}
