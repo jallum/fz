@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::binop::{eval_binop, eval_unop, interp_value_eq, unpack_callable, unpack_closure};
-use super::dispatch_exec::{Dispatch, DispatchOperands, DispatchSource, dispatch_values};
+use super::dispatch_exec::{Dispatch, DispatchSource, dispatch_values};
 use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
 use super::value::{
@@ -710,11 +710,7 @@ fn select_clause(
     let values = dispatch_values(runtime.cur_proc(), transport, plan, DispatchSource::Inputs(args))?;
     // Dispatch reads an input in whatever form it arrived in: a tuple delivered
     // as lanes is questioned lane-wise, never rebuilt.
-    let operands = DispatchOperands {
-        transport,
-        inputs: args,
-        pinned: &values,
-    };
+    let operands = values.over(transport, args);
     let decided = Dispatch::new(runtime, types, program, module, plan, operands).run()?;
     Ok(decided.and_then(|decided| dispatch.clause_index(plan.body_id(decided.outcome()))))
 }
@@ -880,11 +876,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         &dispatch.plan,
                         DispatchSource::Inputs(&inputs),
                     )?;
-                    let operands = DispatchOperands {
-                        transport,
-                        inputs: &inputs,
-                        pinned: &values,
-                    };
+                    let operands = values.over(transport, &inputs);
                     let decided = Dispatch::new(runtime, types, program, module, &dispatch.plan, operands)
                         .run()?
                         .ok_or_else(|| {
@@ -1126,11 +1118,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 &dispatch.plan,
                 DispatchSource::Bound { env: &env, bindings },
             )?;
-            let operands = DispatchOperands {
-                transport,
-                inputs: &input_values,
-                pinned: &pinned_values,
-            };
+            let operands = pinned_values.over(transport, &input_values);
             let run = Dispatch::new(runtime, types, program, module, &dispatch.plan, operands);
             let (target, params) = match run.run()? {
                 Some(mut decided) => {
@@ -1240,11 +1228,7 @@ fn try_match_backend_receive(
         DispatchSource::Bound { env, bindings },
     )?;
     let inputs = [Some(BackendBoundValue::Runtime(msg))];
-    let operands = DispatchOperands {
-        transport,
-        inputs: &inputs,
-        pinned: &pinned,
-    };
+    let operands = pinned.over(transport, &inputs);
     let run = Dispatch::new(runtime, types, program, module, dispatch, operands);
     let Some(mut decided) = run.run()? else {
         return Ok(None);
@@ -2273,11 +2257,7 @@ fn select_construction_member<'a>(
                 selection,
                 DispatchSource::Inputs(&inputs),
             )?;
-            let operands = DispatchOperands {
-                transport,
-                inputs: &inputs,
-                pinned: &values,
-            };
+            let operands = values.over(transport, &inputs);
             let decided = Dispatch::new(runtime, types, program, module, selection, operands)
                 .run()?
                 .ok_or_else(|| format!("backend callable construction {:?} matched no member", wrapper.identity))?;

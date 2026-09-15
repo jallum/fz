@@ -194,7 +194,7 @@ pub(crate) fn collect_guard_capture_names(
     out: &mut Vec<PatternPinnedInput>,
 ) {
     match &expr.node {
-        Expr::Var(name) if !bound.contains(name) => record_pinned_name(name, expr.span, PinnedKind::GuardVar, out),
+        Expr::Var(name) if !bound.contains(name) => record_pinned_name(name, expr.span, PinnedKind::Variable, out),
         Expr::BinOp(_, a, b) => {
             collect_guard_capture_names(a, bound, out);
             collect_guard_capture_names(b, bound, out);

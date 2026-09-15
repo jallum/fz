@@ -31,18 +31,29 @@ use fz_runtime::process::Process;
 /// The operands a plan needs beyond its inputs: one runtime word per pin it
 /// compares against, and the values its prepared keys are looked up by.
 ///
-/// A map pattern keyed by a binary -- `%{"name" => n}` -- is decided through a
-/// PREPARED key: the executor finds the key's index in `plan.prepared_keys` and
-/// reads the value out of these. Only binary keys need it. Ints, floats, atoms,
-/// booleans and nil are decided from the constant directly and never consult
-/// prepared values.
-///
 /// The lifetime is a guard helper's view of its caller's keys; the values a
 /// door builds for its own plan borrow nothing.
 #[derive(Debug)]
 pub(super) struct DispatchValues<'a> {
     pinned: Vec<AnyValue>,
     prepared: PreparedValues<'a>,
+}
+
+impl<'a> DispatchValues<'a> {
+    /// The read-only operands one run works from: these values, the inputs it
+    /// is deciding about, and the store that says how a lane-form input is
+    /// laid out.
+    pub(super) fn over(
+        &'a self,
+        transport: &'a TransportStore,
+        inputs: &'a [Option<BackendBoundValue>],
+    ) -> DispatchOperands<'a> {
+        DispatchOperands {
+            transport,
+            inputs,
+            pinned: self,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -57,6 +68,12 @@ impl Default for DispatchValues<'_> {
 }
 
 /// Where the values a plan's prepared keys are looked up by come from.
+///
+/// A map pattern keyed by a binary -- `%{"name" => n}` -- is decided through a
+/// PREPARED key: the executor finds the key's index in `plan.prepared_keys` and
+/// reads the value out of these. Only binary keys need it. Ints, floats, atoms,
+/// booleans and nil are decided from the constant directly and never consult
+/// prepared values.
 ///
 /// A match site names its keys as environment values, so they arrive as words
 /// its body already built. An entry plan builds its own out of the plan's
@@ -204,29 +221,29 @@ pub(super) fn dispatch_values(
     plan: &PatternDispatchPlan<Ty>,
     source: DispatchSource<'_>,
 ) -> Result<DispatchValues<'static>, String> {
-    if let DispatchSource::Bound { bindings, .. } = &source {
-        assert_eq!(
-            bindings.pinned.len(),
-            plan.pinned.len(),
-            "a match site names every pin its plan carries"
-        );
-        assert_eq!(
-            bindings.prepared.len(),
-            plan.prepared_keys.len(),
-            "a match site names every prepared key its plan carries"
-        );
-    }
     let prepared = match &source {
         DispatchSource::Inputs(_) => {
             PreparedValues::Constants(plan.prepared_keys.iter().map(|_| OnceCell::new()).collect())
         }
-        DispatchSource::Bound { env, bindings } => PreparedValues::Bound(
-            bindings
-                .prepared
-                .iter()
-                .map(|value| env_get(transport, proc, env, *value))
-                .collect::<Result<Vec<_>, String>>()?,
-        ),
+        DispatchSource::Bound { env, bindings } => {
+            assert_eq!(
+                bindings.pinned.len(),
+                plan.pinned.len(),
+                "a match site names every pin its plan carries"
+            );
+            assert_eq!(
+                bindings.prepared.len(),
+                plan.prepared_keys.len(),
+                "a match site names every prepared key its plan carries"
+            );
+            PreparedValues::Bound(
+                bindings
+                    .prepared
+                    .iter()
+                    .map(|value| env_get(transport, proc, env, *value))
+                    .collect::<Result<Vec<_>, String>>()?,
+            )
+        }
     };
     let mut pinned = Vec::with_capacity(plan.pinned.len());
     for (index, pin) in plan.pinned.iter().enumerate() {
@@ -400,12 +417,6 @@ impl<'a> Dispatch<'a> {
     /// branch.
     fn subject_word(&mut self, subject: SubjectId) -> Result<AnyValue, DispatchStop> {
         self.resolve_subject(subject)?;
-        self.word_of(subject)
-    }
-
-    /// The same answer for a caller that has already resolved the subject. A
-    /// lane-form value is built once, here, and the built word takes its place.
-    fn word_of(&mut self, subject: SubjectId) -> Result<AnyValue, DispatchStop> {
         let transport = self.operands.transport;
         let proc = self.proc();
         let word = match required(self.state.get(subject))? {
@@ -506,7 +517,22 @@ impl<'a> Dispatch<'a> {
         region: &Region<Ty>,
         evidence: &EdgeEvidence<Ty>,
     ) -> Result<bool, DispatchStop> {
+        // Three questions decide for themselves what they need, so they are
+        // asked before the shared fetch below: a guard reads the leaves its
+        // expression names, a type test asks the subject in the form it is
+        // held, and a tuple's arity tries the lane shape its caller delivered
+        // before falling back to a value.
         match region {
+            Region::Guard(guard) => {
+                let plan = self.plan;
+                let Some(expr) = plan.guards.get(guard.0 as usize) else {
+                    return Ok(false);
+                };
+                let Some(value) = or_miss(self.eval_guard(expr))? else {
+                    return Ok(false);
+                };
+                return Ok(!(value.is_false() || value.is_nil()));
+            }
             Region::Type(ty) => {
                 // The value is asked in the form it is held: a tuple delivered
                 // as lanes is decided per position, without one being built.
@@ -514,21 +540,7 @@ impl<'a> Dispatch<'a> {
                     return Ok(false);
                 }
                 let predicate = self.types.runtime_type_predicate(ty);
-                self.subject_type_matches(subject, &predicate)
-            }
-            Region::Equal(ComparisonValue::Const(value)) => {
-                let Some(word) = self.subject_value(subject)? else {
-                    return Ok(false);
-                };
-                Ok(dispatch_const_eq(self.proc(), self.module, word, value))
-            }
-            Region::Equal(ComparisonValue::Pinned(pin_id)) => {
-                let Some(word) = self.subject_value(subject)? else {
-                    return Ok(false);
-                };
-                Ok(self
-                    .pin_value(*pin_id)
-                    .is_some_and(|want| interp_value_eq(self.proc(), want, word).unwrap_or(false)))
+                return self.subject_type_matches(subject, &predicate);
             }
             Region::TupleArity(arity) => {
                 if !self.resolved(subject)? {
@@ -542,7 +554,7 @@ impl<'a> Dispatch<'a> {
                 {
                     return Ok(known == *arity as usize);
                 }
-                let Some(word) = or_miss(self.word_of(subject))? else {
+                let Some(word) = self.subject_value(subject)? else {
                     return Ok(false);
                 };
                 let Ok(word) = word.value(self.proc()) else {
@@ -554,31 +566,31 @@ impl<'a> Dispatch<'a> {
                 let Some(heap) = word.heap_addr() else {
                     return Ok(false);
                 };
-                Ok(unsafe { struct_schema_id(heap) } == interp_tuple_schema_id(self.runtime, *arity as usize))
+                return Ok(unsafe { struct_schema_id(heap) } == interp_tuple_schema_id(self.runtime, *arity as usize));
             }
-            Region::List(ListRegion::Empty) => {
-                let Some(word) = self.subject_value(subject)? else {
-                    return Ok(false);
-                };
-                Ok(word.is_empty_list())
+            Region::Equal(_)
+            | Region::List(_)
+            | Region::MapKind
+            | Region::MapKeyPresent { .. }
+            | Region::Bitstring(_) => {}
+        }
+        // What is left wants the whole value, so it is built once here and the
+        // region says what to ask of it.
+        let Some(word) = self.subject_value(subject)? else {
+            return Ok(false);
+        };
+        match region {
+            Region::Equal(ComparisonValue::Const(value)) => {
+                Ok(dispatch_const_eq(self.proc(), self.module, word, value))
             }
-            Region::List(ListRegion::Cons) => {
-                let Some(word) = self.subject_value(subject)? else {
-                    return Ok(false);
-                };
-                Ok(word.value(self.proc()).ok().is_some_and(interp_is_list_cons))
-            }
-            Region::MapKind => {
-                let Some(word) = self.subject_value(subject)? else {
-                    return Ok(false);
-                };
-                Ok(word.value(self.proc()).ok().is_some_and(is_map_value))
-            }
+            Region::Equal(ComparisonValue::Pinned(pin_id)) => Ok(self
+                .pin_value(*pin_id)
+                .is_some_and(|want| interp_value_eq(self.proc(), want, word).unwrap_or(false))),
+            Region::List(ListRegion::Empty) => Ok(word.is_empty_list()),
+            Region::List(ListRegion::Cons) => Ok(word.value(self.proc()).ok().is_some_and(interp_is_list_cons)),
+            Region::MapKind => Ok(word.value(self.proc()).ok().is_some_and(is_map_value)),
             Region::MapKeyPresent { key } => {
-                let Some(map) = self.subject_value(subject)? else {
-                    return Ok(false);
-                };
-                let Some(value) = self.map_lookup(map, key)? else {
+                let Some(value) = self.map_lookup(word, key)? else {
                     return Ok(false);
                 };
                 let plan = self.plan;
@@ -593,23 +605,13 @@ impl<'a> Dispatch<'a> {
                 Ok(true)
             }
             Region::Bitstring(shape) => {
-                let Some(word) = self.subject_value(subject)? else {
-                    return Ok(false);
-                };
                 let Ok(value) = word.value(self.proc()) else {
                     return Ok(false);
                 };
                 Ok(self.read_bitstring(value, shape))
             }
-            Region::Guard(guard) => {
-                let plan = self.plan;
-                let Some(expr) = plan.guards.get(guard.0 as usize) else {
-                    return Ok(false);
-                };
-                let Some(value) = or_miss(self.eval_guard(expr))? else {
-                    return Ok(false);
-                };
-                Ok(!(value.is_false() || value.is_nil()))
+            Region::Type(_) | Region::TupleArity(_) | Region::Guard(_) => {
+                unreachable!("a type, arity or guard question fetches for itself and answers above")
             }
         }
     }
@@ -726,17 +728,13 @@ impl<'a> Dispatch<'a> {
                     self.program,
                     self.module,
                     &dispatch.plan,
-                    DispatchOperands {
-                        transport: self.operands.transport,
-                        inputs: &values,
-                        pinned: &helper_values,
-                    },
+                    helper_values.over(self.operands.transport, &values),
                 );
                 // A helper that matches nothing answers no value, which is a
                 // guard that does not hold.
                 let mut decided = required(helper.run().map_err(DispatchStop::Broken)?)?;
                 let body = required(dispatch.bodies.get(dispatch.plan.body_id(decided.outcome()) as usize))?;
-                decided.eval_guard(body)?
+                decided.run.eval_guard(body)?
             }
         })
     }
@@ -770,27 +768,20 @@ impl<'a> Dispatch<'a> {
     /// question asks for it.
     fn const_key_value(&self, key: &GroundValue) -> Result<Option<AnyValue>, DispatchStop> {
         use crate::ground_value::DispatchShape;
-        Ok(
-            match key
-                .as_dispatch_shape()
-                .expect("const_key_value only ever sees a dispatch-matrix const")
-            {
-                DispatchShape::Int(n) => Some(AnyValue::Int(n)),
-                DispatchShape::Float(bits) => Some(AnyValue::Float(f64::from_bits(bits))),
-                DispatchShape::Bool(value) => Some(interp_bool_value(value)),
-                DispatchShape::Nil => Some(interp_nil_value()),
-                DispatchShape::Atom(name) => self
-                    .module
-                    .atom_names
-                    .iter()
-                    .position(|n| n == name)
-                    .map(|id| AnyValue::Atom(id as u32)),
-                DispatchShape::Utf8Binary(_) => match self.plan.prepared_key_id(key) {
-                    Some(id) => self.operands.pinned.prepared.word(id, key, self.proc(), self.module)?,
-                    None => None,
-                },
+        match key
+            .as_dispatch_shape()
+            .expect("const_key_value only ever sees a dispatch-matrix const")
+        {
+            DispatchShape::Utf8Binary(_) => match self.plan.prepared_key_id(key) {
+                Some(id) => self.operands.pinned.prepared.word(id, key, self.proc(), self.module),
+                None => Ok(None),
             },
-        )
+            DispatchShape::Int(_)
+            | DispatchShape::Float(_)
+            | DispatchShape::Bool(_)
+            | DispatchShape::Nil
+            | DispatchShape::Atom(_) => Ok(dispatch_const_to_value(self.proc(), self.module, key)),
+        }
     }
 
     /// Read a bitstring subject field by field, binding what each field yields.
@@ -1021,11 +1012,6 @@ impl Decided<'_> {
     /// The one runtime word one of the winning outcome's arguments denotes.
     pub(super) fn subject_word(&mut self, subject: SubjectId) -> Result<AnyValue, DispatchStop> {
         self.run.subject_word(subject)
-    }
-
-    /// The value a guard body answers, decided against the same run.
-    fn eval_guard(&mut self, expr: &PatternGuardExpr<Ty>) -> Result<AnyValue, DispatchStop> {
-        self.run.eval_guard(expr)
     }
 }
 

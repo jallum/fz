@@ -98,8 +98,9 @@ input saying what the plan's questions read of it. `input_demand` and
 A pin names a binding that existed BEFORE the pattern began. Three spellings
 reach for one: `^name`, a guard variable the row's patterns do not bind, and a
 bitstring `size(name)` no earlier field of the same bitstring binds. All three
-become a `PatternPinnedInput`, distinguished by `PinnedKind` so a diagnostic
-can say which one it is.
+become a `PatternPinnedInput` carrying a `PinnedKind`, which says what the
+diagnostic has to say back: `Pin` names the pin and why it is undefined, and
+the two spellings without a caret are `Variable`, an undefined variable.
 
 `SourcePatternRows::prematch` is that snapshot, and it has two shapes.
 

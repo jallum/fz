@@ -101,15 +101,15 @@ pub(crate) struct PatternPinnedInput {
 
 impl PatternPinnedInput {
     /// What a reader is told when this name was never bound. The wording is
-    /// Elixir's: a pin says which pin and why, a guard variable or a bitstring
-    /// size is just an undefined variable.
+    /// Elixir's: a pin says which pin and why, a plain variable is just an
+    /// undefined variable.
     pub(crate) fn undefined_message(&self) -> String {
         match self.kind {
             PinnedKind::Pin => format!(
                 "undefined variable ^{}. No variable \"{}\" has been defined before the current pattern",
                 self.name, self.name
             ),
-            PinnedKind::GuardVar | PinnedKind::BitstringSize => format!("undefined variable \"{}\"", self.name),
+            PinnedKind::Variable => format!("undefined variable \"{}\"", self.name),
         }
     }
 }
@@ -120,10 +120,9 @@ impl PatternPinnedInput {
 pub(crate) enum PinnedKind {
     /// `^name` in a pattern.
     Pin,
-    /// A guard variable no pattern in the same row binds.
-    GuardVar,
-    /// A bitstring `size(name)` no earlier field of the same bitstring binds.
-    BitstringSize,
+    /// A name spelled without a pin: a guard variable no pattern in the same
+    /// row binds, or a bitstring `size(name)` no earlier field binds.
+    Variable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +223,33 @@ pub(crate) enum PatternGuardExpr<TypeHandle> {
 }
 
 impl<TypeHandle> PatternGuardExpr<TypeHandle> {
+    /// Every value this expression reads: the subjects and pins that reach it.
+    /// A nested helper call contributes only what its argument expressions
+    /// read, because the helper's own plan is closed over its own input space.
+    fn leaves(&self) -> Vec<GuardLeaf> {
+        let mut leaves = Vec::new();
+        self.collect_leaves(&mut leaves);
+        leaves
+    }
+
+    fn collect_leaves(&self, leaves: &mut Vec<GuardLeaf>) {
+        match self {
+            PatternGuardExpr::Const(_) => {}
+            PatternGuardExpr::Subject(subject) => leaves.push(GuardLeaf::Subject(*subject)),
+            PatternGuardExpr::Pinned(pinned) => leaves.push(GuardLeaf::Pinned(*pinned)),
+            PatternGuardExpr::Unary { expr, .. } => expr.collect_leaves(leaves),
+            PatternGuardExpr::Binary { lhs, rhs, .. } => {
+                lhs.collect_leaves(leaves);
+                rhs.collect_leaves(leaves);
+            }
+            PatternGuardExpr::Dispatch { inputs, .. } => {
+                for input in inputs {
+                    input.collect_leaves(leaves);
+                }
+            }
+        }
+    }
+
     pub(crate) fn map_type_handle<MappedHandle>(
         &self,
         map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
@@ -356,15 +382,11 @@ where
             .iter()
             .map(|binding| (binding.name.clone(), binding.source))
             .collect::<HashMap<_, _>>();
-        // A helper BODY is what the helper reads of its OWN inputs, not a
-        // question the caller's plan asks, so its leaves are discarded here.
-        let mut body_leaves = Vec::new();
         bodies.push(guard_expr_from_ast(
             &clause.body.node,
             &bindings,
             &pinned_by_name,
             &mut plan.prepared_keys,
-            &mut body_leaves,
             resolver,
         )?);
     }
@@ -375,16 +397,12 @@ where
     })
 }
 
-/// Builds one guard expression and records, in `leaves`, every value it reads:
-/// the subjects and pins that reach it. A nested helper call contributes only
-/// what its argument expressions read, because the helper's own plan is closed
-/// over its own input space.
+/// Builds one guard expression from its source form.
 fn guard_expr_from_ast<F, TypeHandle>(
     expr: &Expr,
     bindings: &HashMap<String, SubjectId>,
     pinned_by_name: &HashMap<String, PinnedValueId>,
     prepared_keys: &mut Vec<GroundValue>,
-    leaves: &mut Vec<GuardLeaf>,
     resolver: &mut F,
 ) -> Result<PatternGuardExpr<TypeHandle>, SourcePatternError>
 where
@@ -399,18 +417,14 @@ where
         Expr::Nil => PatternGuardExpr::Const(GroundValue::Nil),
         Expr::Var(name) => {
             if let Some(subject) = bindings.get(name) {
-                leaves.push(GuardLeaf::Subject(*subject));
                 PatternGuardExpr::Subject(*subject)
             } else if let Some(pinned) = pinned_by_name.get(name) {
-                leaves.push(GuardLeaf::Pinned(*pinned));
                 PatternGuardExpr::Pinned(*pinned)
             } else {
                 return Err(SourcePatternError::UnknownGuardVar(name.clone()));
             }
         }
-        Expr::Ascribe(inner, _) => {
-            guard_expr_from_ast(&inner.node, bindings, pinned_by_name, prepared_keys, leaves, resolver)?
-        }
+        Expr::Ascribe(inner, _) => guard_expr_from_ast(&inner.node, bindings, pinned_by_name, prepared_keys, resolver)?,
         Expr::UnOp(crate::ast::UnOp::Not, arg) => PatternGuardExpr::Unary {
             op: PatternGuardUnaryOp::Not,
             expr: Box::new(guard_expr_from_ast(
@@ -418,7 +432,6 @@ where
                 bindings,
                 pinned_by_name,
                 prepared_keys,
-                leaves,
                 resolver,
             )?),
         },
@@ -429,7 +442,6 @@ where
                 bindings,
                 pinned_by_name,
                 prepared_keys,
-                leaves,
                 resolver,
             )?),
         },
@@ -463,7 +475,6 @@ where
                 bindings,
                 pinned_by_name,
                 prepared_keys,
-                leaves,
                 resolver,
             )?),
             rhs: Box::new(guard_expr_from_ast(
@@ -471,7 +482,6 @@ where
                 bindings,
                 pinned_by_name,
                 prepared_keys,
-                leaves,
                 resolver,
             )?),
         },
@@ -482,7 +492,7 @@ where
             };
             let args = args
                 .iter()
-                .map(|arg| guard_expr_from_ast(&arg.node, bindings, pinned_by_name, prepared_keys, leaves, resolver))
+                .map(|arg| guard_expr_from_ast(&arg.node, bindings, pinned_by_name, prepared_keys, resolver))
                 .collect::<Result<Vec<_>, _>>()?;
             let dispatch = resolver
                 .guard_call(&name, arity)?
@@ -538,10 +548,6 @@ struct PatternDispatchProducer<TypeHandle> {
     prepared_keys: Vec<GroundValue>,
     outcomes: Vec<PatternDispatchOutcome>,
     guards: Vec<PatternGuardExpr<TypeHandle>>,
-    /// What each guard reads, parallel to `guards`. It is the graph builder's
-    /// input, not a plan payload: a guard question rides a carrier subject, so
-    /// only the leaves say which inputs the guard demands.
-    guard_leaves: Vec<Vec<GuardLeaf>>,
     projections: HashMap<(SubjectId, ProjectionKind), SubjectId>,
 }
 
@@ -576,7 +582,6 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             prepared_keys: Vec::new(),
             outcomes: Vec::new(),
             guards: Vec::new(),
-            guard_leaves: Vec::new(),
             projections: HashMap::new(),
         })
     }
@@ -617,18 +622,15 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             for binding in &bindings {
                 bound.insert(binding.name.clone(), binding.source);
             }
-            let mut leaves = Vec::new();
             let guard_expr = guard_expr_from_ast(
                 &guard.node,
                 &bound,
                 &self.pinned_by_name,
                 &mut self.prepared_keys,
-                &mut leaves,
                 resolver,
             )?;
             let guard_id = GuardId(self.guards.len() as u32);
             self.guards.push(guard_expr);
-            self.guard_leaves.push(leaves);
             questions.push(RegionQuestion::new(RegionPredicate::new(
                 self.guard_subject,
                 Region::Guard(guard_id),
@@ -661,13 +663,16 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         }
         let matrix = self.builder.build().map_err(PatternDispatchError::MatrixBuild)?;
         let pinned_inputs = self.pinned.iter().map(|pin| pin.input).collect::<Vec<_>>();
+        // A guard question rides a carrier subject, so only its leaves say
+        // which inputs the guard demands.
+        let guard_leaves = self.guards.iter().map(PatternGuardExpr::leaves).collect::<Vec<_>>();
         let inputs = PlanInputs {
             // The DECLARED input count, not the matrix's subject count: a plan
             // that declares no inputs still mints one subject to carry guards.
             count: self.input_count,
             subjects: &matrix.subjects,
             pinned: &pinned_inputs,
-            guard_leaves: &self.guard_leaves,
+            guard_leaves: &guard_leaves,
         };
         let graph = compile_dispatch_matrix(&matrix, inputs)
             .map_err(PatternDispatchError::Compile)?
@@ -939,7 +944,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             name: name.to_string(),
             input: self.prematch.input_for(name),
             span,
-            kind: PinnedKind::BitstringSize,
+            kind: PinnedKind::Variable,
         });
         self.pinned_by_name.insert(name.to_string(), id);
         id

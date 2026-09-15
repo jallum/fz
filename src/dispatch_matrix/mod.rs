@@ -56,7 +56,7 @@ use std::collections::BTreeMap;
 pub(crate) mod demand;
 pub(crate) mod pattern;
 
-use demand::{DemandPathStep, DispatchDemand, demand_at_path};
+use demand::{DemandPathStep, DispatchDemand, demand_at_step};
 
 /// The dispatch/pattern constant carrier. `dispatch_matrix` is otherwise
 /// generic over an opaque `TypeHandle` and has no dependency on any concrete
@@ -981,21 +981,19 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
     }
 
     fn charge_subject(&mut self, subject: SubjectId, demand: DispatchDemand) {
-        let (ordinal, path) = self.subject_path(subject);
-        self.charge_input(ordinal, demand_at_path(&path, demand));
+        let (ordinal, demand) = self.subject_demand(subject, demand);
+        self.charge_input(ordinal, demand);
     }
 
-    /// The input a subject descends from, and the steps taken to reach it. A
-    /// question the matrix accepted names a subject the matrix holds, so an
-    /// unknown subject is a producer that built the graph from another plan's
-    /// questions.
-    fn subject_path(&self, subject: SubjectId) -> (u32, Vec<DemandPathStep>) {
-        subject_path(self.inputs.subjects, subject).unwrap_or_else(|| {
-            panic!(
-                "dispatch question names subject s{}, which its matrix does not hold",
-                subject.0
-            )
-        })
+    /// The input a subject descends from, and what a demand on that subject
+    /// asks of that input.
+    fn subject_demand(&self, subject: SubjectId, demand: DispatchDemand) -> (u32, DispatchDemand) {
+        subject_demand(self.inputs.subjects, subject, demand).unwrap_or_else(|| missing_subject(subject))
+    }
+
+    /// The input a subject descends from, for a caller that asks nothing of it.
+    fn subject_root(&self, subject: SubjectId) -> u32 {
+        subject_root(self.inputs.subjects, subject).unwrap_or_else(|| missing_subject(subject))
     }
 
     /// Every ordinal charged here names a declared input of THIS plan. A
@@ -1018,26 +1016,24 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
     /// the fold to ignore evidence.
     fn ensure_projections_ride_a_charged_input(&self) {
         for node in &self.nodes {
-            match node {
-                DispatchNode::Fail => {}
-                DispatchNode::Outcome { evidence, .. } => self.ensure_evidence_rides_a_charged_input(evidence),
-                DispatchNode::Test { on_match, on_miss, .. } => {
-                    self.ensure_evidence_rides_a_charged_input(&on_match.evidence);
-                    self.ensure_evidence_rides_a_charged_input(&on_miss.evidence);
-                }
+            let (first, second) = match node {
+                DispatchNode::Fail => (None, None),
+                DispatchNode::Outcome { evidence, .. } => (Some(evidence), None),
+                DispatchNode::Test { on_match, on_miss, .. } => (Some(&on_match.evidence), Some(&on_miss.evidence)),
+            };
+            for projection in first
+                .into_iter()
+                .chain(second)
+                .flat_map(|evidence| &evidence.projections)
+            {
+                let ordinal = self.subject_root(*projection);
+                assert!(
+                    self.input_demand
+                        .get(ordinal as usize)
+                        .is_some_and(DispatchDemand::asks_anything),
+                    "dispatch projects from input {ordinal}, which no question charged",
+                );
             }
-        }
-    }
-
-    fn ensure_evidence_rides_a_charged_input(&self, evidence: &EdgeEvidence<TypeHandle>) {
-        for projection in &evidence.projections {
-            let (ordinal, _) = self.subject_path(*projection);
-            assert!(
-                self.input_demand
-                    .get(ordinal as usize)
-                    .is_some_and(DispatchDemand::asks_anything),
-                "dispatch projects from input {ordinal}, which no question charged",
-            );
         }
     }
 }
@@ -1058,15 +1054,45 @@ fn demand_for_region<TypeHandle>(region: &Region<TypeHandle>) -> DispatchDemand 
     }
 }
 
-/// The input a subject descends from, and the steps taken to reach it.
-fn subject_path(subjects: &[Subject], subject: SubjectId) -> Option<(u32, Vec<DemandPathStep>)> {
-    let subject = subjects.get(subject.0 as usize)?;
-    match &subject.source {
-        SubjectSource::Input { ordinal } => Some((*ordinal, Vec::new())),
-        SubjectSource::Projection(projection) => {
-            let (ordinal, mut path) = subject_path(subjects, projection.source)?;
-            path.push(DemandPathStep::from(&projection.kind));
-            Some((ordinal, path))
+/// A question the matrix accepted names a subject the matrix holds, so an
+/// unknown subject is a producer that built the graph from another plan's
+/// questions.
+fn missing_subject(subject: SubjectId) -> ! {
+    panic!(
+        "dispatch question names subject s{}, which its matrix does not hold",
+        subject.0
+    )
+}
+
+/// The input a subject descends from. A projection names its source, so the
+/// chain climbs to the input the subject was carved out of.
+fn subject_root(subjects: &[Subject], mut subject: SubjectId) -> Option<u32> {
+    loop {
+        match &subjects.get(subject.0 as usize)?.source {
+            SubjectSource::Input { ordinal } => return Some(*ordinal),
+            SubjectSource::Projection(projection) => subject = projection.source,
+        }
+    }
+}
+
+/// The input a subject descends from, and what a demand on that subject asks
+/// of that input.
+///
+/// The walk climbs the same chain as `subject_root`, and each step it climbs
+/// wraps the demand in the projection that reached it, so the demand that
+/// arrives at the input is the one the input carries.
+fn subject_demand(
+    subjects: &[Subject],
+    mut subject: SubjectId,
+    mut demand: DispatchDemand,
+) -> Option<(u32, DispatchDemand)> {
+    loop {
+        match &subjects.get(subject.0 as usize)?.source {
+            SubjectSource::Input { ordinal } => return Some((*ordinal, demand)),
+            SubjectSource::Projection(projection) => {
+                demand = demand_at_step(&DemandPathStep::from(&projection.kind), demand);
+                subject = projection.source;
+            }
         }
     }
 }

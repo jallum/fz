@@ -12,8 +12,9 @@
 //! lattice carries. Only a tuple field and a list head descend; a struct field,
 //! a list tail, a map value and a bitstring field are positions the lattice
 //! cannot name, so a question reached through one of them collapses to `Whole`.
-//! `demand_at_path` turns a path and the demand at its end into the demand on
-//! the value the path started from.
+//! `demand_at_step` turns one step and the demand beyond it into the demand on
+//! the value the step was taken from, and `demand_at_path` folds a whole path
+//! that way, from its end back to the value it started from.
 
 use std::collections::BTreeMap;
 
@@ -73,22 +74,24 @@ impl From<&ProjectionKind> for DemandPathStep {
     }
 }
 
-pub(crate) fn demand_at_path(path: &[DemandPathStep], demand: DispatchDemand) -> DispatchDemand {
-    let Some((head, tail)) = path.split_first() else {
-        return demand;
-    };
-    match head {
-        DemandPathStep::TupleField(field) => {
-            let mut fields = BTreeMap::new();
-            fields.insert(*field, demand_at_path(tail, demand));
-            DispatchDemand::TupleFields(fields)
-        }
-        DemandPathStep::ListHead => DispatchDemand::ListShape(Box::new(demand_at_path(tail, demand))),
+/// What a demand beyond one step asks of the value the step was taken from.
+pub(crate) fn demand_at_step(step: &DemandPathStep, demand: DispatchDemand) -> DispatchDemand {
+    match step {
+        DemandPathStep::TupleField(field) => DispatchDemand::TupleFields(BTreeMap::from([(*field, demand)])),
+        DemandPathStep::ListHead => DispatchDemand::ListShape(Box::new(demand)),
         DemandPathStep::ListTail
         | DemandPathStep::MapValue
         | DemandPathStep::StructField
         | DemandPathStep::BitstringField => DispatchDemand::Whole,
     }
+}
+
+/// The same, for a whole path: the demand at the path's end travels back
+/// through each step to the value the path started from.
+pub(crate) fn demand_at_path(path: &[DemandPathStep], demand: DispatchDemand) -> DispatchDemand {
+    path.iter()
+        .rev()
+        .fold(demand, |demand, step| demand_at_step(step, demand))
 }
 
 #[cfg(test)]

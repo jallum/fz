@@ -45,20 +45,67 @@ fn entry_plan_pinning_input_zero() -> PatternDispatchPlan<Ty> {
     .expect("an entry head that pins a delivered input compiles")
 }
 
-/// A tuple shape whose every field is one integer lane, the form a caller
-/// delivers a tuple in when nothing forced it onto the heap.
-fn int_lane_tuple(transport: &mut TransportStore, types: &mut Types, arity: usize) -> ShapeId {
-    let int = types.int();
-    let lane = transport.interners_mut().intern_lane(LaneDescr {
-        ty: int,
-        class: TransportClass::Value,
-    });
-    let field = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
-    transport.interners_mut().intern_shape(ShapeDescr::Tuple(
-        std::iter::repeat_n(TransportLayout::structural(field), arity)
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-    ))
+/// One live door: a running process, the world its types come from, and the
+/// program, module and transport store a run reads alongside its operands.
+struct Door {
+    runtime: IrInterpRuntime,
+    world: World,
+    program: BackendProgram,
+    transport: TransportStore,
+    module: Module,
+}
+
+impl Door {
+    fn new() -> Self {
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
+        runtime.current_proc = runtime.process_ptr(1).unwrap();
+        Self {
+            runtime,
+            world: World::new(),
+            program: crate::compiler2::BackendProgram::empty_for_test(),
+            transport: TransportStore::new(),
+            module: Module::default(),
+        }
+    }
+
+    fn proc(&self) -> *mut Process {
+        self.runtime.cur_proc()
+    }
+
+    /// A tuple shape whose every field is one integer lane, the form a caller
+    /// delivers a tuple in when nothing forced it onto the heap.
+    fn int_lane_tuple(&mut self, arity: usize) -> ShapeId {
+        let int = self.world.types_mut().int();
+        let lane = self.transport.interners_mut().intern_lane(LaneDescr {
+            ty: int,
+            class: TransportClass::Value,
+        });
+        let field = self.transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
+        self.transport.interners_mut().intern_shape(ShapeDescr::Tuple(
+            std::iter::repeat_n(TransportLayout::structural(field), arity)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ))
+    }
+
+    /// Decide one plan against these inputs and these operands.
+    fn decide<'a>(
+        &'a mut self,
+        plan: &'a PatternDispatchPlan<Ty>,
+        inputs: &'a [Option<BackendBoundValue>],
+        values: &'a DispatchValues<'a>,
+    ) -> Result<Option<Decided<'a>>, String> {
+        let operands = values.over(&self.transport, inputs);
+        Dispatch::new(
+            &mut self.runtime,
+            self.world.types(),
+            &self.program,
+            &self.module,
+            plan,
+            operands,
+        )
+        .run()
+    }
 }
 
 /// The subject a plan names for one of its inputs.
@@ -142,38 +189,17 @@ fn bitstring_allocs(proc: *mut Process) -> u64 {
     unsafe { &*proc }.heap.alloc_stats_snapshot().bitstring.allocs
 }
 
-fn live_runtime() -> IrInterpRuntime {
-    let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
-    runtime.current_proc = runtime.process_ptr(1).unwrap();
-    runtime
-}
-
 /// An input the plan reads that never arrived is a disagreement between the
 /// plan and its caller, not a subject that simply failed its test.
 #[test]
 fn an_input_the_plan_reads_but_never_received_stops_the_run() {
     let plan = one_input_plan(vec![Pattern::Tuple(vec![Spanned::dummy(Pattern::Wildcard)])]);
-    let mut runtime = live_runtime();
-    let world = World::new();
-    let program = crate::compiler2::BackendProgram::empty_for_test();
-    let transport = TransportStore::new();
-    let pinned = DispatchValues::default();
-    let module = Module::default();
-    let error = Dispatch::new(
-        &mut runtime,
-        world.types(),
-        &program,
-        &module,
-        &plan,
-        DispatchOperands {
-            transport: &transport,
-            inputs: &[],
-            pinned: &pinned,
-        },
-    )
-    .run()
-    .err()
-    .expect("the plan reads the only input, which was never delivered");
+    let mut door = Door::new();
+    let values = DispatchValues::default();
+    let error = door
+        .decide(&plan, &[], &values)
+        .err()
+        .expect("the plan reads the only input, which was never delivered");
     assert_eq!(error, "dispatch reads input 0, which did not arrive");
 }
 
@@ -181,29 +207,14 @@ fn an_input_the_plan_reads_but_never_received_stops_the_run() {
 #[test]
 fn the_door_decides_which_clause_the_operands_choose() {
     let plan = one_input_plan(vec![Pattern::Int(1), Pattern::Var("other".to_string())]);
-    let mut runtime = live_runtime();
-    let world = World::new();
-    let program = crate::compiler2::BackendProgram::empty_for_test();
-    let transport = TransportStore::new();
-    let pinned = DispatchValues::default();
-    let module = Module::default();
+    let mut door = Door::new();
+    let values = DispatchValues::default();
     for (input, expected_body) in [(1, 0u32), (2, 1)] {
         let inputs = [Some(BackendBoundValue::Runtime(AnyValue::Int(input)))];
-        let decided = Dispatch::new(
-            &mut runtime,
-            world.types(),
-            &program,
-            &module,
-            &plan,
-            DispatchOperands {
-                transport: &transport,
-                inputs: &inputs,
-                pinned: &pinned,
-            },
-        )
-        .run()
-        .expect("the plan decides")
-        .expect("a clause matched");
+        let decided = door
+            .decide(&plan, &inputs, &values)
+            .expect("the plan decides")
+            .expect("a clause matched");
         assert_eq!(
             plan.body_id(decided.outcome()),
             expected_body,
@@ -218,28 +229,13 @@ fn the_door_decides_which_clause_the_operands_choose() {
 #[test]
 fn an_outcome_argument_reads_the_run_that_decided_it() {
     let plan = one_input_plan(vec![Pattern::Int(1), Pattern::Var("other".to_string())]);
-    let mut runtime = live_runtime();
-    let world = World::new();
-    let program = crate::compiler2::BackendProgram::empty_for_test();
-    let transport = TransportStore::new();
-    let pinned = DispatchValues::default();
-    let module = Module::default();
+    let mut door = Door::new();
+    let values = DispatchValues::default();
     let inputs = [Some(BackendBoundValue::Runtime(AnyValue::Int(7)))];
-    let mut decided = Dispatch::new(
-        &mut runtime,
-        world.types(),
-        &program,
-        &module,
-        &plan,
-        DispatchOperands {
-            transport: &transport,
-            inputs: &inputs,
-            pinned: &pinned,
-        },
-    )
-    .run()
-    .expect("the plan decides")
-    .expect("a clause matched");
+    let mut decided = door
+        .decide(&plan, &inputs, &values)
+        .expect("the plan decides")
+        .expect("a clause matched");
     let binding = plan
         .outcome(decided.outcome())
         .expect("a winning outcome")
@@ -264,14 +260,13 @@ fn an_outcome_argument_reads_the_run_that_decided_it() {
 fn a_pin_comes_from_an_input_ordinal_or_from_an_environment_value() {
     let entry_plan = entry_plan_pinning_input_zero();
     let site_plan = one_input_plan(vec![Pattern::Pinned("want".to_string())]);
-    let runtime = live_runtime();
-    let transport = TransportStore::new();
+    let door = Door::new();
     let want = AnyValue::Int(41);
 
     let inputs = [Some(BackendBoundValue::Runtime(want)), None];
     let from_input = dispatch_values(
-        runtime.cur_proc(),
-        &transport,
+        door.proc(),
+        &door.transport,
         &entry_plan,
         DispatchSource::Inputs(&inputs),
     )
@@ -284,8 +279,8 @@ fn a_pin_comes_from_an_input_ordinal_or_from_an_environment_value() {
         prepared: Vec::new(),
     };
     let from_env = dispatch_values(
-        runtime.cur_proc(),
-        &transport,
+        door.proc(),
+        &door.transport,
         &site_plan,
         DispatchSource::Bound {
             env: &env,
@@ -311,10 +306,10 @@ fn a_pin_comes_from_an_input_ordinal_or_from_an_environment_value() {
 #[test]
 fn a_pin_whose_input_arrives_in_lane_form_is_refused_by_name() {
     let plan = entry_plan_pinning_input_zero();
-    let runtime = live_runtime();
-    let mut transport = TransportStore::new();
-    let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
-    let tuple = transport
+    let mut door = Door::new();
+    let nothing = door.transport.interners_mut().intern_shape(ShapeDescr::Nothing);
+    let tuple = door
+        .transport
         .interners_mut()
         .intern_shape(ShapeDescr::Tuple(Box::from([TransportLayout::structural(nothing)])));
     let inputs = [
@@ -324,7 +319,7 @@ fn a_pin_whose_input_arrives_in_lane_form_is_refused_by_name() {
         }),
         None,
     ];
-    let error = dispatch_values(runtime.cur_proc(), &transport, &plan, DispatchSource::Inputs(&inputs))
+    let error = dispatch_values(door.proc(), &door.transport, &plan, DispatchSource::Inputs(&inputs))
         .expect_err("a lane-form input holds no single word to compare against");
     assert_eq!(error, "dispatch pin `want` has no runtime argument operand");
 }
@@ -341,32 +336,17 @@ fn a_failed_test_undoes_the_subjects_it_produced() {
         Pattern::Tuple(vec![Spanned::dummy(Pattern::Int(1))]),
         Pattern::Var("other".to_string()),
     ]);
-    let mut runtime = live_runtime();
-    let mut world = World::new();
-    let program = crate::compiler2::BackendProgram::empty_for_test();
-    let mut transport = TransportStore::new();
-    let pair = int_lane_tuple(&mut transport, world.types_mut(), 2);
-    let pinned = DispatchValues::default();
-    let module = Module::default();
+    let mut door = Door::new();
+    let pair = door.int_lane_tuple(2);
+    let values = DispatchValues::default();
     let inputs = [Some(BackendBoundValue::Transport {
         shape: pair,
         lanes: vec![AnyValue::Int(9), AnyValue::Int(8)],
     })];
-    let decided = Dispatch::new(
-        &mut runtime,
-        world.types(),
-        &program,
-        &module,
-        &plan,
-        DispatchOperands {
-            transport: &transport,
-            inputs: &inputs,
-            pinned: &pinned,
-        },
-    )
-    .run()
-    .expect("the plan decides")
-    .expect("the wildcard arm matches");
+    let decided = door
+        .decide(&plan, &inputs, &values)
+        .expect("the plan decides")
+        .expect("the wildcard arm matches");
     assert_eq!(
         plan.body_id(decided.outcome()),
         1,
@@ -390,32 +370,17 @@ fn a_taken_branch_keeps_what_its_test_learned() {
         Pattern::Tuple(vec![Spanned::dummy(Pattern::Int(1)), Spanned::dummy(Pattern::Wildcard)]),
         Pattern::Var("other".to_string()),
     ]);
-    let mut runtime = live_runtime();
-    let mut world = World::new();
-    let program = crate::compiler2::BackendProgram::empty_for_test();
-    let mut transport = TransportStore::new();
-    let pair = int_lane_tuple(&mut transport, world.types_mut(), 2);
-    let pinned = DispatchValues::default();
-    let module = Module::default();
+    let mut door = Door::new();
+    let pair = door.int_lane_tuple(2);
+    let values = DispatchValues::default();
     let inputs = [Some(BackendBoundValue::Transport {
         shape: pair,
         lanes: vec![AnyValue::Int(9), AnyValue::Int(8)],
     })];
-    let decided = Dispatch::new(
-        &mut runtime,
-        world.types(),
-        &program,
-        &module,
-        &plan,
-        DispatchOperands {
-            transport: &transport,
-            inputs: &inputs,
-            pinned: &pinned,
-        },
-    )
-    .run()
-    .expect("the plan decides")
-    .expect("the wildcard arm matches");
+    let decided = door
+        .decide(&plan, &inputs, &values)
+        .expect("the plan decides")
+        .expect("the wildcard arm matches");
     assert_eq!(
         plan.body_id(decided.outcome()),
         1,
@@ -448,33 +413,15 @@ fn a_bitstring_field_a_failed_shape_extracted_is_not_visible_to_the_next_arm() {
         Pattern::Bitstring(vec![byte_field("first"), byte_field("second")]),
         Pattern::Var("other".to_string()),
     ]);
-    let mut runtime = live_runtime();
-    let world = World::new();
-    let program = crate::compiler2::BackendProgram::empty_for_test();
-    let transport = TransportStore::new();
-    let pinned = DispatchValues::default();
-    let module = Module::default();
-    let inputs = [Some(BackendBoundValue::Runtime(bitstring_value(
-        runtime.cur_proc(),
-        b"a",
-    )))];
+    let mut door = Door::new();
+    let values = DispatchValues::default();
+    let inputs = [Some(BackendBoundValue::Runtime(bitstring_value(door.proc(), b"a")))];
     let fields = bitstring_field_subjects(&plan);
     assert_eq!(fields.len(), 2, "the shape names one subject per field");
-    let decided = Dispatch::new(
-        &mut runtime,
-        world.types(),
-        &program,
-        &module,
-        &plan,
-        DispatchOperands {
-            transport: &transport,
-            inputs: &inputs,
-            pinned: &pinned,
-        },
-    )
-    .run()
-    .expect("the plan decides")
-    .expect("the wildcard arm matches");
+    let decided = door
+        .decide(&plan, &inputs, &values)
+        .expect("the plan decides")
+        .expect("the wildcard arm matches");
     assert_eq!(plan.body_id(decided.outcome()), 1, "one byte answers no two-byte shape");
     for field in fields {
         assert!(
@@ -497,35 +444,20 @@ fn a_prepared_binary_key_no_test_reads_is_never_built() {
         Pattern::Var("other".to_string()),
     ]);
     assert_eq!(plan.prepared_keys.len(), 1, "the map pattern prepares its binary key");
-    let mut runtime = live_runtime();
-    let mut world = World::new();
-    let program = crate::compiler2::BackendProgram::empty_for_test();
-    let mut transport = TransportStore::new();
-    let single = int_lane_tuple(&mut transport, world.types_mut(), 1);
-    let module = Module::default();
-    let proc = runtime.cur_proc();
+    let mut door = Door::new();
+    let single = door.int_lane_tuple(1);
+    let proc = door.proc();
     let inputs = [Some(BackendBoundValue::Transport {
         shape: single,
         lanes: vec![AnyValue::Int(1)],
     })];
     let before = bitstring_allocs(proc);
-    let values = dispatch_values(proc, &transport, &plan, DispatchSource::Inputs(&inputs))
+    let values = dispatch_values(proc, &door.transport, &plan, DispatchSource::Inputs(&inputs))
         .expect("the plan's operands are built");
-    let decided = Dispatch::new(
-        &mut runtime,
-        world.types(),
-        &program,
-        &module,
-        &plan,
-        DispatchOperands {
-            transport: &transport,
-            inputs: &inputs,
-            pinned: &values,
-        },
-    )
-    .run()
-    .expect("the plan decides")
-    .expect("the tuple arm matches");
+    let decided = door
+        .decide(&plan, &inputs, &values)
+        .expect("the plan decides")
+        .expect("the tuple arm matches");
     assert_eq!(plan.body_id(decided.outcome()), 0, "the tuple arm answers first");
     assert_eq!(
         bitstring_allocs(proc) - before,
@@ -556,35 +488,20 @@ fn a_prepared_binary_key_two_tests_read_is_built_once() {
         1,
         "one constant, however many questions ask it"
     );
-    let mut runtime = live_runtime();
-    let world = World::new();
-    let program = crate::compiler2::BackendProgram::empty_for_test();
-    let transport = TransportStore::new();
-    let module = Module::default();
-    let proc = runtime.cur_proc();
+    let mut door = Door::new();
+    let proc = door.proc();
     let map = map_with_binary_key(proc, "key", 42);
     let inputs = [
         Some(BackendBoundValue::Runtime(map)),
         Some(BackendBoundValue::Runtime(map)),
     ];
     let before = bitstring_allocs(proc);
-    let values = dispatch_values(proc, &transport, &plan, DispatchSource::Inputs(&inputs))
+    let values = dispatch_values(proc, &door.transport, &plan, DispatchSource::Inputs(&inputs))
         .expect("the plan's operands are built");
-    let decided = Dispatch::new(
-        &mut runtime,
-        world.types(),
-        &program,
-        &module,
-        &plan,
-        DispatchOperands {
-            transport: &transport,
-            inputs: &inputs,
-            pinned: &values,
-        },
-    )
-    .run()
-    .expect("the plan decides")
-    .expect("both maps hold the key");
+    let decided = door
+        .decide(&plan, &inputs, &values)
+        .expect("the plan decides")
+        .expect("both maps hold the key");
     assert_eq!(plan.body_id(decided.outcome()), 0, "the only arm matches");
     assert_eq!(
         bitstring_allocs(proc) - before,

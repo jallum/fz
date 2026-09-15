@@ -189,15 +189,15 @@ binding under a test that already charged its root, which `build` asserts before
 it hands the graph over.
 
 A guard helper is reified as a NESTED plan numbered in its own input space and
-fed only through the call's argument list. Its leaves are the caller's, gathered
-while the argument expressions are built, so the helper's own numbers never
-reach the caller's slots. A collector that walked the nested plan instead made a
-3-input helper called from a 1-input clause demand semantic input 2; native
-dispatch iterates its own inputs and asks whether each is required, so it never
-looked at the impossible ordinal, while the interpreter iterated the demands and
-indexed the arguments, so it refused the call (fz-5xp.74). Charging asserts
-every ordinal is inside the declared count, which keeps a recurrence at the plan
-that produced it rather than at whichever door reads it first.
+fed only through the call's argument list. Its leaves are the caller's, derived
+from the finished expression when the plan is finished, so the helper's own
+numbers never reach the caller's slots. A collector that walked the nested plan
+instead made a 3-input helper called from a 1-input clause demand semantic input
+2; native dispatch iterates its own inputs and asks whether each is required, so
+it never looked at the impossible ordinal, while the interpreter iterated the
+demands and indexed the arguments, so it refused the call (fz-5xp.74). Charging
+asserts every ordinal is inside the declared count, which keeps a recurrence at
+the plan that produced it rather than at whichever door reads it first.
 
 **Map key identity and order** — `TermComparator` in `Strict` mode owns both.
 Tuple/list/map keys compare structurally; binary storage kinds share bit

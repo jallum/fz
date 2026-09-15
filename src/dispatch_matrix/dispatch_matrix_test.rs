@@ -353,7 +353,7 @@ fn compile_source_order_uses_first_matching_arm() {
         .expect("source fallback arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix)).expect("compile");
+    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix.subjects)).expect("compile");
 
     assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(1)), Some(one));
     assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(2)), Some(fallback));
@@ -387,7 +387,7 @@ fn compile_orthogonal_arms_in_deterministic_source_order() {
         .expect("second orthogonal arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix)).expect("compile");
+    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix.subjects)).expect("compile");
     let Some(DispatchNode::Test { predicate, .. }) = compiled.graph.node(compiled.graph.root) else {
         panic!("expected root test");
     };
@@ -436,7 +436,7 @@ fn compile_shares_consecutive_common_prefix_tests() {
         .expect("second cons arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix)).expect("compile");
+    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix.subjects)).expect("compile");
     let Some(DispatchNode::Test { predicate, .. }) = compiled.graph.node(compiled.graph.root) else {
         panic!("expected shared root test");
     };
@@ -462,7 +462,7 @@ fn compile_closed_residual_fails_unmatched_values() {
         .expect("specific arm");
     let matrix = builder.build().expect("matrix");
 
-    let closed = compile_dispatch_matrix(&matrix, one_input(&matrix)).expect("closed compile");
+    let closed = compile_dispatch_matrix(&matrix, one_input(&matrix.subjects)).expect("closed compile");
 
     assert_eq!(eval_graph(&closed.graph, subject, TestValue::Int(2)), None);
     assert_eq!(closed.stats.fail_nodes, 1);
@@ -495,7 +495,7 @@ fn compile_places_projection_only_on_proven_edge() {
         .expect("map presence arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix)).expect("compile");
+    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix.subjects)).expect("compile");
     let Some(DispatchNode::Test {
         predicate,
         on_match,
@@ -523,7 +523,7 @@ fn compile_places_projection_only_on_proven_edge() {
 #[test]
 fn graph_builder_preserves_node_identity_and_validates_edges() {
     let subjects = [input_subject()];
-    let mut builder = DispatchGraphBuilder::<Ty>::typed(one_input_subject(&subjects));
+    let mut builder = DispatchGraphBuilder::<Ty>::typed(one_input(&subjects));
     let fail = builder.add_node(DispatchNode::Fail);
     let out = builder.add_node(DispatchNode::Outcome {
         outcome: OutcomeId(0),
@@ -546,14 +546,14 @@ fn graph_builder_preserves_node_identity_and_validates_edges() {
 #[test]
 fn graph_builder_rejects_unknown_root_or_edge_node() {
     let subjects = [input_subject()];
-    let mut unknown_root = DispatchGraphBuilder::<Ty>::typed(one_input_subject(&subjects));
+    let mut unknown_root = DispatchGraphBuilder::<Ty>::typed(one_input(&subjects));
     unknown_root.add_node(DispatchNode::Fail);
     assert_eq!(
         unknown_root.build(GraphNodeId(9)).expect_err("root must exist"),
         DispatchGraphError::UnknownNode(GraphNodeId(9))
     );
 
-    let mut unknown_edge = DispatchGraphBuilder::<Ty>::typed(one_input_subject(&subjects));
+    let mut unknown_edge = DispatchGraphBuilder::<Ty>::typed(one_input(&subjects));
     let fail = unknown_edge.add_node(DispatchNode::Fail);
     let test = unknown_edge.add_node(DispatchNode::Test {
         predicate: RegionPredicate::new(SubjectId(0), Region::Equal(ComparisonValue::Const(GroundValue::Nil))),
@@ -566,12 +566,13 @@ fn graph_builder_rejects_unknown_root_or_edge_node() {
     );
 }
 
-/// The inputs of a matrix whose questions read one declared input and neither
-/// pins nor guards.
-fn one_input<TypeHandle>(matrix: &DispatchMatrix<TypeHandle>) -> PlanInputs<'_> {
+/// The inputs of a plan whose questions read one declared input and neither
+/// pins nor guards. The subjects come from the caller, so a matrix hands its
+/// own and a graph assembled node by node hands the ones its nodes question.
+fn one_input(subjects: &[Subject]) -> PlanInputs<'_> {
     PlanInputs {
         count: 1,
-        subjects: &matrix.subjects,
+        subjects,
         pinned: &[],
         guard_leaves: &[],
     }
@@ -582,17 +583,6 @@ fn input_subject() -> Subject {
     Subject {
         id: SubjectId(0),
         source: SubjectSource::Input { ordinal: 0 },
-    }
-}
-
-/// The same, for a graph assembled node by node rather than compiled from a
-/// matrix: the caller owns the subject the nodes question.
-fn one_input_subject(subjects: &[Subject]) -> PlanInputs<'_> {
-    PlanInputs {
-        count: 1,
-        subjects,
-        pinned: &[],
-        guard_leaves: &[],
     }
 }
 
@@ -755,7 +745,7 @@ fn an_entry_pin_no_input_delivers_is_refused_with_every_undefined_name() {
             .collect::<Vec<_>>(),
         vec![
             ("a", pattern::PinnedKind::Pin, pin_span),
-            ("b", pattern::PinnedKind::GuardVar, guard_span),
+            ("b", pattern::PinnedKind::Variable, guard_span),
         ]
     );
 }
@@ -1261,6 +1251,35 @@ fn a_head_after_a_catch_all_demands_nothing() {
         input_demand(&plan),
         vec![DispatchDemand::Ignore],
         "the catch-all decides every value, so the comparison below it is never asked"
+    );
+}
+
+/// A demand travels back to the input through every projection between them,
+/// and the order it nests in is the order the projections descend. The head
+/// `{[{a} | _]}` asks its innermost arity of a subject two steps down: field 0
+/// of the input, then the head of the list that field holds. So the input
+/// records a TUPLE whose field 0 is a LIST whose head is a tuple -- the
+/// opposite nesting would say the input is a list, which it is not.
+#[test]
+fn a_nested_projection_nests_the_demand_in_the_order_the_projections_descend() {
+    let plan = pattern_plan(SourcePatternRows::lexical(
+        1,
+        vec![pattern_row(
+            vec![Pattern::Tuple(vec![sp(Pattern::List(
+                vec![sp(Pattern::Tuple(vec![sp(Pattern::Var("a".to_string()))]))],
+                Some(Box::new(sp(Pattern::Wildcard))),
+            ))])],
+            0,
+        )],
+    ));
+
+    assert_eq!(
+        input_demand(&plan),
+        vec![DispatchDemand::TupleFields(BTreeMap::from([(
+            0,
+            DispatchDemand::ListShape(Box::new(DispatchDemand::TupleFields(BTreeMap::new()))),
+        )]))],
+        "the input is a tuple whose field 0 is a list whose head is a tuple"
     );
 }
 
