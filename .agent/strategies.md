@@ -18,3 +18,10 @@ subsystem model.
   greppable marker to make the suite green, then re-enable one at a time --
   judging each test's intent against its assertions -- so every new red is
   unmistakably caused by the change in front of you.
+
+- [Profile a Compilation](strategies/profile-a-compilation.md)
+  Capture a `--log-telemetry` stream on the slow door, distill it with
+  `tools/distill-telemetry.exs` into where the time went (by kind, by subject,
+  by re-run and by the fact that woke each re-run), corroborate the magnitude
+  with a sample of the plain binary, then name the mechanism and find its
+  ticket.
