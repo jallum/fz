@@ -4,7 +4,9 @@
     "fz-kdt.48.6",
     "fz-tfn.62.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.48.8"
+  ],
   "created": "2026-09-15T20:29:53Z",
   "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR3, after fz-tfn.62's retained-target commits. Types::intersect(closure_lit, surface) merges the surface into the literal's ArrowSig (sigs.rs ~299-326 specialize_lit_arrow), but a lone lit clause's value set is decided by fn_id + captures alone (emptiness.rs ~194-226), so every surface mints another Ty for one callable value; every duplicate identity in the measured sample is a callable. Keep the literal and its surface constraint as distinct factors of one clause and specialize on read; specialize_lit_arrow (construction) and specialize_callable_clause (mod.rs ~3112, read) are one computation written twice; fold them. Inventory every pos.len()==1 / lit-bearing ArrowSig reader first. Tests: two_surfaces_over_one_closure_intern_once, anonymous-vs-branded callable controls.",
   "id": "fz-kdt.48.7",
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "One Ty per callable value",
   "type": "task",
-  "updated_at": "2026-09-15T20:30:08Z"
+  "updated_at": "2026-09-15T20:30:09Z"
 }
