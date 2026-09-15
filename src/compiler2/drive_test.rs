@@ -19568,6 +19568,161 @@ fn compiler2_productive_deepening_terminates_by_widening() {
 }
 
 #[test]
+fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
+    // def build(0), do: :start
+    // def build(n), do: {n, build(n - 1)}
+    // The true return is the recursive type mu t.(:start | {integer, t}). The
+    // lattice cannot name it, so every round joins one more level of nesting and
+    // the stored return climbs a ladder — {integer, :start}, then
+    // {integer, :start | {integer, :start}}, and so on — until the widening
+    // budget tops it out at `any`. Each rung re-analyzes the activation and
+    // revises its return. The counts below are that ladder as it stands, taken
+    // through the product pull every door makes, and they measure what recursive
+    // denotations remove rather than a target to keep.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let widened = Rc::new(Cell::new(false));
+    let widened_sink = Rc::clone(&widened);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "return_type", "widened"],
+        move |_, _, _, _, _| widened_sink.set(true),
+    );
+    let revisions: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+    let revision_sink = Rc::clone(&revisions);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "return_type", "defined"],
+        move |_, _, _, _, activation| *revision_sink.borrow_mut().entry(activation.clone()).or_default() += 1,
+    );
+    let analyses: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+    let analysis_sink = Rc::clone(&analyses);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "activation_analysis", "defined"],
+        move |_, _, _, _, activation| *analysis_sink.borrow_mut().entry(activation.clone()).or_default() += 1,
+    );
+
+    let (mut compiler, root) = submit_main_root(
+        tel,
+        "return_tuple_ladder.fz",
+        include_str!("../../fixtures2/behavior/return_tuple_ladder.fz"),
+    );
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("the tuple ladder reaches a backend program");
+
+    let counts_for = |counts: &HashMap<ActivationKey, u64>, function: FunctionId| {
+        counts
+            .iter()
+            .filter(|(key, _)| key.function == function)
+            .map(|(_, count)| *count)
+            .collect::<Vec<_>>()
+    };
+    let build = function_id(&functions, "build", 1);
+    assert_eq!(
+        counts_for(&analyses.borrow(), build),
+        vec![TUPLE_LADDER_BUILD_ANALYSES],
+        "build/1 has one activation, re-analyzed once per rung of the ladder",
+    );
+    assert_eq!(
+        counts_for(&revisions.borrow(), build),
+        vec![TUPLE_LADDER_BUILD_RETURN_REVISIONS],
+        "each rung revises the activation's return with one more level of nesting",
+    );
+    // The caller pays for the ladder without climbing one. `main/0` sees a new
+    // argument type for `dbg/1` on every rung, so it is re-analyzed as often as
+    // `build/1` is, while its own return — what `dbg/1` gives back — moves
+    // twice. Re-analysis and ascent are separate costs and only one of them is
+    // the ladder.
+    let main = function_id(&functions, "main", 0);
+    assert_eq!(
+        counts_for(&analyses.borrow(), main),
+        vec![TUPLE_LADDER_MAIN_ANALYSES],
+        "main/0 is re-analyzed once per rung, because each rung retypes its argument",
+    );
+    assert_eq!(
+        counts_for(&revisions.borrow(), main),
+        vec![TUPLE_LADDER_MAIN_RETURN_REVISIONS],
+        "main/0's own return does not climb: it is not the recursive one",
+    );
+    assert!(
+        widened.get(),
+        "the ladder never lands on its own denotation, so it ends at the widening budget",
+    );
+}
+
+/// What `return_tuple_ladder.fz` costs today, through the product pull, on one
+/// cold compile. `RETURN_WIDENING_BUDGET` is 8 strict ascents before the join
+/// widens the growing spine and twice that before it stores `any`; the ladder
+/// climbs past both, so `build/1`'s one activation is analyzed 19 times and its
+/// return revised 17, and `main/0` is re-analyzed 22 times for a return that
+/// moves twice.
+///
+/// These are whole-compile totals, not the ladder's own round counter. A rebase
+/// resets `ActivationSlot::ascents` to zero and starts the climb again, and
+/// every revision in the new epoch still fires `return_type.defined`, so a
+/// warm or re-driven world counts the epochs together while `ascents` does not.
+const TUPLE_LADDER_BUILD_ANALYSES: u64 = 19;
+const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 17;
+const TUPLE_LADDER_MAIN_ANALYSES: u64 = 22;
+const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 2;
+
+#[test]
+fn compiler2_recursive_typedef_deadlocks_on_its_own_definition() {
+    // @type t :: :start | {integer, t} is a legal recursive declaration, and
+    // resolving it needs a type whose definition names itself. There is no such
+    // denotation, so DeriveTypeDef(t) waits on TypeDefined(t) — its own output —
+    // and the product pull every door makes fails on a stall rather than on a
+    // diagnostic. The stalled waits name the cycle.
+    let (mut compiler, root) = submit_main_root(
+        ConfiguredTelemetry::new(),
+        "recursive_typedef.fz",
+        include_str!("../../fixtures2/behavior/recursive_typedef.fz"),
+    );
+    let outcome = compiler.drive_root_to_dump_stage(root, super::dump::DumpStage::Backend);
+    assert!(
+        outcome.is_err(),
+        "a self-referential typedef must stall the product, not deliver one",
+    );
+    let waits = compiler.world().unresolved_waits();
+    let self_wait = waits
+        .iter()
+        .find(|wait| {
+            wait.jobs
+                .iter()
+                .any(|job| matches!(job, Job::DeriveTypeDef(name) if name.name == "t"))
+        })
+        .expect("DeriveTypeDef(t) is among the stalled jobs");
+    let FactUse::Current(DependencyKey::Fact(FactKey::TypeDefined(awaited))) = &self_wait.fact else {
+        panic!("DeriveTypeDef(t) stalls on the current TypeDefined fact: {self_wait:?}");
+    };
+    assert_eq!(
+        awaited.name, "t",
+        "the fact DeriveTypeDef(t) waits on is the one it is itself the producer of",
+    );
+}
+
+/// Submits one source and its `main/0` root, the way the doors do before they
+/// ask for a product.
+fn submit_main_root(
+    telemetry: ConfiguredTelemetry,
+    name: &str,
+    text: &str,
+) -> (Compiler2<ConfiguredTelemetry>, crate::compiler2::RootId) {
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.submit_code(CodeSubmission {
+        name: Some(name.to_string()),
+        text: text.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    (compiler, root)
+}
+
+#[test]
 fn compiler2_quicksort_return_revisions_stay_bounded() {
     // THE runaway invariant (fz-rh2.21): in the oscillating engine, one
     // activation's ReturnType was re-defined 32,356 times and job counts hit
