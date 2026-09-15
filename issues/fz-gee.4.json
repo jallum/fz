@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T06:07:57Z",
+  "description": "Declared on five structs (semantic.rs ~556, transport.rs ~280 and ~289, artifact.rs ~100 and ~938), 64 references. Every production construction is the identity split (runtime_demand.rs ~558, ~827, ~2007; pull.rs ~5203 is Box::default()); no site emits a permutation, and two read sites undo the vector back into a number (runtime_demand.rs ~857, ir_interp/backend.rs ~2567). One capture_count: usize replaces all of it, and it equals World::activation_capture_count(\u0026target), so it may not need storing. Deletes ten field declarations and two canon emitters; the type signature stops obliging every reader to defend against an impossible permutation. Compiler-enforced; census pins may move if canon output changes.",
+  "id": "fz-gee.4",
+  "labels": [],
+  "parent": "fz-gee",
+  "priority": 3,
+  "status": "open",
+  "title": "capture_semantic_inputs / surface_semantic_inputs advertise a permutation that never happens; one capture_count replaces them",
+  "type": "task",
+  "updated_at": "2026-09-15T06:07:57Z"
+}
