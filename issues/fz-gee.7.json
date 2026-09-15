@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T06:08:00Z",
+  "description": "native_codegen/receive.rs is 1755 lines; ~1363 (78 percent) is a dispatch executor over Cranelift values (emit_dispatch_node ~361, resolve_dispatch_subject ~436, emit_region_test ~510, guard exprs ~1125, guard dispatch ~1278) and only ~160 lines are receive-specific (bitstring ~147, pinned ~15; the matcher never touches the mailbox: runtime/src/sched.rs ~98/~154 pop the message and hand it one opaque word). Every question it asks has an fz_ir prim, bitstrings included (native.rs lower_bitstring_region is line-for-line equivalent). What is missing is the calling convention: a leaf C-ABI fz_ir function form (the matcher returns a verdict on the sender's stack and cannot be CPS'd) returning bound lanes instead of writing an out-buffer, plus a pinned-register call form. The concept win exceeds the file: PatternDispatchPlan\u003cRuntimeTypePredicate\u003e exists at two sites (fz_ir/mod.rs ~770, receive.rs ~55) and every other instantiation is \u003cTy\u003e; the TypeHandle parameter on the dispatch-matrix model and map_type_handle (~167 lines, one production caller at native.rs ~1811) exist for this one consumer. Estimated -2050 / +400; diagnostics, telemetry and incrementality gain (real FnIds and spans; the two-pass module scan at native_codegen/driver.rs ~599-663 disappears). Costs: binary-literal patterns allocate per probe unless an Identical(x, ConstBitstring) peephole lands (also a win for compiled-body case \"abc\"); pinned-register save/restore per probe. Risk is entirely the ABI: installing the pinned register across a process boundary is the shape that produced the fz-gdf SIGBUS; 79 receive fixtures gate it. Do not do the cheap intermediate of merging emit_dispatch_node and emit_guard_dispatch_node behind a shared shell; the fold deletes both. Investigate and plan as a 7-step chain before building. Absorbs fz-5xp.22 (fold the two native dispatch region emitters) and depends on fz-21x.24 (guards as code) which removes the third guard evaluator from this file first.",
+  "id": "fz-gee.7",
+  "labels": [],
+  "parent": "fz-gee",
+  "priority": 2,
+  "status": "open",
+  "title": "Lower the receive matcher through the fz_ir dispatch lowering; delete the third dispatch executor",
+  "type": "task",
+  "updated_at": "2026-09-15T06:08:00Z"
+}
