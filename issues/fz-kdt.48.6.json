@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-kdt.48.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.48.7"
+  ],
   "created": "2026-09-15T20:29:53Z",
   "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR3. Descr::union calls normalize_empty_nonempty_list_unions (descr.rs ~523, dnf.rs ~39-74), which MERGES [] ∨ nonempty[T] into [T], while intern's list pass only absorbs; the same denotation reached through difference, intersect or substitution is not merged. Merge at intern (canon's denotational list_clause, canon.rs ~225-262: [] ∨ nonempty[T] → [T], list(T) \u0026 not([]) → non_empty_list(T)), then delete the union-path normalizer. Tests: every_route_to_a_possibly_empty_list_interns_once, the_union_path_owns_no_list_normalizer.",
   "id": "fz-kdt.48.6",
