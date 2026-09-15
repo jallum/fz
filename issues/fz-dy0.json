@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T14:01:55Z",
+  "description": "Cargo.toml's [profile.dev] has no [profile.dev.package.\"*\"] override, so cranelift-codegen, regalloc2 and object compile at opt-level 0 in the debug fz2 that the fixture matrix and CI run. On json_roundtrip's run door, Cranelift is 16.4% of the lane and SipHash frames attributed to cranelift_codegen and object another 22% of samples; nobody debugs those crates. Measure before deciding: build with `[profile.dev.package.\"*\"] opt-level = 2` (dependencies only; the fz crates stay at 0 so debug assertions and debuggability are untouched), time the matrix single-threaded and the two slowest lanes, and report. Not a fix for fz-ex9 or fz-kdt.177; a lever that is free if the measurement says so.",
+  "id": "fz-dy0",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Cranelift and its dependencies build unoptimized in the dev profile the fixture matrix runs",
+  "type": "task",
+  "updated_at": "2026-09-15T14:01:55Z"
+}
