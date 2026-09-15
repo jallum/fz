@@ -17,9 +17,15 @@
   "id": "fz-tfn.62",
   "labels": [],
   "parent": "fz-tfn",
+  "comments": [
+    {
+      "text": "fz-tfn.62.1/.2 landed the narrow part (retained Bound(FunctionId) on quoted metadata as reserved key __fz_bound__, read at decode as Expr::BoundFunction, caller-namespace re-resolution deleted). Not built, by measurement: (1) Missing{owner,ref,arity} is not minted at quote lowering because a lookup miss there is not definitive until the staged expansion scope (step 2) exists; unclassified heads stay unclassified and are classified at insertion (fixtures 00119/00121 depend on it). (2) The expander still classifies macro-vs-function by head spelling: consulting the retained classification deadlocked (retained_callable_symbol falls to NamespaceSymbol::Callable for a not-yet-Defined function and blocks on ModuleInterface(ModuleId(0))); the missing piece is a settled per-function kind fact (is_macro is only a name-keyed namespace symbol at reservation). (3) __fz_bound__ is semantic content in semantically_eq and carries a raw FunctionId, so id-allocation shifts can bump a quoted source's revision; the cure is the parent's semantic encoding (FunctionDenotation as content). (4) Heap-owned carrier: see the new child ticket.",
+      "timestamp": "2026-09-15T21:37:31Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Keep callable identity through quoted source; delete canonical-name re-resolution",
   "type": "bug",
-  "updated_at": "2026-09-13T02:42:54Z"
+  "updated_at": "2026-09-15T21:37:31Z"
 }
