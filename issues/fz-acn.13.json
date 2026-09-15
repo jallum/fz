@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T05:28:12Z",
+  "description": "src/ir_interp/dispatch_exec.rs and src/ir_interp/backend.rs carried their tests inline (594 and 1236 lines), while the crate's convention at 23 sites is a sibling \u003cmodule\u003e_test.rs mounted with #[path]. The epic added nine tests to the first and one to the second; both whole modules move to dispatch_exec_test.rs and backend_test.rs so the production files read as production and the tests as tests. No test changes.",
+  "id": "fz-acn.13",
+  "labels": [],
+  "parent": "fz-acn",
+  "priority": 3,
+  "status": "open",
+  "title": "The interpreter's test modules live in sibling files",
+  "type": "task",
+  "updated_at": "2026-09-15T05:28:12Z"
+}
