@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T00:52:50Z",
+  "description": "The interpreter's operand builder materializes a Utf8Binary prepared key through fz_alloc_bitstring_const (one process-heap allocation) and then falls through to dispatch_const_to_value, whose own Utf8Binary arm builds the same value byte by byte through utf8_binary_const_value (src/ir_interp/dispatch_exec.rs). One constant, two constructors, and they are not allocation-equivalent: guard_plan_inputs.fz pins bitstring_allocs at exactly 1 across a receive. Fold to one constructor and let the fixture's pin say which; if the two must differ, the difference is a fact to state where the second constructor lives.",
+  "id": "fz-kdg",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "A binary dispatch constant is built two ways",
+  "type": "task",
+  "updated_at": "2026-09-15T00:52:50Z"
+}
