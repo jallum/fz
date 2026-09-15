@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T06:07:53Z",
+  "description": "Today the direct-vs-boxed decision is one predicate pair (callee_supplies_target_captures + layout_is_one_public_word, jobs/transport.rs ~801-861) evaluated in two layers: at recipe evaluation (transport.rs ~935) and again at edge minting (jobs/artifact.rs ~1089-1102, where layout_is_one_public_word runs twice on the same layout), and classified a third way in backend_program/boxed_contract.rs ~52-58 (target.is_some() || publishes_no_lanes(), which is not the same set as !layout_is_one_public_word). Native (jobs/native.rs ~1513) and the interpreter (ir_interp/backend.rs ~1141) read the recorded target, but the capture/surface split is re-derived by hand as input_len - args.len() at native.rs ~1533, ~4056, ir_interp/backend.rs ~1150, ~2711, a second denotation of World::activation_capture_count (input_len - function_arity).\n\nChange: BackendTail::ClosureCall { target: Option\u003cExecutableKey\u003e } (artifact.rs ~1299-1307) becomes ClosureCallEdge { Direct { target, capture_count }, Seam, Dead }, minted once by a closure_call_form(world, callee_layout, summary) calculator beside the predicates; the recipe, boxed_contract, native and interp read the recorded form and re-ask nothing. Deletes: the two re-derivations, the boxed_contract classification, the four hand-rolled capture splits, the double predicate call, and most of jobs/artifact_test.rs (a pure 3-arg calculator is testable directly, taking with it four visibility widenings). Contradiction stays an internal error. Signal: existing fixtures tuple_field_closure_call and the closure corpus unchanged on three doors; a unit test on the calculator per state.",
+  "id": "fz-gee.1",
+  "labels": [],
+  "parent": "fz-gee",
+  "priority": 2,
+  "status": "open",
+  "title": "Record the closure call as one three-valued edge: Direct { target, capture_count } / Seam / Dead",
+  "type": "task",
+  "updated_at": "2026-09-15T06:07:53Z"
+}
