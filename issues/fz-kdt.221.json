@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T06:08:36Z",
+  "description": "ir_interp/backend.rs ~2398-2405 callable_value_arity computes abi.semantic_inputs.len() - capture_count, but semantic_inputs is sparse (the same file documents it at ~2549-2553, which is why both bind_executable_inputs implementations scatter by index). A closure whose target has a demand-ignored input renders the wrong #Function\u003c.../arity\u003e. Fix: input_len(types) - capture_count, i.e. World::activation_capture_count's own denominator. Signal: a fixture that dbg's a closure whose target ignores one input, expected arity on three doors (Elixir oracle for the arity digit).",
+  "id": "fz-kdt.221",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] A rendered closure's arity subtracts the capture count from the sparse semantic_inputs length",
+  "type": "bug",
+  "updated_at": "2026-09-15T06:08:36Z"
+}
