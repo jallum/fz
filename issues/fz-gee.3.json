@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T06:07:56Z",
+  "description": "Five walks of the tuple_positions decomposition: native.rs settled_lane_form_type_test (~3047) and lane_form_type_test (~3095), ir_interp/backend.rs lane_form_type_match (~859), native_codegen/runtime_test.rs emit_shapes_of_arity (~398), runtime_type_predicate.rs matches_tuple_shape (~1302); the tuple_positions match is verbatim at three of them. The native settled pass exists only because the leaf is an emission rather than a description. Change: a side-effect-free LaneTest { True, False, Whole(w, pred), All(..), Any(..) } with smart constructors that fold statics, built by one recursion over BoundValue\u003cW\u003e, with a per-door leaf (native: emit RuntimeTypeTest on a Var; interp: matches_runtime_type_predicate on a word). Deletes settled_lane_form_type_test and two of the three recursions. Preserve the surface_membership::observe short-circuit points (backend.rs ~952). Free fix: native.rs ~3131-3150 has no early exit when a later shape settles Static(true), so an earlier shape's emitted RuntimeTypeTest lets become dead. Blocked by the BoundValue\u003cW\u003e ticket.",
+  "id": "fz-gee.3",
+  "labels": [],
+  "parent": "fz-gee",
+  "priority": 3,
+  "status": "open",
+  "title": "One three-valued LaneTest evaluator for lane-form type tests on both doors",
+  "type": "task",
+  "updated_at": "2026-09-15T06:07:56Z"
+}
