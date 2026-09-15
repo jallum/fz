@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-kdt.177.6"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.177.8"
+  ],
   "created": "2026-09-15T20:29:57Z",
   "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR4. Types::runtime_type_predicate (mod.rs ~1765) builds an eagerly materialised finite RuntimeTypePredicate tree; a μ type has no value in it, and eight consumers inherit it (executable_facts, callsite_dispatch, jobs/native, jobs/transport, jobs/body, jobs/semantic). Decide with evidence: the predicate grows a recursive node, or the dispatch surface stays ground by construction and the μ is projected away at that boundary. Adjacent: jobs/transport.rs ~2410 generic_layout_from_demand recurses forever under ShapeDemand::Whole and ~2604 boundary_runtime_demand recurses unguarded. Tests: runtime_type_predicate_of_a_recursive_denotation_is_finite; three-door parity on return_tuple_ladder.",
   "id": "fz-kdt.177.7",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A recursive denotation at the runtime-dispatch boundary",
   "type": "task",
-  "updated_at": "2026-09-15T20:30:12Z"
+  "updated_at": "2026-09-15T20:30:13Z"
 }
