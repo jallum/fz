@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T02:55:00Z",
+  "description": "The interpreter's dispatch path lost a HashMap clone per test node and a lane-vector clone per cache hit (fz-21x.27), and the epic's earlier steps removed two HashSets per call (fz-acn.3) and an Absent-filled copy of the arguments (fz-acn.4). None of it is pinned by a count: no #[global_allocator], counting allocator or probe exists in src/, tests/ or runtime/, Process.heap_alloc_stats() counts the fz program's heap only, and the reduction counters are zero on interp (fz-b58). The evidence today is wall clock (3.9s -\u003e 2.4s on tail_recursion) and structural argument. Priority 8 wants a count. Fix: a test-only counting allocator (cfg(test) global allocator in the test crate, or a feature) that a unit test wraps one Dispatch::run in, asserting the number of Rust allocations per decision for a fixed plan and operands: one state vector, zero per test node. Signal: the test, red if a clone returns.",
+  "id": "fz-6gc",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Count Rust-heap allocations per interpreter dispatch with a test-only counting allocator",
+  "type": "task",
+  "updated_at": "2026-09-15T02:55:00Z"
+}
