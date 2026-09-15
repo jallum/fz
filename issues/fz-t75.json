@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T14:01:53Z",
+  "description": "Measured 2026-09-15: fz2 run fixtures2/behavior/json_roundtrip.fz takes 3.5s; with --log-telemetry it takes 50-62s for 40,743 records (23.7 MB), while enum_take_drop_split with 45,600 records goes 4.6s to 5.1s. A sample of the instrumented run puts 98.3% of samples in TyCanon::render -\u003e descr_body -\u003e axes -\u003e clause_texts::\u003cArrowSig\u003e -\u003e func_clause -\u003e conj_text, entered from JsonlBackend::append_self_describing -\u003e CanonStream::define (src/telemetry/jsonl.rs ~199). define dedupes defined types at the top, but the render has no memo inside its recursion: one sampled render expanded into 118,041 clause_texts frames. JSON decoders are deeply nested arrows, and rendering is combinatorial in that depth.\n\nConsequence: the project's prescribed diagnostic (minimal job-trace acceptance, .agent/docs/performance-instrumentation.md) cannot be run on the goal program, and every telemetry-derived timing on it is inflated 13-16x. Canon strings are display-only by rule, so this cost must not exist.\n\nFix: memoize the render per interned Ty (or per denotation once fz-kdt.48 lands) so each sub-type renders once per stream; a deterministic pin is the count of clause_texts calls per stream for json_roundtrip. Signal: the instrumented run within 1.5x of the plain run on json_roundtrip.",
+  "id": "fz-t75",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "TyCanon::render is combinatorial in nested-arrow depth, so --log-telemetry costs 14x the compile on the goal program",
+  "type": "bug",
+  "updated_at": "2026-09-15T14:01:53Z"
+}
