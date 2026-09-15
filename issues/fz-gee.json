@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T06:07:53Z",
+  "description": "Follow-through on fz-21x.25 (#167) and fz-kdt.137 (#169). Both landed their one-authority thesis at about 80 percent; the audit (2026-09-15, worktree fz-wt-3ai at c6f299d3f) found the remaining duplicates below. Each child is one commit; the first three are stacked on #169 as a draft PR. Priorities: one denotation per question, delete parallel implementations and redundant verification, fewer concepts over fewer lines.",
+  "id": "fz-gee",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "[EPIC] Closure-call and transport fold arc: one recorded call form, one bound-value type, one shape calculator, one transport walk",
+  "type": "epic",
+  "updated_at": "2026-09-15T06:07:53Z"
+}
