@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T22:29:35Z",
+  "description": "src/compiler2/types/addressed.rs has an inline #[cfg(test)] mod tests, against the project convention that unit tests live in a sibling \u003cmodule\u003e_test.rs mounted with #[path]. Move them to addressed_test.rs; no behavior change. Found while fixing three test descriptors there that were the bottom all along (funcs: .. ..Descr::none() built an empty brand slot; fixed to ..Descr::unbranded() in fz-kdt.48.1).",
+  "id": "fz-n8v",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "types/addressed.rs carries an inline mod tests",
+  "type": "task",
+  "updated_at": "2026-09-15T22:29:35Z"
+}
