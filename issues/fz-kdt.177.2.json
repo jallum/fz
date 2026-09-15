@@ -4,6 +4,7 @@
   "blocks": [
     "fz-kdt.177.4"
   ],
+  "closed_at": "2026-09-15T23:57:15Z",
   "created": "2026-09-15T20:29:45Z",
   "description": "Every fixture-matrix lane already runs fz2 --log-telemetry and reads the log back; fz-kdt.177.3 puts return_type.defined/.widened in that log. So the corpus widening sweep in drive_test.rs (which never read behavior/, drove the standalone semantic drive no door runs, and cost ~110 s per gate) is deleted rather than fixed. In its place the matrix folds each lane's log into the worst activation's (revisions, widened) and checks it: at or under a default ceiling of 5 with no widening unless the fixture header pins otherwise (a `return.ladder` header field beside diagnostic.code, checked in both directions). The six ladders (return_tuple_ladder, json_roundtrip, json_decode_cost, json_decode_control_bytes, json_decode_invalid_utf8, json_decode_surrogates) pin 17 widened. Zero extra compiles, three-door parity, pins live with the program; a fold may lower a pin, never raise one. Finding recorded on fz-kdt.177: standalone drive 277 activations / max 9 / 0 widened vs product pull 380 / 17 / 5 on json_roundtrip; the activation population drives the ladder.",
   "id": "fz-kdt.177.2",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Return ladders are pinned per fixture on every door",
   "type": "bug",
-  "updated_at": "2026-09-15T22:24:48Z"
+  "updated_at": "2026-09-15T23:57:15Z"
 }
