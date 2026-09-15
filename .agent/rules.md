@@ -9,6 +9,7 @@
 - Tracks and *removes* the temporary fixtures, scaffolding and affordances put in place during construction.
 
 ## Work Rules
+- Do not cover up errors or unmet expectations; They should be loud and proud.
 - Don't commit until you're proud of the work.
 - Understand each task thoroughly before undertaking it. Do not guess; research and verify No hidden surprises.
 - Before building a subsystem of any complexity, examine the existing patterns, authorities, and analogous code; reuse or collapse them unless evidence proves they cannot serve.
