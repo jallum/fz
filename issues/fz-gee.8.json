@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T09:35:21Z",
+  "description": "After fz-gee.1 the lowering doors read capture_count from the recorded ClosureCallEdge, but src/compiler2/body.rs ~799-806 CallInputMode::Closure still derives the split as callee_input_len - arg_count, with callers at jobs/runtime_demand.rs ~602 and ~2180 and jobs/transport.rs ~1832 that decide WHICH semantic input a closure argument lands in. Demand and transport place argument i at input_len - arg_count + i while native and the interpreter place it at capture_count + i; the two agree only while args.len() == function_arity, which nothing states. Two callers hold \u0026World and could ask activation_capture_count; the third, arg_demands_for_summary inside derive_executable_runtime_demand (~886), is a pure function of \u0026Types plus RuntimeDemandFacts with no arity source, so routing two of three would leave the fifth spelling alive. Fix direction (preferred): carry capture_count on CallTargetSummary, minted by the semantic job (which has World), so demand derivation reads a settled fact; then CallInputMode::semantic_index takes the count instead of deriving it and body.rs's checked_sub is deleted. Alternative: widen six signatures (derive_executable_runtime_demand ~886, collect_entry_external_demands ~1040, collect_entry_live_demands ~1095, direct_call_arg_demands ~2083, closure_call_arg_demands ~2104, arg_demands_for_summary ~2125) from \u0026Types to \u0026World, which widens the per-executable demand derivation's inputs from types+facts to the whole World and is the worse cut. Signal: a unit test that the semantic index of argument 0 equals the recorded capture_count for a direct closure edge, and the corpus canon unchanged.",
+  "id": "fz-gee.8",
+  "labels": [],
+  "parent": "fz-gee",
+  "priority": 2,
+  "status": "open",
+  "title": "The capture/argument split of a closure call has a fifth spelling in body.rs that demand and transport still use",
+  "type": "task",
+  "updated_at": "2026-09-15T09:35:21Z"
+}
