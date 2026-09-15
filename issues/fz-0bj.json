@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T22:12:33Z",
+  "description": "Measured while building the corpus return-ladder sweep (fz-kdt.177.2): pulling a root's BackendProgram product through drive_root_to_dump_stage on a libtest thread (2 MiB default stack) overflows on ordinary fixtures such as cross_kind_operators, so the sweep runs the pull on an 8 MiB thread (the process main thread's default, which is what fz2 gets). The depth itself is unmeasured: which recursion (pull frames, type traversal, lowering) consumes it, how it scales with program size, and whether a real program can exceed 8 MiB under fz2 run. Measure the maximum stack depth of the pull on the corpus and name the recursive path; a pull whose depth is proportional to program nesting rather than program size is the acceptance. Signal: the sweep's stack_size override is deleted because the pull fits the default test stack, or a ticket states the exact recursion that needs converting.",
+  "id": "fz-0bj",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Product pull recursion depth exceeds a 2 MiB stack on ordinary fixtures",
+  "type": "bug",
+  "updated_at": "2026-09-15T22:12:33Z"
+}
