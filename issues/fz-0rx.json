@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T21:55:42Z",
+  "description": "On main 2d5f79d07, `fz2 run fixtures2/behavior/protocol_without_impl.fz` prints nothing, then panics at src/compiler2/jobs/artifact.rs:141, `materialize_call_edges(...).expect(\"product materialization should use settled semantic facts\")`, and exits 101. The same abort happens on fixtures2/00424_protocol_no_impl.fz and fixtures2/00253_variadic_float_error.fz, found by the corpus return-ladder sweep (fz-kdt.177.2 pins them as CORPUS_PRODUCT_PULL_ABORTS so the sweep does not pretend they were measured). Each program should be rejected with a diagnostic: the diagnostic IS emitted, and then materialization asserts on the FatalError raised for it. The matrix is green on all three because `expect: diagnostic` only requires a nonzero exit plus the artifact/incomplete-semantic-plan telemetry code, and an ICE satisfies both; protocol_without_impl's own header says its point is a diagnostic, not a compiler crash, and names the sibling assertion (`...complete call edges after waits`) that was fixed for closure calls. Fix: a FatalError already reported must end the product as a failed product, not an expect; and the fixture harness must distinguish an ICE (panic / exit 101) from a diagnostic exit so `expect: diagnostic` cannot be satisfied by a crash. Signal: the three fixtures exit with their diagnostic and no panic; CORPUS_PRODUCT_PULL_ABORTS becomes empty and is deleted; a harness test proves a panic fails an `expect: diagnostic` lane.",
+  "id": "fz-0rx",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Product materialization asserts on an already-emitted FatalError (ICE on three diagnostic fixtures)",
+  "type": "bug",
+  "updated_at": "2026-09-15T21:55:42Z"
+}
