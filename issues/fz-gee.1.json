@@ -7,9 +7,15 @@
   "id": "fz-gee.1",
   "labels": [],
   "parent": "fz-gee",
+  "comments": [
+    {
+      "text": "Committed 1c776b730 on fz-gee/fold-arc; draft PR https://github.com/jallum/fz/pull/170 stacked on #169 (GitHub stack #171). Cold-reviewed: 547/547 corpus backend dumps byte-identical modulo the edge print; MaterializedCallEdge/AbiReadyCallEdge made two-variant enums; fifth capture split ticketed as fz-gee.8.",
+      "timestamp": "2026-09-15T09:43:54Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Record the closure call as one three-valued edge: Direct { target, capture_count } / Seam / Dead",
   "type": "task",
-  "updated_at": "2026-09-15T06:48:34Z"
+  "updated_at": "2026-09-15T09:43:54Z"
 }
