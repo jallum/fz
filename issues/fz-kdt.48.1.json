@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T20:29:49Z",
+  "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR3. int \u0026 binary, Meters \u0026 Feet and none() are three Ty ids for the empty set, pinned on purpose at types_test.rs ~3096-3108. Types::intern (src/compiler2/types/mod.rs ~384) returns the canonical none for any provably empty descriptor, through the memoized is_empty. Rewrite the tests that pin several bottoms and the prose in .agent/docs/set-theoretic-types.md ~288. Test: every_bottom_interns_once. Signal: canon_test's one-type-two-identities census strictly lower.",
+  "id": "fz-kdt.48.1",
+  "labels": [],
+  "parent": "fz-kdt.48",
+  "priority": 1,
+  "status": "open",
+  "title": "One bottom: every provably empty descriptor interns to none",
+  "type": "task",
+  "updated_at": "2026-09-15T20:29:49Z"
+}
