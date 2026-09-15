@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-gee.2"
+  ],
   "blocks": [],
   "created": "2026-09-15T06:07:59Z",
   "description": "encode_transport_layout, encode_runtime_value, decode_transport_layout, transport_field_views, tuple_field_values_for_encoding and materialize_* exist twice, structurally line for line (jobs/native.rs ~3896-4350 vs ir_interp/backend.rs ~2865-3300), differing only in Var/AnyValue and FatalError/String. Four copies of one encode arm (native.rs ~4210 and ~4338; backend.rs ~2872 and ~2915). It is already hiding a divergence: the C extern scalar-pair return errors on arity mismatch at backend.rs ~2126 and silently truncates at native.rs ~773. native_codegen/runtime_test.rs RuntimeTestEmitter (~30-86) is the precedent: one walk generic over a door trait with the door supplying leaf operations. Investigate first: list every function pair, the exact leaf operations each door needs, and the divergences; then one commit per walk. Blocked by the BoundValue\u003cW\u003e ticket.",
