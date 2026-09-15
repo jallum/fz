@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T02:29:49Z",
+  "description": "Measured 2026-09-15 on fz-acn/one-plan-fact at fz-21x.27 with fixtures2/behavior/map_key_unreached.fz: a two-clause function (tuple clause, then %{\"key\" =\u003e v}) called three times with tuples. bitstring_allocs across the three calls: interp 0 (the prepared key is built the first time a question reads it, once per run), run 3, build 3. Native lowers each prepared binary key as a constant at the head of the function (lower_argument_bindings / lower_dispatch_bindings -\u003e Prim::ConstBitstring), so a key on a path the call never walks is still copied onto the process heap on every call. Three-path parity: interp and native disagree about the cost of a head that is not reached.\n\nFix: native materializes a prepared binary key at the first question that reads it, on the path that reads it, once per entry (the same first-read rule the interpreter's PreparedValues::Constants follows); the receive matcher prepares constants before parking and is not this bug. Signal: map_key_unreached's expected.txt drops from 3 to 0 and its two per-path goldens collapse into one; guard_plan_inputs keeps its bitstring_allocs delta of exactly 1.",
+  "id": "fz-r8x",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Native lowering copies every binary map key onto the heap at the function head, once per call",
+  "type": "bug",
+  "updated_at": "2026-09-15T02:29:49Z"
+}
