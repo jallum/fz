@@ -1332,7 +1332,7 @@ impl ProgramCanon<'_> {
                 ));
             }
             CallEdge::Dispatch(dispatch) => {
-                out.enter(&format!("dispatch miss={:?}", dispatch.miss));
+                out.enter("dispatch");
                 for arm in &dispatch.arms {
                     let callee = self.call_target(&arm.callee);
                     let flow = self.return_flow(&arm.return_flow);

@@ -59,7 +59,7 @@ pub use artifact::{
     BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
     BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReceive, BackendReturnLayout,
     BackendSemanticInputLayout, BackendStep, BackendTail, CallEdge, CallTarget, DirectCallEdge, DispatchCallArm,
-    DispatchCallEdge, DispatchCallMiss, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
+    DispatchCallEdge, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{

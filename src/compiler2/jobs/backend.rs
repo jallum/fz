@@ -400,7 +400,6 @@ fn backend_call_edge(
                     })
                 })
                 .collect::<Result<Vec<_>, FatalError>>()?,
-            miss: dispatch.miss,
         })),
         CallEdge::Indirect(flow) => CallEdge::Indirect(resolve_return_flow(flow, endpoints)?),
     })

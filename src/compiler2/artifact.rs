@@ -203,7 +203,6 @@ pub struct DirectCallEdge<T, F = CallReturnFlow> {
 pub struct DispatchCallEdge<T, F = CallReturnFlow> {
     pub(crate) plan: PatternDispatchPlan<Ty>,
     pub arms: Vec<DispatchCallArm<T, F>>,
-    pub miss: DispatchCallMiss,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,11 +211,6 @@ pub struct DispatchCallArm<T, F = CallReturnFlow> {
     pub callee: CallTarget<T>,
     pub return_flow: F,
     pub extern_marshals: Option<Vec<ExternTy>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DispatchCallMiss {
-    Unreachable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

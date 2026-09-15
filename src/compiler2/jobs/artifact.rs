@@ -17,7 +17,7 @@ use crate::source::Span;
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendReturnLayout, BackendSemanticInputLayout,
     BackendValueLayout, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm, DispatchCallEdge,
-    DispatchCallMiss, EffectSummary, MaterializedCallEdge, MaterializedExecutable, MaterializedExecutableTransport,
+    EffectSummary, MaterializedCallEdge, MaterializedExecutable, MaterializedExecutableTransport,
     PositionedCallableConstructionOwner,
 };
 use super::super::body::{
@@ -1058,7 +1058,6 @@ fn materialize_direct_call_edge(
         target: CallEdge::Dispatch(Box::new(DispatchCallEdge {
             plan: dispatch.plan,
             arms,
-            miss: DispatchCallMiss::Unreachable,
         })),
         return_ty,
     }))
