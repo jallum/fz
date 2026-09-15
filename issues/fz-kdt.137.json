@@ -27,11 +27,15 @@
     {
       "text": "Review comment addressed: the callee-neither-supplies-captures-nor-is-one-word state is an internal compiler error (panic naming callsite, target count, callee layout), not an artifact/incomplete-semantic-plan diagnostic; both pinning tests are should_panic; pipeline.md updated. PR #169 amended to c6f299d3f.",
       "timestamp": "2026-09-14T22:39:26Z"
+    },
+    {
+      "text": "Rebased onto main at 2d5f79d07 (#168) as f27fd23dd. Census after the rebase, measured, with the reason: 00420_enum_take_drop_split cold walks 1128 -\u003e 1130, applied work steps 4197 -\u003e 4199, DeriveRuntimeDemand completions 1180 -\u003e 1182, wake-cause split [58,232,145,513,0] -\u003e [58,232,156,504,0]; replacement-edit walks 661 -\u003e 643. The +2 is this ticket's own delta on any base (it was +2 against f26264572 too; the earlier 'lowered by 12' compared against post-#168 main). Mechanism: ShapeDemand::join pads tuple-field demands to a prefix instead of collapsing mismatched lengths to Whole, so the split_positive ladder's 3-tuple accumulator climbs one more rung per member (+11 completions, each changing the fact) while the 2-tuple split_while/split_with callers settle one rung sooner (-9). No equal-result re-evaluation, no lost dedup; necessary work. Follow-up on the field_prefix truncation argument is fz-gee.13.",
+      "timestamp": "2026-09-15T19:43:22Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "P1: native loses callable identity and captures when invoking a closure projected from a tuple",
   "type": "task",
-  "updated_at": "2026-09-14T22:39:26Z"
+  "updated_at": "2026-09-15T19:43:22Z"
 }
