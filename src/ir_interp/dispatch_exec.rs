@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::slice::from_raw_parts;
 
@@ -12,8 +13,8 @@ use crate::dispatch_matrix::pattern::{
 };
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
-    EdgeEvidence, GraphNodeId, GroundValue, ListRegion, OutcomeId, PinnedValueId, ProjectionKind, Region, SubjectId,
-    SubjectSource,
+    EdgeEvidence, GraphNodeId, GroundValue, ListRegion, OutcomeId, PinnedValueId, PreparedKeyId, ProjectionKind,
+    Region, SubjectId, SubjectSource,
 };
 use crate::fz_ir::Module;
 use crate::runtime_type_predicate::{
@@ -27,7 +28,88 @@ use fz_runtime::ir_runtime::{
 use fz_runtime::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
 use fz_runtime::process::Process;
 
-pub(super) type DispatchValues = crate::compiler2::DispatchBindings<AnyValue>;
+/// The operands a plan needs beyond its inputs: one runtime word per pin it
+/// compares against, and the values its prepared keys are looked up by.
+///
+/// A map pattern keyed by a binary -- `%{"name" => n}` -- is decided through a
+/// PREPARED key: the executor finds the key's index in `plan.prepared_keys` and
+/// reads the value out of these. Only binary keys need it. Ints, floats, atoms,
+/// booleans and nil are decided from the constant directly and never consult
+/// prepared values.
+///
+/// The lifetime is a guard helper's view of its caller's keys; the values a
+/// door builds for its own plan borrow nothing.
+#[derive(Debug)]
+pub(super) struct DispatchValues<'a> {
+    pinned: Vec<AnyValue>,
+    prepared: PreparedValues<'a>,
+}
+
+#[cfg(test)]
+impl Default for DispatchValues<'_> {
+    /// A plan that pins nothing and prepares nothing needs no operands.
+    fn default() -> Self {
+        Self {
+            pinned: Vec::new(),
+            prepared: PreparedValues::Bound(Vec::new()),
+        }
+    }
+}
+
+/// Where the values a plan's prepared keys are looked up by come from.
+///
+/// A match site names its keys as environment values, so they arrive as words
+/// its body already built. An entry plan builds its own out of the plan's
+/// constants, and a binary key is a copy onto the process heap, so each one is
+/// built the first time a question reads it and kept for the rest of the run: a
+/// key on a path this call never walks is never built, and a key two questions
+/// read is built once. A guard helper reads its caller's, named by position, so
+/// a constant both plans carry is still one copy.
+#[derive(Debug)]
+enum PreparedValues<'a> {
+    Bound(Vec<AnyValue>),
+    Constants(Vec<OnceCell<AnyValue>>),
+    Caller {
+        values: &'a PreparedValues<'a>,
+        ids: &'a [PreparedKeyId],
+    },
+}
+
+impl PreparedValues<'_> {
+    /// The word one prepared key is looked up by. The key travels with its id
+    /// because a helper names its caller's constants and the two are the same
+    /// value, and because a key that has never been built has to be built from
+    /// something.
+    ///
+    /// A key this door does not carry is no value; a key it carries and cannot
+    /// build is a plan and a process that disagree, which stops the run rather
+    /// than passing for a question that missed.
+    fn word(
+        &self,
+        id: PreparedKeyId,
+        key: &GroundValue,
+        proc: *mut Process,
+        module: &Module,
+    ) -> Result<Option<AnyValue>, DispatchStop> {
+        match self {
+            Self::Bound(words) => Ok(words.get(id.0 as usize).copied()),
+            Self::Constants(cells) => {
+                let Some(cell) = cells.get(id.0 as usize) else {
+                    return Ok(None);
+                };
+                if let Some(word) = cell.get() {
+                    return Ok(Some(*word));
+                }
+                let word = materialize_prepared_key(proc, module, key).map_err(DispatchStop::Broken)?;
+                Ok(Some(*cell.get_or_init(|| word)))
+            }
+            Self::Caller { values, ids } => match ids.get(id.0 as usize) {
+                Some(id) => values.word(*id, key, proc, module),
+                None => Ok(None),
+            },
+        }
+    }
+}
 
 /// Why a dispatch step produced no value.
 ///
@@ -71,7 +153,7 @@ fn required<T>(value: Option<T>) -> Result<T, DispatchStop> {
 pub(super) struct DispatchOperands<'a> {
     pub(super) transport: &'a TransportStore,
     pub(super) inputs: &'a [Option<BackendBoundValue>],
-    pub(super) pinned: &'a DispatchValues,
+    pub(super) pinned: &'a DispatchValues<'a>,
 }
 
 /// Where one door's pins and prepared keys come from.
@@ -108,38 +190,20 @@ impl DispatchSource<'_> {
             Self::Bound { env, bindings } => env_get(transport, proc, env, bindings.pinned[index]),
         }
     }
-
-    /// The value one prepared key is looked up by.
-    fn prepared_key(
-        &self,
-        transport: &TransportStore,
-        proc: *mut Process,
-        module: &Module,
-        index: usize,
-        key: &GroundValue,
-    ) -> Result<AnyValue, String> {
-        match self {
-            Self::Inputs(_) => materialize_prepared_key(proc, module, key),
-            Self::Bound { env, bindings } => env_get(transport, proc, env, bindings.prepared[index]),
-        }
-    }
 }
 
-/// The operands a plan needs beyond its inputs: one runtime word per pin it
-/// compares against, and one per prepared key it looks up by.
+/// The operands one door hands a run: its pins as words, and its prepared keys
+/// in the form that door holds them.
 ///
-/// A map pattern keyed by a binary -- `%{"name" => n}` -- is decided through a
-/// PREPARED key: the executor finds the key's index in `plan.prepared_keys` and
-/// reads the materialised value out of these. Only binary keys need it. Ints,
-/// floats, atoms, booleans and nil are decided from the constant directly and
-/// never consult prepared values.
+/// An entry plan gets one empty cell per constant its patterns named, which the
+/// run fills as it reads them. A match site gets the words its environment
+/// already holds.
 pub(super) fn dispatch_values(
     proc: *mut Process,
     transport: &TransportStore,
-    module: &Module,
     plan: &PatternDispatchPlan<Ty>,
     source: DispatchSource<'_>,
-) -> Result<DispatchValues, String> {
+) -> Result<DispatchValues<'static>, String> {
     if let DispatchSource::Bound { bindings, .. } = &source {
         assert_eq!(
             bindings.pinned.len(),
@@ -152,10 +216,18 @@ pub(super) fn dispatch_values(
             "a match site names every prepared key its plan carries"
         );
     }
-    let mut prepared = Vec::with_capacity(plan.prepared_keys.len());
-    for (index, key) in plan.prepared_keys.iter().enumerate() {
-        prepared.push(source.prepared_key(transport, proc, module, index, key)?);
-    }
+    let prepared = match &source {
+        DispatchSource::Inputs(_) => {
+            PreparedValues::Constants(plan.prepared_keys.iter().map(|_| OnceCell::new()).collect())
+        }
+        DispatchSource::Bound { env, bindings } => PreparedValues::Bound(
+            bindings
+                .prepared
+                .iter()
+                .map(|value| env_get(transport, proc, env, *value))
+                .collect::<Result<Vec<_>, String>>()?,
+        ),
+    };
     let mut pinned = Vec::with_capacity(plan.pinned.len());
     for (index, pin) in plan.pinned.iter().enumerate() {
         pinned.push(source.pin(transport, proc, index, pin)?);
@@ -181,9 +253,60 @@ fn materialize_prepared_key(proc: *mut Process, module: &Module, key: &GroundVal
 }
 
 /// What the walk has learned about the subjects it has already produced.
-#[derive(Default, Clone)]
+///
+/// Subjects are dense ids over the plan's own matrix, so the state is one slot
+/// per subject, allocated once for the run. Beside it is a journal of the
+/// subjects written since the branch point the test being walked opened: a test
+/// that misses clears the slots its journal names, so nothing it produced is
+/// visible to the edge that gets its turn next, and a test that matches keeps
+/// them for the questions after it.
+///
+/// `undo` drains only the writes the branch it closes made, so what an earlier
+/// branch learned still stands. A slot it does clear is either produced again
+/// from the operands when a later question asks for it, or belongs to the shape
+/// that made it: a bitstring field is written only inside the branch of the
+/// shape test that reads it, and `resolve_subject` answers no such subject, so
+/// that field goes with the shape that failed.
+///
+/// Three absences meet here and are not one: a state slot's `None` is a subject
+/// this run has not produced yet, an operand slot's `None` is an input the ABI
+/// published no layout for, and `BackendBoundValue::Absent` is a value the
+/// program published as nothing.
 struct DispatchExecState {
-    values: HashMap<SubjectId, BackendBoundValue>,
+    values: Vec<Option<BackendBoundValue>>,
+    journal: Vec<SubjectId>,
+}
+
+impl DispatchExecState {
+    fn new(subjects: usize) -> Self {
+        Self {
+            values: vec![None; subjects],
+            journal: Vec::new(),
+        }
+    }
+
+    fn get(&self, subject: SubjectId) -> Option<&BackendBoundValue> {
+        self.values.get(subject.0 as usize).and_then(Option::as_ref)
+    }
+
+    /// Record what a subject holds. A subject names a slot of the plan whose
+    /// matrix declared it, so it always has one.
+    fn set(&mut self, subject: SubjectId, value: BackendBoundValue) {
+        self.values[subject.0 as usize] = Some(value);
+        self.journal.push(subject);
+    }
+
+    /// Where the branch a test is about to open begins.
+    fn branch(&self) -> usize {
+        self.journal.len()
+    }
+
+    /// Forget everything written since a branch began.
+    fn undo(&mut self, branch: usize) {
+        for subject in self.journal.drain(branch..) {
+            self.values[subject.0 as usize] = None;
+        }
+    }
 }
 
 /// One run of one dispatch plan against one set of operands.
@@ -217,7 +340,7 @@ impl<'a> Dispatch<'a> {
             module,
             plan,
             operands,
-            state: DispatchExecState::default(),
+            state: DispatchExecState::new(plan.matrix.subjects.len()),
         }
     }
 
@@ -235,8 +358,8 @@ impl<'a> Dispatch<'a> {
         }
     }
 
-    /// Walk one node. A test decides its region against a copy of the evidence
-    /// so far, and only the branch that is taken keeps what the test learned.
+    /// Walk one node. A test opens a branch in the evidence, and only the
+    /// branch that is taken keeps what the test learned.
     fn node(&mut self, node_id: GraphNodeId) -> Result<OutcomeId, DispatchStop> {
         let plan = self.plan;
         match required(plan.graph.node(node_id))? {
@@ -247,13 +370,13 @@ impl<'a> Dispatch<'a> {
                 on_match,
                 on_miss,
             } => {
-                let before = self.state.clone();
+                let branch = self.state.branch();
                 let took_match = self.region_hit(predicate.subject, &predicate.region, &on_match.evidence)?
                     && or_miss(self.apply_edge_evidence(&on_match.evidence))?.is_some();
                 if took_match {
                     self.node(on_match.target)
                 } else {
-                    self.state = before;
+                    self.state.undo(branch);
                     self.node(on_miss.target)
                 }
             }
@@ -262,11 +385,7 @@ impl<'a> Dispatch<'a> {
 
     fn apply_edge_evidence(&mut self, evidence: &EdgeEvidence<Ty>) -> Result<(), DispatchStop> {
         for projection in &evidence.projections {
-            if self.state.values.contains_key(projection) {
-                continue;
-            }
-            let value = self.resolve_subject(*projection)?;
-            self.state.values.insert(*projection, value);
+            self.resolve_subject(*projection)?;
         }
         Ok(())
     }
@@ -280,25 +399,27 @@ impl<'a> Dispatch<'a> {
     /// here, at the question that asks for it, and keep it for the rest of this
     /// branch.
     fn subject_word(&mut self, subject: SubjectId) -> Result<AnyValue, DispatchStop> {
-        let value = self.resolve_subject(subject)?;
-        self.word_of(subject, value)
+        self.resolve_subject(subject)?;
+        self.word_of(subject)
     }
 
-    /// The same answer for a caller that has already resolved the subject.
-    fn word_of(&mut self, subject: SubjectId, value: BackendBoundValue) -> Result<AnyValue, DispatchStop> {
-        let word = match value {
-            BackendBoundValue::Runtime(value) => return Ok(value),
+    /// The same answer for a caller that has already resolved the subject. A
+    /// lane-form value is built once, here, and the built word takes its place.
+    fn word_of(&mut self, subject: SubjectId) -> Result<AnyValue, DispatchStop> {
+        let transport = self.operands.transport;
+        let proc = self.proc();
+        let word = match required(self.state.get(subject))? {
+            BackendBoundValue::Runtime(value) => return Ok(*value),
             BackendBoundValue::Absent => {
                 return Err(DispatchStop::broken(format!(
                     "dispatch subject {subject:?} carries no runtime value"
                 )));
             }
             BackendBoundValue::Transport { shape, lanes } => {
-                materialize_transport_value(self.operands.transport, self.proc(), shape, &lanes)
-                    .map_err(DispatchStop::broken)?
+                materialize_transport_value(transport, proc, *shape, lanes).map_err(DispatchStop::broken)?
             }
         };
-        self.state.values.insert(subject, BackendBoundValue::Runtime(word));
+        self.state.set(subject, BackendBoundValue::Runtime(word));
         Ok(word)
     }
 
@@ -307,12 +428,13 @@ impl<'a> Dispatch<'a> {
     /// A tuple field of a lane-form subject is a view over lanes the caller
     /// already delivered, so reading it allocates nothing. Every other
     /// projection reads through a runtime value.
-    fn resolve_subject(&mut self, subject: SubjectId) -> Result<BackendBoundValue, DispatchStop> {
-        if let Some(value) = self.state.values.get(&subject) {
-            return Ok(value.clone());
+    fn resolve_subject(&mut self, subject: SubjectId) -> Result<(), DispatchStop> {
+        if self.state.get(subject).is_some() {
+            return Ok(());
         }
         let plan = self.plan;
         let proc = self.proc();
+        let transport = self.operands.transport;
         let subject_data = required(plan.matrix.subjects.get(subject.0 as usize))?;
         let value = match &subject_data.source {
             SubjectSource::Input { ordinal } => match self.operands.inputs.get(*ordinal as usize).cloned().flatten() {
@@ -325,8 +447,9 @@ impl<'a> Dispatch<'a> {
             },
             SubjectSource::Projection(projection) => match &projection.kind {
                 ProjectionKind::TupleField(index) => {
-                    let parent = self.resolve_subject(projection.source)?;
-                    match transport_tuple_field(self.operands.transport, &parent, *index as usize)? {
+                    self.resolve_subject(projection.source)?;
+                    let parent = required(self.state.get(projection.source))?;
+                    match transport_tuple_field(transport, parent, *index as usize)? {
                         Some(field) => field,
                         None => {
                             let parent = self.subject_word(projection.source)?;
@@ -364,13 +487,13 @@ impl<'a> Dispatch<'a> {
                 }
                 ProjectionKind::MapValue { key } => {
                     let map = self.subject_word(projection.source)?;
-                    BackendBoundValue::Runtime(required(self.map_lookup(map, key))?)
+                    BackendBoundValue::Runtime(required(self.map_lookup(map, key)?)?)
                 }
                 ProjectionKind::BitstringField(_) => return Err(DispatchStop::NoMatch),
             },
         };
-        self.state.values.insert(subject, value.clone());
-        Ok(value)
+        self.state.set(subject, value);
+        Ok(())
     }
 
     /// Decide one region question about one subject.
@@ -387,11 +510,11 @@ impl<'a> Dispatch<'a> {
             Region::Type(ty) => {
                 // The value is asked in the form it is held: a tuple delivered
                 // as lanes is decided per position, without one being built.
-                let Some(value) = self.subject_bound_value(subject)? else {
+                if !self.resolved(subject)? {
                     return Ok(false);
-                };
+                }
                 let predicate = self.types.runtime_type_predicate(ty);
-                self.type_matches(&predicate, &value)
+                self.subject_type_matches(subject, &predicate)
             }
             Region::Equal(ComparisonValue::Const(value)) => {
                 let Some(word) = self.subject_value(subject)? else {
@@ -408,18 +531,18 @@ impl<'a> Dispatch<'a> {
                     .is_some_and(|want| interp_value_eq(self.proc(), want, word).unwrap_or(false)))
             }
             Region::TupleArity(arity) => {
-                let Some(value) = self.subject_bound_value(subject)? else {
+                if !self.resolved(subject)? {
                     return Ok(false);
-                };
+                }
                 // A lane-form subject knows its own arity: the transport shape
                 // its caller delivered settles the question, with no value to
                 // inspect.
-                if let BackendBoundValue::Transport { shape, .. } = &value
+                if let Some(BackendBoundValue::Transport { shape, .. }) = self.state.get(subject)
                     && let Some(known) = self.operands.transport.interners().tuple_arity(*shape)
                 {
                     return Ok(known == *arity as usize);
                 }
-                let Some(word) = or_miss(self.word_of(subject, value))? else {
+                let Some(word) = or_miss(self.word_of(subject))? else {
                     return Ok(false);
                 };
                 let Ok(word) = word.value(self.proc()) else {
@@ -455,7 +578,7 @@ impl<'a> Dispatch<'a> {
                 let Some(map) = self.subject_value(subject)? else {
                     return Ok(false);
                 };
-                let Some(value) = self.map_lookup(map, key) else {
+                let Some(value) = self.map_lookup(map, key)? else {
                     return Ok(false);
                 };
                 let plan = self.plan;
@@ -464,7 +587,7 @@ impl<'a> Dispatch<'a> {
                         && projection.source == subject
                         && matches!(&projection.kind, ProjectionKind::MapValue { key: projection_key } if projection_key == key)
                     {
-                        self.state.values.insert(*result, BackendBoundValue::Runtime(value));
+                        self.state.set(*result, BackendBoundValue::Runtime(value));
                     }
                 }
                 Ok(true)
@@ -497,112 +620,31 @@ impl<'a> Dispatch<'a> {
         or_miss(self.subject_word(subject))
     }
 
-    /// The subject in whatever form it is held, or `None` where it cannot be
-    /// produced and the region therefore fails.
-    fn subject_bound_value(&mut self, subject: SubjectId) -> Result<Option<BackendBoundValue>, DispatchStop> {
-        or_miss(self.resolve_subject(subject))
-    }
-
-    /// Ask a type test of a value in whatever form it is held.
+    /// Ask a type test of a subject the state already holds.
     ///
-    /// A whole value is offered to the shared matcher. A tuple held as lanes has
-    /// no heap object to read a schema off, so it asks the predicate what it
-    /// wants of a tuple of that arity and puts one question to each position
-    /// instead -- the same decomposition the boxed matcher makes, one level in,
-    /// against lanes the caller already delivered.
-    ///
-    /// A position carries runtime demand and so keeps a lane, which is why the
-    /// absent arm below is unreachable rather than a case to answer.
-    fn type_matches(
+    /// The reader needs the run's runtime while the state lends out the value it
+    /// is being asked about, so the two halves of the run are taken apart here,
+    /// and only here.
+    fn subject_type_matches(
         &mut self,
+        subject: SubjectId,
         predicate: &RuntimeTypePredicate,
-        value: &BackendBoundValue,
     ) -> Result<bool, DispatchStop> {
-        let transport = self.operands.transport;
-        let (shape, lanes) = match value {
-            BackendBoundValue::Runtime(word) => return Ok(self.whole_value_matches(predicate, *word)),
-            BackendBoundValue::Absent => {
-                return Err(DispatchStop::broken(
-                    "backend type test has no value to ask".to_string(),
-                ));
-            }
-            BackendBoundValue::Transport { shape, lanes } => (*shape, lanes),
-        };
-        let Some(arity) = transport.interners().tuple_arity(shape) else {
-            return Err(DispatchStop::broken(format!(
-                "backend type test cannot read lane-form {shape:?}"
-            )));
-        };
-        let shapes = match predicate.tuple_positions(arity) {
-            TuplePositions::Never => return Ok(false),
-            TuplePositions::Always => return Ok(true),
-            TuplePositions::AnyOf(shapes) => shapes,
-        };
-        let views = transport_field_views(transport, shape, lanes).map_err(DispatchStop::broken)?;
-        for shape in shapes {
-            let mut matched = true;
-            for (position, view) in shape.iter().zip(&views) {
-                if !self.type_matches(position, view)? {
-                    matched = false;
-                    break;
-                }
-            }
-            if matched {
-                return Ok(true);
-            }
+        let value = required(self.state.get(subject))?;
+        TypeTest {
+            runtime: &mut *self.runtime,
+            types: self.types,
+            program: self.program,
+            module: self.module,
+            transport: self.operands.transport,
         }
-        Ok(false)
+        .matches(predicate, value)
     }
 
-    /// Whether one whole runtime value satisfies a test.
-    ///
-    /// The partner of the decomposition above: where a lane-form subject is
-    /// asked one question per position, a value that exists as one word is
-    /// offered whole to the shared matcher.
-    fn whole_value_matches(&mut self, predicate: &RuntimeTypePredicate, value: AnyValue) -> bool {
-        let proc = self.proc();
-        let Ok(runtime_value) = value.value(proc) else {
-            return false;
-        };
-        let module = self.module;
-        let (tuple_schema_ids, named_schema_ids) =
-            interp_runtime_type_predicate_schema_ids(self.runtime, module, predicate);
-        // The representation's owner answers what only it can: which callable a
-        // code word denotes, and what a tuple's field holds.
-        let (types, transport, program) = (self.types, self.operands.transport, self.program);
-        let callables = |code: u64| backend_callable_identity(types, transport, program, code);
-        let fields = |value: RuntimeAnyValue, index: usize| {
-            let field = fz_struct_get_field_ref(proc, value.ref_word().raw_word(), (index as u32) * 8);
-            interp_value_from_ref_word(field, "tuple shape field")
-                .ok()
-                .and_then(|value| value.value(proc).ok())
-        };
-        let list_head = |value: RuntimeAnyValue| {
-            let head = fz_list_head_ref(value.ref_word().raw_word());
-            interp_value_from_ref_word(head, "list head")
-                .ok()
-                .and_then(|value| value.value(proc).ok())
-        };
-        let list_tail = |value: RuntimeAnyValue| {
-            let tail = fz_list_tail_ref(value.ref_word().raw_word());
-            interp_value_from_ref_word(tail, "list tail")
-                .ok()
-                .and_then(|value| value.value(proc).ok())
-        };
-        let reader = RuntimeValueReader {
-            module,
-            tuple_schema_ids: &tuple_schema_ids,
-            named_schema_ids: &named_schema_ids,
-            callables: &callables,
-            fields: &fields,
-            list_head: &list_head,
-            list_tail: &list_tail,
-        };
-        let matched = matches_runtime_type_predicate(predicate, &reader, runtime_value);
-        if matched {
-            surface_membership::observe(predicate, &reader, runtime_value);
-        }
-        matched
+    /// Produce a subject into the state, answering `false` where it cannot be
+    /// produced and the region therefore fails.
+    fn resolved(&mut self, subject: SubjectId) -> Result<bool, DispatchStop> {
+        Ok(or_miss(self.resolve_subject(subject))?.is_some())
     }
 
     fn eval_guard(&mut self, expr: &PatternGuardExpr<Ty>) -> Result<AnyValue, DispatchStop> {
@@ -668,15 +710,15 @@ impl<'a> Dispatch<'a> {
                 }
                 // A helper's prepared keys are its caller's, named by position:
                 // the source constructor lifted every child key into this
-                // plan's operands, so the remap is a read, not a build.
-                let helper_pinned = DispatchValues {
+                // plan's operands, so the helper reads the caller's values and
+                // a key neither has built yet is built once, on the caller.
+                let caller = self.operands.pinned;
+                let helper_values = DispatchValues {
                     pinned: Vec::new(),
-                    prepared: required(
-                        prepared
-                            .iter()
-                            .map(|id| self.operands.pinned.prepared.get(id.0 as usize).copied())
-                            .collect::<Option<Vec<_>>>(),
-                    )?,
+                    prepared: PreparedValues::Caller {
+                        values: &caller.prepared,
+                        ids: prepared,
+                    },
                 };
                 let helper = Dispatch::new(
                     self.runtime,
@@ -687,7 +729,7 @@ impl<'a> Dispatch<'a> {
                     DispatchOperands {
                         transport: self.operands.transport,
                         inputs: &values,
-                        pinned: &helper_pinned,
+                        pinned: &helper_values,
                     },
                 );
                 // A helper that matches nothing answers no value, which is a
@@ -701,49 +743,54 @@ impl<'a> Dispatch<'a> {
 
     /// The map value one constant key denotes, or `None` where the subject is no
     /// map or holds no such key.
-    fn map_lookup(&self, map: AnyValue, key: &GroundValue) -> Option<AnyValue> {
+    fn map_lookup(&self, map: AnyValue, key: &GroundValue) -> Result<Option<AnyValue>, DispatchStop> {
         let proc = self.proc();
         if !map.value(proc).ok().is_some_and(is_map_value) {
-            return None;
+            return Ok(None);
         }
-        let key = self.const_key_value(key)?;
-        let ref_word = with_value_ref(proc, map, "DispatchMapGet map", |map_ref| {
+        let Some(key) = self.const_key_value(key)? else {
+            return Ok(None);
+        };
+        let found = with_value_ref(proc, map, "DispatchMapGet map", |map_ref| {
             with_value_ref(proc, key, "DispatchMapGet key", |key_ref| {
                 fz_matcher_map_get_ref(proc, map_ref, key_ref)
             })
         })
-        .ok()?
-        .ok()?;
-        let value = interp_value_from_ref_word(ref_word, "DispatchMapGet").ok()?;
-        match value {
-            AnyValue::Null => None,
-            _ => Some(value),
-        }
+        .ok()
+        .and_then(Result::ok)
+        .and_then(|ref_word| interp_value_from_ref_word(ref_word, "DispatchMapGet").ok());
+        Ok(match found {
+            None | Some(AnyValue::Null) => None,
+            Some(value) => Some(value),
+        })
     }
 
     /// The runtime word a map pattern's constant key compares against. A binary
-    /// key is materialised before the run and read out of the prepared values.
-    fn const_key_value(&self, key: &GroundValue) -> Option<AnyValue> {
+    /// key is read out of the prepared values, which build it the first time a
+    /// question asks for it.
+    fn const_key_value(&self, key: &GroundValue) -> Result<Option<AnyValue>, DispatchStop> {
         use crate::ground_value::DispatchShape;
-        match key
-            .as_dispatch_shape()
-            .expect("const_key_value only ever sees a dispatch-matrix const")
-        {
-            DispatchShape::Int(n) => Some(AnyValue::Int(n)),
-            DispatchShape::Float(bits) => Some(AnyValue::Float(f64::from_bits(bits))),
-            DispatchShape::Bool(value) => Some(interp_bool_value(value)),
-            DispatchShape::Nil => Some(interp_nil_value()),
-            DispatchShape::Atom(name) => self
-                .module
-                .atom_names
-                .iter()
-                .position(|n| n == name)
-                .map(|id| AnyValue::Atom(id as u32)),
-            DispatchShape::Utf8Binary(_) => self
-                .plan
-                .prepared_key_id(key)
-                .and_then(|id| self.operands.pinned.prepared.get(id.0 as usize).copied()),
-        }
+        Ok(
+            match key
+                .as_dispatch_shape()
+                .expect("const_key_value only ever sees a dispatch-matrix const")
+            {
+                DispatchShape::Int(n) => Some(AnyValue::Int(n)),
+                DispatchShape::Float(bits) => Some(AnyValue::Float(f64::from_bits(bits))),
+                DispatchShape::Bool(value) => Some(interp_bool_value(value)),
+                DispatchShape::Nil => Some(interp_nil_value()),
+                DispatchShape::Atom(name) => self
+                    .module
+                    .atom_names
+                    .iter()
+                    .position(|n| n == name)
+                    .map(|id| AnyValue::Atom(id as u32)),
+                DispatchShape::Utf8Binary(_) => match self.plan.prepared_key_id(key) {
+                    Some(id) => self.operands.pinned.prepared.word(id, key, self.proc(), self.module)?,
+                    None => None,
+                },
+            },
+        )
     }
 
     /// Read a bitstring subject field by field, binding what each field yields.
@@ -796,9 +843,7 @@ impl<'a> Dispatch<'a> {
             else {
                 return false;
             };
-            self.state
-                .values
-                .insert(*field_subject, BackendBoundValue::Runtime(extracted));
+            self.state.set(*field_subject, BackendBoundValue::Runtime(extracted));
             let Ok(next_reader_ref) = next_reader.as_ref_word(proc) else {
                 return false;
             };
@@ -823,8 +868,7 @@ impl<'a> Dispatch<'a> {
             Some(BitstringFieldSize::Literal(n)) => Some((1, *n)),
             Some(BitstringFieldSize::Binding(subject)) => self
                 .state
-                .values
-                .get(subject)
+                .get(*subject)
                 .and_then(BackendBoundValue::runtime_word)
                 .and_then(|v| v.as_i64())
                 .map(|n| (1, n as u32)),
@@ -846,6 +890,116 @@ impl<'a> Dispatch<'a> {
 
     fn proc(&self) -> *mut Process {
         self.runtime.cur_proc()
+    }
+}
+
+/// The reader half of a run: what a type test needs to ask a value its
+/// question, held apart from the state that says what the value is.
+struct TypeTest<'a> {
+    runtime: &'a mut IrInterpRuntime,
+    types: &'a Types,
+    program: &'a BackendProgram,
+    module: &'a Module,
+    transport: &'a TransportStore,
+}
+
+impl TypeTest<'_> {
+    /// Ask a type test of a value in whatever form it is held.
+    ///
+    /// A whole value is offered to the shared matcher. A tuple held as lanes has
+    /// no heap object to read a schema off, so it asks the predicate what it
+    /// wants of a tuple of that arity and puts one question to each position
+    /// instead -- the same decomposition the boxed matcher makes, one level in,
+    /// against lanes the caller already delivered.
+    ///
+    /// A position carries runtime demand and so keeps a lane, which is why the
+    /// absent arm below is unreachable rather than a case to answer.
+    fn matches(&mut self, predicate: &RuntimeTypePredicate, value: &BackendBoundValue) -> Result<bool, DispatchStop> {
+        let transport = self.transport;
+        let (shape, lanes) = match value {
+            BackendBoundValue::Runtime(word) => return Ok(self.whole_value_matches(predicate, *word)),
+            BackendBoundValue::Absent => {
+                return Err(DispatchStop::broken(
+                    "backend type test has no value to ask".to_string(),
+                ));
+            }
+            BackendBoundValue::Transport { shape, lanes } => (*shape, lanes),
+        };
+        let Some(arity) = transport.interners().tuple_arity(shape) else {
+            return Err(DispatchStop::broken(format!(
+                "backend type test cannot read lane-form {shape:?}"
+            )));
+        };
+        let shapes = match predicate.tuple_positions(arity) {
+            TuplePositions::Never => return Ok(false),
+            TuplePositions::Always => return Ok(true),
+            TuplePositions::AnyOf(shapes) => shapes,
+        };
+        let views = transport_field_views(transport, shape, lanes).map_err(DispatchStop::broken)?;
+        for shape in shapes {
+            let mut matched = true;
+            for (position, view) in shape.iter().zip(&views) {
+                if !self.matches(position, view)? {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether one whole runtime value satisfies a test.
+    ///
+    /// The partner of the decomposition above: where a lane-form subject is
+    /// asked one question per position, a value that exists as one word is
+    /// offered whole to the shared matcher.
+    fn whole_value_matches(&mut self, predicate: &RuntimeTypePredicate, value: AnyValue) -> bool {
+        let proc = self.runtime.cur_proc();
+        let Ok(runtime_value) = value.value(proc) else {
+            return false;
+        };
+        let module = self.module;
+        let (tuple_schema_ids, named_schema_ids) =
+            interp_runtime_type_predicate_schema_ids(self.runtime, module, predicate);
+        // The representation's owner answers what only it can: which callable a
+        // code word denotes, and what a tuple's field holds.
+        let (types, transport, program) = (self.types, self.transport, self.program);
+        let callables = |code: u64| backend_callable_identity(types, transport, program, code);
+        let fields = |value: RuntimeAnyValue, index: usize| {
+            let field = fz_struct_get_field_ref(proc, value.ref_word().raw_word(), (index as u32) * 8);
+            interp_value_from_ref_word(field, "tuple shape field")
+                .ok()
+                .and_then(|value| value.value(proc).ok())
+        };
+        let list_head = |value: RuntimeAnyValue| {
+            let head = fz_list_head_ref(value.ref_word().raw_word());
+            interp_value_from_ref_word(head, "list head")
+                .ok()
+                .and_then(|value| value.value(proc).ok())
+        };
+        let list_tail = |value: RuntimeAnyValue| {
+            let tail = fz_list_tail_ref(value.ref_word().raw_word());
+            interp_value_from_ref_word(tail, "list tail")
+                .ok()
+                .and_then(|value| value.value(proc).ok())
+        };
+        let reader = RuntimeValueReader {
+            module,
+            tuple_schema_ids: &tuple_schema_ids,
+            named_schema_ids: &named_schema_ids,
+            callables: &callables,
+            fields: &fields,
+            list_head: &list_head,
+            list_tail: &list_tail,
+        };
+        let matched = matches_runtime_type_predicate(predicate, &reader, runtime_value);
+        if matched {
+            surface_membership::observe(predicate, &reader, runtime_value);
+        }
+        matched
     }
 }
 
@@ -1011,24 +1165,29 @@ mod tests {
     use super::*;
     use crate::ast::{Pattern, Spanned};
     use crate::compiler2::World;
-    use crate::compiler2::transport::{ShapeDescr, TransportLayout};
+    use crate::compiler2::transport::{LaneDescr, ShapeDescr, ShapeId, TransportClass, TransportLayout};
     use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
 
-    fn one_input_plan(patterns: Vec<Pattern>) -> PatternDispatchPlan<Ty> {
+    /// A head over `input_count` inputs, one row per clause and one pattern per
+    /// input in each row.
+    fn plan_over_inputs(input_count: usize, rows: Vec<Vec<Pattern>>) -> PatternDispatchPlan<Ty> {
         pattern_dispatch_from_source(SourcePatternRows::lexical(
-            1,
-            patterns
-                .into_iter()
+            input_count,
+            rows.into_iter()
                 .enumerate()
-                .map(|(body_id, pattern)| PatternRow {
-                    patterns: vec![Spanned::dummy(pattern)],
+                .map(|(body_id, patterns)| PatternRow {
+                    patterns: patterns.into_iter().map(Spanned::dummy).collect(),
                     preconditions: Vec::new(),
                     guard: None,
                     body_id: body_id as u32,
                 })
                 .collect(),
         ))
-        .expect("a one-input head compiles")
+        .expect("the head compiles")
+    }
+
+    fn one_input_plan(patterns: Vec<Pattern>) -> PatternDispatchPlan<Ty> {
+        plan_over_inputs(1, patterns.into_iter().map(|pattern| vec![pattern]).collect())
     }
 
     /// An entry head whose captures arrive as leading inputs, pinning the one
@@ -1048,6 +1207,103 @@ mod tests {
             vec![("want".to_string(), 0)],
         ))
         .expect("an entry head that pins a delivered input compiles")
+    }
+
+    /// A tuple shape whose every field is one integer lane, the form a caller
+    /// delivers a tuple in when nothing forced it onto the heap.
+    fn int_lane_tuple(transport: &mut TransportStore, types: &mut Types, arity: usize) -> ShapeId {
+        let int = types.int();
+        let lane = transport.interners_mut().intern_lane(LaneDescr {
+            ty: int,
+            class: TransportClass::Value,
+        });
+        let field = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
+        transport.interners_mut().intern_shape(ShapeDescr::Tuple(
+            std::iter::repeat_n(TransportLayout::structural(field), arity)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ))
+    }
+
+    /// The subject a plan names for one of its inputs.
+    fn input_subject(plan: &PatternDispatchPlan<Ty>, ordinal: u32) -> SubjectId {
+        plan.matrix
+            .subjects
+            .iter()
+            .find(|subject| matches!(subject.source, SubjectSource::Input { ordinal: read } if read == ordinal))
+            .expect("the plan reads that input")
+            .id
+    }
+
+    /// The subject a plan names for one field of its tuple input.
+    fn tuple_field_subject(plan: &PatternDispatchPlan<Ty>, index: u32) -> SubjectId {
+        plan.matrix
+            .subjects
+            .iter()
+            .find(|subject| {
+                matches!(&subject.source, SubjectSource::Projection(projection)
+                    if matches!(projection.kind, ProjectionKind::TupleField(field) if field == index))
+            })
+            .expect("the plan projects that tuple field")
+            .id
+    }
+
+    /// The subjects a plan extracts out of a bitstring input.
+    fn bitstring_field_subjects(plan: &PatternDispatchPlan<Ty>) -> Vec<SubjectId> {
+        plan.matrix
+            .subjects
+            .iter()
+            .filter(|subject| {
+                matches!(&subject.source, SubjectSource::Projection(projection)
+                    if matches!(projection.kind, ProjectionKind::BitstringField(_)))
+            })
+            .map(|subject| subject.id)
+            .collect()
+    }
+
+    /// One byte of a bitstring pattern, bound to a name.
+    fn byte_field(name: &str) -> crate::ast::BitField<Spanned<Pattern>> {
+        crate::ast::BitField {
+            value: Spanned::dummy(Pattern::Var(name.to_string())),
+            spec: crate::ast::BitFieldSpec {
+                size: Some(crate::ast::BitSize::Literal(8)),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// A map pattern keyed by a binary, which is what makes a plan carry a
+    /// prepared key.
+    fn binary_key_pattern(key: &str, bind: &str) -> Pattern {
+        Pattern::Map(vec![(
+            Spanned::dummy(Pattern::Binary(key.as_bytes().to_vec())),
+            Spanned::dummy(Pattern::Var(bind.to_string())),
+        )])
+    }
+
+    fn bitstring_value(proc: *mut Process, bytes: &[u8]) -> AnyValue {
+        let word = fz_runtime::ir_runtime::fz_alloc_bitstring_const(
+            proc,
+            bytes.as_ptr() as u64,
+            bytes.len() as u64,
+            (bytes.len() * 8) as u64,
+        );
+        interp_value_from_ref_word(word, "test bitstring").expect("a bitstring value")
+    }
+
+    fn map_with_binary_key(proc: *mut Process, key: &str, value: i64) -> AnyValue {
+        let empty = fz_runtime::ir_runtime::fz_map_empty(proc);
+        let key = bitstring_value(proc, key.as_bytes())
+            .as_ref_word(proc)
+            .expect("a binary key reference");
+        let map = fz_runtime::ir_runtime::fz_map_put_int(proc, empty, key, value);
+        interp_value_from_ref_word(map, "test map").expect("a map value")
+    }
+
+    /// How many bitstrings this process has put on its heap. A prepared binary
+    /// key is one of them, which is what makes building one observable.
+    fn bitstring_allocs(proc: *mut Process) -> u64 {
+        unsafe { &*proc }.heap.alloc_stats_snapshot().bitstring.allocs
     }
 
     fn live_runtime() -> IrInterpRuntime {
@@ -1174,14 +1430,12 @@ mod tests {
         let site_plan = one_input_plan(vec![Pattern::Pinned("want".to_string())]);
         let runtime = live_runtime();
         let transport = TransportStore::new();
-        let module = Module::default();
         let want = AnyValue::Int(41);
 
         let inputs = [Some(BackendBoundValue::Runtime(want)), None];
         let from_input = dispatch_values(
             runtime.cur_proc(),
             &transport,
-            &module,
             &entry_plan,
             DispatchSource::Inputs(&inputs),
         )
@@ -1196,7 +1450,6 @@ mod tests {
         let from_env = dispatch_values(
             runtime.cur_proc(),
             &transport,
-            &module,
             &site_plan,
             DispatchSource::Bound {
                 env: &env,
@@ -1235,14 +1488,272 @@ mod tests {
             }),
             None,
         ];
-        let error = dispatch_values(
-            runtime.cur_proc(),
-            &transport,
-            &Module::default(),
-            &plan,
-            DispatchSource::Inputs(&inputs),
-        )
-        .expect_err("a lane-form input holds no single word to compare against");
+        let error = dispatch_values(runtime.cur_proc(), &transport, &plan, DispatchSource::Inputs(&inputs))
+            .expect_err("a lane-form input holds no single word to compare against");
         assert_eq!(error, "dispatch pin `want` has no runtime argument operand");
+    }
+
+    /// A test that misses leaves nothing of what it produced.
+    ///
+    /// The arity question resolves the input to ask it, and then misses. The
+    /// arm that gets its turn next reads a state that holds no answer from the
+    /// arm that lost, so nothing a failed question decided can decide anything
+    /// after it.
+    #[test]
+    fn a_failed_test_undoes_the_subjects_it_produced() {
+        let plan = one_input_plan(vec![
+            Pattern::Tuple(vec![Spanned::dummy(Pattern::Int(1))]),
+            Pattern::Var("other".to_string()),
+        ]);
+        let mut runtime = live_runtime();
+        let mut world = World::new();
+        let program = crate::compiler2::BackendProgram::empty_for_test();
+        let mut transport = TransportStore::new();
+        let pair = int_lane_tuple(&mut transport, world.types_mut(), 2);
+        let pinned = DispatchValues::default();
+        let module = Module::default();
+        let inputs = [Some(BackendBoundValue::Transport {
+            shape: pair,
+            lanes: vec![AnyValue::Int(9), AnyValue::Int(8)],
+        })];
+        let decided = Dispatch::new(
+            &mut runtime,
+            world.types(),
+            &program,
+            &module,
+            &plan,
+            DispatchOperands {
+                transport: &transport,
+                inputs: &inputs,
+                pinned: &pinned,
+            },
+        )
+        .run()
+        .expect("the plan decides")
+        .expect("the wildcard arm matches");
+        assert_eq!(
+            plan.body_id(decided.outcome()),
+            1,
+            "a two-field tuple answers no one-field tuple question"
+        );
+        assert!(
+            decided.run.state.get(input_subject(&plan, 0)).is_none(),
+            "the input the failed arity test resolved is not carried past it"
+        );
+    }
+
+    /// A branch that is taken keeps what its test learned.
+    ///
+    /// The arity question matches and projects both fields; the literal
+    /// question after it misses. The fields stay, because the branch that
+    /// produced them is the branch the walk took, and the question after the
+    /// miss reads them instead of projecting them again.
+    #[test]
+    fn a_taken_branch_keeps_what_its_test_learned() {
+        let plan = one_input_plan(vec![
+            Pattern::Tuple(vec![Spanned::dummy(Pattern::Int(1)), Spanned::dummy(Pattern::Wildcard)]),
+            Pattern::Var("other".to_string()),
+        ]);
+        let mut runtime = live_runtime();
+        let mut world = World::new();
+        let program = crate::compiler2::BackendProgram::empty_for_test();
+        let mut transport = TransportStore::new();
+        let pair = int_lane_tuple(&mut transport, world.types_mut(), 2);
+        let pinned = DispatchValues::default();
+        let module = Module::default();
+        let inputs = [Some(BackendBoundValue::Transport {
+            shape: pair,
+            lanes: vec![AnyValue::Int(9), AnyValue::Int(8)],
+        })];
+        let decided = Dispatch::new(
+            &mut runtime,
+            world.types(),
+            &program,
+            &module,
+            &plan,
+            DispatchOperands {
+                transport: &transport,
+                inputs: &inputs,
+                pinned: &pinned,
+            },
+        )
+        .run()
+        .expect("the plan decides")
+        .expect("the wildcard arm matches");
+        assert_eq!(
+            plan.body_id(decided.outcome()),
+            1,
+            "field 0 is 9, so the literal arm loses"
+        );
+        for (index, expected) in [(0u32, 9i64), (1, 8)] {
+            let field = tuple_field_subject(&plan, index);
+            assert_eq!(
+                decided
+                    .run
+                    .state
+                    .get(field)
+                    .and_then(BackendBoundValue::runtime_word)
+                    .and_then(|word| word.as_i64()),
+                Some(expected),
+                "the arity test that matched keeps the field it projected"
+            );
+        }
+    }
+
+    /// A field a failing bitstring shape extracted is not visible to the next
+    /// arm.
+    ///
+    /// Reading a bitstring binds field by field, so a shape that fails on its
+    /// last field has already bound the ones before it. Those bindings belong
+    /// to the arm that failed, and the arm that wins never sees them.
+    #[test]
+    fn a_bitstring_field_a_failed_shape_extracted_is_not_visible_to_the_next_arm() {
+        let plan = one_input_plan(vec![
+            Pattern::Bitstring(vec![byte_field("first"), byte_field("second")]),
+            Pattern::Var("other".to_string()),
+        ]);
+        let mut runtime = live_runtime();
+        let world = World::new();
+        let program = crate::compiler2::BackendProgram::empty_for_test();
+        let transport = TransportStore::new();
+        let pinned = DispatchValues::default();
+        let module = Module::default();
+        let inputs = [Some(BackendBoundValue::Runtime(bitstring_value(
+            runtime.cur_proc(),
+            b"a",
+        )))];
+        let fields = bitstring_field_subjects(&plan);
+        assert_eq!(fields.len(), 2, "the shape names one subject per field");
+        let decided = Dispatch::new(
+            &mut runtime,
+            world.types(),
+            &program,
+            &module,
+            &plan,
+            DispatchOperands {
+                transport: &transport,
+                inputs: &inputs,
+                pinned: &pinned,
+            },
+        )
+        .run()
+        .expect("the plan decides")
+        .expect("the wildcard arm matches");
+        assert_eq!(plan.body_id(decided.outcome()), 1, "one byte answers no two-byte shape");
+        for field in fields {
+            assert!(
+                decided.run.state.get(field).is_none(),
+                "a field the failed shape read is gone with it"
+            );
+        }
+    }
+
+    /// A prepared binary key no test reads is never built.
+    ///
+    /// The key of a map pattern is a copy onto the process heap, and the arm
+    /// that wins here is decided before the map pattern is ever asked, so the
+    /// copy is never made.
+    #[test]
+    fn a_prepared_binary_key_no_test_reads_is_never_built() {
+        let plan = one_input_plan(vec![
+            Pattern::Tuple(vec![Spanned::dummy(Pattern::Int(1))]),
+            binary_key_pattern("key", "value"),
+            Pattern::Var("other".to_string()),
+        ]);
+        assert_eq!(plan.prepared_keys.len(), 1, "the map pattern prepares its binary key");
+        let mut runtime = live_runtime();
+        let mut world = World::new();
+        let program = crate::compiler2::BackendProgram::empty_for_test();
+        let mut transport = TransportStore::new();
+        let single = int_lane_tuple(&mut transport, world.types_mut(), 1);
+        let module = Module::default();
+        let proc = runtime.cur_proc();
+        let inputs = [Some(BackendBoundValue::Transport {
+            shape: single,
+            lanes: vec![AnyValue::Int(1)],
+        })];
+        let before = bitstring_allocs(proc);
+        let values = dispatch_values(proc, &transport, &plan, DispatchSource::Inputs(&inputs))
+            .expect("the plan's operands are built");
+        let decided = Dispatch::new(
+            &mut runtime,
+            world.types(),
+            &program,
+            &module,
+            &plan,
+            DispatchOperands {
+                transport: &transport,
+                inputs: &inputs,
+                pinned: &values,
+            },
+        )
+        .run()
+        .expect("the plan decides")
+        .expect("the tuple arm matches");
+        assert_eq!(plan.body_id(decided.outcome()), 0, "the tuple arm answers first");
+        assert_eq!(
+            bitstring_allocs(proc) - before,
+            0,
+            "a key no question reaches costs the process nothing"
+        );
+        let PreparedValues::Constants(cells) = &values.prepared else {
+            panic!("an entry plan builds its own prepared keys");
+        };
+        assert!(cells[0].get().is_none(), "the key's cell is still empty");
+    }
+
+    /// A prepared binary key two tests read is built once.
+    ///
+    /// Both inputs are asked for the same key. The first question that reads it
+    /// builds the one copy the run has, and the second reads that copy.
+    #[test]
+    fn a_prepared_binary_key_two_tests_read_is_built_once() {
+        let plan = plan_over_inputs(
+            2,
+            vec![vec![
+                binary_key_pattern("key", "left"),
+                binary_key_pattern("key", "right"),
+            ]],
+        );
+        assert_eq!(
+            plan.prepared_keys.len(),
+            1,
+            "one constant, however many questions ask it"
+        );
+        let mut runtime = live_runtime();
+        let world = World::new();
+        let program = crate::compiler2::BackendProgram::empty_for_test();
+        let transport = TransportStore::new();
+        let module = Module::default();
+        let proc = runtime.cur_proc();
+        let map = map_with_binary_key(proc, "key", 42);
+        let inputs = [
+            Some(BackendBoundValue::Runtime(map)),
+            Some(BackendBoundValue::Runtime(map)),
+        ];
+        let before = bitstring_allocs(proc);
+        let values = dispatch_values(proc, &transport, &plan, DispatchSource::Inputs(&inputs))
+            .expect("the plan's operands are built");
+        let decided = Dispatch::new(
+            &mut runtime,
+            world.types(),
+            &program,
+            &module,
+            &plan,
+            DispatchOperands {
+                transport: &transport,
+                inputs: &inputs,
+                pinned: &values,
+            },
+        )
+        .run()
+        .expect("the plan decides")
+        .expect("both maps hold the key");
+        assert_eq!(plan.body_id(decided.outcome()), 0, "the only arm matches");
+        assert_eq!(
+            bitstring_allocs(proc) - before,
+            1,
+            "two questions over one constant are one copy"
+        );
     }
 }

@@ -128,8 +128,8 @@ the `:error` tag are visible in one golden).
 
 **Keep memory-floor stats (harness-level):** `append`, `reverse`, `filter`,
 `tree`, `quicksort`, `enum_sort`, `enum_list_allocations`, `enum_reduce_suspend`,
-`process_heap_stats`, `opaque_fn_value_join`. Budgets realigned case by case
-(`quicksort` keeps its budget).
+`process_heap_stats`, `opaque_fn_value_join`, `map_key_unreached`. Budgets
+realigned case by case (`quicksort` keeps its budget).
 
 **Keep golden — observed side-effect ordering:** `resource_lifecycle`,
 `file_resource_lifecycle`, `file_handle`, `a-resource_aot_dtor` (the dtor firing is

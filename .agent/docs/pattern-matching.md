@@ -84,8 +84,10 @@ matrix:
 - `pinned`: names the patterns reach for but do not bind, each with the span
   that reaches for it, how it reached (`^name`, a guard variable, a bitstring
   size), and the input that delivers it when the rows carry a prematch.
-- `prepared_keys`: heap values, such as atom/binary/float map keys, materialized
-  once outside the dispatch graph.
+- `prepared_keys`: the heap values a map pattern is keyed by -- atom, binary or
+  float -- which the graph names by id instead of spelling out, so one prepared
+  key is one value however many questions ask it. Each door decides when to
+  build them.
 
 The graph carries one payload of its own: `input_demand`, a slot per declared
 input saying what the plan's questions read of it. `input_demand` and
@@ -165,10 +167,24 @@ needs -- runtime, types, program, module, the plan, and its `DispatchOperands`
 walk fills in. Every step of the walk is a method on it, so a question reads its
 operands rather than being handed them, and a type test asks
 `Types::runtime_type_predicate` through the same context instead of a closure
-built per call. The lane-form decomposition (`type_matches`) and the
-whole-value answer (`whole_value_matches`) are two methods on that one context;
-`backend.rs` answers only what the representation owns, which callable a code
-word denotes.
+built per call. The lane-form decomposition (`TypeTest::matches`) and the
+whole-value answer (`TypeTest::whole_value_matches`) are two methods on the
+reader half of that context, borrowed apart from the subject state they are
+asking about; `backend.rs` answers only what the representation owns, which
+callable a code word denotes.
+
+The subject state is one slot per subject the plan's matrix declares, allocated
+once for the run, beside a journal of the subjects written since the branch
+point the test being walked opened. A test that misses clears the slots its
+journal names and a test that matches keeps them, so the questions after a taken
+branch read what it learned and nothing a failed branch produced outlives it.
+`undo` drains only the writes the branch it closes made, so what an earlier
+branch learned still stands. Reading a bitstring is why it has work to do: it
+binds field by field and can still fail on a later field, and a bitstring field
+is written only inside the branch of the shape test that reads it -- nothing
+else produces one, since `resolve_subject` answers no such subject -- so the
+fields a failed shape bound go with it. Every other slot the drain clears is
+produced again from the operands when a later question asks for it.
 
 `Dispatch::run` is the only entry. It consumes the run and answers `Ok(None)`
 where no clause matched, an error where the plan and its operands disagree, and
@@ -185,11 +201,25 @@ inline and receive sites route it through their own outcome edges.
 `dispatch_values` builds the operands every door needs beyond its inputs, and
 each door goes through it. Its `DispatchSource` says where those come from:
 `Inputs` reads a pin from the ordinal the plan's prematch recorded out of the
-decoded inputs and materialises prepared keys from the plan's own constants,
+decoded inputs and gets one empty cell per constant the plan's patterns named,
 while `Bound` reads both out of the environment values a match site named. A
 guard helper is the one exception to building: its prepared keys are its
 caller's, named by position, because the source constructor lifted every child
-key into the caller's operands.
+key into the caller's operands, so the helper reads through the caller's cells.
+
+A prepared key is built the first time a question reads it and kept for the rest
+of the run. A binary key is a copy of its bytes onto the process heap, so a call
+whose clause is decided before the map pattern is ever asked makes no copy, and a
+key two questions read -- in one plan, or in a plan and the guard helper it calls
+-- is copied once. Native lowering emits the same constant at the head of the
+function it belongs to, which is one copy per call;
+`fixtures2/behavior/map_key_unreached.fz` pins the interpreter's floor at zero
+for that reason.
+
+Only a map pattern's heap key is prepared. Every other constant a question
+compares against is built where it is asked, through `dispatch_const_to_value`,
+so a guard that compares a binary -- `when v == "key"` -- copies those bytes on
+every evaluation of that guard.
 
 Inputs are borrowed as decoded -- `None` for a semantic input the ABI published
 no layout for. An input the plan's demand says it reads is refused before the

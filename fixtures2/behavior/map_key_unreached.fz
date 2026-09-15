@@ -1,0 +1,44 @@
+#---
+# purpose: "A map pattern's binary key reaches the process heap only where a clause reads it"
+#---
+#
+# A map pattern keyed by a binary -- `%{"key" => value}` -- is decided against a
+# copy of those bytes on the process heap. `describe/1` is called only with
+# tuples, so its first clause answers every call and the map clause is never
+# reached. The values come out of the mailbox, so each call is decided at run
+# time against the whole head.
+#
+# A map pattern's key is the one binary constant a plan prepares; a binary a
+# guard compares against is built where it is asked, on every evaluation.
+#
+# `bitstring_allocs` counts the copies the three calls made, and each path owns
+# its own count:
+#
+# - `interp` decides the head through the dispatch plan and builds a prepared
+#   key the first time a question reads it, so the key no call reaches is never
+#   copied: `0`.
+# - `run` and `build` lower the key as a constant at the head of the function,
+#   which is one copy per call: `3`.
+def describe({a, b}), do: a + b
+def describe(%{"key" => value}), do: value
+def describe(_), do: 0
+
+def relay() do
+  receive do
+    value -> value
+  after
+    1000 -> 0
+  end
+end
+
+def main() do
+  send(self(), {1, 2})
+  send(self(), {3, 4})
+  send(self(), {5, 6})
+  before = Process.heap_alloc_stats().bitstring_allocs
+  assert(describe(relay()) == 3)
+  assert(describe(relay()) == 7)
+  assert(describe(relay()) == 11)
+  count_after = Process.heap_alloc_stats().bitstring_allocs
+  dbg(count_after - before)
+end

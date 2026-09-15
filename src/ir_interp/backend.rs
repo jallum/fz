@@ -707,13 +707,7 @@ fn select_clause(
 ) -> Result<Option<usize>, String> {
     let plan = dispatch.plan();
     refuse_omitted_required_inputs(plan, args)?;
-    let values = dispatch_values(
-        runtime.cur_proc(),
-        transport,
-        module,
-        plan,
-        DispatchSource::Inputs(args),
-    )?;
+    let values = dispatch_values(runtime.cur_proc(), transport, plan, DispatchSource::Inputs(args))?;
     // Dispatch reads an input in whatever form it arrived in: a tuple delivered
     // as lanes is questioned lane-wise, never rebuilt.
     let operands = DispatchOperands {
@@ -883,7 +877,6 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     let values = dispatch_values(
                         runtime.cur_proc(),
                         transport,
-                        module,
                         &dispatch.plan,
                         DispatchSource::Inputs(&inputs),
                     )?;
@@ -1130,7 +1123,6 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             let pinned_values = dispatch_values(
                 runtime.cur_proc(),
                 transport,
-                module,
                 &dispatch.plan,
                 DispatchSource::Bound { env: &env, bindings },
             )?;
@@ -1244,7 +1236,6 @@ fn try_match_backend_receive(
     let pinned = dispatch_values(
         runtime.cur_proc(),
         transport,
-        module,
         dispatch,
         DispatchSource::Bound { env, bindings },
     )?;
@@ -2279,7 +2270,6 @@ fn select_construction_member<'a>(
             let values = dispatch_values(
                 runtime.cur_proc(),
                 transport,
-                module,
                 selection,
                 DispatchSource::Inputs(&inputs),
             )?;
