@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T05:56:25Z",
+  "description": "Region::Guard is the only region whose predicate.subject is never read: the interpreter ignores it (src/ir_interp/dispatch_exec.rs region_hit), the graph builder must special-case it out of the demand fold (src/dispatch_matrix/mod.rs charge_node), and the producer mints an input subject that exists only to carry guards on a plan that declares no inputs (src/dispatch_matrix/pattern.rs guard_subject), which is why PlanInputs.count needs a comment saying it is not subjects.len(). One idea, \"a guard is a question about no subject\", is spelled as a subject plus three reminders not to believe it. Fix is a data-model change: a test node that carries a guard without a subject (RegionPredicate is subject-mandatory today). Guards become code under fz-21x.24 and Region::Guard leaves with them; if that lands first this closes with it.",
+  "id": "fz-tqd.1",
+  "labels": [],
+  "parent": "fz-tqd",
+  "priority": 3,
+  "status": "open",
+  "title": "A guard question carries a subject nobody reads",
+  "type": "task",
+  "updated_at": "2026-09-15T05:56:25Z"
+}
