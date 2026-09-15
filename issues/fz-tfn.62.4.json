@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-15T21:37:30Z",
-  "description": "The quoted call's retained callable (`__fz_bound__`), `__fz_module__` and `__fz_lexical__` travel today as reserved entries of the visible quoted-metadata map, validated at the read boundary (World::try_function_ref + arity for the callable) rather than physically inaccessible to a macro that edits the map. The parent asks for inline heap-owned bytes on the map, outside its entries. Doing that needs, together: a runtime Map header flag beside MAP_DESTINATION_FLAG (runtime/src/any_value.rs) with a trailing payload and matching size_of_map/map_size_for_count (GC forwards by strict_object_size, so it rides along); one new prim in the DestMap* family implemented on the interpreter, Cranelift and AOT doors; preservation across map_put_value/alloc_map_destination/freeze; inclusion in values_eq and the canon/AOT encodings. Move all three keys onto it in one motion; moving one alone is wasted work. Signal: a macro that rewrites the metadata map cannot forge or drop the classification; the reserved META_* keys and their read-boundary validation are deleted.",
+  "description": "The quoted call's retained callable (`__fz_bound__`), `__fz_module__` and `__fz_lexical__` travel today as reserved entries of the visible quoted-metadata map, validated at the read boundary rather than physically inaccessible. Measured on fz-tfn.62/narrow: source text can write the key, and a macro returning `{:a, %{__fz_bound__: N}, [x]}` retargets the call to whatever function slot N names; retained_callee rejects wrong arity, undefined slots and non-function kinds loudly, but a defined public-or-not function of matching arity is reachable by integer, which namespace resolution never allowed (it enforced kind and public_function_with_name_arity). The parent asks for inline heap-owned bytes on the map, outside its entries, so that visible edits cannot forge or drop the classification. Doing that needs, together: a runtime Map header flag beside MAP_DESTINATION_FLAG (runtime/src/any_value.rs) with a trailing payload and matching size_of_map/map_size_for_count (GC forwards by strict_object_size, so it rides along); one new prim in the DestMap* family implemented on the interpreter, Cranelift and AOT doors; preservation across map_put_value/alloc_map_destination/freeze; inclusion in values_eq and the canon/AOT encodings. Move all three keys onto it in one motion. Signal: the forged-key program above diagnoses at decode; the reserved META_* keys and their read-boundary validation are deleted.",
   "id": "fz-tfn.62.4",
   "labels": [],
   "parent": "fz-tfn.62",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Inline heap-owned annotation on the quoted metadata map",
   "type": "task",
-  "updated_at": "2026-09-15T21:37:30Z"
+  "updated_at": "2026-09-15T22:04:22Z"
 }
