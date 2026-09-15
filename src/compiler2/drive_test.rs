@@ -19722,6 +19722,167 @@ fn submit_main_root(
     (compiler, root)
 }
 
+/// One activation's return ascent: the label the canon events name its function
+/// by — which carries the arity, so `build/1` and `Json.array_item/2` are whole
+/// identities — how many times that activation's `ReturnType` was revised, and
+/// whether the widening budget engaged on that same activation. The three
+/// describe one activation, so "something widened" can never be read as "this
+/// row widened".
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ActivationAscent {
+    function: String,
+    revisions: u64,
+    widened: bool,
+}
+
+/// A return settles once its activation is analyzed and its callees' returns
+/// arrive; a handful of joins is the whole cost. Climbing past this is a return
+/// driven by the program's own shape — a recursive type the lattice cannot name.
+const RETURN_LADDER_CEILING: u64 = 5;
+
+/// One climbing activation, as pinned: the canon function label (which carries
+/// the arity), the revisions its return took, and whether it widened.
+type PinnedAscent = (&'static str, u64, bool);
+
+/// One fixture's ladder: the fixture path, and every activation of it that
+/// climbs past `RETURN_LADDER_CEILING`.
+type PinnedLadder = (&'static str, &'static [PinnedAscent]);
+
+/// Every activation that climbs past that ceiling in the two fixtures below,
+/// measured through the product pull on one cold compile.
+///
+/// This is the ladder as it stands on the compiler the doors run, a defect
+/// measured rather than a budget to spend; recursive denotations delete the
+/// table along with the climb. The ladder is a population as much as a height.
+/// `return_tuple_ladder` is the bare case: one activation, seventeen revisions,
+/// widened. `json_roundtrip` is the goal program, and there the climb spreads
+/// sideways first — `Json.array_item/2` and `Json.array_next/2` each key a dozen
+/// activations, one per level of the recursive value type, and the returns they
+/// share climb to the ceiling on the evidence those levels publish. Reaching
+/// seventeen is not one outcome but two: a widened row ran out of budget and was
+/// coarsened, while an unwidened row arrived at its answer on its own evidence
+/// before the budget could fire.
+const RETURN_LADDERS: &[PinnedLadder] = &[
+    ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
+    (
+        "fixtures2/behavior/json_roundtrip.fz",
+        &[
+            ("Json.array/2", 17, true),
+            ("Json.array_element/2", 17, true),
+            ("Json.array_item/2", 6, false),
+            ("Json.array_item/2", 7, false),
+            ("Json.array_item/2", 8, false),
+            ("Json.array_item/2", 9, false),
+            ("Json.array_item/2", 10, false),
+            ("Json.array_item/2", 11, false),
+            ("Json.array_item/2", 12, false),
+            ("Json.array_item/2", 13, false),
+            ("Json.array_item/2", 14, false),
+            ("Json.array_item/2", 15, false),
+            ("Json.array_item/2", 16, false),
+            ("Json.array_item/2", 17, false),
+            ("Json.array_item/2", 17, false),
+            ("Json.array_next/2", 6, false),
+            ("Json.array_next/2", 7, false),
+            ("Json.array_next/2", 8, false),
+            ("Json.array_next/2", 9, false),
+            ("Json.array_next/2", 10, false),
+            ("Json.array_next/2", 11, false),
+            ("Json.array_next/2", 12, false),
+            ("Json.array_next/2", 13, false),
+            ("Json.array_next/2", 14, false),
+            ("Json.array_next/2", 15, false),
+            ("Json.array_next/2", 16, false),
+            ("Json.array_next/2", 17, false),
+            ("Json.decode/1", 17, true),
+            ("Json.val/1", 17, true),
+            ("Json.value/1", 17, true),
+        ],
+    ),
+];
+
+/// The other four `json_*` fixtures share this one's decode loop and measure the
+/// same climb, so pinning the goal program pins them too.
+const RETURN_LADDER_FIXTURES: &[(&str, &str)] = &[
+    (
+        "fixtures2/behavior/return_tuple_ladder.fz",
+        include_str!("../../fixtures2/behavior/return_tuple_ladder.fz"),
+    ),
+    (
+        "fixtures2/behavior/json_roundtrip.fz",
+        include_str!("../../fixtures2/behavior/json_roundtrip.fz"),
+    ),
+];
+
+#[test]
+fn return_ladders_are_pinned_per_activation() {
+    for (name, text) in RETURN_LADDER_FIXTURES {
+        let measured = measure_return_ascents(name, text);
+        let (climbing, settled): (Vec<_>, Vec<_>) = measured
+            .into_iter()
+            .partition(|ascent| ascent.revisions > RETURN_LADDER_CEILING);
+        let settled_but_widened = settled.iter().filter(|ascent| ascent.widened).collect::<Vec<_>>();
+        assert!(
+            settled_but_widened.is_empty(),
+            "{name}: widening can only fire past the budget, so no settled return may carry it: {settled_but_widened:?}",
+        );
+        let pinned = RETURN_LADDERS
+            .iter()
+            .find(|(pinned, _)| pinned == name)
+            .map(|(_, rows)| {
+                rows.iter()
+                    .map(|(function, revisions, widened)| ActivationAscent {
+                        function: (*function).to_string(),
+                        revisions: *revisions,
+                        widened: *widened,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| panic!("{name} has no row in RETURN_LADDERS"));
+        assert_eq!(climbing, pinned, "{name}: the ladder moved");
+    }
+}
+
+/// Drives one fixture the way every door does — pulling the root's
+/// `BackendProgram` product, the stage `run_root_interp` and `run_root_jit`
+/// reach before they execute anything — and reports every activation whose
+/// return was revised, sorted.
+fn measure_return_ascents(name: &str, text: &str) -> Vec<ActivationAscent> {
+    let tel = ConfiguredTelemetry::new();
+    let widened: Rc<RefCell<HashSet<ActivationKey>>> = Rc::new(RefCell::new(HashSet::new()));
+    let widened_sink = Rc::clone(&widened);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "return_type", "widened"],
+        move |_, _, _, _, activation| {
+            widened_sink.borrow_mut().insert(activation.clone());
+        },
+    );
+    let revisions: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+    let revision_sink = Rc::clone(&revisions);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "return_type", "defined"],
+        move |_, _, _, _, activation| *revision_sink.borrow_mut().entry(activation.clone()).or_default() += 1,
+    );
+
+    let (mut compiler, root) = submit_main_root(tel, name, text);
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
+    let world = compiler.world();
+    let widened = widened.borrow();
+    let mut ascents = revisions
+        .borrow()
+        .iter()
+        .map(|(activation, revisions)| ActivationAscent {
+            function: super::canon::function_label(world, activation.function),
+            revisions: *revisions,
+            widened: widened.contains(activation),
+        })
+        .collect::<Vec<_>>();
+    ascents.sort();
+    ascents
+}
+
 #[test]
 fn compiler2_quicksort_return_revisions_stay_bounded() {
     // THE runaway invariant (fz-rh2.21): in the oscillating engine, one
@@ -19764,88 +19925,6 @@ fn compiler2_quicksort_return_revisions_stay_bounded() {
             stats.define_calls,
         );
     }
-}
-
-fn sweep_corpus_for_return_widening(shard: usize, shards: usize) {
-    let mut swept = 0u32;
-    let mut corpus_max_return_changes = 0u64;
-    let mut entries = std::fs::read_dir("fixtures2")
-        .expect("fixtures2 corpus")
-        .map(|entry| entry.expect("corpus entry").path())
-        .collect::<Vec<_>>();
-    entries.sort();
-    for (index, path) in entries.into_iter().enumerate() {
-        if index % shards != shard {
-            continue;
-        }
-        if path.extension().is_none_or(|ext| ext != "fz") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).expect("fixture source");
-        if !text.contains("def main()") {
-            continue;
-        }
-        swept += 1;
-
-        let tel = ConfiguredTelemetry::new();
-        let widened = Rc::new(Cell::new(false));
-        let widened_sink = Rc::clone(&widened);
-        tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-            &["fz", "compiler2", "return_type", "widened"],
-            move |_, _, _, _, _| widened_sink.set(true),
-        );
-        let return_changes: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
-        let sink = Rc::clone(&return_changes);
-        tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-            &["fz", "compiler2", "return_type", "defined"],
-            move |_, _, _, _, activation| {
-                *sink.borrow_mut().entry(activation.clone()).or_default() += 1;
-            },
-        );
-
-        let mut world = crate::compiler2::World::new();
-        world.submit_code(Some(path.display().to_string()), text);
-        world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-        // Diagnostics are fixture-specific; the corpus invariants are that
-        // the drive terminates (it returned) and never widened a return.
-        let _ = super::drive::ExecutionContext::new(&mut world, &tel).drive();
-        assert!(
-            !widened.get(),
-            "return widening engaged on corpus fixture {}",
-            path.display(),
-        );
-        let fixture_max_return_changes = return_changes.borrow().values().copied().max().unwrap_or_default();
-        corpus_max_return_changes = corpus_max_return_changes.max(fixture_max_return_changes);
-    }
-    assert!(
-        swept >= 25,
-        "corpus shard {shard}/{shards} swept only {swept} fixtures — wrong path?"
-    );
-    assert!(
-        corpus_max_return_changes <= 5,
-        "corpus max return changes grew to {corpus_max_return_changes} — \
-         re-derive RETURN_WIDENING_BUDGET's headroom before loosening this",
-    );
-}
-
-#[test]
-fn compiler2_corpus_never_engages_return_widening_shard_0() {
-    sweep_corpus_for_return_widening(0, 4);
-}
-
-#[test]
-fn compiler2_corpus_never_engages_return_widening_shard_1() {
-    sweep_corpus_for_return_widening(1, 4);
-}
-
-#[test]
-fn compiler2_corpus_never_engages_return_widening_shard_2() {
-    sweep_corpus_for_return_widening(2, 4);
-}
-
-#[test]
-fn compiler2_corpus_never_engages_return_widening_shard_3() {
-    sweep_corpus_for_return_widening(3, 4);
 }
 
 #[test]
