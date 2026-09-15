@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T06:08:37Z",
+  "description": "src/compiler2/dispatch_reachability.rs ~242-246 turns Region::TupleArity(n) into types.tuple([any; n]) whose runtime predicate is TupleShapes::exact([[any; n]]); TupleShapes::exact (~765) does not normalise an all-any shape to arity-only. That drives the exact branch of every emitter (native boxed, interp boxed, both lane lowerings) with n always-true position tests. A second, more expensive denotation of one predicate. Fix at the calculator: exact() normalises a shape whose every position is any to the arity-only reading, or reachability asks tuple_arity(n) directly. Signal: the lane lowerings settle TupleArity without any position test (program walk: no RuntimeTypeTest emitted for an arity question); receive and boxed emitters unchanged in answers.",
+  "id": "fz-kdt.222",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "dispatch_reachability models TupleArity(n) as an exact all-any tuple shape, so every emitter pays a per-position always-true test for an arity-only question",
+  "type": "task",
+  "updated_at": "2026-09-15T06:08:37Z"
+}
