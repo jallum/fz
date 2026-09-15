@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T06:08:38Z",
+  "description": "jobs/artifact.rs refusals emit a specific diagnostic before returning Err (FatalError means 'diagnostic already emitted', jobs/backend.rs ~40-46). jobs/native.rs has ~40 bare Err(FatalError) sites that emit nothing, so for native the only diagnostic a user sees is the generic one emit_backend_product_error (jobs/backend.rs ~129) prints from product_failed. The two layers therefore need opposite behaviour from one hook, which is why #169's before-merge pass had to stop the hook double-reporting artifact failures. Change: every native refusal names its cause (incomplete_native_program already exists; route the bare sites through it), then product_failed emits nothing and FatalError's contract holds everywhere. Signal: a program that fails native lowering prints exactly one diagnostic naming the cause; drive_test counts diagnostics per code.",
+  "id": "fz-kdt.223",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Native lowering refusals say why: give jobs/native.rs the artifact layer's diagnostic discipline, then delete the product_failed emitting hook",
+  "type": "task",
+  "updated_at": "2026-09-15T06:08:38Z"
+}
