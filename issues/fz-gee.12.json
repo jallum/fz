@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T15:06:09Z",
+  "description": "The native runtime-test emitter turns the module's named structs into a chain of schema-id compares by iterating a HashMap. runtime_test.rs emit_named_struct_axis reads e.named_schema_ids().values() for all_named, and emit_arity_set_membership reads the same map for its cofinite 'not a named schema' half. Rust's default HashMap hasher is seeded per process, so the order of the emitted icmp/bor chain is not a function of the module: two compilations of the same source can emit the same question as different instruction sequences.\n\nThe answer is unaffected -- it is an OR over equality compares, so any order decides the same values -- which is why nothing has caught it. What it costs is comparability: a byte-identical comparison of two BackendPrograms or of emitted code across runs cannot distinguish 'the compiler made a different decision' from 'the hasher handed back a different order'.\n\nPre-existing; fz-wof moved the reading into emit_arity_set_membership without changing it. The fix is an ordered source for the set -- the same module-scoped table fz-gee.11 wants for the interpreter's side of it, so the two are worth settling together even though the invariants differ: fz-gee.11 is about work proportional to the question, this one about emission being a function of the input.",
+  "id": "fz-gee.12",
+  "labels": [],
+  "parent": "fz-gee",
+  "priority": 3,
+  "status": "open",
+  "title": "Emitted named-schema compares follow HashMap order, so the same module can emit different IR",
+  "type": "task",
+  "updated_at": "2026-09-15T15:06:09Z"
+}
