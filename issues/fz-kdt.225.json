@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T06:08:39Z",
+  "description": "jobs/artifact.rs ~409-462: one sort_by + dedup_by over all positions, then six further sort_transport_positions calls mid-flow. Sorting is a barrier (needs every element; pass-thinking) and is legitimate only at final packaging. Build the position list ordered by construction (or sort once at the packaging edge) and delete the six. Signal: canon and the transport contract tests unchanged; count of sort calls in the function is one.",
+  "id": "fz-kdt.225",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "materialized_executable_transport sorts once and then six more times mid-flow",
+  "type": "task",
+  "updated_at": "2026-09-15T06:08:39Z"
+}
