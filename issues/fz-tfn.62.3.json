@@ -7,9 +7,15 @@
   "id": "fz-tfn.62.3",
   "labels": [],
   "parent": "fz-tfn.62",
+  "comments": [
+    {
+      "text": "User decision: a module invoking a macro it defines in its own body is rejected as Elixir rejects it (undefined function make_answer/0: a module's macros are not callable until the module is compiled). The gate deletion stays (unconsumed wait); module_local_item_macro becomes an expect: diagnostic fixture and the entry-planning test stages demand directly.",
+      "timestamp": "2026-09-15T22:24:49Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Delete the ModuleDefined blanket gate on entry planning",
   "type": "task",
-  "updated_at": "2026-09-15T20:31:33Z"
+  "updated_at": "2026-09-15T22:24:49Z"
 }
