@@ -742,8 +742,15 @@ annotate it both decide without building anything, and the winning clause is
 called with the entry lanes as they came. A runtime value is built only for a
 question no decomposition reaches -- a pinned equality, a guard, or a map, list
 or bitstring region -- and then at that question rather than on entry.
-`TransportInterners::layout_spans` is the one calculator both doors use to say
-which lanes a field occupies.
+Both doors hold a value the same three ways -- one runtime word, the lanes of a
+transport shape, or explicit absence -- so they hold it in one `BoundValue<W>`
+over the door's own word type, named `NativeBoundValue` and
+`BackendBoundValue`. `TransportInterners::field_spans` is the one calculator
+both use to say which lanes a field occupies: a tuple's fields and a callable's
+captures alike, since both are the same sequence of layouts laid end to end.
+Whether a callable may answer for a TUPLE is a different question, and
+`tuple_arity` is the one place it is asked, so a reader that needs a tuple
+guards on the arity and then reads the fields.
 
 A callable surface that publishes a transport boundary names a runtime dispatch
 site, so it must be **ground**: type variables are an inference-phase concept and

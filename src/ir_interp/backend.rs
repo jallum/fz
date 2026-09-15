@@ -936,7 +936,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         Some(BackendBoundValue::Transport { shape, lanes })
                             if matches!(transport.interners().shape(*shape), ShapeDescr::Callable(_)) =>
                         {
-                            decode_callable_captures(transport, *shape, lanes)?
+                            transport_field_views(transport, *shape, lanes)?
                         }
                         _ => Vec::new(),
                     };
@@ -1525,7 +1525,10 @@ fn eval_steps<T: Telemetry + ?Sized>(
             }
             ProgramStep::AssertTuple { source, arity } => {
                 let source_value = env_get_value(env, *source)?;
-                if transport_tuple_arity(transport, &source_value) != Some(*arity)
+                if source_value
+                    .transport_shape()
+                    .and_then(|shape| transport.interners().tuple_arity(shape))
+                    != Some(*arity)
                     && !is_tuple_arity(
                         runtime,
                         materialize_backend_value(transport, runtime.cur_proc(), &source_value)?,
@@ -1538,7 +1541,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
             ProgramStep::TupleField { value, source, index } => {
                 let field = match env_get_value(env, *source)? {
                     BackendBoundValue::Transport { shape, lanes }
-                        if matches!(transport.interners().shape(shape), ShapeDescr::Tuple(_)) =>
+                        if transport.interners().tuple_arity(shape).is_some() =>
                     {
                         transport_field_views(transport, shape, &lanes)?
                             .get(*index)
@@ -2697,14 +2700,17 @@ fn decode_transport_layout(
     }
 }
 
-fn take_runtime_lanes(args: &[AnyValue], lane_index: &mut usize, width: usize) -> Result<Vec<AnyValue>, String> {
+fn take_runtime_lanes<'a>(
+    args: &'a [AnyValue],
+    lane_index: &mut usize,
+    width: usize,
+) -> Result<&'a [AnyValue], String> {
     let end = lane_index
         .checked_add(width)
         .ok_or_else(|| "backend runtime lane offset overflow".to_string())?;
     let lanes = args
         .get(*lane_index..end)
-        .ok_or_else(|| format!("backend expected runtime lane range {}..{}", *lane_index, end))?
-        .to_vec();
+        .ok_or_else(|| format!("backend expected runtime lane range {}..{}", *lane_index, end))?;
     *lane_index = end;
     Ok(lanes)
 }
@@ -2717,10 +2723,13 @@ fn next_runtime_lane(args: &[AnyValue], lane_index: &mut usize) -> Result<AnyVal
     Ok(value)
 }
 
+/// A value in the lanes it occupies. Only a value that travels AS lanes -- a
+/// tuple or a callable -- takes a copy of them; a word is read out of the slice
+/// in place.
 fn decode_backend_value_from_lanes(
     transport: &TransportStore,
     shape: ShapeId,
-    lanes: Vec<AnyValue>,
+    lanes: &[AnyValue],
 ) -> Result<BackendBoundValue, String> {
     if lanes.len() != transport.interners().shape_width(shape) {
         return Err(format!(
@@ -2736,38 +2745,34 @@ fn decode_backend_value_from_lanes(
                 .first()
                 .ok_or_else(|| format!("backend scalar transport shape {shape:?} has no runtime lane"))?,
         ),
-        ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => BackendBoundValue::Transport { shape, lanes },
+        ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => BackendBoundValue::Transport {
+            shape,
+            lanes: lanes.to_vec(),
+        },
     })
 }
 
-fn transport_tuple_arity(transport: &TransportStore, value: &BackendBoundValue) -> Option<usize> {
-    let BackendBoundValue::Transport { shape, .. } = value else {
-        return None;
-    };
-    transport.interners().tuple_arity(*shape)
-}
-
-/// The lane spans of a tuple shape's fields, checked against the lanes in hand.
-fn tuple_field_spans_for(
-    transport: &TransportStore,
+/// The lane spans of a shape's fields, checked against the lanes in hand.
+pub(super) fn field_spans_for<'t>(
+    transport: &'t TransportStore,
     shape: ShapeId,
     lanes: &[AnyValue],
-) -> Result<Vec<(TransportLayout, std::ops::Range<usize>)>, String> {
+) -> Result<impl Iterator<Item = (TransportLayout, std::ops::Range<usize>)> + 't, String> {
     if lanes.len() != transport.interners().shape_width(shape) {
         return Err(format!(
-            "backend tuple transport shape {shape:?} expected {} lane(s), got {}",
+            "backend transport shape {shape:?} expected {} lane(s), got {}",
             transport.interners().shape_width(shape),
             lanes.len()
         ));
     }
     transport
         .interners()
-        .tuple_field_spans(shape)
-        .ok_or_else(|| format!("backend transport shape {shape:?} is not a tuple"))
+        .field_spans(shape)
+        .ok_or_else(|| format!("backend transport shape {shape:?} has no fields"))
 }
 
-/// One field of a lane-form tuple, read out of the span it occupies.
-fn decode_tuple_field(
+/// One field of a lane-form value, read out of the span it occupies.
+pub(super) fn decode_field(
     transport: &TransportStore,
     shape: ShapeId,
     lanes: &[AnyValue],
@@ -2776,14 +2781,13 @@ fn decode_tuple_field(
 ) -> Result<BackendBoundValue, String> {
     let field_lanes = lanes
         .get(span)
-        .ok_or_else(|| format!("backend tuple transport shape {shape:?} has an invalid lane span"))?
-        .to_vec();
+        .ok_or_else(|| format!("backend transport shape {shape:?} has an invalid lane span"))?;
     if field_layout.carrier.is_value_ref() {
         field_lanes
             .first()
             .copied()
             .map(BackendBoundValue::Runtime)
-            .ok_or_else(|| format!("backend ValueRef tuple field in {shape:?} has no runtime lane"))
+            .ok_or_else(|| format!("backend ValueRef field in {shape:?} has no runtime lane"))
     } else {
         decode_backend_value_from_lanes(transport, field_layout.structural, field_lanes)
     }
@@ -2796,20 +2800,21 @@ pub(super) fn transport_field_view(
     lanes: &[AnyValue],
     index: usize,
 ) -> Result<Option<BackendBoundValue>, String> {
-    let Some((field_layout, span)) = tuple_field_spans_for(transport, shape, lanes)?.into_iter().nth(index) else {
+    let Some((field_layout, span)) = field_spans_for(transport, shape, lanes)?.nth(index) else {
         return Ok(None);
     };
-    decode_tuple_field(transport, shape, lanes, field_layout, span).map(Some)
+    decode_field(transport, shape, lanes, field_layout, span).map(Some)
 }
 
+/// Every field of a lane-form value: a tuple's fields, or a callable's
+/// captures, which occupy their lanes the same way.
 pub(super) fn transport_field_views(
     transport: &TransportStore,
     shape: ShapeId,
     lanes: &[AnyValue],
 ) -> Result<Vec<BackendBoundValue>, String> {
-    tuple_field_spans_for(transport, shape, lanes)?
-        .into_iter()
-        .map(|(field_layout, span)| decode_tuple_field(transport, shape, lanes, field_layout, span))
+    field_spans_for(transport, shape, lanes)?
+        .map(|(field_layout, span)| decode_field(transport, shape, lanes, field_layout, span))
         .collect()
 }
 
@@ -2823,7 +2828,7 @@ fn tuple_field_values_for_encoding(
         shape: value_shape,
         lanes,
     } = value
-        && matches!(transport.interners().shape(*value_shape), ShapeDescr::Tuple(source) if source.len() == fields.len())
+        && transport.interners().tuple_arity(*value_shape) == Some(fields.len())
     {
         return transport_field_views(transport, *value_shape, lanes);
     }
@@ -2841,28 +2846,6 @@ fn tuple_field_values_for_encoding(
         .collect()
 }
 
-fn decode_callable_captures(
-    transport: &TransportStore,
-    shape: ShapeId,
-    lanes: &[AnyValue],
-) -> Result<Vec<BackendBoundValue>, String> {
-    let ShapeDescr::Callable(callable) = transport.interners().shape(shape) else {
-        return Err("capture projection requires a callable source layout".into());
-    };
-    let mut cursor = 0;
-    let values = transport
-        .interners()
-        .callable(*callable)
-        .capture_layouts
-        .iter()
-        .map(|layout| decode_transport_layout(transport, lanes, *layout, &mut cursor))
-        .collect::<Result<Vec<_>, _>>()?;
-    if cursor != lanes.len() {
-        return Err("direct callable source layout does not consume its lanes".into());
-    }
-    Ok(values)
-}
-
 fn direct_callable_capture_lanes(
     transport: &TransportStore,
     program: &BackendProgram,
@@ -2871,41 +2854,35 @@ fn direct_callable_capture_lanes(
     callable: &crate::compiler2::transport::CallableDescr,
 ) -> Result<Vec<AnyValue>, String> {
     let function = callable.function.expect("direct callable names its source function");
-    let captures = match value {
-        BackendBoundValue::Transport { shape, lanes }
-            if matches!(transport.interners().shape(*shape), ShapeDescr::Callable(_)) =>
-        {
-            let ShapeDescr::Callable(callable) = transport.interners().shape(*shape) else {
-                unreachable!();
-            };
-            let source = transport.interners().callable(*callable);
-            if source.function != Some(function) {
-                return Err(format!(
-                    "backend direct-callable transport expected function {}, got {:?}",
-                    function.as_u32(),
-                    source.function
-                ));
-            }
-            decode_callable_captures(transport, *shape, lanes)?
+    let captures = if let BackendBoundValue::Transport { shape, lanes } = value
+        && let ShapeDescr::Callable(source) = transport.interners().shape(*shape)
+    {
+        let source = transport.interners().callable(*source);
+        if source.function != Some(function) {
+            return Err(format!(
+                "backend direct-callable transport expected function {}, got {:?}",
+                function.as_u32(),
+                source.function
+            ));
         }
-        other => {
-            let materialized = materialize_backend_value(transport, proc, other)?;
-            let (fn_id, words) = match materialized {
-                AnyValue::FnRef(fn_id, _, _) => (fn_id, Vec::new()),
-                other => unpack_closure(other.value(proc)?)?,
-            };
-            // The word is a CONSTRUCTION, not a function: a wrapper's word
-            // is this backend's own numbering, so the program translates it
-            // back before the check (fz-kdt.127).
-            if backend_callable_function(transport, program, fn_id) != Some(function) {
-                return Err(format!(
-                    "backend direct-callable transport expected function {}, got construction word {}",
-                    function.as_u32(),
-                    fn_id.0
-                ));
-            }
-            words.into_iter().map(BackendBoundValue::Runtime).collect()
+        transport_field_views(transport, *shape, lanes)?
+    } else {
+        let materialized = materialize_backend_value(transport, proc, value)?;
+        let (fn_id, words) = match materialized {
+            AnyValue::FnRef(fn_id, _, _) => (fn_id, Vec::new()),
+            other => unpack_closure(other.value(proc)?)?,
+        };
+        // The word is a CONSTRUCTION, not a function: a wrapper's word is this
+        // backend's own numbering, so the program translates it back before the
+        // check (fz-kdt.127).
+        if backend_callable_function(transport, program, fn_id) != Some(function) {
+            return Err(format!(
+                "backend direct-callable transport expected function {}, got construction word {}",
+                function.as_u32(),
+                fn_id.0
+            ));
         }
+        words.into_iter().map(BackendBoundValue::Runtime).collect()
     };
     if captures.len() != callable.capture_layouts.len() {
         return Err(format!(
@@ -2985,9 +2962,13 @@ fn tuple_step_value(
     }
     if let Some(layout) = executable.abi.value_layouts.get(&value)
         && !matches!(layout.carrier, TransportCarrier::ValueRef(_))
-        && let ShapeDescr::Tuple(fields) = transport.interners().shape(layout.structural)
+        && transport.interners().tuple_arity(layout.structural).is_some()
     {
-        let fields = fields.clone();
+        // Encoding needs the field layouts, not where their lanes land.
+        let fields = transport
+            .interners()
+            .field_layouts(layout.structural)
+            .expect("a tuple shape has fields");
         if fields.len() != items.len() {
             return Err(format!(
                 "backend tuple step for value {} has {} item(s) but its layout shape has {} field(s)",

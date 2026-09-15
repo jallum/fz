@@ -420,8 +420,15 @@ impl World {
         self.transport.interners().layout_physical_lanes(layout)
     }
 
-    pub fn layout_spans(&self, layouts: &[TransportLayout]) -> Vec<(TransportLayout, std::ops::Range<usize>)> {
-        self.transport.interners().layout_spans(layouts)
+    pub fn field_layouts(&self, shape: ShapeId) -> Option<&[TransportLayout]> {
+        self.transport.interners().field_layouts(shape)
+    }
+
+    pub fn field_spans(
+        &self,
+        shape: ShapeId,
+    ) -> Option<impl Iterator<Item = (TransportLayout, std::ops::Range<usize>)> + '_> {
+        self.transport.interners().field_spans(shape)
     }
 
     pub fn tuple_arity(&self, shape: ShapeId) -> Option<usize> {

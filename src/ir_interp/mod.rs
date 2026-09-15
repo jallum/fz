@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use crate::compiler2::transport::ShapeId;
+use crate::compiler2::transport::BoundValue;
 use crate::exec::runtime::ExitRecord;
 use fz_runtime::heap::{Schema, SchemaRegistry};
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
@@ -35,26 +35,7 @@ struct BackendContinuation {
     env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
 }
 
-#[derive(Debug, Clone)]
-/// An explicit `Absent` binding records an omitted semantic value. It is not
-/// an environment miss: missing lane-free inputs can authorize an exact
-/// direct closure target, while `Absent` cannot be called. A `Transport`
-/// tuple or callable retains its structure even when `lanes` is empty.
-enum BackendBoundValue {
-    Absent,
-    Runtime(AnyValue),
-    Transport { shape: ShapeId, lanes: Vec<AnyValue> },
-}
-
-impl BackendBoundValue {
-    /// The single runtime word this value is, if it is one.
-    fn runtime_word(&self) -> Option<AnyValue> {
-        match self {
-            Self::Runtime(value) => Some(*value),
-            Self::Absent | Self::Transport { .. } => None,
-        }
-    }
-}
+type BackendBoundValue = BoundValue<AnyValue>;
 
 enum BackendResumeEntry {
     Executable {
