@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T06:07:54Z",
+  "description": "NativeBoundValue (jobs/native.rs ~4532) and BackendBoundValue (ir_interp/mod.rs ~43) are one enum spelled twice (Absent | Runtime(W) | Transport { shape, lanes: Vec\u003cW\u003e }), as are runtime_lane/runtime_word and transport_tuple_arity (native.rs ~3986 and ir_interp/backend.rs ~3019, inlined a third time at dispatch_exec.rs ~354). TransportInterners::tuple_field_spans (transport.rs ~576) has one caller because World wraps layout_spans and tuple_arity but not it, so native open-codes the destructure; transport.rs ~561 already states that tuple fields and callable captures are both lane sequences, yet native's transport_field_views carries an extra fields parameter only to serve CallableDescr::capture_layouts (native.rs ~4028).\n\nChange: BoundValue\u003cW\u003e in compiler2/transport.rs with type NativeBoundValue = BoundValue\u003cVar\u003e and type BackendBoundValue = BoundValue\u003cAnyValue\u003e; one field_spans(shape) covering Tuple and Callable, wrapped on World; the nine hand-rolled ShapeDescr::Tuple/Callable walks (native.rs ~3051, ~3118, ~4001, ~4027, ~4129; ir_interp/backend.rs ~1807, ~3102, ~3264; the guard half of native.rs ~1074) become calculator calls. Also: lane_form_type_match (backend.rs ~891) decodes all fields to answer a per-position question; decode per position. This is the enabling step for the LaneTest and transport-walk folds. Signal: lib and matrix unchanged; census pins unchanged.",
+  "id": "fz-gee.2",
+  "labels": [],
+  "parent": "fz-gee",
+  "priority": 2,
+  "status": "open",
+  "title": "One BoundValue\u003cW\u003e for both doors and one field_spans(shape) calculator over Tuple and Callable",
+  "type": "task",
+  "updated_at": "2026-09-15T06:07:54Z"
+}
