@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-15T04:13:06Z",
   "created": "2026-09-14T17:16:14Z",
   "description": "World::entry_dispatch (src/compiler2/world.rs:1505-1510) returns a clone of the whole plan (matrix, graph, every guard) on each of four production reads: executable_facts.rs:489 (stores it), jobs/keying.rs:418 (only walks it), jobs/contract.rs:127-131 and jobs/semantic.rs:130-142 (clone only to satisfy the borrow checker around types_mut). World::guard_dispatch (world.rs:2108) clones a helper plan per guard reference per re-plan (jobs/dispatch.rs:181), and that clone is then embedded by value into every caller plan via PatternGuardExpr::Dispatch.\n\nPriority 4 of the north star: equal reproduction preserves the allocation and performs no deep copies.\n\nChange: the fact type becomes Rc\u003cPatternDispatchPlan\u003cTy\u003e\u003e. FunctionDispatchMap\u003cT\u003e needs only Clone + PartialEq (dispatch.rs:32-34); Rc's pointer shortcut makes change detection cheaper, not different. Net lines about zero; deep copies per job read go to zero.\n\nSignal: compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius (drive_test.rs:17114) and canon double-compile equality stay green; --log-telemetry job trace on a guard-heavy fixture unchanged.",
   "id": "fz-acn.7",
   "labels": [],
   "parent": "fz-acn",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Plan facts are shared by Rc: no deep copy per fact read",
   "type": "task",
-  "updated_at": "2026-09-14T17:16:14Z"
+  "updated_at": "2026-09-15T04:13:06Z"
 }
