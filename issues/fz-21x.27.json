@@ -4,14 +4,15 @@
     "fz-acn.4"
   ],
   "blocks": [],
+  "closed_at": "2026-09-15T03:09:01Z",
   "created": "2026-09-14T12:19:36Z",
   "description": "Punch two of two, inside the context that fz-acn.4 gives the interpreter's dispatch path. Two representation changes, no shape changes.\n\nDispatch state. DispatchExecState is HashMap\u003cSubjectId, BackendBoundValue\u003e, cloned whole at every DispatchNode::Test (src/ir_interp/dispatch_exec.rs ~117) and at every Outcome, so a plan with k tests performs k map clones per decision; every cache hit clones a lane vector (~245, ~302). About a quarter of interpreter samples on tail_recursion sit under execute_dispatch_node. Subjects are dense ids (plan.matrix.subjects[id]). Every writer into the state is a pure resolution of (subject, operands), so entries carried across a miss are value-identical; the one non-obvious case is a bitstring shape that writes extracted field subjects and then fails (~781 then ~787/~795) while dispatch_bit_size_value (~801-810) reads state for BitstringFieldSize::Binding. Change: the context's state becomes Vec\u003cOption\u003cBackendBoundValue\u003e\u003e sized by the plan's subject count plus an undo journal (Vec\u003cSubjectId\u003e of writes since the branch point; on miss, truncate and clear). Accessors return references so a cache hit no longer clones. Allocations go from one clone per test node to one vector per run. The journal keeps the bitstring case closed by construction. The native lowering has the same shape (DispatchState::clone per Test in lower_dispatch_node) but pays it once per plan at compile time; leave it.\n\nPrepared keys. The operand builder materializes every binary prepared key on the process heap (fz_alloc_bitstring_const, a real copy) before the first test runs, on every call; a function whose hot clause never reaches its map pattern still pays for every key it could have read. Change: the prepared vector holds lazily filled cells, filled at dispatch_const_key_value (~715-723) and memoized per run so a key reached on two paths sees one word.\n\nSignal: the bitstring fixtures (00309, 00326, 00339) and entry_dispatch_decides_a_lane_form_tuple_from_its_lanes on three doors; map_binary_keys and 00553_match_map_nonatom_keys; a unit test over a plan with nested tests asserting one state allocation per run; a fixture whose map clause is not reached pins zero bitstring allocations through Process.heap_alloc_stats(). tail_recursion interp wall clock corroborates.",
   "id": "fz-21x.27",
   "labels": [],
   "parent": "fz-acn",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Dispatch state is a dense vector with an undo journal, and prepared keys materialize on first read",
   "type": "task",
-  "updated_at": "2026-09-15T01:20:01Z"
+  "updated_at": "2026-09-15T03:09:01Z"
 }
