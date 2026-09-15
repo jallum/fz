@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T05:12:43Z",
+  "description": "The census tests pin counts, and beside each pinned number a comment records how it moved and which ticket moved it: `// fz-5xp.30: 1430 -\u003e 1447 ...`, `// fz-kdt.106: 805 -\u003e 742, zero-change 13 -\u003e 9 ...`. Counted 2026-09-15 by grepping for a ticket id followed by an arrow: src/telemetry/public_trace_test.rs 83, src/compiler2/work_start_reason_test.rs 4, tests/fz2_cli.rs 3. A change log lives in the commit that made the change; a comment beside a pin says what the count is and what would move it, or nothing, since the assertion message already names the pin. Review rule stated on PR #168 by the maintainer (\"how is this kind of comment helpful?\") and applied to the ten comments that branch added.\n\nFix: delete every delta comment; where one contains a present-tense fact worth keeping (what a count is composed of, why two counts must agree), keep that sentence without the ticket id or the arrow. Signal: the grep above returns zero; the pinned values do not change.",
+  "id": "fz-anb",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Census pins carry a change log in comments",
+  "type": "task",
+  "updated_at": "2026-09-15T05:12:43Z"
+}
