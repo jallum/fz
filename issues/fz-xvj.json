@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T14:02:42Z",
+  "description": "Jobs have spans, spans have timing, and that timing can be summed. tools/distill-telemetry.exs (Elixir, no dependencies; the JSON module ships with Elixir 1.18+) reads a --log-telemetry JSONL stream and prints: the timeline (before the first job, first job start to last job stop, native codegen span, after the last span), spans by name with inclusive and self time (a child's inclusive time comes out of its parent's self time through parent_span_id), compiler jobs by kind, jobs by kind and subject with functions named from the canon.function events, the most re-run jobs, and for each of those the facts that woke it, read off work_graph.applied's wakes and their causes.\n\nWorked on json_roundtrip it shows in one screen that AnalyzeActivation is 97% of job time, that three activations are re-run 32 to 77 times, and that every re-run is woken by Json.value/1's ReturnType changing (18 rungs): the fz-kdt.177 ladder.\n\nStrategy .agent/strategies/profile-a-compilation.md: run the front door with --log-telemetry, distill, read top to bottom (where the time sits, which kind, which subject, why it ran again), corroborate magnitude with sample on the plain binary because the stream inflates the compile (fz-t75) and counts are the authoritative signal, then file or find the ticket that names the mechanism. performance-instrumentation.md points at both.",
+  "id": "fz-xvj",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "A span distiller for --log-telemetry and the profile-a-compilation strategy",
+  "type": "task",
+  "updated_at": "2026-09-15T14:02:42Z"
+}
