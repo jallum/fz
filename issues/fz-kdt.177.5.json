@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T20:29:56Z",
+  "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR4. Unguarded traversals that would diverge on a cyclic node: has_vars (mod.rs ~3229, highest fan-in), collect_free_vars (~3132), collect_subst_into (~3725), collect_match_subst (arrow_match.rs ~362); Types::intersect (~1423) and every MergeSig::intersect_pos (sigs.rs ~206-343) need an in-flight HashMap\u003c(Ty,Ty),Ty\u003e returning a reserved id; guards on refine_widen, erase_closure_identity, runtime_envelope, instantiate/map_recursive_inputs_with, address_remap_with, and the convergence family. One proof, not an inspection: the emptiness Memo (emptiness.rs ~12-18) keys in_flight on descriptor values while phi_tuple descends into freshly built intersect/diff descriptors; test types_emptiness_discharges_a_negation_bearing_cycle.",
+  "id": "fz-kdt.177.5",
+  "labels": [],
+  "parent": "fz-kdt.177",
+  "priority": 1,
+  "status": "open",
+  "title": "Traversal guards for cyclic types, with one proof on the emptiness memo",
+  "type": "task",
+  "updated_at": "2026-09-15T20:29:56Z"
+}
