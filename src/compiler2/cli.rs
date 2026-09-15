@@ -12,7 +12,6 @@ use crate::aot_link;
 use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
 use crate::diag::style::ColorMode;
-use crate::notify_fixture_execution_start;
 use crate::telemetry::diag_render::{DiagRenderer, DiagnosticStatus};
 use crate::telemetry::{ConfiguredTelemetry, JsonlBackend, StatsHandler};
 
@@ -182,7 +181,6 @@ fn run_command(
     let (mut compiler, root) = load_main_root(tel, &path, diagnostic_status)?;
     compiler.set_requested_output(Box::new(FileRequestedOutput::new(root, &options.dumps)));
     emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
-    notify_fixture_execution_start();
     compiler
         .run_root_jit(root)
         .map_err(|error| CliError::failure(format!("fz2 run: {error}")))?;
@@ -199,7 +197,6 @@ fn interp_command(
     let (mut compiler, root) = load_main_root(tel, &path, diagnostic_status)?;
     compiler.set_requested_output(Box::new(FileRequestedOutput::new(root, &options.dumps)));
     emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
-    notify_fixture_execution_start();
     let result = compiler.run_root_interp(root).map_err(|error| {
         if error.contains("not yet supported") {
             CliError::deferred(format!("fz2 interp: {error}"))
@@ -265,7 +262,6 @@ fn test_command(
     let exe = std::env::current_exe().map_err(|error| CliError::failure(format!("fz2 test: {error}")))?;
 
     println!("Running {}...\n", plural_count(tests.len(), "test", "tests"));
-    notify_fixture_execution_start();
     let mut failures = 0usize;
     for test in &tests {
         let module_arg = test.module_arg();

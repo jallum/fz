@@ -13,10 +13,28 @@ route through the same typed raw emit site, so `NullTelemetry` remains
 monomorphizable and configured handlers behave identically across interpreter,
 JIT, and AOT.
 
-One event matters:
+Two events matter:
 
+- `fz.runtime.execution_ready` — the boundary between compiling a program and
+  running it, emitted by `run_root_jit` and `run_root_interp`.
 - `fz.runtime.process_exited` — one per task exit, carrying the existing pid and
   live `Process` authority.
+
+## `fz.runtime.execution_ready`
+
+`signal_execution_ready` (`execution_ready.rs`) is the single emit site, called
+by `run_root_jit` just before the runtime spawns the entry and by
+`run_root_interp` just before `run_backend_main` enqueues it — so the event
+lands once per `fz2 run`, once per `fz2 interp`, and once per `run-test-root`
+child `fz2 test` starts, with parsing, the fixpoint drive, the backend product
+and Cranelift all behind it. An AOT binary never emits it: `fz2 build` stops at
+the object file, and the executable links `fz_runtime` and its own
+`aot_run_queue_loop`, which carries no telemetry bus and emits no
+`process_exited` either. The event has no payload; its content is its position
+in the stream. The same call writes one byte to the descriptor named by
+`FZ_EXEC_READY_FD` when the environment names one — the fixture matrix's
+execution deadline is a consumer of this boundary, not a second definition of it
+(see [fixtures](fixtures.md)).
 
 ## `fz.runtime.process_exited`
 

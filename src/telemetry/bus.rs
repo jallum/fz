@@ -22,7 +22,6 @@ struct Entry {
     handler: Box<dyn Handler>,
 }
 
-#[cfg(test)]
 type Event0 = dyn Fn(&[&'static str], u64, u64);
 type Event1 = dyn Fn(&[&'static str], u64, u64, &dyn Any);
 type Event2 = dyn Fn(&[&'static str], u64, u64, &dyn Any, &dyn Any);
@@ -34,7 +33,6 @@ type SpanStop0 = dyn Fn(&[&'static str], u64, u64, u64);
 type SpanStop1 = dyn Fn(&[&'static str], u64, u64, u64, &dyn Any);
 
 enum RawEventCallback {
-    #[cfg(test)]
     Zero(Box<Event0>),
     One(Box<Event1>),
     Two(Box<Event2>),
@@ -329,7 +327,6 @@ impl ConfiguredTelemetry {
         id
     }
 
-    #[cfg(test)]
     attach_raw_event!(attach_raw_event0, Zero);
     attach_raw_event!(attach_raw_event1, One, A a);
     attach_raw_event!(attach_raw_event2, Two, A a, B b);
@@ -459,7 +456,6 @@ impl ConfiguredTelemetry {
         }
     }
 
-    #[cfg(test)]
     dispatch_raw_event!(dispatch_raw_event0, Zero);
     dispatch_raw_event!(dispatch_raw_event1, One, a);
     dispatch_raw_event!(dispatch_raw_event2, Two, a, b);
@@ -589,7 +585,6 @@ impl Telemetry for ConfiguredTelemetry {
         ConfiguredTelemetry::detach(self, id)
     }
 
-    #[cfg(test)]
     forward_raw_event!(dispatch_raw_event0);
     forward_raw_event!(dispatch_raw_event1, a);
     forward_raw_event!(dispatch_raw_event2, a, b);

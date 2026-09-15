@@ -1,3 +1,4 @@
+use crate::execution_ready::signal_execution_ready;
 use crate::telemetry::{RawSpanTelemetry, Telemetry, TelemetryExt as _};
 use std::rc::Rc;
 use std::time::Duration;
@@ -295,6 +296,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         let program = self.product_backend_program_for_root(root)?;
         let tel = &self.telemetry;
         let (types, transport) = self.world.types_mut_and_transport();
+        signal_execution_ready(tel);
         crate::ir_interp::run_backend_main(types, transport, tel, self.output.as_ref(), &program)
     }
 
@@ -414,6 +416,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
             .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
         let tel = &self.telemetry;
         let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, tel).with_output(self.output.as_ref());
+        signal_execution_ready(tel);
         let root_pid = runtime.spawn(program.entry);
         runtime.run_until_idle();
         // A fault-halted root must not report success (fz-bdk). The exit

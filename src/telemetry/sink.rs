@@ -632,7 +632,6 @@ pub trait TelemetryExt: Telemetry {
         payload: impl FnOnce() -> (Measurements<'meas>, Metadata<'meta>),
     );
 
-    #[cfg(test)]
     fn raw_event0(&self, name: &[&'static str]) {
         self.dispatch_raw_event0(name);
     }

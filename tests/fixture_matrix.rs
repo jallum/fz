@@ -230,6 +230,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "fixture_command_rejects_missing_readiness",
             fixture_command_rejects_missing_readiness,
         ),
+        (
+            "fixture_command_verdict_follows_the_fixture_expectation",
+            fixture_command_verdict_follows_the_fixture_expectation,
+        ),
         ("fixture_readiness_eof_before_exit", fixture_readiness_eof_before_exit),
         ("fixture_readiness_exit_before_eof", fixture_readiness_exit_before_eof),
         (
@@ -237,8 +241,12 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             fixture_readiness_drains_an_exited_child,
         ),
         (
-            "kind_test_commands_signal_execution_ready_once",
-            kind_test_commands_signal_execution_ready_once,
+            "kind_test_commands_signal_execution_ready_per_test",
+            kind_test_commands_signal_execution_ready_per_test,
+        ),
+        (
+            "execution_guard_covers_the_program_not_the_compile",
+            execution_guard_covers_the_program_not_the_compile,
         ),
         (
             "kind_test_timeouts_kill_the_outer_command_and_its_hung_root",
@@ -381,6 +389,15 @@ impl Header {
         self.path_deferrals
             .iter()
             .find_map(|(deferred_path, rationale)| (*deferred_path == path).then_some(rationale.as_str()))
+    }
+
+    /// `expect: diagnostic` declares a source the compiler must refuse, so no
+    /// program may start; every other expectation runs one.
+    fn execution_boundary(&self) -> ExecutionBoundary {
+        match self.expect {
+            Expect::Diagnostic => ExecutionBoundary::Refused,
+            Expect::Success | Expect::Abort => ExecutionBoundary::Announced,
+        }
     }
 }
 
@@ -670,10 +687,20 @@ enum RunOutcome {
     Failed(String),
 }
 
+/// What a command is expected to do about starting a program. It decides both
+/// when the execution clock starts and what the readiness pipe must show.
 #[derive(Clone, Copy)]
-enum TimeoutStart {
-    OnSpawn,
-    OnExecutionReady,
+enum ExecutionBoundary {
+    /// The command is itself the thing being timed — a built binary, a build,
+    /// an oracle — so the execution clock starts at spawn and there is no
+    /// readiness pipe.
+    Spawn,
+    /// A program starts and announces itself; each announcement opens an
+    /// execution window.
+    Announced,
+    /// The fixture declares that the compiler must refuse this source, so no
+    /// program may start and an announcement is the finding.
+    Refused,
 }
 
 enum ExecutionReady {
@@ -686,24 +713,32 @@ enum ExecutionReady {
 enum FixtureCommandState {
     Running,
     Exited,
-    MissingExecutionReady,
+    /// The command did not do what the fixture expects about starting a
+    /// program; the variant carries the finding.
+    BoundaryFailed(String),
 }
 
+/// The fixture's own expectation decides the verdict, not the exit status: a
+/// fixture that expects a program to run is not served by a command that exits
+/// nonzero without running one, and a fixture that expects to be refused is not
+/// served by a compiler that ran its program anyway. Until the command exits,
+/// pipe EOF decides nothing; the setup guard bounds the wait.
 fn fixture_command_state(
-    timeout_start: TimeoutStart,
+    boundary: ExecutionBoundary,
     readiness_bytes: usize,
-    readiness_open: bool,
     status: Option<ExitStatus>,
 ) -> FixtureCommandState {
-    if matches!(timeout_start, TimeoutStart::OnExecutionReady)
-        && readiness_bytes == 0
-        && (!readiness_open || status.is_some())
-    {
-        FixtureCommandState::MissingExecutionReady
-    } else if status.is_some() {
-        FixtureCommandState::Exited
-    } else {
-        FixtureCommandState::Running
+    if status.is_none() {
+        return FixtureCommandState::Running;
+    }
+    match (boundary, readiness_bytes) {
+        (ExecutionBoundary::Announced, 0) => {
+            FixtureCommandState::BoundaryFailed("never started a program (0 readiness bytes)".to_string())
+        }
+        (ExecutionBoundary::Refused, started @ 1..) => FixtureCommandState::BoundaryFailed(format!(
+            "started a program ({started} readiness bytes) though the fixture declares the compiler must refuse it"
+        )),
+        _ => FixtureCommandState::Exited,
     }
 }
 
@@ -796,8 +831,8 @@ fn anonymous_capture(stream: &str) -> Result<File, String> {
     FixtureTempFile::new(stream)?.unlink()
 }
 
-fn execution_start(boundary: TimeoutStart, now: Instant) -> Option<Instant> {
-    matches!(boundary, TimeoutStart::OnSpawn).then_some(now)
+fn execution_start(boundary: ExecutionBoundary, now: Instant) -> Option<Instant> {
+    matches!(boundary, ExecutionBoundary::Spawn).then_some(now)
 }
 
 fn execution_ready_pipe() -> Result<(OwnedFd, OwnedFd), String> {
@@ -878,23 +913,23 @@ fn read_execution_ready(fd: &OwnedFd) -> Result<ExecutionReady, String> {
 fn fixture_command_output(
     cmd: &mut Command,
     label: &str,
-    timeout_start: TimeoutStart,
+    boundary: ExecutionBoundary,
     timeout: Duration,
 ) -> Result<Output, String> {
-    fixture_command_output_with_ready_writer_action(cmd, label, timeout_start, timeout, ReadyWriterAction::Inherit)
+    fixture_command_output_with_ready_writer_action(cmd, label, boundary, timeout, ReadyWriterAction::Inherit)
 }
 
 fn fixture_command_output_with_ready_writer_action(
     cmd: &mut Command,
     label: &str,
-    timeout_start: TimeoutStart,
+    boundary: ExecutionBoundary,
     timeout: Duration,
     ready_writer_action: ReadyWriterAction,
 ) -> Result<Output, String> {
     guarded_fixture_command(
         cmd,
         label,
-        timeout_start,
+        boundary,
         DEFAULT_FIXTURE_HANG_TIMEOUT,
         timeout,
         ready_writer_action,
@@ -905,14 +940,14 @@ fn fixture_command_output_with_ready_writer_action(
 fn guarded_fixture_command(
     cmd: &mut Command,
     label: &str,
-    timeout_start: TimeoutStart,
+    boundary: ExecutionBoundary,
     setup_timeout: Duration,
     execution_timeout: Duration,
     ready_writer_action: ReadyWriterAction,
 ) -> Result<GuardedOutput, String> {
-    let ready_pipe = match timeout_start {
-        TimeoutStart::OnSpawn => None,
-        TimeoutStart::OnExecutionReady => Some(execution_ready_pipe()?),
+    let ready_pipe = match boundary {
+        ExecutionBoundary::Spawn => None,
+        ExecutionBoundary::Announced | ExecutionBoundary::Refused => Some(execution_ready_pipe()?),
     };
     if let Some((_read_fd, write_fd)) = ready_pipe.as_ref() {
         cmd.env(FZ_EXEC_READY_FD_ENV, write_fd.as_raw_fd().to_string());
@@ -928,7 +963,7 @@ fn guarded_fixture_command(
         FixtureProcess { child, capture },
         ready_read_fd,
         label,
-        timeout_start,
+        boundary,
         setup_timeout,
         execution_timeout,
     )
@@ -938,12 +973,12 @@ fn wait_fixture_command(
     mut process: FixtureProcess,
     mut ready_read_fd: Option<OwnedFd>,
     label: &str,
-    timeout_start: TimeoutStart,
+    boundary: ExecutionBoundary,
     setup_timeout: Duration,
     execution_timeout: Duration,
 ) -> Result<GuardedOutput, String> {
     let spawned_at = Instant::now();
-    let mut execution_started = execution_start(timeout_start, spawned_at);
+    let mut execution_started = execution_start(boundary, spawned_at);
     let mut execution_ready_count = 0;
     loop {
         // Observe exit before draining: an exited child's final ready byte is
@@ -955,10 +990,10 @@ fn wait_fixture_command(
         while let Some(read_fd) = ready_read_fd.as_ref() {
             match read_execution_ready(read_fd) {
                 Ok(ExecutionReady::Ready) => {
+                    // Every announcement starts an execution window: a command
+                    // that runs several programs in turn gives each its own.
                     execution_ready_count += 1;
-                    if execution_ready_count == 1 {
-                        execution_started = Some(Instant::now());
-                    }
+                    execution_started = Some(Instant::now());
                 }
                 Ok(ExecutionReady::Pending) => break,
                 Ok(ExecutionReady::Closed) => {
@@ -969,12 +1004,13 @@ fn wait_fixture_command(
                 }
             }
         }
-        match fixture_command_state(timeout_start, execution_ready_count, ready_read_fd.is_some(), status) {
-            FixtureCommandState::MissingExecutionReady => {
+        match fixture_command_state(boundary, execution_ready_count, status) {
+            FixtureCommandState::BoundaryFailed(finding) => {
                 let output = process.finish(label)?;
                 return Err(format!(
-                    "{} ended before execution-ready signal (0 readiness bytes); stderr: {}",
+                    "{} {}; stderr: {}",
                     label,
+                    finding,
                     String::from_utf8_lossy(&output.stderr).trim_end()
                 ));
             }
@@ -1092,12 +1128,17 @@ fn fixture_hang_guard_policy() {
     );
     let now = Instant::now();
     assert_eq!(
-        execution_start(TimeoutStart::OnExecutionReady, now),
+        execution_start(ExecutionBoundary::Announced, now),
         None,
         "pre-execution work must not arm the execution hang guard"
     );
     assert_eq!(
-        execution_start(TimeoutStart::OnSpawn, now),
+        execution_start(ExecutionBoundary::Refused, now),
+        None,
+        "a compile that must be refused is setup work from start to finish"
+    );
+    assert_eq!(
+        execution_start(ExecutionBoundary::Spawn, now),
         Some(now),
         "a spawn-timed command arms its execution guard immediately"
     );
@@ -1123,27 +1164,27 @@ fn fixture_command_capture_does_not_wait_for_an_open_writer() {
 fn fixture_command_rejects_missing_readiness() {
     let error = fixture_command_output_with_ready_writer_action(
         Command::new("sh").args(["-c", "sleep 2"]),
-        "readiness EOF fixture",
-        TimeoutStart::OnExecutionReady,
+        "unannounced command",
+        ExecutionBoundary::Announced,
         DEFAULT_FIXTURE_HANG_TIMEOUT,
         ReadyWriterAction::CloseBeforeExec,
     )
-    .expect_err("closing the readiness pipe without a signal must fail explicitly");
+    .expect_err("a command that ends without starting a program must be reported");
     assert_eq!(
         error,
-        "readiness EOF fixture ended before execution-ready signal (0 readiness bytes); stderr: "
+        "unannounced command never started a program (0 readiness bytes); stderr: "
     );
 
     let error = fixture_command_output(
         Command::new("sh").args(["-c", "sleep 2 &"]),
         "pre-ready leader",
-        TimeoutStart::OnExecutionReady,
+        ExecutionBoundary::Announced,
         DEFAULT_FIXTURE_HANG_TIMEOUT,
     )
-    .expect_err("leader success without an execution-ready signal is a harness error");
+    .expect_err("an inherited writer must not conceal a leader that starts no program");
     assert_eq!(
         error,
-        "pre-ready leader ended before execution-ready signal (0 readiness bytes); stderr: "
+        "pre-ready leader never started a program (0 readiness bytes); stderr: "
     );
 
     let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -1153,7 +1194,7 @@ fn fixture_command_rejects_missing_readiness() {
             .env("FZ_SETUP_HANG_PID_PATH", &pid_path)
             .args(["-c", "printf %s $$ > \"$FZ_SETUP_HANG_PID_PATH\"; sleep 2"]),
         "setup-hung fixture",
-        TimeoutStart::OnExecutionReady,
+        ExecutionBoundary::Announced,
         Duration::from_secs(1),
         DEFAULT_FIXTURE_HANG_TIMEOUT,
         ReadyWriterAction::Inherit,
@@ -1167,6 +1208,61 @@ fn fixture_command_rejects_missing_readiness() {
     let _ = fs::remove_file(pid_path);
 }
 
+/// The fixture's expectation, not the exit status, says whether a program had
+/// to run. An `expect: abort` program exits nonzero after running, so a
+/// nonzero exit can never stand in for the boundary; an `expect: diagnostic`
+/// source must be refused before any program starts, so a byte from one means
+/// the compiler accepted what it was told to reject.
+fn fixture_command_verdict_follows_the_fixture_expectation() {
+    let probe = |code: i32| {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "printf 'probe diagnostic\\n' >&2; exit \"$1\"",
+            "verdict probe",
+            &code.to_string(),
+        ]);
+        command
+    };
+
+    let error = fixture_command_output_with_ready_writer_action(
+        &mut probe(7),
+        "aborting program",
+        ExecutionBoundary::Announced,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        ReadyWriterAction::Inherit,
+    )
+    .expect_err("a nonzero exit does not excuse a program that never started");
+    assert_eq!(
+        error,
+        "aborting program never started a program (0 readiness bytes); stderr: probe diagnostic"
+    );
+
+    let finished = fixture_command_output_with_ready_writer_action(
+        &mut probe(7),
+        "refused source",
+        ExecutionBoundary::Refused,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        ReadyWriterAction::Inherit,
+    )
+    .expect("a refused source starts no program, and its diagnostic is the answer");
+    assert_eq!(finished.status.code(), Some(7));
+    assert_eq!(finished.stderr, b"probe diagnostic\n");
+
+    let error = fixture_command_output_with_ready_writer_action(
+        &mut probe(0),
+        "refused source",
+        ExecutionBoundary::Refused,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        ReadyWriterAction::SignalBeforeExec,
+    )
+    .expect_err("a program that starts under a refusal expectation is the finding");
+    assert_eq!(
+        error,
+        "refused source started a program (1 readiness bytes) though the fixture declares the compiler must refuse it; stderr: probe diagnostic"
+    );
+}
+
 fn fixture_readiness_eof_before_exit() {
     assert_missing_readiness_observation_order(false);
 }
@@ -1176,7 +1272,7 @@ fn fixture_readiness_exit_before_eof() {
 }
 
 fn fixture_readiness_drains_an_exited_child() {
-    for (signal, exit_code) in [(true, 0), (true, 7), (false, 7)] {
+    for exit_code in [0, 7] {
         let (read_fd, write_fd) = execution_ready_pipe().expect("create readiness pipe");
         let capture = CommandCapture::new().expect("create command capture");
         let (stdout, stderr) = capture.stdio().expect("capture child output");
@@ -1191,15 +1287,7 @@ fn fixture_readiness_drains_an_exited_child() {
             .stdout(stdout)
             .stderr(stderr)
             .process_group(0);
-        configure_ready_writer(
-            &mut command,
-            write_fd.as_raw_fd(),
-            if signal {
-                ReadyWriterAction::SignalBeforeExec
-            } else {
-                ReadyWriterAction::Inherit
-            },
-        );
+        configure_ready_writer(&mut command, write_fd.as_raw_fd(), ReadyWriterAction::SignalBeforeExec);
         let mut child = command.spawn().expect("spawn exited readiness probe");
         let pid = child.id() as libc::pid_t;
         drop(write_fd);
@@ -1211,22 +1299,18 @@ fn fixture_readiness_drains_an_exited_child() {
             FixtureProcess { child, capture },
             Some(read_fd),
             "exited readiness probe",
-            TimeoutStart::OnExecutionReady,
+            ExecutionBoundary::Announced,
             DEFAULT_FIXTURE_HANG_TIMEOUT,
             DEFAULT_FIXTURE_HANG_TIMEOUT,
         );
         assert_reaped(pid);
-        if signal {
-            let finished = result.expect("consume the exited child's buffered signal before judging its status");
-            assert_eq!(finished.execution_ready_count, 1);
-            assert_eq!(finished.output.status.code(), Some(exit_code));
-            assert_eq!(finished.output.stderr, b"child diagnostic\n");
-        } else {
-            assert_eq!(
-                result.unwrap_err(),
-                "exited readiness probe ended before execution-ready signal (0 readiness bytes); stderr: child diagnostic"
-            );
-        }
+        // An exited child's buffered byte is drained and counted before its
+        // status is classified, so a program that announced itself and then
+        // exited — successfully or not — is judged on its own terms.
+        let finished = result.expect("consume the exited child's buffered signal before judging its status");
+        assert_eq!(finished.execution_ready_count, 1);
+        assert_eq!(finished.output.status.code(), Some(exit_code));
+        assert_eq!(finished.output.stderr, b"child diagnostic\n");
     }
 }
 
@@ -1245,20 +1329,7 @@ fn assert_missing_readiness_observation_order(exit_first: bool) {
     let mut child = command.spawn().expect("spawn readiness observation probe");
     let pid = child.id() as libc::pid_t;
     drop(write_fd);
-    if exit_first {
-        child
-            .stdin
-            .take()
-            .expect("child control pipe")
-            .write_all(b"exit\n")
-            .unwrap();
-        assert!(
-            child
-                .wait()
-                .expect("observe child exit before reading readiness")
-                .success()
-        );
-    } else {
+    if !exit_first {
         let mut ready = libc::pollfd {
             fd: read_fd.as_raw_fd(),
             events: libc::POLLIN,
@@ -1272,7 +1343,19 @@ fn assert_missing_readiness_observation_order(exit_first: bool) {
                 .expect("observe child blocked on control pipe")
                 .is_none()
         );
+        assert_eq!(
+            fixture_command_state(ExecutionBoundary::Announced, 0, None),
+            FixtureCommandState::Running,
+            "a closed readiness pipe is not a verdict on its own: the exit status decides"
+        );
     }
+    child
+        .stdin
+        .take()
+        .expect("child control pipe")
+        .write_all(b"exit\n")
+        .unwrap();
+    assert!(child.wait().expect("observe child exit").success());
     let diagnostic_deadline = Instant::now() + Duration::from_secs(1);
     while capture.stderr.metadata().expect("inspect captured diagnostics").len() == 0 {
         assert!(
@@ -1283,19 +1366,18 @@ fn assert_missing_readiness_observation_order(exit_first: bool) {
     }
     assert_eq!(
         fixture_command_state(
-            TimeoutStart::OnExecutionReady,
+            ExecutionBoundary::Announced,
             0,
-            false,
             child.try_wait().expect("observe child status")
         ),
-        FixtureCommandState::MissingExecutionReady,
-        "pipe EOF and child exit have one semantic verdict"
+        FixtureCommandState::BoundaryFailed("never started a program (0 readiness bytes)".to_string()),
+        "an exit with no boundary is the same verdict whichever observation lands first"
     );
     let error = wait_fixture_command(
         FixtureProcess { child, capture },
         Some(read_fd),
         "missing readiness probe",
-        TimeoutStart::OnExecutionReady,
+        ExecutionBoundary::Announced,
         DEFAULT_FIXTURE_HANG_TIMEOUT,
         DEFAULT_FIXTURE_HANG_TIMEOUT,
     )
@@ -1303,7 +1385,7 @@ fn assert_missing_readiness_observation_order(exit_first: bool) {
     assert_reaped(pid);
     assert_eq!(
         error,
-        "missing readiness probe ended before execution-ready signal (0 readiness bytes); stderr: setup diagnostic"
+        "missing readiness probe never started a program (0 readiness bytes); stderr: setup diagnostic"
     );
 }
 
@@ -1319,12 +1401,17 @@ fn assert_reaped(pid: libc::pid_t) {
     assert_eq!(Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
 }
 
-fn kind_test_commands_signal_execution_ready_once() {
+/// Every program that starts announces its own boundary. `fz2 test` starts one
+/// per test, in a child process that inherits the readiness descriptor and
+/// reaches the same seam, so a two-test fixture produces two bytes and the
+/// discovering parent contributes none. A `run-test-root` invoked directly is
+/// one program and produces one.
+fn kind_test_commands_signal_execution_ready_per_test() {
     let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let fixture = temp_dir().join(format!("fz_kind_test_ready_{}_{}.fz", id(), nonce));
     fs::write(
         &fixture,
-        "#---\n# purpose: readiness probe\n# kind: test\n#---\ntest(:passes, do: assert(true))\n",
+        "#---\n# purpose: readiness probe\n# kind: test\n#---\ntest(:passes, do: assert(true))\ntest(:also_passes, do: assert(true))\n",
     )
     .expect("write kind:test readiness probe");
 
@@ -1335,7 +1422,7 @@ fn kind_test_commands_signal_execution_ready_once() {
             command.arg("--interp");
         }
         command.arg(&fixture);
-        assert_execution_ready_count(&mut command, "fz2 test", 1);
+        assert_execution_ready_count(&mut command, "fz2 test", 2);
     }
 
     for interp in [false, true] {
@@ -1344,32 +1431,50 @@ fn kind_test_commands_signal_execution_ready_once() {
         if interp {
             command.arg("--interp");
         }
-        assert_execution_ready_count(&mut command, "fz2 run-test-root", 0);
+        assert_execution_ready_count(&mut command, "fz2 run-test-root", 1);
     }
 
     let _ = fs::remove_file(fixture);
 }
 
 fn assert_execution_ready_count(command: &mut Command, label: &str, expected: usize) {
-    let result = guarded_fixture_command(
+    let finished = guarded_fixture_command(
         command,
         label,
-        TimeoutStart::OnExecutionReady,
+        ExecutionBoundary::Announced,
         DEFAULT_FIXTURE_HANG_TIMEOUT,
         DEFAULT_FIXTURE_HANG_TIMEOUT,
         ReadyWriterAction::Inherit,
-    );
-    if expected == 0 {
-        let error = result.expect_err("private root must not signal readiness");
-        assert_eq!(
-            error,
-            format!("{label} ended before execution-ready signal (0 readiness bytes); stderr: ")
-        );
-        return;
-    }
-    let finished = result.unwrap_or_else(|error| panic!("run `{label}` readiness probe: {error}"));
+    )
+    .unwrap_or_else(|error| panic!("run `{label}` readiness probe: {error}"));
     assert!(finished.output.status.success());
     assert_eq!(finished.execution_ready_count, expected);
+}
+
+/// The execution guard measures the program, not the compiler that produced it.
+/// `json_roundtrip` compiles for seconds and then runs in about thirty
+/// milliseconds, so a two-second execution window fits the program many times
+/// over while the compile alone would blow it: the lane can only go red if the
+/// readiness byte is written before a compile that takes longer than two
+/// seconds. A faster machine shortens the compile and the program alike, so the
+/// trial never flips green to red on better hardware -- it only loses
+/// discrimination. The compile itself stays under the usual setup guard.
+fn execution_guard_covers_the_program_not_the_compile() {
+    let fixture = Path::new("fixtures2/behavior/json_roundtrip.fz");
+    for door in ["run", "interp"] {
+        let label = format!("fz2 {door}");
+        let finished = guarded_fixture_command(
+            Command::new(FZ2_BIN).arg(door).arg(fixture),
+            &label,
+            ExecutionBoundary::Announced,
+            DEFAULT_FIXTURE_HANG_TIMEOUT,
+            Duration::from_secs(2),
+            ReadyWriterAction::Inherit,
+        )
+        .unwrap_or_else(|error| panic!("the program runs well inside a two-second window: {error}"));
+        assert!(finished.output.status.success(), "{label} must succeed");
+        assert_eq!(finished.execution_ready_count, 1);
+    }
 }
 
 fn kind_test_timeouts_kill_the_outer_command_and_its_hung_root() {
@@ -1386,7 +1491,7 @@ fn kind_test_timeouts_kill_the_outer_command_and_its_hung_root() {
         let error = fixture_command_output(
             Command::new(FZ2_BIN).args(args).arg(&fixture),
             &label,
-            TimeoutStart::OnExecutionReady,
+            ExecutionBoundary::Announced,
             Duration::from_secs(1),
         )
         .expect_err("a kind:test root that never returns must time out");
@@ -1403,7 +1508,7 @@ fn build_output_owner_cleans_timeout_and_error_paths() {
         fixture_command_output(
             Command::new("sh").args(["-c", "sleep 2"]),
             "timed-out build probe",
-            TimeoutStart::OnSpawn,
+            ExecutionBoundary::Spawn,
             Duration::from_millis(20),
         )
     });
@@ -1481,7 +1586,7 @@ fn run_path(fixture: &FixtureCase, header: &Header, path: FixtureMatrixPath) -> 
     let out = match fixture_command_output(
         Command::new(FZ2_BIN).args(args).arg(&input),
         "fz2",
-        TimeoutStart::OnExecutionReady,
+        header.execution_boundary(),
         header.timeout_for_path(path),
     ) {
         Ok(o) => o,
@@ -1518,7 +1623,7 @@ fn run_fz2_build_path_owned(fixture: &FixtureCase, header: &Header, out_path: &P
             .args(["-o"])
             .arg(out_path),
         "fz2 build",
-        TimeoutStart::OnSpawn,
+        ExecutionBoundary::Spawn,
         DEFAULT_FIXTURE_HANG_TIMEOUT,
     ) {
         Ok(o) => o,
@@ -1538,7 +1643,7 @@ fn run_fz2_build_path_owned(fixture: &FixtureCase, header: &Header, out_path: &P
     let run = match fixture_command_output(
         &mut Command::new(out_path),
         "fz2-built binary",
-        TimeoutStart::OnSpawn,
+        ExecutionBoundary::Spawn,
         header.timeout_for_path(FixtureMatrixPath::Build),
     ) {
         Ok(o) => o,
@@ -1877,7 +1982,7 @@ fn run_path_logged_to(
                 .args(["-o"])
                 .arg(&out_path),
             "fz2 build --log-telemetry",
-            TimeoutStart::OnSpawn,
+            ExecutionBoundary::Spawn,
             DEFAULT_FIXTURE_HANG_TIMEOUT,
         );
         remove_fz2_build_outputs(&out_path);
@@ -1904,7 +2009,7 @@ fn run_path_logged_to(
     fixture_command_output(
         &mut cmd,
         "fz2 --log-telemetry",
-        TimeoutStart::OnExecutionReady,
+        header.execution_boundary(),
         header.timeout_for_path(path),
     )
 }
@@ -1944,7 +2049,7 @@ fn oracle_goldens_match_elixir() {
         let out = match fixture_command_output(
             Command::new("elixir").arg(&oracle_path),
             &label,
-            TimeoutStart::OnSpawn,
+            ExecutionBoundary::Spawn,
             DEFAULT_FIXTURE_HANG_TIMEOUT,
         ) {
             Ok(o) => o,
