@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.48.1"
+  ],
   "blocks": [],
   "created": "2026-09-15T20:29:50Z",
   "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR3. Only the tuple axis sweeps provably empty clauses at intern (mod.rs ~512); canon sweeps all five (types/canon.rs ~350-402 drop_empty). Extend to lists, resources, funcs and maps using the existing emptiness::*_clause_empty; delete canon's drop_empty. Test: an_empty_clause_is_dropped_on_every_axis.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Empty clauses are dropped on every axis at intern",
   "type": "task",
-  "updated_at": "2026-09-15T20:29:50Z"
+  "updated_at": "2026-09-15T20:30:05Z"
 }
