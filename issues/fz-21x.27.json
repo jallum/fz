@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-acn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Dispatch state is a dense vector with an undo journal, and prepared keys materialize on first read",
   "type": "task",
-  "updated_at": "2026-09-14T22:20:16Z"
+  "updated_at": "2026-09-15T01:20:01Z"
 }
