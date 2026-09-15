@@ -19,11 +19,15 @@
     {
       "text": "CONCORDANT with fz-kdt.65 (the RETURN_WIDENING_BUDGET side of the ladder): the budget counts strict ascents of the RETURN; a nesting accumulator ascends the INPUT key per rung with a super-linear Types cost per rung, so neither the return budget nor ACTIVATION_INPUT_ROW_BUDGET ends it in time. Note in .agent/docs/type-specialization.md:123-135 the termination carriers (no numeric singletons, finite atoms, return-join widening) do not name element nesting.",
       "timestamp": "2026-09-03T08:19:08Z"
+    },
+    {
+      "text": "Measured (fz-kdt.177.2 review, json_roundtrip at 2d5f79d07): standalone semantic drive settles at 277 activations with a return revision / 843 analyses / max 9 revisions / 0 widened; the product pull every door takes reaches 380 activations / 1476 analyses / max 17 / 5 widened, and the three SHARED arrow-64 keys (Json.decode/1 9→17, val/1 8→17, value/1 8→17) climb the extra rungs. The pull's 103 extra activations are what feed the extra evidence into the shared returns: the ladder length is driven by the activation population, not by a demand edge on Json.value/1. Prediction for the kernel: a recursive denotation collapses the population and the ladder in one motion; the activation count (380 → ~126) and the revision count are one signal, not two.",
+      "timestamp": "2026-09-15T22:12:37Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Represent recursive denotations without expanding infinite type ladders",
   "type": "task",
-  "updated_at": "2026-09-15T14:08:51Z"
+  "updated_at": "2026-09-15T22:12:37Z"
 }
