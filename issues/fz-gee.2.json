@@ -10,9 +10,15 @@
   "id": "fz-gee.2",
   "labels": [],
   "parent": "fz-gee",
+  "comments": [
+    {
+      "text": "Committed 8078f9d4e on fz-gee/fold-arc; draft PR https://github.com/jallum/fz/pull/170 stacked on #169 (stack #171). field_spans yields; field_layouts is the borrowed reading; layout_spans and both transport_tuple_arity wrappers deleted.",
+      "timestamp": "2026-09-15T09:43:55Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "One BoundValue\u003cW\u003e for both doors and one field_spans(shape) calculator over Tuple and Callable",
   "type": "task",
-  "updated_at": "2026-09-15T08:27:45Z"
+  "updated_at": "2026-09-15T09:43:55Z"
 }
