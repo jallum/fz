@@ -31,7 +31,7 @@ pub(crate) enum ListShape {
 /// treat as separation, and each of the three lowerings decides the axes by
 /// matching on this enum:
 ///
-/// - `ir_interp::backend::select_dispatch_match` through
+/// - `ir_interp::backend::whole_value_matches_predicate` through
 ///   [`matches_runtime_type_predicate`];
 /// - `compiler2::native_codegen::prim::lower_runtime_type_predicate` and
 ///   `compiler2::native_codegen::receive::emit_runtime_type_predicate_region_test`,
@@ -2405,7 +2405,7 @@ mod tests {
 /// reads, and the gap between the two readings is what
 /// [`surface_membership::observe`] must report -- no more and no less.
 ///
-/// The reader is exactly the shape `select_dispatch_match` builds, and the
+/// The reader is exactly the shape `whole_value_matches_predicate` builds, and the
 /// predicate is asked through `matches_runtime_type_predicate` and `observe`
 /// rather than through the walk directly, so a case that passes here is a case
 /// the interpreter answers the same way.

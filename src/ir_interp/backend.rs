@@ -2,15 +2,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::binop::{eval_binop, eval_unop, interp_value_eq, unpack_callable, unpack_closure};
-use super::dispatch_exec::{
-    DispatchExecState, DispatchMatch, DispatchOperands, DispatchStop, DispatchValues, execute_dispatch_inputs,
-    subject_word,
-};
+use super::dispatch_exec::{Dispatch, DispatchOperands, DispatchSource, dispatch_values};
 use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
 use super::value::{
-    AnyValue, interp_bool_value, interp_empty_list_value, interp_nil_value, interp_runtime_type_predicate_schema_ids,
-    interp_struct_field_from_tagged_bits, interp_value_from_ref_word, with_value_ref,
+    AnyValue, interp_bool_value, interp_empty_list_value, interp_nil_value, interp_struct_field_from_tagged_bits,
+    interp_value_from_ref_word, with_value_ref,
 };
 use super::*;
 use crate::compiler2::pull::TransportCarrier;
@@ -22,10 +19,7 @@ use crate::compiler2::{
 };
 use crate::compiler2::{ExecutableKey, FunctionId};
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
-use crate::runtime_type_predicate::{
-    CallableShape, RuntimeTypePredicate, RuntimeValueReader, TuplePositions, matches_runtime_type_predicate,
-    surface_membership,
-};
+use crate::runtime_type_predicate::CallableShape;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use crate::types::ClosureTarget;
 use fz_runtime::any_value::{
@@ -35,9 +29,9 @@ use fz_runtime::exec_ctx::ExecCtx;
 use fz_runtime::heap::Schema;
 use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
 use fz_runtime::ir_runtime::{
-    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts,
-    fz_list_tail_ref, fz_map_empty, fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref,
-    fz_struct_get_field_ref, fz_struct_get_named_field_ref,
+    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_empty,
+    fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref,
+    fz_struct_get_named_field_ref,
 };
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
 use fz_runtime::procbin::mso_drop_all_deferred;
@@ -701,111 +695,50 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
     }
 }
 
+/// Which clause of an executable's entry dispatch its arguments choose.
 fn select_clause(
     runtime: &mut IrInterpRuntime,
-    types: &mut crate::compiler2::Types,
+    types: &crate::compiler2::Types,
     transport: &TransportStore,
     program: &BackendProgram,
     module: &Module,
     dispatch: &ExecutableDispatch,
     args: &[Option<BackendBoundValue>],
 ) -> Result<Option<usize>, String> {
+    let plan = dispatch.plan();
+    refuse_omitted_required_inputs(plan, args)?;
+    let values = dispatch_values(
+        runtime.cur_proc(),
+        transport,
+        module,
+        plan,
+        DispatchSource::Inputs(args),
+    )?;
     // Dispatch reads an input in whatever form it arrived in: a tuple delivered
     // as lanes is questioned lane-wise, never rebuilt.
-    let mut inputs = vec![BackendBoundValue::Absent; args.len()];
-    let plan = dispatch.plan();
-    for ordinal in (0..plan.input_demand().len()).filter(|ordinal| plan.required_input(*ordinal)) {
-        let value = args
-            .get(ordinal)
-            .and_then(Option::as_ref)
-            .ok_or_else(|| format!("backend clause dispatch required omitted semantic input {}", ordinal))?;
-        inputs[ordinal] = value.clone();
-    }
-    let prepared = prepared_dispatch_keys(runtime, module, dispatch.plan(), &inputs)?;
-    let selected = select_dispatch_body(
-        runtime,
-        types,
+    let operands = DispatchOperands {
         transport,
-        program,
-        module,
-        dispatch.plan(),
-        &inputs,
-        &prepared,
-    )?;
-    Ok(selected.and_then(|body_id| dispatch.clause_index(body_id)))
+        inputs: args,
+        pinned: &values,
+    };
+    let decided = Dispatch::new(runtime, types, program, module, plan, operands).run()?;
+    Ok(decided.and_then(|decided| dispatch.clause_index(plan.body_id(decided.outcome()))))
 }
 
-/// Materialise a plan's prepared keys so entry dispatch can read them.
-///
-/// A map pattern keyed by a binary — `%{"name" => n}` — is decided through a
-/// PREPARED key: `dispatch_const_key_value` finds the key's index in
-/// `plan.prepared_keys` and then reads the materialised value out of the
-/// prepared values. The receive path supplies those from its bindings, and native
-/// entry dispatch materializes them itself, but interpreted entry dispatch used
-/// to pass no prepared values here. The lookup
-/// then found nothing, the region reported "key absent", and the clause was
-/// skipped: `lookup(%{"name" => "ada"})` answered `:anonymous` on `interp`
-/// while `run` and Elixir both answered `{:named, "ada"}`.
-///
-/// Only binary keys need this. Ints, floats, atoms, booleans and nil are
-/// decided from the constant directly and never consult prepared values.
-///
-/// The pins come from the same call. Every pin an entry plan carries was bound
-/// before its patterns began and arrives as one of the plan's inputs; a pin
-/// without one is an undefined name the entry planner already refused.
-fn prepared_dispatch_keys(
-    runtime: &mut IrInterpRuntime,
-    module: &Module,
+/// An input the plan reads has to have arrived. The demand lattice says which
+/// inputs a plan reads; a caller is free to omit any other.
+fn refuse_omitted_required_inputs(
     plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
-    inputs: &[BackendBoundValue],
-) -> Result<DispatchValues, String> {
-    use crate::ground_value::DispatchShape;
-    let mut prepared = Vec::new();
-    for key in &plan.prepared_keys {
-        let value = if let Some(DispatchShape::Utf8Binary(bytes)) = key.as_dispatch_shape() {
-            let ref_word = fz_runtime::ir_runtime::fz_alloc_bitstring_const(
-                runtime.cur_proc(),
-                bytes.as_ptr() as u64,
-                bytes.len() as u64,
-                (bytes.len() * 8) as u64,
-            );
-            interp_value_from_ref_word(ref_word, "prepared dispatch key")?
-        } else {
-            super::dispatch_exec::dispatch_const_to_value(runtime.cur_proc(), module, key)
-                .ok_or_else(|| format!("cannot materialize prepared dispatch key {key:?}"))?
-        };
-        prepared.push(value);
+    args: &[Option<BackendBoundValue>],
+) -> Result<(), String> {
+    for ordinal in (0..plan.input_demand().len()).filter(|ordinal| plan.required_input(*ordinal)) {
+        if args.get(ordinal).and_then(Option::as_ref).is_none() {
+            return Err(format!(
+                "backend clause dispatch required omitted semantic input {ordinal}"
+            ));
+        }
     }
-    Ok(DispatchValues {
-        // A pin is compared whole, so its operand is always one runtime word.
-        pinned: plan
-            .pinned
-            .iter()
-            .map(|pin| {
-                pin.input
-                    .and_then(|input| inputs.get(input as usize))
-                    .and_then(BackendBoundValue::runtime_word)
-                    .ok_or_else(|| format!("dispatch pin `{}` has no runtime argument operand", pin.name))
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        prepared,
-    })
-}
-
-fn select_dispatch_body(
-    runtime: &mut IrInterpRuntime,
-    types: &mut crate::compiler2::Types,
-    transport: &TransportStore,
-    program: &BackendProgram,
-    module: &Module,
-    plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
-    args: &[BackendBoundValue],
-    pinned: &DispatchValues,
-) -> Result<Option<u32>, String> {
-    Ok(
-        select_dispatch_match(runtime, types, transport, program, module, plan, args, pinned)?
-            .map(|matched| plan.outcome(matched.outcome).expect("winning dispatch outcome").body_id),
-    )
+    Ok(())
 }
 
 /// The CONSTRUCTION a runtime code word denotes, in the terms the type lattice
@@ -816,7 +749,7 @@ fn select_dispatch_body(
 /// the wrapper owns the ordered source capture annotations. Every other callable
 /// value carries its function's own id directly and closes over nothing a test
 /// can name, so it answers as a construction over no captures.
-fn backend_callable_identity(
+pub(super) fn backend_callable_identity(
     types: &crate::compiler2::Types,
     transport: &TransportStore,
     program: &BackendProgram,
@@ -848,145 +781,6 @@ fn backend_callable_function(transport: &TransportStore, program: &BackendProgra
     match construction_wrapper_for_fn(program, fn_id) {
         Some(wrapper) => transport.interners().callable(wrapper.callable).function,
         None => Some(FunctionId::from_fn_id(fn_id)),
-    }
-}
-
-/// Ask a type test of a value in whatever form it is held.
-///
-/// A whole value is offered to the shared matcher. A tuple held as lanes has no
-/// heap object to read a schema off, so it asks the predicate what it wants of a
-/// tuple of that arity and puts one question to each position instead -- the
-/// same decomposition the boxed matcher makes, one level in, against lanes the
-/// caller already delivered.
-///
-/// A position carries runtime demand and so keeps a lane, which is why the
-/// absent arm below is unreachable rather than a case to answer.
-fn lane_form_type_match(
-    runtime: &mut IrInterpRuntime,
-    module: &Module,
-    types: &crate::compiler2::Types,
-    transport: &TransportStore,
-    program: &BackendProgram,
-    predicate: &RuntimeTypePredicate,
-    value: &BackendBoundValue,
-) -> Result<bool, DispatchStop> {
-    let (shape, lanes) = match value {
-        BackendBoundValue::Runtime(word) => {
-            return Ok(whole_value_matches_predicate(
-                runtime, module, types, transport, program, predicate, *word,
-            ));
-        }
-        BackendBoundValue::Absent => {
-            return Err(DispatchStop::broken(
-                "backend type test has no value to ask".to_string(),
-            ));
-        }
-        BackendBoundValue::Transport { shape, lanes } => (*shape, lanes),
-    };
-    let Some(arity) = transport.interners().tuple_arity(shape) else {
-        return Err(DispatchStop::broken(format!(
-            "backend type test cannot read lane-form {shape:?}"
-        )));
-    };
-    let shapes = match predicate.tuple_positions(arity) {
-        TuplePositions::Never => return Ok(false),
-        TuplePositions::Always => return Ok(true),
-        TuplePositions::AnyOf(shapes) => shapes,
-    };
-    let views = transport_field_views(transport, shape, lanes).map_err(DispatchStop::broken)?;
-    for shape in shapes {
-        let mut matched = true;
-        for (position, view) in shape.iter().zip(&views) {
-            if !lane_form_type_match(runtime, module, types, transport, program, position, view)? {
-                matched = false;
-                break;
-            }
-        }
-        if matched {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Whether one whole runtime value satisfies a test.
-fn whole_value_matches_predicate(
-    runtime: &mut IrInterpRuntime,
-    module: &Module,
-    types: &crate::compiler2::Types,
-    transport: &TransportStore,
-    program: &BackendProgram,
-    predicate: &RuntimeTypePredicate,
-    value: AnyValue,
-) -> bool {
-    let Ok(runtime_value) = value.value(runtime.cur_proc()) else {
-        return false;
-    };
-    let (tuple_schema_ids, named_schema_ids) = interp_runtime_type_predicate_schema_ids(runtime, module, predicate);
-    // The representation's owner answers what only it can: which callable a
-    // code word denotes, and what a tuple's field holds.
-    let proc = runtime.cur_proc();
-    let callables = |code: u64| backend_callable_identity(types, transport, program, code);
-    let fields = |value: RuntimeAnyValue, index: usize| {
-        let field = fz_struct_get_field_ref(proc, value.ref_word().raw_word(), (index as u32) * 8);
-        interp_value_from_ref_word(field, "tuple shape field")
-            .ok()
-            .and_then(|value| value.value(proc).ok())
-    };
-    let list_head = |value: RuntimeAnyValue| {
-        let head = fz_list_head_ref(value.ref_word().raw_word());
-        interp_value_from_ref_word(head, "list head")
-            .ok()
-            .and_then(|value| value.value(proc).ok())
-    };
-    let list_tail = |value: RuntimeAnyValue| {
-        let tail = fz_list_tail_ref(value.ref_word().raw_word());
-        interp_value_from_ref_word(tail, "list tail")
-            .ok()
-            .and_then(|value| value.value(proc).ok())
-    };
-    let reader = RuntimeValueReader {
-        module,
-        tuple_schema_ids: &tuple_schema_ids,
-        named_schema_ids: &named_schema_ids,
-        callables: &callables,
-        fields: &fields,
-        list_head: &list_head,
-        list_tail: &list_tail,
-    };
-    let matched = matches_runtime_type_predicate(predicate, &reader, runtime_value);
-    if matched {
-        surface_membership::observe(predicate, &reader, runtime_value);
-    }
-    matched
-}
-
-fn select_dispatch_match(
-    runtime: &mut IrInterpRuntime,
-    types: &mut crate::compiler2::Types,
-    transport: &TransportStore,
-    program: &BackendProgram,
-    module: &Module,
-    plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
-    args: &[BackendBoundValue],
-    pinned: &DispatchValues,
-) -> Result<Option<DispatchMatch>, String> {
-    let mut state = DispatchExecState::default();
-    let types = &*types;
-    let mut type_match =
-        |runtime: &mut IrInterpRuntime, module: &Module, want: &crate::compiler2::Ty, value: &BackendBoundValue| {
-            let predicate = types.runtime_type_predicate(want);
-            lane_form_type_match(runtime, module, types, transport, program, &predicate, value)
-        };
-    let operands = DispatchOperands {
-        transport,
-        inputs: args,
-        pinned,
-    };
-    match execute_dispatch_inputs(runtime, module, plan, &operands, &mut state, &mut type_match) {
-        Ok(matched) => Ok(Some(matched)),
-        Err(DispatchStop::NoMatch) => Ok(None),
-        Err(DispatchStop::Broken(error)) => Err(error),
     }
 }
 
@@ -1069,43 +863,44 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             let (callee, extern_marshals) = match target {
                 CallEdge::Direct(direct) => (&direct.callee, direct.extern_marshals.as_deref()),
                 CallEdge::Dispatch(dispatch) => {
-                    let input_values = args
+                    let inputs = args
                         .iter()
                         .enumerate()
                         .map(|(index, arg)| {
-                            if dispatch.plan.required_input(index) {
+                            let value = if dispatch.plan.required_input(index) {
                                 env_get(transport, runtime.cur_proc(), &env, arg.value).map_err(|error| {
                                     format!(
                                         "backend dispatch call requires semantic argument {index} value {}: {error}",
                                         arg.value.as_u32()
                                     )
-                                })
+                                })?
                             } else {
-                                Ok(interp_nil_value())
-                            }
+                                interp_nil_value()
+                            };
+                            Ok(Some(BackendBoundValue::Runtime(value)))
                         })
                         .collect::<Result<Vec<_>, String>>()?;
-                    let dispatch_inputs = input_values
-                        .iter()
-                        .copied()
-                        .map(BackendBoundValue::Runtime)
-                        .collect::<Vec<_>>();
-                    let body_id = select_dispatch_body(
-                        runtime,
-                        types,
+                    let values = dispatch_values(
+                        runtime.cur_proc(),
                         transport,
-                        program,
                         module,
                         &dispatch.plan,
-                        &dispatch_inputs,
-                        &DispatchValues::default(),
-                    )?
-                    .ok_or_else(|| {
-                        format!(
-                            "backend dispatch callsite in executable {:?} missed an exhaustive dispatch",
-                            executable.key
-                        )
-                    })?;
+                        DispatchSource::Inputs(&inputs),
+                    )?;
+                    let operands = DispatchOperands {
+                        transport,
+                        inputs: &inputs,
+                        pinned: &values,
+                    };
+                    let decided = Dispatch::new(runtime, types, program, module, &dispatch.plan, operands)
+                        .run()?
+                        .ok_or_else(|| {
+                            format!(
+                                "backend dispatch callsite in executable {:?} missed an exhaustive dispatch",
+                                executable.key
+                            )
+                        })?;
+                    let body_id = dispatch.plan.body_id(decided.outcome());
                     let arm = dispatch
                         .arms
                         .iter()
@@ -1330,39 +1125,33 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
         } => {
             let input_values = env_values(transport, runtime.cur_proc(), &env, inputs)?
                 .into_iter()
-                .map(BackendBoundValue::Runtime)
+                .map(|value| Some(BackendBoundValue::Runtime(value)))
                 .collect::<Vec<_>>();
-            let pinned_values = local_dispatch_pinned(transport, runtime.cur_proc(), &env, bindings, &dispatch.plan)?;
-            let (target, params) = match select_dispatch_match(
-                runtime,
-                types,
+            let pinned_values = dispatch_values(
+                runtime.cur_proc(),
                 transport,
-                program,
                 module,
                 &dispatch.plan,
-                &input_values,
-                &pinned_values,
-            )? {
-                Some(mut matched) => {
-                    let edge = dispatch.outcome(matched.outcome);
-                    let operands = DispatchOperands {
-                        transport,
-                        inputs: &input_values,
-                        pinned: &pinned_values,
-                    };
+                DispatchSource::Bound { env: &env, bindings },
+            )?;
+            let operands = DispatchOperands {
+                transport,
+                inputs: &input_values,
+                pinned: &pinned_values,
+            };
+            let run = Dispatch::new(runtime, types, program, module, &dispatch.plan, operands);
+            let (target, params) = match run.run()? {
+                Some(mut decided) => {
+                    let edge = dispatch.outcome(decided.outcome());
+                    // The winning outcome's arguments come off the run that
+                    // decided it, which already holds the subjects it produced.
                     let params = edge
                         .arguments
                         .iter()
                         .map(|argument| {
-                            let value = subject_word(
-                                runtime.cur_proc(),
-                                module,
-                                &dispatch.plan,
-                                argument.subject,
-                                &operands,
-                                &mut matched.state,
-                            )
-                            .map_err(|_| format!("winning outcome lacks subject {:?}", argument.subject))?;
+                            let value = decided
+                                .subject_word(argument.subject)
+                                .map_err(|_| format!("winning outcome lacks subject {:?}", argument.subject))?;
                             Ok((argument.parameter, value))
                         })
                         .collect::<Result<Vec<_>, String>>()?;
@@ -1452,33 +1241,32 @@ fn try_match_backend_receive(
     bindings: &crate::compiler2::DispatchBindings,
     env: &HashMap<ValueId, BackendBoundValue>,
 ) -> Result<Option<OutcomeValues>, String> {
-    let pinned = local_dispatch_pinned(transport, runtime.cur_proc(), env, bindings, dispatch)?;
-    let inputs = [BackendBoundValue::Runtime(msg)];
-    let Some(mut matched) =
-        select_dispatch_match(runtime, types, transport, program, module, dispatch, &inputs, &pinned)?
-    else {
-        return Ok(None);
-    };
-    let edge = outcomes
-        .iter()
-        .find(|edge| edge.outcome == matched.outcome)
-        .expect("receive winning edge");
+    let pinned = dispatch_values(
+        runtime.cur_proc(),
+        transport,
+        module,
+        dispatch,
+        DispatchSource::Bound { env, bindings },
+    )?;
+    let inputs = [Some(BackendBoundValue::Runtime(msg))];
     let operands = DispatchOperands {
         transport,
         inputs: &inputs,
         pinned: &pinned,
     };
+    let run = Dispatch::new(runtime, types, program, module, dispatch, operands);
+    let Some(mut decided) = run.run()? else {
+        return Ok(None);
+    };
+    let edge = outcomes
+        .iter()
+        .find(|edge| edge.outcome == decided.outcome())
+        .expect("receive winning edge");
     let mut params = Vec::with_capacity(edge.arguments.len());
     for argument in &edge.arguments {
-        let value = subject_word(
-            runtime.cur_proc(),
-            module,
-            dispatch,
-            argument.subject,
-            &operands,
-            &mut matched.state,
-        )
-        .map_err(|_| format!("receive outcome lacks subject {:?}", argument.subject))?;
+        let value = decided
+            .subject_word(argument.subject)
+            .map_err(|_| format!("receive outcome lacks subject {:?}", argument.subject))?;
         params.push((argument.parameter, value));
     }
     Ok(Some((edge.target, params)))
@@ -2218,22 +2006,7 @@ fn env_values(
         .collect()
 }
 
-fn local_dispatch_pinned(
-    transport: &TransportStore,
-    proc: *mut Process,
-    env: &HashMap<ValueId, BackendBoundValue>,
-    bindings: &crate::compiler2::DispatchBindings,
-    plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
-) -> Result<DispatchValues, String> {
-    assert_eq!(bindings.pinned.len(), plan.pinned.len());
-    assert_eq!(bindings.prepared.len(), plan.prepared_keys.len());
-    Ok(DispatchValues {
-        pinned: env_values(transport, proc, env, &bindings.pinned)?,
-        prepared: env_values(transport, proc, env, &bindings.prepared)?,
-    })
-}
-
-fn env_get(
+pub(super) fn env_get(
     transport: &TransportStore,
     proc: *mut Process,
     env: &HashMap<ValueId, BackendBoundValue>,
@@ -2498,18 +2271,28 @@ fn select_construction_member<'a>(
         ));
     }
     let member = match &wrapper.selection {
-        Some(selection) => select_dispatch_body(
-            runtime,
-            types,
-            transport,
-            program,
-            module,
-            selection,
-            &args.iter().copied().map(BackendBoundValue::Runtime).collect::<Vec<_>>(),
-            &DispatchValues::default(),
-        )?
-        .ok_or_else(|| format!("backend callable construction {:?} matched no member", wrapper.identity))?
-            as usize,
+        Some(selection) => {
+            let inputs = args
+                .iter()
+                .map(|arg| Some(BackendBoundValue::Runtime(*arg)))
+                .collect::<Vec<_>>();
+            let values = dispatch_values(
+                runtime.cur_proc(),
+                transport,
+                module,
+                selection,
+                DispatchSource::Inputs(&inputs),
+            )?;
+            let operands = DispatchOperands {
+                transport,
+                inputs: &inputs,
+                pinned: &values,
+            };
+            let decided = Dispatch::new(runtime, types, program, module, selection, operands)
+                .run()?
+                .ok_or_else(|| format!("backend callable construction {:?} matched no member", wrapper.identity))?;
+            selection.body_id(decided.outcome()) as usize
+        }
         None if wrapper.members.len() == 1 => 0,
         None => {
             return Err(format!(
@@ -3553,6 +3336,48 @@ fn backend_unop(op: crate::ast::UnOp) -> Result<IrUnOp, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fz_runtime::ir_runtime::{fz_list_head_ref, fz_list_tail_ref};
+
+    /// Entry dispatch refuses to decide when an input its plan reads never
+    /// arrived: the questions it asks have no value to ask them of.
+    #[test]
+    fn entry_dispatch_refuses_an_input_its_plan_reads_but_never_received() {
+        use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
+        let plan = pattern_dispatch_from_source::<crate::compiler2::Ty>(SourcePatternRows::lexical(
+            1,
+            vec![
+                PatternRow {
+                    patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Int(1))],
+                    preconditions: Vec::new(),
+                    guard: None,
+                    body_id: 0,
+                },
+                PatternRow {
+                    patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard)],
+                    preconditions: Vec::new(),
+                    guard: None,
+                    body_id: 1,
+                },
+            ],
+        ))
+        .expect("a two-clause head compiles");
+        let dispatch = crate::compiler2::ExecutableDispatch::new(plan, vec![0, 1]);
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
+        runtime.current_proc = runtime.process_ptr(1).unwrap();
+        let world = crate::compiler2::World::new();
+        let program = empty_backend_program();
+        let error = select_clause(
+            &mut runtime,
+            world.types(),
+            &TransportStore::new(),
+            &program,
+            &Module::default(),
+            &dispatch,
+            &[None],
+        )
+        .expect_err("the plan reads the only input, which never arrived");
+        assert_eq!(error, "backend clause dispatch required omitted semantic input 0");
+    }
 
     #[test]
     fn kernel_panic_preserves_a_composite_reason_without_terminating_the_interpreter_host() {

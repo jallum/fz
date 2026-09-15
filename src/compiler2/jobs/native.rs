@@ -3393,7 +3393,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
 
     /// Clause selection on a bitstring pattern.
     ///
-    /// The interpreter answers this in `dispatch_read_bitstring` and the
+    /// The interpreter answers this in `Dispatch::read_bitstring` and the
     /// receive matcher answers it in `emit_bitstring_test`; this is the entry
     /// dispatch's answer, and it is why `case <<len, rest :: binary>> -> ...`
     /// used to run on the interpreter and refuse to lower natively.

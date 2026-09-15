@@ -33,8 +33,9 @@ should consume `PatternDispatchPlan` or the underlying `DispatchGraph` directly.
   the matrix as `PatternDispatchPlan`.
 - `src/compiler2/jobs/body.rs` constructs inline outcome edges and their target
   signatures together; `jobs/native.rs` lowers the graph and its winning values.
-- `src/ir_interp/dispatch_exec.rs` returns the winning outcome and successful
-  subject state for inline dispatch, function dispatch, and receive probes.
+- `src/ir_interp/dispatch_exec.rs` owns `Dispatch`, the interpreter's one
+  dispatch door, for inline dispatch, function dispatch, guard helpers, callable
+  construction and receive probes.
 - `src/compiler2/native_codegen/receive.rs` emits the scheduler-facing receive
   probe function by walking the same plan.
 
@@ -155,6 +156,45 @@ their source or projection recipe.
 
 The generic `DispatchMatrix` sees only regions and opaque outcome ids. Bodies,
 receive wakeup behavior, and guard result interpretation belong to the producer.
+
+## The Interpreter's Dispatch Door
+
+`Dispatch` in `src/ir_interp/dispatch_exec.rs` borrows what deciding a plan
+needs -- runtime, types, program, module, the plan, and its `DispatchOperands`
+(transport, inputs, pins and prepared keys) -- and owns the subject state the
+walk fills in. Every step of the walk is a method on it, so a question reads its
+operands rather than being handed them, and a type test asks
+`Types::runtime_type_predicate` through the same context instead of a closure
+built per call. The lane-form decomposition (`type_matches`) and the
+whole-value answer (`whole_value_matches`) are two methods on that one context;
+`backend.rs` answers only what the representation owns, which callable a code
+word denotes.
+
+`Dispatch::run` is the only entry. It consumes the run and answers `Ok(None)`
+where no clause matched, an error where the plan and its operands disagree, and
+otherwise a `Decided`: the decision as a value, holding both the winning outcome
+and the run that produced it. A winning outcome's arguments are read through
+`Decided::subject_word`, off the operands the decision was made on, so nothing
+rebuilds them and no caller can ask a run that never decided what it bound. A
+guard's nested dispatch runs the helper plan through the same door; a helper
+that matches nothing is a guard that does not hold. Entry dispatch maps the
+winning outcome through `PatternDispatchPlan::body_id` to
+`ExecutableDispatch::clause_index`; a callable construction maps it to a member;
+inline and receive sites route it through their own outcome edges.
+
+`dispatch_values` builds the operands every door needs beyond its inputs, and
+each door goes through it. Its `DispatchSource` says where those come from:
+`Inputs` reads a pin from the ordinal the plan's prematch recorded out of the
+decoded inputs and materialises prepared keys from the plan's own constants,
+while `Bound` reads both out of the environment values a match site named. A
+guard helper is the one exception to building: its prepared keys are its
+caller's, named by position, because the source constructor lifted every child
+key into the caller's operands.
+
+Inputs are borrowed as decoded -- `None` for a semantic input the ABI published
+no layout for. An input the plan's demand says it reads is refused before the
+run; reaching one inside the walk stops the run naming the ordinal, so the two
+readings of "did this input arrive" cannot disagree quietly.
 
 ## Lowering Sites
 

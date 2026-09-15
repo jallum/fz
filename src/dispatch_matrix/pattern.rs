@@ -30,6 +30,12 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
         self.outcomes.iter().find(|entry| entry.outcome == id)
     }
 
+    /// The body a winning outcome names. Every outcome the graph can reach is
+    /// one this plan carries, so a decision always has a body.
+    pub(crate) fn body_id(&self, outcome: OutcomeId) -> PatternBodyId {
+        self.outcome(outcome).expect("a winning outcome names a body").body_id
+    }
+
     pub(crate) fn subject(&self, id: SubjectId) -> &super::SubjectSource {
         &self.matrix.subjects[id.0 as usize].source
     }
