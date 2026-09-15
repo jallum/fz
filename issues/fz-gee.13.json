@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T19:32:28Z",
+  "description": "ShapeDemand::field_prefix (src/compiler2/semantic.rs) pads or truncates a TupleFields demand to a construction site's arity, and the Tuple arm of jobs/runtime_demand.rs and tuple_return_demand_for_observed_need consume it. Truncation drops demand entries past the arity. That is a narrowing step inside the runtime-demand fixpoint. It is monotone, so the fixpoint stays safe, but its correctness rests on one argument that lives only in a doc comment: a field past this construction site's arity names an arm of the union this value is not, so the entry cannot apply here. Nothing asserts that. Make the argument checkable: either the demand join carries the arity it was formed under, so a mismatch is a typed refusal rather than a silent trim, or a debug assertion at the truncation proves the dropped entries are ignore for the arm being constructed. Found while probing the +2 DeriveRuntimeDemand evaluations that fz-kdt.137 costs on 00420_enum_take_drop_split (all eleven extra completions change the fact; the two-tuple callers settle one rung sooner; verdict necessary work). Not a defect today.",
+  "id": "fz-gee.13",
+  "labels": [],
+  "parent": "fz-gee",
+  "priority": 3,
+  "status": "open",
+  "title": "field_prefix narrows a tuple demand past a construction site's arity on a doc-comment argument alone",
+  "type": "task",
+  "updated_at": "2026-09-15T19:32:28Z"
+}
