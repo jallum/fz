@@ -9,9 +9,15 @@
   "id": "fz-kdt.177.2",
   "labels": [],
   "parent": "fz-kdt.177",
+  "comments": [
+    {
+      "text": "The three product-pull aborts pinned in CORPUS_PRODUCT_PULL_ABORTS are the ICE filed as fz-0rx; when it is fixed the pin empties and is deleted.",
+      "timestamp": "2026-09-15T21:56:16Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "The corpus widening sweep reads every fixture directory",
   "type": "bug",
-  "updated_at": "2026-09-15T20:30:34Z"
+  "updated_at": "2026-09-15T21:56:16Z"
 }
