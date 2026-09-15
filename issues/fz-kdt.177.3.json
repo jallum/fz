@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.177.9"
+  ],
   "created": "2026-09-15T20:29:46Z",
   "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR1. fz.compiler2.return_type.defined and .widened are emitted (src/compiler2/world.rs ~3411/3414) with a JSONL projection (src/telemetry/jsonl.rs ~1343) but never appear in a --log-telemetry capture, nor do activation_analysis.defined and callsite.defined; the public allowlist (is_public_compiler2_trace_event) or the raw-value registration is the likely cause (same family as fz-uai). Find it, fix it, and give tools/distill-telemetry.exs a section: ReturnType revisions per activation (count, and whether widened), so fz-kdt.177's stated signal is observable from the stream. Test: jsonl_emits_return_type_revisions; the distiller on json_roundtrip prints Json.value/1 with 18.",
   "id": "fz-kdt.177.3",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Return-type revision events reach the telemetry stream and the distiller counts them",
   "type": "bug",
-  "updated_at": "2026-09-15T20:29:46Z"
+  "updated_at": "2026-09-15T20:30:02Z"
 }
