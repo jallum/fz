@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T22:12:34Z",
+  "description": "src/telemetry/public_trace.rs PublicTrace::compile ends in Compiler2::drive(), the standalone semantic drive; every door pulls the root's BackendProgram product instead (run_root_interp / run_root_jit / build), and on json_roundtrip the two drivers disagree (standalone: 277 activations with a return revision, max 9 revisions, 0 widened; product pull: 380 activations, max 17, 5 widened; fz-kdt.177.2 doc). Tests written against PublicTrace::compile measure a configuration no user runs. Make the public-trace helper drive the same product pull the doors take (or delete Compiler2::drive as a public entry if nothing but tests use it), so there is one measurement driver. Signal: jsonl_test and the corpus sweep measure the same numbers on the same fixture; grep for compiler.drive() in tests finds only tests about the drive itself.",
+  "id": "fz-a8i",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "One measurement driver: PublicTrace::compile drives the standalone semantic drive, no door does",
+  "type": "task",
+  "updated_at": "2026-09-15T22:12:34Z"
+}
