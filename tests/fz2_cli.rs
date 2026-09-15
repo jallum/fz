@@ -31,11 +31,6 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
-        // A guard no longer charges the subject that carries it, so a local
-        // demand that used to start at `Whole` starts at `Ignore` and the
-        // demand fixpoint climbs one more step: thirteen more walks of bodies
-        // it already reached. The activations, the backend program and every
-        // other counter are identical.
         runtime_demand_walks: 1125,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
@@ -50,9 +45,6 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
         golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        // The same lower starting point costs three more demand walks here,
-        // on `main/0` and the `Range` reducers. No key moves: the backend
-        // program, its activations and its types are identical.
         runtime_demand_walks: 237,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
@@ -1143,11 +1135,7 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
             })
             .sum::<u64>();
         assert_eq!(
-            // Sixteen more demand walks across the three fixtures: with the
-            // guard carrier uncharged, the demand fixpoint starts lower and
-            // climbs one more step. Nothing else about the programs moves.
-            aggregate_walks,
-            1973,
+            aggregate_walks, 1973,
             "the same retained observations own the aggregate work pin"
         );
         assert!(
