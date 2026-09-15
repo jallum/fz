@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T14:01:52Z",
+  "description": "notify_fixture_execution_start() (src/lib.rs) is called in src/compiler2/cli.rs run_command right before compiler.run_root_jit(root) and in interp_command before run_root_interp, i.e. after parsing and root submission but before the entire fixpoint drive, Cranelift JIT and the program run. tests/fixture_matrix.rs arms the execution deadline on that byte, so \"fz2 exceeded 20s\" on the run and interp doors measures compile + JIT + run, of which the program is under 0.2% on json_roundtrip. The harness's own policy test says pre-execution work must not arm the execution hang guard, and .agent/docs/fixtures.md describes the execution guard as starting when execution starts; the build door honours it (its compile is guarded from spawn, the built binary separately).\n\nFix: write the readiness byte at the real seam, immediately before the runtime spawns the program's entry, inside run_root_jit and run_root_interp (src/compiler2/compiler.rs), so the setup guard covers the compile and the execution guard covers the program. Signal: tests/fixture_matrix.rs's policy test made real by a fixture whose compile is slow and whose run is instant (json_roundtrip is one), asserting which deadline fires; the telemetry stream's process_exited timestamp minus the readiness time equals the program's run time.",
+  "id": "fz-i9q",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "The readiness byte precedes the compiler drive, so the execution hang guard times the compiler",
+  "type": "bug",
+  "updated_at": "2026-09-15T14:01:52Z"
+}
