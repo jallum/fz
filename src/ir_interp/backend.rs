@@ -14,7 +14,7 @@ use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportLayout, TransportPosition, TransportStore};
 use crate::compiler2::{
     BackendBody, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendExecutable,
-    BackendProgram, BackendStep as ProgramStep, BackendTail, CallEdge, CallTarget, ControlDestination,
+    BackendProgram, BackendStep as ProgramStep, BackendTail, CallEdge, CallTarget, ClosureCallEdge, ControlDestination,
     ExecutableDispatch, ValueId,
 };
 use crate::compiler2::{ExecutableKey, FunctionId};
@@ -915,7 +915,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             )
         }
         BackendTail::ClosureCall {
-            target,
+            edge,
             callsite,
             callee,
             args,
@@ -923,25 +923,15 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             ..
         } => {
             let callee_value = env.get(callee).cloned();
-            // The call form carries the decision the artifact layer made with
-            // `callee_supplies_target_captures`. A named target is a direct
-            // edge whose captures come out of the callee value's own lanes; an
-            // unnamed one is a call through the boxed apply seam. This door
-            // emits what that one answer promised, exactly as native does.
-            let (executable_target, call_args) = match target {
-                Some(target) => {
+            // The recorded call form carries the decision the artifact layer
+            // made. A direct edge names its target and the capture count that
+            // target declares, and the captures come out of the callee value's
+            // own lanes; a seam call goes through the boxed apply wrapper. This
+            // door emits what that one answer promised, exactly as native does.
+            let (executable_target, call_args) = match edge {
+                ClosureCallEdge::Direct { target, capture_count } => {
                     let callee_executable = backend_executable_ref(program, types, target)?;
-                    let capture_inputs_end = callee_executable
-                        .key
-                        .activation
-                        .input_len(types)
-                        .checked_sub(args.len())
-                        .ok_or_else(|| {
-                            format!(
-                                "backend executable {} has fewer inputs than closure call args",
-                                callee_executable.key.activation.function.as_u32()
-                            )
-                        })?;
+                    let capture_inputs_end = *capture_count;
                     let captures = match &callee_value {
                         Some(BackendBoundValue::Transport { shape, lanes })
                             if matches!(transport.interners().shape(*shape), ShapeDescr::Callable(_)) =>
@@ -992,7 +982,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     )?);
                     (callee_executable, lanes)
                 }
-                None => {
+                ClosureCallEdge::Seam | ClosureCallEdge::Dead => {
                     let callee_value = callee_value.ok_or_else(|| {
                         format!(
                             "closure call executable={:?} function={} callsite={} callee_value={}: backend value {} is unbound",

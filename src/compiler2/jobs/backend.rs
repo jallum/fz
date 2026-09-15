@@ -15,10 +15,10 @@ use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::super::artifact::{
-    AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause, BackendConstructionCapture,
-    BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
-    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout, BackendStep,
-    BackendTail, CallEdge, CallReturnFlow, DirectCallEdge, DispatchCallArm,
+    AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
+    BackendConstructionCapture, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry,
+    BackendEntryCapture, BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout,
+    BackendStep, BackendTail, CallEdge, CallReturnFlow, DirectCallEdge, DispatchCallArm,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry, LoweredStep, LoweredTail,
@@ -231,7 +231,7 @@ pub(crate) fn produce_backend_executable_product(
     let root = context.session().root();
     let mut dependencies = HashSet::new();
     for edge in abi.call_edges.values() {
-        let flows = match &edge.target {
+        let flows = match edge.target() {
             CallEdge::Direct(edge) => vec![&edge.return_flow],
             CallEdge::Dispatch(dispatch) => dispatch.arms.iter().map(|arm| &arm.return_flow).collect(),
             CallEdge::Indirect(flow) => vec![flow],
@@ -316,7 +316,7 @@ pub(crate) fn produce_backend_executable_product(
     collect_executable_atoms(world, &backend, &mut HashSet::new(), &mut atoms);
     backend.atom_names = atoms.into_iter().map(Rc::new).collect();
     for edge in backend.abi.call_edges.values() {
-        for callee in symbolic_call_edge_callees(&edge.target) {
+        for callee in symbolic_call_edge_callees(edge.target()) {
             context.include_product(ProductKey::BackendExecutable(callee.clone()));
         }
     }
@@ -727,7 +727,7 @@ fn lower_backend_tail(
             BackendTail::DirectCall {
                 value: *value,
                 callsite: *callsite,
-                target: backend_call_edge(&edge.target, &lowerer.return_endpoints)?,
+                target: backend_call_edge(edge.target(), &lowerer.return_endpoints)?,
                 args: lowerer.lower_call_args(abi, *callsite, None, args)?,
                 dest: dest.clone(),
             }
@@ -739,18 +739,23 @@ fn lower_backend_tail(
             args,
             dest,
         } => {
-            let edge = abi.call_edges.get(callsite);
+            // A closure tail's edge is a closure edge, minted with the form
+            // this tail carries on unchanged.
+            let Some(AbiReadyCallEdge::Closure { form, target, .. }) = abi.call_edges.get(callsite) else {
+                return Err(incomplete_backend_program(
+                    lowerer.telemetry,
+                    lowerer.root_id,
+                    format!("missing symbolic closure-call edge for callsite {}", callsite.as_u32()),
+                ));
+            };
             BackendTail::ClosureCall {
                 value: *value,
                 callsite: *callsite,
                 callee: *callee,
-                target: edge
-                    .and_then(|edge| symbolic_direct_call_edge(&edge.target))
-                    .and_then(|edge| edge.callee.local().cloned()),
+                edge: form.clone(),
                 args: lowerer.lower_call_args(abi, *callsite, Some(*callee), args)?,
                 dest: dest.clone(),
-                return_flow: edge
-                    .and_then(|edge| symbolic_call_edge_return_flow(&edge.target))
+                return_flow: symbolic_call_edge_return_flow(target)
                     .map(|flow| resolve_return_flow(flow, &lowerer.return_endpoints))
                     .transpose()?,
             }
@@ -782,13 +787,6 @@ fn lower_backend_tail(
         })),
         LoweredTail::Halt { atom } => BackendTail::Halt { atom: atom.clone() },
     })
-}
-
-fn symbolic_direct_call_edge(target: &CallEdge<ExecutableKey>) -> Option<&DirectCallEdge<ExecutableKey>> {
-    match target {
-        CallEdge::Direct(direct) => Some(direct),
-        CallEdge::Dispatch(_) | CallEdge::Indirect(_) => None,
-    }
 }
 
 fn symbolic_call_edge_return_flow(target: &CallEdge<ExecutableKey>) -> Option<&CallReturnFlow> {
@@ -1509,7 +1507,7 @@ mod tests {
                         value: ValueId::from_u32(2),
                         callsite: CallSiteId::from_u32(0),
                         callee,
-                        target: None,
+                        edge: crate::compiler2::artifact::ClosureCallEdge::Seam,
                         args: vec![BackendCallArg {
                             value: ValueId::from_u32(3),
                             ownership: crate::fz_ir::OwnershipMode::Share,

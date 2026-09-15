@@ -4844,7 +4844,7 @@ mod tests {
         caller_symbol: ExecutableSymbol,
         callee_symbol: ExecutableSymbol,
     ) -> MaterializedCallEdge {
-        MaterializedCallEdge {
+        MaterializedCallEdge::Named {
             target: CallEdge::Direct(DirectCallEdge {
                 callee: CallTarget::Local(callee),
                 return_flow: CallReturnFlow::Tail {

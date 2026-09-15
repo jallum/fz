@@ -8,8 +8,6 @@ use super::drive::{ExecutionContext, Job, JobEffects};
 use super::scheduler::FatalError;
 
 pub(crate) mod artifact;
-#[cfg(test)]
-mod artifact_test;
 pub(crate) mod backend;
 mod body;
 #[cfg(test)]
@@ -30,6 +28,8 @@ mod source;
 #[cfg(test)]
 mod source_test;
 pub(crate) mod transport;
+#[cfg(test)]
+mod transport_test;
 mod types;
 
 pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(

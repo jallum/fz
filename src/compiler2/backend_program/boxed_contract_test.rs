@@ -4,7 +4,7 @@ use super::boxed_contract::tests::{caller, wrapper};
 use super::boxed_contract::{BoxedApplyRequirement, BoxedContracts};
 use crate::compiler2::artifact::{
     AbiValueRepr, BackendBody, BackendCallArg, BackendCallableReturn, BackendEntry, BackendEntryOrigin,
-    BackendExecutable, BackendReturnFlow, BackendReturnLayout, BackendTail, BackendValueLayout,
+    BackendExecutable, BackendReturnFlow, BackendReturnLayout, BackendTail, BackendValueLayout, ClosureCallEdge,
 };
 use crate::compiler2::body::ControlDestination;
 use crate::compiler2::identity::{ExecutableKey, RootId};
@@ -53,7 +53,7 @@ fn boxed_caller_body(
                 value: ValueId::from_u32(2),
                 callsite: CallSiteId::from_u32(0),
                 callee,
-                target: None,
+                edge: ClosureCallEdge::Seam,
                 args: vec![BackendCallArg {
                     value: ValueId::from_u32(3),
                     ownership: crate::fz_ir::OwnershipMode::Share,

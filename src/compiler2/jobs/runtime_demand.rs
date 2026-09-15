@@ -991,9 +991,8 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
 /// hands back.
 ///
 /// The question "does this call go through the seam?" is a property of the
-/// CALLEE VALUE, not of the callsite: `materialize_closure_call_edge` lowers a
-/// direct edge to a named target only while the callee travels in its exact
-/// carrier, and that carrier is `ValueRef` the moment the value's own joined
+/// CALLEE VALUE, not of the callsite: `closure_call_form` mints a direct edge
+/// to a named target only while the callee travels in its exact carrier, and that carrier is `ValueRef` the moment the value's own joined
 /// demand is first-class -- which a use somewhere else in this body can decide
 /// on its own. A callsite that names an exact target is still a boxed call if
 /// the lambda it calls is also handed out of the function two lines later. So

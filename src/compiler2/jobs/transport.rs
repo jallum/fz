@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
-use super::super::artifact::AbiValueRepr;
+use super::super::artifact::{AbiValueRepr, ClosureCallEdge};
 use super::super::body::{
     CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredTail, ValueId, callsite_call_args,
     callsite_input_modes,
@@ -17,8 +17,8 @@ use super::super::pull::{
     TransportShapeFact,
 };
 use super::super::semantic::{
-    CallableDemand, CallableFlowFact, CallableSurface, CallableTarget, ExecutableRuntimeDemand, RuntimeDemand,
-    SelectedCallee, SemanticOrd, ShapeDemand,
+    CallSiteSummary, CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, CallableTarget,
+    ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, SemanticOrd, ShapeDemand,
 };
 use super::super::transport::{
     ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableConstructionCapture, CallableConstructionFact,
@@ -798,7 +798,7 @@ fn record_generic_owner_facts(
 /// ask whether a lane is one. Interning it once at world construction would
 /// let both take `&World`, but it would also move every type minted after it,
 /// which is a large change of ids for a smaller change of signature.
-pub(crate) fn layout_is_one_public_word(world: &mut World, layout: TransportLayout) -> bool {
+fn layout_is_one_public_word(world: &mut World, layout: TransportLayout) -> bool {
     if layout.carrier.is_value_ref() {
         return true;
     }
@@ -837,14 +837,10 @@ pub(crate) fn layout_is_one_public_word(world: &mut World, layout: TransportLayo
 /// environment and is never direct to this target. Any other uncarried value
 /// holds no captures, which is all a target that declares none asks for.
 ///
-/// This is the single authority. The artifact layer mints the call edge from
-/// it, the closure-call return claim grounds on it, and the native and
-/// interpreter lowerings emit the captures the same answer promised.
-pub(crate) fn callee_supplies_target_captures(
-    world: &mut World,
-    callee: TransportLayout,
-    target: &ActivationKey,
-) -> bool {
+/// This is the single authority. `closure_call_form` mints the recorded call
+/// form from it, the closure-call return claim grounds on it, and the native
+/// and interpreter lowerings emit the captures that one answer promised.
+fn callee_supplies_target_captures(world: &mut World, callee: TransportLayout, target: &ActivationKey) -> bool {
     if layout_is_one_public_word(world, callee) {
         return false;
     }
@@ -859,6 +855,71 @@ pub(crate) fn callee_supplies_target_captures(
         ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Tuple(_) => 0,
     };
     held == world.activation_capture_count(target)
+}
+
+/// Which of the three call forms this closure callsite has, from the callee's
+/// positioned layout and what the callsite summary names.
+///
+/// This is the whole decision, made once. A caller that can supply the one
+/// target's captures calls it directly; a caller holding one public word calls
+/// through the boxed apply seam; a callee that is neither -- no captures to
+/// hand over and no word to call through -- reaches nothing, and only a
+/// callsite that names nothing either can be in that state.
+///
+/// A callsite that DOES name a target while its callee carries neither form is
+/// two authorities contradicting each other about one value: the summary says
+/// a function with captures, transport says a value that holds none. No source
+/// program produces that, so it stops the compiler here rather than picking
+/// half of one convention.
+///
+/// The transport recipe for a closure-call result asks the same question
+/// through `callee_supplies_target_captures` instead of reading this answer,
+/// because it runs first: the recipe produces the callee's return layout, and
+/// the edge this mints is made from the layouts the recipe settled.
+pub(super) fn closure_call_form(
+    world: &mut World,
+    callee_layout: TransportLayout,
+    summary: Option<&CallSiteSummary>,
+    need: ExecutableNeed,
+) -> ClosureCallForm {
+    let direct = summary
+        .and_then(CallSiteSummary::single_owned_target)
+        .filter(|(_, activation)| callee_supplies_target_captures(world, callee_layout, activation));
+    if let Some((target, activation)) = direct {
+        let (target, activation) = (target.clone(), activation.clone());
+        let capture_count = world.activation_capture_count(&activation);
+        return ClosureCallForm::Direct {
+            edge: ClosureCallEdge::Direct {
+                target: ExecutableKey { activation, need },
+                capture_count,
+            },
+            target,
+        };
+    }
+    if layout_is_one_public_word(world, callee_layout) {
+        return ClosureCallForm::Seam;
+    }
+    match summary {
+        Some(summary) => panic!(
+            "closure callee layout {callee_layout:?} carries neither the captures of the {} target(s) its callsite names nor one public word",
+            summary.targets.len()
+        ),
+        None => ClosureCallForm::Dead,
+    }
+}
+
+/// What `closure_call_form` decided, with what lowering needs to act on it.
+///
+/// Only the `ClosureCallEdge` travels on to the emitted tail. A direct call is
+/// also lowered against the callsite summary row it was decided from, so the
+/// answer carries that row rather than leaving the caller to look it up again.
+pub(super) enum ClosureCallForm {
+    Direct {
+        edge: ClosureCallEdge,
+        target: CallTargetSummary,
+    },
+    Seam,
+    Dead,
 }
 
 #[derive(Clone)]
@@ -922,9 +983,12 @@ fn evaluate_transport_recipe(
             RecipeLayout::Exact(with_value_ref_carrier(world, ty, layout))
         }
         TransportRecipe::ClosureCallReturn { callee, grounded } => {
-            // One authority: `materialize_closure_call_edge` goes direct only
-            // when the caller can supply the target's captures; the claim
-            // grounds on exactly that condition.
+            // One authority: `closure_call_form` mints a direct edge only when
+            // the caller can supply the target's captures, and the claim
+            // grounds on exactly that condition. It asks
+            // `callee_supplies_target_captures` here rather than reading the
+            // recorded form, because this runs first: the edge is minted from
+            // the layout this recipe settles.
             let callee_key = ProductKey::TransportShape(callee.clone());
             let callee_layout = match context.read_product(tel, callee_key.clone(), world.types()) {
                 Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => *layout,
@@ -1221,10 +1285,11 @@ fn direct_callable_descr(
 
 /// The executable a closure callsite could ground its return against:
 /// `CallSiteSummary::single_owned_target` paired with the need this callsite
-/// asks of it. Whether the grounding APPLIES is decided at recipe evaluation
-/// by `callee_supplies_target_captures` — the same question
-/// `materialize_closure_call_edge` asks to choose a direct edge — so claim and
-/// call share one authority.
+/// asks of it. Whether the grounding APPLIES is decided at recipe evaluation by
+/// `callee_supplies_target_captures` — the same predicate `closure_call_form`
+/// mints a direct edge from — so claim and call share one authority. The claim
+/// asks the predicate itself rather than reading the recorded form, because it
+/// runs first: the form is minted from the layout this claim settles.
 fn singleton_closure_call_target(
     facts: &ExecutableFacts,
     callsite: &CallSiteId,
@@ -1288,10 +1353,9 @@ fn origin_transport_recipe(
         TransportSource::ClosureCallReturn { callsite, callee } => {
             // A closure-call result refines the settled singleton target
             // forward (fz-9i4.4.5): when the caller can supply that target's
-            // captures, `materialize_closure_call_edge` lowers the call as a
-            // direct edge to it, so the result aliases that executable's own
-            // return fact — caller and callee read one shape and agree by
-            // construction. A callee that has to go through the construction
+            // captures, `closure_call_form` mints a direct edge to it, so the
+            // result aliases that executable's own return fact — caller and
+            // callee read one shape and agree by construction. A callee that has to go through the construction
             // wrapper returns the public boxed contract instead, and the claim
             // stays public with it. The gate is deferred to recipe evaluation
             // because the callee's own layout is itself a transport product.

@@ -30,9 +30,9 @@ use crate::telemetry::TelemetryExt as _;
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryCapture, BackendEntryOrigin, BackendExecutable,
-    BackendProgram, BackendReturnFlow, BackendStep, BackendTail, CallEdge, CallTarget, DispatchCallEdge, EffectSummary,
-    NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeConstructionMember,
-    NativeEntryAbi, NativeExecutableEntry, NativeProgram,
+    BackendProgram, BackendReturnFlow, BackendStep, BackendTail, CallEdge, CallTarget, ClosureCallEdge,
+    DispatchCallEdge, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId,
+    NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram,
 };
 use super::super::body::{ControlDestination, ControlEntryId, DispatchBindings, LoweredExtern, ValueId};
 use super::super::identity::RootId;
@@ -1496,26 +1496,27 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             },
             BackendTail::ClosureCall {
                 callee,
-                target,
+                edge,
                 args,
                 dest,
                 return_flow,
                 ..
             } => {
                 let callee_value = env.cloned_value(*callee);
-                // The call form already carries the decision: a named target is
-                // a direct edge the artifact layer minted from
-                // `callee_supplies_target_captures`. Native emits what that
-                // answer promised; it does not re-decide.
-                let direct_call = match target {
-                    Some(target) => {
+                // The recorded call form carries the decision the artifact
+                // layer made. Native emits what that answer promised; it does
+                // not re-decide, and it does not re-derive where the target's
+                // captures end.
+                let direct_call = match edge {
+                    ClosureCallEdge::Direct { target, capture_count } => {
+                        let capture_inputs_end = *capture_count;
                         let capture_lanes = self.direct_closure_capture_lanes(
                             ctx,
                             executable,
                             *callee,
                             callee_value.as_ref(),
                             target,
-                            args.len(),
+                            capture_inputs_end,
                         )?;
                         let target = self
                             .program
@@ -1523,12 +1524,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             .ok_or(FatalError)?;
                         let callee_executable = &self.program.executables()[target];
                         let mut call_args = capture_lanes;
-                        let capture_inputs_end = callee_executable
-                            .key
-                            .activation
-                            .input_len(self.world.types())
-                            .checked_sub(args.len())
-                            .ok_or(FatalError)?;
+                        let target_inputs = callee_executable.key.activation.input_len(self.world.types());
+                        if target_inputs != capture_inputs_end + args.len() {
+                            return Err(incomplete_native_program(
+                                self.telemetry,
+                                self.root_id,
+                                format!(
+                                    "native direct closure call owner={:?} target={:?} takes {target_inputs} input(s), but the call form names {capture_inputs_end} capture(s) and passes {} argument(s)",
+                                    executable.key,
+                                    callee_executable.key,
+                                    args.len(),
+                                ),
+                            ));
+                        }
                         for (surface_index, arg) in args.iter().enumerate() {
                             let semantic_index = capture_inputs_end + surface_index;
                             let Some(target_input) = callee_executable
@@ -1596,7 +1604,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         }
                         Some((target, call_args))
                     }
-                    None => None,
+                    // A seam call goes through the callee value's own boundary,
+                    // and a dead call reaches nothing: both lower to the
+                    // indirect term below, whose return flow says which.
+                    ClosureCallEdge::Seam | ClosureCallEdge::Dead => None,
                 };
                 if let Some((target, call_args)) = direct_call {
                     let callee = DirectCallTarget::Local(self.executable_fns[target]);
@@ -4022,11 +4033,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
 
     /// The capture lanes a direct closure call hands its target.
     ///
-    /// Whether the call IS direct was decided by
-    /// `callee_supplies_target_captures` when the edge was minted, so this only
-    /// emits what that answer promised. A callee value that turns out not to
-    /// carry the target's captures is a broken plan, not a reason to call
-    /// through the seam instead.
+    /// Whether the call IS direct, and how many captures it promised to hand
+    /// over, were decided when the edge was minted, so this only emits what
+    /// that answer promised. A callee value that turns out not to carry those
+    /// captures is a broken plan, not a reason to call through the seam
+    /// instead.
     fn direct_closure_capture_lanes(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -4034,19 +4045,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         callee: ValueId,
         value: Option<&NativeBoundValue>,
         target: &ExecutableKey,
-        surface_arity: usize,
+        capture_inputs_end: usize,
     ) -> Result<Vec<Var>, FatalError> {
         let target = self
             .program
             .executable_index(target, self.world.types())
             .ok_or(FatalError)?;
         let executable = Rc::clone(&self.program.executables()[target]);
-        let capture_inputs_end = executable
-            .key
-            .activation
-            .input_len(self.world.types())
-            .checked_sub(surface_arity)
-            .ok_or(FatalError)?;
         if let Some(value) = value
             && let Some((function, captures)) = self.direct_callable_captures(value)?
         {

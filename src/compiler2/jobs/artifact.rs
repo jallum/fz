@@ -16,8 +16,8 @@ use crate::source::Span;
 
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendReturnLayout, BackendSemanticInputLayout,
-    BackendValueLayout, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm, DispatchCallEdge,
-    EffectSummary, MaterializedCallEdge, MaterializedExecutable, MaterializedExecutableTransport,
+    BackendValueLayout, CallEdge, CallReturnFlow, CallTarget, ClosureCallEdge, DirectCallEdge, DispatchCallArm,
+    DispatchCallEdge, EffectSummary, MaterializedCallEdge, MaterializedExecutable, MaterializedExecutableTransport,
     PositionedCallableConstructionOwner,
 };
 use super::super::body::{
@@ -42,7 +42,7 @@ use super::super::transport::ShapeDescr;
 use super::super::transport::{ActivationSymbol, ExecutableSymbol, PhysicalLaneSource, TransportPosition};
 use super::super::types::{Ty, Types};
 use super::super::world::World;
-use super::transport::{callee_supplies_target_captures, layout_is_one_public_word};
+use super::transport::{ClosureCallForm, closure_call_form};
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
@@ -197,8 +197,8 @@ fn reachable_struct_modules(
     type_roots.extend([executable.activation.arrow, return_ty]);
     type_roots.extend(value_types.values().copied());
     for edge in call_edges.values() {
-        type_roots.push(edge.return_ty);
-        match &edge.target {
+        type_roots.push(edge.return_ty());
+        match edge.target() {
             CallEdge::Direct(direct) => {
                 if let Some(callee) = direct.callee.local() {
                     type_roots.push(callee.activation.arrow);
@@ -237,7 +237,7 @@ pub(crate) fn produce_executable_effects_product<T: crate::telemetry::Telemetry>
     let mut callees = materialized
         .call_edges
         .values()
-        .flat_map(|edge| edge.target.local_callees())
+        .flat_map(|edge| edge.target().local_callees())
         .cloned()
         .collect::<Vec<_>>();
     callees.sort_by(|left, right| left.semantic_cmp(right, types));
@@ -462,8 +462,8 @@ fn materialized_executable_transport(
     }
 }
 
-pub(super) struct ArtifactTransportLookup<'a> {
-    pub(super) positions: &'a [(TransportPosition, TransportLayout)],
+struct ArtifactTransportLookup<'a> {
+    positions: &'a [(TransportPosition, TransportLayout)],
 }
 
 fn transport_lookup<'a>(positions: &'a [(TransportPosition, TransportLayout)]) -> ArtifactTransportLookup<'a> {
@@ -930,7 +930,7 @@ fn materialize_call_edges(
                     value: *callee,
                 };
                 let callee_layout = require_transport_layout(tel, root_id, transport_plan, &callee_position)?;
-                if let Some(edge) = materialize_closure_call_edge(
+                let edge = materialize_closure_call_edge(
                     world,
                     tel,
                     root_id,
@@ -945,9 +945,8 @@ fn materialize_call_edges(
                     dest,
                     original_entry_ids,
                     callsite_args,
-                )? {
-                    call_edges.insert(*callsite, edge);
-                }
+                )?;
+                call_edges.insert(*callsite, edge);
             }
             LoweredTail::Value { .. }
             | LoweredTail::If { .. }
@@ -1014,7 +1013,7 @@ fn materialize_direct_call_edge(
                 callsite_args,
                 target,
             )?;
-            return Ok(Some(MaterializedCallEdge {
+            return Ok(Some(MaterializedCallEdge::Named {
                 target: CallEdge::Direct(direct),
                 return_ty,
             }));
@@ -1055,7 +1054,7 @@ fn materialize_direct_call_edge(
         });
     }
     let return_ty = summary.settled_return(world.types_mut());
-    Ok(Some(MaterializedCallEdge {
+    Ok(Some(MaterializedCallEdge::Named {
         target: CallEdge::Dispatch(Box::new(DispatchCallEdge {
             plan: dispatch.plan,
             arms,
@@ -1064,7 +1063,7 @@ fn materialize_direct_call_edge(
     }))
 }
 
-pub(super) fn materialize_closure_call_edge(
+fn materialize_closure_call_edge(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
@@ -1079,92 +1078,85 @@ pub(super) fn materialize_closure_call_edge(
     dest: &ControlDestination,
     original_entry_ids: &[ControlEntryId],
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
-) -> Result<Option<MaterializedCallEdge>, FatalError> {
+) -> Result<MaterializedCallEdge, FatalError> {
     let summary = summaries.get(&callsite).cloned();
-    // One question decides the call: can this caller supply the target's
-    // capture inputs out of what it holds? `callee_supplies_target_captures`
-    // answers it, and native lowering emits the captures that answer promised.
-    let direct_target = summary
-        .as_ref()
-        .and_then(CallSiteSummary::single_owned_target)
-        .filter(|(_, activation)| callee_supplies_target_captures(world, callee_layout, activation))
-        .map(|(target, _)| target.clone());
-    // One public word means a real callable value reaches this callsite at
-    // runtime and the boxed-apply wrapper can call it, however little the
-    // analysis managed to name. That is the standing state for a closure that
-    // arrived from outside the analysed world — a mailbox message — where no
-    // target is ever named and none ever will be: "no targets" there is
-    // UNKNOWN, not `none` (fz-kdt.130). It is also where a lambda goes when
-    // the tuple carrying it is used whole beside being taken apart.
-    let boxed = layout_is_one_public_word(world, callee_layout);
-    if direct_target.is_none() && !boxed {
-        // The callsite summary names a target with captures, and transport
-        // delivered a callee that carries neither those captures nor a word
-        // the seam could open. The two authorities have contradicted each
-        // other about one value: that is a compiler defect, not a program
-        // this compiler declines.
-        if let Some(summary) = summary.as_ref() {
-            panic!(
-                "closure callsite {} names {} target(s) whose captures the callee layout {callee_layout:?} does not carry, and the layout is not one public word either",
-                callsite.as_u32(),
-                summary.targets.len()
-            );
+    // One question decides the call, and `closure_call_form` is where it is
+    // asked: can this caller supply the target's capture inputs out of what it
+    // holds, and if not, is what it holds a word the seam can open? The form
+    // travels with the edge, so native lowering, the interpreter and the
+    // boxed-apply contract all emit what this one answer promised.
+    match closure_call_form(world, callee_layout, summary.as_ref(), need) {
+        // Nothing can be called here, so this call really never happens. Lower
+        // it as the dead call it is — every `ClosureCall` tail needs a return
+        // flow, and `NoReturn` is the name for one that never returns. Emitting
+        // no edge at all instead leaves native lowering with a `Deliver`
+        // destination and nothing to deliver (fz-f98.18). An `Unresolved` edge
+        // (fz-kdt.69.2) reaches this same answer.
+        ClosureCallForm::Dead => {
+            let never = world.types_mut().none();
+            Ok(MaterializedCallEdge::Closure {
+                form: ClosureCallEdge::Dead,
+                target: CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None }),
+                return_ty: never,
+            })
         }
-        // No callable carrier AND no evidence at all: nothing can be called
-        // here, so this call really never happens. Lower it as the dead call it
-        // is — every `ClosureCall` tail needs a return flow, and `NoReturn` is
-        // the name for one that never returns. Emitting no edge at all instead
-        // leaves native lowering with a `Deliver` destination and nothing to
-        // deliver (fz-f98.18). An `Unresolved` edge (fz-kdt.69.2) reaches this
-        // same answer.
-        let never = world.types_mut().none();
-        return Ok(Some(MaterializedCallEdge {
-            target: CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None }),
-            return_ty: never,
-        }));
-    }
-    let Some(target) = direct_target else {
-        let return_ty =
-            public_indirect_return_ty(world, tel, root_id, analysis, summary.as_ref(), callsite, result_value)?;
-        let return_flow = if world.types().is_empty(&return_ty) {
-            CallReturnFlow::NoReturn { local_source: None }
-        } else {
-            call_return_flow(
+        // A real callable value reaches this callsite at runtime and the
+        // boxed-apply wrapper can call it, however little the analysis managed
+        // to name. That is the standing state for a closure that arrived from
+        // outside the analysed world — a mailbox message — where no target is
+        // ever named and none ever will be: "no targets" there is UNKNOWN, not
+        // `none` (fz-kdt.130). It is also where a lambda goes when the tuple
+        // carrying it is used whole beside being taken apart.
+        ClosureCallForm::Seam => {
+            let return_ty =
+                public_indirect_return_ty(world, tel, root_id, analysis, summary.as_ref(), callsite, result_value)?;
+            let return_flow = if world.types().is_empty(&return_ty) {
+                CallReturnFlow::NoReturn { local_source: None }
+            } else {
+                call_return_flow(
+                    world,
+                    tel,
+                    root_id,
+                    transport_plan,
+                    executable,
+                    None,
+                    callsite,
+                    dest,
+                    original_entry_ids,
+                    true,
+                )?
+            };
+            Ok(MaterializedCallEdge::Closure {
+                form: ClosureCallEdge::Seam,
+                target: CallEdge::Indirect(return_flow),
+                return_ty,
+            })
+        }
+        // The form came from the callsite's one owned target and carries that
+        // summary row, so the direct edge is lowered against the row the
+        // decision was made from.
+        ClosureCallForm::Direct { edge, target } => {
+            let (direct, return_ty) = lower_materialized_call_target(
                 world,
                 tel,
                 root_id,
                 transport_plan,
                 executable,
-                None,
+                analysis,
+                need,
                 callsite,
                 dest,
                 original_entry_ids,
-                true,
-            )?
-        };
-        return Ok(Some(MaterializedCallEdge {
-            target: CallEdge::Indirect(return_flow),
-            return_ty,
-        }));
-    };
-    let (direct, return_ty) = lower_materialized_call_target(
-        world,
-        tel,
-        root_id,
-        transport_plan,
-        executable,
-        analysis,
-        need,
-        callsite,
-        dest,
-        original_entry_ids,
-        callsite_args,
-        target,
-    )?;
-    Ok(Some(MaterializedCallEdge {
-        target: CallEdge::Direct(direct),
-        return_ty,
-    }))
+                callsite_args,
+                target,
+            )?;
+            Ok(MaterializedCallEdge::Closure {
+                form: edge,
+                target: CallEdge::Direct(direct),
+                return_ty,
+            })
+        }
+    }
 }
 
 fn public_indirect_return_ty(
@@ -1718,7 +1710,7 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
             // single/dispatch target is not.
             let opaque = match call_edges.get(callsite) {
                 None => true,
-                Some(edge) => matches!(edge.target, CallEdge::Indirect { .. }),
+                Some(edge) => matches!(edge.target(), CallEdge::Indirect { .. }),
             };
             if opaque {
                 effects.calls_opaque = true;
@@ -1739,7 +1731,7 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
 }
 
 fn call_edge_calls_provider_boundary(edge: &MaterializedCallEdge) -> bool {
-    match &edge.target {
+    match edge.target() {
         CallEdge::Direct(direct) => matches!(direct.callee, CallTarget::ProviderBoundary(_)),
         CallEdge::Dispatch(dispatch) => dispatch
             .arms
@@ -1878,9 +1870,20 @@ fn build_abi_executable(
         .map(|(callsite, edge)| {
             (
                 *callsite,
-                AbiReadyCallEdge {
-                    target: edge.target.clone(),
-                    return_ty: edge.return_ty,
+                match edge {
+                    MaterializedCallEdge::Named { target, return_ty } => AbiReadyCallEdge::Named {
+                        target: target.clone(),
+                        return_ty: *return_ty,
+                    },
+                    MaterializedCallEdge::Closure {
+                        form,
+                        target,
+                        return_ty,
+                    } => AbiReadyCallEdge::Closure {
+                        form: form.clone(),
+                        target: target.clone(),
+                        return_ty: *return_ty,
+                    },
                 },
             )
         })
@@ -1984,7 +1987,7 @@ fn incomplete_semantic_plan(
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
     use super::*;
     use crate::compiler2::semantic::{
         CallSiteResolution, CallSiteSummary, CallTargetSummary, EntryReachability, SelectedCallee,
@@ -2101,7 +2104,7 @@ pub(super) mod tests {
         assert_eq!(positions, vec![call_arg(0, 1), call_arg(1, 0), call_arg(1, 1)]);
     }
 
-    pub(crate) fn fake_call_executable(world: &mut World, root: u32, function: u32, inputs: &[Ty]) -> ExecutableKey {
+    fn fake_call_executable(world: &mut World, root: u32, function: u32, inputs: &[Ty]) -> ExecutableKey {
         let activation = ActivationKey::from_inputs(
             RootId::for_test(root),
             FunctionId::for_test(function),
@@ -2189,7 +2192,7 @@ pub(super) mod tests {
     fn try_materialize_closure_edge(
         evidence: ClosureCallEvidence,
         carrier: TransportCarrier,
-    ) -> (World, Result<Option<MaterializedCallEdge>, FatalError>) {
+    ) -> (World, Result<MaterializedCallEdge, FatalError>) {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let int = world.types_mut().int();
@@ -2285,10 +2288,7 @@ pub(super) mod tests {
 
     fn materialize_closure_edge(evidence: ClosureCallEvidence) -> (World, MaterializedCallEdge) {
         let (world, edge) = try_materialize_closure_edge(evidence, TransportCarrier::ValueRef(LaneId::for_test(0)));
-        let edge = edge
-            .expect("materialization should not fail")
-            .expect("a closure call over a runtime callable should produce an edge");
-        (world, edge)
+        (world, edge.expect("materialization should not fail"))
     }
 
     #[test]
@@ -2298,7 +2298,7 @@ pub(super) mod tests {
             source,
             payload,
             caller_return,
-        }) = edge.target
+        }) = edge.target()
         else {
             panic!("returning multi-target closure call should carry indirect return flow")
         };
@@ -2309,20 +2309,11 @@ pub(super) mod tests {
     #[test]
     fn materialize_closure_call_edge_routes_settled_empty_multi_target_without_a_result_value() {
         let (world, edge) = materialize_closure_edge(ClosureCallEvidence::AmbiguousNonReturning);
-        assert!(world.types().is_empty(&edge.return_ty));
+        assert!(world.types().is_empty(&edge.return_ty()));
         assert_eq!(
-            edge.target,
-            CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None })
+            edge.target(),
+            &CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None })
         );
-    }
-
-    /// Several targets and no word to call through: transport and the
-    /// callsite summary contradict each other about one value, which is a
-    /// compiler defect and stops as one.
-    #[test]
-    #[should_panic(expected = "is not one public word either")]
-    fn materialize_closure_call_edge_rejects_absent_multi_target_carrier() {
-        let _ = try_materialize_closure_edge(ClosureCallEvidence::AmbiguousReturning, TransportCarrier::Absent);
     }
 
     /// fz-kdt.130. A callable that arrived through the mailbox names no target
@@ -2333,11 +2324,11 @@ pub(super) mod tests {
     #[test]
     fn materialize_closure_call_edge_calls_an_unnamed_callable_and_comes_back() {
         let (world, edge) = materialize_closure_edge(ClosureCallEvidence::Unnamed);
-        assert!(!world.types().is_empty(&edge.return_ty));
+        assert!(!world.types().is_empty(&edge.return_ty()));
         assert!(
-            matches!(edge.target, CallEdge::Indirect(CallReturnFlow::Continue { .. })),
+            matches!(edge.target(), CallEdge::Indirect(CallReturnFlow::Continue { .. })),
             "an unnamed callable behind a runtime carrier must return to its caller, got {:?}",
-            edge.target
+            edge.target()
         );
     }
 
@@ -2346,13 +2337,11 @@ pub(super) mod tests {
     #[test]
     fn materialize_closure_call_edge_keeps_the_dead_call_when_nothing_can_be_called() {
         let (world, edge) = try_materialize_closure_edge(ClosureCallEvidence::Unnamed, TransportCarrier::Absent);
-        let edge = edge
-            .expect("materialization should not fail")
-            .expect("a dead closure call still needs an edge to carry its return flow");
-        assert!(world.types().is_empty(&edge.return_ty));
+        let edge = edge.expect("materialization should not fail");
+        assert!(world.types().is_empty(&edge.return_ty()));
         assert_eq!(
-            edge.target,
-            CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None })
+            edge.target(),
+            &CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None })
         );
     }
 }
