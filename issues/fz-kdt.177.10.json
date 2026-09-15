@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T20:30:00Z",
+  "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR5, last. Inside the group solve, one variable per member return; the equations are regular-tree equations whose solution is the μ node; Types::close_bounds (mod.rs ~749) is the existing solver and its 'if has_vars { continue }' is where the recursive case is dropped today. Fold when the equation is regular; where it is not, an explicit declared abstraction, never silent widening. Then delete RETURN_WIDENING_BUDGET, ActivationSlot::ascents, ReturnDefine::widened, the convergence_class call in define_return (semantic.rs ~1132-1191) and ADDRESS_COLLAPSE_DEPTH (types/mod.rs ~1042, no test today), with the obsolete termination prose (.agent/docs/type-specialization.md ~246-262, keying.rs ~66-76). Tests: compiler2_json_value_returns_a_recursive_denotation (dump line not fp[any] any), compiler2_tuple_return_ladder_settles_in_two_revisions, compiler2_nesting_accumulator_terminates ({n,acc} and [acc] forms), compiler2_same_depth_distinguishes_every_nesting_depth, activation pin 380 → ~126 on json_roundtrip. Budgets are deleted here and nowhere earlier.",
+  "id": "fz-kdt.177.10",
+  "labels": [],
+  "parent": "fz-kdt.177",
+  "priority": 1,
+  "status": "open",
+  "title": "Fold a recursive group's equations to μ; delete the budgets",
+  "type": "task",
+  "updated_at": "2026-09-15T20:30:00Z"
+}
