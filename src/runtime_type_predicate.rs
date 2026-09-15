@@ -253,6 +253,28 @@ impl RuntimeTypePredicate {
         predicate
     }
 
+    /// Which arities of UNNAMED struct the other-structs axis admits.
+    ///
+    /// The axis is the remainder the tuple axis leaves: every unnamed struct
+    /// whose arity the tuple axis does not NAME. So the answer is the
+    /// complement of the arities the tuple axis lists -- cofinite, because an
+    /// arity nobody mentioned is one nobody excluded -- and it is empty for a
+    /// test that does not carry the axis at all.
+    ///
+    /// Naming is not admission: a cofinite tuple axis EXCLUDES the arities it
+    /// lists, and those are exactly the ones this axis then declines too, so
+    /// such a test refuses them on both axes. That is what the axis has always
+    /// meant; stating it once keeps the interpreter's matcher, the whole-value
+    /// reading in [`Self::tuple_positions`] and the native emitter from each
+    /// deciding for themselves which arities are spoken for.
+    pub(crate) fn other_struct_arities(&self) -> FiniteSet<usize> {
+        if self.allow_other_structs {
+            FiniteSet::cofinite(self.tuples.arities().values.iter().copied())
+        } else {
+            FiniteSet::none()
+        }
+    }
+
     /// What this test asks of a value that is an unnamed tuple of `arity`.
     ///
     /// The whole-value answer, not one axis of it: a struct value is offered to
@@ -269,10 +291,10 @@ impl RuntimeTypePredicate {
     /// and the two lowerings that hold the fields rather than a value -- so
     /// they cannot decompose a tuple test differently.
     pub(crate) fn tuple_positions(&self, arity: usize) -> TuplePositions<'_> {
-        if self.allow_other_structs && !self.tuples.arities().values.contains(&arity) {
+        if self.other_struct_arities().contains(&arity) {
             return TuplePositions::Always;
         }
-        if !self.tuples.admits_arity(arity) {
+        if !self.tuples.arities().contains(&arity) {
             return TuplePositions::Never;
         }
         if !self.tuples.is_exact() {
@@ -296,6 +318,28 @@ impl RuntimeTypePredicate {
         let mut out = BTreeSet::new();
         self.collect_tuple_arities(&mut out);
         out
+    }
+
+    /// Whether answering this test needs to know which schemas the module
+    /// NAMED.
+    ///
+    /// Three readings consult that table, and a test that asks none of them at
+    /// any depth can be answered without building it at all. The named-structs
+    /// axis asks it outright. Either struct axis asks it whenever its arity set
+    /// is COFINITE, because "every arity but these" means "every UNNAMED struct
+    /// but these", and only the module's table says which structs were named --
+    /// and the other-structs axis' set is cofinite exactly when the test
+    /// carries that axis.
+    ///
+    /// The same walk as [`Self::tuple_arities_at_every_depth`], for the same
+    /// reason: a nested position is answered through the same reader, so a
+    /// question asked at depth needs what the whole test needs.
+    pub(crate) fn reads_named_schemas(&self) -> bool {
+        self.asks_a_named_schema_question() || self.sub_predicates().any(Self::reads_named_schemas)
+    }
+
+    fn asks_a_named_schema_question(&self) -> bool {
+        !self.named_structs.is_none() || self.tuples.arities().cofinite || self.allow_other_structs
     }
 
     fn collect_tuple_arities(&self, out: &mut BTreeSet<usize>) {
@@ -806,15 +850,6 @@ impl TupleShapes {
             .filter(move |shape| shape.len() == arity)
     }
 
-    /// Whether this axis admits tuples of `arity` at all.
-    ///
-    /// The four `FiniteSet` readings at once: `none` admits nothing, `any`
-    /// admits every arity, a finite set admits the arities it lists and a
-    /// cofinite one admits the arities it does not.
-    fn admits_arity(&self, arity: usize) -> bool {
-        self.arities.values.contains(&arity) != self.arities.cofinite
-    }
-
     /// Whether every shape `other` admits, some shape of this axis admits too.
     ///
     /// An inexact axis is the arity-only reading, which admits every payload,
@@ -1135,6 +1170,30 @@ impl RuntimeValueReader<'_> {
             .collect()
     }
 
+    /// Whether `schema` is an UNNAMED struct whose arity `arities` admits.
+    ///
+    /// The one schema-space reading of an arity set. A tuple is a struct the
+    /// module never named, so a cofinite set is "not a named schema, and not
+    /// one of the excluded arities' schemas" while a finite one is exactly the
+    /// schemas of the arities it lists. An arity the runtime registered no
+    /// schema for names no value and drops out of either reading.
+    ///
+    /// Both struct axes that ask about arities ask through here, so the tuple
+    /// axis and the other-structs axis cannot disagree about which schema a
+    /// set of arities covers. The native emitter's `emit_arity_set_membership`
+    /// renders the same three cases into Cranelift.
+    fn unnamed_struct_of_arity(&self, schema: u32, arities: &FiniteSet<usize>) -> bool {
+        let of_arities = arities
+            .values
+            .iter()
+            .filter_map(|arity| self.tuple_schema_ids.get(arity).copied())
+            .collect::<BTreeSet<_>>();
+        if !arities.cofinite {
+            return of_arities.contains(&schema);
+        }
+        !self.known_named_schemas().contains(&schema) && !of_arities.contains(&schema)
+    }
+
     fn tuple_arity_of(&self, schema: u32) -> Option<usize> {
         self.tuple_schema_ids
             .iter()
@@ -1257,38 +1316,21 @@ where
 
 /// "Is this an admitted tuple, of an admitted shape?"
 ///
-/// The arity half is a schema-id membership question; the shape half asks each
-/// position its own question, and is skipped where the axis is inexact, which
-/// is the arity-only reading this layer had before fz-kdt.119.
+/// The arity half is the schema-id membership question
+/// [`RuntimeValueReader::unnamed_struct_of_arity`] answers; the shape half asks
+/// each position its own question, and is skipped where the axis is inexact,
+/// which is the arity-only reading this layer had before fz-kdt.119.
 fn matches_tuple_axis(
     predicate: &RuntimeTypePredicate,
     reader: &RuntimeValueReader<'_>,
     value: RuntimeAnyValue,
     scope: PositionScope,
 ) -> bool {
-    let arities = predicate.tuples.arities();
-    if arities.is_none() {
-        return false;
-    }
     let Some(actual) = struct_schema_of(value) else {
         return false;
     };
-    let known_named = reader.known_named_schemas();
-    let named_arities = || {
-        arities
-            .values
-            .iter()
-            .filter_map(|arity| reader.tuple_schema_ids.get(arity).copied())
-            .collect::<BTreeSet<_>>()
-    };
-    let arity_match = if arities.is_any() {
-        !known_named.contains(&actual)
-    } else if arities.cofinite {
-        !known_named.contains(&actual) && !named_arities().contains(&actual)
-    } else {
-        named_arities().contains(&actual)
-    };
-    arity_match && matches_tuple_shape(predicate, reader, value, actual, scope)
+    reader.unnamed_struct_of_arity(actual, predicate.tuples.arities())
+        && matches_tuple_shape(predicate, reader, value, actual, scope)
 }
 
 /// Whether some shape the test names matches the tuple's fields.
@@ -1490,25 +1532,21 @@ fn matches_named_struct_axis(
     }
 }
 
+/// "Is this an unnamed struct the tuple axis does not speak for?"
+///
+/// Which arities those are is [`RuntimeTypePredicate::other_struct_arities`]'s
+/// to say, and turning arities into schema ids is the same reading the tuple
+/// axis uses, so the two axes divide the unnamed structs between them without
+/// gap or overlap.
 fn matches_other_struct_axis(
     predicate: &RuntimeTypePredicate,
     reader: &RuntimeValueReader<'_>,
     value: RuntimeAnyValue,
 ) -> bool {
-    if !predicate.allow_other_structs {
-        return false;
-    }
     let Some(actual) = struct_schema_of(value) else {
         return false;
     };
-    let known_tuple = predicate
-        .tuples
-        .arities()
-        .values
-        .iter()
-        .filter_map(|arity| reader.tuple_schema_ids.get(arity).copied())
-        .collect::<BTreeSet<_>>();
-    !reader.known_named_schemas().contains(&actual) && !known_tuple.contains(&actual)
+    reader.unnamed_struct_of_arity(actual, &predicate.other_struct_arities())
 }
 
 /// The dynamic surface-membership tripwire (fz-kdt.135, fz-kdt.144).
@@ -1847,7 +1885,7 @@ mod tests {
         }
     }
 
-    fn tuple_of(shapes: Vec<Vec<RuntimeTypePredicate>>) -> RuntimeTypePredicate {
+    pub(super) fn tuple_of(shapes: Vec<Vec<RuntimeTypePredicate>>) -> RuntimeTypePredicate {
         let mut predicate = RuntimeTypePredicate::none();
         predicate.tuples = TupleShapes::exact(shapes);
         predicate
@@ -2120,13 +2158,13 @@ mod tests {
         predicate
     }
 
-    fn atom(name: &str) -> RuntimeTypePredicate {
+    pub(super) fn atom(name: &str) -> RuntimeTypePredicate {
         let mut predicate = RuntimeTypePredicate::none();
         predicate.atoms = FiniteSet::lit(name.to_string());
         predicate
     }
 
-    fn ints() -> RuntimeTypePredicate {
+    pub(super) fn ints() -> RuntimeTypePredicate {
         let mut predicate = RuntimeTypePredicate::none();
         predicate.ints = FiniteSet::any();
         predicate
@@ -3035,3 +3073,7 @@ mod value_membership_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_type_predicate_test.rs"]
+mod runtime_type_predicate_test;

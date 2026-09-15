@@ -421,6 +421,15 @@ deciding it:
 | named/other structs, maps, binaries, resources | erasing | a schema id or a kind, never the contents |
 | tuples | per position | as separating as the positions' own sub-tests |
 
+A named struct and a tuple are both `ValueKind::STRUCT`, and the three struct
+axes divide those values between them. The other-structs axis takes the unnamed
+structs the tuple axis does not NAME -- `RuntimeTypePredicate::other_struct_arities`
+is that complement, and every door reads it rather than deciding for itself:
+the interpreter's matcher, the whole-value reading in `tuple_positions`, and the
+native boxed emitter. Naming is a top-level reading, so it is not the same set
+as the arities a schema gets registered for, which is `tuple_arities_at_every_depth`
+and includes the arities only a nested position asks about.
+
 The tuple axis is `TupleShapes`: one shape per tuple CLAUSE of the descriptor it
 was projected from, each carrying its positions' own predicates, plus the arity
 reading derived from the shapes' lengths for the callers that only want that.

@@ -534,7 +534,8 @@ fn emit_region_test<M: cranelift_module::Module>(
         }
         Region::TupleArity(arity) => {
             let val = resolve_dispatch_subject(body, ctx, subject, state)?;
-            emit_tuple_arity_test(body, ctx, ctx.tuple_schema_ids, val, *arity as usize, true_b, false_b)?;
+            let predicate = RuntimeTypePredicate::tuple_arity(*arity as usize);
+            emit_runtime_type_predicate_region_test(body, ctx, val, &predicate, true_b, false_b)?;
         }
         Region::List(ListRegion::Empty) => {
             let val = resolve_dispatch_subject(body, ctx, subject, state)?;
@@ -1509,44 +1510,6 @@ fn emit_map_kind_test<M: cranelift_module::Module>(
     let zero = body.b.ins().iconst(types::I8, 0);
     let cmp = body.b.ins().icmp(IntCC::NotEqual, ok, zero);
     body.b.ins().brif(cmp, match_b, &[], next_b, &[]);
-    Ok(())
-}
-
-/// Chain of equality / load checks that verifies `val` is a tuple of
-/// the given arity. Branches to `match_b` on success, `next_b` on any
-/// mismatch.
-fn emit_tuple_arity_test<M: cranelift_module::Module>(
-    body: &mut DispatchBody<'_, '_, M>,
-    ctx: &DispatchCtx<'_>,
-    tuple_schema_ids: &HashMap<usize, u32>,
-    val: ReceiveValue,
-    arity: usize,
-    match_b: ir::Block,
-    next_b: ir::Block,
-) -> Result<(), CodegenError> {
-    let expected_schema_id = *tuple_schema_ids.get(&arity).ok_or_else(|| {
-        CodegenError::new(format!(
-            "dispatch tuple arity {} not pre-registered (compile() walk missed it?)",
-            arity
-        ))
-    })?;
-
-    let tag = receive_value_tag(body, val)?;
-    let tag64 = body.b.ins().uextend(types::I64, tag);
-    let c0 = body.b.create_block();
-    let cmp0 = body
-        .b
-        .ins()
-        .icmp_imm(IntCC::Equal, tag64, ValueKind::STRUCT.tag() as i64);
-    body.b.ins().brif(cmp0, c0, &[], next_b, &[]);
-    body.b.switch_to_block(c0);
-    body.b.seal_block(c0);
-
-    let struct_ref = emit_receive_value_ref(body, ctx, val)?;
-    let schema = runtime_call1!(body, fz_struct_schema_id_ref, [struct_ref]);
-    let schema_want = body.b.ins().iconst(types::I32, expected_schema_id as i64);
-    let cmp4 = body.b.ins().icmp(IntCC::Equal, schema, schema_want);
-    body.b.ins().brif(cmp4, match_b, &[], next_b, &[]);
     Ok(())
 }
 

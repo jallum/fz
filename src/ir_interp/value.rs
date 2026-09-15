@@ -177,12 +177,18 @@ pub(super) fn interp_runtime_type_predicate_schema_ids(
         .into_iter()
         .map(|arity| (arity, interp_tuple_schema_id(runtime, arity)))
         .collect();
+    // Registering the module's named structs means cloning every name and
+    // field list into the heap's registry, so it is only worth doing for a test
+    // that actually reads the table. `RuntimeValueReader` consults it from two
+    // places and both are guarded by the same question this asks.
     let mut named_schema_ids = HashMap::new();
-    for (name, fields) in &module.struct_schemas {
-        let schema_id = unsafe { &mut *runtime.cur_proc() }
-            .heap
-            .register_schema(Schema::named_struct(name.clone(), fields.clone()));
-        named_schema_ids.insert(name.clone(), schema_id);
+    if predicate.reads_named_schemas() {
+        for (name, fields) in &module.struct_schemas {
+            let schema_id = unsafe { &mut *runtime.cur_proc() }
+                .heap
+                .register_schema(Schema::named_struct(name.clone(), fields.clone()));
+            named_schema_ids.insert(name.clone(), schema_id);
+        }
     }
     (tuple_schema_ids, named_schema_ids)
 }
