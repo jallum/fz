@@ -1,0 +1,33 @@
+#---
+# purpose: "a module body invokes an item macro another module defines"
+#---
+#
+# # provider_macros_item_macro
+#
+# `Provider.Macros` defines `make_answer/0`; `Provider` imports it and invokes
+# it in its own body. The generated `answer/0` calls `Provider.helper/1`, a
+# function of the module the macro was spliced into.
+#
+# This is the shape `module_local_item_macro` cannot have: the macro's module
+# is already compiled when the invoking body runs. Elixir accepts the same
+# split — there it is written `require Provider.Macros` plus a qualified call,
+# and fz reaches the macro through `import ... only:` instead.
+#
+defmodule Provider.Macros do
+  defmacro make_answer() do
+    body = quote do: Provider.helper(41)
+    {:def, %{}, [{:answer, %{}, []}, [{:do, body}]]}
+  end
+end
+
+defmodule Provider do
+  import Provider.Macros, only: [make_answer: 0]
+
+  def helper(x), do: x + 1
+
+  make_answer()
+end
+
+def main() do
+  assert(Provider.answer() == 42, "an imported item macro generates answer/0 over its caller's helper")
+end
