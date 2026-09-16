@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-16T22:11:07Z",
+  "close_reason": "Shared final required-field construction returns canonical bottom for impossible nominal structs without a second pass and preserves duplicate-key replacement semantics.",
   "created": "2026-09-16T22:03:19Z",
   "description": "Goal: Return canonical bottom from nominal struct construction when its final required field map contains canonical bottom, sharing the proven plain-map field-building rule without a second traversal or changed duplicate-key semantics.\n\nSignal: `Types::struct_map` still passes a pair iterator into `Descr::struct_map`, which builds a map descriptor and sends a known-impossible product to generic normalization. `MapSig` emptiness treats required fields of both plain and nominal map tags alike: a final bottom-valued field makes the product empty. The just-completed plain-map path established the correct complication: duplicate input keys are resolved last-write-wins.\n\nStrategy: Extract the final-required-field builder from `Types::map`. It builds exactly one ordered `BTreeMap` and tracks a bottom-valued final field as insertions replace values. Apply it to `Types::struct_map`; let `Descr::struct_map` receive the owned final map directly. Do not add an extra scan, cache, hash, deep comparison, or broad record-normalization change.\n\nTDD: Establish a red interior-bottom struct test with interning-work counts. Prove an earlier bottom overwritten by a later inhabited field remains an inhabited struct with that field type. Preserve the plain-map proof while centralizing the common builder.\n\nDocs and acceptance: Extend the product-field documentation to include nominal structs. Run focused type tests and enum/f98 canaries, fmt, check, strict Clippy, full workspace tests, cold branch-base review, one commit, draft stacked PR, and close.",
   "id": "fz-kdt.48.24",
   "labels": [],
   "parent": "fz-kdt.48",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Return impossible structs before descriptor normalization",
   "type": "task",
-  "updated_at": "2026-09-16T22:03:25Z"
+  "updated_at": "2026-09-16T22:11:07Z"
 }
