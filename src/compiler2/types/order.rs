@@ -135,11 +135,10 @@ impl<'a> ClauseOrder<'a> {
         }
     }
 
-    /// The activation-facing relation preserves the established callable
-    /// surface precedence (arguments, return, literal) while reading each
-    /// field structurally. Storage canonicalization deliberately puts the
-    /// literal first so equal-callable clauses group together; the two orders
-    /// answer different questions and must not be conflated.
+    /// The activation-facing relation leads with callable construction. Direct
+    /// call surfaces are ordered separately as `ActivationSignature`s, so a
+    /// literal's owner identity must not be recovered from its value type's
+    /// template variables.
     pub(super) fn for_activation(cx: TyCtx<'a>, origins: &'a CallableOrigins) -> Self {
         Self {
             cx,
@@ -256,9 +255,9 @@ impl<'a> ClauseOrder<'a> {
                 .then_with(|| self.cmp_tys(&a.args, &b.args))
                 .then_with(|| self.cmp_ty(a.ret, b.ret)),
             OrderPurpose::Activation(_) => self
-                .cmp_tys(&a.args, &b.args)
-                .then_with(|| self.cmp_ty(a.ret, b.ret))
-                .then_with(|| self.cmp_lit(a.lit.as_ref(), b.lit.as_ref())),
+                .cmp_lit(a.lit.as_ref(), b.lit.as_ref())
+                .then_with(|| self.cmp_tys(&a.args, &b.args))
+                .then_with(|| self.cmp_ty(a.ret, b.ret)),
         }
     }
 

@@ -151,6 +151,7 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
         }
 
         let mut collapsed = 0_usize;
+        let mut duplicate_forms = Vec::new();
         for group in groups.values() {
             let mut classes: HashMap<Arc<str>, Vec<Ty>> = HashMap::new();
             for ty in group {
@@ -166,6 +167,9 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
                         head.as_u32(),
                         member.as_u32(),
                     );
+                }
+                if class.len() > 1 {
+                    duplicate_forms.push(format!("{form}: {class:?}"));
                 }
                 collapsed += class.len() - 1;
             }
@@ -186,34 +190,13 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
             }
         }
 
-        // The arena still carries distinct ids for one type, so the sweep
-        // above proves canon collapses a measured defect rather than passing
-        // vacuously. Both counts are CEILINGS: every fold at the persistence
-        // boundary may lower them and none may raise them, and the target is
-        // zero duplicates.
-        assert!(
-            collapsed <= duplicate_ceiling(name),
-            "{name}: {collapsed} mutually-subtype distinct ids, above the {} this fixture is \
-             pinned at -- a boundary fold may lower this ceiling, never raise it",
-            duplicate_ceiling(name)
+        duplicate_forms.sort();
+        assert_eq!(
+            collapsed,
+            0,
+            "{name}: {collapsed} mutually-subtype distinct ids reached the identity census\n{}",
+            duplicate_forms.join("\n"),
         );
-    }
-}
-
-/// How many ids each target fixture still spends on a type it already has.
-/// Lower is better, so a change that improves the boundary lowers the pin in
-/// the same motion.
-///
-/// The number of interned types is deliberately NOT pinned beside it. It is
-/// not a lower-only quantity: fusing two clauses that agree on all but one
-/// coordinate mints the union of that coordinate, so a fold can spend a type
-/// to save an identity. Identities are what a specialization is keyed on;
-/// intermediate types are not.
-fn duplicate_ceiling(name: &str) -> usize {
-    match name {
-        "fixtures2/00420_enum_take_drop_split.fz" => 45,
-        "fixtures2/behavior/fz_f98_range_map_converges.fz" => 6,
-        other => panic!("no pinned ceiling for {other}"),
     }
 }
 

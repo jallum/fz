@@ -343,20 +343,10 @@ impl<'a> TyCanon<'a> {
     // Normalization
     // ------------------------------------------------------------------
 
-    /// The four denotational axes were absorbed at the persistence boundary, so
-    /// an INTERNED descriptor has nothing left to absorb and this repeats
-    /// nothing. Only the descriptors this module builds ITSELF — a list
-    /// clause's intersected element fragment — need the rule applied here, and
-    /// they get it from the same function, the list axis's set-level merge
-    /// (`[] ∨ non_empty(T) = list(T)`) included: a fragment is `Descr`
-    /// arithmetic over interned children, and the arithmetic concatenates
-    /// clauses that the boundary would have merged.
-    ///
-    /// The callable axis is the one this module still normalizes after the
-    /// fact whatever the descriptor came from: an interned arrow carries a
-    /// declared signature and a closure's capture layout beside its
-    /// denotation, so the boundary must leave it alone, while a RENDERING
-    /// reads nothing back out of it and may collapse it to what it denotes.
+    /// The persistence boundary has already absorbed every stored axis it can
+    /// normalize. Only a list fragment synthesized by this renderer needs the
+    /// shared rules again: descriptor arithmetic concatenates clauses after
+    /// their children were interned.
     fn axes(&mut self, cx: TyCtx<'_>, d: &Descr, provenance: Provenance) -> Axes {
         let subtype = &|narrower: &Ty, wider: &Ty| cx.descr(narrower).is_subtype(cx, cx.descr(wider));
         let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
@@ -372,14 +362,11 @@ impl<'a> TyCanon<'a> {
             axis::absorb_axis(cx, &mut maps, subtype, covers, &axis::MAPS);
         }
 
-        let mut funcs = d.funcs.clone();
-        axis::absorb_axis(cx, &mut funcs, subtype, covers, &axis::FUNCS);
-
         Axes {
             tuples,
             lists,
             resources,
-            funcs,
+            funcs: d.funcs.clone(),
             maps,
         }
     }
