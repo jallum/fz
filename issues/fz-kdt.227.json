@@ -12,9 +12,15 @@
   "id": "fz-kdt.227",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Committed 1f2050583 on the same branch, PR #185. 00181 job starts 443-\u003e433, drains 20-\u003e2; json_roundtrip 4527-\u003e4371, drains 155-\u003e2. One wake-attribution redistribution and one changed_outputs/wakes rise were traced to record-level cause before acceptance (both are the batched-fact-to-singular-fact redistribution the fix is for); details in the branch history.",
+      "timestamp": "2026-09-16T16:09:09Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "The quiescence drain certifies a fact over dirty ground, one fact at a time",
   "type": "bug",
-  "updated_at": "2026-09-16T14:56:39Z"
+  "updated_at": "2026-09-16T16:09:09Z"
 }
