@@ -111,7 +111,7 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "boolean",  arity: Arity::Fixed(0), build: |t, _| t.bool() },
     ConstructorEntry { name: "integer",  arity: Arity::Fixed(0), build: |t, _| t.int() },
     ConstructorEntry { name: "float",    arity: Arity::Fixed(0), build: |t, _| t.float() },
-    ConstructorEntry { name: "cpointer", arity: Arity::Fixed(0), build: |t, _| t.cpointer() },
+    ConstructorEntry { name: "c_pointer", arity: Arity::Fixed(0), build: |t, _| t.c_pointer() },
     ConstructorEntry { name: "binary",   arity: Arity::Fixed(0), build: |t, _| t.str_t() },
     ConstructorEntry { name: "atom",     arity: Arity::Fixed(0), build: |t, _| t.atom() },
     ConstructorEntry { name: "any",      arity: Arity::Fixed(0), build: |t, _| t.any() },

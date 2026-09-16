@@ -22,7 +22,7 @@
 # same fact on the way in: `close(-1)` hands over the low 32 bits of -1 and
 # the kernel reports EBADF rather than being handed a 64-bit value it has no
 # way to read.
-extern "C" defp libc::open(path :: cstring, flags :: c_int, ...) :: c_int
+extern "C" defp libc::open(path :: c_string, flags :: c_int, ...) :: c_int
 extern "C" defp libc::close(fd :: c_int) :: c_int
 extern "C" defp libc::abs(c_int) :: c_int
 

@@ -466,7 +466,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                     let mut desc = DataDescription::new();
                     // Append invisible trailing NUL; not counted in the
                     // static SharedBin's bytes_len field. Underwrites the
-                    // cstring extern marshal contract for literal binaries.
+                    // c_string extern marshal contract for literal binaries.
                     let mut payload: Vec<u8> = bytes.clone();
                     payload.push(0);
                     desc.define(payload.into_boxed_slice());

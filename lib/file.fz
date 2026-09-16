@@ -17,26 +17,25 @@ defmodule File do
   resource access that fz does not yet expose.
   """
 
-  @type t :: resource(integer)
+  @type t :: resource(c_pointer)
 
-  # `FILE *` occupies the same raw word lane as `integer` on supported targets.
-  # fz has no C pointer return wire spelling yet, so the opaque pointer stays in
-  # this module as an integer resource payload.
-  extern "C" defp libc::fopen(cstring, cstring) :: integer
-  extern "C" defp libc::fclose(integer) :: c_int
-  extern "C" defp libc::fgetc(integer) :: c_int
-  extern "C" defp libc::ferror(integer) :: c_int
-  extern "C" defp libc::fwrite(binary, integer, integer, integer) :: integer
-  extern "C" defp libc::fflush(integer) :: c_int
-  extern "C" defp libc::access(cstring, c_int) :: c_int
-  extern "C" defp libc::mkdir(cstring, integer) :: c_int
-  extern "C" defp libc::rmdir(cstring) :: c_int
-  extern "C" defp libc::unlink(cstring) :: c_int
-  extern "C" defp libc::rename(cstring, cstring) :: c_int
-  extern "C" defp libc::link(cstring, cstring) :: c_int
-  extern "C" defp libc::symlink(cstring, cstring) :: c_int
-  extern "C" defp libc::chmod(cstring, integer) :: c_int
-  extern "fz" defp fz_make_resource(integer, (integer) -> nil) :: resource(integer)
+  # `c_pointer` keeps the C `FILE *` distinct from an fd while using the native
+  # pointer-width C ABI lane.
+  extern "C" defp libc::fopen(c_string, c_string) :: c_pointer
+  extern "C" defp libc::fclose(c_pointer) :: c_int
+  extern "C" defp libc::fgetc(c_pointer) :: c_int
+  extern "C" defp libc::ferror(c_pointer) :: c_int
+  extern "C" defp libc::fwrite(binary, integer, integer, c_pointer) :: integer
+  extern "C" defp libc::fflush(c_pointer) :: c_int
+  extern "C" defp libc::access(c_string, c_int) :: c_int
+  extern "C" defp libc::mkdir(c_string, integer) :: c_int
+  extern "C" defp libc::rmdir(c_string) :: c_int
+  extern "C" defp libc::unlink(c_string) :: c_int
+  extern "C" defp libc::rename(c_string, c_string) :: c_int
+  extern "C" defp libc::link(c_string, c_string) :: c_int
+  extern "C" defp libc::symlink(c_string, c_string) :: c_int
+  extern "C" defp libc::chmod(c_string, integer) :: c_int
+  extern "fz" defp fz_make_resource(c_pointer, (c_pointer) -> nil) :: resource(c_pointer)
 
   @doc "Returns whether `path` exists, following symbolic links."
   @spec exists?(binary) :: boolean
@@ -152,7 +151,7 @@ defmodule File do
   @spec close!(t) :: :ok
   def close!(handle), do: result!(close(handle))
 
-  @spec read_open(integer) :: {:ok, binary} | {:error, :io}
+  @spec read_open(c_pointer) :: {:ok, binary} | {:error, :io}
   defp read_open(0), do: {:error, :io}
 
   defp read_open(stream) do
@@ -160,10 +159,10 @@ defmodule File do
     read_result(contents, libc::ferror(stream), libc::fclose(stream))
   end
 
-  @spec read_bytes(integer, binary) :: binary
+  @spec read_bytes(c_pointer, binary) :: binary
   defp read_bytes(stream, contents), do: read_byte(stream, libc::fgetc(stream), contents)
 
-  @spec read_byte(integer, integer, binary) :: binary
+  @spec read_byte(c_pointer, integer, binary) :: binary
   defp read_byte(_stream, -1, contents), do: contents
   defp read_byte(stream, byte, contents), do: read_bytes(stream, contents <> <<byte>>)
 
@@ -171,7 +170,7 @@ defmodule File do
   defp read_result(contents, 0, 0), do: {:ok, contents}
   defp read_result(_contents, _read_error, _close_error), do: {:error, :io}
 
-  @spec write_open(integer, binary) :: :ok | {:error, :io}
+  @spec write_open(c_pointer, binary) :: :ok | {:error, :io}
   defp write_open(0, _content), do: {:error, :io}
 
   defp write_open(stream, content) do
@@ -186,17 +185,17 @@ defmodule File do
   defp write_result(bytes, bytes, 0, 0), do: :ok
   defp write_result(_written, _bytes, _flush, _close), do: {:error, :io}
 
-  @spec wrap_open(integer) :: {:ok, t} | {:error, :io}
+  @spec wrap_open(c_pointer) :: {:ok, t} | {:error, :io}
   defp wrap_open(0), do: {:error, :io}
   defp wrap_open(stream), do: {:ok, fz_make_resource(stream, &dtor/1)}
 
-  @spec dtor(integer) :: nil
+  @spec dtor(c_pointer) :: nil
   defp dtor(stream) do
     libc::fclose(stream)
     nil
   end
 
-  @spec close_claim({:ok, integer} | {:error, :closed}) :: :ok | {:error, :closed | :io}
+  @spec close_claim({:ok, c_pointer} | {:error, :closed}) :: :ok | {:error, :closed | :io}
   defp close_claim({:ok, stream}), do: status(libc::fclose(stream))
   defp close_claim({:error, :closed}), do: {:error, :closed}
 
