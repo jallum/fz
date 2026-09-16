@@ -10,11 +10,15 @@
     {
       "text": "Built as 549c3b05d on fz-i9q/readiness-at-the-seam, draft PR #174 against main; stack #171 (#169, #170, #172) is being rebased onto it so the fold arc's CI runs under the honest guard. Shape: one function signal_execution_ready (src/execution_ready.rs) emits fz.runtime.execution_ready and writes the FZ_EXEC_READY_FD byte; called from run_root_jit immediately before the runtime spawns the entry and from run_root_interp immediately before run_backend_main. The fz2 test door's own signal and its env_remove are deleted; each run-test-root child reaches the seam and the harness opens a new execution window on every byte (residual: test N+1's compile runs inside test N's window). Harness verdict is the fixture's expectation: success/abort require a byte whatever the exit status; diagnostic requires none and a byte is the finding. Proof: execution_guard_covers_the_program_not_the_compile (json_roundtrip run+interp under a 2s execution guard; compile ~4s, program ~30ms), rogue byte at the old site turns 28 diagnostic lanes red, suppressed byte turns 482 red incl. all 16 abort lanes. Timeouts unchanged; the 20s setup guard is now the compile's budget, so fz-ex9's work-counter step still decides CI determinism.",
       "timestamp": "2026-09-16T00:05:39Z"
+    },
+    {
+      "text": "PR #174 was closed as merged by GitHub itself when the rebased #172 branch (which contains 549c3b05d) was pushed, and the head branch was auto-deleted; nothing reached main. Re-pushed and reopened as draft PR #175 against main, standalone (the stack tool only appends on top). Merge #175 first with a rebase-merge or merge commit so 549c3b05d keeps its hash; #169/#170/#172 already sit on it.",
+      "timestamp": "2026-09-16T00:20:22Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "The readiness byte precedes the compiler drive, so the execution hang guard times the compiler",
   "type": "bug",
-  "updated_at": "2026-09-16T00:05:39Z"
+  "updated_at": "2026-09-16T00:20:22Z"
 }
