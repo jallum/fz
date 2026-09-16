@@ -1,0 +1,234 @@
+defmodule File do
+  @moduledoc """
+  Filesystem operations over binary paths and binary file contents.
+
+  `File` calls libc directly. Successful operations return `:ok` or
+  `{:ok, value}`; a failed C status becomes `{:error, :io}`. The bang forms
+  panic with that reason because fz does not yet provide Elixir exceptions.
+
+  `open/2` returns a resource and `close/1` claims that resource before
+  closing it. A handle therefore closes exactly once across every alias. The
+  path-oriented operations open and close their private C stream before they
+  return.
+
+  This initial surface intentionally excludes `File.Stat`, directory listing,
+  recursive operations, streams, process cwd, and handle IO: each needs a
+  structured C out-parameter, a directory iterator, or guarded reusable
+  resource access that fz does not yet expose.
+  """
+
+  @type t :: resource(integer)
+
+  # `FILE *` occupies the same raw word lane as `integer` on supported targets.
+  # fz has no C pointer return wire spelling yet, so the opaque pointer stays in
+  # this module as an integer resource payload.
+  extern "C" defp libc::fopen(cstring, cstring) :: integer
+  extern "C" defp libc::fclose(integer) :: c_int
+  extern "C" defp libc::fgetc(integer) :: c_int
+  extern "C" defp libc::ferror(integer) :: c_int
+  extern "C" defp libc::fwrite(binary, integer, integer, integer) :: integer
+  extern "C" defp libc::fflush(integer) :: c_int
+  extern "C" defp libc::access(cstring, c_int) :: c_int
+  extern "C" defp libc::mkdir(cstring, integer) :: c_int
+  extern "C" defp libc::rmdir(cstring) :: c_int
+  extern "C" defp libc::unlink(cstring) :: c_int
+  extern "C" defp libc::rename(cstring, cstring) :: c_int
+  extern "C" defp libc::link(cstring, cstring) :: c_int
+  extern "C" defp libc::symlink(cstring, cstring) :: c_int
+  extern "C" defp libc::chmod(cstring, integer) :: c_int
+  extern "fz" defp fz_make_resource(integer, (integer) -> nil) :: resource(integer)
+
+  @doc "Returns whether `path` exists, following symbolic links."
+  @spec exists?(binary) :: boolean
+  def exists?(path), do: libc::access(path, 0) == 0
+
+  @doc "Reads the complete binary contents of `path`."
+  @spec read(binary) :: {:ok, binary} | {:error, :io}
+  def read(path), do: read_open(libc::fopen(path, "rb"))
+
+  @spec read!(binary) :: binary
+  def read!(path), do: read_value!(read(path))
+
+  @doc "Writes `content` to `path`, replacing any prior contents."
+  @spec write(binary, binary) :: :ok | {:error, :io}
+  def write(path, content), do: write_open(libc::fopen(path, "wb"), content)
+
+  @doc "Writes `content`; `[:append]` preserves existing contents."
+  @spec write(binary, binary, [atom]) :: :ok | {:error, :badarg | :io}
+  def write(path, content, []), do: write(path, content)
+  def write(path, content, [:append]), do: write_open(libc::fopen(path, "ab"), content)
+  def write(_path, _content, _modes), do: {:error, :badarg}
+
+  @spec write!(binary, binary) :: :ok
+  def write!(path, content), do: result!(write(path, content))
+
+  @spec write!(binary, binary, [atom]) :: :ok
+  def write!(path, content, modes), do: result!(write(path, content, modes))
+
+  @doc "Creates one directory with mode `0o777` (subject to the process umask)."
+  @spec mkdir(binary) :: :ok | {:error, :io}
+  def mkdir(path), do: mkdir(path, 0o777)
+
+  @spec mkdir(binary, integer) :: :ok | {:error, :io}
+  def mkdir(path, mode), do: status(libc::mkdir(path, mode))
+
+  @spec mkdir!(binary) :: :ok
+  def mkdir!(path), do: result!(mkdir(path))
+
+  @spec mkdir!(binary, integer) :: :ok
+  def mkdir!(path, mode), do: result!(mkdir(path, mode))
+
+  @spec rm(binary) :: :ok | {:error, :io}
+  def rm(path), do: status(libc::unlink(path))
+
+  @spec rm!(binary) :: :ok
+  def rm!(path), do: result!(rm(path))
+
+  @spec rmdir(binary) :: :ok | {:error, :io}
+  def rmdir(path), do: status(libc::rmdir(path))
+
+  @spec rmdir!(binary) :: :ok
+  def rmdir!(path), do: result!(rmdir(path))
+
+  @spec rename(binary, binary) :: :ok | {:error, :io}
+  def rename(source, destination), do: status(libc::rename(source, destination))
+
+  @spec rename!(binary, binary) :: :ok
+  def rename!(source, destination), do: result!(rename(source, destination))
+
+  @spec copy(binary, binary) :: {:ok, integer} | {:error, :io}
+  def copy(source, destination), do: copy_read(read(source), destination)
+
+  @spec copy!(binary, binary) :: integer
+  def copy!(source, destination), do: copy_value!(copy(source, destination))
+
+  @spec cp(binary, binary) :: :ok | {:error, :io}
+  def cp(source, destination), do: copy_result(copy(source, destination))
+
+  @spec cp!(binary, binary) :: :ok
+  def cp!(source, destination), do: result!(cp(source, destination))
+
+  @spec ln(binary, binary) :: :ok | {:error, :io}
+  def ln(source, destination), do: status(libc::link(source, destination))
+
+  @spec ln!(binary, binary) :: :ok
+  def ln!(source, destination), do: result!(ln(source, destination))
+
+  @spec ln_s(binary, binary) :: :ok | {:error, :io}
+  def ln_s(source, destination), do: status(libc::symlink(source, destination))
+
+  @spec ln_s!(binary, binary) :: :ok
+  def ln_s!(source, destination), do: result!(ln_s(source, destination))
+
+  @spec chmod(binary, integer) :: :ok | {:error, :io}
+  def chmod(path, mode), do: status(libc::chmod(path, mode))
+
+  @spec chmod!(binary, integer) :: :ok
+  def chmod!(path, mode), do: result!(chmod(path, mode))
+
+  @doc "Opens `path` as a C stream resource."
+  @spec open(binary) :: {:ok, t} | {:error, :badarg | :io}
+  def open(path), do: open(path, [:read])
+
+  @spec open(binary, [atom]) :: {:ok, t} | {:error, :badarg | :io}
+  def open(path, [:read]), do: wrap_open(libc::fopen(path, "rb"))
+  def open(path, [:write]), do: wrap_open(libc::fopen(path, "wb"))
+  def open(path, [:append]), do: wrap_open(libc::fopen(path, "ab"))
+  def open(path, [:read, :write]), do: wrap_open(libc::fopen(path, "r+b"))
+  def open(path, [:write, :read]), do: wrap_open(libc::fopen(path, "w+b"))
+  def open(path, [:append, :read]), do: wrap_open(libc::fopen(path, "a+b"))
+  def open(_path, _modes), do: {:error, :badarg}
+
+  @spec open!(binary) :: t
+  def open!(path), do: open_value!(open(path))
+
+  @spec open!(binary, [atom]) :: t
+  def open!(path, modes), do: open_value!(open(path, modes))
+
+  @doc "Closes an open handle once; every later alias receives `:closed`."
+  @spec close(t) :: :ok | {:error, :closed | :io}
+  def close(handle :: t), do: close_claim(Kernel.claim_resource(handle))
+
+  @spec close!(t) :: :ok
+  def close!(handle), do: result!(close(handle))
+
+  @spec read_open(integer) :: {:ok, binary} | {:error, :io}
+  defp read_open(0), do: {:error, :io}
+
+  defp read_open(stream) do
+    contents = read_bytes(stream, "")
+    read_result(contents, libc::ferror(stream), libc::fclose(stream))
+  end
+
+  @spec read_bytes(integer, binary) :: binary
+  defp read_bytes(stream, contents), do: read_byte(stream, libc::fgetc(stream), contents)
+
+  @spec read_byte(integer, integer, binary) :: binary
+  defp read_byte(_stream, -1, contents), do: contents
+  defp read_byte(stream, byte, contents), do: read_bytes(stream, contents <> <<byte>>)
+
+  @spec read_result(binary, integer, integer) :: {:ok, binary} | {:error, :io}
+  defp read_result(contents, 0, 0), do: {:ok, contents}
+  defp read_result(_contents, _read_error, _close_error), do: {:error, :io}
+
+  @spec write_open(integer, binary) :: :ok | {:error, :io}
+  defp write_open(0, _content), do: {:error, :io}
+
+  defp write_open(stream, content) do
+    bytes = byte_size(content)
+    written = libc::fwrite(content, 1, bytes, stream)
+    flush = libc::fflush(stream)
+    close = libc::fclose(stream)
+    write_result(written, bytes, flush, close)
+  end
+
+  @spec write_result(integer, integer, integer, integer) :: :ok | {:error, :io}
+  defp write_result(bytes, bytes, 0, 0), do: :ok
+  defp write_result(_written, _bytes, _flush, _close), do: {:error, :io}
+
+  @spec wrap_open(integer) :: {:ok, t} | {:error, :io}
+  defp wrap_open(0), do: {:error, :io}
+  defp wrap_open(stream), do: {:ok, fz_make_resource(stream, &dtor/1)}
+
+  @spec dtor(integer) :: nil
+  defp dtor(stream) do
+    libc::fclose(stream)
+    nil
+  end
+
+  @spec close_claim({:ok, integer} | {:error, :closed}) :: :ok | {:error, :closed | :io}
+  defp close_claim({:ok, stream}), do: status(libc::fclose(stream))
+  defp close_claim({:error, :closed}), do: {:error, :closed}
+
+  @spec copy_read({:ok, binary} | {:error, :io}, binary) :: {:ok, integer} | {:error, :io}
+  defp copy_read({:ok, contents}, destination), do: copy_write(write(destination, contents), byte_size(contents))
+  defp copy_read({:error, :io}, _destination), do: {:error, :io}
+
+  @spec copy_write(:ok | {:error, :io}, integer) :: {:ok, integer} | {:error, :io}
+  defp copy_write(:ok, bytes), do: {:ok, bytes}
+  defp copy_write({:error, :io}, _bytes), do: {:error, :io}
+
+  @spec copy_result({:ok, integer} | {:error, :io}) :: :ok | {:error, :io}
+  defp copy_result({:ok, _bytes}), do: :ok
+  defp copy_result({:error, :io}), do: {:error, :io}
+
+  @spec status(integer) :: :ok | {:error, :io}
+  defp status(0), do: :ok
+  defp status(_status), do: {:error, :io}
+
+  @spec read_value!({:ok, binary} | {:error, :io}) :: binary
+  defp read_value!({:ok, value}), do: value
+  defp read_value!({:error, reason}), do: panic(reason)
+
+  @spec copy_value!({:ok, integer} | {:error, :io}) :: integer
+  defp copy_value!({:ok, value}), do: value
+  defp copy_value!({:error, reason}), do: panic(reason)
+
+  @spec open_value!({:ok, t} | {:error, :badarg | :io}) :: t
+  defp open_value!({:ok, value}), do: value
+  defp open_value!({:error, reason}), do: panic(reason)
+
+  @spec result!(:ok | {:error, :badarg | :closed | :io}) :: :ok
+  defp result!(:ok), do: :ok
+  defp result!({:error, reason}), do: panic(reason)
+end

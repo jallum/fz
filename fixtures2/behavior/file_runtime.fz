@@ -1,0 +1,47 @@
+#---
+# purpose: "The built-in File library interprets direct libc status values in fz source and claims an opaque stream exactly once on close."
+#---
+def main() do
+  root = "/tmp/fz-file-runtime-direct"
+  path = root <> "/entry"
+  renamed = root <> "/renamed"
+  copied = root <> "/copied"
+  copied_again = root <> "/copied-again"
+  linked = root <> "/linked"
+  symlinked = root <> "/symlinked"
+
+  File.rm(path)
+  File.rm(renamed)
+  File.rm(copied)
+  File.rm(copied_again)
+  File.rm(linked)
+  File.rm(symlinked)
+  File.rmdir(root)
+
+  assert(File.mkdir(root) == :ok, "mkdir creates one directory")
+  assert(File.write(path, "hello") == :ok, "write stores binary contents")
+  assert(File.read(path) == {:ok, "hello"}, "read returns the stored binary")
+  assert(File.write(path, "!", [:append]) == :ok, "append preserves prior bytes")
+  assert(File.read(path) == {:ok, "hello!"}, "append extends the file")
+  assert(File.exists?(path), "exists? recognizes the file")
+
+  handle = File.open!(path, [:read])
+  assert(File.close(handle) == :ok, "close claims and closes the handle")
+  assert(File.close(handle) == {:error, :closed}, "close only claims a handle once")
+
+  assert(File.rename(path, renamed) == :ok, "rename moves a file")
+  assert(File.copy(renamed, copied) == {:ok, 6}, "copy reports copied bytes")
+  assert(File.cp(copied, copied_again) == :ok, "cp hides the byte count")
+  assert(File.ln(copied, linked) == :ok, "ln creates a hard link")
+  assert(File.ln_s(copied, symlinked) == :ok, "ln_s creates a symbolic link")
+  assert(File.chmod(copied, 0o600) == :ok, "chmod changes file permissions")
+  assert(File.read("/tmp/fz-file-runtime-direct-missing") == {:error, :io}, "read normalizes a C failure")
+
+  assert(File.rm(renamed) == :ok, "rm removes the renamed source")
+  assert(File.rm(copied) == :ok, "rm removes the copied file")
+  assert(File.rm(copied_again) == :ok, "rm removes the second copy")
+  assert(File.rm(linked) == :ok, "rm removes the hard link")
+  assert(File.rm(symlinked) == :ok, "rm removes the symbolic link")
+  assert(File.rmdir(root) == :ok, "rmdir removes an empty directory")
+  dbg(:file_runtime_ok)
+end

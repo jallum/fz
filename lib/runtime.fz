@@ -4,6 +4,7 @@
 alias Atom
 alias Enum
 alias Enumerable
+alias File
 alias Float
 alias Integer
 alias Json
