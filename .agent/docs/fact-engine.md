@@ -132,9 +132,7 @@ Every ask a run can already name belongs in the same pass.
 call surface is refined, the callee's `FunctionContract` (when it declares
 one) and the facts its activation key is built from (`Recursive`,
 `InputDemand`) register in one pass, so a caller holding none of them blocks
-once. Registering them a rung apart cost 65/30/33 of the 72/43/37 zero-change
-`AnalyzeActivation` evaluations on the three measured fixtures; folding the
-ask left 6/13/4 and moved no emitted byte (fz-kdt.86).
+once instead of once per rung.
 
 ### Absence is bottom; rebasing is the narrowing path
 
@@ -155,17 +153,6 @@ it says on arrival is content a reader can see and act on — `CallSiteSummary`
 and `CallSiteTargets`' `Unresolved` IS a reader-visible answer, not the absence
 of one — and it appears at revision 1 and wakes. The existence facts
 (`Activation`, `Executable`) are the same: their readers are gated on presence.
-
-Measured over `fz2 interp --log-telemetry` on `fz_f98_range_map_converges`,
-`enum_predicate_search` and `00420_enum_take_drop_split`, joining each step's
-`changed[old_revision=null]` against its `wakes[].cause` — of `ReturnType`'s
-75/255/283 first claims, 46/152/135 carried no content, and those caused
-43/137/139 `Current` wakes to re-read nothing. Removing them left the claims
-exactly where they were and took 42/132/114 evaluations out of the compile,
-almost all of them `AnalyzeActivation` runs that concluded unchanged (85 -> 43,
-171 -> 37, 192 -> 72). No lifecycle, no shift count and no emitted byte moved
-(fz-kdt.84). What that left standing was the callee-prerequisite ladder above:
-those same three counts are 43/37/72 -> 13/4/6 since fz-kdt.86.
 
 Retraction-by-omission is sound only where a publisher's silence about a key is
 KNOWLEDGE. For `analyze_activation`'s callee `Activation` claims it is not: a
@@ -252,6 +239,8 @@ key, so there is no producer for a wait to name; the run records the read
 (the unconditional-read rule above), so a first or later claim wakes it, and
 it re-lists its standing claims (`World::standing_claims`) so a conclusion
 reached with no ground under it retracts nothing it never refuted.
+
+## How a claim's content moves: ascent vs. ground shift
 
 `FactKey::is_cumulative` declares each fact's content algebra: `ReturnType`
 and `ActivationInputs` hold monotone joins maintained by their `World` stores
@@ -408,12 +397,14 @@ reader, and unresolved-job waves with the World's typed job relation.
 joins can allocate. Losing owner order at any mutation boundary is sufficient
 to move the first divergence downstream.
 
-Two non-cures, both tried and rejected. Sorting needs a comparator that does not
-depend on what is being minted, and Debug-text sorts are what fz-k22.21 had to
-remove. A global after-the-fact renumbering pass of the interner is worse: it is
-a barrier that needs the whole arena, it invalidates `Ty` as a stable handle for
-every memo keyed by it, and it would leave the work order nondeterministic while
-making only the ids look stable — hiding the defect instead of removing it.
+Two approaches that look like cures are not. Sorting needs a comparator that
+does not itself depend on what is being minted; a Debug-text sort fails this,
+because the text it sorts by already encodes the unstable ids it is meant to
+fix. A global after-the-fact renumbering pass over the interner is worse: it
+is a barrier that needs the whole arena, it invalidates `Ty` as a stable
+handle for every memo keyed by it, and it leaves the work order
+nondeterministic while making only the ids look stable — hiding the defect
+instead of removing it.
 
 Two tests hold this. `compiling_the_same_root_twice_runs_the_same_jobs_in_the_same_order`
 is the causal one and names the first swapped pair;
@@ -498,7 +489,9 @@ The interpreter artifact path is not a scheduler pass and it does not enqueue
 follow-up jobs. `Compiler2::run_root_interp` asks the product driver for
 `ProductKey::RootBackendProduct(root)`. Each product producer returns a
 `ProductValue`, an exact set of waits, or an explicit `Failed(ProductFailure)`
-outcome that the memo never installs:
+outcome that the memo never installs.
+
+### The pull driver and product keys
 
 ```text
 ProductKey =
@@ -519,6 +512,8 @@ Before the pull stack expands an unordered wait set, product waits retain their
 existing product-key order and fact waits use the World's semantic `FactUse`
 key. Thus an activation-bearing fact cannot reverse product expansion merely
 because its arrow received a different arena handle.
+
+### Executable facts and runtime demand
 
 `ExecutableFacts(E)` and `RuntimeDemand(E)` are direct facts.
 `DeriveExecutableFacts(E)`
@@ -553,6 +548,8 @@ executable return or return payload). These stay distinct typed dependencies
 and distinct readiness changes; the shared prerequisite boundary alone is
 atomic.
 
+### One producer per key, one causal trace
+
 The pull driver is the only code that expands a product wait into its producer.
 A producer may say "I need `AbiExecutable(E)`" or "I need settled
 `ReturnType(A)`"; it may not schedule unrelated work under another name.
@@ -568,6 +565,9 @@ id allocated monotonically by its retained session, and the producer-running pul
 make overlapping pulls impossible; cache requests do not invent evaluations.
 Recursive search inside a producer stays within that exact request boundary.
 Causality is never inferred from an aggregate or merely adjacent log lines.
+
+### Recursive product groups
+
 Cyclic products use the same pending-product graph. `ExecutableEffects(E)` is
 one ordinary formula over `MaterializedExecutable(E)` and the exact
 `ExecutableEffects(callee)` products named by its local call edges. A pending
@@ -598,6 +598,7 @@ search counts or component selected from one graph. A settled product answers
 a read with the value it already holds, so it waits on nothing and no cycle of
 waits runs through it — and a settled product never depends on an unsettled
 one, so nothing is missed by not stepping into it.
+
 Graph traversal establishes component membership only. An ordinary producer
 completes exactly its requested key; it cannot stage current peers. Its single
 completion passes directly to publication without a one-element batch vector.
@@ -613,6 +614,9 @@ Each successful group receives a fresh session-local settlement handle. Causal
 replay joins those settlement handles within their session and compares the
 canonical member multiset of each publication. Numeric allocation order is not
 group identity; actual membership and publication multiplicity are.
+
+### Equality, sharing, and retry
+
 Large product answers are single-threaded `Rc` values: the producer, memo entry,
 downstream product, direct consumer, and cache hit retain one immutable
 allocation. `PullSession` and `World` already contain
@@ -631,6 +635,7 @@ equal-but-distinct handle. `ProductMemo` is also the typed settled inventory:
 its materialized, ABI, and backend point queries and iterators project
 the stored key/value pairs directly. `PullSession` carries no parallel artifact
 maps.
+
 Group completion checks that duplicate external product and fact observations
 agree; a mixed-generation or mixed-fact-state snapshot publishes nothing and
 retries from fresh reads. This transient conflict check does not become a
@@ -658,6 +663,8 @@ moves its key. A completed mutation retains no scheduling permission beyond
 that wave. One aggregate work report covers the whole wave, including duplicate
 attempts, rather than attributing only validation-triggered refreshes.
 
+### Product sessions and executable artifacts
+
 `PullSession` owns one root's retained product memo and scheduling relations
 for that root's lifetime in `Compiler2`. A `TransportShape(position)` answer remains in its
 memo entry until an exact consumer reads it. `MaterializedExecutable` embeds the
@@ -671,6 +678,8 @@ lowers one complete body and creates wrappers only for positioned owners whose
 `construction` is present. Direct-only owners retain their layout and direct
 callable facts with no construction, so lowering does not rejoin boundary
 publications to recover first-class eligibility.
+
+### Absence, omission, and ABI width
 
 A value whose materialized layout is `Nothing` with an `Absent` carrier is
 semantically absent. Its lexical capture metadata can still be consumed by a
@@ -705,6 +714,8 @@ missing input. `BackendStep::Omitted` likewise installs explicit absence.
 Entry selection materializes only the inputs the plan records as read --
 `PatternDispatchPlan::required_input`; unused structural inputs can
 contain absent fields and stay decomposed for the body.
+
+### Root membership and cycle repair
 
 Root membership is a distinct dependency relation, not a read of every member's
 value. Each backend producer commits its exact executable and schema membership
@@ -744,6 +755,8 @@ bit's transition through the ordinary mutation wave, not partially updated
 membership state. An equal member can restore readiness without reevaluating
 the root or its native and source consumers.
 
+### The root artifact
+
 The root producer consumes changed member keys and owns one shared
 `BackendProgram`. Its persistent ordered inventories retain executable,
 wrapper, atom, and schema contributions while sharing untouched branches with
@@ -774,6 +787,8 @@ vector from the same stored demand value while carrying its own revision, so a
 return-only change cannot wake an input-only reader. Artifact products read the
 full demand fact at settled readiness and use the normal fact-generation
 dependency path for invalidation.
+
+### Product sessions per root
 
 `Compiler2` retains one `PullSession` per root. Its memo emits a subscription
 change exactly when the first reader of a fact appears or the last disappears.
@@ -891,6 +906,8 @@ AnalyzeActivation(a) re-runs against the new body.
   the returned decision and immutable `World` getters; the context never owns
   store mutation or invariants.
 
+## AppliedStep: what a completion reports
+
 `AppliedStep<J, F>` is `Scheduler::complete_ordered`'s report of one completion's
 effect on the graph: `changed` (the `FactChange`s that resulted), `movements`
 (the full post-wave state of every fact this completion or its cascade
@@ -906,6 +923,6 @@ already pending) and `shift` (the same ground-shift-vs-ascent classification
 `AppliedStep`: `enqueue_step` records one per cause, so a job coalesced by
 two distinct causes in the same `complete` call gets two `Wake`s, not one
 deduped entry — coalescing a job's *evaluation* must not coalesce away *why*
-it woke. This replaced the earlier `enqueued: Vec<J>` /
-`coalesced: Vec<J>` fields, which reported only the deduped job lists with no
+it woke. This distinguishes attributed cause from deduped job identity: an
+earlier design reported only deduped `enqueued`/`coalesced` job lists with no
 cause attribution.
