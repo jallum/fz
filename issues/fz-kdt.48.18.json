@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T21:04:59Z",
+  "description": "Runtime-demand evaluation currently materializes peer input vectors, then clones the entire HashMap into RuntimeDemandFormulaSnapshot. Transfer that immutable map by ownership so each peer input vector has one allocation for the evaluation. Add a red test that proves the snapshot retains the original vector buffer, then validate semantic demand behavior and the full suite.",
+  "id": "fz-kdt.48.18",
+  "labels": [],
+  "parent": "fz-kdt.48",
+  "priority": 1,
+  "status": "open",
+  "title": "Move runtime-demand peer inputs into the formula snapshot",
+  "type": "task",
+  "updated_at": "2026-09-16T21:04:59Z"
+}
