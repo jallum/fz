@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T09:52:22Z",
+  "description": "Add an end-to-end golden test against a captured public telemetry stream, update the profiling guide to invoke the fz tool, and remove the superseded Elixir distiller.",
+  "id": "fz-lcx.3",
+  "labels": [],
+  "parent": "fz-lcx",
+  "priority": 2,
+  "status": "open",
+  "title": "Prove and document the native telemetry analyzer",
+  "type": "task",
+  "updated_at": "2026-09-16T09:52:22Z"
+}
