@@ -11,10 +11,10 @@ defmodule File do
   path-oriented operations open and close their private C stream before they
   return.
 
-  This initial surface intentionally excludes `File.Stat`, directory listing,
-  recursive operations, streams, process cwd, and handle IO: each needs a
-  structured C out-parameter, a directory iterator, or guarded reusable
-  resource access that fz does not yet expose.
+  `stream!/1` supplies reusable lazy line enumeration. `File.Stat`, directory
+  listing, recursive operations, process cwd, and handle IO remain outside
+  this surface: each needs a structured C out-parameter or directory iterator
+  that fz does not yet expose.
   """
 
   @type t :: resource(c_pointer)
@@ -47,6 +47,10 @@ defmodule File do
 
   @spec read!(binary) :: binary
   def read!(path), do: read_value!(read(path))
+
+  @doc "Returns a lazy stream of binary lines from `path`."
+  @spec stream!(binary) :: FileStream.t
+  def stream!(path), do: FileStream.new(path)
 
   @doc "Writes `content` to `path`, replacing any prior contents."
   @spec write(binary, binary) :: :ok | {:error, :io}

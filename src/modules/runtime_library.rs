@@ -65,6 +65,14 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/enum.fz"),
     },
     RuntimeModuleSource {
+        name: "Stream",
+        source: include_str!("../../lib/stream.fz"),
+    },
+    RuntimeModuleSource {
+        name: "FileStream",
+        source: include_str!("../../lib/file_stream.fz"),
+    },
+    RuntimeModuleSource {
         name: "Atom",
         source: include_str!("../../lib/atom.fz"),
     },

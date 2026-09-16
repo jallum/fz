@@ -1,0 +1,12 @@
+defmodule Stream do
+  @moduledoc """
+  Lazy enumerable transforms.
+
+  `map/2` records a transformation and does no enumeration itself. The source
+  is consumed only when an `Enum` operation reduces the returned stream.
+  """
+
+  defstruct [:source, :mapper]
+
+  def map(source, mapper), do: %Stream{source: source, mapper: mapper}
+end
