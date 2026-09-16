@@ -9,9 +9,15 @@
   "id": "fz-kdt.48.10",
   "labels": [],
   "parent": "fz-kdt.48",
+  "comments": [
+    {
+      "text": "Built and measured 2026-09-16 on d25552951 (patch 48-10.patch held, not committed). Rule lives in dispatch_matrix (Proven carried down during construction; Proof::settles; resolved_target; relation = Types::covers = RuntimeTypePredicate::contained_in on the two TESTS, memoized as ComparisonKey::TestCovers, NOT is_subtype: the type-\u003etest projection is not monotone, e.g. {any,any} \u0026 not({:x,:x}) projects to a test admitting no tuple). Gate green (lib 2210/0, matrix 825/0). Findings: (1) the rebase onto main already moved SURFACE_MEMBERSHIP_CENSUS rows: 82-\u003e64, 12-\u003e9, 382-\u003e265 at d25552951; (2) on the settled seat the discharge moves NO row (the question it removes is a refuted one, never matched); plan node counts unchanged, only 4/2/4/2/2/0 miss edges retarget; (3) the ticket's neutrality claim is REFUTED: with the tie-break flipped, rows are 61/11/236 without the rule and 54/9/225 with it, still not equal to the settled 64/9/265 either way; cause = when the covering arm is seated first a value answers the covering question, fails the closure, then answers the covered question, and nothing on that path settles the covering question; (4) the patch is net +8 concepts (Proven, RegionCovers, Proof::settles, resolved_target, Types::covers, TestCovers, PatternResolver::covers, impl PatternResolver for Types) minus 2 no-op resolvers. The cure that makes arm order free by construction is asking the SEPARATING position first within an arm (dispatch_row precondition order): 2 questions in either seat. Also proposed, not filed: a dispatch graph holding only root-reachable nodes (61 unreachable fail nodes on json_roundtrip at baseline); one authority for test coverage (runtime_questions/seating re-project what Types::covers memoizes).",
+      "timestamp": "2026-09-16T11:18:13Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Discharge a dispatch question already proven by a stronger one on the path",
   "type": "task",
-  "updated_at": "2026-09-16T09:33:51Z"
+  "updated_at": "2026-09-16T11:18:13Z"
 }
