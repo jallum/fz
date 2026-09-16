@@ -4,6 +4,7 @@
   "blocks": [
     "fz-kdt.48.5"
   ],
+  "closed_at": "2026-09-16T15:01:04Z",
   "created": "2026-09-16T09:33:50Z",
   "description": "Plan: ../recursive-denotations-proposal.html. PR3 (fz-kdt.48), lands BEFORE fz-kdt.48.5. RE-SCOPED 2026-09-16 with the user's decision after the discharge was built and measured (see the comments; patch held as 48-10-discharge-NOT-LANDED.patch, not landed: +8 concepts, no census row moved on the settled seat, arm order still not free).\n\nMeasured on d25552951 and with the .48.5 patch (fz-wt-48g): at the boxed direct_call inside List.reduce_while_step/3's delivered_resume continuation, two arms A (take: s1 = {:cont | :halt, {[int], int}}, s2 = closure[Enum.take_positive]) and B (drop: s1 = {:cont, {[int], int}}, s2 = closure[Enum.drop_positive]) are Separated at the CLOSURE position (s2) and not at the tuple position (s1). The plan asks s1 before s2. So whichever separated arm is seated first, a value bound for the other arm answers the first arm's s1 (match), fails its s2, then answers its own s1 and s2: 3 matched questions instead of 2. The seat is an arbitrary canonical tie-break (order.rs lex_elements_then_longer clause count; .48.5's fusion flips it), which is why .48.5 moves SURFACE_MEMBERSHIP_CENSUS rows 9 -\u003e 11 on 00418_enum_count_range and behavior/unused_range_binding while ten rows fall. Nothing on the path settles the covering s1, so no discharge can remove that question.\n\nBuild: within an arm, the plan asks the position(s) that SEPARATE it from its seated neighbours (the position where seating found no overlap) before the positions that do not, so a selection costs 2 questions in either seat by construction and separated-arm order becomes a pure determinism choice. Decide from seating's own per-position verdicts (typed containment on runtime tests), never from clause count or rendering; keep binding/projection edges where the arm below reads them. One rule, every producer (source patterns, callsite wrappers, construction wrappers), every door. Tests: the two-arm witness pinned at [2,2,2] matched questions for BOTH seats (the discharge builder's seating_the_covered_arm_first_is_what_shortens_the_walk_not_the_discharge test becomes this); the tie-break flip probe shows every SURFACE_MEMBERSHIP_CENSUS row unchanged under either seat; rows lowered in the same motion (expected: every row at or below 64 / 9 / 265 / 4, none raised); no golden rises; docs at canonically_order_separated_neighbours and order.rs say separated-arm order is determinism only, which is then a provable fact. Then .48.5 re-measures on top and must only lower rows.",
   "id": "fz-kdt.48.10",
@@ -24,8 +25,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Ask the separating position first within a dispatch arm",
   "type": "task",
-  "updated_at": "2026-09-16T15:01:03Z"
+  "updated_at": "2026-09-16T15:01:04Z"
 }
