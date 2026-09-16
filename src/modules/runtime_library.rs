@@ -37,6 +37,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/file.fz"),
     },
     RuntimeModuleSource {
+        name: "IO",
+        source: include_str!("../../lib/io.fz"),
+    },
+    RuntimeModuleSource {
         name: "List",
         source: include_str!("../../lib/list.fz"),
     },
@@ -59,6 +63,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
     RuntimeModuleSource {
         name: "String",
         source: include_str!("../../lib/string.fz"),
+    },
+    RuntimeModuleSource {
+        name: "System",
+        source: include_str!("../../lib/system.fz"),
     },
     RuntimeModuleSource {
         name: "Enum",

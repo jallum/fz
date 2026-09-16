@@ -112,6 +112,9 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
             b: &mut b,
             runtime_funcs: HashMap::new(),
         };
+        let &[argc, argv] = main.b.block_params(entry) else {
+            unreachable!("C main has argc and argv parameters")
+        };
 
         // Atom blob: symbol address + byte length.
         let atom_blob_addr = main.data_addr(atom_blob_data);
@@ -137,6 +140,8 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
                 hcb_f64_addr,
                 hcb_atom_addr,
                 et_addr,
+                argc,
+                argv,
             ]
         );
         let proc_v = main.sole_result(setup);

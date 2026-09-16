@@ -97,6 +97,10 @@ fn parse_global_args(raw_args: Vec<String>) -> (Option<String>, bool, Vec<String
     let mut args = Vec::new();
     let mut index = 0;
     while index < raw_args.len() {
+        if raw_args[index] == "--" {
+            args.extend_from_slice(&raw_args[index..]);
+            break;
+        }
         match raw_args[index].as_str() {
             "--log-telemetry" => {
                 index += 1;
@@ -145,12 +149,12 @@ fn print_help() {
 fz2 — incremental compiler
 
 Usage:
-  fz2 <command> [options] <src.fz>
+  fz2 <command> [options] <src.fz> [-- <program-args>...]
 
 Commands:
-  run     <src.fz>   JIT-compile and run through Compiler2
-  build   <src.fz>   AOT-compile and link through Compiler2 (needs -o)
-  interp  <src.fz>   run through Compiler2's backend interpreter
+  run     <src.fz> [-- <args>...]     JIT-compile and run through Compiler2
+  build   <src.fz>                    AOT-compile and link through Compiler2 (needs -o)
+  interp  <src.fz> [-- <args>...]     run through Compiler2's backend interpreter
   test    <src.fz>   discover and run every `test(:name) do ... end` in the
                      source (top-level or nested in a `defmodule`), one
                      subprocess per test; add --interp to run each test
@@ -176,9 +180,10 @@ fn run_command(
     args: &[String],
     diagnostic_status: &DiagnosticStatus,
 ) -> Result<(), CliError> {
-    let options = parse_source_options("fz2 run [--dump <spec>] <src.fz>", args)?;
+    let options = parse_source_options("fz2 run [--dump <spec>] <src.fz> [-- <program-args>...]", args)?;
     let path = options.path;
     let (mut compiler, root) = load_main_root(tel, &path, diagnostic_status)?;
+    compiler.set_program_args(options.program_args);
     compiler.set_requested_output(Box::new(FileRequestedOutput::new(root, &options.dumps)));
     emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
     compiler
@@ -192,9 +197,10 @@ fn interp_command(
     args: &[String],
     diagnostic_status: &DiagnosticStatus,
 ) -> Result<(), CliError> {
-    let options = parse_source_options("fz2 interp [--dump <spec>] <src.fz>", args)?;
+    let options = parse_source_options("fz2 interp [--dump <spec>] <src.fz> [-- <program-args>...]", args)?;
     let path = options.path;
     let (mut compiler, root) = load_main_root(tel, &path, diagnostic_status)?;
+    compiler.set_program_args(options.program_args);
     compiler.set_requested_output(Box::new(FileRequestedOutput::new(root, &options.dumps)));
     emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
     let result = compiler.run_root_interp(root).map_err(|error| {
@@ -570,6 +576,7 @@ fn do_keyword_body_root(
 struct SourceOptions {
     path: PathBuf,
     dumps: Vec<DumpSpec>,
+    program_args: Vec<String>,
 }
 
 struct BuildOptions {
@@ -581,8 +588,16 @@ struct BuildOptions {
 fn parse_source_options(usage: &'static str, args: &[String]) -> Result<SourceOptions, CliError> {
     let mut path = None;
     let mut dumps = Vec::new();
+    let mut program_args = Vec::new();
     let mut index = 0;
     while index < args.len() {
+        if args[index] == "--" {
+            if path.is_none() {
+                return Err(CliError::usage(usage));
+            }
+            program_args.extend_from_slice(&args[index + 1..]);
+            break;
+        }
         match args[index].as_str() {
             "--dump" => {
                 index += 1;
@@ -597,7 +612,11 @@ fn parse_source_options(usage: &'static str, args: &[String]) -> Result<SourceOp
         index += 1;
     }
     let path = path.ok_or_else(|| CliError::usage(usage))?;
-    Ok(SourceOptions { path, dumps })
+    Ok(SourceOptions {
+        path,
+        dumps,
+        program_args,
+    })
 }
 
 fn parse_build_options(args: &[String]) -> Result<BuildOptions, CliError> {
