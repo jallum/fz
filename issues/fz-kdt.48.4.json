@@ -11,9 +11,15 @@
   "id": "fz-kdt.48.4",
   "labels": [],
   "parent": "fz-kdt.48",
+  "comments": [
+    {
+      "text": "Reworked absorber measured on fz-kdt.48/one-ty-per-denotation at 2cb74c6bf (2026-09-16), counts authoritative, three inputs = enum_take_drop_split / range_map_converges / json_roundtrip: exact union questions 0 / 0 / 291 (all 291 involve a clause or sibling with a negative factor, which the structural rules do not read; positionwise gate never wrong); saturation questions 0 / 0 / 0; memoized subtype questions 34,673 / 4,810 / 229,590 vs parent addeaaa95 36,595 / 4,896 / 235,488; intern calls and misses unchanged; census 134 / 17. Wall-clock corroborative: json_roundtrip 4.2-4.6 s vs 5.5 s at the parent. Scope as built: tuple, list, resource, map axes; callable axis excluded (stated once, types/axis.rs module doc); tuples and maps never saturate (unbounded arity / struct tags); top written as the widest single sig, never Conj::top().",
+      "timestamp": "2026-09-16T02:42:57Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "One absorber for every axis, survivor by typed order, with saturation",
   "type": "task",
-  "updated_at": "2026-09-15T20:30:07Z"
+  "updated_at": "2026-09-16T02:42:57Z"
 }
