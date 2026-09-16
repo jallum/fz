@@ -569,7 +569,7 @@ pub(crate) struct JobEffects {
     pub(crate) product_waits: Vec<ProductAddress>,
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
-    pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
+    pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::semantic::ActivationInput>)>,
     pub(crate) runtime_demand_input_contributions: Vec<(ExecutableKey, super::semantic::TargetDemandContribution)>,
     pub(crate) incoming_input_contributions:
         std::collections::HashMap<super::incoming_inputs::InputSlot, super::incoming_inputs::IncomingInputSources>,

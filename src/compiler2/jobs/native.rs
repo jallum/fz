@@ -722,8 +722,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             return_tuple_arity,
             executable.abi.effects,
         );
-        let activation_inputs = executable.key.activation.inputs(self.world.types());
-        let params = ctx.entry_params(activation_inputs.as_slice());
+        let activation_inputs = executable.key.activation.inputs();
+        let params = ctx.entry_params(activation_inputs);
         let mut extern_args = Vec::with_capacity(params.len());
         for (arg_index, param) in params.iter().copied().enumerate() {
             let arg = if arg_index < signature.params.len() {
@@ -1228,7 +1228,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         lowered.push(crate::fz_ir::BitFieldIr {
                             value: self.env_runtime_var(ctx, executable, env, field.value),
                             ty: field.spec.ty,
-                            size: lower_bit_size_ir(self.world, &field.spec.size, env)?,
+                            size: lower_bit_size_ir(&field.spec.size, env)?,
                             endian: field.spec.endian,
                             signed: field.spec.signed,
                             unit: field.spec.unit,
@@ -1442,7 +1442,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let (result, _) = ctx.emit_let(Prim::BitReadField {
                         reader,
                         ty: spec.ty,
-                        size: lower_bit_size_ir(self.world, &spec.size, env)?,
+                        size: lower_bit_size_ir(&spec.size, env)?,
                         endian: spec.endian,
                         signed: spec.signed,
                         unit: spec.unit,
@@ -1536,7 +1536,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             .ok_or(FatalError)?;
                         let callee_executable = &self.program.executables()[target];
                         let mut call_args = capture_lanes;
-                        let target_inputs = callee_executable.key.activation.input_len(self.world.types());
+                        let target_inputs = callee_executable.key.activation.input_len();
                         if target_inputs != capture_inputs_end + args.len() {
                             return Err(incomplete_native_program(
                                 self.telemetry,
@@ -2806,7 +2806,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         executable: &BackendExecutable,
         params: &[Var],
     ) -> Result<Vec<Option<NativeBoundValue>>, FatalError> {
-        let semantic_arity = executable.key.activation.input_len(self.world.types());
+        let semantic_arity = executable.key.activation.input_len();
         let mut bound = vec![None; semantic_arity];
         let mut lane_index = 0;
         for input in &executable.abi.semantic_inputs {
@@ -4814,26 +4814,13 @@ fn collect_extern_marshals(
 ) -> Result<HashMap<usize, Vec<ExternTy>>, FatalError> {
     let mut out = HashMap::new();
     for executable in program.executables() {
-        if let BackendBody::Clauses { clauses, entries, .. } = &executable.body {
-            for clause in clauses {
-                collect_extern_marshals_in_steps(world, root_id, program, &clause.projections, &mut out)?;
-            }
+        if let BackendBody::Clauses { entries, .. } = &executable.body {
             for entry in entries {
                 collect_extern_marshals_in_tail(world, tel, root_id, program, &entry.tail, &mut out)?;
             }
         }
     }
     Ok(out)
-}
-
-fn collect_extern_marshals_in_steps(
-    _world: &World,
-    _root_id: RootId,
-    _program: &BackendProgram,
-    _steps: &[BackendStep],
-    _out: &mut HashMap<usize, Vec<ExternTy>>,
-) -> Result<(), FatalError> {
-    Ok(())
 }
 
 fn collect_extern_marshals_in_tail(
@@ -5062,7 +5049,6 @@ fn atom_names(atom_ids: &HashMap<String, u32>) -> Vec<String> {
 }
 
 fn lower_bit_size_ir(
-    _world: &World,
     size: &Option<super::super::body::LoweredBitSize>,
     env: &ValueEnv,
 ) -> Result<Option<BitSizeIr>, FatalError> {

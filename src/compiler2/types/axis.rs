@@ -82,25 +82,11 @@
 //! drift apart.
 //!
 //! Absorption reaches the tuple, list, resource and map axes. The callable
-//! axis is excluded, on three measured facts about the shapes that axis
-//! holds: an arrow carries MORE than the set it denotes, and each surplus
-//! has a reader that takes it back out.
-//!
-//! A LIT-FREE arrow is how the compiler writes a record down. `ActivationKey`
-//! keeps a specialization's canonical inputs and result as one arrow's params
-//! and result and reads them back with `Types::arrow_params`, and a resolved
-//! `@spec` is decomposed by `arrow_params`/`arrow_result` the same way. The
-//! kernel meanwhile calls `(any, int) -> any` EVERY callable — an arrow whose
-//! result is every value constrains nothing a callable could fail, which
-//! `emptiness::func_clause_empty` decides outright — so the top rule would
-//! replace any such arrow with the contentless clause. `arrow_params` then
-//! answers `[]`, and `arrow_result` answers `None` where `resolve` and
-//! `contract` both `expect` a result slot: the collapse ends in a panic, not
-//! in a quietly empty answer. An activation key escapes only because its
-//! result slot is the unknown `r0` and not `any`; a declared callable
-//! parameter does not, and the target fixtures hold those by the dozen.
-//! `axis_test` pins the collapse against the params the same arrow still
-//! hands back.
+//! axis remains excluded on the two measured facts about literal shapes that
+//! still carry planner evidence. The formerly separate lit-free obstruction is
+//! gone: `ActivationKey` and resolved source contracts now keep their addressed
+//! inputs and result in typed coordinate records, not an `ArrowSig`, so an axis
+//! top can no longer erase planner bookkeeping from a callable `Ty`.
 //!
 //! A LIT-BEARING arrow's `args` and `ret` are evidence `func_clause_empty`
 //! does not read, so two specializations of one lambda are mutually subtypes

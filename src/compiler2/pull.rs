@@ -4875,8 +4875,8 @@ mod tests {
         super::super::transport::ExecutableSymbol {
             activation: super::super::transport::ActivationSymbol {
                 function: executable.activation.function,
-                arrow: executable.activation.arrow,
-                input: Box::default(),
+                signature: executable.activation.signature.clone(),
+                callable_surfaces: executable.activation.callable_surfaces.clone(),
             },
             need: executable.need,
         }
@@ -5117,7 +5117,7 @@ mod tests {
         );
     }
 
-    type OwnerSymbolKey = (u32, super::super::types::Ty, Vec<super::super::types::Ty>, u8, usize);
+    type OwnerSymbolKey = (u32, super::super::identity::ActivationSignature, u8, usize);
     type OwnerPositionKey = (u8, OwnerSymbolKey, u64, u64, usize);
 
     fn owner_symbol_key(symbol: &ExecutableSymbol) -> OwnerSymbolKey {
@@ -5127,8 +5127,7 @@ mod tests {
         };
         (
             symbol.activation.function.as_u32(),
-            symbol.activation.arrow,
-            symbol.activation.input.to_vec(),
+            symbol.activation.signature.clone(),
             need.0,
             need.1,
         )
@@ -5567,7 +5566,7 @@ mod tests {
         let root = RootId::for_test(61);
         let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 610));
         let mut executable = executable_symbol_for_test(&fake_executable_with_function(root, 612));
-        executable.activation.input = vec![executable.activation.arrow; 32].into_boxed_slice();
+        executable.activation.signature.inputs = vec![executable.activation.signature.result; 32].into_boxed_slice();
         let external = ProductKey::TransportShape(TransportPosition::ExecutableReturn { executable });
         let dependencies = ProductDependencies {
             rooted_read: None,
@@ -5580,7 +5579,7 @@ mod tests {
         let ProductKey::TransportShape(position) = dependencies.products.get_index(0).unwrap().0 else {
             unreachable!()
         };
-        let input_storage = position.executable().activation.input.as_ptr();
+        let input_storage = position.executable().activation.signature.inputs.as_ptr();
         let membership_storage = dependencies.membership.get(&external).unwrap() as *const ProductKey;
         assert!(memo.begin(left.clone()));
         assert!(finish_test_entry(
@@ -5599,7 +5598,10 @@ mod tests {
         let ProductKey::TransportShape(position) = entry.dependencies.products.get_index(0).unwrap().0 else {
             unreachable!()
         };
-        assert_eq!(position.executable().activation.input.as_ptr(), input_storage);
+        assert_eq!(
+            position.executable().activation.signature.inputs.as_ptr(),
+            input_storage
+        );
         assert_eq!(
             entry.membership.get(&external).unwrap() as *const ProductKey,
             membership_storage

@@ -1078,8 +1078,8 @@ impl BackendExecutable {
         let symbol = ExecutableSymbol {
             activation: super::transport::ActivationSymbol {
                 function: key.activation.function,
-                arrow: key.activation.arrow,
-                input: Box::default(),
+                signature: key.activation.signature.clone(),
+                callable_surfaces: key.activation.callable_surfaces.clone(),
             },
             need: key.need,
         };

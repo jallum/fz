@@ -21,7 +21,7 @@ use super::super::semantic::{
     ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, SemanticOrd, ShapeDemand,
 };
 use super::super::transport::{
-    ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableConstructionCapture, CallableConstructionFact,
+    BoundaryDescr, BoundaryFacts, BoundaryId, CallableConstructionCapture, CallableConstructionFact,
     CallableConstructionMember, CallableConstructionOwner, CallableDescr, CallableDirectEdge, CallableFacts,
     CallableId, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPosition,
 };
@@ -312,34 +312,20 @@ fn produce_generic_callable_owner(
                     .incoming_input_sources(&slot)
                     .expect("settled input slot has an authoritative answer");
                 source_positions.extend(sources.iter().map(|source| TransportPosition::Value {
-                    executable: executable_symbol(&source.producer, world.types()),
+                    executable: ExecutableSymbol::from_key(&source.producer),
                     value: source.value,
                 }));
             }
             TransportPosition::Value { value, .. } => {
                 if let Some(origin) = facts.value_origin(*value)
-                    && !append_origin_children(
-                        world,
-                        executable,
-                        position.executable(),
-                        facts,
-                        origin,
-                        &mut source_positions,
-                    )
+                    && !append_origin_children(position.executable(), facts, origin, &mut source_positions)
                 {
                     source_positions.clear();
                 }
             }
             TransportPosition::ExecutableReturn { .. } => {
                 for origin in facts.return_origins() {
-                    if !append_origin_children(
-                        world,
-                        executable,
-                        position.executable(),
-                        facts,
-                        origin,
-                        &mut source_positions,
-                    ) {
+                    if !append_origin_children(position.executable(), facts, origin, &mut source_positions) {
                         source_positions.clear();
                         break;
                     }
@@ -362,14 +348,7 @@ fn produce_generic_callable_owner(
             }
             TransportPosition::ReturnPayload { callsite, .. } => {
                 if facts.callsite_return_origin(*callsite).is_none_or(|origin| {
-                    !append_origin_children(
-                        world,
-                        executable,
-                        position.executable(),
-                        facts,
-                        origin,
-                        &mut source_positions,
-                    )
+                    !append_origin_children(position.executable(), facts, origin, &mut source_positions)
                 }) {
                     source_positions.clear();
                 }
@@ -391,14 +370,7 @@ fn produce_generic_callable_owner(
             TransportPosition::ResumePayload { callsite, entry, .. } => {
                 if let Some(callsite) = callsite {
                     if facts.callsite_return_origin(*callsite).is_none_or(|origin| {
-                        !append_origin_children(
-                            world,
-                            executable,
-                            position.executable(),
-                            facts,
-                            origin,
-                            &mut source_positions,
-                        )
+                        !append_origin_children(position.executable(), facts, origin, &mut source_positions)
                     }) {
                         source_positions.clear();
                     }
@@ -537,7 +509,7 @@ fn generic_owner_ty_and_demand(
         TransportPosition::ExecutableInput { semantic_index, .. } => (
             world
                 .activation_inputs_joined(&executable.activation)
-                .unwrap_or_else(|| executable.activation.inputs(world.types()))
+                .unwrap_or_else(|| executable.activation.inputs().to_vec())
                 .get(*semantic_index)
                 .copied()
                 .unwrap_or_else(|| world.types_mut().any()),
@@ -723,7 +695,7 @@ fn exact_demand_resolution_symbols(
             .flat_map(|draft| draft.resolutions.iter())
             .filter(|resolution| {
                 resolution.activation.function == target.activation.function
-                    && resolution.activation.arrow == target.activation.arrow
+                    && resolution.activation.signature == target.activation.signature
             })
         {
             if !resolutions.contains(resolution) {
@@ -1246,7 +1218,7 @@ fn direct_callable_descr(
         activation: target.activation.clone(),
         need: target.need,
     };
-    let executable = executable_symbol(&executable, world.types());
+    let executable = ExecutableSymbol::from_key(&executable);
     let mut capture_layouts = Vec::with_capacity(capture_count);
     for semantic_index in 0..capture_count {
         let capture = TransportPosition::ExecutableInput {
@@ -1304,7 +1276,6 @@ fn singleton_closure_call_target(
 }
 
 fn origin_transport_recipe(
-    world: &World,
     symbol: &ExecutableSymbol,
     facts: &ExecutableFacts,
     origin: &TransportSource,
@@ -1336,13 +1307,10 @@ fn origin_transport_recipe(
                     .map(|target| match (&target.callee, &target.activation) {
                         (SelectedCallee::Function(_), Some(activation)) => {
                             TransportRecipe::Alias(TransportPosition::ExecutableReturn {
-                                executable: executable_symbol(
-                                    &ExecutableKey {
-                                        activation: activation.clone(),
-                                        need,
-                                    },
-                                    world.types(),
-                                ),
+                                executable: ExecutableSymbol::from_key(&ExecutableKey {
+                                    activation: activation.clone(),
+                                    need,
+                                }),
                             })
                         }
                         (SelectedCallee::ProviderBoundary(_), _) | (_, None) => TransportRecipe::Terminal,
@@ -1366,13 +1334,10 @@ fn origin_transport_recipe(
                 },
                 grounded: singleton_closure_call_target(facts, callsite).map(|(activation, need)| {
                     let recipe = TransportRecipe::Alias(TransportPosition::ExecutableReturn {
-                        executable: executable_symbol(
-                            &ExecutableKey {
-                                activation: activation.clone(),
-                                need,
-                            },
-                            world.types(),
-                        ),
+                        executable: ExecutableSymbol::from_key(&ExecutableKey {
+                            activation: activation.clone(),
+                            need,
+                        }),
                     });
                     Box::new(DirectClosureTarget {
                         target: activation,
@@ -1384,7 +1349,7 @@ fn origin_transport_recipe(
         TransportSource::Join(origins) => TransportRecipe::Alternatives(
             origins
                 .iter()
-                .map(|origin| origin_transport_recipe(world, symbol, facts, origin))
+                .map(|origin| origin_transport_recipe(symbol, facts, origin))
                 .collect(),
         ),
         TransportSource::TupleValue(values) => TransportRecipe::Tuple(
@@ -1484,7 +1449,7 @@ fn produce_local_callable_construction(
             capture.join_assign(input);
         }
     }
-    let symbol = executable_symbol(executable, world.types());
+    let symbol = ExecutableSymbol::from_key(executable);
     let mut capture_layouts = Vec::with_capacity(producer.captures.len());
     for (index, capture) in producer.captures.iter().copied().enumerate() {
         let key = ProductKey::TransportShape(TransportPosition::Value {
@@ -1518,7 +1483,7 @@ fn produce_local_callable_construction(
     });
     let boundary_surfaces = flow.first_class_surfaces.clone();
     let boundary_layouts = surface_layouts(world, &boundary_surfaces);
-    let boundary_resolutions = boundary_resolution_symbols_for_flow_surfaces(flow, &boundary_surfaces, world.types());
+    let boundary_resolutions = boundary_resolution_symbols_for_flow_surfaces(flow, &boundary_surfaces);
     let producer_position = TransportPosition::Value {
         executable: symbol,
         value,
@@ -1535,10 +1500,7 @@ fn produce_local_callable_construction(
     );
     builder.record_callable(
         callable,
-        flow.resolutions
-            .iter()
-            .map(|resolution| executable_symbol(resolution, world.types()))
-            .collect(),
+        flow.resolutions.iter().map(ExecutableSymbol::from_key).collect(),
         direct_surfaces,
         direct_edges,
         boundaries_by_surface.values().copied().collect(),
@@ -1567,7 +1529,7 @@ fn produce_local_callable_construction(
                 .zip(capture_tys)
                 .map(|((value, layout), ty)| CallableConstructionCapture {
                     source: TransportPosition::Value {
-                        executable: executable_symbol(executable, world.types()),
+                        executable: ExecutableSymbol::from_key(executable),
                         value,
                     },
                     layout,
@@ -1691,7 +1653,7 @@ fn resume_payload_ty(types: &Types, executable: &ExecutableKey, facts: &Executab
         // gives it the empty type, so the value has a type and this arm never
         // fires (fz-f98.18). Defaulting to `any` here is the defect fz-f98.17
         // removed.
-        if types.key_is_value_template(&executable.activation.inputs(types)) {
+        if types.key_is_value_template(executable.activation.inputs()) {
             panic!(
                 "transport invariant failed: resume payload value {:?} in executable {:?} has no \
                  analyzed type because the activation is a value template — a value-template \
@@ -1750,7 +1712,7 @@ fn produce_named_transport_position(
         TransportPosition::ExecutableInput { semantic_index, .. } => {
             let ty = world
                 .activation_inputs_joined(&executable.activation)
-                .unwrap_or_else(|| executable.activation.inputs(world.types()))
+                .unwrap_or_else(|| executable.activation.inputs().to_vec())
                 .get(*semantic_index)
                 .copied()
                 .unwrap_or_else(|| world.types_mut().any());
@@ -1765,7 +1727,7 @@ fn produce_named_transport_position(
                 facts
                     .return_origins()
                     .iter()
-                    .map(|origin| origin_transport_recipe(world, &symbol, &facts, origin))
+                    .map(|origin| origin_transport_recipe(&symbol, &facts, origin))
                     .collect(),
             );
             (ty, runtime.return_demand.clone())
@@ -1789,7 +1751,7 @@ fn produce_named_transport_position(
                         None => PullOutcome::wait_on_product(key),
                     });
                 }
-                Some(origin) => recipe = origin_transport_recipe(world, &symbol, &facts, origin),
+                Some(origin) => recipe = origin_transport_recipe(&symbol, &facts, origin),
                 None => {}
             }
             (ty, demand)
@@ -1828,19 +1790,15 @@ fn produce_named_transport_position(
                     let Some(activation) = &target.activation else {
                         continue;
                     };
-                    let Some(target_index) =
-                        mode.semantic_index(activation.input_len(world.types()), args_len, *semantic_index)
+                    let Some(target_index) = mode.semantic_index(activation.input_len(), args_len, *semantic_index)
                     else {
                         continue;
                     };
                     let target = TransportRecipe::Alias(TransportPosition::ExecutableInput {
-                        executable: executable_symbol(
-                            &ExecutableKey {
-                                activation: activation.clone(),
-                                need,
-                            },
-                            world.types(),
-                        ),
+                        executable: ExecutableSymbol::from_key(&ExecutableKey {
+                            activation: activation.clone(),
+                            need,
+                        }),
                         semantic_index: target_index,
                     });
                     match &mut recipe {
@@ -1870,7 +1828,6 @@ fn produce_named_transport_position(
                 return Some(bottom_transport_shape(world));
             };
             recipe = origin_transport_recipe(
-                world,
                 &symbol,
                 &facts,
                 facts
@@ -1920,7 +1877,6 @@ fn produce_named_transport_position(
             let value = resume_payload_value(&facts, *entry);
             if let Some(callsite) = callsite {
                 recipe = origin_transport_recipe(
-                    world,
                     &symbol,
                     &facts,
                     facts
@@ -2264,8 +2220,6 @@ fn bottom_transport_shape(world: &mut World) -> PullOutcome {
 }
 
 fn append_origin_children(
-    world: &World,
-    executable: &ExecutableKey,
     symbol: &ExecutableSymbol,
     facts: &ExecutableFacts,
     origin: &TransportSource,
@@ -2294,13 +2248,10 @@ fn append_origin_children(
                     (SelectedCallee::ProviderBoundary(_), _) | (_, None) => return false,
                     (SelectedCallee::Function(_), Some(activation)) => {
                         children.push(TransportPosition::ExecutableReturn {
-                            executable: executable_symbol(
-                                &ExecutableKey {
-                                    activation: activation.clone(),
-                                    need,
-                                },
-                                world.types(),
-                            ),
+                            executable: ExecutableSymbol::from_key(&ExecutableKey {
+                                activation: activation.clone(),
+                                need,
+                            }),
                         });
                     }
                 }
@@ -2317,13 +2268,13 @@ fn append_origin_children(
             });
             if let Some((activation, need)) = singleton_closure_call_target(facts, callsite) {
                 children.push(TransportPosition::ExecutableReturn {
-                    executable: executable_symbol(&ExecutableKey { activation, need }, world.types()),
+                    executable: ExecutableSymbol::from_key(&ExecutableKey { activation, need }),
                 });
             }
         }
         TransportSource::Join(origins) => {
             for origin in origins {
-                if !append_origin_children(world, executable, symbol, facts, origin, children) {
+                if !append_origin_children(symbol, facts, origin, children) {
                     return false;
                 }
             }
@@ -2348,7 +2299,6 @@ fn append_origin_children(
         }
         TransportSource::CallableValue(_) => return false,
     }
-    let _ = executable;
     true
 }
 
@@ -2481,20 +2431,10 @@ fn executable_key_for_transport_position(root: RootId, position: &TransportPosit
         activation: ActivationKey {
             root,
             function: symbol.activation.function,
-            arrow: symbol.activation.arrow,
+            signature: symbol.activation.signature.clone(),
+            callable_surfaces: symbol.activation.callable_surfaces.clone(),
         },
         need: symbol.need,
-    }
-}
-
-fn executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSymbol {
-    ExecutableSymbol {
-        activation: ActivationSymbol {
-            function: executable.activation.function,
-            arrow: executable.activation.arrow,
-            input: executable.activation.inputs(types).into_boxed_slice(),
-        },
-        need: executable.need,
     }
 }
 
@@ -2561,7 +2501,7 @@ fn callable_direct_edges(
         .map(|edge| CallableDirectEdge {
             surface_inputs: edge.surface.inputs.clone().into_boxed_slice(),
             surface_arg_shapes: surface_shape(world, &edge.surface),
-            resolution: executable_symbol(&edge.resolution, world.types()),
+            resolution: ExecutableSymbol::from_key(&edge.resolution),
             capture_semantic_inputs: edge.capture_semantic_inputs.clone(),
             surface_semantic_inputs: edge.surface_semantic_inputs.clone(),
         })
@@ -2719,7 +2659,6 @@ fn publish_boundaries_for_callable(
 fn boundary_resolution_symbols_for_flow_surfaces(
     flow: &CallableFlowFact,
     surfaces: &BTreeSet<CallableSurface>,
-    types: &Types,
 ) -> Vec<Vec<ExecutableSymbol>> {
     surfaces
         .iter()
@@ -2727,7 +2666,7 @@ fn boundary_resolution_symbols_for_flow_surfaces(
             flow.first_class_edges
                 .iter()
                 .filter(|edge| &edge.surface == surface)
-                .map(|edge| executable_symbol(&edge.resolution, types))
+                .map(|edge| ExecutableSymbol::from_key(&edge.resolution))
                 .collect::<Vec<_>>()
         })
         .collect()
@@ -2865,7 +2804,7 @@ mod tests {
             activation: activation.clone(),
             need: ExecutableNeed::Value,
         };
-        let resolution = executable_symbol(&executable, world.types());
+        let resolution = ExecutableSymbol::from_key(&executable);
         let surface = CallableSurface::new(Vec::new(), world.types_mut());
         let demand = RuntimeDemand::callable(CallableDemand {
             resolved: BTreeSet::from([surface.clone()]),
