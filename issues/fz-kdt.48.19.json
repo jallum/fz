@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T21:15:30Z",
+  "description": "Every Ty persists through Types::intern, whose bottom collapse gives all empty denotations the one core none handle. Types::is_empty still hashes a ComparisonKey::Empty and may run recursive emptiness. Replace it with direct canonical-handle equality, remove the obsolete Empty cache key, and prove empty/non-empty queries leave comparison-cache state unchanged.",
+  "id": "fz-kdt.48.19",
+  "labels": [],
+  "parent": "fz-kdt.48",
+  "priority": 1,
+  "status": "open",
+  "title": "Answer empty Ty queries from canonical bottom identity",
+  "type": "task",
+  "updated_at": "2026-09-16T21:15:30Z"
+}
