@@ -7,14 +7,15 @@
   "blocks": [
     "fz-kdt.177.4"
   ],
+  "closed_at": "2026-09-16T19:50:45Z",
   "created": "2026-09-15T20:29:54Z",
   "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR3, last. Flip canon_test.rs ~170-179 (canon_is_faithful_over_the_full_arena_of_both_target_fixtures) from collapsed \u003e 0 to collapsed == 0 and equivalent_executable_keys to zero; add the construction-order battery fz-kdt.48 names (empty-list vs list unions, tuple carvings, template vs ground, anonymous vs branded callables); delete whatever canon normalization is left dead; record bounded comparison and interning work through comparison_cache_stats / identity_inventory; update set-theoretic-types.md ~108-165 (also stale: it says three passes and never mentions normalize_tuple_coordinate_differences) and canonical-form.md. Decide the one residual: a free type-var tie broken by mint order (order.rs ~51-59).",
   "id": "fz-kdt.48.8",
   "labels": [],
   "parent": "fz-kdt.48",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The identity census reaches zero and stays there",
   "type": "task",
-  "updated_at": "2026-09-16T18:59:42Z"
+  "updated_at": "2026-09-16T19:50:45Z"
 }
