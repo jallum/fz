@@ -54,7 +54,9 @@ use conj::Conj;
 use descr::Descr;
 use descr::OpaqueTag;
 use dnf::dnf_intersect_with;
-use sigs::{ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig};
+use sigs::{
+    ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig, specialize_surface,
+};
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
 /// `(brand, captures, args, ret)`, the brand `None` for an anonymous literal.
@@ -2531,7 +2533,12 @@ impl Types {
                 .filter(|surface| surface.args.len() == clause.args.len())
             {
                 specialized = true;
-                let resolved_clause = specialize_callable_clause(self, &clause, surface);
+                let (args, ret) = specialize_surface(self, (&clause.args, clause.ret), (&surface.args, surface.ret));
+                let resolved_clause = CallableClause {
+                    args,
+                    ret,
+                    closure: clause.closure.clone(),
+                };
                 if !resolved.contains(&resolved_clause) {
                     resolved.push(resolved_clause);
                 }
@@ -3322,23 +3329,6 @@ where
         FiniteSet::cofinite(excluded)
     } else {
         FiniteSet::finite(set.values.iter().filter(|candidate| *candidate != value).cloned())
-    }
-}
-
-fn specialize_callable_clause(
-    types: &mut Types,
-    clause: &CallableClause<Ty>,
-    surface: &CallableClause<Ty>,
-) -> CallableClause<Ty> {
-    let mut sigma = Sigma::new();
-    for (pattern, witness) in clause.args.iter().zip(surface.args.iter()) {
-        types.collect_instantiation_subst(pattern, witness, &mut sigma);
-    }
-    types.collect_instantiation_subst(&clause.ret, &surface.ret, &mut sigma);
-    CallableClause {
-        args: clause.args.iter().map(|arg| types.instantiate(arg, &sigma)).collect(),
-        ret: types.instantiate(&clause.ret, &sigma),
-        closure: clause.closure.clone(),
     }
 }
 

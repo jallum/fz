@@ -76,15 +76,53 @@
 //! the rendering cannot drift apart.
 //!
 //! Absorption reaches the tuple, list, resource and map axes. The callable
-//! axis carries more than its denotation — an arrow holds a declared signature
-//! that `@spec` resolution reads its parameters and result back out of, and a
-//! closure literal holds a capture layout — so absorbing
-//! `closure[f]([mailbox])` into `closure[f]([any])` would lose an environment,
-//! and collapsing `(X) -> any` to the axis top would lose a declaration. That
-//! axis keeps its exact-duplicate dedupe instead, until callable identity is
-//! one `Ty` per value. Dropping what denotes nothing is safe there and reaches
-//! all five. This is the one statement of that exclusion; every other site
-//! points here.
+//! axis is excluded, on three measured facts about the shapes that axis
+//! holds: an arrow carries MORE than the set it denotes, and each surplus
+//! has a reader that takes it back out.
+//!
+//! A LIT-FREE arrow is how the compiler writes a record down. `ActivationKey`
+//! keeps a specialization's canonical inputs and result as one arrow's params
+//! and result and reads them back with `Types::arrow_params`, and a resolved
+//! `@spec` is decomposed by `arrow_params`/`arrow_result` the same way. The
+//! kernel meanwhile calls `(any, int) -> any` EVERY callable — an arrow whose
+//! result is every value constrains nothing a callable could fail, which
+//! `emptiness::func_clause_empty` decides outright — so the top rule would
+//! replace any such arrow with the contentless clause. `arrow_params` then
+//! answers `[]`, and `arrow_result` answers `None` where `resolve` and
+//! `contract` both `expect` a result slot: the collapse ends in a panic, not
+//! in a quietly empty answer. An activation key escapes only because its
+//! result slot is the unknown `r0` and not `any`; a declared callable
+//! parameter does not, and the target fixtures hold those by the dozen.
+//! `axis_test` pins the collapse against the params the same arrow still
+//! hands back.
+//!
+//! A LIT-BEARING arrow's `args` and `ret` are evidence `func_clause_empty`
+//! does not read, so two specializations of one lambda are mutually subtypes
+//! and a rule reading the denotation alone would merge them — stated once, and
+//! pinned against the planner that reads them, by `semantic`'s
+//! `activation_input_rows_keep_arrows_that_differ_only_where_subtyping_is_blind`.
+//! What puts the discarded evidence back is `Types::row_column_dominates`,
+//! and it is a conjunction of three: equal free var ids (which is what keeps
+//! a template beside its ground instance, a surplus with its own test),
+//! containment of `lit_arrow_shapes` in one direction — every literal shape of
+//! the dominated column appears in the dominator's — and `is_subtype`. A shape
+//! is `(brand, captures, args, ret)`; the kernel reads brand and captures, so
+//! `args` and `ret` are the part containment adds.
+//!
+//! A closure literal's CAPTURE LAYOUT is the third, and here the kernel
+//! ENDORSES the containment rather than refusing it: the capture-subset rule
+//! in `func_clause_empty` makes `closure[f]([mailbox]) ⊆ closure[f]([any])`,
+//! so absorbing the narrower clause into the wider one would be exact — and
+//! would still erase an environment, because `Types::callable_clauses` hands
+//! transport the captures of every clause it finds, narrower ones included.
+//! Absorb the axis and
+//! `transport_relation_incremental_test::a_nested_source_union_retains_both_environments_of_the_same_function`
+//! fails: one source union stops naming the same lambda with a `[mailbox]`
+//! environment beside its `[any]` one.
+//!
+//! That axis keeps its exact-duplicate dedupe instead. Dropping what denotes
+//! nothing is safe there and reaches all five. This is the one statement of
+//! that exclusion; every other site points here.
 
 use super::Ty;
 use super::TyCtx;
@@ -484,9 +522,11 @@ fn is_full(cx: TyCtx<'_>, ty: Ty) -> bool {
     cx.descr(&ty).is_full(cx)
 }
 
-/// The callable axis, absorbed only where a RENDERING asks for it. Intern
-/// leaves this axis alone — see the module doc — so its clause rule is the
-/// axis-independent one and every real question goes to the calculator.
+/// The callable axis, absorbed only where a RENDERING asks for it — where
+/// nothing reads the arrow back, so none of the three surpluses the module
+/// doc names can be lost. Intern leaves this axis alone, so its clause rule
+/// is the axis-independent one and every real question goes to the
+/// calculator.
 pub(super) const FUNCS: AxisView<super::sigs::ArrowSig> = AxisView {
     install: |d, clauses| d.funcs = clauses,
     clause_covers: |wider, narrower, _| factors_are_superset(wider, narrower),

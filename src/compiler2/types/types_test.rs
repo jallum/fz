@@ -1776,6 +1776,40 @@ macro_rules! closure_helper_conformance_tests {
                 assert!(t.is_nil(&clause.ret), "the surface should specialize the closure return");
             }
 
+            /// Construction and read are ONE specialization.
+            ///
+            /// A literal and the surface it is viewed at meet in two places: a
+            /// `Types::intersect` folds the surface into the literal's clause,
+            /// and `callable_value_clauses` views a literal through a surface
+            /// clause standing beside it in a union. Both ask the same question
+            /// -- what does this callable's own arrow look like once the
+            /// surface's witnesses are substituted through it -- so they report
+            /// one shape, and a second implementation of it could drift.
+            #[test]
+            fn meeting_a_surface_and_reading_through_one_report_one_shape() {
+                let mut t = $ctor;
+                let closure = t.fn_ref_lit(ClosureTarget(3), 1);
+                let int = t.int();
+                let nil = t.nil();
+                let surface = t.arrow(&[int], nil);
+
+                let met = t.intersect(closure, surface);
+                let met = t.callable_value_clauses(&met).expect("the meet stays callable");
+
+                let beside = t.union(closure, surface);
+                let read = t.callable_value_clauses(&beside).expect("the union stays callable");
+                let read: Vec<_> = read.into_iter().filter(|clause| clause.closure.is_some()).collect();
+
+                assert_eq!(met.len(), 1);
+                assert_eq!(read.len(), 1, "one literal viewed through one surface is one clause");
+                assert_eq!(
+                    (met[0].args.clone(), met[0].ret),
+                    (read[0].args.clone(), read[0].ret),
+                    "the meet and the read specialize the literal the same way",
+                );
+                assert!(t.is_integer(&read[0].args[0]) && t.is_nil(&read[0].ret));
+            }
+
             #[test]
             fn refine_widen_same_fn_ref_preserves_closure_identity() {
                 let mut t = $ctor;

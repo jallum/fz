@@ -276,8 +276,41 @@ function, so the boundary and the oracle cannot disagree about what `any` is.
 The CALLABLE axis gets IDEMPOTENCE alone: exact-duplicate clauses are dropped
 (`A ∨ A = A`, `dedupe_exact_clauses`, first occurrence kept), which is the rule
 the ACTIVATION KEY depends on. It is the one axis absorption does not reach;
-`types/axis.rs` carries the one statement of why. `TyCanon` still collapses it
-for RENDERING, where nothing reads the arrow back.
+`types/axis.rs` carries the one statement of why, and all three of its facts
+are measured. A LIT-FREE arrow is the type language's record: `ActivationKey`
+keeps a specialization's canonical inputs and result as one arrow's params and
+result and reads them back with `Types::arrow_params`, and a resolved `@spec`
+is decomposed the same way — while the kernel calls `(any, int) -> any` every
+callable, because an arrow whose result is every value constrains nothing a
+callable could fail. Collapsing such an arrow to the axis top leaves that
+reader `arrow_params` empty and `arrow_result` `None`, which `resolve` and
+`contract` both `expect`: a panic (`axis_test`). An activation key escapes only
+because its result slot is the unknown `r0` and not `any`; a declared callable
+parameter does not. A LIT-BEARING arrow's `args` and `ret` are evidence
+`func_clause_empty` never looks at, so two specializations of one lambda are
+mutually subtypes and a rule reading the denotation alone would merge them;
+`Types::row_column_dominates` is what adds the evidence back, and
+`semantic::activation_input_rows_keep_arrows_that_differ_only_where_subtyping_is_blind`
+pins that against the planner. A closure literal's CAPTURE LAYOUT is the third,
+and it is the one the kernel ENDORSES: the capture-subset rule in
+`func_clause_empty` makes `closure[f]([mailbox]) ⊆ closure[f]([any])`, so
+absorbing the narrower clause would be exact — and would still erase the
+narrower environment, because `Types::callable_clauses` hands transport the
+captures of every clause it finds.
+`transport_relation_incremental_test::a_nested_source_union_retains_both_environments_of_the_same_function`
+is what fails when the axis is absorbed. `TyCanon` still collapses the axis for
+RENDERING, where nothing reads the arrow back.
+
+That is also where the arena's remaining callable duplicates come from, and
+they are two different populations. Measured over the full arena of
+`00420_enum_take_drop_split`, `fz_f98_range_map_converges` and
+`json_roundtrip`, counting the SURPLUS ids per canonical class the census
+sums: 118 / 11 / 0 are ONE closure literal stored at several surfaces
+(construction vars, addressed vars, a ground instantiation), and 5 / 4 / 25 are
+lit-free arrows the kernel already calls the whole axis. The rest — 5 / 0 / 2 —
+are tuple carvings. Neither callable population can be folded at the boundary
+without erasing something a reader takes back out, so the census counts them;
+one `Ty` per callable VALUE would mean the surface evidence leaving the type.
 
 The coverage walk and the dedupe only ever remove, and both visit in index
 order, so what they leave is still sorted; a saturated axis is REPLACED by the
