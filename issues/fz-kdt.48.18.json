@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-16T21:14:11Z",
+  "close_reason": "Moved the immutable runtime-demand peer-input map into its one formula snapshot; the regression test proves the snapshot retains each peer vector allocation without copying.",
   "created": "2026-09-16T21:04:59Z",
   "description": "Runtime-demand evaluation currently materializes peer input vectors, then clones the entire HashMap into RuntimeDemandFormulaSnapshot. Transfer that immutable map by ownership so each peer input vector has one allocation for the evaluation. Add a red test that proves the snapshot retains the original vector buffer, then validate semantic demand behavior and the full suite.",
   "id": "fz-kdt.48.18",
   "labels": [],
   "parent": "fz-kdt.48",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Move runtime-demand peer inputs into the formula snapshot",
   "type": "task",
-  "updated_at": "2026-09-16T21:05:04Z"
+  "updated_at": "2026-09-16T21:14:11Z"
 }
