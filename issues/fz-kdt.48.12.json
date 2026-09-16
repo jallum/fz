@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T19:41:02Z",
+  "description": "## Goal\n\nMake identity-preserving `Types` operations return their existing `Ty` before they allocate a `Descr`, normalize its outer DNF, or probe the interner. The type boundary remains the one and only authority that mints a changed type.\n\n## Evidence\n\nOn `fixtures2/behavior/enum_take_drop_split.fz`, the cold AOT trace observed 7,198 pre-normalization index misses for 1,036 inserted descriptors. The current profiler places `Descr` hashing, `Types::intern`, tuple normalization, and emptiness checks on the hot semantic path. Every structural child is already a `Ty`; this task removes needless outer-descriptor construction where an operation can prove its result is an existing handle, rather than adding a raw-descriptor cache.\n\n## Design\n\nAudit public type constructors and transforms. Each must either return an input/canonical constant by construction, or build the smallest genuinely changed descriptor and pass it once to `Types::intern`. Do not add a second type cache, content hash, raw `Ty` order, renderer equivalence check, arena sweep, or a new normalization authority. Preserve the existing index-before-normalization fast path for changed descriptors.\n\n## TDD / signal\n\nFirst pin representative no-op transforms (including same-id union and a transform whose rebuilt descriptor is unchanged): they return the original `Ty` and do not grow the arena. Add a test-only interning-work census that distinguishes descriptor construction/lookup from new ids, and prove the no-op paths perform neither descriptor interning nor normalization. Retain construction-order, semantic equivalence, and canonical artifact coverage. Measure the enum fixture before/after through the existing telemetry/profile workflow; record work counts, not wall time, as the acceptance signal.\n\n## Deletion / acceptance\n\nDelete the redundant rebuild/probe path each proven no-op replaces. Update `.agent/docs/type-world.md` with the ownership rule. Focused kernel tests, type canon census, the fixture matrix, formatting, `cargo check`, and strict Clippy pass. One commit and a fresh cold review precede close.",
+  "id": "fz-kdt.48.12",
+  "labels": [],
+  "parent": "fz-kdt.48",
+  "priority": 2,
+  "status": "open",
+  "title": "Preserve Ty identity through no-op type operations",
+  "type": "task",
+  "updated_at": "2026-09-16T19:41:02Z"
+}
