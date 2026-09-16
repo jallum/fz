@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-16T03:05:06Z",
   "created": "2026-09-16T03:03:44Z",
   "description": "GOAL: Keep rendered-closure behavior fixtures stable when unrelated runtime modules change function allocation order.\\n\\nSIGNAL: Fixture comparisons retain the rendered #fn form and arity, but never make raw denotation mint IDs contractual; File can add its runtime module without unrelated closure golden churn.\\n\\nSTRATEGY: Canonicalize numeric #fn denotations in matrix output before comparison, test the normalization, document the contract, and express the closure fixture golden with the canonical identity.",
   "id": "fz-ope.2",
   "labels": [],
   "parent": "fz-ope",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Canonicalize non-contract closure identities in fixture output",
   "type": "bug",
-  "updated_at": "2026-09-16T03:04:15Z"
+  "updated_at": "2026-09-16T03:05:06Z"
 }
