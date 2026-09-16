@@ -29,7 +29,58 @@ use super::super::semantic::{
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
 
-type SemanticValues = HashMap<ValueId, Ty>;
+#[derive(Clone, Copy)]
+struct TupleFieldProjection {
+    source: ValueId,
+    index: usize,
+    arity: usize,
+}
+
+#[derive(Clone, Default)]
+struct SemanticValues {
+    types: HashMap<ValueId, Ty>,
+    tuple_arities: HashMap<ValueId, usize>,
+    tuple_fields: HashMap<ValueId, TupleFieldProjection>,
+}
+
+impl SemanticValues {
+    fn get(&self, value: &ValueId) -> Option<&Ty> {
+        self.types.get(value)
+    }
+
+    fn insert(&mut self, value: ValueId, ty: Ty) {
+        self.types.insert(value, ty);
+    }
+
+    fn contains_key(&self, value: &ValueId) -> bool {
+        self.types.contains_key(value)
+    }
+
+    fn assert_tuple(&mut self, value: ValueId, arity: usize) {
+        self.tuple_arities.insert(value, arity);
+    }
+
+    fn project_tuple_field(&mut self, value: ValueId, source: ValueId, index: usize) {
+        let Some(&arity) = self.tuple_arities.get(&source) else {
+            return;
+        };
+        self.tuple_fields
+            .insert(value, TupleFieldProjection { source, index, arity });
+    }
+
+    fn tuple_field(&self, value: ValueId) -> Option<TupleFieldProjection> {
+        self.tuple_fields.get(&value).copied()
+    }
+
+    fn empty_scope(&self) -> Self {
+        Self {
+            types: HashMap::new(),
+            tuple_arities: self.tuple_arities.clone(),
+            tuple_fields: self.tuple_fields.clone(),
+        }
+    }
+}
+
 type ValueTypes = HashMap<ValueId, Ty>;
 type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
 /// One reached call: what it resolved to, the activation demand it
@@ -179,7 +230,7 @@ pub(super) fn analyze_activation(
                 if clause.params.len() > clause_inputs.len() {
                     continue;
                 }
-                let mut values = HashMap::new();
+                let mut values = SemanticValues::default();
                 for (value, ty) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
                     values.insert(value, ty);
                 }
@@ -505,7 +556,7 @@ fn apply_step(
             };
             let literal_ty = literal_ty(world, literal);
             let refined = world.types_mut().intersect(source_ty, literal_ty);
-            values.insert(*source, refined);
+            refine_value(world, values, *source, refined);
         }
         LoweredStep::AssertStruct { source, module } => {
             let Some(source_ty) = value_ty(values, *source) else {
@@ -513,7 +564,7 @@ fn apply_step(
             };
             let asserted = struct_assertion_ty(world, *module, reads, waits);
             let refined = world.types_mut().intersect(source_ty, asserted);
-            values.insert(*source, refined);
+            refine_value(world, values, *source, refined);
         }
         LoweredStep::RequireMapValue { value, source, key } => {
             let Some(source_ty) = value_ty(values, *source) else {
@@ -532,7 +583,8 @@ fn apply_step(
                 return Ok(());
             };
             let refined = world.types_mut().intersect(source_ty, tuple);
-            values.insert(*source, refined);
+            values.assert_tuple(*source, *arity);
+            refine_value(world, values, *source, refined);
         }
         LoweredStep::TupleField { value, source, index } => {
             let Some(source_ty) = value_ty(values, *source) else {
@@ -540,6 +592,7 @@ fn apply_step(
             };
             let field_ty = world.types_mut().tuple_field_type(&source_ty, *index);
             values.insert(*value, field_ty);
+            values.project_tuple_field(*value, *source, *index);
         }
         LoweredStep::AssertEmptyList { source } => {
             let empty = world.types_mut().empty_list();
@@ -547,15 +600,15 @@ fn apply_step(
                 return Ok(());
             };
             let refined = world.types_mut().intersect(source_ty, empty);
-            values.insert(*source, refined);
+            refine_value(world, values, *source, refined);
         }
         LoweredStep::AssertSame { source, value } => {
             let (Some(source_ty), Some(value_ty)) = (value_ty(values, *source), value_ty(values, *value)) else {
                 return Ok(());
             };
             let both = world.types_mut().intersect(source_ty, value_ty);
-            values.insert(*source, both);
-            values.insert(*value, both);
+            refine_value(world, values, *source, both);
+            refine_value(world, values, *value, both);
         }
         LoweredStep::SplitList { source, head, tail } => {
             let Some(source_ty) = value_ty(values, *source) else {
@@ -572,7 +625,7 @@ fn apply_step(
             let any = world.types_mut().any();
             let non_empty = world.types_mut().non_empty_list(any);
             let refined_source = world.types_mut().intersect(source_ty, non_empty);
-            values.insert(*source, refined_source);
+            refine_value(world, values, *source, refined_source);
             values.insert(*head, elem);
             values.insert(*tail, rest);
         }
@@ -598,6 +651,25 @@ fn apply_step(
         LoweredStep::AssertBitstringDone { reader: _ } => {}
     }
     Ok(())
+}
+
+/// A successful assertion on a tuple field is evidence about the tuple, not
+/// merely the temporary field value. Preserve that proof before a later
+/// sibling projection asks the tuple for its field type.
+fn refine_value(world: &mut World, values: &mut SemanticValues, value: ValueId, refined: Ty) {
+    values.insert(value, refined);
+    let Some(projection) = values.tuple_field(value) else {
+        return;
+    };
+    let Some(source_ty) = value_ty(values, projection.source) else {
+        return;
+    };
+    let any = world.types_mut().any();
+    let mut fields = world.types_mut().repeat(any, projection.arity);
+    fields[projection.index] = refined;
+    let asserted = world.types_mut().tuple(&fields);
+    let source_refined = world.types_mut().intersect(source_ty, asserted);
+    refine_value(world, values, projection.source, source_refined);
 }
 
 /// Join two path results. `None` ("no evidence on this path yet") is the
@@ -975,7 +1047,7 @@ fn entry_scope(
     params: &[(ValueId, Ty)],
 ) -> SemanticValues {
     let entry = &entries[entry_id.as_u32() as usize];
-    let mut scope = HashMap::new();
+    let mut scope = values.empty_scope();
     if let Some((_, value)) = delivered
         && let Some(input) = entry.origin.input_value()
     {
@@ -1050,7 +1122,7 @@ fn resolve_direct_call(
 /// identities — `refine_widen` merges the arrows into an anonymous clause
 /// and belongs to activation-key canonicalization.
 fn merge_value_types(world: &mut World, merged: &mut ValueTypes, observed: &SemanticValues) {
-    for (&value, &ty) in observed {
+    for (&value, &ty) in &observed.types {
         match merged.get(&value).copied() {
             Some(current) if current != ty => {
                 let joined = world.types_mut().union(current, ty);
