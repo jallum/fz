@@ -347,9 +347,9 @@ handle = <span class="fn">make_resource</span>(fd, &amp;<span class="fn">libc::c
 
 <p>Now <code>handle</code> is an fz value carrying the fd. When the last
 reference to <code>handle</code> goes out of scope (the GC notices, or the
-process exits), fz calls <code>libc::close(fd)</code> automatically.
-You can <em>never</em> leak this fd by forgetting to close it — there's
-no path through fz code that holds a handle but skips its dtor.</p>
+process exits), fz calls <code>libc::close(fd)</code> automatically. This is
+the fallback cleanup path: an unclaimed resource cannot silently skip its
+dtor.</p>
 
 <p>The type of the handle follows the payload. An integer fd produces
 <code>resource(integer)</code>; a future raw C pointer payload will produce
@@ -383,6 +383,26 @@ gets queued up. The scheduler drains the queue at quiet moments — between
 quanta, at task exit — and dispatches each dtor closure body through the
 normal fz call machinery. From your code's perspective: by the time fz
 "notices" you're done, the dtor has run.
+</div>
+
+<h3>Closing now</h3>
+
+<p>A library that needs deterministic cleanup can claim a resource. Exactly
+one alias wins, even if another process received the same handle. The winner
+gets the raw payload and takes responsibility for closing it; fz then skips the
+fallback dtor at GC or process exit.</p>
+
+<pre><span class="kw">def</span> <span class="fn">close</span>(handle) <span class="kw">do</span>
+  <span class="kw">case</span> <span class="ty">Kernel</span>.<span class="fn">claim_resource</span>(handle) <span class="kw">do</span>
+    {<span class="atm">:ok</span>, fd} -&gt; <span class="fn">libc::close</span>(fd)
+    {<span class="atm">:error</span>, <span class="atm">:closed</span>} -&gt; {<span class="atm">:error</span>, <span class="atm">:closed</span>}
+  <span class="kw">end</span>
+<span class="kw">end</span></pre>
+
+<div class="box green">
+<strong>One owner, one cleanup.</strong> A resource either reaches its fallback
+dtor when its last reference goes away, or one caller claims it and performs
+cleanup directly. It never does both.
 </div>
 
 <h3>Why opaque?</h3>
@@ -505,8 +525,8 @@ prototype in the C header.
       dtor as a "cleanup, never fail" path.</li>
   <li><strong>Dtors run at scheduler boundaries, not synchronously.</strong>
       A resource going out of scope inside a tight loop won't fire its
-      dtor until the loop yields. For most uses this is fine; if you need
-      <em>now</em>, fz isn't the right tool.</li>
+      dtor until the loop yields. A library that needs deterministic cleanup
+      should claim the resource and close its payload itself.</li>
 </ul>
 
 <h3>What externs are <em>not</em></h3>
@@ -527,8 +547,9 @@ prototype in the C header.
 <div class="box green">
 <strong>The contract.</strong> Declare the C signature truthfully. Pick the
 right marshal class for each side. Wrap anything that needs cleanup in a
-<code>make_resource</code> with a dtor. Trust the runtime to call the dtor
-when the value becomes unreachable — and not before.
+<code>make_resource</code> with a dtor. Either let the runtime run that dtor
+when the value becomes unreachable, or claim the resource once and clean it up
+deterministically — never both.
 </div>
 
 </body>
