@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-acn.3"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-acn",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Reachability consumes the plan-owned required-input fact",
   "type": "task",
-  "updated_at": "2026-09-16T16:31:35Z"
+  "updated_at": "2026-09-16T16:48:18Z"
 }
