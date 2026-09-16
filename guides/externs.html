@@ -410,7 +410,7 @@ cleanup directly. It never does both.
 <p>The convention is to wrap a resource in a <em>module</em> with an
 opaque type:</p>
 
-<pre><span class="kw">defmodule</span> <span class="ty">File</span> <span class="kw">do</span>
+<pre><span class="kw">defmodule</span> <span class="ty">NativeHandle</span> <span class="kw">do</span>
   @<span class="kw">type</span> t <span class="kw">::</span> opaque <span class="kw">resource</span>(<span class="ty">integer</span>)
 
   <span class="kw">def</span> <span class="fn">open</span>(path) <span class="kw">do</span>
@@ -421,16 +421,16 @@ opaque type:</p>
   <span class="kw">def</span> <span class="fn">fd</span>(h), <span class="kw">do:</span> h.value
 <span class="kw">end</span></pre>
 
-<p>Outside <code>File</code>, nobody can fish the raw integer out of the
-handle — only <code>File.fd/1</code> (defined inside the module) can.
-That means a fd from <code>File.open</code> can't be passed to a wrong
+<p>Outside <code>NativeHandle</code>, nobody can fish the raw integer out of the
+handle — only <code>NativeHandle.fd/1</code> (defined inside the module) can.
+That means the handle can't be passed to a wrong
 function that expects a different kind of fd, and the dtor contract
 can't be bypassed.</p>
 
-<p>Inside <code>File</code>, <code>make_resource(fd, &amp;libc::close/1)</code>
+<p>Inside <code>NativeHandle</code>, <code>make_resource(fd, &amp;libc::close/1)</code>
 can satisfy the module's opaque <code>t</code> type. Outside
-<code>File</code>, a plain <code>resource(integer)</code> is not the same
-thing as <code>File.t</code>; the opaque handle is still owned by the
+<code>NativeHandle</code>, a plain <code>resource(integer)</code> is not the same
+thing as <code>NativeHandle.t</code>; the opaque handle is still owned by the
 module that declared it.</p>
 
 <!-- ─────────────────────────────── 8. EXAMPLE ─────────────────────────────── -->
