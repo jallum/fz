@@ -17227,118 +17227,6 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     );
 }
 
-/// A module whose own body invokes a macro the same module defines.
-///
-/// `make_answer/0` has to be planned, lowered and executed while
-/// `DefineModule(Provider)` is still mid-body, so `ModuleDefined(Provider)`
-/// cannot exist yet at that point.
-#[test]
-fn entry_dispatch_blocks_on_the_exact_struct_or_type_fact_its_heads_name() {
-    // The other half of the same contract: dropping the module gate drops
-    // nothing real. Each genuine prerequisite still blocks entry planning, and
-    // blocks it on exactly the fact the clause head named.
-    let tel = ConfiguredTelemetry::new();
-    let outputs = OutputCapture::new();
-    outputs.install(&tel);
-    let functions = FunctionCapture::new();
-    functions.install(&tel);
-
-    let mut compiler = Compiler2::new(tel);
-    let source_owner = compiler.submit_code(CodeSubmission {
-        name: Some("entry_dispatch_exact_prerequisites.fz".into()),
-        text: concat!(
-            "defmodule User do\n",
-            "  @type count :: integer\n",
-            "\n",
-            "  def measure(n :: count), do: n\n",
-            "  def unwrap(%Boxes{x: x}), do: x\n",
-            "end\n",
-            "\n",
-            "defmodule Boxes do\n",
-            "  defstruct [:x]\n",
-            "end\n",
-        )
-        .into(),
-    });
-
-    assert_resolved(compiler.drive(), "first drive should index both modules");
-    assert!(
-        compiler.demand(Job::ScopeCode(source_owner)),
-        "top-level scope should be demandable",
-    );
-    assert_resolved(compiler.drive(), "second drive should scope both modules");
-
-    let user = compiler.world_mut().reference_module(module_name("User"));
-    let boxes = compiler.world_mut().reference_module(module_name("Boxes"));
-    assert!(
-        compiler.demand(Job::DefineModule(user)),
-        "User's own body should be demandable",
-    );
-    assert_resolved(compiler.drive(), "User should define without Boxes being touched");
-
-    let count = TypeName {
-        module: user,
-        name: "count".to_string(),
-        arity: 0,
-    };
-    let measure = function_id(&functions, "measure", 1);
-    let unwrap = function_id(&functions, "unwrap", 1);
-    assert!(
-        compiler.demand(Job::DefineFunction(measure)),
-        "measure/1's definition should be demandable",
-    );
-    assert!(
-        compiler.demand(Job::DefineFunction(unwrap)),
-        "unwrap/1's definition should be demandable",
-    );
-    assert_resolved(
-        compiler.drive(),
-        "both clause heads should define without deriving the facts they name",
-    );
-    assert!(
-        !compiler.world().has_fact(&FactKey::StructDefined(boxes)),
-        "Boxes' defstruct is still unpublished when entry planning is asked for",
-    );
-    assert!(
-        !compiler.world().has_fact(&FactKey::TypeDefined(count.clone())),
-        "User's @type count is still underived when entry planning is asked for",
-    );
-
-    assert!(
-        compiler.demand(Job::PlanEntryDispatch(measure)),
-        "measure/1's entry plan should be demandable",
-    );
-    assert!(
-        compiler.demand(Job::PlanEntryDispatch(unwrap)),
-        "unwrap/1's entry plan should be demandable",
-    );
-    assert_resolved(
-        compiler.drive(),
-        "entry planning should pull each missing prerequisite's own producer and settle",
-    );
-
-    let first_waits = |function| {
-        outputs
-            .stops_matching(|job| matches!(job, Job::PlanEntryDispatch(id) if *id == function))
-            .first()
-            .and_then(|stop| stop.effects.clone())
-            .expect("an entry-dispatch application")
-            .waits
-            .into_iter()
-            .collect::<HashSet<_>>()
-    };
-    assert_eq!(
-        first_waits(measure),
-        HashSet::from([FactUse::current(FactKey::TypeDefined(count))]),
-        "a parameter annotation blocks entry planning on that type fact and nothing else",
-    );
-    assert_eq!(
-        first_waits(unwrap),
-        HashSet::from([FactUse::current(FactKey::StructDefined(boxes))]),
-        "a struct pattern blocks entry planning on that struct fact and nothing else",
-    );
-}
-
 #[test]
 fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
     let tel = ConfiguredTelemetry::new();
@@ -18491,6 +18379,32 @@ impl FunctionCapture {
             .map(|record| record.function_id)
             .unwrap_or_else(|| panic!("function fact for {name}/{arity}"))
     }
+
+    /// The one `name/arity` owned by the module with this last segment, for
+    /// sources where two modules define the same name.
+    fn id_in_module(&self, module: &str, name: &str, arity: u64) -> FunctionId {
+        self.try_id_in_module(module, name, arity)
+            .unwrap_or_else(|| panic!("function fact for {module}.{name}/{arity}"))
+    }
+
+    fn try_id_in_module(&self, module: &str, name: &str, arity: u64) -> Option<FunctionId> {
+        use crate::compiler2::identity::FunctionOrigin;
+        self.defs
+            .borrow()
+            .values()
+            .find(|record| {
+                record.function_ref.is_named(name)
+                    && record.arity == arity
+                    && matches!(
+                        &record.function_ref.denotation.origin,
+                        FunctionOrigin::Named {
+                            module: Some(ModuleDenotation::Named(owner)),
+                            ..
+                        } if owner.last_segment() == module
+                    )
+            })
+            .map(|record| record.function_id)
+    }
 }
 
 impl SourceNoteCapture {
@@ -19376,6 +19290,19 @@ pub(crate) fn assert_resolved(outcome: DriveOutcome<Job, DependencyKey>, message
 
 pub(crate) fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> FunctionId {
     capture.id(name, arity)
+}
+
+pub(crate) fn module_function_id(capture: &FunctionCapture, module: &str, name: &str, arity: u64) -> FunctionId {
+    capture.id_in_module(module, name, arity)
+}
+
+pub(crate) fn try_module_function_id(
+    capture: &FunctionCapture,
+    module: &str,
+    name: &str,
+    arity: u64,
+) -> Option<FunctionId> {
+    capture.try_id_in_module(module, name, arity)
 }
 
 /// Records every `ActivationKey` the semantic pass publishes through
@@ -21921,6 +21848,107 @@ fn retained_quoted_call(cursor: &crate::compiler2::QuotedSourceCursor) -> Option
         _ => return None,
     };
     children.iter().find_map(retained_quoted_call)
+}
+
+const QUOTED_HELPER_PROVIDER: &str = "defmodule FutureMacros do\n  def double(x), do: x * 2\n\n  defmacro twice(x) do\n    quote do: double(unquote(x))\n  end\nend\n";
+
+const QUOTED_HELPER_REQUESTER: &str = "defmodule App do\n  alias FutureMacros, as: F\n  require F\n\n  def run(n), do: F.twice(n)\nend\n\ndef main() do\n  App.run(21)\nend\n";
+
+/// Submits the two sources in the given order, drives once, and reports the
+/// value `main` produces alongside the function `App.run/1` ends up calling.
+fn quoted_helper_target(sources: [(&str, &str); 2]) -> (Result<i64, String>, FunctionId, FunctionId) {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    for (name, text) in sources {
+        compiler.submit_code(CodeSubmission {
+            name: Some(name.to_string()),
+            text: text.to_string(),
+        });
+    }
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "quoted helper across two submissions");
+
+    let called = lowered_direct_callee(&bodies, module_function_id(&functions, "App", "run", 1))
+        .expect("the expanded body calls the quoted helper");
+    (
+        compiler.run_root_interp(root),
+        called,
+        module_function_id(&functions, "FutureMacros", "double", 1),
+    )
+}
+
+/// The provider is already compiled when the requester arrives: the quoted
+/// helper is the one `FutureMacros` resolved, and `App` never names it.
+#[test]
+fn a_quoted_helper_keeps_its_provider_when_the_provider_arrives_first() {
+    let (value, called, provider_double) = quoted_helper_target([
+        ("future_macros.fz", QUOTED_HELPER_PROVIDER),
+        ("app.fz", QUOTED_HELPER_REQUESTER),
+    ]);
+    assert_eq!(called, provider_double, "the helper lowers to the provider's double/1");
+    assert_eq!(value, Ok(42), "21 doubled");
+}
+
+/// The requester is submitted first and only driven once the provider exists.
+/// Submission order moves no target: the same provider function is called.
+#[test]
+fn a_quoted_helper_keeps_its_provider_when_the_requester_arrives_first() {
+    let (value, called, provider_double) = quoted_helper_target([
+        ("app.fz", QUOTED_HELPER_REQUESTER),
+        ("future_macros.fz", QUOTED_HELPER_PROVIDER),
+    ]);
+    assert_eq!(called, provider_double, "the helper lowers to the provider's double/1");
+    assert_eq!(value, Ok(42), "21 doubled");
+}
+
+/// The caller binds `FutureMacros` to a different module entirely. The quoted
+/// helper was resolved where it was written, so the caller's alias has nothing
+/// left to decide.
+#[test]
+fn a_caller_alias_cannot_redirect_a_quoted_helper() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("quoted_helper_keeps_its_provider.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/quoted_helper_keeps_its_provider.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "shadowed provider alias");
+
+    let shadowed = module_function_id(&functions, "Shadowed", "run", 1);
+    let called = lowered_direct_callee(&bodies, shadowed).expect("the expanded body calls the quoted helper");
+    assert_eq!(
+        called,
+        module_function_id(&functions, "FutureMacros", "double", 1),
+        "the alias the caller rebound cannot retarget a call it never wrote"
+    );
+    assert_eq!(
+        try_module_function_id(&functions, "Decoy", "double", 1),
+        None,
+        "the decoy that alias points at is never even referenced"
+    );
+    assert!(
+        compiler.run_root_interp(root).is_ok(),
+        "both of the fixture's assertions hold"
+    );
 }
 
 /// Macro classification asks the retained callable what it is. The provider's

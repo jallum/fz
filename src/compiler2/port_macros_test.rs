@@ -1,5 +1,7 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
-use super::drive_test::{FunctionCapture, LoweredBodyCapture, assert_resolved, function_id, lowered_direct_callee};
+use super::drive_test::{
+    FunctionCapture, LoweredBodyCapture, assert_resolved, function_id, lowered_direct_callee, module_function_id,
+};
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -298,16 +300,20 @@ fn item_macro_list_of_compiler_ast_functions_splices_multiple_fns() {
     // TODO: JIT-execute and assert result == 30 (first() + second() = 10 + 20)
 }
 
-// Ported coverage: item macro inside defmodule qualifies compiler-shaped fn AST with module path
+// Ported coverage: an item macro's spliced fn belongs to the module it was spliced into
 #[test]
 fn item_macro_in_module_qualifies_spliced_fn_names() {
     let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00124_item_macro_compiler_ast_in_module.fz".to_string()),
         text: include_str!("../../fixtures2/00124_item_macro_compiler_ast_in_module.fz").to_string(),
     });
-    compiler.submit_root(RootSubmission {
+    let root = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
         arity: 0,
@@ -317,7 +323,12 @@ fn item_macro_in_module_qualifies_spliced_fn_names() {
         compiler.drive(),
         "item macro inside defmodule qualifying function names should resolve",
     );
-    // TODO: JIT-execute and assert result == 314
+    assert_eq!(
+        lowered_direct_callee(&bodies, function_id(&functions, "main", 0)),
+        Some(module_function_id(&functions, "Constants", "pi_ish", 0)),
+        "`Constants.pi_ish()` calls the fn the macro spliced into Constants"
+    );
+    assert_eq!(compiler.run_root_interp(root), Ok(314), "the spliced constant");
 }
 
 // Ported from src/frontend/macros_test.rs: expansion pipeline without macros evaluates plain arithmetic correctly

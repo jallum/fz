@@ -17,11 +17,14 @@ impl std::fmt::Display for ModuleTarget {
     }
 }
 
-/// A source callable name, optionally qualified by an exact reflected module.
-/// Unresolved source spelling is interpreted only by the lexical resolver.
+/// A source callable name: the callable's own identifier, and the module path
+/// it was written under when it was written under one. The qualifier is a
+/// `ModuleTarget`, so an alias spelling stays separate from an exact reflected
+/// identity and the resolver never recovers one from the other by splitting
+/// display text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableName {
-    pub module: Option<ModuleDenotation>,
+    pub module: Option<ModuleTarget>,
     pub name: String,
 }
 
@@ -59,13 +62,6 @@ impl CallableName {
         }
     }
 
-    pub fn for_call(expr: &Expr, arity: usize) -> Option<Self> {
-        match expr {
-            Expr::FnRef { name, arity: declared } => (*declared == arity).then(|| name.clone()),
-            _ => Self::from_expr(expr),
-        }
-    }
-
     pub fn from_expr(expr: &Expr) -> Option<Self> {
         let mut path = Vec::new();
         let mut current = expr;
@@ -74,7 +70,17 @@ impl CallableName {
                 Expr::Var(name) => {
                     path.push(name.clone());
                     path.reverse();
-                    return Some(Self::source(path.join(".")));
+                    let name = path.pop()?;
+                    // An alias written `A.B` arrives as one identifier, so its
+                    // own spelling is what says where its segments divide.
+                    let segments = path
+                        .iter()
+                        .flat_map(|segment| segment.split('.'))
+                        .map(str::to_string)
+                        .collect::<Vec<_>>();
+                    let module =
+                        (!segments.is_empty()).then(|| ModuleTarget::Unresolved(ModuleName::from_segments(segments)));
+                    return Some(Self { module, name });
                 }
                 Expr::Module(module) => {
                     path.reverse();
@@ -87,7 +93,7 @@ impl CallableName {
                         module = ModuleDenotation::Named(parent.child(segment));
                     }
                     return Some(Self {
-                        module: Some(module),
+                        module: Some(ModuleTarget::Exact(module)),
                         name,
                     });
                 }
@@ -179,9 +185,9 @@ pub enum Expr {
     BoundFunction(crate::compiler2::FunctionId),
 
     /// Explicit function reference: `&name/arity` (fz-swt.5).
-    /// `name` may be dotted (`Mod.fun`). Lowers to a thin `Prim::MakeFnRef`
-    /// over the fn matching `(name, arity)` exactly, rather than the bare-name
-    /// path's "first defined wins".
+    /// `name` carries its module qualifier when it has one. Lowers to a thin
+    /// `Prim::MakeFnRef` over the fn matching `(name, arity)` exactly, rather
+    /// than the bare-name path's "first defined wins".
     FnRef {
         name: CallableName,
         arity: usize,
