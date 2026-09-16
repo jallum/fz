@@ -465,10 +465,15 @@ impl Types {
     /// common case by a wide margin — the overwhelming majority of intern calls
     /// re-present a descriptor the arena already has.
     ///
-    /// TUPLE NORMALIZATION first: a ground tuple difference whose cover differs
-    /// in exactly one coordinate is still one rectangle. Rewriting that form
-    /// here makes every construction route share the same semantic normal form
-    /// before descriptor identity is assigned.
+    /// TUPLE NORMALIZATION first, the one rule that reaches a different
+    /// CARVING of one type. A ground tuple difference whose cover differs in
+    /// exactly one coordinate is still one rectangle, and the axis's plain
+    /// rectangles are then fused and widened to the one union of products both
+    /// carvings reach: `{A,C} ∨ {B,C}` is `{A∨B, C}`, so
+    /// `{[int], :false} ∨ {[int], :true}` and `{[int], :false | :true}` are one
+    /// descriptor before identity is assigned. Fusion mints the coordinate it
+    /// merges on, through this same boundary; the recursion terminates because
+    /// a coordinate names only types interned before it.
     ///
     /// LIST NORMALIZATION comes next, and is the same idea on the list axis. A
     /// list clause says only two things -- does it hold `[]`, and which
@@ -517,7 +522,8 @@ impl Types {
     /// inherit the recursion's coinductive assumption about a cycle.
     ///
     /// One pass suffices because the composition is idempotent: re-interning an
-    /// already-interned descriptor sorts an already-sorted list to itself, finds
+    /// already-interned descriptor finds its tuple axis already at the carving
+    /// fixpoint, sorts an already-sorted list to itself, finds
     /// no empty or subsumed clause left to drop on any axis, no exact duplicate
     /// left to collapse, and answers `none` for `none`, so it hashes to the
     /// descriptor already in the index. Idempotence is also what makes the
@@ -527,7 +533,7 @@ impl Types {
         if let Some(ty) = self.interner.lookup(&d) {
             return ty;
         }
-        self.normalize_tuple_coordinate_differences(&mut d);
+        self.normalize_tuple_axis(&mut d);
         self.normalize_list_clauses(&mut d);
         self.order_clauses(&mut d);
         self.drop_empty_clauses(&mut d);
@@ -734,6 +740,48 @@ impl Types {
         axis::absorb_axis(cx, clauses, subtype, covers, view);
     }
 
+    /// The tuple axis's own normal form, in two steps.
+    ///
+    /// First each clause alone: a ground difference whose cover differs in
+    /// exactly one coordinate is still one rectangle, so it is rewritten to
+    /// one — which also turns a clause that was carrying a negative into a
+    /// plain rectangle the step below can carve.
+    ///
+    /// Then the axis as a whole: its plain rectangles go through
+    /// [`axis::fuse_tuple_rects`], which fuses and widens until one union of
+    /// products has one carving. Clauses that are not plain rectangles keep
+    /// their form; the clause sort below puts the axis back in canonical order
+    /// either way.
+    ///
+    /// Carving works on descriptors and the coordinates it builds are interned
+    /// here, so a coordinate is a `Ty` by the time the descriptor reaches the
+    /// index. That recursion terminates for the same reason the rest of the
+    /// boundary does: a coordinate names only types interned before it.
+    fn normalize_tuple_axis(&mut self, d: &mut Descr) {
+        let clauses = std::mem::take(&mut d.tuples);
+        let mut complex = Vec::with_capacity(clauses.len());
+        let mut rects: Vec<axis::Rect> = Vec::with_capacity(clauses.len());
+        for clause in clauses {
+            let clause = self.normalize_tuple_coordinate_difference(clause);
+            match (clause.pos.as_slice(), clause.neg.as_slice()) {
+                ([sig], []) => rects.push(sig.elems.iter().map(|ty| axis::Coord::Interned(*ty)).collect()),
+                _ => complex.push(clause),
+            }
+        }
+        let rects = axis::fuse_tuple_rects(self.ctx(), rects);
+        d.tuples = complex;
+        for rect in rects {
+            let elems = rect
+                .into_iter()
+                .map(|coord| match coord {
+                    axis::Coord::Interned(ty) => ty,
+                    axis::Coord::Built(descr) => self.intern(*descr),
+                })
+                .collect();
+            d.tuples.push(Conj::pos_of(TupleSig { elems }));
+        }
+    }
+
     /// `P₀ × … × Pₖ × … × Pₙ \ N₀ × … × Nₖ × … × Nₙ` is one rectangle
     /// whenever every coordinate except `k` is contained in its cover:
     ///
@@ -744,14 +792,6 @@ impl Types {
     /// distinct from the right form, so it must collapse before `Ty` identity
     /// is assigned. More than one differing coordinate needs a union of
     /// rectangles and deliberately stays in its existing DNF form.
-    fn normalize_tuple_coordinate_differences(&mut self, d: &mut Descr) {
-        let clauses = std::mem::take(&mut d.tuples);
-        d.tuples = clauses
-            .into_iter()
-            .map(|clause| self.normalize_tuple_coordinate_difference(clause))
-            .collect();
-    }
-
     fn normalize_tuple_coordinate_difference(&mut self, clause: Conj<TupleSig>) -> Conj<TupleSig> {
         let ([positive], [negative]) = (clause.pos.as_slice(), clause.neg.as_slice()) else {
             return clause;

@@ -2556,13 +2556,15 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[{:done, []} | {:halted, []} | {:suspended, [], () -> any}] result=[]",
+            "Known params=[{:done | :halted, []} | {:suspended, [], () -> any}] result=[]",
             "X4"
         );
     }
 
     // X4B. The SAME question with a SAME-arity tuple union, which the arity
-    // projection could always descend: X4's control. The two must agree.
+    // projection could always descend: X4's control. The two must agree. Both
+    // arms bind the payload to the same `[]`, so the two rectangles they carve
+    // are one rectangle over the union of their tags.
     #[test]
     fn x4b_same_arity_tuple_union_binds_the_payload_the_argument_supplied() {
         let mut t = Types::new();
@@ -2575,11 +2577,7 @@ mod pinned_verdicts {
         let empty = t.empty_list();
         let arg = t.tuple(&[done, empty]);
         let v = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
-        assert_eq!(
-            render(&t, &v),
-            "Known params=[{:done, []} | {:halted, []}] result=[]",
-            "X4B"
-        );
+        assert_eq!(render(&t, &v), "Known params=[{:done | :halted, []}] result=[]", "X4B");
     }
 
     // X5. A BRANDED argument at a ground pattern field is ACCEPTED, and that

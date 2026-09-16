@@ -23,6 +23,12 @@
 //! case where it does — and a rule that outruns it drops clauses the union
 //! they are folded into does not contain.
 //!
+//! The tuple axis has a fourth, because a union of products can be CARVED
+//! into products more than one way and neither carving's clauses contain the
+//! other's: [`fuse_tuple_rects`] rewrites both carvings to one. It is the only
+//! rewrite here that can grow a clause rather than remove one, and the only
+//! one that mints a type.
+//!
 //! # One spelling of the top
 //!
 //! The top of every axis is the clause with no factors, [`Conj::top`] — the
@@ -69,11 +75,11 @@
 //! `Types::intern` is the authority: it applies them at the persistence
 //! boundary, so an interned descriptor arrives already rewritten and identity
 //! is assigned to the rewritten form. [`TyCanon`](super::canon) is the second
-//! caller, for the descriptors it builds ITSELF — tuple-coordinate widening
-//! and a list clause's intersected element fragment are `Descr` values that
-//! never reach the interner, and rendering one unrewritten would report two
-//! carvings of a type as two types. One function each way, so the boundary and
-//! the rendering cannot drift apart.
+//! caller, for the one descriptor it still builds ITSELF — a list clause's
+//! intersected element fragment is a `Descr` that never reaches the interner,
+//! and rendering one unrewritten would report two carvings of a type as two
+//! types. One function each way, so the boundary and the rendering cannot
+//! drift apart.
 //!
 //! Absorption reaches the tuple, list, resource and map axes. The callable
 //! axis is excluded, on three measured facts about the shapes that axis
@@ -725,6 +731,144 @@ fn axis_of<T>(clauses: Vec<Conj<T>>, install: InstallAxis<T>) -> Descr {
     let mut d = Descr::unbranded();
     install(&mut d, clauses);
     d
+}
+
+// ----------------------------------------------------------------------
+// Tuple carving
+// ----------------------------------------------------------------------
+
+/// One tuple coordinate. Carving builds coordinates that no type names yet, so
+/// a coordinate is either the id it arrived as or a descriptor still to be
+/// interned — and a coordinate carving never touched costs no interning at
+/// all.
+pub(super) enum Coord {
+    Interned(Ty),
+    Built(Box<Descr>),
+}
+
+impl Coord {
+    fn descr(&self, cx: TyCtx<'_>) -> Descr {
+        match self {
+            Self::Interned(ty) => cx.descr(ty).clone(),
+            Self::Built(d) => (**d).clone(),
+        }
+    }
+
+    fn same_as(&self, other: &Self, cx: TyCtx<'_>) -> bool {
+        match (self, other) {
+            (Self::Interned(a), Self::Interned(b)) => a == b,
+            _ => self.descr(cx) == other.descr(cx),
+        }
+    }
+}
+
+/// A plain single-positive tuple clause, read as the product of its
+/// coordinates.
+pub(super) type Rect = Vec<Coord>;
+
+/// One union of rectangles, carved the same way whichever decomposition
+/// arrived.
+///
+/// A tuple axis stores a union of products, and one set of tuples can be cut
+/// into products more than one way. Neither carving's clauses contain the
+/// other's, so no clause-by-clause rule reaches it; these two rewrites do, and
+/// both preserve the denoted set exactly:
+///
+/// - FUSION, exact: two rectangles that agree on every coordinate but one are
+///   the single rectangle over the union of that coordinate,
+///   `{A,C} ∨ {B,C} = {A∨B, C}`. It is what turns a tagged union's width
+///   growth into depth growth.
+/// - WIDENING: replace coordinate `k` of one rectangle with the union of
+///   coordinate `k` over its same-arity siblings, and keep the step only while
+///   the grown rectangle is still inside the axis union. A rectangle only
+///   grows, and never past the union, so the union is invariant and the result
+///   does not depend on the order the steps are taken in.
+///
+/// Fusion runs to fixpoint first because it strictly reduces the rectangle
+/// count; widening then runs against a settled sibling set. The pair repeats
+/// only while something changed, so the walk is bounded by the rectangle count
+/// it started with.
+pub(super) fn fuse_tuple_rects(cx: TyCtx<'_>, mut rects: Vec<Rect>) -> Vec<Rect> {
+    if rects.len() < 2 {
+        return rects;
+    }
+    loop {
+        let fused = fuse_one_coordinate_unions(cx, &mut rects);
+        let widened = widen_to_axis_union(cx, &mut rects);
+        if !fused && !widened {
+            return rects;
+        }
+    }
+}
+
+/// `{A,C} ∨ {B,C} = {A∨B, C}`, to fixpoint. Reports whether anything merged.
+fn fuse_one_coordinate_unions(cx: TyCtx<'_>, rects: &mut Vec<Rect>) -> bool {
+    let mut fused = false;
+    while let Some((left, right, coord)) = next_fusible_pair(cx, rects) {
+        let grown = rects[left][coord].descr(cx).union(cx, &rects[right][coord].descr(cx));
+        rects[left][coord] = Coord::Built(Box::new(grown));
+        rects.remove(right);
+        fused = true;
+    }
+    fused
+}
+
+/// The first pair agreeing on every coordinate but one, with that coordinate.
+/// A pair agreeing on ALL coordinates is a duplicate, which the axis absorber
+/// owns, so it is not reported here.
+fn next_fusible_pair(cx: TyCtx<'_>, rects: &[Rect]) -> Option<(usize, usize, usize)> {
+    for left in 0..rects.len() {
+        for right in (left + 1)..rects.len() {
+            if rects[left].len() != rects[right].len() {
+                continue;
+            }
+            let mut differing = (0..rects[left].len()).filter(|k| !rects[left][*k].same_as(&rects[right][*k], cx));
+            let Some(coord) = differing.next() else {
+                continue;
+            };
+            if differing.next().is_none() {
+                return Some((left, right, coord));
+            }
+        }
+    }
+    None
+}
+
+/// Grow coordinates to the axis union while the rectangle stays inside it.
+/// Reports whether anything grew.
+fn widen_to_axis_union(cx: TyCtx<'_>, rects: &mut [Rect]) -> bool {
+    let mut widened = false;
+    while let Some((index, coord, grown)) = next_widening(cx, rects) {
+        rects[index][coord] = Coord::Built(Box::new(grown));
+        widened = true;
+    }
+    widened
+}
+
+fn next_widening(cx: TyCtx<'_>, rects: &[Rect]) -> Option<(usize, usize, Descr)> {
+    let mats: Vec<Vec<Descr>> = rects
+        .iter()
+        .map(|rect| rect.iter().map(|coord| coord.descr(cx)).collect())
+        .collect();
+    for (index, rect) in mats.iter().enumerate() {
+        let arity = rect.len();
+        let siblings: Vec<&Vec<Descr>> = mats.iter().filter(|other| other.len() == arity).collect();
+        for coord in 0..arity {
+            let candidate = siblings
+                .iter()
+                .fold(Descr::none(), |acc, sibling| acc.union(cx, &sibling[coord]));
+            if candidate == rect[coord] {
+                continue;
+            }
+            let mut trial = rect.clone();
+            trial[coord] = candidate.clone();
+            let cover: Vec<Vec<Descr>> = siblings.iter().map(|sibling| (*sibling).clone()).collect();
+            if emptiness::phi_tuple(cx, &trial, &cover, &mut emptiness::Memo::default()) {
+                return Some((index, coord, candidate));
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

@@ -22,9 +22,10 @@
 //! `tuple`/`list`/`fun`/`map`/`resource`, `display` as the widest type a user
 //! could write where there is one (`[any]`, `resource(any)`).
 //!
-//! Normalization runs on DESCRIPTORS, not only on interned `Ty`s: tuple
-//! coordinate widening builds descriptors that were never interned, and
-//! interning them here would mutate the very arena the canon describes.
+//! Normalization runs on DESCRIPTORS, not only on interned `Ty`s: a list
+//! clause's intersected element fragment is a descriptor that was never
+//! interned, and interning it here would mutate the very arena the canon
+//! describes.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -143,7 +144,7 @@ impl<'a> TyCanon<'a> {
         if let Some(hit) = self.bodies.get(&ty) {
             return Arc::clone(hit);
         }
-        let text: Arc<str> = self.descr_body(cx, cx.descr(&ty)).into();
+        let text: Arc<str> = self.descr_body(cx, cx.descr(&ty), Provenance::Interned).into();
         self.bodies.insert(ty, Arc::clone(&text));
         text
     }
@@ -152,30 +153,35 @@ impl<'a> TyCanon<'a> {
     // Body
     // ------------------------------------------------------------------
 
-    /// The descriptors this module builds ITSELF — a widened tuple coordinate,
-    /// a list clause's intersected element fragment — never reach the
-    /// interner, so the empty-clause drop the boundary applies is applied here
-    /// too, by the same function. On a descriptor that did come from the
-    /// interner it finds nothing and the sweep is a no-op.
-    fn descr_body(&mut self, cx: TyCtx<'_>, d: &Descr) -> String {
+    /// The empty-clause drop and the axis absorption below are the boundary's
+    /// own rules, so a descriptor that came from the INTERNER already
+    /// satisfies both and neither is repeated on one. A descriptor this module
+    /// built itself — a list clause's intersected element fragment — never
+    /// reached the interner, so it gets them here, from the same functions.
+    fn descr_body(&mut self, cx: TyCtx<'_>, d: &Descr, provenance: Provenance) -> String {
         if d.is_empty_memo(cx, &mut Memo::default()) {
             return "none".to_string();
         }
         if d.is_full(cx) {
             return "any".to_string();
         }
-        let mut swept = d.clone();
-        axis::drop_empty_clauses(cx, &mut swept, &|ty| cx.descr(ty).is_empty(cx));
-        let d = &swept;
-        let axes = self.axes(cx, d);
+        let normalized;
+        let d = match provenance {
+            Provenance::Interned => d,
+            Provenance::Synthesized => {
+                let mut swept = d.clone();
+                axis::drop_empty_clauses(cx, &mut swept, &|ty| cx.descr(ty).is_empty(cx));
+                normalized = swept;
+                &normalized
+            }
+        };
+        let axes = self.axes(cx, d, provenance);
         let mut parts: Vec<String> = basic_names(d.basic);
         push_set(&mut parts, &d.atoms, "atom", |name| format!(":{name}"));
         push_set(&mut parts, &d.opaques, "opaque", ToString::to_string);
         push_set(&mut parts, &d.vars, "var", |id| self.var_text(cx, *id));
-        parts.extend(sorted(axes.tuple_rects.iter().map(|rect| self.rect_text(cx, rect))));
         parts.extend(sorted(
-            self.clause_texts(cx, &axes.tuple_complex, Self::tuple_clause)
-                .into_iter(),
+            self.clause_texts(cx, &axes.tuples, Self::tuple_clause).into_iter(),
         ));
         parts.extend(sorted(
             self.clause_texts(cx, &axes.lists, Self::list_clause).into_iter(),
@@ -189,18 +195,6 @@ impl<'a> TyCanon<'a> {
         ));
         parts.extend(sorted(self.clause_texts(cx, &axes.maps, Self::map_clause).into_iter()));
         brand_refinement(&d.brands, parts.join(" | "))
-    }
-
-    fn rect_text(&mut self, cx: TyCtx<'_>, rect: &Rect) -> String {
-        let coords: Vec<String> = rect.iter().map(|coord| self.coord_text(cx, coord)).collect();
-        format!("{{{}}}", coords.join(", "))
-    }
-
-    fn coord_text(&mut self, cx: TyCtx<'_>, coord: &Coord) -> String {
-        match coord {
-            Coord::Interned(ty) => self.body(cx, *ty).to_string(),
-            Coord::Widened(d) => self.descr_body(cx, d),
-        }
     }
 
     /// One clause rendered with its factors sorted. `top` names the clause with
@@ -255,9 +249,12 @@ impl<'a> TyCanon<'a> {
         } else {
             "non_empty_list"
         };
-        let mut factors = vec![format!("{head}({})", self.descr_body(cx, &elem))];
+        let mut factors = vec![format!(
+            "{head}({})",
+            self.descr_body(cx, &elem, Provenance::Synthesized)
+        )];
         for cut in &minus {
-            let rendered = self.descr_body(cx, cut);
+            let rendered = self.descr_body(cx, cut, Provenance::Synthesized);
             factors.push(format!("not(non_empty_list({rendered}))"));
         }
         factors.join(" & ")
@@ -346,45 +343,40 @@ impl<'a> TyCanon<'a> {
     // Normalization
     // ------------------------------------------------------------------
 
-    /// The four denotational axes are absorbed by the shared rule
-    /// ([`axis`](super::axis)) that `Types::intern` already applied. It is
-    /// repeated here because widening below synthesizes descriptors that never
-    /// reach the interner, and an unabsorbed coordinate would render two
-    /// carvings of one type as two types.
-    ///
-    /// The list axis's set-level merge (`[] ∨ non_empty(T) = list(T)`) is
-    /// repeated for the same reason: coordinate widening joins two interned
-    /// coordinates with `Descr::union`, which concatenates clauses, and the
-    /// joined coordinate would otherwise render as the two fragments a
-    /// coordinate built the other way renders as one list.
+    /// The four denotational axes were absorbed at the persistence boundary, so
+    /// an INTERNED descriptor has nothing left to absorb and this repeats
+    /// nothing. Only the descriptors this module builds ITSELF — a list
+    /// clause's intersected element fragment — need the rule applied here, and
+    /// they get it from the same function, the list axis's set-level merge
+    /// (`[] ∨ non_empty(T) = list(T)`) included: a fragment is `Descr`
+    /// arithmetic over interned children, and the arithmetic concatenates
+    /// clauses that the boundary would have merged.
     ///
     /// The callable axis is the one this module still normalizes after the
-    /// fact, with the same call: the boundary leaves that axis alone for the
-    /// reason stated in [`axis`](super::axis), while a RENDERING reads nothing
-    /// back out of it and may collapse it to what it denotes.
-    fn axes(&mut self, cx: TyCtx<'_>, d: &Descr) -> Axes {
+    /// fact whatever the descriptor came from: an interned arrow carries a
+    /// declared signature and a closure's capture layout beside its
+    /// denotation, so the boundary must leave it alone, while a RENDERING
+    /// reads nothing back out of it and may collapse it to what it denotes.
+    fn axes(&mut self, cx: TyCtx<'_>, d: &Descr, provenance: Provenance) -> Axes {
         let subtype = &|narrower: &Ty, wider: &Ty| cx.descr(narrower).is_subtype(cx, cx.descr(wider));
         let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
         let mut tuples = d.tuples.clone();
-        axis::absorb_axis(cx, &mut tuples, subtype, covers, &axis::TUPLES);
-        let (mut tuple_rects, tuple_complex) = split_rects(tuples);
-        widen_rects(cx, &mut tuple_rects);
-        let tuple_rects = drop_subsumed_rects(cx, tuple_rects);
-
         let mut lists = d.lists.clone();
-        axis::merge_empty_list_clause(&mut lists);
-        axis::absorb_axis(cx, &mut lists, subtype, covers, &axis::LISTS);
         let mut resources = d.resources.clone();
-        axis::absorb_axis(cx, &mut resources, subtype, covers, &axis::RESOURCES);
         let mut maps = d.maps.clone();
-        axis::absorb_axis(cx, &mut maps, subtype, covers, &axis::MAPS);
+        if matches!(provenance, Provenance::Synthesized) {
+            axis::merge_empty_list_clause(&mut lists);
+            axis::absorb_axis(cx, &mut tuples, subtype, covers, &axis::TUPLES);
+            axis::absorb_axis(cx, &mut lists, subtype, covers, &axis::LISTS);
+            axis::absorb_axis(cx, &mut resources, subtype, covers, &axis::RESOURCES);
+            axis::absorb_axis(cx, &mut maps, subtype, covers, &axis::MAPS);
+        }
 
         let mut funcs = d.funcs.clone();
         axis::absorb_axis(cx, &mut funcs, subtype, covers, &axis::FUNCS);
 
         Axes {
-            tuple_rects,
-            tuple_complex,
+            tuples,
             lists,
             resources,
             funcs,
@@ -409,140 +401,21 @@ impl<'a> TyCanon<'a> {
 // Normalized axes
 // ----------------------------------------------------------------------
 
-/// One tuple coordinate. Widening replaces an interned coordinate with a
-/// descriptor that was never interned, so the two cases have to coexist.
-enum Coord {
-    Interned(Ty),
-    Widened(Box<Descr>),
+/// Where a descriptor came from. One that reached the interner is already in
+/// the boundary's normal form; one this module built is not.
+#[derive(Clone, Copy)]
+enum Provenance {
+    Interned,
+    Synthesized,
 }
-
-impl Coord {
-    fn descr(&self, cx: TyCtx<'_>) -> Descr {
-        match self {
-            Self::Interned(ty) => cx.descr(ty).clone(),
-            Self::Widened(d) => (**d).clone(),
-        }
-    }
-}
-
-/// A plain single-positive tuple clause: a rectangle `∏ coords`.
-type Rect = Vec<Coord>;
 
 /// The per-axis DNFs after normalization.
 struct Axes {
-    tuple_rects: Vec<Rect>,
-    tuple_complex: Vec<Conj<TupleSig>>,
+    tuples: Vec<Conj<TupleSig>>,
     lists: Vec<Conj<ListSig>>,
     resources: Vec<Conj<ResourceSig>>,
     funcs: Vec<Conj<ArrowSig>>,
     maps: Vec<Conj<MapSig>>,
-}
-
-fn split_rects(clauses: Vec<Conj<TupleSig>>) -> (Vec<Rect>, Vec<Conj<TupleSig>>) {
-    let mut rects = Vec::new();
-    let mut complex = Vec::new();
-    for c in clauses {
-        match (c.pos.as_slice(), c.neg.as_slice()) {
-            ([sig], []) => rects.push(sig.elems.iter().copied().map(Coord::Interned).collect()),
-            _ => complex.push(c),
-        }
-    }
-    (rects, complex)
-}
-
-/// Widen each rectangle's coordinates to the axis fixpoint.
-///
-/// Two decompositions of one tuple union differ by where they carved the
-/// overlap. `{list(int), []} | {[], non_empty_list(int)}` and
-/// `{list(int), []} | {[], list(int)}` denote the same set: the extra point
-/// `{[], []}` the second admits is already covered by the FIRST clause. No
-/// pairwise clause subsumption can see that — neither clause contains the other
-/// — so the axis needs a rewrite that both decompositions reach.
-///
-/// Widening is it: replace coordinate `k` of one rectangle with the union of
-/// coordinate `k` over every same-arity rectangle, and keep the replacement
-/// only if the widened rectangle is still contained in the axis union. Every
-/// accepted step preserves the denoted set exactly — a rectangle only grows,
-/// and never past the union — so the union is invariant across the whole loop.
-/// That is also why the result cannot depend on the order steps are taken in,
-/// and why each (rectangle, coordinate) widens at most once: its target is that
-/// one fixed union.
-fn widen_rects(cx: TyCtx<'_>, rects: &mut [Rect]) {
-    loop {
-        let mats: Vec<Vec<Descr>> = rects
-            .iter()
-            .map(|rect| rect.iter().map(|coord| coord.descr(cx)).collect())
-            .collect();
-        let Some((index, coord, widened)) = next_widening(cx, &mats) else {
-            return;
-        };
-        rects[index][coord] = Coord::Widened(Box::new(widened));
-    }
-}
-
-fn next_widening(cx: TyCtx<'_>, mats: &[Vec<Descr>]) -> Option<(usize, usize, Descr)> {
-    for (index, rect) in mats.iter().enumerate() {
-        let arity = rect.len();
-        let siblings: Vec<&Vec<Descr>> = mats.iter().filter(|other| other.len() == arity).collect();
-        for coord in 0..arity {
-            let candidate = siblings
-                .iter()
-                .fold(Descr::none(), |acc, sibling| acc.union(cx, &sibling[coord]));
-            if candidate == rect[coord] {
-                continue;
-            }
-            let mut trial = rect.clone();
-            trial[coord] = candidate.clone();
-            let cover: Vec<Vec<Descr>> = siblings.iter().map(|sibling| (*sibling).clone()).collect();
-            if emptiness::phi_tuple(cx, &trial, &cover, &mut Memo::default()) {
-                return Some((index, coord, candidate));
-            }
-        }
-    }
-    None
-}
-
-/// Drop every rectangle covered by the union of the ones that survive.
-///
-/// Rectangles are visited in index order. For a descriptor that came from the
-/// interner that is the canonical clause order the persistence boundary
-/// imposed; for one this module synthesized — a widened tuple coordinate, a
-/// list clause's element fragment — it is the order the `Descr::union` folds
-/// happened to produce, so these lists are not canonically ordered. What that
-/// leaves undecided is narrow: two rectangles that cover EACH OTHER are two
-/// carvings of one set, and which of them survives follows position. The
-/// rendered texts are sorted before they are joined, so the order itself never
-/// reaches the output; only the choice of spelling can. Exact duplicates leave
-/// exactly one survivor either way: once the first is dropped it stops
-/// covering its twin.
-fn drop_subsumed_rects(cx: TyCtx<'_>, rects: Vec<Rect>) -> Vec<Rect> {
-    if rects.len() < 2 {
-        return rects;
-    }
-    let mats: Vec<Vec<Descr>> = rects
-        .iter()
-        .map(|rect| rect.iter().map(|coord| coord.descr(cx)).collect())
-        .collect();
-    let mut keep = vec![true; rects.len()];
-    for index in 0..rects.len() {
-        let arity = mats[index].len();
-        let cover: Vec<Vec<Descr>> = (0..mats.len())
-            .filter(|other| *other != index && keep[*other] && mats[*other].len() == arity)
-            .map(|other| mats[other].clone())
-            .collect();
-        if emptiness::phi_tuple(cx, &mats[index], &cover, &mut Memo::default()) {
-            keep[index] = false;
-        }
-    }
-    retain_kept(rects, keep)
-}
-
-fn retain_kept<T>(items: Vec<T>, keep: Vec<bool>) -> Vec<T> {
-    items
-        .into_iter()
-        .zip(keep)
-        .filter_map(|(item, keep)| keep.then_some(item))
-        .collect()
 }
 
 // ----------------------------------------------------------------------
@@ -568,9 +441,9 @@ fn retain_kept<T>(items: Vec<T>, keep: Vec<bool>) -> Vec<T> {
 /// equivalence does not.
 ///
 /// Inhabited-ness is read straight off the clauses because normalization cannot
-/// change it: saturation and widening keep an axis non-empty, and the
-/// subsumption drop always leaves a survivor (the last clause standing has
-/// nothing left to be covered by).
+/// change it: saturation keeps an axis non-empty, and the subsumption drop
+/// always leaves a survivor (the last clause standing has nothing left to be
+/// covered by).
 fn descr_fingerprint(cx: TyCtx<'_>, d: &Descr, mut render_var: impl FnMut(TypeVarId) -> String) -> String {
     if d.is_empty_memo(cx, &mut Memo::default()) {
         return "fp[none]".to_string();

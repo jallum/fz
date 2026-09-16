@@ -234,19 +234,20 @@ fn runtime_type_predicate_projects_tuple_positions_and_list_heads() {
 
     let cont = t.atom_lit("cont");
     let halt = t.atom_lit("halt");
+    let binary = t.str_t();
     let cont_int = t.tuple(&[cont, int]);
-    let halt_int = t.tuple(&[halt, int]);
-    let either = t.union(cont_int, halt_int);
+    let halt_binary = t.tuple(&[halt, binary]);
+    let either = t.union(cont_int, halt_binary);
     let either_predicate = t.runtime_type_predicate(&either);
     assert_eq!(
         either_predicate.tuples.shapes().len(),
         2,
-        "a two-clause union is two shapes: joining them position-wise would admit {{:cont, _}} \
-         and {{:halt, _}} crossed with each other's payloads",
+        "arms that differ in their PAYLOAD as well as their tag stay two shapes: joining them \
+         position-wise would admit {{:cont, binary}}, which neither arm holds",
     );
     assert!(
         !t.runtime_type_predicate(&cont_int)
-            .overlaps(&t.runtime_type_predicate(&halt_int)),
+            .overlaps(&t.runtime_type_predicate(&halt_binary)),
         "and the tags separate, which is the whole point",
     );
 }
@@ -2809,6 +2810,79 @@ mod union_clause_order {
             forward_key, backward_key,
             "the specialization a callee gets must be a function of the type it is passed, \
              not of which branch the scheduler ran first"
+        );
+    }
+}
+
+/// One tuple union has many carvings, and they are one type.
+///
+/// A DNF axis stores a union of rectangles, and the same set of tuples can be
+/// cut into rectangles more than one way. No clause-by-clause rule sees it —
+/// neither carving's clauses contain the other's — so the axis needs a rewrite
+/// both carvings reach.
+mod tuple_carving_fusion {
+    use super::*;
+
+    /// Two rectangles that agree on every coordinate but one are one rectangle
+    /// over the union of that coordinate: `{A,C} ∨ {B,C}` is exactly
+    /// `{A∨B, C}`. This is the shape a tagged-union ladder grows in, so fusing
+    /// it turns width growth into depth growth.
+    #[test]
+    fn two_carvings_of_one_tuple_union_intern_once() {
+        let mut t = Types::new();
+        let int = t.int();
+        let ints = t.list(int);
+        let false_ = t.bool_lit(false);
+        let true_ = t.bool_lit(true);
+
+        let carved = {
+            let with_false = t.tuple(&[ints, false_]);
+            let with_true = t.tuple(&[ints, true_]);
+            t.union(with_false, with_true)
+        };
+        let fused = {
+            let either = t.union(false_, true_);
+            t.tuple(&[ints, either])
+        };
+        assert_eq!(
+            carved,
+            fused,
+            "one union of pairs, one interned id: got {} vs {}",
+            t.display(&carved),
+            t.display(&fused)
+        );
+        assert_eq!(t.descr(&carved).tuples.len(), 1, "and it is one rectangle");
+    }
+
+    /// Two carvings that differ in BOTH coordinates meet only by widening a
+    /// coordinate to the axis union and keeping the step while the rectangle
+    /// stays inside that union. The extra pair `{[], []}` the second carving
+    /// names is already in the first carving's own first rectangle.
+    #[test]
+    fn two_carvings_that_overlap_differently_intern_once() {
+        let mut t = Types::new();
+        let int = t.int();
+        let ints = t.list(int);
+        let empty = t.empty_list();
+        let non_empty = t.non_empty_list(int);
+
+        let narrow = {
+            let left = t.tuple(&[ints, empty]);
+            let right = t.tuple(&[empty, non_empty]);
+            t.union(left, right)
+        };
+        let wide = {
+            let left = t.tuple(&[ints, empty]);
+            let right = t.tuple(&[empty, ints]);
+            t.union(left, right)
+        };
+        assert!(t.is_equivalent(&narrow, &wide), "the two carvings denote one set");
+        assert_eq!(
+            narrow,
+            wide,
+            "one denotation, one interned id: got {} vs {}",
+            t.display(&narrow),
+            t.display(&wide)
         );
     }
 }

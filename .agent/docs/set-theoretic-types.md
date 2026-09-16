@@ -108,7 +108,24 @@ coordinate or resource payload, a non-empty list sig with no element left).
 The persistence boundary (`Types::intern`) canonicalizes every descriptor
 entering the interner.
 
-Before the sort, the LIST NORMAL FORM (`emptiness::list_denotation`,
+First the TUPLE NORMALIZER (`types/axis.rs`), the tuple axis's own normal form
+and the one rule that reaches a different CARVING of one type. Per clause
+first: a ground difference whose cover differs in exactly one coordinate is
+still one rectangle, and is rewritten to one — which also turns a clause
+carrying a negative into a plain rectangle the axis step can carve. Then the
+axis as a whole, to fixpoint: FUSION merges two rectangles that agree on every
+coordinate but one into the single rectangle over the union of that coordinate
+(`{A,C} ∨ {B,C} = {A∨B, C}`, exact, and what turns a tagged union's width
+growth into depth growth), and WIDENING grows a coordinate to the union of that
+coordinate over its same-arity siblings while the grown rectangle is still
+inside the axis union. A rectangle only grows and never past the union, so the
+denoted set is invariant and the outcome does not depend on the order the steps
+are taken in. Fusion mints the union coordinate it merges on, so this is a fold
+that can spend an interned type to save an identity: the coordinate it builds
+is interned through this same boundary, which terminates because a coordinate
+names only types interned before it.
+
+Then, still before the sort, the LIST NORMAL FORM (`emptiness::list_denotation`,
 `types/axis.rs`). A `ListSig` denotes `[]` (when `empty`) together with every
 non-empty list over `elem`, so a list clause says exactly two things: does it
 hold `[]`, and which non-empty lists does it keep. One function reads those two
@@ -361,7 +378,9 @@ small constant per compile.
 
 What clause order canNOT reconcile is a different CARVING of one type:
 `{[int], :false} | {[int], :true}` and `{[int], :false | :true}` are one
-denotation in two decompositions and still intern apart (fz-kdt.48).
+denotation in two decompositions, and no clause-by-clause rule sees it because
+neither carving's clauses contain the other's. The TUPLE NORMALIZER above is
+what reconciles them, by rewriting both to the same union of rectangles.
 
 Union-time hygiene is not enough, because clauses are also made
 equal AFTER a union — `erase_closure_identity` strips closure brands in place,
