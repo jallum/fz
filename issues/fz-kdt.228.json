@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-kdt.226"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-kdt.227"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "The scheduler owns claims per job; a job that publishes several facts in one run must be able to conclude each on its own reads (derivation identity)",
   "type": "bug",
-  "updated_at": "2026-09-16T11:23:51Z"
+  "updated_at": "2026-09-16T12:37:23Z"
 }
