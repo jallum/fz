@@ -91,7 +91,7 @@ pub use module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable,
     ReadyOrPending,
 };
-pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
+pub use namespace::{BindingId, CallableQualifier, Namespace, NamespaceStore, NamespaceSymbol};
 pub(crate) use pull::{ProductKey, PullSession};
 pub use scheduler::{
     AppliedStep, DriveOutcome, FatalError, Scheduler, Wake, WakeDisposition, WorkStartReason, WorkStartTally,

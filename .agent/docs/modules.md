@@ -95,6 +95,13 @@ which head to bind onto. Type lookups filter for `NamespaceSymbol::Type`, while
 value/callable lookups filter for modules/functions/macros, so a type name and a
 value name can share spelling without becoming one binding kind.
 
+A `CallableName` asks the chain at most once. Its qualifier is a `ModuleTarget`,
+so an alias path written in source (`Unresolved`) stays distinct from an exact
+reflected module (`Exact`), and `World::callable_name_qualifier` answers which
+module a qualified name names. Nothing splits a rendered `Module.function`
+string back into a module and a name: a callable that was already resolved
+travels as the function itself.
+
 ## Scoping a body
 
 `define_scope` walks a scope's items in two passes so bodies can reference names

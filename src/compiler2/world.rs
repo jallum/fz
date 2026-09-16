@@ -46,7 +46,7 @@ use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap,
 };
-use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
+use super::namespace::{CallableQualifier, Namespace, NamespaceStore, NamespaceSymbol};
 use super::ordered_set::OrderedSet;
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
@@ -2036,10 +2036,6 @@ impl World {
         name: &str,
         arity: usize,
     ) -> Option<NamespaceSymbol> {
-        if let Some((module_path, local_name)) = name.rsplit_once('.') {
-            let module = self.lookup_module_path(head, &ModuleName::parse_dotted(module_path).ok()?)?;
-            return self.lookup_module_callable(module, local_name, arity);
-        }
         self.namespaces
             .lookup_best_matching(head, name, |symbol| match symbol {
                 NamespaceSymbol::Function(function)
@@ -2051,6 +2047,25 @@ impl World {
             })
             .cloned()
             .map(|symbol| self.resolve_callable_symbol(symbol))
+    }
+
+    /// Where a callable name's qualifier points. This is the one place a
+    /// qualifier is read, so no caller recovers a module from display text.
+    /// An exact reflected module is interned as it stands; an alias path is
+    /// walked through `head`.
+    pub(crate) fn callable_name_qualifier(
+        &mut self,
+        head: Namespace,
+        name: &crate::ast::CallableName,
+    ) -> CallableQualifier {
+        let Some(target) = name.module.as_ref() else {
+            return CallableQualifier::Unqualified;
+        };
+        let module = match target {
+            crate::ast::ModuleTarget::Exact(module) => Some(self.reference_module_denotation(module.clone())),
+            crate::ast::ModuleTarget::Unresolved(path) => self.lookup_module_path(head, path),
+        };
+        module.map_or(CallableQualifier::Unbound, CallableQualifier::Module)
     }
 
     /// The symbol a call's callee names here. A retained callable answers from
@@ -2073,12 +2088,10 @@ impl World {
         name: &crate::ast::CallableName,
         arity: usize,
     ) -> Option<NamespaceSymbol> {
-        match &name.module {
-            Some(module) => {
-                let module = self.reference_module_denotation(module.clone());
-                self.lookup_module_callable(module, &name.name, arity)
-            }
-            None => self.lookup_callable_namespace(head, &name.name, arity),
+        match self.callable_name_qualifier(head, name) {
+            CallableQualifier::Unqualified => self.lookup_callable_namespace(head, &name.name, arity),
+            CallableQualifier::Module(module) => self.lookup_module_callable(module, &name.name, arity),
+            CallableQualifier::Unbound => None,
         }
     }
 
@@ -2149,10 +2162,6 @@ impl World {
     }
 
     pub(crate) fn min_variadic_arity(&mut self, head: Namespace, name: &str) -> Option<usize> {
-        if let Some((module_path, local_name)) = name.rsplit_once('.') {
-            let module = self.lookup_module_path(head, &ModuleName::parse_dotted(module_path).ok()?)?;
-            return self.min_module_variadic_arity(module, local_name);
-        }
         self.namespaces
             .lookup_best_matching(head, name, |symbol| match symbol {
                 NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function)
