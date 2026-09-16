@@ -638,7 +638,7 @@ mod tests {
                     captures: vec![shared_address, shared_address],
                 }),
             })],
-            ..Descr::none()
+            ..Descr::unbranded()
         });
         let closure = t.closure_lit(ClosureTarget(8), vec![shared_address, nested], 1);
 
@@ -783,7 +783,7 @@ mod tests {
                     captures: vec![nested_address],
                 }),
             })],
-            ..Descr::none()
+            ..Descr::unbranded()
         });
         let concrete = t.int();
         let siblings = t.intern(Descr {
@@ -807,7 +807,7 @@ mod tests {
                     }),
                 }),
             ],
-            ..Descr::none()
+            ..Descr::unbranded()
         });
 
         let addressed = t.address_inputs(&[siblings])[0];

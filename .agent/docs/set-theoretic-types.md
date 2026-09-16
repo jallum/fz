@@ -106,7 +106,7 @@ coordinate or resource payload, a non-empty list sig with no element left).
 `dnf_union` drops duplicate clauses and `dnf_neg` skips duplicate factors.
 
 The persistence boundary (`Types::intern`) canonicalizes every descriptor
-entering the interner, in three order-preserving passes.
+entering the interner.
 
 First, ORDER (`order.rs::ClauseOrder`): every DNF axis is sorted by a total
 order on clauses, so a descriptor's clause list is a function of its clause set
@@ -146,6 +146,12 @@ kept). Both later passes are order-preserving filters, so what reaches the
 interner index is still sorted — which is also why one pass suffices:
 re-interning an interned descriptor sorts a sorted list to itself, finds nothing
 left to absorb or collapse, and hits the index.
+
+Last, the BOTTOM COLLAPSE: a descriptor that denotes the empty set is replaced
+by `Descr::none()` before an id is assigned, so the empty set has exactly one
+`Ty` however it was reached. It runs on descriptors through the same emptiness
+algorithm the axes use, so it never mints the id it is about to reject, and it
+runs after the axis passes so it reads the smallest clause lists.
 
 What clause order canNOT reconcile is a different CARVING of one type:
 `{[int], :false} | {[int], :true}` and `{[int], :false | :true}` are one
@@ -285,12 +291,15 @@ answer `is_subtype = false` or leave a narrowed branch too wide.
 `Descr::neg_structure` is its private helper, the complement of the kind axes
 alone.
 
-The empty type therefore has more than one interned identity: `Descr::none()`
-carries an empty slot, while `int and binary` meets at empty kind axes with the
-slot still at top. `Descr::looks_empty()` is the bottom test; `== Descr::none()`
-is not, and `union` and `erase_nominal` both ask it first so that no bottom
-widens or resurrects. The canonical form is unaffected — `TyCanon` answers on
-emptiness first, so every bottom renders `none` and fingerprints `fp[none]`.
+A bottom therefore arrives in more than one descriptor shape: `Descr::none()`
+carries an empty slot, `int and binary` meets at empty kind axes with the slot
+still at top, and a tuple with an empty coordinate empties through a structural
+axis. They all denote the same set, so `Types::intern` answers every provably
+empty descriptor with the one `none` identity, and `Types::is_empty(t)` holds
+exactly when `t` is that id. Descriptor arithmetic runs BEFORE interning and
+still meets the several shapes, so `Descr::looks_empty()` — never
+`== Descr::none()` — stays the descriptor-level bottom test that `union` and
+`erase_nominal` ask first, so that no bottom widens or resurrects.
 
 A refinement renders as a refinement, never as a union: `utf8(binary)`,
 `not(Meters)(int)`, `(Feet | Meters)(int)`. Rendering it `binary | utf8` would
