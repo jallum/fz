@@ -552,10 +552,10 @@ end state. Both compile twice in ONE process, which is what exposes the hazard:
 iterate differently from the first's.
 
 Activation-bearing identities have one owner-supplied total order.
-`SemanticOrd<Types>` compares real fields and delegates activation arrows to
-`Types::cmp_activation_ty`. That operation reuses the type store's structural
-walk in activation mode: callable arguments, return, then literal; list
-emptiness and addressed variable paths remain explicit, and named literals use
+`SemanticOrd<Types>` compares real fields and delegates activation coordinate
+records to `Types::cmp_activation_signature`. That operation compares the input
+coordinates then the result with the type store's activation structural walk;
+list emptiness and addressed variable paths remain explicit, and named literals use
 immutable owner-registered typed callable identities. It therefore distinguishes lattice
 forms that display intentionally merges, including possibly-empty and
 non-empty lists, without allocating or parsing presentation text.
@@ -574,12 +574,13 @@ structural comparison.
 The type store memoizes each activation-order verdict by a normalized
 `(low Ty, high Ty)` pair (`Types::cmp_activation_ty`, cached under
 `ComparisonKey::ActivationArrowOrder`); asking in the reverse direction reuses
-the inverse verdict rather than recomputing it. Descriptors and structural
-addresses are immutable after interning, and callable identities must be
-registered before comparison and cannot be renamed, so the entry lives for the
-owning `Types`/`World` lifetime with no invalidation path. Hit/miss counters
-(`Types::comparison_cache_stats`) exist for tests to assert on, not for
-production use. ClauseOrder's private storage-canonical relation
+the inverse verdict rather than recomputing it. `ActivationSignature` comparison reduces
+each input, result, and callable-observation coordinate to that typed order.
+Descriptors and structural addresses are immutable after interning, and
+callable identities must be registered before comparison and cannot be renamed,
+so the entry lives for the owning `Types`/`World` lifetime with no invalidation
+path. Hit/miss counters (`Types::comparison_cache_stats`) exist for tests to
+assert on, not for production use. ClauseOrder's private storage-canonical relation
 remains distinct: it intentionally puts a closure literal before its surface to
 group DNF clauses and must not determine activation order.
 

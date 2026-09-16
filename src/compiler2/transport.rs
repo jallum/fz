@@ -4,14 +4,14 @@
 //! Position-owned products retain these descriptors in each executable's ABI.
 //! Positions may mention semantic body evidence, but descriptor keys must not.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::Range;
 use std::rc::Rc;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
-use super::identity::{ExecutableNeed, FunctionId};
+use super::identity::{ActivationSignature, ExecutableKey, ExecutableNeed, FunctionId};
 use super::semantic::SemanticOrd;
 use super::types::{Ty, Types};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
@@ -203,8 +203,12 @@ pub struct LaneDescr {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ActivationSymbol {
     pub function: FunctionId,
-    pub arrow: Ty,
-    pub input: Box<[Ty]>,
+    pub signature: ActivationSignature,
+    /// The callable-observation coordinates that participate in the
+    /// activation identity.  Transport symbols are root-independent, but
+    /// they must retain the entire key or re-materialization could conflate
+    /// two executable bodies.
+    pub callable_surfaces: Box<[BTreeSet<ActivationSignature>]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -213,13 +217,31 @@ pub struct ExecutableSymbol {
     pub need: ExecutableNeed,
 }
 
+impl ExecutableSymbol {
+    pub(crate) fn from_key(executable: &ExecutableKey) -> Self {
+        Self {
+            activation: ActivationSymbol {
+                function: executable.activation.function,
+                signature: executable.activation.signature.clone(),
+                callable_surfaces: executable.activation.callable_surfaces.clone(),
+            },
+            need: executable.need,
+        }
+    }
+}
+
 impl SemanticOrd<Types> for ExecutableSymbol {
     fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
         self.activation
             .function
             .cmp(&other.activation.function)
-            .then_with(|| types.cmp_activation_ty(self.activation.arrow, other.activation.arrow))
-            .then_with(|| types.cmp_activation_tys(&self.activation.input, &other.activation.input))
+            .then_with(|| types.cmp_activation_signature(&self.activation.signature, &other.activation.signature))
+            .then_with(|| {
+                types.cmp_activation_callable_surfaces(
+                    &self.activation.callable_surfaces,
+                    &other.activation.callable_surfaces,
+                )
+            })
             .then_with(|| self.need.cmp(&other.need))
     }
 }

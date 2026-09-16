@@ -60,7 +60,7 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::DeriveCallGraphComponent(function_id) => keying::derive_call_graph_component(world, *function_id),
         Job::DeriveInputDemand(function_id) => keying::derive_input_demand(world, tel, *function_id),
         Job::SeedRoot(root_id) => root::seed_root(world, tel, *root_id),
-        Job::SeedActivation(activation) => root::seed_activation(world, tel, activation),
+        Job::SeedActivation(activation) => root::seed_activation(activation),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, tel, activation),
         Job::DeriveExecutableFacts(executable) => executable_facts::derive_executable_facts(world, executable),
         Job::DeriveCallableConstructionTarget(key) => callable_target::derive(world, key),

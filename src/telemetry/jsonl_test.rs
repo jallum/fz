@@ -439,28 +439,42 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
     use crate::compiler2::SemanticOrd as _;
     use crate::compiler2::{ActivationKey, FactChange, FactKey, FactMovement, FactState, FactUse, FunctionId, RootId};
 
-    fn canonicalize_arrows(
+    fn canonicalize_coordinate_types(
         value: &serde_json::Value,
-        arrows: &std::collections::HashMap<u64, &'static str>,
+        types: &std::collections::HashMap<u64, &'static str>,
         field: Option<&str>,
     ) -> serde_json::Value {
         match (field, value) {
-            (Some("arrow"), serde_json::Value::Number(id)) => serde_json::Value::String(
-                arrows
+            (Some("result"), serde_json::Value::Number(id)) => serde_json::Value::String(
+                types
                     .get(&id.as_u64().expect("arrow id is an integer"))
-                    .expect("test dictionary covers every activation arrow")
+                    .expect("test dictionary covers every activation coordinate")
                     .to_string(),
+            ),
+            (Some("inputs"), serde_json::Value::Array(values)) => serde_json::Value::Array(
+                values
+                    .iter()
+                    .map(|value| {
+                        let id = value.as_u64().expect("input type id is an integer");
+                        serde_json::Value::String(
+                            types
+                                .get(&id)
+                                .expect("test dictionary covers every activation coordinate")
+                                .to_string(),
+                        )
+                    })
+                    .collect(),
             ),
             (_, serde_json::Value::Object(fields)) => serde_json::Value::Object(
                 fields
                     .iter()
-                    .map(|(name, value)| (name.clone(), canonicalize_arrows(value, arrows, Some(name))))
+                    .map(|(name, value)| (name.clone(), canonicalize_coordinate_types(value, types, Some(name))))
                     .collect(),
             ),
             (_, serde_json::Value::Array(values)) => serde_json::Value::Array(
                 values
                     .iter()
-                    .map(|value| canonicalize_arrows(value, arrows, None))
+                    .map(|value| canonicalize_coordinate_types(value, types, None))
                     .collect(),
             ),
             _ => value.clone(),
@@ -485,7 +499,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
             let non_empty = ActivationKey::from_inputs(root, function, &[non_empty], &mut types);
             (list, non_empty)
         };
-        let raw_order = list.arrow < non_empty.arrow;
+        let raw_order = list.signature < non_empty.signature;
         let keys = if non_empty_first {
             vec![
                 FactKey::ReturnType(non_empty.clone()),
@@ -526,13 +540,17 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
             body.strip_prefix(',').expect("applied body starts with a field")
         );
         let raw: serde_json::Value = serde_json::from_str(&json).expect("applied step JSON");
-        let arrows = std::collections::HashMap::from([
-            (list.arrow.as_u32() as u64, "list-activation"),
-            (non_empty.arrow.as_u32() as u64, "non-empty-list-activation"),
+        let types = std::collections::HashMap::from([
+            (list.signature.inputs[0].as_u32() as u64, "list-activation"),
+            (
+                non_empty.signature.inputs[0].as_u32() as u64,
+                "non-empty-list-activation",
+            ),
+            (list.signature.result.as_u32() as u64, "result"),
         ]);
         (
             raw_order,
-            serde_json::to_vec(&canonicalize_arrows(&raw, &arrows, None)).expect("canonical batch JSON"),
+            serde_json::to_vec(&canonicalize_coordinate_types(&raw, &types, None)).expect("canonical batch JSON"),
         )
     };
 
@@ -540,7 +558,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
     let non_empty_first = render(true);
     assert_ne!(
         list_first.0, non_empty_first.0,
-        "fixture must deterministically reverse raw arrow ids"
+        "fixture must deterministically reverse raw activation coordinate ids"
     );
     assert_eq!(
         list_first.1, non_empty_first.1,
@@ -626,7 +644,8 @@ fn incoming_slot_facts_identify_the_exact_root_executable_and_input() {
                 &[int, int],
                 &mut types,
             );
-            let arrow = activation.arrow.as_u32();
+            let inputs = activation.inputs().iter().map(|ty| ty.as_u32()).collect::<Vec<_>>();
+            let result = activation.signature.result.as_u32();
             let slot = InputSlot {
                 executable: ExecutableKey {
                     activation,
@@ -642,7 +661,8 @@ fn incoming_slot_facts_identify_the_exact_root_executable_and_input() {
                 identity,
                 serde_json::json!({
                     "use": "settled", "kind": "IncomingInputSlot", "root_id": root,
-                    "function_id": 9, "arrow": arrow, "need": "value", "semantic_index": index,
+                    "function_id": 9, "inputs": inputs, "result": result,
+                    "callable_surfaces": [[], []], "need": "value", "semantic_index": index,
                 })
             );
             assert!(
@@ -844,7 +864,10 @@ fn jsonl_emits_return_type_revisions() {
         .map(|event| {
             let activation = &event.metadata["activation"];
             assert!(
-                activation["root_id"].is_u64() && activation["arrow"].is_u64(),
+                activation["root_id"].is_u64()
+                    && activation["inputs"].is_array()
+                    && activation["result"].is_u64()
+                    && activation["callable_surfaces"].is_array(),
                 "a revision names the whole activation, not just its function: {activation}"
             );
             assert!(

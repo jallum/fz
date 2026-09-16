@@ -4,7 +4,7 @@
 //! dispatch, derives direct-call summaries, and settles per-activation return
 //! types without calling the legacy whole-program pipeline.
 
-use std::collections::{BTreeMap, HashMap, HashSet, hash_map::Entry};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry};
 
 use crate::ast::{BinOp, UnOp};
 use crate::diag::driver::emit_through;
@@ -19,12 +19,14 @@ use super::super::body::{
 use super::super::contract::FunctionContract;
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
-use super::super::identity::{ActivationKey, FunctionId, ModuleId, TypeName, function_id_of_closure_target};
+use super::super::identity::{
+    ActivationKey, ActivationSignature, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
+};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallTargetSummary,
-    SelectedCallee,
+    ActivationAnalysis, ActivationInput, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets,
+    CallTargetSummary, SelectedCallee,
 };
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
@@ -36,20 +38,78 @@ struct TupleFieldProjection {
     arity: usize,
 }
 
+#[derive(Clone)]
+struct SemanticValue {
+    ty: Ty,
+    callable_surfaces: BTreeSet<ActivationSignature>,
+}
+
+impl SemanticValue {
+    fn new(ty: Ty) -> Self {
+        Self {
+            ty,
+            callable_surfaces: BTreeSet::new(),
+        }
+    }
+
+    fn callable(ty: Ty, surface: ActivationSignature) -> Self {
+        Self {
+            ty,
+            callable_surfaces: BTreeSet::from([surface]),
+        }
+    }
+
+    fn ty(&self) -> Ty {
+        self.ty
+    }
+
+    fn as_activation_input(&self) -> ActivationInput {
+        ActivationInput::from_parts(self.ty, self.callable_surfaces.clone())
+    }
+
+    fn from_activation_input(input: ActivationInput) -> Self {
+        Self {
+            ty: input.ty(),
+            callable_surfaces: input.callable_surfaces().clone(),
+        }
+    }
+
+    fn with_ty(mut self, ty: Ty) -> Self {
+        self.ty = ty;
+        self
+    }
+
+    fn composed(ty: Ty, values: impl IntoIterator<Item = Self>) -> Self {
+        let mut composed = Self::new(ty);
+        for value in values {
+            composed.extend_surfaces(&value);
+        }
+        composed
+    }
+
+    fn extend_surfaces(&mut self, other: &Self) {
+        self.callable_surfaces.extend(other.callable_surfaces.iter().cloned());
+    }
+}
+
 #[derive(Clone, Default)]
 struct SemanticValues {
-    types: HashMap<ValueId, Ty>,
+    types: HashMap<ValueId, SemanticValue>,
     tuple_arities: HashMap<ValueId, usize>,
     tuple_fields: HashMap<ValueId, TupleFieldProjection>,
 }
 
 impl SemanticValues {
-    fn get(&self, value: &ValueId) -> Option<&Ty> {
+    fn get(&self, value: &ValueId) -> Option<&SemanticValue> {
         self.types.get(value)
     }
 
     fn insert(&mut self, value: ValueId, ty: Ty) {
-        self.types.insert(value, ty);
+        self.insert_value(value, SemanticValue::new(ty));
+    }
+
+    fn insert_value(&mut self, value: ValueId, semantic: SemanticValue) {
+        self.types.insert(value, semantic);
     }
 
     fn contains_key(&self, value: &ValueId) -> bool {
@@ -82,7 +142,7 @@ impl SemanticValues {
 }
 
 type ValueTypes = HashMap<ValueId, Ty>;
-type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
+type RefinedCallSurface = (Vec<Ty>, Option<Ty>, Vec<BTreeSet<ActivationSignature>>);
 /// One reached call: what it resolved to, the activation demand it
 /// contributes, and its return evidence.
 type ResolvedCall = (
@@ -103,7 +163,7 @@ struct CallEmission {
 #[derive(Debug, Clone)]
 struct ActivationContribution {
     key: ActivationKey,
-    inputs: Vec<Ty>,
+    inputs: Vec<ActivationInput>,
 }
 
 /// Analyzes one rooted function activation against its lowered body.
@@ -190,13 +250,25 @@ pub(super) fn analyze_activation(
     let mut fail_reachable = false;
     let mut row_clause_inputs = Vec::new();
     for row in alternatives.rows() {
-        let dispatch_reachability = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, row.columns());
+        let row_types = row.tys();
+        let dispatch_reachability = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, &row_types);
         fail_reachable |= dispatch_reachability.fail_reachable;
         let clause_inputs = dispatch_reachability
             .outcome_inputs
             .iter()
             .cloned()
-            .filter_map(|(outcome, inputs)| entry_dispatch.outcome(outcome).map(|outcome| (outcome.body_id, inputs)))
+            .filter_map(|(outcome, inputs)| {
+                entry_dispatch.outcome(outcome).map(|outcome| {
+                    let inputs: Vec<ActivationInput> = row
+                        .inputs()
+                        .iter()
+                        .cloned()
+                        .zip(inputs)
+                        .map(|(input, ty)| input.with_ty(ty))
+                        .collect();
+                    (outcome.body_id, inputs)
+                })
+            })
             .collect::<Vec<_>>();
         reachable_clauses.extend(clause_inputs.iter().map(|(clause, _)| *clause));
         row_clause_inputs.push(clause_inputs);
@@ -227,8 +299,8 @@ pub(super) fn analyze_activation(
                     continue;
                 }
                 let mut values = SemanticValues::default();
-                for (value, ty) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
-                    values.insert(value, ty);
+                for (value, input) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
+                    values.insert_value(value, SemanticValue::from_activation_input(input));
                 }
                 apply_steps(
                     world,
@@ -260,7 +332,7 @@ pub(super) fn analyze_activation(
 
     for row in alternatives.rows() {
         if let Some(contract_return_ty) =
-            activation_contract_return(world, tel, function, row.columns(), &mut reads, &mut waits)?
+            activation_contract_return(world, tel, function, &row.tys(), &mut reads, &mut waits)?
         {
             return_evidence = refine_call_return(world, return_evidence, Some(contract_return_ty));
         }
@@ -334,7 +406,7 @@ pub(super) fn analyze_activation(
     let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
         activation,
         ActivationAnalysis {
-            input_rows: alternatives.rows().iter().map(|row| row.columns().to_vec()).collect(),
+            input_rows: alternatives.rows().iter().map(|row| row.tys()).collect(),
             entry_reachability,
             reachable_entries: {
                 let mut entries = reachable_entries.into_iter().collect::<Vec<_>>();
@@ -433,22 +505,37 @@ fn apply_step(
         LoweredStep::Tuple { value, items } => {
             let Some(items) = items
                 .iter()
-                .map(|item| value_ty(values, item.value))
+                .map(|item| values.get(&item.value).cloned())
                 .collect::<Option<Vec<_>>>()
             else {
                 return Ok(());
             };
-            let tuple = world.types_mut().tuple(&items);
-            values.insert(*value, tuple);
+            let tuple = world
+                .types_mut()
+                .tuple(&items.iter().map(SemanticValue::ty).collect::<Vec<_>>());
+            values.insert_value(*value, SemanticValue::composed(tuple, items));
         }
         LoweredStep::List { value, items, tail, .. } => {
             if let Some(list) = list_ty(world, values, items, *tail) {
-                values.insert(*value, list);
+                let mut parts = items
+                    .iter()
+                    .filter_map(|item| values.get(item).cloned())
+                    .collect::<Vec<_>>();
+                if let Some(tail) = tail
+                    && let Some(tail) = values.get(tail).cloned()
+                {
+                    parts.push(tail);
+                }
+                values.insert_value(*value, SemanticValue::composed(list, parts));
             }
         }
         LoweredStep::Map { value, entries, .. } => {
             if let Some(map) = map_ty(world, values, entries) {
-                values.insert(*value, map);
+                let parts = entries
+                    .iter()
+                    .filter_map(|(_, value)| values.get(value).cloned())
+                    .collect::<Vec<_>>();
+                values.insert_value(*value, SemanticValue::composed(map, parts));
             }
         }
         LoweredStep::MapUpdate { value, base, entries } => {
@@ -469,7 +556,14 @@ fn apply_step(
                     break;
                 }
             }
-            values.insert(*value, map_ty);
+            let mut semantic = values.get(base).cloned().unwrap_or_else(|| SemanticValue::new(map_ty));
+            semantic.ty = map_ty;
+            for (_, item) in entries {
+                if let Some(item) = values.get(item) {
+                    semantic.extend_surfaces(item);
+                }
+            }
+            values.insert_value(*value, semantic);
         }
         LoweredStep::Struct { value, module, fields } => {
             let Some(field_tys) = fields
@@ -485,32 +579,46 @@ fn apply_step(
             // separate schema lookup needed here.
             let field_names = fields.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
             let struct_ty = world.struct_module_value_ty(*module, &field_names, &field_tys);
-            values.insert(*value, struct_ty);
+            let parts = fields
+                .iter()
+                .filter_map(|(_, value)| values.get(value).cloned())
+                .collect::<Vec<_>>();
+            values.insert_value(*value, SemanticValue::composed(struct_ty, parts));
         }
         LoweredStep::Bitstring { value, .. } => {
             values.insert(*value, world.types_mut().str_t());
         }
         LoweredStep::FunctionRef { value, function } => {
             let arity = world.function_arity(*function);
-            values.insert(
-                *value,
-                world.types_mut().fn_ref_lit(ClosureTarget(function.as_u32()), arity),
-            );
+            let closure = world.types_mut().fn_ref_lit(ClosureTarget(function.as_u32()), arity);
+            let surface = world
+                .types()
+                .callable_literal_signature(&closure)
+                .expect("a freshly minted function reference has one literal surface");
+            values.insert_value(*value, SemanticValue::callable(closure, surface));
         }
         LoweredStep::Lambda {
             value,
             function,
             captures,
         } => {
-            let Some(captures) = captures
+            let Some(capture_values) = captures
                 .iter()
-                .map(|capture| value_ty(values, *capture))
+                .map(|capture| values.get(capture).cloned())
                 .collect::<Option<Vec<_>>>()
             else {
                 return Ok(());
             };
-            let closure = world.closure_ty(*function, captures);
-            values.insert(*value, closure);
+            let closure = world.closure_ty(*function, capture_values.iter().map(SemanticValue::ty).collect());
+            let surface = world
+                .types()
+                .callable_literal_signature(&closure)
+                .expect("a freshly minted lambda has one literal surface");
+            let mut semantic = SemanticValue::callable(closure, surface);
+            for capture in capture_values {
+                semantic.extend_surfaces(&capture);
+            }
+            values.insert_value(*value, semantic);
         }
         LoweredStep::BinaryOp { value, op, left, right } => {
             let (Some(left), Some(right)) = (value_ty(values, *left), value_ty(values, *right)) else {
@@ -653,7 +761,12 @@ fn apply_step(
 /// merely the temporary field value. Preserve that proof before a later
 /// sibling projection asks the tuple for its field type.
 fn refine_value(world: &mut World, values: &mut SemanticValues, value: ValueId, refined: Ty) {
-    values.insert(value, refined);
+    let semantic = values
+        .get(&value)
+        .cloned()
+        .unwrap_or_else(|| SemanticValue::new(refined))
+        .with_ty(refined);
+    values.insert_value(value, semantic);
     let Some(projection) = values.tuple_field(value) else {
         return;
     };
@@ -746,16 +859,17 @@ fn analyze_tail(
             args,
             dest,
         } => {
-            let Some(arg_types) = args
+            let Some(arg_values) = args
                 .iter()
-                .map(|arg| value_ty(values, arg.value))
+                .map(|arg| values.get(&arg.value).cloned())
                 .collect::<Option<Vec<_>>>()
             else {
                 calls.push(reached_but_unresolved(activation, *callsite));
                 return Ok(None);
             };
+            let arg_inputs = arg_values.iter().map(SemanticValue::as_activation_input).collect();
             let (emission, return_ty) =
-                resolve_direct_call(world, tel, activation, *callsite, *callee, arg_types, reads, waits)?;
+                resolve_direct_call(world, tel, activation, *callsite, *callee, arg_inputs, reads, waits)?;
             if let Some(emission) = emission {
                 calls.push(emission);
             }
@@ -763,7 +877,7 @@ fn analyze_tail(
                 return Ok(None);
             };
             let mut delivered = values.clone();
-            delivered.insert(*value, return_ty);
+            delivered.insert_value(*value, semantic_value_from_ty(world, return_ty));
             merge_value_types(world, value_types, &delivered);
             deliver_tail_value(
                 world,
@@ -787,17 +901,17 @@ fn analyze_tail(
             args,
             dest,
         } => {
-            let (Some(callee_ty), Some(arg_types)) = (
-                value_ty(values, *callee),
+            let (Some(callee), Some(arg_values)) = (
+                values.get(callee).cloned(),
                 args.iter()
-                    .map(|arg| value_ty(values, arg.value))
+                    .map(|arg| values.get(&arg.value).cloned())
                     .collect::<Option<Vec<_>>>(),
             ) else {
                 calls.push(reached_but_unresolved(activation, *callsite));
                 return Ok(None);
             };
             let (emission, return_ty) =
-                resolve_closure_call(world, tel, activation, *callsite, callee_ty, arg_types, reads, waits)?;
+                resolve_closure_call(world, tel, activation, *callsite, callee, arg_values, reads, waits)?;
             if let Some(emission) = emission {
                 calls.push(emission);
             }
@@ -805,7 +919,7 @@ fn analyze_tail(
                 return Ok(None);
             };
             let mut delivered = values.clone();
-            delivered.insert(*value, return_ty);
+            delivered.insert_value(*value, semantic_value_from_ty(world, return_ty));
             merge_value_types(world, value_types, &delivered);
             deliver_tail_value(
                 world,
@@ -997,16 +1111,16 @@ fn deliver_tail_value(
     waits: &mut HashSet<FactKey>,
 ) -> Result<Option<Ty>, FatalError> {
     // No evidence for the delivered value means no evidence for the path.
-    let Some(delivered) = value_ty(values, value) else {
+    let Some(delivered) = values.get(&value).cloned() else {
         return Ok(None);
     };
     // A proven-empty value is evidence: nothing flows past this point, the
     // path is dead.
-    if world.types().is_empty(&delivered) {
-        return Ok(Some(delivered));
+    if world.types().is_empty(&delivered.ty()) {
+        return Ok(Some(delivered.ty()));
     }
     match dest {
-        ControlDestination::Return => Ok(Some(delivered)),
+        ControlDestination::Return => Ok(Some(delivered.ty())),
         ControlDestination::Deliver(entry_id) => {
             let scope = entry_scope(entries, *entry_id, values, Some((value, delivered)), &[]);
             analyze_entry(
@@ -1035,7 +1149,7 @@ fn entry_scope(
     entries: &[LoweredEntry],
     entry_id: super::super::body::ControlEntryId,
     values: &SemanticValues,
-    delivered: Option<(ValueId, Ty)>,
+    delivered: Option<(ValueId, SemanticValue)>,
     params: &[(ValueId, Ty)],
 ) -> SemanticValues {
     let entry = &entries[entry_id.as_u32() as usize];
@@ -1043,7 +1157,7 @@ fn entry_scope(
     if let Some((_, value)) = delivered
         && let Some(input) = entry.origin.input_value()
     {
-        scope.insert(input, value);
+        scope.insert_value(input, value);
     }
     for (param, value) in params {
         scope.insert(*param, *value);
@@ -1052,8 +1166,8 @@ fn entry_scope(
         if scope.contains_key(capture) {
             continue;
         }
-        if let Some(value) = values.get(capture).copied() {
-            scope.insert(*capture, value);
+        if let Some(value) = values.get(capture) {
+            scope.insert_value(*capture, value.clone());
         }
     }
     scope
@@ -1079,10 +1193,11 @@ fn resolve_direct_call(
     caller: &ActivationKey,
     callsite: CallSiteId,
     function: FunctionId,
-    arg_types: Vec<Ty>,
+    arg_inputs: Vec<ActivationInput>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
+    let arg_types = arg_inputs.iter().map(ActivationInput::ty).collect::<Vec<_>>();
     // A proven-empty argument type is a real fact: no value can reach this
     // call, the path is dead. (Absence cannot arrive here — an unresolved
     // upstream call already short-circuited the path.) A call that never
@@ -1093,7 +1208,7 @@ fn resolve_direct_call(
     }
 
     let (resolution, activations, return_ty) =
-        resolve_function_call(world, tel, caller, function, arg_types, callsite.span(), reads, waits)?;
+        resolve_function_call(world, tel, caller, function, arg_inputs, callsite.span(), reads, waits)?;
     Ok((
         Some(CallEmission {
             key: CallSiteKey {
@@ -1107,6 +1222,32 @@ fn resolve_direct_call(
     ))
 }
 
+/// Apply a resolver's value-coordinate refinement without losing the direct
+/// callable observations attached to the same semantic columns.
+fn refine_activation_inputs(observed: Vec<ActivationInput>, refined: &[Ty]) -> Vec<ActivationInput> {
+    debug_assert_eq!(observed.len(), refined.len());
+    observed
+        .into_iter()
+        .zip(refined.iter().copied())
+        .map(|(input, ty)| input.with_ty(ty))
+        .collect()
+}
+
+/// Put matched contract arrows beside the callback values they constrain. A
+/// contract is call-planning evidence, not a request to mint another closure
+/// type, so only arrow-shaped matched parameters contribute a surface.
+fn attach_callable_surface_observations(
+    inputs: Vec<ActivationInput>,
+    observations: &[BTreeSet<ActivationSignature>],
+) -> Vec<ActivationInput> {
+    debug_assert_eq!(inputs.len(), observations.len());
+    inputs
+        .into_iter()
+        .zip(observations)
+        .map(|(input, surfaces)| input.extend_callable_surfaces(surfaces.iter().cloned()))
+        .collect()
+}
+
 /// Merge one path's observed value types into the activation's published
 /// summary. Paths join by clause-preserving UNION: the summary is what
 /// materialization reads to resolve escaped callables, so a case that yields
@@ -1114,7 +1255,8 @@ fn resolve_direct_call(
 /// identities — `refine_widen` merges the arrows into an anonymous clause
 /// and belongs to activation-key canonicalization.
 fn merge_value_types(world: &mut World, merged: &mut ValueTypes, observed: &SemanticValues) {
-    for (&value, &ty) in &observed.types {
+    for (&value, semantic) in &observed.types {
+        let ty = semantic.ty();
         match merged.get(&value).copied() {
             Some(current) if current != ty => {
                 let joined = world.types_mut().union(current, ty);
@@ -1182,11 +1324,12 @@ fn resolve_function_call(
     tel: &impl crate::telemetry::Telemetry,
     caller: &ActivationKey,
     function: FunctionId,
-    input_types: Vec<Ty>,
+    input_evidence: Vec<ActivationInput>,
     call_span: Span,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<ResolvedCall, FatalError> {
+    let input_types = input_evidence.iter().map(ActivationInput::ty).collect::<Vec<_>>();
     if let Some(callback) = world.protocol_callback(function) {
         return resolve_protocol_call(
             world,
@@ -1194,7 +1337,7 @@ fn resolve_function_call(
             caller,
             function,
             callback.protocol,
-            input_types,
+            input_evidence,
             call_span,
             reads,
             waits,
@@ -1207,12 +1350,17 @@ fn resolve_function_call(
         return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     };
     let caller_owner = world.function_definition(caller.function).0.owner;
-    let (input_types, contract_return_ty) =
+    let (input_types, contract_return_ty, callable_surfaces) =
         refine_function_call_surface(world, tel, function, input_types, caller_owner, call_span)?;
+    let input_evidence = attach_callable_surface_observations(
+        refine_activation_inputs(input_evidence, &input_types),
+        &callable_surfaces,
+    );
     if shape == CalleeShape::Boundary {
         // The provider boundary is the public dynamic edge: `any` is earned
         // here (and only here and at unresolvable callable values).
         let return_ty = contract_return_ty.unwrap_or_else(|| any_ty(world));
+        let boundary_inputs = boundary_surface_inputs(world, &input_evidence);
         return Ok((
             CallSiteResolution::Resolved(CallSiteSummary {
                 targets: vec![call_target_summary(
@@ -1220,7 +1368,7 @@ fn resolve_function_call(
                     SelectedCallee::ProviderBoundary(function),
                     input_types,
                     None,
-                    None,
+                    Some(boundary_inputs),
                     Some(return_ty),
                 )],
                 return_ty: Some(return_ty),
@@ -1229,23 +1377,28 @@ fn resolve_function_call(
             Some(return_ty),
         ));
     }
-    let (activation, return_evidence) = prepare_function_call(world, caller, function, &input_types, reads);
+    let (activation, return_evidence) = prepare_function_call(world, caller, function, &input_evidence, reads);
     let return_ty = refine_call_return(world, return_evidence, contract_return_ty);
+    let activation_inputs = if callee_extern_params(world, function).is_some() {
+        boundary_surface_inputs(world, &input_evidence)
+    } else {
+        input_types.clone()
+    };
     Ok((
         CallSiteResolution::Resolved(CallSiteSummary {
-            targets: vec![CallTargetSummary {
-                callee: SelectedCallee::Function(function),
-                surface_inputs: input_types.clone(),
-                activation: Some(activation.clone()),
-                activation_inputs: Some(input_types.clone()),
-                extern_params: callee_extern_params(world, function),
+            targets: vec![call_target_summary(
+                world,
+                SelectedCallee::Function(function),
+                input_types,
+                Some(activation.clone()),
+                Some(activation_inputs),
                 return_ty,
-            }],
+            )],
             return_ty,
         }),
         vec![ActivationContribution {
             key: activation,
-            inputs: input_types.clone(),
+            inputs: input_evidence,
         }],
         return_ty,
     ))
@@ -1257,11 +1410,12 @@ fn resolve_protocol_call(
     caller: &ActivationKey,
     callback_function: FunctionId,
     protocol: ModuleId,
-    input_types: Vec<Ty>,
+    input_evidence: Vec<ActivationInput>,
     call_span: Span,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<ResolvedCall, FatalError> {
+    let input_types = input_evidence.iter().map(ActivationInput::ty).collect::<Vec<_>>();
     // VERDICT (fz-rh2.17.5.9): body readiness, not interface visibility.
     // Defining the protocol module is what registers its callbacks and
     // publishes ProtocolDispatch — the precise fact read just below. This
@@ -1354,10 +1508,14 @@ fn resolve_protocol_call(
         }
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
         let caller_owner = world.function_definition(caller.function).0.owner;
-        let (refined_inputs, contract_return_ty) =
+        let (refined_inputs, contract_return_ty, callable_surfaces) =
             refine_function_call_surface(world, tel, selected.function, refined_inputs, caller_owner, call_span)?;
+        let refined_evidence = attach_callable_surface_observations(
+            refine_activation_inputs(input_evidence.clone(), &refined_inputs),
+            &callable_surfaces,
+        );
         let (activation, observed_return) =
-            prepare_function_call(world, caller, selected.function, &refined_inputs, reads);
+            prepare_function_call(world, caller, selected.function, &refined_evidence, reads);
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
         return_ty = join_evidence(world, return_ty, target_return);
         targets.push(call_target_summary(
@@ -1370,7 +1528,7 @@ fn resolve_protocol_call(
         ));
         activations.push(ActivationContribution {
             key: activation,
-            inputs: refined_inputs.clone(),
+            inputs: refined_evidence,
         });
     }
     Ok((
@@ -1446,11 +1604,13 @@ fn resolve_closure_call(
     tel: &impl crate::telemetry::Telemetry,
     caller: &ActivationKey,
     callsite: CallSiteId,
-    callee_ty: Ty,
-    arg_types: Vec<Ty>,
+    callee: SemanticValue,
+    arg_values: Vec<SemanticValue>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
+    let callee_ty = callee.ty();
+    let arg_types = arg_values.iter().map(SemanticValue::ty).collect::<Vec<_>>();
     let key = CallSiteKey {
         activation: caller.clone(),
         callsite,
@@ -1514,10 +1674,21 @@ fn resolve_closure_call(
         // mirror of this narrowing on the return side; the argument side owes
         // the same. Declared `@spec` contracts still refine, in
         // `apply_function_contract`, where the surface is enforced.
-        let mut inputs = closure.captures;
-        inputs.extend(arg_types.iter().copied());
-        let (resolution, clause_activations, observed_return) =
-            resolve_function_call(world, tel, caller, function, inputs, callsite.span(), reads, waits)?;
+        let captures = closure.captures;
+        let mut input_evidence = captures.into_iter().map(ActivationInput::new).collect::<Vec<_>>();
+        let captures_len = input_evidence.len();
+        input_evidence.extend(arg_values.iter().map(SemanticValue::as_activation_input));
+        debug_assert_eq!(captures_len + arg_values.len(), input_evidence.len());
+        let (resolution, clause_activations, observed_return) = resolve_function_call(
+            world,
+            tel,
+            caller,
+            function,
+            input_evidence,
+            callsite.span(),
+            reads,
+            waits,
+        )?;
 
         if let CallSiteResolution::Resolved(summary) = resolution {
             for target in summary.targets {
@@ -1648,7 +1819,8 @@ fn refine_function_call_surface(
     violation_span: Span,
 ) -> Result<RefinedCallSurface, FatalError> {
     if !world.function_declares_contract(function) {
-        return Ok((input_types, None));
+        let observations = vec![BTreeSet::new(); input_types.len()];
+        return Ok((input_types, None, observations));
     }
     let contract = world
         .function_contract(function)
@@ -1673,7 +1845,7 @@ fn apply_function_contract(
     input_types: Vec<Ty>,
     caller_owner: SourceOwner,
     violation_span: Span,
-) -> Result<(Vec<Ty>, Option<Ty>), FatalError> {
+) -> Result<RefinedCallSurface, FatalError> {
     let application = contract.apply(world.types_mut(), &input_types);
     if !application.enforceable_satisfied
         && function_contract_is_enforced(world, function, caller_owner)
@@ -1681,6 +1853,8 @@ fn apply_function_contract(
     {
         return Err(emit_spec_violation(tel, world, function, &input_types, violation_span));
     }
+    let callable_surfaces =
+        callable_surface_observations(world.types(), &application.matched_arrows, input_types.len());
     Ok((
         refine_contract_inputs(
             world,
@@ -1688,7 +1862,24 @@ fn apply_function_contract(
             application.matched_arrows.iter().map(|params| params.as_slice()),
         ),
         application.result,
+        callable_surfaces,
     ))
+}
+
+fn callable_surface_observations(
+    types: &Types,
+    matched_arrows: &[Vec<Ty>],
+    input_len: usize,
+) -> Vec<BTreeSet<ActivationSignature>> {
+    let mut observations = vec![BTreeSet::new(); input_len];
+    for matched in matched_arrows {
+        for (slot, ty) in matched.iter().enumerate() {
+            if let Some(surface) = types.callable_signature(ty) {
+                observations[slot].insert(surface);
+            }
+        }
+    }
+    observations
 }
 
 /// A spec violation is enforced (fatal) only at USER callsites. Calls written
@@ -1727,7 +1918,7 @@ fn activation_contract_return(
     if !require_function_contract(world, function, reads, waits) {
         return Ok(None);
     }
-    let (_, contract_return_ty) =
+    let (_, contract_return_ty, _) =
         refine_function_call_surface(world, tel, function, input_types.to_vec(), caller_owner, violation_span)?;
     Ok(contract_return_ty)
 }
@@ -1835,10 +2026,10 @@ fn prepare_function_call(
     world: &mut World,
     caller: &ActivationKey,
     function: FunctionId,
-    arg_types: &[Ty],
+    arg_inputs: &[ActivationInput],
     reads: &mut Vec<FactKey>,
 ) -> (ActivationKey, Option<Ty>) {
-    let activation = world.activation_key(caller.root, function, arg_types);
+    let activation = world.activation_key_for_inputs(caller.root, function, arg_inputs);
     // The read is the subscription that re-wakes this caller when the
     // callee's return evidence rises — chaotic iteration needs no wait here,
     // so mutual recursion cannot deadlock. Absent evidence stays absent: it
@@ -1969,7 +2160,7 @@ fn refine_protocol_target_inputs(world: &mut World, input_types: &[Ty], receiver
 }
 
 fn call_target_summary(
-    world: &World,
+    world: &mut World,
     callee: SelectedCallee,
     surface_inputs: Vec<Ty>,
     activation: Option<ActivationKey>,
@@ -1990,6 +2181,29 @@ fn call_target_summary(
     }
 }
 
+/// A provider boundary consumes a direct call contract, not a closure value
+/// type. Preserve that coordinate beside the raw value denotation so runtime
+/// demand can select the boundary's grounded lane without losing the literal
+/// target that identifies the escaping closure.
+fn boundary_surface_inputs(world: &mut World, inputs: &[ActivationInput]) -> Vec<Ty> {
+    let raw = inputs
+        .iter()
+        .map(|input| {
+            let mut surfaces = input.callable_surfaces().iter();
+            let Some(first) = surfaces.next() else {
+                return input.ty();
+            };
+            let mut surface_ty = world.types_mut().arrow(&first.inputs, first.result);
+            for surface in surfaces {
+                let next = world.types_mut().arrow(&surface.inputs, surface.result);
+                surface_ty = world.types_mut().union(surface_ty, next);
+            }
+            surface_ty
+        })
+        .collect::<Vec<_>>();
+    world.types_mut().address_inputs(&raw)
+}
+
 fn callee_extern_params(world: &World, function: FunctionId) -> Option<usize> {
     match &*world.lowered_body(function) {
         LoweredBody::Extern { signature } => Some(signature.params.len()),
@@ -1998,7 +2212,19 @@ fn callee_extern_params(world: &World, function: FunctionId) -> Option<usize> {
 }
 
 fn value_ty(values: &SemanticValues, value: ValueId) -> Option<Ty> {
-    values.get(&value).copied()
+    values.get(&value).map(SemanticValue::ty)
+}
+
+/// A returned literal closure is still one value denotation, but its owner
+/// signature is the initial direct call observation for the next callsite.
+/// Reconstitute that carrier when a call result enters the local value scope;
+/// raw `Ty` alone deliberately does not encode it.
+fn semantic_value_from_ty(world: &World, ty: Ty) -> SemanticValue {
+    world
+        .types()
+        .callable_literal_signature(&ty)
+        .map(|surface| SemanticValue::callable(ty, surface))
+        .unwrap_or_else(|| SemanticValue::new(ty))
 }
 
 fn literal_ty(world: &mut World, literal: &GroundValue) -> Ty {
@@ -2281,7 +2507,12 @@ def main(), do: {relay(0, [1], [:left]), relay(0, [:right], [2])}
             "a shared callee key must receive only the two walked rows, never their column-wise blend: {sink_rows:?}"
         );
         for row in &rows {
-            assert!(sink_rows.contains(row), "every real caller row must survive coalescing");
+            assert!(
+                sink_rows
+                    .iter()
+                    .any(|inputs| inputs.iter().map(ActivationInput::ty).eq(row.iter().copied())),
+                "every real caller row must survive coalescing"
+            );
         }
         world.complete_job(Job::AnalyzeActivation(relay_activation), effects);
         let published = world
@@ -2289,7 +2520,7 @@ def main(), do: {relay(0, [1], [:left]), relay(0, [:right], [2])}
             .expect("the conclusion should publish the callee's real evidence");
         assert_eq!(published.rows().len(), rows.len());
         for row in &rows {
-            assert!(published.rows().iter().any(|published| published.columns() == row));
+            assert!(published.rows().iter().any(|published| published.tys() == *row));
         }
     }
 
@@ -2343,8 +2574,13 @@ end
 
         let first_effects = analyze_activation(&mut world, &tel, &first_activation)
             .expect("the actual AnalyzeActivation job should conclude");
+        let first_contributions = first_effects
+            .activation_input_contributions
+            .iter()
+            .map(|(key, inputs)| (key.clone(), inputs.iter().map(ActivationInput::ty).collect::<Vec<_>>()))
+            .collect::<Vec<_>>();
         assert_eq!(
-            first_effects.activation_input_contributions,
+            first_contributions,
             vec![
                 (sink_activation.clone(), vec![int_list]),
                 (other_activation, vec![int_list]),
@@ -2399,8 +2635,13 @@ end
 
         let second_effects = analyze_activation(&mut world, &tel, &second_activation)
             .expect("the second actual AnalyzeActivation job should conclude after the first rebases");
+        let second_contributions = second_effects
+            .activation_input_contributions
+            .iter()
+            .map(|(key, inputs)| (key.clone(), inputs.iter().map(ActivationInput::ty).collect::<Vec<_>>()))
+            .collect::<Vec<_>>();
         assert_eq!(
-            second_effects.activation_input_contributions,
+            second_contributions,
             vec![(sink_activation.clone(), vec![int_list])],
             "another AnalyzeActivation publisher must retain ownership of the same exact contribution",
         );

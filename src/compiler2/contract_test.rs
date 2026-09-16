@@ -45,6 +45,10 @@ fn function_contract_application_refines_callable_params_from_outer_bindings() {
         "the result should refine to resource(integer)",
     );
     let refined_callable = types.intersect(actual_callable, matched[1]);
+    assert_eq!(
+        refined_callable, actual_callable,
+        "a contract arrow is activation evidence, not a second closure value type"
+    );
     let callable = types
         .callable_value_clauses(&refined_callable)
         .expect("matched callable value surface")
@@ -52,13 +56,13 @@ fn function_contract_application_refines_callable_params_from_outer_bindings() {
         .next()
         .expect("matched callable value clause");
     assert!(
-        types.is_integer(&callable.args[0]),
-        "the callable arg slot should inherit the payload binding from the outer contract: {}",
+        types.has_vars(&callable.args[0]),
+        "the closure keeps its one owner signature; the matched contract surface carries the payload binding: {}",
         types.display(&callable.args[0]),
     );
     assert!(
-        types.is_nil(&callable.ret),
-        "the callable result should stay at the declared nil surface",
+        types.has_vars(&callable.ret),
+        "the closure result surface is carried beside the value",
     );
     let closure = callable.closure.expect("closure identity should survive refinement");
     assert_eq!(closure.target, ClosureTarget(17));
@@ -110,6 +114,10 @@ fn function_contract_application_refines_reduce_style_callable_from_list_and_acc
     );
 
     let refined_callable = types.intersect(actual_callable, applied.matched_arrows[0][2]);
+    assert_eq!(
+        refined_callable, actual_callable,
+        "the reducer contract remains a direct activation observation"
+    );
     let callable = types
         .callable_value_clauses(&refined_callable)
         .expect("refined reduce callable value surface")
@@ -117,12 +125,12 @@ fn function_contract_application_refines_reduce_style_callable_from_list_and_acc
         .next()
         .expect("refined reduce callable clause");
     assert!(
-        types.is_integer(&callable.args[0]),
-        "the callable element input should stay specialized after intersect: {}",
+        types.has_vars(&callable.args[0]),
+        "the reducer value keeps its one denotation after intersect: {}",
         types.display(&callable.args[0]),
     );
-    assert_eq!(callable.args[1], actual_acc);
-    assert_eq!(callable.ret, actual_acc);
+    assert!(types.has_vars(&callable.args[1]));
+    assert!(types.has_vars(&callable.ret));
     let closure = callable
         .closure
         .expect("reduce-style fn ref should preserve closure identity");
@@ -320,10 +328,11 @@ fn addressed_function_contract_keeps_reduce_halt_payload_free_until_callable_ret
     let reducer = types.arrow(&[elem, cont_acc], reducer_result);
     let list = types.list(elem);
     let params = vec![list, reducer_result, reducer];
-    let arrow = types.address_arrow(&params, result);
+    let (signature, _) = types.address_signature_with_env(&params, result);
     let contract = FunctionContract {
         arrows: vec![ContractArrow {
-            arrow,
+            params: signature.inputs,
+            result: signature.result,
             bounds: HashMap::new(),
             protocol_domain_obligations: BTreeSet::new(),
         }],
@@ -517,16 +526,13 @@ fn function_contract_application_tracks_enforceable_arrows_separately_from_match
         result: float,
         constraints: HashMap::new(),
     };
-    let contract = FunctionContract::from_classified_arrows(
-        &mut types,
-        vec![
-            ResolvedContractArrow::with_obligations(
-                skipped,
-                BTreeSet::from([ProtocolDomainObligation::from_marker_tag("protocol::Enumerable.t")]),
-            ),
-            ResolvedContractArrow::with_obligations(enforced, BTreeSet::new()),
-        ],
-    );
+    let contract = FunctionContract::from_classified_arrows(vec![
+        ResolvedContractArrow::with_obligations(
+            skipped,
+            BTreeSet::from([ProtocolDomainObligation::from_marker_tag("protocol::Enumerable.t")]),
+        ),
+        ResolvedContractArrow::with_obligations(enforced, BTreeSet::new()),
+    ]);
 
     let applied = contract.apply(&mut types, &[int]);
 

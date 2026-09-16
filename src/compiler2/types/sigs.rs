@@ -9,7 +9,7 @@ use crate::fz_ir::FnId;
 use crate::compiler2::identity::ModuleId;
 use crate::modules::identity::ModuleName;
 
-use super::{CallableValueKind, MapKey, Sigma, Ty, Types};
+use super::{CallableValueKind, MapKey, Ty, Types};
 
 /// Runtime identity of one record-family value. Plain maps and named structs
 /// share the record-field type algebra, but their tags are disjoint and travel
@@ -289,13 +289,12 @@ impl MergeSig for ArrowSig {
                 })
             }
             (Some(_), None) | (None, Some(_)) => {
-                let (literal, surface) = if a.lit.is_some() { (a, b) } else { (b, a) };
-                let (args, ret) = specialize_surface(types, (&literal.args, literal.ret), (&surface.args, surface.ret));
-                PosMeet::Merged(ArrowSig {
-                    args,
-                    ret,
-                    lit: literal.lit.clone(),
-                })
+                // A literal's args/result are mint-owned placeholders, not a
+                // second identity for the closure value.  The observed arrow
+                // belongs to the activation-input carrier; intersecting it
+                // with the value type therefore leaves the literal's one
+                // denotation unchanged.
+                PosMeet::Merged(if a.lit.is_some() { a.clone() } else { b.clone() })
             }
             (None, None) => PosMeet::Merged(ArrowSig {
                 args: a
@@ -309,34 +308,6 @@ impl MergeSig for ArrowSig {
             }),
         }
     }
-}
-
-/// One callable read at the surface it is being viewed through: the
-/// substitution its own params and result take against that surface, applied
-/// to them.
-///
-/// A closure literal is minted carrying the surface vars its lambda owns, and
-/// every caller meets it with the surface its callsite states. The two meet in
-/// two places -- at CONSTRUCTION, where a positive meet folds a lit-free arrow
-/// into a literal's clause, and on READ, where `Types::callable_value_clauses`
-/// views a literal through a surface clause standing beside it -- and this is
-/// the whole computation both times, so neither can report a different shape
-/// for one literal at one surface.
-///
-/// Positions past the shorter side are not substituted through; every caller
-/// has already required the two arities to agree.
-pub(super) fn specialize_surface(types: &mut Types, callable: (&[Ty], Ty), surface: (&[Ty], Ty)) -> (Vec<Ty>, Ty) {
-    let (params, result) = callable;
-    let (witness_params, witness_result) = surface;
-    let mut sigma = Sigma::new();
-    for (pattern, witness) in params.iter().zip(witness_params.iter()) {
-        types.collect_instantiation_subst(pattern, witness, &mut sigma);
-    }
-    types.collect_instantiation_subst(&result, &witness_result, &mut sigma);
-    (
-        params.iter().map(|param| types.instantiate(param, &sigma)).collect(),
-        types.instantiate(&result, &sigma),
-    )
 }
 
 impl MergeSig for MapSig {
