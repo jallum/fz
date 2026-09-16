@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-kdt.98.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.98.3"
+  ],
   "created": "2026-09-16T01:36:18Z",
   "description": "keying.rs static_edges emits StaticEdge::Lambda for LoweredStep::Lambda and nothing for LoweredStep::FunctionRef, though both mint a callable value naming a function. Fold the two into one construction edge. Witness: call/2 applying \u0026pong/1 and \u0026ping/1 (ping and pong mutually recursive only through function references) is three singleton components today; after, ping and pong share one component and Recursive is true for both. Consumers (activation keying, transport recursion cut) see more recursion for \u0026fun cycles; the corpus canon check records what moves. First commit of fz-kdt.98.",
   "id": "fz-kdt.98.1",
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "A function reference is a construction edge of the call graph, as a lambda already is",
   "type": "task",
-  "updated_at": "2026-09-16T02:07:08Z"
+  "updated_at": "2026-09-16T02:07:09Z"
 }
