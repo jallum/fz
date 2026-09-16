@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-4nh.3"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-4nh",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Close remaining direct Distill core-library gaps",
   "type": "task",
-  "updated_at": "2026-09-16T13:04:25Z"
+  "updated_at": "2026-09-16T13:05:03Z"
 }
