@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T20:14:08Z",
+  "description": "Goal: A pure binary type operation or comparison over the same immutable operand handles must be evaluated once per Types world, then reuse its answer without rewalking, cloning, normalizing, or descriptor hashing.\n\nAuthority: one Types-owned operation-result table keyed only by operation tag plus Ty u32 operands. It stores only the canonical Ty returned by Types::intern; it introduces no raw descriptor equality, normalization, or semantic authority. Reuse the existing comparison memo for pure predicates, extending it only for a missing pure binary query if needed.\n\nScope: audit union, intersect, difference, refine_widen, and value-disjointness. Preserve current operand orientation where identity is observably directional; prove and normalize a symmetric key only where exact Ty result is established in the current supported domain. Stateful substitution/constraint collection is outside this ticket.\n\nTDD: prove first evaluation records one miss and exact repetition one hit with no extra boundary work; prove a different operation and an ordered inverse cannot collide; prove any symmetric operation reuses reversed operands only after an exact-identity law. Run canonical/fixture gates and record per-operation hit/miss counts on enum_take_drop_split.\n\nAcceptance: document key authority and scope, strict focused/corpus/three-door gates, format/check/Clippy, cold review, one commit and close.",
+  "id": "fz-kdt.48.15",
+  "labels": [],
+  "parent": "fz-kdt.48",
+  "priority": 1,
+  "status": "open",
+  "title": "Memoize pure binary Ty algebra by operand identity",
+  "type": "task",
+  "updated_at": "2026-09-16T20:14:08Z"
+}
