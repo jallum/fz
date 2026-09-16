@@ -11,7 +11,7 @@ defmodule Kernel do
       `make_ref/0` and `make_resource/2`
     * `panic/1`, `assert/1`, `assert/2`, `refute/1` and `refute/2`, for
       aborting the current process
-    * `dbg/1`, `to_string/1`, `byte_size/1`, `div/2`, `rem/2` and `range/3`
+    * `dbg/1`, `inspect/1`, `inspect/2`, `to_string/1`, `byte_size/1`, `div/2`, `rem/2` and `range/3`
 
   Every arithmetic and comparison operator is a typed clause family: one
   clause per pair of operand types it supports. Arithmetic has no catch-all,
@@ -21,6 +21,7 @@ defmodule Kernel do
   """
 
   extern "fz" defp fz_dbg_value(any) :: any
+  extern "fz" defp fz_inspect(any) :: binary
   extern "fz" defp fz_panic(any) :: never
   extern "fz" defp fz_spawn(() -> any) :: pid
   extern "fz" defp fz_self() :: pid
@@ -117,6 +118,19 @@ defmodule Kernel do
   """
   @spec to_string(any) :: binary
   def to_string(term), do: StringChars.to_string(term)
+
+  @doc """
+  Returns the diagnostic representation of `term` as a binary.
+
+  fz uses the same renderer as `dbg/1`; the optional keyword arguments are
+  accepted for Elixir-shaped call sites. The current renderer has no width or
+  item-limit truncation, so `limit:` does not change its output.
+  """
+  @spec inspect(any) :: binary
+  def inspect(term), do: fz_inspect(term)
+
+  @spec inspect(any, any) :: binary
+  def inspect(term, _options), do: fz_inspect(term)
 
   @doc """
   Prints `x` to standard output and returns it unchanged.

@@ -120,6 +120,36 @@ defmodule String do
   defp codepoint_count_step({_cp, rest}, acc), do: codepoint_count(rest, acc + 1)
 
   @doc """
+  Pads `s` with spaces on the left until it has at least `count` codepoints.
+
+  ## Examples
+
+      String.pad_leading("7", 4)
+      #=> "   7"
+  """
+  @spec pad_leading(binary, integer) :: binary
+  def pad_leading(s, count), do: pad_leading_missing(s, count - length(s))
+
+  @spec pad_leading_missing(binary, integer) :: binary
+  defp pad_leading_missing(s, missing) when missing <= 0, do: s
+  defp pad_leading_missing(s, missing), do: duplicate(" ", missing) <> s
+
+  @doc """
+  Pads `s` with spaces on the right until it has at least `count` codepoints.
+
+  ## Examples
+
+      String.pad_trailing("job", 6)
+      #=> "job   "
+  """
+  @spec pad_trailing(binary, integer) :: binary
+  def pad_trailing(s, count), do: pad_trailing_missing(s, count - length(s))
+
+  @spec pad_trailing_missing(binary, integer) :: binary
+  defp pad_trailing_missing(s, missing) when missing <= 0, do: s
+  defp pad_trailing_missing(s, missing), do: s <> duplicate(" ", missing)
+
+  @doc """
   Returns whether `s` starts with `prefix`.
 
   `prefix` is a single binary, not a list of alternatives.
