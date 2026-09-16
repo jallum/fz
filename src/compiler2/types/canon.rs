@@ -14,10 +14,12 @@
 //! by the faithfulness ratchet in `compiler2::canon_test`.
 //!
 //! `Types::display` cannot serve: it is not injective. It renders the
-//! possibly-empty and the non-empty list identically as `[T]`, and it collapses
-//! each axis's saturated clause onto the bare word `any`. A false equivalence
-//! is far worse than a false difference for an equivalence oracle, so this
-//! rendering distinguishes every form the lattice does.
+//! possibly-empty and the non-empty list identically as `[T]`, and it renders a
+//! saturated clause from the factors it was built out of rather than from what
+//! it denotes. A false equivalence is far worse than a false difference for an
+//! equivalence oracle, so this rendering distinguishes every form the lattice
+//! does. The two surfaces do agree on the five axis tops
+//! (`tuple`/`list`/`fun`/`map`/`resource`).
 //!
 //! Normalization runs on DESCRIPTORS, not only on interned `Ty`s: tuple
 //! coordinate widening builds descriptors that were never interned, and
@@ -29,6 +31,7 @@ use std::sync::Arc;
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::FnId;
 
+use super::axis;
 use super::bits::{BASIC_NAMES, BasicBits};
 use super::conj::Conj;
 use super::descr::Descr;
@@ -148,6 +151,11 @@ impl<'a> TyCanon<'a> {
     // Body
     // ------------------------------------------------------------------
 
+    /// The descriptors this module builds ITSELF — a widened tuple coordinate,
+    /// a list clause's intersected element fragment — never reach the
+    /// interner, so the empty-clause drop the boundary applies is applied here
+    /// too, by the same function. On a descriptor that did come from the
+    /// interner it finds nothing and the sweep is a no-op.
     fn descr_body(&mut self, cx: TyCtx<'_>, d: &Descr) -> String {
         if d.is_empty_memo(cx, &mut Memo::default()) {
             return "none".to_string();
@@ -155,6 +163,9 @@ impl<'a> TyCanon<'a> {
         if is_full(cx, d) {
             return "any".to_string();
         }
+        let mut swept = d.clone();
+        axis::drop_empty_clauses(cx, &mut swept, &|ty| cx.descr(ty).is_empty(cx));
+        let d = &swept;
         let axes = self.axes(cx, d);
         let mut parts: Vec<String> = basic_names(d.basic);
         push_set(&mut parts, &d.atoms, "atom", |name| format!(":{name}"));
@@ -207,7 +218,6 @@ impl<'a> TyCanon<'a> {
         }
         let mut factors: Vec<String> = c.pos.iter().map(|p| sig(self, cx, p)).collect();
         factors.extend(c.neg.iter().map(|n| format!("not({})", sig(self, cx, n))));
-        factors.sort();
         factors.join(" & ")
     }
 
@@ -259,10 +269,11 @@ impl<'a> TyCanon<'a> {
             (None, false, _) => unreachable!("an absent fragment is always erased"),
         }];
         if !erased {
-            factors.extend(sorted(c.neg.iter().filter_map(|n| n.elem).map(|elem| {
+            let residuals: Vec<Ty> = c.neg.iter().filter_map(|n| n.elem).collect();
+            factors.extend(residuals.into_iter().map(|elem| {
                 let rendered = self.body(cx, elem);
                 format!("not(non_empty_list({rendered}))")
-            })));
+            }));
         }
         factors.join(" & ")
     }
@@ -350,48 +361,35 @@ impl<'a> TyCanon<'a> {
     // Normalization
     // ------------------------------------------------------------------
 
+    /// The four denotational axes are absorbed by the shared rule
+    /// ([`axis`](super::axis)) that `Types::intern` already applied. It is
+    /// repeated here because widening below synthesizes descriptors that never
+    /// reach the interner, and an unabsorbed coordinate would render two
+    /// carvings of one type as two types.
+    ///
+    /// The callable axis is the one this module still normalizes after the
+    /// fact: an interned arrow carries a declared signature and a closure's
+    /// capture layout beside its denotation, so the boundary must leave it
+    /// alone, while a RENDERING reads nothing back out of it and may collapse
+    /// it to what it denotes.
     fn axes(&mut self, cx: TyCtx<'_>, d: &Descr) -> Axes {
-        let tuples = saturate(
-            cx,
-            drop_empty(cx, &d.tuples, emptiness::tuple_clause_empty),
-            |d, clauses| d.tuples = clauses,
-        );
+        let subtype = &|narrower: &Ty, wider: &Ty| cx.descr(narrower).is_subtype(cx, cx.descr(wider));
+        let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
+        let mut tuples = d.tuples.clone();
+        axis::absorb_axis(cx, &mut tuples, subtype, covers, &axis::TUPLES);
         let (mut tuple_rects, tuple_complex) = split_rects(tuples);
         widen_rects(cx, &mut tuple_rects);
-        let rect_keys = tuple_rects.iter().map(|rect| self.rect_text(cx, rect)).collect();
-        let tuple_rects = drop_subsumed_rects(cx, tuple_rects, rect_keys);
+        let tuple_rects = drop_subsumed_rects(cx, tuple_rects);
 
-        let lists = saturate(
-            cx,
-            drop_empty(cx, &d.lists, emptiness::list_clause_empty),
-            |d, clauses| d.lists = clauses,
-        );
-        let keys = self.clause_texts(cx, &lists, Self::list_clause);
-        let lists = drop_subsumed(cx, lists, keys, |d, clauses| d.lists = clauses);
+        let mut lists = d.lists.clone();
+        axis::absorb_axis(cx, &mut lists, subtype, covers, &axis::LISTS);
+        let mut resources = d.resources.clone();
+        axis::absorb_axis(cx, &mut resources, subtype, covers, &axis::RESOURCES);
+        let mut maps = d.maps.clone();
+        axis::absorb_axis(cx, &mut maps, subtype, covers, &axis::MAPS);
 
-        let resources = saturate(
-            cx,
-            drop_empty(cx, &d.resources, emptiness::resource_clause_empty),
-            |d, clauses| d.resources = clauses,
-        );
-        let keys = self.clause_texts(cx, &resources, Self::resource_clause);
-        let resources = drop_subsumed(cx, resources, keys, |d, clauses| d.resources = clauses);
-
-        let funcs = saturate(
-            cx,
-            drop_empty(cx, &d.funcs, emptiness::func_clause_empty),
-            |d, clauses| d.funcs = clauses,
-        );
-        let keys = self.clause_texts(cx, &funcs, Self::func_clause);
-        let funcs = drop_subsumed(cx, funcs, keys, |d, clauses| d.funcs = clauses);
-
-        let maps = saturate(
-            cx,
-            drop_empty(cx, &d.maps, emptiness::map_clause_empty),
-            |d, clauses| d.maps = clauses,
-        );
-        let keys = self.clause_texts(cx, &maps, Self::map_clause);
-        let maps = drop_subsumed(cx, maps, keys, |d, clauses| d.maps = clauses);
+        let mut funcs = d.funcs.clone();
+        axis::absorb_axis(cx, &mut funcs, subtype, covers, &axis::FUNCS);
 
         Axes {
             tuple_rects,
@@ -447,39 +445,6 @@ struct Axes {
     resources: Vec<Conj<ResourceSig>>,
     funcs: Vec<Conj<ArrowSig>>,
     maps: Vec<Conj<MapSig>>,
-}
-
-fn drop_empty<T: Clone>(
-    cx: TyCtx<'_>,
-    clauses: &[Conj<T>],
-    is_empty: fn(TyCtx<'_>, &Conj<T>, &mut Memo) -> bool,
-) -> Vec<Conj<T>> {
-    clauses
-        .iter()
-        .filter(|c| !is_empty(cx, c, &mut Memo::default()))
-        .cloned()
-        .collect()
-}
-
-/// Collapse an axis whose clauses already cover the whole axis to that axis's
-/// saturated clause.
-///
-/// The lattice reaches saturation through ordinary clauses: `(X) -> any`
-/// constrains nothing (`f(X) ⊆ any` holds for every function), so it denotes
-/// EVERY callable whatever `X` is. Without this step the same set would render
-/// once per `X` the arena happened to mint.
-fn saturate<T: Clone>(cx: TyCtx<'_>, clauses: Vec<Conj<T>>, install: fn(&mut Descr, Vec<Conj<T>>)) -> Vec<Conj<T>> {
-    if clauses.is_empty() || matches!(clauses.as_slice(), [c] if c.pos.is_empty() && c.neg.is_empty()) {
-        return clauses;
-    }
-    let mut mine = Descr::unbranded();
-    install(&mut mine, clauses.clone());
-    let mut top = Descr::unbranded();
-    install(&mut top, vec![Conj::top()]);
-    if top.is_subtype(cx, &mine) {
-        return vec![Conj::top()];
-    }
-    clauses
 }
 
 fn split_rects(clauses: Vec<Conj<TupleSig>>) -> (Vec<Rect>, Vec<Conj<TupleSig>>) {
@@ -548,11 +513,12 @@ fn next_widening(cx: TyCtx<'_>, mats: &[Vec<Descr>]) -> Option<(usize, usize, De
 
 /// Drop every rectangle covered by the union of the ones that survive.
 ///
-/// Rectangles are visited in rendered-key order, so the outcome depends on the
-/// rectangle SET and not on the arena order the clauses happened to be minted
-/// in. Exact duplicates leave exactly one survivor: once the first is dropped
-/// it stops covering its twin.
-fn drop_subsumed_rects(cx: TyCtx<'_>, rects: Vec<Rect>, keys: Vec<String>) -> Vec<Rect> {
+/// Rectangles are visited in index order, which is the canonical clause order
+/// the persistence boundary imposed, so the outcome depends on the rectangle
+/// SET and not on the order the clauses happened to be minted in. Exact
+/// duplicates leave exactly one survivor: once the first is dropped it stops
+/// covering its twin.
+fn drop_subsumed_rects(cx: TyCtx<'_>, rects: Vec<Rect>) -> Vec<Rect> {
     if rects.len() < 2 {
         return rects;
     }
@@ -561,7 +527,7 @@ fn drop_subsumed_rects(cx: TyCtx<'_>, rects: Vec<Rect>, keys: Vec<String>) -> Ve
         .map(|rect| rect.iter().map(|coord| coord.descr(cx)).collect())
         .collect();
     let mut keep = vec![true; rects.len()];
-    for index in visit_order(keys) {
+    for index in 0..rects.len() {
         let arity = mats[index].len();
         let cover: Vec<Vec<Descr>> = (0..mats.len())
             .filter(|other| *other != index && keep[*other] && mats[*other].len() == arity)
@@ -572,44 +538,6 @@ fn drop_subsumed_rects(cx: TyCtx<'_>, rects: Vec<Rect>, keys: Vec<String>) -> Ve
         }
     }
     retain_kept(rects, keep)
-}
-
-/// The single-axis form of the same rule for the axes that need no widening: a
-/// clause covered by the union of the surviving clauses on its own axis adds
-/// nothing and is dropped.
-fn drop_subsumed<T: Clone>(
-    cx: TyCtx<'_>,
-    clauses: Vec<Conj<T>>,
-    keys: Vec<String>,
-    install: fn(&mut Descr, Vec<Conj<T>>),
-) -> Vec<Conj<T>> {
-    if clauses.len() < 2 {
-        return clauses;
-    }
-    let mut keep = vec![true; clauses.len()];
-    for index in visit_order(keys) {
-        let others: Vec<Conj<T>> = (0..clauses.len())
-            .filter(|other| *other != index && keep[*other])
-            .map(|other| clauses[other].clone())
-            .collect();
-        if others.is_empty() {
-            continue;
-        }
-        let mut mine = Descr::unbranded();
-        install(&mut mine, vec![clauses[index].clone()]);
-        let mut rest = Descr::unbranded();
-        install(&mut rest, others);
-        if mine.is_subtype(cx, &rest) {
-            keep[index] = false;
-        }
-    }
-    retain_kept(clauses, keep)
-}
-
-fn visit_order(keys: Vec<String>) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..keys.len()).collect();
-    order.sort_by(|left, right| keys[*left].cmp(&keys[*right]).then(left.cmp(right)));
-    order
 }
 
 fn retain_kept<T>(items: Vec<T>, keep: Vec<bool>) -> Vec<T> {

@@ -604,37 +604,33 @@ fn substitution_descends_only_through_equal_record_tags() {
     );
 }
 
-/// A clause that pins SEVERAL closure literals at once is an intersection, not
-/// one construction, so neither projection can name a capture layout for it --
-/// and the reading both must fall back to is the target-only one, which admits
-/// every capture layout of those targets.
-///
-/// The envelope used to answer this clause with its several literals over NO
-/// captures, which the predicate then read as EXACT zero-capture shapes.
-/// `CallableShape::inside` matches capture counts, so that arm refused every
-/// CAPTURING construction of its own targets -- under-admission, the one
-/// direction a runtime test may never err in.
+/// A clause pins SEVERAL closure literals only when they name several BRANDS:
+/// two literals that can name one value merge into one, intersecting their
+/// captures. A value carries exactly one code brand, so the surviving clause
+/// denotes nothing and interns as the bottom.
 #[test]
-fn a_multi_literal_callable_clause_admits_every_capture_layout_of_its_targets() {
+fn a_clause_pinning_two_closure_brands_is_the_bottom() {
     let mut t = Types::new();
     let int = t.int();
     let float = t.float();
+    let none = t.none();
     let over_int = t.closure_lit(ClosureTarget(66), vec![int], 1);
     let over_float = t.closure_lit(ClosureTarget(68), vec![float], 1);
-    let both = t.intersect(over_int, over_float);
-    let clauses = t.descr(&both).funcs.clone();
-    assert_eq!(clauses.len(), 1, "the subject here is ONE clause pinning two literals");
-    assert_eq!(clauses[0].pos.iter().filter(|sig| sig.lit.is_some()).count(), 2);
+    assert_eq!(
+        t.intersect(over_int, over_float),
+        none,
+        "no value is both closure 66 and closure 68"
+    );
 
-    let enveloped = t.runtime_type_test_envelope(both);
-    let axis = t.runtime_type_predicate(&enveloped).callables;
-    let capturing = CallableShape {
-        target: ClosureTarget(66),
-        captures: vec![t.runtime_type_predicate(&int)],
-    };
-    assert!(
-        axis.admits(&capturing),
-        "a clause it cannot shape must admit any capture layout of the targets it names",
+    let any = t.any();
+    let wider = t.closure_lit(ClosureTarget(66), vec![any], 1);
+    let merged = t.intersect(over_int, wider);
+    let clauses = t.descr(&merged).funcs.clone();
+    assert_eq!(clauses.len(), 1);
+    assert_eq!(
+        clauses[0].pos.iter().filter(|sig| sig.lit.is_some()).count(),
+        1,
+        "one brand, one literal, whatever the two capture layouts said"
     );
 }
 
@@ -644,13 +640,12 @@ fn a_multi_literal_callable_clause_admits_every_capture_layout_of_its_targets() 
 /// arm. `runtime_type_predicate_callables` is the one place that decides;
 /// `callable_identity_clauses` keeps the clause shape it decides on.
 #[test]
-fn the_envelope_and_the_predicate_agree_on_a_multi_literal_callable_clause() {
+fn the_envelope_and_the_predicate_agree_on_a_callable_clause() {
     let mut t = Types::new();
     let int = t.int();
-    let float = t.float();
-    let over_int = t.closure_lit(ClosureTarget(66), vec![int], 1);
-    let over_float = t.closure_lit(ClosureTarget(68), vec![float], 1);
-    let both = t.intersect(over_int, over_float);
+    let surface = t.arrow(&[int], int);
+    let literal = t.closure_lit(ClosureTarget(66), vec![int], 1);
+    let both = t.intersect(literal, surface);
 
     let direct = t.runtime_type_predicate(&both).callables;
     let enveloped = t.runtime_type_test_envelope(both);
@@ -2213,6 +2208,91 @@ mod tuple_dnf_hygiene {
     }
 }
 
+/// `A ∨ ∅ = A`, on every axis the DNF kernel carries.
+mod empty_clause_hygiene {
+    use super::*;
+
+    /// One axis's witnesses: an alternative the subtrahend covers, one it does
+    /// not, the subtrahend, and the reader for that axis's clause list.
+    struct AxisCase {
+        axis: &'static str,
+        covered: Ty,
+        survivor: Ty,
+        cover: Ty,
+        clause_count: fn(&Descr) -> usize,
+    }
+
+    /// A difference carves the axis it is taken on into one clause per
+    /// alternative of the minuend. An alternative the subtrahend COVERS —
+    /// covers without being spelled the same, so no `P ∧ ¬P` collapse
+    /// applies — denotes nothing. Every axis drops that clause before an
+    /// identity is assigned, so the difference persists as its survivor and
+    /// nothing beside it.
+    #[test]
+    fn an_empty_clause_is_dropped_on_every_axis() {
+        let mut t = Types::new();
+        let int = t.int();
+        let bin = t.str_t();
+        let float = t.float();
+        let wide = t.union(int, bin);
+        let key = MapKey::Atom("k".to_string());
+
+        let cases = [
+            AxisCase {
+                axis: "tuples",
+                covered: t.tuple(&[int]),
+                survivor: t.tuple(&[float]),
+                cover: t.tuple(&[wide]),
+                clause_count: |d| d.tuples.len(),
+            },
+            AxisCase {
+                axis: "lists",
+                covered: t.non_empty_list(int),
+                survivor: t.non_empty_list(float),
+                cover: t.non_empty_list(wide),
+                clause_count: |d| d.lists.len(),
+            },
+            AxisCase {
+                axis: "resources",
+                covered: t.resource(int),
+                survivor: t.resource(float),
+                cover: t.resource(wide),
+                clause_count: |d| d.resources.len(),
+            },
+            AxisCase {
+                axis: "funcs",
+                covered: t.closure_lit(ClosureTarget(66), vec![int], 1),
+                survivor: t.closure_lit(ClosureTarget(68), vec![float], 1),
+                cover: t.closure_lit(ClosureTarget(66), vec![wide], 1),
+                clause_count: |d| d.funcs.len(),
+            },
+            AxisCase {
+                axis: "maps",
+                covered: t.map(&[(key.clone(), int)]),
+                survivor: t.map(&[(key.clone(), float)]),
+                cover: t.map(&[(key, wide)]),
+                clause_count: |d| d.maps.len(),
+            },
+        ];
+
+        for case in cases {
+            let carved = t.union(case.covered, case.survivor);
+            let rest = t.difference(carved, case.cover);
+            assert_eq!(
+                (case.clause_count)(t.descr(&rest)),
+                1,
+                "{}: the covered alternative must not persist as an empty clause",
+                case.axis
+            );
+            assert!(
+                t.is_equivalent(&rest, &case.survivor),
+                "{}: and the survivor is the whole answer",
+                case.axis
+            );
+        }
+    }
+}
+
 // fz-go4.25 — list-clause emptiness: exact-empty evidence must survive the
 // positive elem fold.
 //
@@ -2699,6 +2779,125 @@ mod union_clause_order {
     }
 }
 
+/// One absorber for every axis a denotation fully describes.
+///
+/// The callable axis is not among them: an arrow there carries a declared
+/// signature and a closure's capture layout beside its denotation, and both
+/// would be lost to a rule that reads only the set of values. See
+/// `types::axis` for the one statement of that exclusion.
+mod clause_absorption {
+    use super::*;
+
+    /// A clause no SINGLE sibling contains, but the two of them together do.
+    /// This is what union coverage buys over pairwise containment, and it is
+    /// the case a per-axis subsumption rule cannot see.
+    #[test]
+    fn a_clause_two_siblings_cover_between_them_is_dropped() {
+        let mut t = Types::new();
+        let int = t.int();
+        let bin = t.str_t();
+        let float = t.float();
+        let int_or_bin = t.union(int, bin);
+
+        // {int|binary, float} is inside {int, float} ∨ {binary, float} and
+        // inside neither alone.
+        let covered = t.tuple(&[int_or_bin, float]);
+        let left = t.tuple(&[int, float]);
+        let right = t.tuple(&[bin, float]);
+        assert!(!t.is_subtype(&covered, &left) && !t.is_subtype(&covered, &right));
+
+        let siblings = t.union(left, right);
+        let joined = t.union(siblings, covered);
+        assert_eq!(
+            t.descr(&joined).tuples.len(),
+            1,
+            "the two siblings fuse and swallow the clause: {}",
+            t.display(&joined)
+        );
+        assert!(t.is_equivalent(&joined, &siblings));
+
+        // A list that admits `[]` is inside `[] ∨ non_empty_list(int)` and
+        // inside neither alone.
+        let empty = t.empty_list();
+        let non_empty = t.non_empty_list(int);
+        let whole = t.list(int);
+        assert!(!t.is_subtype(&whole, &empty) && !t.is_subtype(&whole, &non_empty));
+        let shapes = t.union(empty, non_empty);
+        assert_eq!(shapes, whole, "the two shapes ARE the possibly-empty list");
+    }
+
+    /// An axis whose clauses between them cover it IS its top, and the top is
+    /// written as the widest single sig the axis can carry — never as an empty
+    /// conjunction, which has no positive sig for a reader to project.
+    #[test]
+    fn an_axis_its_clauses_cover_becomes_its_widest_sig() {
+        let mut t = Types::new();
+        let any = t.any();
+
+        let every_list = {
+            let empty = t.empty_list();
+            let non_empty = t.non_empty_list(any);
+            t.union(empty, non_empty)
+        };
+        assert_eq!(every_list, t.list(any), "one set of lists, one id");
+        assert_eq!(t.display(&every_list), "[any]", "and a type a user could write");
+        assert_eq!(
+            t.list_element_type(&every_list),
+            any,
+            "a reader projecting the element still finds one"
+        );
+
+        let every_resource = t.resource(any);
+        assert_eq!(t.display(&every_resource), "resource(any)");
+        assert_eq!(t.resource_payload_type(&every_resource), Some(any));
+
+        // The other two axes have no top they can reach: tuple arity and
+        // struct tags are both unbounded, so no finite union covers them.
+        let pair = t.tuple(&[any, any]);
+        assert_eq!(t.descr(&pair).tuples.len(), 1);
+        assert!(!t.descr(&pair).tuples[0].pos.is_empty(), "a tuple axis keeps its sig");
+        let key = MapKey::Atom("k".to_string());
+        let open = t.map(&[(key, any)]);
+        assert!(!t.descr(&open).maps[0].pos.is_empty(), "a map axis keeps its sig");
+    }
+}
+
+/// A clause is its factor SET: `A ∧ B` and `B ∧ A` are one clause.
+///
+/// `Conj::pos` grows as the clause product walks its operands, so an
+/// intersection whose factors cannot merge into one signature records them in
+/// arrival order. Two arrivals then reach the interner as two different
+/// `Vec<Conj<_>>`, hash to two different `Descr`s, and are handed two `Ty`s for
+/// one set of values — the same schedule dependence clause order carries, one
+/// level down.
+mod clause_factor_order {
+    use super::*;
+
+    /// Two arrows of different arity cannot merge into one signature, so their
+    /// meet keeps both as factors of one clause — an overload, and inhabited.
+    #[test]
+    fn two_factor_orders_of_one_intersection_intern_once() {
+        let mut t = Types::new();
+        let int = t.int();
+        let unary = t.arrow(&[int], int);
+        let binary = t.arrow(&[int, int], int);
+
+        let forward = t.intersect(unary, binary);
+        let backward = t.intersect(binary, unary);
+
+        let clauses = &t.descr(&forward).funcs;
+        assert_eq!(clauses.len(), 1, "one clause");
+        assert_eq!(clauses[0].pos.len(), 2, "holding both arrows as factors");
+        assert_eq!(
+            forward,
+            backward,
+            "one denotation, one interned id: got {} vs {}",
+            t.display(&forward),
+            t.display(&backward)
+        );
+    }
+}
+
 /// fz-kdt.198 — the documented brand law, as pins.
 ///
 /// `.agent/docs/set-theoretic-types.md` states it in one line: `utf8 <:
@@ -3092,94 +3291,108 @@ mod brand_lattice_algebra {
         assert_eq!(t.display(&x), "X(int | binary)");
     }
 
-    /// THE TWO BASES, observed. `Descr::none()` keeps an EMPTY slot (it is the
-    /// union identity), while a meet of two disjoint kinds leaves the slot at
-    /// top — so the empty type now has more than one interned identity, and
-    /// `looks_empty()`, never `== Descr::none()`, is the bottom test.
+    /// ONE BOTTOM. The three descriptor shapes that reach the empty set take
+    /// three different routes — `Descr::none()` empties the brand slot, a meet
+    /// of two disjoint kinds empties the kind axes with the slot still at top,
+    /// a meet of two brands empties the slot with the kind axes inhabited —
+    /// and a tuple with an empty coordinate or a non-empty list of an empty
+    /// element reaches it through a structural axis. All five denote the same
+    /// set, so `Types::intern` answers them with one id.
     #[test]
-    fn bottom_has_more_than_one_interned_identity() {
+    fn every_bottom_interns_once() {
         let mut t = Types::new();
         let int = t.int();
         let bin = t.str_t();
-        let met = t.intersect(int, bin);
-        let none = t.none();
-        assert!(t.is_empty(&met));
-        assert!(t.is_empty(&none));
-        assert_ne!(met, none, "int and binary meet at a SECOND bottom id");
-    }
-
-    /// `TyCanon::fingerprint` promises "equivalent types always share it". The
-    /// several bottoms would refute it, except `descr_fingerprint` and
-    /// `descr_body` both answer on emptiness first, so every bottom collapses
-    /// to `fp[none]` / `none` whatever its slot says. This pins the one thing
-    /// the base split could have broken silently.
-    #[test]
-    fn the_canon_collapses_every_bottom_to_one_form() {
-        let mut t = Types::new();
-        let int = t.int();
-        let bin = t.str_t();
-        let met = t.intersect(int, bin);
-        let none = t.none();
-        assert!(t.is_equivalent(&met, &none));
-        let labels = |_: FnId| String::new();
-        let mut canon = TyCanon::new(&labels);
-        let a = canon.fingerprint(&t, met);
-        let b = canon.fingerprint(&t, none);
-        assert_eq!(a, b, "both bottoms fingerprint as fp[none]");
-        let ra = canon.render(&t, met);
-        let rb = canon.render(&t, none);
-        assert!(
-            ra.ends_with("none") && rb.ends_with("none"),
-            "both bodies render `none`: {ra} / {rb}"
-        );
-        assert_eq!(ra, rb, "one denotation, one canonical form");
-    }
-
-    /// A bottom is the UNION IDENTITY however it was reached.
-    ///
-    /// The empty type no longer has one interned identity: a structural meet
-    /// (`int and binary`) empties the kind axes and leaves the slot at TOP,
-    /// while a brand meet (`Meters and Feet`) empties the slot and leaves the
-    /// kind axes inhabited. A pointwise hull would read the top slot of the
-    /// first as "any brand" and erase the other operand's brand — `nothing |
-    /// Meters(int)` would answer `int`. `union` answers on `looks_empty()`
-    /// first, which is the one bottom test, so every bottom is the identity.
-    #[test]
-    fn every_bottom_is_the_union_identity() {
-        let mut t = Types::new();
-        let int = t.int();
-        let bin = t.str_t();
-        let nil = t.nil();
         let m = meters(&mut t);
         let f = feet(&mut t);
-        let structural_bottom = t.intersect(int, bin);
-        let slot_bottom = t.intersect(m, f);
-        assert!(t.is_empty(&structural_bottom));
-        assert!(t.is_empty(&slot_bottom));
-        for bottom in [structural_bottom, slot_bottom] {
-            for inhabited in [m, nil, int] {
-                let joined = t.union(bottom, inhabited);
-                assert_eq!(
-                    t.display(&joined),
-                    t.display(&inhabited),
-                    "nothing | {} must be {}",
-                    t.display(&inhabited),
-                    t.display(&inhabited)
-                );
-                let flipped = t.union(inhabited, bottom);
-                assert_eq!(flipped, joined, "and the join commutes");
-            }
-        }
         let none = t.none();
-        for a in [structural_bottom, slot_bottom, none] {
-            for b in [structural_bottom, slot_bottom, none] {
-                assert_eq!(
-                    t.union(a, b),
-                    none,
-                    "a join of two nothings is THE nothing, whichever bottoms they are"
-                );
-            }
+
+        let kinds_meet = t.intersect(int, bin);
+        let brands_meet = t.intersect(m, f);
+        let empty_coordinate = t.tuple(&[int, none]);
+        let list_of_nothing = t.non_empty_list(none);
+
+        for (spelling, bottom) in [
+            ("int and binary", kinds_meet),
+            ("Meters and Feet", brands_meet),
+            ("{int, none}", empty_coordinate),
+            ("non-empty [none]", list_of_nothing),
+        ] {
+            assert!(t.is_empty(&bottom), "{spelling} denotes the empty set");
+            assert_eq!(bottom, none, "{spelling} must intern as the one bottom");
         }
+    }
+
+    /// The bottom is the UNION IDENTITY.
+    ///
+    /// A `Descr` joins its factors pointwise, and the bottom's brand slot is
+    /// EMPTY. Read pointwise that slot would say "no brand at all" and erase
+    /// the other operand's — `nothing | Meters(int)` would answer `int`.
+    /// `union` answers on `looks_empty()` before it joins anything, so the
+    /// join keeps the inhabited operand exactly.
+    #[test]
+    fn the_bottom_is_the_union_identity() {
+        let mut t = Types::new();
+        let int = t.int();
+        let nil = t.nil();
+        let m = meters(&mut t);
+        let none = t.none();
+        for inhabited in [m, nil, int] {
+            let joined = t.union(none, inhabited);
+            assert_eq!(
+                joined,
+                inhabited,
+                "nothing | {} must be {} itself, not a widening of it",
+                t.display(&inhabited),
+                t.display(&inhabited)
+            );
+            let flipped = t.union(inhabited, none);
+            assert_eq!(flipped, joined, "and the join commutes");
+        }
+        assert_eq!(t.union(none, none), none, "a join of two nothings is the nothing");
+    }
+
+    /// `Types::is_empty` and `== none()` are one question once every provably
+    /// empty descriptor interns as the bottom.
+    #[test]
+    fn is_empty_holds_exactly_at_the_one_bottom() {
+        let mut t = Types::new();
+        let int = t.int();
+        let bin = t.str_t();
+        let m = meters(&mut t);
+        let f = feet(&mut t);
+        let none = t.none();
+        let any = t.any();
+        let nil = t.nil();
+        let kinds_meet = t.intersect(int, bin);
+        let brands_meet = t.intersect(m, f);
+        let pair = t.tuple(&[int, m]);
+        let empty_pair = t.tuple(&[int, none]);
+        for ty in [none, any, nil, int, m, kinds_meet, brands_meet, pair, empty_pair] {
+            assert_eq!(
+                t.is_empty(&ty),
+                ty == none,
+                "is_empty and the bottom identity must agree on {}",
+                t.display(&ty)
+            );
+        }
+    }
+
+    /// The canonical form answers on emptiness before it reads any axis, so a
+    /// bottom renders `none` whatever descriptor reached it. One interned
+    /// bottom makes that hard to break silently, and this keeps it pinned.
+    #[test]
+    fn the_canon_renders_the_bottom_as_none() {
+        let mut t = Types::new();
+        let none = t.none();
+        let labels = |_: FnId| String::new();
+        let mut canon = TyCanon::new(&labels);
+        assert_eq!(canon.fingerprint(&t, none).as_ref(), "fp[none]");
+        assert!(
+            canon.render(&t, none).ends_with("none"),
+            "got {}",
+            canon.render(&t, none)
+        );
     }
 
     /// Erasing the refinement must not RESURRECT an empty type. `Meters and

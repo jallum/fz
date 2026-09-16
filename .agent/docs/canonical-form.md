@@ -45,20 +45,20 @@ canon(a) == canon(b)   iff   a and b are mutually subtype
 ```
 
 `Types::display` cannot serve, because it is not injective: it renders
-`list(int)` and `non_empty_list(int)` identically as `[int]`, and it renders
-each axis's saturated clause as the bare word `any`. For an equivalence oracle a
-false equivalence is far worse than a false difference, so the canonical form
-distinguishes every shape the lattice does — `empty_list()`, `list(T)` and
-`non_empty_list(T)` all render apart, and `tuple`/`list`/`fun`/`map`/`resource`
-name the five axis tops.
+`list(int)` and `non_empty_list(int)` identically as `[int]`, and it renders a
+clause from the factors it was built out of rather than from what it denotes.
+For an equivalence oracle a false equivalence is far worse than a false
+difference, so the canonical form distinguishes every shape the lattice does —
+`empty_list()`, `list(T)` and `non_empty_list(T)` all render apart. Both
+surfaces name the five axis tops `tuple`/`list`/`fun`/`map`/`resource`; a
+saturated clause denotes every value of ITS kind, which is not `any`.
 
 Getting there takes normalization, because one type has many descriptors. Each
 step below rewrites a descriptor to a semantically EQUAL one, which is what
 makes "same rendering implies equivalent" true by construction:
 
-- **drop empty clauses** — a clause denoting `∅` contributes nothing;
-- **saturate** — clauses that between them cover a whole axis collapse to that
-  axis's top. `(X) -> any` constrains nothing, so it denotes every callable
+- **saturate the callable axis** — clauses that between them cover it collapse
+  to its top. `(X) -> any` constrains nothing, so it denotes every callable
   whatever `X` is;
 - **widen tuple coordinates** — replace coordinate *k* of a rectangle with the
   union of coordinate *k* across every same-arity rectangle, keeping the result
@@ -70,14 +70,28 @@ makes "same rendering implies equivalent" true by construction:
   contained rectangle becomes the same rectangle with that coordinate
   subtracted, only when every coordinate is ground, so type-variable polarity
   and its runtime envelope remain unchanged;
-- **drop subsumed clauses** — a clause covered by the union of the survivors
-  adds nothing;
+- **drop subsumed callable clauses** — a clause covered by the union of the
+  survivors adds nothing;
 - **normalize list clauses from their denotation** — a `ListSig` denotes `[]`
   plus lists over an element type, so `list(T) & not([])` and
   `non_empty_list(T)` are one thing and render as one thing;
-- **sort** — clause order inside a DNF, and factor order inside a clause, follow
-  the order facts arrived in. Sorting them on their rendered bytes is a
-  presentation-boundary sort, the one place sorting is free of consequence.
+- **sort** — the axis lists this module BUILDS (widened rectangles, the clauses
+  left after its own drops) carry no canonical order, so their rendered texts
+  are sorted before they are joined. That is a presentation-boundary sort, the
+  one place sorting is free of consequence. Clause order and factor order
+  inside an interned descriptor are already canonical (`order.rs`), so nothing
+  here re-sorts them.
+
+Dropping empty clauses and absorbing what the siblings cover are not among
+them, because they are one shared rule (`types::axis`) that `Types::intern`
+applies at the persistence boundary. Intern is that rule's authority; this
+module is its second caller, for the descriptors it builds ITSELF — a widened
+tuple coordinate, a list clause's intersected element fragment — which never
+reach the interner and would otherwise be rendered unswept. Only the CALLABLE
+axis is absorbed here after the fact and nowhere else: an interned arrow
+carries a declared signature and a closure's capture layout beside its
+denotation, so the boundary must leave it alone, while a rendering reads
+nothing back out of it.
 
 Normalization runs on DESCRIPTORS rather than on interned `Ty`s alone: widening
 builds descriptors that were never interned, and interning them would mutate the

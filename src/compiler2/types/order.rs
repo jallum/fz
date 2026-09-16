@@ -12,9 +12,12 @@
 //! alternatives by clause position (`AddrStep::Variant(k)`), so the variable
 //! names inside a canonical arrow move with the scheduler too.
 //!
-//! Sorting every axis at intern removes that degree of freedom: the clause list
-//! becomes a function of the clause MULTISET, so same-denotation unions carved
-//! the same way intern to ONE `Ty`.
+//! `Conj::pos` and `Conj::neg` grow the same way inside the clause product, so
+//! `A ∧ B` and `B ∧ A` split one overload in two.
+//!
+//! Sorting every axis at intern removes both degrees of freedom: a clause
+//! becomes a function of its factor set and an axis a function of its clause
+//! set, so same-denotation unions carved the same way intern to ONE `Ty`.
 //!
 //! This storage order is private to descriptor canonicalization. Production
 //! activation and artifact order instead use `Types::cmp_activation_ty`, whose
@@ -118,7 +121,11 @@ impl<'a> ClauseOrder<'a> {
         }
     }
 
-    /// Put every DNF axis of `d` in canonical order.
+    /// Put every DNF axis of `d` in canonical order, factors first.
+    ///
+    /// Factors have to lead: a clause compares by its stored factor lists, so
+    /// the clause sort is a function of the clause SET only once each clause is
+    /// a function of its own factor set.
     pub(super) fn sort_axes(&self, d: &mut Descr) {
         self.sort_axis(&mut d.tuples);
         self.sort_axis(&mut d.lists);
@@ -127,11 +134,27 @@ impl<'a> ClauseOrder<'a> {
         self.sort_axis(&mut d.maps);
     }
 
-    fn sort_axis<T: OrderedSig>(&self, clauses: &mut [Conj<T>]) {
+    fn sort_axis<T: OrderedSig + PartialEq>(&self, clauses: &mut [Conj<T>]) {
+        for clause in clauses.iter_mut() {
+            self.sort_factors(&mut clause.pos);
+            self.sort_factors(&mut clause.neg);
+        }
         if clauses.len() < 2 {
             return;
         }
         clauses.sort_by(|a, b| self.cmp_conj(a, b));
+    }
+
+    /// One side of one clause, in canonical order with duplicates collapsed
+    /// (`A ∧ A = A`, `¬A ∧ ¬A = ¬A`). The order is injective — it reads every
+    /// field of a signature — so equal factors land adjacent and `dedup`
+    /// removes exactly the repeats.
+    fn sort_factors<T: OrderedSig + PartialEq>(&self, factors: &mut Vec<T>) {
+        if factors.len() < 2 {
+            return;
+        }
+        factors.sort_by(|a, b| T::cmp_sig(self, a, b));
+        factors.dedup();
     }
 
     // ------------------------------------------------------------------
@@ -170,16 +193,9 @@ impl<'a> ClauseOrder<'a> {
     // Clauses
     // ------------------------------------------------------------------
 
-    /// A clause compares by its POSITIVE factors, then its negative ones — and
-    /// within each, in STORED order.
-    ///
-    /// Sorting the factors first would be the wrong move: two clauses that hold
-    /// the same factors in different orders are not equal under the `PartialEq`
-    /// that `dedupe_exact_clauses` and the interner index use, so making them
-    /// TIE here would hand the survivor back to arrival order. Intra-clause
-    /// factor order is a second non-canonical dimension (`Conj::pos` grows in
-    /// `dnf_intersect_with` arrival order); this module does not touch it, and
-    /// two factor-permuted clauses simply stay distinct.
+    /// A clause compares by its POSITIVE factors, then its negative ones. Both
+    /// lists are in canonical order by the time this runs, so the verdict is a
+    /// function of the two clauses' factor sets.
     fn cmp_conj<T: OrderedSig>(&self, a: &Conj<T>, b: &Conj<T>) -> Ordering {
         lex(&a.pos, &b.pos, |x, y| T::cmp_sig(self, x, y))
             .then_with(|| lex(&a.neg, &b.neg, |x, y| T::cmp_sig(self, x, y)))
