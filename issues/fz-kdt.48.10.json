@@ -17,11 +17,15 @@
     {
       "text": "Framing (user, 2026-09-16): this is Maranget column selection. dispatch_matrix credits Maranget but compile_arm_sequence/compile_single_arm (mod.rs ~669-713) do no column selection: each arm is a chain of its own questions in the producer's order, misses fall to the next arm; the separating column (closure, input 2) is asked last only because it is input 2. Build as column selection in the tree compiler over the row block (necessity/separation from seating's containment verdicts on runtime tests, since our 'constructors' overlap), source order among ties; share a chosen column's test across the arms it separates if that collapses concepts. Not a per-arm reorder in the producer.",
       "timestamp": "2026-09-16T12:29:18Z"
+    },
+    {
+      "text": "Landed as 520579c9e on fz-kdt.48/one-ty-per-denotation (PR #177). dispatch_columns replaces discriminating_inputs; separated_at is the one position verdict; routable_alternatives returns the plan for both doors. Census: ten rows fall 64-\u003e54, 265-\u003e225, none rise; tie-break flip moves no row. CI green at c3d2d46b5 (final table read).",
+      "timestamp": "2026-09-16T15:01:03Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Ask the separating position first within a dispatch arm",
   "type": "task",
-  "updated_at": "2026-09-16T12:29:18Z"
+  "updated_at": "2026-09-16T15:01:03Z"
 }
