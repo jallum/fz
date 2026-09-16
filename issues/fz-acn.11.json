@@ -4,14 +4,15 @@
     "fz-acn.3"
   ],
   "blocks": [],
+  "closed_at": "2026-09-16T16:50:46Z",
   "created": "2026-09-14T17:16:17Z",
   "description": "## Goal\n\nDelete reachability's last independent input scanner. `DispatchGraphBuilder` already records exactly which declared inputs each plan question reads; semantic reachability must consume that immutable fact through `PatternDispatchPlan::required_input` instead of walking graph nodes or conservatively enveloping every input whenever a guard exists.\n\n## Proven authority\n\nAt `DispatchGraphBuilder::add_node`, `charge_node` records every runtime read: a normal predicate subject, a pinned equality input, a pinned bitstring-size input, or the exact subject/pin leaves of a guard. Edge evidence and projections are bindings, not questions, and are deliberately not charged. `required_input` is precisely `input_demand[ordinal] != Ignore`.\n\nThe only consumer of `tested_input_ordinals` is `calculate_dispatch_reachability`, where it decides which roots receive `runtime_envelope`. Its current graph walk is redundant, and `plan.guards.is_empty()` makes the answer wrong-conservative: a guard reading input 2 envelopes unrelated inputs 0 and 1, erasing their pending inference variables before the selected clause body sees them.\n\n## Design\n\nReplace `tested_input_ordinals` with `plan.required_input(ordinal)` while building reachability roots. Do not add a second Tested/Projected lattice or scanner: `DispatchDemand` already carries the plan's structural read fact, and the sole consumer here asks only whether it reads anything. The graph builder remains the only writer.\n\nThis must read the finished graph, never source rows: plans can omit non-discriminating questions during construction, and only the emitted graph says what dispatch actually observes.\n\n## TDD / signal\n\nFirst add a guarded three-input source plan whose guard reads only input 2. Assert the plan records `[Ignore, Ignore, Whole]`; reachability preserves the exact type variables of inputs 0 and 1 in `outcome_inputs`, and runtime-envelopes only input 2. Cover a projected guard leaf and a pinned/bitstring-size read if the existing demand tests do not already prove they map to required inputs.\n\nKeep the existing dependent-helper blast-radius and shared-Rc-plan tests green. Use existing `fz.compiler2.entry_dispatch.defined` / test captures to prove equal reproduction and unrelated edits do not replan the requested root; do not add permanent telemetry solely to count the deleted scanner. Re-baseline every activation/census signal on current main after fz-kdt.48 normalization; old counts are not transferable.\n\n## Documentation / deletion\n\nDelete `tested_input_ordinals` and its HashSet import. Update dispatch-matrix and semantic-authorities so reachability is named as a reader of the recorded fact, with guards charging their actual leaves rather than every input.",
   "id": "fz-acn.11",
   "labels": [],
   "parent": "fz-acn",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Reachability consumes the plan-owned required-input fact",
   "type": "task",
-  "updated_at": "2026-09-16T16:48:18Z"
+  "updated_at": "2026-09-16T16:50:46Z"
 }
