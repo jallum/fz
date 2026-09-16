@@ -18,11 +18,15 @@
     {
       "text": "Re-ported and re-measured on d25552951 (rebased head; patch 48-5.patch, held in fz-wt-48g): canon census 128 -\u003e 123 (the five tuple carvings), 15 unchanged; SURFACE_MEMBERSHIP_CENSUS ten rows FALL (64-\u003e61 x3, 265-\u003e236 x2 and their arrivals) and two RISE 9 -\u003e 11 (00418_enum_count_range, behavior/unused_range_binding), escapes 0 everywhere; same mechanism as on the old base (clause-count tie-break seat flip; 3 vs 2 matched questions per selection because the non-separating tuple question is asked before the separating closure question). Counts: ids minted +3/+2/-40 (fused union coordinates), intern calls down on all three, absorber questions flat; nested fusion interns 3,685/88/3,210 with ~26% index hits. Full gate green except that one census test. Lands after fz-kdt.48.10 (re-scoped to separating-position-first).",
       "timestamp": "2026-09-16T12:27:31Z"
+    },
+    {
+      "text": "Landed as c3d2d46b5 on fz-kdt.48/one-ty-per-denotation (PR #177), re-measured on top of .48.10: canon census 128-\u003e123, surface rows held at 54/9/225 (no rises). Types::normalize_tuple_axis + axis::fuse_tuple_rects; canon's private rectangle widening deleted; Provenance on the renderer. CI green at c3d2d46b5 (final table read).",
+      "timestamp": "2026-09-16T15:01:05Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Tuple carving fusion at intern, including the one-coordinate union merge",
   "type": "task",
-  "updated_at": "2026-09-16T12:27:31Z"
+  "updated_at": "2026-09-16T15:01:05Z"
 }
