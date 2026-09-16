@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-16T10:23:24Z",
   "created": "2026-09-16T09:52:19Z",
   "description": "Replace the Elixir telemetry distiller with a usable fz command. The tool must consume a public compiler JSONL stream, report span and job costs plus re-run wake causes, and be exercised end to end.",
   "id": "fz-lcx",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Native fz telemetry log analyzer",
   "type": "epic",
-  "updated_at": "2026-09-16T09:52:19Z"
+  "updated_at": "2026-09-16T10:23:24Z"
 }
