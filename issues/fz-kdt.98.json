@@ -15,7 +15,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "Residual transport-cut hole: a cycle whose every grounded closure-call edge's target cannot statically reach its owner is uncut",
+  "title": "The call graph misses function-reference and value-call edges, so every consumer of CallGraphComponent and Recursive under-approximates recursion",
   "type": "task",
-  "updated_at": "2026-09-16T02:08:23Z"
+  "updated_at": "2026-09-16T02:08:44Z"
 }
