@@ -109,6 +109,30 @@ fn fixed_type_constructors_return_before_the_type_boundary() {
 }
 
 #[test]
+fn canonical_empty_identity_returns_before_the_comparison_cache() {
+    let mut t = Types::new();
+    let none = t.none();
+    let int = t.int();
+    let empty_non_empty_list = t.non_empty_list(none);
+    let list = t.list(int);
+    assert_eq!(
+        empty_non_empty_list, none,
+        "a non-empty list cannot hold an empty element type"
+    );
+
+    let before = t.comparison_cache_stats();
+    assert!(t.is_empty(&none));
+    assert!(t.is_empty(&empty_non_empty_list));
+    assert!(!t.is_empty(&int));
+    assert!(!t.is_empty(&list));
+    assert_eq!(
+        t.comparison_cache_stats(),
+        before,
+        "the interning boundary gives every empty denotation the canonical bottom Ty; checking it must not hash, cache, or traverse"
+    );
+}
+
+#[test]
 fn repeating_binary_type_algebra_returns_before_it_rebuilds_a_descriptor() {
     let mut t = Types::new();
     let int = t.int();
