@@ -1928,9 +1928,6 @@ impl ProductSessions {
 }
 
 impl super::scheduler::ExternalDependencyStates<DependencyKey> for ProductSessions {
-    fn has_unsettled_dependencies(&self) -> bool {
-        !self.requested.is_empty()
-    }
     fn external_state(&self, key: &DependencyKey) -> Option<FactState> {
         match key {
             DependencyKey::Fact(_) => None,

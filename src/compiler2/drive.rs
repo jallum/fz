@@ -761,11 +761,15 @@ impl World {
     ///
     /// Transitive finality is maintained by counting, and counting can never
     /// finalize a cycle — `Scheduler::settle_quiescent` carries the proof. At
-    /// a drain the agenda decides instead: a locally clean cone holding no
-    /// dirty fact cannot move, so it is final. This is demand-driven, not a
-    /// sweep — nothing is arbitrated that nobody asked about — and the step it
-    /// produces is stashed for the execution context to emit, so the wake it
-    /// causes always has a movement on the public stream to name.
+    /// a drain the agenda decides instead: a fact is certified only when no
+    /// publisher in its transitive read ground is dirty and no external
+    /// product beneath it is unsettled. The walk that proves this visits
+    /// every unquiet fact in that ground and certifies all of them, since the
+    /// same argument proved each one final. This is demand-driven, not a
+    /// sweep — the walk starts only from `facts` and follows what they
+    /// actually read — and the step it produces is stashed for the execution
+    /// context to emit, so the wake it causes always has a movement on the
+    /// public stream to name.
     pub(crate) fn settle_quiescent_with_sessions(
         &mut self,
         facts: &[FactKey],

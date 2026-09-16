@@ -174,27 +174,51 @@ fn quiescence_cannot_certify_a_fact_while_its_external_ground_is_dirty() {
     assert_eq!(scheduler.pop(), None);
 }
 
-#[test]
-fn an_unrelated_dirty_product_does_not_block_fact_quiescence() {
-    let mut scheduler = chain_a_b_c();
+/// Two clean publishers reading each other: unfinal by counting, dirty
+/// nowhere, so only the drain can make them final.
+fn clean_cycle() -> TestScheduler {
+    let mut scheduler = TestScheduler::new();
     complete(
         &mut scheduler,
-        UPSTREAM,
+        JOB_A,
+        HashSet::from([current("cum_b")]),
         HashSet::new(),
+        vec!["cum_a"],
+        vec!["cum_a"],
+    );
+    complete(
+        &mut scheduler,
+        JOB_B,
+        HashSet::from([current("cum_a")]),
         HashSet::new(),
-        vec!["u"],
-        vec!["u"],
+        vec!["cum_b"],
+        vec!["cum_b"],
+    );
+    let _ = scheduler.pop();
+    complete(
+        &mut scheduler,
+        JOB_A,
+        HashSet::from([current("cum_b")]),
+        HashSet::new(),
+        vec!["cum_a"],
+        Vec::new(),
     );
     while scheduler.pop().is_some() {}
+    scheduler
+}
+
+#[test]
+fn an_unrelated_dirty_product_does_not_block_fact_quiescence() {
+    let mut scheduler = clean_cycle();
     let product = ExternalProduct(crate::compiler2::facts::FactState {
         revision: Some(1),
         settled: false,
     });
-    assert!(!scheduler.facts().is_settled(&"c"));
-    scheduler.settle_quiescent_ordered_with_external(&["c"], &product, &TestOrder);
+    assert!(!scheduler.facts().is_settled(&"cum_a"));
+    scheduler.settle_quiescent_ordered_with_external(&["cum_a"], &product, &TestOrder);
     assert!(
-        scheduler.facts().is_settled(&"c"),
-        "only exact upstream product dependencies can prevent fact quiescence"
+        scheduler.facts().is_settled(&"cum_a"),
+        "only a product the cone actually reads can prevent fact quiescence"
     );
 }
 
@@ -1704,7 +1728,7 @@ fn compiler2_scheduler_a_concluded_derivation_is_final_while_its_job_waits() {
     let mut scheduler: Scheduler<TestDerivation, &'static str> = Scheduler::new();
     // JOB_A reaches one answer on the way through -- "early", over "b" -- and
     // then blocks: its own answer, "partial", still needs "late".
-    let run_a = |scheduler: &mut Scheduler<TestDerivation, &'static str>| {
+    let run_a = |scheduler: &mut Scheduler<TestDerivation, &'static str>, changed: Vec<&'static str>| {
         scheduler.complete_ordered(
             &JOB_A,
             CompletionEffects {
@@ -1712,14 +1736,14 @@ fn compiler2_scheduler_a_concluded_derivation_is_final_while_its_job_waits() {
                     publisher: (JOB_A, 1),
                     reads: HashSet::from([current("b")]),
                     outputs: vec!["early"],
-                    changed: vec!["early"],
+                    changed,
                 }],
                 waits: HashSet::from([current("late")]),
             },
             &TestOrder,
         );
     };
-    run_a(&mut scheduler);
+    run_a(&mut scheduler, vec!["early"]);
     // JOB_B answers "b" from "early": the two answers stand in a clean cycle,
     // unfinal by counting and dirty nowhere, so only a drain can finalize them.
     scheduler.complete_ordered(
@@ -1733,9 +1757,11 @@ fn compiler2_scheduler_a_concluded_derivation_is_final_while_its_job_waits() {
         ),
         &TestOrder,
     );
-    // "b" woke JOB_A; it re-runs, reaches the same answer, and blocks again.
+    // "b" woke JOB_A; it re-runs and concludes unchanged, so both publishers
+    // are clean -- a re-run that redeclared "early" changed would dirty "b"
+    // in turn and leave the cycle genuinely unfinished.
     assert_eq!(scheduler.pop(), Some(JOB_A));
-    run_a(&mut scheduler);
+    run_a(&mut scheduler, Vec::new());
     while scheduler.pop().is_some() {}
 
     assert!(
@@ -2271,18 +2297,38 @@ fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
         revision: Some(1),
         settled: true,
     });
+    // `ground` stands in a clean cycle with `ground_peer`: unfinal by
+    // counting, dirty nowhere, so the drain may arbitrate over it.
+    for (job, input, output) in [(10, "ground_peer", "ground"), (11, "ground", "ground_peer")] {
+        scheduler.complete_ordered_with_external(
+            &job,
+            CompletionEffects::single(
+                job,
+                HashSet::from([current(input)]),
+                HashSet::new(),
+                vec![output],
+                vec![output],
+            ),
+            &product,
+            &TestOrder,
+        );
+    }
+    // The peer's publication woke job 10; it re-reads and concludes unchanged,
+    // so both publishers are clean.
+    let _ = scheduler.pop();
     scheduler.complete_ordered_with_external(
         &10,
         CompletionEffects::single(
             10,
+            HashSet::from([current("ground_peer")]),
             HashSet::new(),
-            HashSet::from([current("missing")]),
             vec!["ground"],
-            vec!["ground"],
+            Vec::new(),
         ),
         &product,
         &TestOrder,
     );
+    while scheduler.pop().is_some() {}
     scheduler.complete_ordered_with_external(
         &1,
         CompletionEffects::single(
@@ -2329,7 +2375,7 @@ fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
 /// publisher is dirty has not been re-derived from the ground it stands on,
 /// and no amount of drain quiet changes that.
 #[test]
-fn compiler2_scheduler_the_drain_arbiter_refuses_a_fact_whose_own_publisher_is_dirty() {
+fn compiler2_scheduler_the_drain_arbiter_refuses_a_fact_over_a_dirty_publisher() {
     let mut scheduler = chain_a_b_c();
     complete(
         &mut scheduler,
@@ -2338,6 +2384,14 @@ fn compiler2_scheduler_the_drain_arbiter_refuses_a_fact_whose_own_publisher_is_d
         HashSet::new(),
         vec!["u"],
         vec!["u"],
+    );
+    complete(
+        &mut scheduler,
+        9,
+        HashSet::new(),
+        HashSet::from([settled("c")]),
+        Vec::new(),
+        Vec::new(),
     );
     // `job_a` is pending, so "a" is dirty. Drain the agenda WITHOUT running
     // it, which is the shape a blocked publisher leaves behind.
@@ -2351,8 +2405,8 @@ fn compiler2_scheduler_the_drain_arbiter_refuses_a_fact_whose_own_publisher_is_d
         "the arbiter may not vouch for a fact whose publisher is dirty",
     );
     assert!(
-        scheduler.facts().is_settled(&"c"),
-        "c's own publishers are clean, and at a drain nothing can move without waking them first",
+        !scheduler.facts().is_settled(&"c") && step.wakes.is_empty(),
+        "c is clean only because a's publisher has not run: the cone can still move, so no settled waiter discharges",
     );
 }
 

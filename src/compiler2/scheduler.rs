@@ -13,9 +13,6 @@ use super::semantic::SemanticOrd;
 /// including when that dependency has no current value.
 pub(crate) trait ExternalDependencyStates<F> {
     fn external_state(&self, key: &F) -> Option<FactState>;
-    fn has_unsettled_dependencies(&self) -> bool {
-        true
-    }
 }
 
 pub(crate) struct NoExternalDependencyStates;
@@ -23,9 +20,6 @@ pub(crate) struct NoExternalDependencyStates;
 impl<F> ExternalDependencyStates<F> for NoExternalDependencyStates {
     fn external_state(&self, _key: &F) -> Option<FactState> {
         None
-    }
-    fn has_unsettled_dependencies(&self) -> bool {
-        false
     }
 }
 
@@ -796,19 +790,21 @@ where
     /// So at a drain, and only at a drain, the agenda itself decides. With no
     /// runnable job, the only publisher that could still move a fact is one
     /// paused on a wait. Waking it later dirties its claims and
-    /// unfinalizes its readers through the ordinary path. So `Settled(F)` at a drain is exactly
-    /// `locally settled`, which is what it meant everywhere before this
-    /// ticket. The transitive rule is what holds DURING the ascent; the drain
-    /// is where it is discharged.
+    /// unfinalizes its readers through the ordinary path, so a fact is
+    /// certified only once the walk of its transitive read ground finds no
+    /// dirty publisher and no unsettled external product beneath it; every
+    /// unquiet fact that walk visited is certified along with it. The
+    /// transitive rule is what holds DURING the ascent; the drain is where it
+    /// is discharged.
     ///
     /// That makes drain finality optimistic in precisely the way settledness
     /// has always been optimistic: a waiter woken here may publish something
     /// that re-moves the cone, and its readers re-wake through the normal
-    /// movement path and re-run. A requested fact names the exact jobs
-    /// being certified: each retains its real read count under a quiescence
-    /// certificate and finalizes
-    /// its own claims together. Ordinary quiet propagation carries that one
-    /// ownership decision downstream; independent publishers stay untouched.
+    /// movement path and re-run. Arbitration starts only from the requested
+    /// facts, and each certified publisher retains its real read count under
+    /// a quiescence certificate and finalizes its own claims together.
+    /// Ordinary quiet propagation carries that ownership decision downstream;
+    /// independent publishers stay untouched.
     pub(crate) fn settle_quiescent_ordered_with_external<Ctx>(
         &mut self,
         facts: &[F],
@@ -848,10 +844,19 @@ where
         if self.facts.is_quiet(fact) || !self.facts.is_locally_settled(fact) {
             return;
         }
-        if external.has_unsettled_dependencies() && self.has_unsettled_external_ground(fact, external) {
+        let Some(cone) = self.quiescent_cone(fact, external) else {
             return;
-        }
-        let mut publishers = self.facts.publishers(fact).cloned().collect::<Vec<_>>();
+        };
+        // The walk proved every unquiet fact in the cone final by the same
+        // argument, so certify them all: leaving the members unfinal would
+        // re-arbitrate each at a later drain and wake their readers again.
+        let mut publishers = cone
+            .iter()
+            .flat_map(|key| self.facts.publishers(key))
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         publishers.sort_by(|left, right| left.semantic_cmp(right, ctx));
         for publisher in publishers {
             let keys = self.deps.output_keys(&publisher);
@@ -868,29 +873,43 @@ where
         }
     }
 
-    fn has_unsettled_external_ground(&self, fact: &F, external: &impl ExternalDependencyStates<F>) -> bool {
+    /// The unquiet facts beneath this one, when nothing there can still move;
+    /// `None` when something can. The walk follows every publisher's reads
+    /// down to quiet ground and stops on a dirty publisher or an unsettled
+    /// external product. A dirty publisher is a job that has not re-run since
+    /// its own ground moved, or one still waiting for a fact nobody has
+    /// produced yet; either way the facts above it are clean only because
+    /// that run has not happened. A quiet fact ends the walk: nothing beneath
+    /// a quiet fact moves. A cycle of clean publishers is therefore final, and
+    /// a partial accumulation over an undiscovered layer is not.
+    fn quiescent_cone(&self, fact: &F, external: &impl ExternalDependencyStates<F>) -> Option<Vec<F>> {
         let mut pending = vec![fact];
         let mut seen = HashSet::new();
+        let mut cone = Vec::new();
         while let Some(key) = pending.pop() {
             if !seen.insert(key) {
                 continue;
             }
             if let Some(state) = external.external_state(key) {
                 if !state.settled {
-                    return true;
+                    return None;
                 }
                 continue;
             }
             if self.facts.is_quiet(key) {
                 continue;
             }
+            if !self.facts.is_locally_settled(key) {
+                return None;
+            }
+            cone.push(key.clone());
             for publisher in self.facts.publishers(key) {
                 if let Some(reads) = self.deps.reads(publisher) {
                     pending.extend(reads.iter().map(FactUse::fact));
                 }
             }
         }
-        false
+        Some(cone)
     }
 
     /// Whether something this job read can still move.

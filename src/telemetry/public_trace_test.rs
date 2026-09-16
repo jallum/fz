@@ -1534,7 +1534,7 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             // reached.
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                [[240, 0, 0, 9, 155], [614, 0, 0, 64, 392], [1130, 0, 0, 70, 643]][fixture_index][scenario],
+                [[237, 0, 0, 9, 5], [592, 0, 0, 64, 6], [1130, 0, 0, 70, 643]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()

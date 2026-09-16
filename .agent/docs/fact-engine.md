@@ -450,25 +450,33 @@ run.
 So at a drain — and only at a drain — the agenda decides. With no pending job,
 the only publisher that could still move a fact is one paused on a wait, and a
 paused publisher cannot run until something wakes it, at which point its claims
-dirty and its readers unfinalize through the ordinary path. `Settled(F)` at a
-drain is therefore exactly locally settled, which is what it meant everywhere
-before finality became transitive. The transitive rule is what holds DURING the
-ascent; the drain is where it is discharged.
+dirty and its readers unfinalize through the ordinary path. A locally clean
+publisher says nothing about the publishers it reads through, though: a dirty
+publisher several hops down looks the same, from the fact's own slot, as a
+settled cycle, until something actually walks the reads. So the drain arbiter
+walks the fact's transitive read ground and refuses to certify while it finds a
+dirty publisher there, or an external product beneath it that is unsettled.
+Only a cone with no dirty publisher and no unsettled external product in it is
+final, discharging the transitive rule that holds DURING the ascent.
 
 `Scheduler::settle_quiescent_ordered_with_external(facts, external, ctx)` is
 that discharge, and it is
-demand-driven: it answers the exact settled questions something is actually
+demand-driven: it walks from the exact settled questions something is actually
 asking — the blocked waiters' own settled waits (`World::settle_quiescent_waits`)
 and one product evaluation's exact prerequisite set
 (`product_drive::drive_product_fact_waits_with_sessions`). A product producer
 names every prerequisite it can identify in the same evaluation, and the pull
 driver presents that set to the arbiter atomically; serially arbitrating the
 members would turn one semantic barrier into multiple public readiness steps.
-Arbitration starts only from those requested facts. The selected fact must be
-locally clean and have no unsettled external-product ground. For each of its
-exact publishers, the scheduler records quiescent certification while retaining
-the actual unquiet-read count, and clears that publisher's unfinal claims through
-its existing output frontier.
+Arbitration starts only from those requested facts, but the walk that proves
+one of them final visits every unquiet fact in its transitive read ground, and
+the same argument proves each of those final too. The scheduler certifies the
+whole walked cone together, not only the fact that was asked — leaving a
+proven member uncertified would only re-arbitrate it at a later drain and wake
+its readers again. For each certified fact's exact publishers, the scheduler
+records quiescent certification while retaining the actual unquiet-read count,
+and clears that publisher's unfinal claims through its existing output
+frontier.
 Other publishers of a shared output still control their own claims. Ordinary
 quiet propagation carries the resulting readiness edges to readers.
 
