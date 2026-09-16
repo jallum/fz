@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-4nh.3"
+  ],
   "created": "2026-09-16T10:35:32Z",
   "description": "Add the minimal general runtime surfaces the Elixir distiller uses: OptionParser strict integer options, MapSet, Map fetch/update/new, string padding, controlled float formatting, and inspect rendering. Each API needs documented behavior and cross-door tests.",
   "id": "fz-4nh.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Add direct-tool parsing collection and formatting primitives",
   "type": "task",
-  "updated_at": "2026-09-16T10:35:32Z"
+  "updated_at": "2026-09-16T10:35:39Z"
 }
