@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-16T19:08:05Z",
   "created": "2026-09-16T18:56:42Z",
   "description": "Carry the one compiled PatternDispatchPlan\u003cTy\u003e snapshot as Rc through lowering and backend artifacts. Equal products share identity; a relevant replacement produces a new snapshot while old retained products remain valid. Prove pointer identity at artifact boundaries and update compiler docs.",
   "id": "fz-acn.16",
   "labels": [],
   "parent": "fz-acn",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Share retained typed dispatch plans across artifact products",
   "type": "task",
-  "updated_at": "2026-09-16T18:56:42Z"
+  "updated_at": "2026-09-16T19:08:05Z"
 }
