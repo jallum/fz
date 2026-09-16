@@ -6,6 +6,7 @@
   "blocks": [
     "fz-kdt.48.5"
   ],
+  "closed_at": "2026-09-16T07:35:04Z",
   "created": "2026-09-15T20:29:51Z",
   "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR3. As built on fz-kdt.48/one-ty-per-denotation at 3cf777603 (reviewed in three cold passes): types/axis.rs is the one absorber for the tuple, list, resource and map axes at Types::intern, and TyCanon runs the same function on the descriptors it synthesizes (and on the callable axis, replacing canon's saturate/drop_subsumed/visit_order). Each axis is one AxisView (install, clause_covers, structural coverage rule, optional AxisTop). Coverage is tiered: single-sibling containment through memoized Types::is_subtype, then the axis's structural rule (tuples/maps positionwise necessary condition over all same-arity/same-tag siblings; lists exact by shape; resources exact under the kernel = one sibling contains it alone, because emptiness::resource_clause_empty requires a single negative to swallow the payload), then the exact union question over descriptors (never mints). Only lists and resources have a top to reach, written as the widest single sig ([any], resource(any)); tuples and maps never saturate. A contentless clause is settled before the walk. Deleted: absorb_subsumed_tuple_clauses, absorb_subsumed_list_clauses, absorb_subsumed_clauses, dnf::tuple_clause_subsumed, dnf::list_clause_subsumed, per-axis exact dedupe, canon's saturate/drop_subsumed/visit_order. Also in this commit: storage clause order is a pure function of the descriptor (order.rs cmp_callable in Storage mode by FnId only; Activation keeps origin order) so TypeInterner::lookup is asked first in intern (95% of intern calls are index hits; misses unchanged). Census unchanged 134 / 17.\n\nNOT in this ticket, by decision after the first review: the callable axis is excluded from intern's absorber (an arrow carries a declared signature and a closure's capture layout beside its denotation; saturating (int) -\u003e any or absorbing closure[f]([mailbox]) into closure[f]([any]) would erase them). The funcs-axis absorption/saturation at intern lands with fz-kdt.48.7 once callable identity is one Ty per value.",
   "id": "fz-kdt.48.4",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "One absorber with saturation on every non-callable axis, at intern",
   "type": "task",
-  "updated_at": "2026-09-16T04:35:41Z"
+  "updated_at": "2026-09-16T07:35:04Z"
 }
