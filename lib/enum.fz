@@ -1420,6 +1420,34 @@ defmodule Enum do
   @spec zip([a], [b]) :: [{a, b}]
   def zip(left, right), do: zip_lists(to_list(left), to_list(right))
 
+  @doc """
+  Invokes `fun` with one value from each enumerable at a time, stopping when
+  any enumerable ends.
+
+  This is the collection-of-enumerables form: `Enum.zip_with([left, right],
+  fun)`. It is the shape table renderers need when their number of columns is
+  determined at runtime.
+  """
+  @spec zip_with([Enumerable.t(a)], ([a]) -> b) :: [b]
+  def zip_with(enumerables, fun), do: zip_with_lists(zip_inputs(enumerables, []), fun)
+
+  @spec zip_inputs([Enumerable.t(a)], [[a]]) :: [[a]]
+  defp zip_inputs([], inputs), do: Enum.reverse(inputs)
+  defp zip_inputs([enumerable | rest], inputs), do: zip_inputs(rest, [to_list(enumerable) | inputs])
+
+  @spec zip_with_lists([[a]], ([a]) -> b) :: [b]
+  defp zip_with_lists([], _fun), do: []
+  defp zip_with_lists(inputs, fun), do: zip_with_next(zip_row(inputs, [], []), fun)
+
+  @spec zip_row([[a]], [a], [[a]]) :: :halt | {:ok, [a], [[a]]}
+  defp zip_row([], values, tails), do: {:ok, Enum.reverse(values), Enum.reverse(tails)}
+  defp zip_row([[] | _rest], _values, _tails), do: :halt
+  defp zip_row([[value | tail] | rest], values, tails), do: zip_row(rest, [value | values], [tail | tails])
+
+  @spec zip_with_next(:halt | {:ok, [a], [[a]]}, ([a]) -> b) :: [b]
+  defp zip_with_next(:halt, _fun), do: []
+  defp zip_with_next({:ok, values, tails}, fun), do: [fun.(values) | zip_with_lists(tails, fun)]
+
   @spec zip_lists([a], [b]) :: [{a, b}]
   defp zip_lists([], _right), do: []
   defp zip_lists(_left, []), do: []

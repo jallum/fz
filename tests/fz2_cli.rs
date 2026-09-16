@@ -2053,6 +2053,51 @@ end
 }
 
 #[test]
+fn direct_distill_compatibility_surfaces_agree_across_every_execution_door() {
+    let source_path = unique_temp_path("fz2_direct_distill_compatibility", ".fz");
+    write(
+        &source_path,
+        r#"
+def main() do
+  record = JSON.decode!("{\"name\":\"compile\",\"elapsed\":12}")
+  columns = Enum.zip_with([["name", "compile"], ["elapsed", "12"]], fn column -> Enum.join(column, "=") end)
+
+  dbg({Map.fetch!(record, "name"), columns})
+end
+"#,
+    )
+    .expect("write direct Distill compatibility fixture");
+
+    let expected = "{\"compile\", [\"name=elapsed\", \"compile=12\"]}\n";
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[OsStr::new(command), source_path.as_os_str()]);
+        assert_successful_stdout(&out, expected, &format!("fz2 {command} direct Distill compatibility"));
+    }
+
+    let out_bin = unique_temp_path("fz2_direct_distill_compatibility_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build direct Distill compatibility should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&out_bin)
+        .output()
+        .expect("run built direct Distill compatibility fixture");
+    assert_successful_stdout(&run, expected, "fz2 build/run direct Distill compatibility");
+
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
+#[test]
 fn direct_distill_collection_compatibility_agrees_across_every_execution_door() {
     let source_path = unique_temp_path("fz2_direct_distill_collections", ".fz");
     write(
