@@ -79,16 +79,13 @@ impl Ty {
 
 pub struct Types {
     interner: TypeInterner,
-    /// The ids of the lattice constants, interned when the store is built.
+    /// The ids of every fixed core type, interned when the store is built.
     ///
-    /// `any` and `none` are CONSTANTS of the lattice, not derived facts: the
-    /// arena is append-only and both descriptors are already normal forms, so
-    /// their ids are stable for the life of the store. Holding them keeps their
-    /// constructors free — `any` would rebuild five clause vectors, while
-    /// `none` would otherwise hash and probe an empty descriptor every time a
-    /// path needs the lattice bottom.
-    any: Ty,
-    none: Ty,
+    /// These descriptors have no operand and are already normal forms, so
+    /// their ids are stable for the life of the store. Holding them makes each
+    /// fixed constructor a handle read: no descriptor is rebuilt, hashed, or
+    /// searched merely to rediscover a core type the arena already owns.
+    core: CoreTypes,
     comparisons: RefCell<ComparisonCache>,
     binary_type_operations: BinaryTypeOperationResults,
     /// Memoized `value_lane_repr`: the transport-lane representative of a type.
@@ -124,6 +121,28 @@ pub struct Types {
     /// produced it instead of leaking into the next reader. Threading a
     /// first-class sink through the join stays fz-0xp's.
     activation_input_collapses: u64,
+}
+
+/// The operand-free types every [`Types`] world knows from birth.
+///
+/// This is not an alternate interner. Each field is the one `Ty` the ordinary
+/// interner assigned to its already-normal descriptor at world construction.
+/// Keeping these handles is the direct, zero-work route for fixed constructors;
+/// operand-dependent constructors remain at the sole [`Types::intern`] boundary.
+struct CoreTypes {
+    any: Ty,
+    none: Ty,
+    nil: Ty,
+    bool_t: Ty,
+    int: Ty,
+    float: Ty,
+    atom: Ty,
+    empty_list: Ty,
+    str_t: Ty,
+    map_top: Ty,
+    pid: Ty,
+    reference: Ty,
+    c_pointer: Ty,
 }
 
 impl Default for Types {
@@ -479,20 +498,33 @@ impl Types {
         Self::default()
     }
 
-    /// Every type the store is born knowing: the two lattice constants.
+    /// Every type the store is born knowing: its operand-free core inventory.
     ///
-    /// They go in through the interner directly because `Descr::any()` and
-    /// `Descr::none()` are already the normal forms `Types::intern` would hand
-    /// back. `any` has one contentless clause on every axis; `none` has none.
-    /// Neither has an empty clause or ordering left to resolve.
+    /// They go in through the interner directly because each descriptor is
+    /// already the normal form `Types::intern` would hand back. `any` has one
+    /// contentless clause on every axis; `none` has none. Every other entry has
+    /// no operand and exactly one descriptor. None of these descriptors has an
+    /// empty clause or ordering left to resolve.
     fn with_constants() -> Self {
         let mut interner = TypeInterner::default();
-        let any = interner.intern(Descr::any());
-        let none = interner.intern(Descr::none());
+        let core = CoreTypes {
+            any: interner.intern(Descr::any()),
+            none: interner.intern(Descr::none()),
+            nil: interner.intern(Descr::nil()),
+            bool_t: interner.intern(Descr::bool_t()),
+            int: interner.intern(Descr::int()),
+            float: interner.intern(Descr::float()),
+            atom: interner.intern(Descr::atom_top()),
+            empty_list: interner.intern(Descr::empty_list()),
+            str_t: interner.intern(Descr::str_t()),
+            map_top: interner.intern(Descr::map_top()),
+            pid: interner.intern(Descr::builtin_opaque(BuiltinOpaque::Pid)),
+            reference: interner.intern(Descr::builtin_opaque(BuiltinOpaque::Ref)),
+            c_pointer: interner.intern(Descr::builtin_opaque(BuiltinOpaque::CPointer)),
+        };
         Self {
             interner,
-            any,
-            none,
+            core,
             comparisons: RefCell::default(),
             binary_type_operations: BinaryTypeOperationResults::default(),
             value_lane_reprs: HashMap::new(),
@@ -1184,23 +1216,23 @@ impl Types {
     }
 
     pub fn any(&mut self) -> Ty {
-        self.any
+        self.core.any
     }
 
     pub fn none(&mut self) -> Ty {
-        self.none
+        self.core.none
     }
 
     pub fn nil(&mut self) -> Ty {
-        self.intern(Descr::nil())
+        self.core.nil
     }
 
     pub fn bool(&mut self) -> Ty {
-        self.intern(Descr::bool_t())
+        self.core.bool_t
     }
 
     pub fn int(&mut self) -> Ty {
-        self.intern(Descr::int())
+        self.core.int
     }
 
     /// Numeric literals are VALUES, not types: the lattice deliberately
@@ -1211,7 +1243,7 @@ impl Types {
     }
 
     pub fn float(&mut self) -> Ty {
-        self.intern(Descr::float())
+        self.core.float
     }
 
     /// See `int_lit`: a float literal in type position means `float()`.
@@ -1220,7 +1252,7 @@ impl Types {
     }
 
     pub fn atom(&mut self) -> Ty {
-        self.intern(Descr::atom_top())
+        self.core.atom
     }
 
     pub fn atom_lit(&mut self, name: &str) -> Ty {
@@ -1270,7 +1302,7 @@ impl Types {
     }
 
     pub fn empty_list(&mut self) -> Ty {
-        self.intern(Descr::empty_list())
+        self.core.empty_list
     }
 
     pub fn list(&mut self, elem: Ty) -> Ty {
@@ -1286,11 +1318,11 @@ impl Types {
     }
 
     pub fn str_t(&mut self) -> Ty {
-        self.intern(Descr::str_t())
+        self.core.str_t
     }
 
     pub fn map_top(&mut self) -> Ty {
-        self.intern(Descr::map_top())
+        self.core.map_top
     }
 
     pub fn mint_brand(&mut self, inner: Ty, name: &str) -> Ty {
@@ -1304,7 +1336,11 @@ impl Types {
     }
 
     pub fn builtin_opaque(&mut self, builtin: BuiltinOpaque) -> Ty {
-        self.intern(Descr::builtin_opaque(builtin))
+        match builtin {
+            BuiltinOpaque::Pid => self.core.pid,
+            BuiltinOpaque::Ref => self.core.reference,
+            BuiltinOpaque::CPointer => self.core.c_pointer,
+        }
     }
 
     pub(crate) fn nominal_protocol_target(&mut self, name: ModuleName) -> Ty {

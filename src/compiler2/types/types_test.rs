@@ -73,6 +73,42 @@ fn empty_constant_and_self_difference_return_before_the_type_boundary() {
 }
 
 #[test]
+fn fixed_type_constructors_return_before_the_type_boundary() {
+    let mut t = Types::new();
+    let before = t.interning_work_stats();
+
+    let any = t.any();
+    let none = t.none();
+    let nil = t.nil();
+    let bool_t = t.bool();
+    let int = t.int();
+    let int_lit = t.int_lit(42);
+    let float = t.float();
+    let float_lit = t.float_lit(42.0);
+    let atom = t.atom();
+    let empty_list = t.empty_list();
+    let str_t = t.str_t();
+    let map_top = t.map_top();
+    let pid = t.pid();
+    let reference = t.reference();
+    let c_pointer = t.c_pointer();
+
+    assert_eq!(int_lit, int, "numeric literals use their fixed kind type");
+    assert_eq!(float_lit, float, "numeric literals use their fixed kind type");
+    assert_ne!(any, none, "the lattice constants stay distinct");
+    assert_ne!(nil, bool_t, "fixed atom types stay distinct");
+    assert_ne!(atom, empty_list, "fixed value families stay distinct");
+    assert_ne!(str_t, map_top, "fixed structural tops stay distinct");
+    assert_ne!(pid, reference, "built-in opaque identities stay distinct");
+    assert_ne!(reference, c_pointer, "built-in opaque identities stay distinct");
+    assert_eq!(
+        t.interning_work_stats(),
+        before,
+        "a fixed type is already owned by this world; its constructor must not rebuild, hash, or probe a descriptor"
+    );
+}
+
+#[test]
 fn repeating_binary_type_algebra_returns_before_it_rebuilds_a_descriptor() {
     let mut t = Types::new();
     let int = t.int();
