@@ -38,6 +38,7 @@ use crate::bitstr::{
 use crate::emit_print_line;
 use crate::exec_ctx::{ExecCtx, timer_schedule};
 use crate::heap::{AllocStat, HeapAllocKind, closure_capture_ref, list_head_ref, list_tail_ref, map_entry_refs};
+use crate::heap::{FieldKind, SchemaIdentity};
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
     ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
@@ -1879,6 +1880,43 @@ pub extern "C" fn fz_list_cons_any(process: *mut Process, head_ref_word: u64, ta
         .alloc_list_cons_any(head, tail)
         .expect("fz_list_cons_any")
         .raw_word()
+}
+
+/// `Tuple.to_list/1`: project the tuple schema's value fields and allocate a
+/// proper list in source order. Struct schemas are deliberately refused: a
+/// named record has fields, not positional tuple elements.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_tuple_to_list(process: *mut Process, tuple_ref_word: u64) -> u64 {
+    let tuple = any_value_ref_from_word(tuple_ref_word, "fz_tuple_to_list");
+    let addr = tuple.struct_addr().expect("Tuple.to_list expects a tuple");
+    let process_ref = unsafe { &mut *process };
+    let offsets: Vec<u32> = {
+        let registry = process_ref.heap.schemas_registry();
+        let registry = registry.borrow();
+        let schema = registry.get(unsafe { struct_schema_id(addr) });
+        assert!(
+            matches!(schema.identity, SchemaIdentity::Tuple(_)),
+            "Tuple.to_list expects a tuple"
+        );
+        schema
+            .fields
+            .iter()
+            .filter(|field| field.kind == FieldKind::AnyValue)
+            .map(|field| field.offset)
+            .collect()
+    };
+    let mut list = AnyValueRef::empty_list();
+    for offset in offsets.into_iter().rev() {
+        let value = process_ref
+            .heap
+            .read_struct_field_ref(tuple, offset)
+            .expect("tuple field");
+        list = process_ref
+            .heap
+            .alloc_list_cons_any(AnyValue::from_ref(value).expect("tuple field value"), list)
+            .expect("tuple list allocation");
+    }
+    list.raw_word()
 }
 
 #[unsafe(no_mangle)]
