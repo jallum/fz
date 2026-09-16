@@ -6,9 +6,15 @@
   "description": "notify_fixture_execution_start() (src/lib.rs) is called in src/compiler2/cli.rs run_command right before compiler.run_root_jit(root) and in interp_command before run_root_interp, i.e. after parsing and root submission but before the entire fixpoint drive, Cranelift JIT and the program run. tests/fixture_matrix.rs arms the execution deadline on that byte, so \"fz2 exceeded 20s\" on the run and interp doors measures compile + JIT + run, of which the program is under 0.2% on json_roundtrip. The harness's own policy test says pre-execution work must not arm the execution hang guard, and .agent/docs/fixtures.md describes the execution guard as starting when execution starts; the build door honours it (its compile is guarded from spawn, the built binary separately).\n\nFix: write the readiness byte at the real seam, immediately before the runtime spawns the program's entry, inside run_root_jit and run_root_interp (src/compiler2/compiler.rs), so the setup guard covers the compile and the execution guard covers the program. Signal: tests/fixture_matrix.rs's policy test made real by a fixture whose compile is slow and whose run is instant (json_roundtrip is one), asserting which deadline fires; the telemetry stream's process_exited timestamp minus the readiness time equals the program's run time.",
   "id": "fz-i9q",
   "labels": [],
+  "comments": [
+    {
+      "text": "Built as 549c3b05d on fz-i9q/readiness-at-the-seam, draft PR #174 against main; stack #171 (#169, #170, #172) is being rebased onto it so the fold arc's CI runs under the honest guard. Shape: one function signal_execution_ready (src/execution_ready.rs) emits fz.runtime.execution_ready and writes the FZ_EXEC_READY_FD byte; called from run_root_jit immediately before the runtime spawns the entry and from run_root_interp immediately before run_backend_main. The fz2 test door's own signal and its env_remove are deleted; each run-test-root child reaches the seam and the harness opens a new execution window on every byte (residual: test N+1's compile runs inside test N's window). Harness verdict is the fixture's expectation: success/abort require a byte whatever the exit status; diagnostic requires none and a byte is the finding. Proof: execution_guard_covers_the_program_not_the_compile (json_roundtrip run+interp under a 2s execution guard; compile ~4s, program ~30ms), rogue byte at the old site turns 28 diagnostic lanes red, suppressed byte turns 482 red incl. all 16 abort lanes. Timeouts unchanged; the 20s setup guard is now the compile's budget, so fz-ex9's work-counter step still decides CI determinism.",
+      "timestamp": "2026-09-16T00:05:39Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "The readiness byte precedes the compiler drive, so the execution hang guard times the compiler",
   "type": "bug",
-  "updated_at": "2026-09-15T14:01:52Z"
+  "updated_at": "2026-09-16T00:05:39Z"
 }
