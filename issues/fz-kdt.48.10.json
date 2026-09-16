@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.48.5"
+  ],
   "created": "2026-09-16T09:33:50Z",
   "description": "Plan: ../recursive-denotations-proposal.html. PR3 (fz-kdt.48), lands BEFORE fz-kdt.48.5.\n\nMeasured 2026-09-16 on fz-kdt.48/one-ty-per-denotation (2cb74c6bf and the .48.5 patch), instrumented seating + observe on both trees: at the Enum.drop_positive/take_positive call sites the decision tree asks the take arm's Region::Type question {:cont | :halt, C} (node n3) on a path that already holds the STRONGER proof Holds {:cont, C} (node n6 matched), so n3 is guaranteed to match and separates nothing: 7 of its 8 fires on 00183_enum_take_list_range are redundant, 2 of 3 on 00418_enum_count_range. Because of that redundant question, the ORDER of two already-Separated arms changes the number of matched questions per round, and the construction-coverage census (SURFACE_MEMBERSHIP_CENSUS in drive_test compiler2_no_value_reaches_a_construction_member_that_never_named_it) measures walk length: the parent seats the take arm first via lex_elements_then_longer's DNF clause-count tie-break (order.rs, b.len().cmp(\u0026a.len())) reached from canonically_order_separated_neighbours (callsite_dispatch.rs ~376/397); .48.5's tuple fusion removes that clause-count axis, the arms transpose (stdout byte-identical, routing identical, no question added or removed), and the census moves 82-\u003e79 x3, 382-\u003e353 x2, 12-\u003e14 x2.\n\nBuild: when the plan constructs a Region::Type (whole-value) question at a node whose path already carries a Holds proof of a SUBTYPE of that question, the question is discharged (the node collapses to its match edge). Decide from the plan's own typed facts (Types::is_subtype on the question types), never from clause count or rendering. Then the order of Separated arms is a determinism choice only and census-neutral: prove it by flipping the tie-break in a test/probe and showing every census row unchanged. Expected: 00183 79 -\u003e ~72 (inferred), every row at or below today's; no golden rises; pins lowered in the same motion. Tests: a decision-tree unit test with the two-arm witness (weaker question discharged, arm order irrelevant to matched-question count), plus the census pins. Doc: the dispatch planner doc gains the discharge rule; order.rs / callsite_dispatch.rs docs state that separated-arm order is determinism only. Unblocks fz-kdt.48.5, whose held patch then only lowers the census.",
   "id": "fz-kdt.48.10",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Discharge a dispatch question already proven by a stronger one on the path",
   "type": "task",
-  "updated_at": "2026-09-16T09:33:50Z"
+  "updated_at": "2026-09-16T09:33:51Z"
 }

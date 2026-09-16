@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-kdt.48.10",
     "fz-kdt.48.4"
   ],
   "blocks": [],
@@ -19,5 +20,5 @@
   "status": "open",
   "title": "Tuple carving fusion at intern, including the one-coordinate union merge",
   "type": "task",
-  "updated_at": "2026-09-16T07:03:03Z"
+  "updated_at": "2026-09-16T09:33:51Z"
 }
