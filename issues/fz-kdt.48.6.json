@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-kdt.48.5"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-kdt.48.7"
   ],
@@ -21,5 +19,5 @@
   "status": "open",
   "title": "One list normal form, one authority",
   "type": "task",
-  "updated_at": "2026-09-16T01:35:29Z"
+  "updated_at": "2026-09-16T07:03:03Z"
 }
