@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-16T21:34:44Z",
-  "description": "Goal: Return canonical bottom before constructing a tuple when any already-interned tuple field is the canonical bottom Ty.\n\nSignal: `Types::tuple` always allocates a tuple descriptor and enters `Types::intern`; the existing type tests prove `tuple([int, none]) = none`. Thus a shallow scan over immutable Ty handles can decide that construction before descriptor-level tuple-emptiness normalization traverses the field descriptors.\n\nStrategy: First measure the current interning work for a tuple containing `none`, then add the shallow public-boundary short circuit only if it preserves the exact existing law. Keep descriptor emptiness for arbitrary descriptors that have no Ty and do not add a hash/cache.\n\nTDD and acceptance: Assert semantic bottom plus zero interning work, exercise a nested tuple/enum canary, document the product-factor law, and complete fmt, check, strict Clippy, full tests, cold review, one commit, and close.",
+  "description": "Goal: Return canonical bottom from public tuple construction when an already-interned tuple field is the canonical bottom Ty, without adding a second traversal to ordinary tuple construction.\n\nSignal: `Types::tuple` always built a tuple descriptor and entered `Types::intern`; the existing type tests prove `tuple([int, none]) = none`. A red interning-work test for an interior `none` field measured one raw index probe, one full normalization, and one canonical-index probe for this known-empty product.\n\nStrategy: Fuse the shallow canonical-bottom check into the one field-copy pass `Types::tuple` already needs. Return `none` as soon as a field handle is bottom; otherwise pass the exact completed field vector into the descriptor builder. Keep descriptor emptiness for arbitrary descriptors that have no Ty and do not add a hash/cache or a pre-scan.\n\nTDD: Assert an interior bottom coordinate yields semantic bottom with no interning work. Exercise type algebra and the enum/f98 canaries.\n\nDocs and acceptance: Document the product-factor law and the no-extra-pass constraint. Run focused type and enum/f98 canaries, fmt, check, strict Clippy, full workspace tests, cold branch-base review, one commit, and close.",
   "id": "fz-kdt.48.22",
   "labels": [],
   "parent": "fz-kdt.48",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "Return impossible tuple construction before descriptor normalization",
   "type": "task",
-  "updated_at": "2026-09-16T21:43:14Z"
+  "updated_at": "2026-09-16T21:45:38Z"
 }
