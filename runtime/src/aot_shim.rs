@@ -38,6 +38,7 @@ use crate::sched::{
 use crate::timer::TimerWheel;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::ffi::{CStr, c_char};
 use std::process::abort;
 use std::ptr::{null, read_unaligned};
 use std::rc::Rc;
@@ -100,6 +101,9 @@ struct AotScheduler {
     /// `aot_timer_cancel_hook`, drained at the top of each
     /// `aot_run_queue_loop` iteration.
     timers: TimerWheel,
+    /// Host arguments after argv[0], retained for every process dispatched by
+    /// this AOT run.
+    program_args: Vec<String>,
     /// Per-run dispatch table. Its handles (Runtime/tel/module) stay null —
     /// AOT has none — and `scheduler` points back at this struct. Every AOT
     /// task points its `Process.ctx` here; the spawn/send/timer
@@ -150,6 +154,39 @@ fn parse_atom_blob(blob: *const u8, len: u32) -> Vec<String> {
         out.push(from_utf8(name).map(str::to_string).unwrap_or_default());
     }
     out
+}
+
+/// Copy the C entry's arguments into the AOT scheduler's stable ownership.
+/// Fz binaries are UTF-8 text programs, so an invalid host argument is a loud
+/// startup failure instead of an invalid `binary` value entering the runtime.
+fn parse_program_args(argc: i32, argv: *const *const c_char) -> Vec<String> {
+    let count = usize::try_from(argc).unwrap_or_else(|_| {
+        eprintln!("fz AOT: negative argc");
+        abort();
+    });
+    if count <= 1 {
+        return Vec::new();
+    }
+    if argv.is_null() {
+        eprintln!("fz AOT: argv is null with {count} arguments");
+        abort();
+    }
+    (1..count)
+        .map(|index| {
+            let arg = unsafe { *argv.add(index) };
+            if arg.is_null() {
+                eprintln!("fz AOT: argv[{index}] is null");
+                abort();
+            }
+            unsafe { CStr::from_ptr(arg) }
+                .to_str()
+                .unwrap_or_else(|_| {
+                    eprintln!("fz AOT: program arguments must be UTF-8");
+                    abort();
+                })
+                .to_string()
+        })
+        .collect()
 }
 
 struct BlobReader<'a> {
@@ -248,6 +285,8 @@ pub extern "C" fn fz_aot_setup(
     halt_cont_body_f64: *const u8,
     halt_cont_body_atom: *const u8,
     entry_thunk_addr: *const u8,
+    argc: i32,
+    argv: *const *const c_char,
 ) -> *mut Process {
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
 
@@ -283,8 +322,10 @@ pub extern "C" fn fz_aot_setup(
         drain_dtor_entry: null(),
         resume_addr: null(),
         timers: TimerWheel::new(),
+        program_args: parse_program_args(argc, argv),
         ctx: ExecCtx {
             output: Some(crate::output::STDOUT_OUTPUT_HOOK),
+            output_write: Some(crate::output::STDOUT_WRITE_HOOK),
             fault: Some(crate::STDERR_FAULT_HOOK),
             spawn: Some(aot_spawn_hook),
             send: Some(aot_send_hook),
@@ -300,6 +341,7 @@ pub extern "C" fn fz_aot_setup(
     // at dispatch. Both targets are stable — the box never moves.
     unsafe {
         (*sched).ctx.scheduler = sched as *mut ();
+        (*sched).ctx.argv = (*sched).program_args.as_slice();
         let proc_ptr = (*sched).tasks.get_mut(&1).map(|b| b.as_mut() as *mut Process).unwrap();
         (*proc_ptr).ctx = &mut (*sched).ctx;
         proc_ptr

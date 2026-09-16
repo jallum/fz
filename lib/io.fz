@@ -1,0 +1,20 @@
+defmodule IO do
+  @moduledoc """
+  Text output for command-line programs.
+
+  `write/1` writes a byte-aligned binary exactly as given. `puts/1` writes the
+  binary followed by one newline. Neither function formats its input: use
+  `Json.encode!/1`, `Integer.to_string/1`, or another explicit renderer when
+  presentation matters.
+  """
+
+  extern "fz" defp fz_io_write(binary) :: nil
+
+  @doc "Writes `text` to standard output without a newline."
+  @spec write(binary) :: nil
+  def write(text), do: fz_io_write(text)
+
+  @doc "Writes `text` followed by one newline."
+  @spec puts(binary) :: nil
+  def puts(text), do: write(text <> "\n")
+end

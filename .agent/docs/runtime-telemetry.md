@@ -67,12 +67,20 @@ renders fields synchronously.
 
 ## Program Output
 
-`dbg`/print lines are semantic program output, not telemetry. `emit_print_line`
-passes its existing rendered bytes through the running process's
-`ExecCtx.output` hook to an event-scoped `OutputSink`. The CLI sink writes those
-bytes to stdout immediately. A retaining test sink copies them during the
-callback. `NullOutput` does nothing. No sink constructs an event or stages a
-second copy for a later telemetry call.
+`dbg` lines and `IO` writes are semantic program output, not telemetry.
+`emit_print_line` passes rendered debug bytes through the running process's
+line-oriented `ExecCtx.output` hook to an event-scoped `OutputSink`; the stdout
+sink appends its newline there. `IO.write/1` uses the separate
+`ExecCtx.output_write` hook and preserves its binary argument byte-for-byte;
+`IO.puts/1` is `IO.write(text <> "\\n")`. A retaining test sink copies each
+callback-scoped line. `NullOutput` does nothing. No sink constructs an event or
+stages a second copy for a later telemetry call.
+
+`System.argv/0` reads the argument vector owned by that scheduler's `ExecCtx`.
+`fz2 run` and `fz2 interp` accept those program arguments after `--`; an AOT
+executable receives the operating-system argument vector directly. In every
+case the source or executable name is omitted, arguments must be UTF-8, and the
+runtime allocates a fresh fz list of binaries in the calling process heap.
 
 Interpreter, JIT, and AOT install the same raw callback boundary. An interpreter
 destructor-drain failure is propagated directly; it is not converted into a

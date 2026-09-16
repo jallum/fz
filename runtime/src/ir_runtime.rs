@@ -331,6 +331,35 @@ pub extern "C" fn fz_inspect(process: *mut Process, ref_word: u64) -> u64 {
     alloc_text(process, &render_value(process, value))
 }
 
+/// Return the current program's arguments as freshly allocated fz binaries.
+/// The execution context owns the host strings; this process owns the fz
+/// list, so no runtime value can outlive its heap.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_system_argv(process: *mut Process) -> u64 {
+    let args = unsafe { process_ctx(process) }.argv;
+    assert!(
+        !args.is_null(),
+        "fz_system_argv: execution context has no program arguments"
+    );
+    let mut list = AnyValueRef::empty_list();
+    for arg in unsafe { &*args }.iter().rev() {
+        let head = alloc_text(process, arg);
+        list = AnyValueRef::from_raw_word(fz_list_cons_ref(process, head, list.raw_word()))
+            .expect("fz_system_argv list value");
+    }
+    list.raw_word()
+}
+
+/// Write one byte-aligned binary without adding a newline. The caller owns
+/// presentation; `IO.puts/1` composes its newline in fz.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_io_write(process: *mut Process, ref_word: u64) -> u64 {
+    let (ptr, len) = byte_aligned_binary_slice(ref_word, "fz_io_write");
+    let ctx = unsafe { process_ctx(process) };
+    unsafe { (ctx.output_write.expect("fz_io_write: output callback installed"))(ctx.output_context, ptr, len) };
+    nil_atom_ref().raw_word()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_dynamic_float_arith_unsupported() -> u64 {
     panic!("dynamic float arithmetic needs a typed float result carrier")
