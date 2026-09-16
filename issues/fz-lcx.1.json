@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-lcx.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-lcx",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Expose program arguments and plain text output to fz tools",
   "type": "task",
-  "updated_at": "2026-09-16T09:52:23Z"
+  "updated_at": "2026-09-16T09:52:30Z"
 }
