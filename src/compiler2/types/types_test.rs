@@ -27,6 +27,82 @@ fn factory_interns_equal_descriptors() {
 }
 
 #[test]
+fn types_intern_two_phase_is_idempotent() {
+    let mut t = Types::new();
+    let recursive = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of([reserved[0]])])[0];
+    let inventory = t.identity_inventory();
+
+    assert_eq!(t.intern(Descr::tuple_of([recursive])), recursive);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+fn regular_test_tys(t: &mut Types) -> Vec<Ty> {
+    let first_self = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of([reserved[0]])])[0];
+    let second_self = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of([reserved[0]])])[0];
+    let mut nodes = vec![t.any(), t.int(), first_self, second_self];
+    for graph in 0..27 {
+        let children = [graph % 3, graph / 3 % 3, graph / 9];
+        if children[0] == children[1] || children[0] == children[2] || children[1] == children[2] {
+            continue;
+        }
+        nodes.extend(t.intern_two_phase(3, |reserved| {
+            children
+                .into_iter()
+                .map(|child| Descr::tuple_of([reserved[child]]))
+                .collect()
+        }));
+    }
+    nodes
+}
+
+#[test]
+fn types_order_equals_identity_on_regular_trees() {
+    let mut t = Types::new();
+    let nodes = regular_test_tys(&mut t);
+
+    for &left in &nodes {
+        for &right in &nodes {
+            let forward = t.cmp_ty(left, right);
+            assert_eq!(
+                forward == std::cmp::Ordering::Equal,
+                left == right,
+                "{left:?} and {right:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn types_order_is_total_on_cyclic_nodes() {
+    let mut t = Types::new();
+    let nodes = regular_test_tys(&mut t);
+
+    for &left in &nodes {
+        for &right in &nodes {
+            assert_eq!(
+                t.cmp_ty(left, right),
+                t.cmp_ty(right, left).reverse(),
+                "{left:?} and {right:?}"
+            );
+        }
+    }
+
+    for &left in &nodes {
+        for &middle in &nodes {
+            for &right in &nodes {
+                let left_middle = t.cmp_ty(left, middle);
+                let middle_right = t.cmp_ty(middle, right);
+                let left_right = t.cmp_ty(left, right);
+                assert!(
+                    !(left_middle.is_le() && middle_right.is_le() && left_right.is_gt()),
+                    "{left:?} <= {middle:?} <= {right:?}, but {left:?} > {right:?}",
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn literal_callable_identity_ignores_an_instantiated_surface() {
     let mut t = Types::new();
     let literal = t.fn_ref_lit(ClosureTarget(3), 1);
