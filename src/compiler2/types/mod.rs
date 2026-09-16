@@ -5,6 +5,7 @@
 
 mod addressed;
 mod arrow_match;
+mod axis;
 mod bits;
 mod canon;
 mod closure_surface_var;
@@ -213,22 +214,19 @@ impl TypeInterner {
         self.ctx().descr(t)
     }
 
-    /// The cheap debug half of the interned-DNF invariant: descriptors carry
-    /// no exact duplicate clause on any axis and no provably-empty or subsumed
-    /// tuple clause. `Types::intern` additionally absorbs typed list
-    /// containment through the memoized comparison cache. Repeating those
-    /// semantic comparisons here through raw descriptors would create a second
-    /// uncached authority, so list hygiene is proved at the canonicalizer's
-    /// typed boundary tests instead.
+    /// The cheap debug half of the interned-DNF invariant: a descriptor that
+    /// reaches the index carries no exact duplicate clause on any axis, no
+    /// provably-empty clause on any axis, and no subsumed tuple clause. This
+    /// runs on an index MISS, so it costs one sweep per distinct descriptor.
+    /// `Types::intern` additionally absorbs typed list containment through the
+    /// memoized comparison cache. Repeating those semantic comparisons here
+    /// through raw descriptors would create a second uncached authority, so
+    /// list hygiene is proved at the canonicalizer's typed boundary tests
+    /// instead.
     #[cfg(debug_assertions)]
     fn debug_assert_dnf_axes_hygienic(&self, d: &Descr) {
         let cx = self.ctx();
         for (i, c) in d.tuples.iter().enumerate() {
-            let mut memo = emptiness::Memo::default();
-            debug_assert!(
-                !emptiness::tuple_clause_empty(cx, c, &mut memo),
-                "interned descr carries a provably-empty tuple clause"
-            );
             for (j, other) in d.tuples.iter().enumerate() {
                 debug_assert!(
                     i == j || !tuple_clause_subsumed(c, other, |x, y| { cx.descr(x).is_subtype(cx, cx.descr(y)) }),
@@ -236,6 +234,11 @@ impl TypeInterner {
                 );
             }
         }
+        debug_assert_no_empty_clauses(cx, &d.tuples, emptiness::tuple_clause_empty, "tuples");
+        debug_assert_no_empty_clauses(cx, &d.lists, emptiness::list_clause_empty, "lists");
+        debug_assert_no_empty_clauses(cx, &d.resources, emptiness::resource_clause_empty, "resources");
+        debug_assert_no_empty_clauses(cx, &d.funcs, emptiness::func_clause_empty, "funcs");
+        debug_assert_no_empty_clauses(cx, &d.maps, emptiness::map_clause_empty, "maps");
         debug_assert_no_exact_duplicates(&d.lists, "lists");
         debug_assert_no_exact_duplicates(&d.resources, "resources");
         debug_assert_no_exact_duplicates(&d.funcs, "funcs");
@@ -290,6 +293,21 @@ fn absorb_subsumed_clauses<T>(clauses: &mut Vec<Conj<T>>, mut subsumed: impl FnM
         out.push(clause);
     }
     *clauses = out;
+}
+
+#[cfg(debug_assertions)]
+fn debug_assert_no_empty_clauses<T>(
+    cx: TyCtx<'_>,
+    clauses: &[Conj<T>],
+    clause_empty: fn(TyCtx<'_>, &Conj<T>, &mut emptiness::Memo) -> bool,
+    axis: &str,
+) {
+    for c in clauses {
+        debug_assert!(
+            !clause_empty(cx, c, &mut emptiness::Memo::default()),
+            "interned descr carries a provably-empty clause on the {axis} axis"
+        );
+    }
 }
 
 #[cfg(debug_assertions)]
@@ -357,7 +375,7 @@ impl Types {
             .or_else(|| self.as_atom_singleton(a).map(MapKey::Atom))
     }
 
-    /// The persistence boundary, in four passes that each leave the next one's
+    /// The persistence boundary, in passes that each leave the next one's
     /// precondition intact.
     ///
     /// TUPLE NORMALIZATION first: a ground tuple difference whose cover differs
@@ -367,37 +385,50 @@ impl Types {
     ///
     /// ORDER follows (fz-kdt.105): every axis goes into canonical clause order, so
     /// a descriptor's clause list is a function of its clause set rather than of
-    /// the arrival order that built it. It has to lead, because the absorption
-    /// below picks the survivor of a mutually-subsuming pair by ARRIVAL — sort
+    /// the arrival order that built it. It has to lead the absorption, which
+    /// picks the survivor of a mutually-subsuming pair by ARRIVAL — sort
     /// afterwards and the schedule would still be choosing which clause lives.
     ///
-    /// ABSORPTION and IDEMPOTENCE follow, and both are order-preserving filters
-    /// (the tuple/list canonicalizers keep survivors in input order;
-    /// `dedupe_exact_clauses` keeps the first occurrence), so what reaches the
-    /// interner index is still sorted.
+    /// The EMPTY-CLAUSE DROP follows, on all five axes: a clause that denotes
+    /// nothing is the union identity of its axis, so it goes before anything
+    /// reads the clause list. Sweeping every axis is also what keeps the
+    /// bottom collapse below cheap: an axis with no empty clause left is empty
+    /// exactly when it holds no clause at all, so the collapse's question stops
+    /// at the first surviving clause.
+    ///
+    /// ABSORPTION and IDEMPOTENCE follow, and all three filters are
+    /// order-preserving (the tuple/list absorbers keep survivors in input
+    /// order; `dedupe_exact_clauses` keeps the first occurrence), so what
+    /// reaches the interner index is still sorted.
     ///
     /// The BOTTOM COLLAPSE closes the pass. The empty set is reachable by many
     /// descriptor shapes — an empty brand slot, empty kind axes under a slot
     /// still at top, a tuple with an empty coordinate — and they all denote
-    /// the one set, so they all take the one `none` identity. It reads
-    /// descriptors only, so the check never mints the id it is about to
-    /// reject, and it runs after the axis canonicalizers so that it sees the
-    /// smallest clause lists.
+    /// the one set, so they all take the one `none` identity.
+    ///
+    /// It asks `looks_empty()`, not the recursive emptiness algorithm, and the
+    /// empty-clause drop above is what makes that exact: a swept axis holds no
+    /// clause that denotes nothing, so "every clause is empty" and "the axis
+    /// holds no clause" are the same question. Reading the descriptor
+    /// structurally also means the check never descends through interned
+    /// children, so it can neither mint the id it is about to reject nor
+    /// inherit the recursion's coinductive assumption about a cycle.
     ///
     /// One pass suffices because the composition is idempotent: re-interning an
     /// already-interned descriptor sorts an already-sorted list to itself, finds
-    /// no empty or subsumed tuple clause or subsumed list clause left to drop,
-    /// no exact duplicate left to collapse, and answers `none` for `none`, so it
-    /// hashes to the descriptor already in the index.
+    /// no empty or subsumed clause left to drop on any axis, no exact duplicate
+    /// left to collapse, and answers `none` for `none`, so it hashes to the
+    /// descriptor already in the index.
     fn intern(&mut self, mut d: Descr) -> Ty {
         self.normalize_tuple_coordinate_differences(&mut d);
         self.order_clauses(&mut d);
-        self.canonicalize_tuple_axis(&mut d);
-        self.canonicalize_list_axis(&mut d);
+        self.drop_empty_clauses(&mut d);
+        self.absorb_subsumed_tuple_clauses(&mut d);
+        self.absorb_subsumed_list_clauses(&mut d);
         dedupe_exact_clauses(&mut d.resources);
         dedupe_exact_clauses(&mut d.funcs);
         dedupe_exact_clauses(&mut d.maps);
-        if d.is_empty(self.ctx()) {
+        if d.looks_empty() {
             d = Descr::none();
         }
         self.interner.intern(d)
@@ -511,17 +542,18 @@ impl Types {
         seen
     }
 
-    /// The persistence boundary keeps the tuples axis of every
-    /// interned descriptor canonical: provably-empty clauses are dropped
-    /// (`A ∨ ∅ = A`) and subsumed clauses are absorbed (`A ⊆ B ⇒ A ∨ B = B`,
-    /// restoring the fz-et8 absorption lost in the compiler2 port). Both drop
-    /// rules preserve the denoted set exactly, so emptiness and subtyping
-    /// answers are unchanged — only the clause list shrinks. Running once at
+    /// `A ∨ ∅ = A` on every axis, by the shared rule in [`axis`]. Running it at
     /// intern covers every construction route (union, intersect, difference,
     /// substitution) with one pass, and keeps garbage from accumulating across
-    /// fixpoint iterations or doubling `dnf_neg` factors downstream.
-    fn canonicalize_tuple_axis(&self, d: &mut Descr) {
-        d.tuples.retain(|clause| !self.tuple_clause_provably_empty(clause));
+    /// fixpoint iterations or doubling `dnf_neg` factors downstream. Tuple
+    /// coordinates are asked through the memoized `Types::is_empty`.
+    fn drop_empty_clauses(&self, d: &mut Descr) {
+        axis::drop_empty_clauses(self.ctx(), d, &|ty| self.is_empty(ty));
+    }
+
+    /// Absorb tuple clauses a sibling already contains: `A ⊆ B ⇒ A ∨ B = B`.
+    /// Products compare coordinatewise where that is decidable.
+    fn absorb_subsumed_tuple_clauses(&self, d: &mut Descr) {
         absorb_subsumed_clauses(&mut d.tuples, |clause, sibling| {
             tuple_clause_subsumed(clause, sibling, |x, y| self.is_subtype(x, y))
         });
@@ -584,21 +616,10 @@ impl Types {
     /// Absorb list clauses whose denotation is contained in a sibling. The
     /// plain-positive relation is exact for the list model: empty membership
     /// and non-empty element containment are its only two dimensions.
-    fn canonicalize_list_axis(&self, d: &mut Descr) {
+    fn absorb_subsumed_list_clauses(&self, d: &mut Descr) {
         absorb_subsumed_clauses(&mut d.lists, |clause, sibling| {
             list_clause_subsumed(clause, sibling, |x, y| self.is_subtype(x, y))
         });
-    }
-
-    fn tuple_clause_provably_empty(&self, c: &Conj<TupleSig>) -> bool {
-        // Plain single-positive clauses (the overwhelmingly common shape) are
-        // empty iff a coordinate is — decidable through the memoized
-        // comparison cache without cloning descriptors.
-        if let ([p], []) = (c.pos.as_slice(), c.neg.as_slice()) {
-            return p.elems.iter().any(|e| self.is_empty(e));
-        }
-        let mut memo = emptiness::Memo::default();
-        emptiness::tuple_clause_empty(self.ctx(), c, &mut memo)
     }
 
     fn ctx(&self) -> TyCtx<'_> {

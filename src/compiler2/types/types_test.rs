@@ -2208,6 +2208,91 @@ mod tuple_dnf_hygiene {
     }
 }
 
+/// `A ∨ ∅ = A`, on every axis the DNF kernel carries.
+mod empty_clause_hygiene {
+    use super::*;
+
+    /// One axis's witnesses: an alternative the subtrahend covers, one it does
+    /// not, the subtrahend, and the reader for that axis's clause list.
+    struct AxisCase {
+        axis: &'static str,
+        covered: Ty,
+        survivor: Ty,
+        cover: Ty,
+        clause_count: fn(&Descr) -> usize,
+    }
+
+    /// A difference carves the axis it is taken on into one clause per
+    /// alternative of the minuend. An alternative the subtrahend COVERS —
+    /// covers without being spelled the same, so no `P ∧ ¬P` collapse
+    /// applies — denotes nothing. Every axis drops that clause before an
+    /// identity is assigned, so the difference persists as its survivor and
+    /// nothing beside it.
+    #[test]
+    fn an_empty_clause_is_dropped_on_every_axis() {
+        let mut t = Types::new();
+        let int = t.int();
+        let bin = t.str_t();
+        let float = t.float();
+        let wide = t.union(int, bin);
+        let key = MapKey::Atom("k".to_string());
+
+        let cases = [
+            AxisCase {
+                axis: "tuples",
+                covered: t.tuple(&[int]),
+                survivor: t.tuple(&[float]),
+                cover: t.tuple(&[wide]),
+                clause_count: |d| d.tuples.len(),
+            },
+            AxisCase {
+                axis: "lists",
+                covered: t.non_empty_list(int),
+                survivor: t.non_empty_list(float),
+                cover: t.non_empty_list(wide),
+                clause_count: |d| d.lists.len(),
+            },
+            AxisCase {
+                axis: "resources",
+                covered: t.resource(int),
+                survivor: t.resource(float),
+                cover: t.resource(wide),
+                clause_count: |d| d.resources.len(),
+            },
+            AxisCase {
+                axis: "funcs",
+                covered: t.closure_lit(ClosureTarget(66), vec![int], 1),
+                survivor: t.closure_lit(ClosureTarget(68), vec![float], 1),
+                cover: t.closure_lit(ClosureTarget(66), vec![wide], 1),
+                clause_count: |d| d.funcs.len(),
+            },
+            AxisCase {
+                axis: "maps",
+                covered: t.map(&[(key.clone(), int)]),
+                survivor: t.map(&[(key.clone(), float)]),
+                cover: t.map(&[(key, wide)]),
+                clause_count: |d| d.maps.len(),
+            },
+        ];
+
+        for case in cases {
+            let carved = t.union(case.covered, case.survivor);
+            let rest = t.difference(carved, case.cover);
+            assert_eq!(
+                (case.clause_count)(t.descr(&rest)),
+                1,
+                "{}: the covered alternative must not persist as an empty clause",
+                case.axis
+            );
+            assert!(
+                t.is_equivalent(&rest, &case.survivor),
+                "{}: and the survivor is the whole answer",
+                case.axis
+            );
+        }
+    }
+}
+
 // fz-go4.25 — list-clause emptiness: exact-empty evidence must survive the
 // positive elem fold.
 //

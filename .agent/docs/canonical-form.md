@@ -56,7 +56,6 @@ Getting there takes normalization, because one type has many descriptors. Each
 step below rewrites a descriptor to a semantically EQUAL one, which is what
 makes "same rendering implies equivalent" true by construction:
 
-- **drop empty clauses** — a clause denoting `∅` contributes nothing;
 - **saturate** — clauses that between them cover a whole axis collapse to that
   axis's top. `(X) -> any` constrains nothing, so it denotes every callable
   whatever `X` is;
@@ -78,6 +77,13 @@ makes "same rendering implies equivalent" true by construction:
 - **sort** — clause order inside a DNF, and factor order inside a clause, follow
   the order facts arrived in. Sorting them on their rendered bytes is a
   presentation-boundary sort, the one place sorting is free of consequence.
+
+Dropping empty clauses is not among them, because it is one shared rule
+(`types::axis`) that `Types::intern` applies at the persistence boundary.
+Intern is that rule's authority; this module is its second caller, for the
+descriptors it builds ITSELF — a widened tuple coordinate, a list clause's
+intersected element fragment — which never reach the interner and would
+otherwise be rendered unswept.
 
 Normalization runs on DESCRIPTORS rather than on interned `Ty`s alone: widening
 builds descriptors that were never interned, and interning them would mutate the

@@ -129,9 +129,24 @@ deliberate: a tie broken by two FREE type vars falls back to mint order, and
 intra-clause factor order (`Conj::pos`, grown in `dnf_intersect_with` arrival
 order) is a second dimension this pass does not touch.
 
-Then ABSORPTION, on the tuple and list axes: provably-empty tuple clauses are
-dropped (`A ∨ ∅ = A`) and subsumed clauses absorbed
-(`A ⊆ B ⇒ A ∨ B = B`) through the memoized comparison cache. Tuple
+Then the EMPTY-CLAUSE DROP, on all five axes: a DNF axis denotes the union of
+its clauses, so a clause that denotes nothing is that union's identity
+(`A ∨ ∅ = A`) and is filtered out. Each axis asks its own
+`emptiness::*_clause_empty` (`types/axis.rs`); the tuple axis takes a memoized
+`Types::is_empty` shortcut for the common plain-positive product, injected by
+the caller so the rule itself holds no cache. Sweeping all five is also what
+makes the bottom collapse below exact AND cheap: an axis with no empty clause
+left is empty exactly when it holds no clause at all, so the collapse reads the
+descriptor structurally instead of re-running the recursion.
+
+`Types::intern` is that rule's authority, but not its only caller: `TyCanon`
+applies the same function to the descriptors it synthesizes itself, because
+tuple-coordinate widening and a list clause's intersected element fragment
+build `Descr` values that never reach the interner and an intersection can
+empty a clause there too.
+
+Then ABSORPTION, on the tuple and list axes: clauses a sibling already contains
+are absorbed (`A ⊆ B ⇒ A ∨ B = B`) through the memoized comparison cache. Tuple
 products compare coordinatewise where that is decidable. Plain positive list
 clauses compare their two exact dimensions: whether they admit `[]`, and
 whether their non-empty element type is contained. Thus
@@ -149,9 +164,11 @@ left to absorb or collapse, and hits the index.
 
 Last, the BOTTOM COLLAPSE: a descriptor that denotes the empty set is replaced
 by `Descr::none()` before an id is assigned, so the empty set has exactly one
-`Ty` however it was reached. It runs on descriptors through the same emptiness
-algorithm the axes use, so it never mints the id it is about to reject, and it
-runs after the axis passes so it reads the smallest clause lists.
+`Ty` however it was reached, and `Types::is_empty(t)` holds exactly when `t` is
+that id. It asks `Descr::looks_empty()`, which the empty-clause drop above
+makes exact; reading the descriptor structurally also means it never descends
+through interned children, so it can neither mint the id it is about to reject
+nor inherit the emptiness recursion's coinductive assumption about a cycle.
 
 What clause order canNOT reconcile is a different CARVING of one type:
 `{[int], :false} | {[int], :true}` and `{[int], :false | :true}` are one
@@ -164,10 +181,11 @@ otherwise intern as a different `Ty` than `funcs = [A]`. That difference is
 what the activation key is built from, so idempotence at the boundary is what
 makes the key a join homomorphism (fz-kdt.80). A debug-build assert in
 `TypeInterner::intern` (`debug_assert_dnf_axes_hygienic`) checks structural
-idempotence and tuple hygiene in debug builds; the typed list-absorption tests
-exercise the memoized semantic relation without adding a second uncached
-comparison sweep. The tuple-emptiness recursion
-(`emptiness::phi_tuple`) returns early on an empty coordinate and drops
+idempotence, the empty-clause invariant on all five axes, and tuple
+subsumption; it runs on an index miss, so it costs one sweep per distinct
+descriptor. The typed list-absorption tests exercise the memoized semantic
+relation without adding a second uncached comparison sweep. The tuple-emptiness
+recursion (`emptiness::phi_tuple`) returns early on an empty coordinate and drops
 negations disjoint from the product, so it explores only inhabited splits
 instead of fanning out `arity^|negs|` branches.
 

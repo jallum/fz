@@ -29,6 +29,7 @@ use std::sync::Arc;
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::FnId;
 
+use super::axis;
 use super::bits::{BASIC_NAMES, BasicBits};
 use super::conj::Conj;
 use super::descr::Descr;
@@ -148,6 +149,11 @@ impl<'a> TyCanon<'a> {
     // Body
     // ------------------------------------------------------------------
 
+    /// The descriptors this module builds ITSELF — a widened tuple coordinate,
+    /// a list clause's intersected element fragment — never reach the
+    /// interner, so the empty-clause drop the boundary applies is applied here
+    /// too, by the same function. On a descriptor that did come from the
+    /// interner it finds nothing and the sweep is a no-op.
     fn descr_body(&mut self, cx: TyCtx<'_>, d: &Descr) -> String {
         if d.is_empty_memo(cx, &mut Memo::default()) {
             return "none".to_string();
@@ -155,6 +161,9 @@ impl<'a> TyCanon<'a> {
         if is_full(cx, d) {
             return "any".to_string();
         }
+        let mut swept = d.clone();
+        axis::drop_empty_clauses(cx, &mut swept, &|ty| cx.descr(ty).is_empty(cx));
+        let d = &swept;
         let axes = self.axes(cx, d);
         let mut parts: Vec<String> = basic_names(d.basic);
         push_set(&mut parts, &d.atoms, "atom", |name| format!(":{name}"));
@@ -351,45 +360,25 @@ impl<'a> TyCanon<'a> {
     // ------------------------------------------------------------------
 
     fn axes(&mut self, cx: TyCtx<'_>, d: &Descr) -> Axes {
-        let tuples = saturate(
-            cx,
-            drop_empty(cx, &d.tuples, emptiness::tuple_clause_empty),
-            |d, clauses| d.tuples = clauses,
-        );
+        let tuples = saturate(cx, d.tuples.clone(), |d, clauses| d.tuples = clauses);
         let (mut tuple_rects, tuple_complex) = split_rects(tuples);
         widen_rects(cx, &mut tuple_rects);
         let rect_keys = tuple_rects.iter().map(|rect| self.rect_text(cx, rect)).collect();
         let tuple_rects = drop_subsumed_rects(cx, tuple_rects, rect_keys);
 
-        let lists = saturate(
-            cx,
-            drop_empty(cx, &d.lists, emptiness::list_clause_empty),
-            |d, clauses| d.lists = clauses,
-        );
+        let lists = saturate(cx, d.lists.clone(), |d, clauses| d.lists = clauses);
         let keys = self.clause_texts(cx, &lists, Self::list_clause);
         let lists = drop_subsumed(cx, lists, keys, |d, clauses| d.lists = clauses);
 
-        let resources = saturate(
-            cx,
-            drop_empty(cx, &d.resources, emptiness::resource_clause_empty),
-            |d, clauses| d.resources = clauses,
-        );
+        let resources = saturate(cx, d.resources.clone(), |d, clauses| d.resources = clauses);
         let keys = self.clause_texts(cx, &resources, Self::resource_clause);
         let resources = drop_subsumed(cx, resources, keys, |d, clauses| d.resources = clauses);
 
-        let funcs = saturate(
-            cx,
-            drop_empty(cx, &d.funcs, emptiness::func_clause_empty),
-            |d, clauses| d.funcs = clauses,
-        );
+        let funcs = saturate(cx, d.funcs.clone(), |d, clauses| d.funcs = clauses);
         let keys = self.clause_texts(cx, &funcs, Self::func_clause);
         let funcs = drop_subsumed(cx, funcs, keys, |d, clauses| d.funcs = clauses);
 
-        let maps = saturate(
-            cx,
-            drop_empty(cx, &d.maps, emptiness::map_clause_empty),
-            |d, clauses| d.maps = clauses,
-        );
+        let maps = saturate(cx, d.maps.clone(), |d, clauses| d.maps = clauses);
         let keys = self.clause_texts(cx, &maps, Self::map_clause);
         let maps = drop_subsumed(cx, maps, keys, |d, clauses| d.maps = clauses);
 
@@ -447,18 +436,6 @@ struct Axes {
     resources: Vec<Conj<ResourceSig>>,
     funcs: Vec<Conj<ArrowSig>>,
     maps: Vec<Conj<MapSig>>,
-}
-
-fn drop_empty<T: Clone>(
-    cx: TyCtx<'_>,
-    clauses: &[Conj<T>],
-    is_empty: fn(TyCtx<'_>, &Conj<T>, &mut Memo) -> bool,
-) -> Vec<Conj<T>> {
-    clauses
-        .iter()
-        .filter(|c| !is_empty(cx, c, &mut Memo::default()))
-        .cloned()
-        .collect()
 }
 
 /// Collapse an axis whose clauses already cover the whole axis to that axis's
