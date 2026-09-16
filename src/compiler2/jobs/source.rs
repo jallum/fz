@@ -110,6 +110,7 @@ pub(super) fn scope_code(
             namespace,
             reads: scope_reads,
             product_reads,
+            derivations,
             mut outputs,
             mut changed,
             ..
@@ -124,8 +125,9 @@ pub(super) fn scope_code(
                 changed.push(FactKey::CodeScoped(source_owner));
             }
             Ok(JobEffects {
-                reads: current_uses(reads),
+                reads: current_uses(reads.clone()),
                 product_reads,
+                derivations: ground_derivations(derivations, &reads),
                 outputs,
                 changed,
                 ..JobEffects::default()
@@ -133,6 +135,24 @@ pub(super) fn scope_code(
         }
         ScopePublication::Blocked(effects) => Ok(effects),
     }
+}
+
+/// Every answer a walk reached also stands on the ground the JOB read before
+/// the walk began -- the preludes it layered in, the parent scope it opened
+/// under. Without them an answer would look like it read nothing, and a
+/// publisher whose reads are all absent is quiet: the claim would settle on
+/// amnesia rather than on ground.
+fn ground_derivations(
+    derivations: Vec<super::super::drive::JobDerivation>,
+    base: &[FactKey],
+) -> Vec<super::super::drive::JobDerivation> {
+    derivations
+        .into_iter()
+        .map(|mut derivation| {
+            derivation.reads.splice(0..0, current_uses(base.to_vec()));
+            derivation
+        })
+        .collect()
 }
 
 /// Builds one module surface when something demands that module.
@@ -176,6 +196,7 @@ pub(super) fn define_module(
                 revision_floor: _revision_floor,
                 reads,
                 product_reads,
+                derivations,
                 mut outputs,
                 mut changed,
                 interface,
@@ -194,6 +215,7 @@ pub(super) fn define_module(
                 Ok(JobEffects {
                     reads: current_uses(reads),
                     product_reads,
+                    derivations,
                     outputs,
                     changed,
                     ..JobEffects::default()

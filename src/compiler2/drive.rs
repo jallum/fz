@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::telemetry::{RawSpanGuard, RawSpanStop0, RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt};
 
 use super::code::SourceOwner;
-use super::facts::{ClaimShape, FactUse};
+use super::facts::{ClaimShape, FactUse, Publisher};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::pull::ProductKey;
 use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
@@ -60,6 +60,7 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
             .world
             .work_graph
             .dependency_uses(&job)
+            .iter()
             .filter_map(|usage| match usage.fact() {
                 DependencyKey::Product(address) => Some(address.clone()),
                 _ => None,
@@ -464,13 +465,110 @@ pub(crate) fn as_fact_use(usage: FactUse<DependencyKey>) -> Option<FactUse<FactK
     }
 }
 
-pub type WorkGraph = Scheduler<Job, DependencyKey>;
+/// Which answer of a job a claim belongs to. A job that answers one question
+/// per run publishes every fact under `Job`. A job that answers several --
+/// a scope walk gives one answer per function it reaches, an analysis one per
+/// activation it contributes to -- names the key of each answer, and each
+/// stands on exactly the reads that produced it.
+///
+/// The key is the question, never the position: a walk that stops earlier one
+/// run and later the next must still name the same answers, or a re-run could
+/// not replace what it re-derived nor retract what it no longer reaches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub enum DerivationKey {
+    /// The job's own answer -- the one its standing waits leave deriving.
+    #[default]
+    Job,
+    Function(FunctionId),
+    Activation(ActivationKey),
+    Executable(ExecutableKey),
+    InputSlot(super::incoming_inputs::InputSlot),
+}
 
-/// One job's answer: exact dependencies, owned facts, and contributions.
+/// One answer a job gave. Reads, claims, cleanliness and finality are all
+/// per answer; the agenda, standing waits and wakes are per job.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Derivation {
+    pub job: Job,
+    pub key: DerivationKey,
+}
+
+impl Derivation {
+    pub(crate) fn of(job: Job, key: DerivationKey) -> Self {
+        Self { job, key }
+    }
+}
+
+impl Publisher for Derivation {
+    type Run = Job;
+
+    fn run(&self) -> &Job {
+        &self.job
+    }
+
+    fn of_run(job: &Job) -> Self {
+        Self {
+            job: job.clone(),
+            key: DerivationKey::Job,
+        }
+    }
+}
+
+impl SemanticOrd<Types> for Derivation {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        self.job
+            .semantic_cmp(&other.job, types)
+            .then_with(|| self.key.semantic_cmp(&other.key, types))
+    }
+}
+
+impl SemanticOrd<Types> for DerivationKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        derivation_key_rank(self)
+            .cmp(&derivation_key_rank(other))
+            .then_with(|| match (self, other) {
+                (DerivationKey::Function(left), DerivationKey::Function(right)) => left.cmp(right),
+                (DerivationKey::Activation(left), DerivationKey::Activation(right)) => left.semantic_cmp(right, types),
+                (DerivationKey::Executable(left), DerivationKey::Executable(right)) => left.semantic_cmp(right, types),
+                (DerivationKey::InputSlot(left), DerivationKey::InputSlot(right)) => left.semantic_cmp(right, types),
+                _ => std::cmp::Ordering::Equal,
+            })
+    }
+}
+
+fn derivation_key_rank(key: &DerivationKey) -> u8 {
+    match key {
+        DerivationKey::Job => 0,
+        DerivationKey::Function(_) => 1,
+        DerivationKey::Activation(_) => 2,
+        DerivationKey::Executable(_) => 3,
+        DerivationKey::InputSlot(_) => 4,
+    }
+}
+
+pub type WorkGraph = Scheduler<Derivation, DependencyKey>;
+
+/// One answer a job reached before its own conclusion: the facts it owns and
+/// the ground it stood on when it reached them. Each is published as its own
+/// derivation, so a run that blocks later cannot unsettle what it already
+/// decided, and a reader of one answer never inherits the reads of another.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct JobDerivation {
+    pub(crate) key: DerivationKey,
+    pub(crate) reads: Vec<FactUse<FactKey>>,
+    pub(crate) product_reads: Vec<ProductAddress>,
+    pub(crate) outputs: Vec<FactKey>,
+    pub(crate) changed: Vec<FactKey>,
+}
+
+/// One job run: the answers it reached, and its own dependencies, owned facts
+/// and contributions.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct JobEffects {
     /// Actual RuntimeDemand body walks; prerequisite-only returns perform none.
     pub(crate) runtime_demand_evaluations: u64,
+    /// The answers this run reached on the way to its own conclusion.
+    pub(crate) derivations: Vec<JobDerivation>,
     pub(crate) reads: Vec<FactUse<FactKey>>,
     pub(crate) waits: Vec<FactUse<FactKey>>,
     pub(crate) product_reads: Vec<ProductAddress>,

@@ -86,8 +86,11 @@ fn completion_claims_belong_directly_to_the_job_that_read_their_ground() {
             .publishers(&DependencyKey::Fact(fact))
             .cloned()
             .collect::<Vec<_>>(),
-        vec![job],
-        "the production completion has one owning job, shared by its reads and claims"
+        vec![crate::compiler2::drive::Derivation::of(
+            job,
+            crate::compiler2::drive::DerivationKey::Job
+        )],
+        "the production completion has one owning answer, shared by its reads and claims"
     );
 }
 

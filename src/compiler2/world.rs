@@ -520,6 +520,30 @@ impl World {
         effects: JobEffects,
         external: &impl ExternalDependencyStates<DependencyKey>,
     ) -> JobCompletion {
+        // The answers this run reached on the way to its own conclusion. Each
+        // carries the ground it stood on at that point, so a walk that blocks
+        // later leaves them standing and a reader of one never inherits the
+        // reads of another.
+        let reached = effects
+            .derivations
+            .into_iter()
+            .map(|derivation| super::scheduler::DerivationEffects {
+                publisher: super::drive::Derivation::of(job.clone(), derivation.key),
+                reads: derivation
+                    .reads
+                    .into_iter()
+                    .map(fact_dependency)
+                    .chain(
+                        derivation
+                            .product_reads
+                            .into_iter()
+                            .map(|address| FactUse::current(DependencyKey::Product(address))),
+                    )
+                    .collect(),
+                outputs: derivation.outputs.into_iter().map(DependencyKey::Fact).collect(),
+                changed: derivation.changed.into_iter().map(DependencyKey::Fact).collect(),
+            })
+            .collect::<Vec<_>>();
         let reads = effects
             .reads
             .into_iter()
@@ -668,10 +692,16 @@ impl World {
         let step = self.work_graph.complete_ordered_with_external(
             &job,
             CompletionEffects {
-                reads,
+                derivations: reached
+                    .into_iter()
+                    .chain([super::scheduler::DerivationEffects {
+                        publisher: super::drive::Derivation::of(job.clone(), super::drive::DerivationKey::Job),
+                        reads,
+                        outputs: outputs.into_iter().map(DependencyKey::Fact).collect(),
+                        changed: changed.into_iter().map(DependencyKey::Fact).collect(),
+                    }])
+                    .collect(),
                 waits,
-                outputs: outputs.into_iter().map(DependencyKey::Fact).collect(),
-                changed: changed.into_iter().map(DependencyKey::Fact).collect(),
             },
             external,
             &self.types,

@@ -1,5 +1,6 @@
 use super::ordered_set::OrderedSet;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Debug;
 use std::hash::Hash;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -145,6 +146,27 @@ pub struct FactReplace<F> {
     /// That order is load-bearing: it becomes the wake order downstream
     /// (fz-f98.19).
     pub output_keys: OrderedSet<F>,
+}
+
+/// Who owns a claim. One job run answers one question per derivation it
+/// reaches, and each answer stands on its own reads, so each is its own
+/// publisher. A job that answers a single question per run is its own
+/// publisher and `Run` is the job itself.
+///
+/// The split is what lets a run give an answer and keep deriving: standing
+/// waits belong to the job, so they leave the job's OWN publisher unfinished
+/// while the answers it already reached are complete.
+pub trait Publisher: Clone + Eq + Hash + Debug {
+    /// The job whose run produces this answer. The agenda, standing waits and
+    /// every wake name this; reads, claims and finality name the publisher.
+    type Run: Clone + Eq + Hash + Debug;
+
+    /// The job this answer came from.
+    fn run(&self) -> &Self::Run;
+
+    /// The publisher of the job's own answer, the one a standing wait leaves
+    /// deriving.
+    fn of_run(run: &Self::Run) -> Self;
 }
 
 /// One fact: the set of PUBLISHERS that currently claim it, plus a monotonic

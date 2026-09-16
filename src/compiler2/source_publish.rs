@@ -16,7 +16,7 @@ use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
 
 use super::code::SourceOwner;
-use super::drive::{FactKey, JobEffects, current_uses};
+use super::drive::{DerivationKey, FactKey, JobDerivation, JobEffects, current_uses};
 use super::identity::{
     DeclaredCallableKind, FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource, TypeName,
 };
@@ -50,6 +50,9 @@ pub(crate) enum ScopePublication {
         revision_floor: u64,
         reads: Vec<FactKey>,
         product_reads: Vec<ProductAddress>,
+        /// One answer per function the walk reached, each standing on the
+        /// ground above it.
+        derivations: Vec<JobDerivation>,
         outputs: Outputs,
         changed: Changed,
         interface: ModuleInterface,
@@ -115,6 +118,9 @@ struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     pending_types: Vec<PendingType>,
     required_remote_macros: HashSet<FunctionId>,
     reads: Vec<FactKey>,
+    /// One answer per function the walk has reached, each carrying the ground
+    /// that stood above it at that point.
+    derivations: Vec<JobDerivation>,
     outputs: Outputs,
     changed: Changed,
     callables: Vec<ModuleInterfaceCallable>,
@@ -264,6 +270,7 @@ pub(crate) fn publish_protocol_surface(
         revision_floor: 0,
         reads: Vec::new(),
         product_reads: Vec::new(),
+        derivations: Vec::new(),
         outputs,
         changed,
         interface: ModuleInterface::new(callables),
@@ -521,6 +528,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             pending_types: Vec::new(),
             required_remote_macros: HashSet::new(),
             reads: Vec::new(),
+            derivations: Vec::new(),
             outputs: Vec::new(),
             changed: Vec::new(),
             callables: Vec::new(),
@@ -844,10 +852,20 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             context.export_public,
             required_remote_macro_list(&self.required_remote_macros),
         );
-        self.outputs.push(FactKey::FunctionSourceStash(publication.function));
-        if publication.stashed_changed {
-            self.changed.push(FactKey::FunctionSourceStash(publication.function));
-        }
+        // Reaching this definition is one answer of the walk: whatever the
+        // rest of the scope turns out to need, this function's source follows
+        // from the ground the walk has read so far and nothing below it.
+        self.derivations.push(JobDerivation {
+            key: DerivationKey::Function(publication.function),
+            reads: current_uses(self.reads.clone()),
+            product_reads: self.product_reads.clone(),
+            outputs: vec![FactKey::FunctionSourceStash(publication.function)],
+            changed: publication
+                .stashed_changed
+                .then_some(FactKey::FunctionSourceStash(publication.function))
+                .into_iter()
+                .collect(),
+        });
         Ok(publication)
     }
 
@@ -1103,6 +1121,10 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {
         effects.reads.extend(current_uses(self.reads.clone()));
         effects.product_reads.extend(self.product_reads.clone());
+        // The answers the walk reached before it blocked are complete, and each
+        // stands on the ground above it, so they are published as their own
+        // derivations rather than left dirty behind the wait.
+        effects.derivations.extend(self.derivations.iter().cloned());
         effects.outputs.extend(self.outputs.clone());
         effects.changed.extend(self.changed.clone());
         effects
@@ -1499,6 +1521,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             revision_floor: self.revision_floor,
             reads: self.reads,
             product_reads: self.product_reads,
+            derivations: self.derivations,
             outputs: self.outputs,
             changed: self.changed,
             interface: ModuleInterface::new(self.callables),

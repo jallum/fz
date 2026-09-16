@@ -21607,6 +21607,7 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
 
 #[test]
 fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
+    use crate::compiler2::drive::{Derivation, DerivationKey};
     use crate::compiler2::scheduler::{CompletionEffects, Scheduler};
     use crate::compiler2::semantic::SemanticOrd;
 
@@ -21624,7 +21625,7 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
     let shared = FactKey::CodeIndexed(crate::compiler2::SourceOwner::for_test(0));
     let writer = Job::IndexCode(crate::compiler2::SourceOwner::for_test(0));
 
-    let complete = |scheduler: &mut Scheduler<Job, FactKey>,
+    let complete = |scheduler: &mut Scheduler<Derivation, FactKey>,
                     job: &Job,
                     reads: HashSet<FactUse<FactKey>>,
                     waits: HashSet<FactUse<FactKey>>,
@@ -21632,12 +21633,13 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
                     changed: Vec<FactKey>| {
         scheduler.complete_ordered(
             job,
-            CompletionEffects {
+            CompletionEffects::single(
+                Derivation::of(job.clone(), DerivationKey::Job),
                 reads,
                 waits,
                 outputs,
                 changed,
-            },
+            ),
             &types,
         )
     };
