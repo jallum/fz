@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T11:05:51Z",
+  "description": "The direct Distill source uses the standard Elixir spelling fn -\u003e value end for a zero-argument fallback. fz currently accepts only fn () -\u003e value end and reports unsupported expression prefix Arrow. Accept the standard spelling with parser and cross-door coverage, so direct tool ports do not carry this cosmetic divergence.",
+  "id": "fz-4nh.5",
+  "labels": [],
+  "parent": "fz-4nh",
+  "priority": 2,
+  "status": "open",
+  "title": "Accept Elixir zero-argument anonymous functions",
+  "type": "task",
+  "updated_at": "2026-09-16T11:05:51Z"
+}
