@@ -2,7 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
-  "closed_at": "2026-09-15T06:21:33Z",
+  "closed_at": "2026-09-16T13:25:22Z",
   "created": "2026-09-14T00:02:06Z",
   "description": "Diagnosed 2026-09-15 across eight CI runs of PR #168 and a local reproduction (the earlier description blamed contention; that was an assumption, and it is wrong as the main term).\n\nWhat decides the result. matrix::json_roundtrip::run costs 3.5s on an M4 (single-threaded, CPU-bound, 83% compiler fixpoint drive, 16% Cranelift, under 0.2% running the program). ubuntu-latest is 3.5x slower per unit of work, measured by running the identical 783-lane matrix at identical RUST_TEST_THREADS=4: 101s locally, 348-364s on seven CI runs, stable to 2%. Contention at one process per vCPU is 1.2x, measured. So the lane sits at about 12s against a 20s guard on every CI run, and its time divided by the lib test binary's time is 0.035-0.038 across all eight runs, a 3% spread against a 1.9x spread in runner speed. Runners split into two classes (lib 523-531s on five runs, 278-371s on three); on the slow class the lane costs 19.3-20.0s and crossed on two of five. Exactly one lane fails per red run, always json_roundtrip::run or tail_recursion::interp, the two slowest. No memory pressure (95 MB per process), no stall, no PR-level regression (the normalized cost is flat across eight commits; main fails the same way).\n\nWhat the guard measures. \"fz2 exceeded 20s\" is the execution-phase deadline, armed by the readiness byte. notify_fixture_execution_start (src/compiler2/cli.rs run_command, interp_command) fires BEFORE run_root_jit / run_root_interp, which perform the whole compiler drive, JIT and the program run. .agent/docs/fixtures.md says the execution guard starts when execution starts, and tests/fixture_matrix.rs's own policy test says pre-execution work must not arm it; for run and interp that is violated in substance. The message therefore reports a slow compile as a hung program.\n\nFix, in order, none of which raises the timeout: (1) move the readiness byte to the real seam, immediately before the runtime spawns the program's entry, in both run_root_jit and run_root_interp, so the setup guard covers the compile and the execution guard covers the program; the build door already has this split. (2) Guard the compile with a deterministic work counter rather than a wall clock: the doc already says the limit detects nontermination, not compiler performance, and that performance regressions need work counters; the matrix already has budget.\u003cnamespace\u003e.\u003cmetric\u003e. (3) Shrink the work: see fz-kdt.177 (the recursive type ladder that makes AnalyzeActivation 97% of job time on this fixture) and the standing 7.9 machine functions per source function. Until (1) and (2) land, a red test job on a PR whose diff is not on the failing lane's path is not evidence about the PR.\n\nSTATUS 2026-09-16: step (1) is built as fz-i9q (PR #175): the byte is written at the seam by signal_execution_ready, the execution guard covers only the program, and the harness verdict is the fixture's expectation. The setup guard is still a 20s wall clock over the compile, so this lane still crosses it on the slow runner class, now reported as a missing readiness signal. This ticket is the canary; the coalmine is fz-kdt.177 (the 18-rung recursive return ladder on json_roundtrip). Close this ticket when fz-kdt.177 lands and the lane's compile is proportional; step (2), a work-counter compile guard, is not built unless that fails.",
   "id": "fz-ex9",
@@ -18,8 +18,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "The fixture matrix's 20s execution guard times the compiler, and the two slowest lanes sit at 60% of it on the CI runner",
   "type": "bug",
-  "updated_at": "2026-09-16T02:08:45Z"
+  "updated_at": "2026-09-16T13:25:22Z"
 }
