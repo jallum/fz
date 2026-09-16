@@ -55,6 +55,11 @@ operation has already proved its answer is an input handle. The laws
 field's existing `Ty` therefore return that `Ty` directly: no descriptor clone,
 hash-table probe, or normalization pass is due.
 
+Instantiation follows the same rule. An empty substitution cannot change any
+type, and a concrete type contains no substitution site, so both return their
+input `Ty` before traversing or cloning its descriptor. A type that may carry a
+replacement still takes the ordinary recursive instantiation path.
+
 This is deliberately narrower than a cache. Constructors such as `tuple` and
 `arrow` receive interned children, but their *outer* clause sets are newly built;
 only the interner can decide whether that new descriptor names an existing type.

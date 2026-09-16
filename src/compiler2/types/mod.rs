@@ -2481,6 +2481,9 @@ impl Types {
     }
 
     pub fn instantiate(&mut self, a: &Ty, sigma: &Sigma<Ty>) -> Ty {
+        if sigma.is_empty() || !self.has_vars(a) {
+            return self.unchanged(*a);
+        }
         let d = instantiate(self, *a, sigma);
         self.intern(d)
     }
