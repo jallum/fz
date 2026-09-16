@@ -1,9 +1,19 @@
 # Fact Engine
 
 The compiler works by running small rules over a shared table of facts until the
-work runs out. There is no phase order. A rule reads some facts, writes some
+work runs out. There is no phase order: nothing says "parse everything, then
+type everything, then lower everything." A rule reads some facts, writes some
 facts, and the engine re-runs whoever cared when a fact changes. When the queue
 empties, compilation is done.
+
+Two jobs serve as a running example through this document: `LowerFunction(f)`,
+which turns a function's source into a lowered body, and
+`AnalyzeActivation(a)`, which checks one call site's arguments against a
+callee's lowered body. `LowerFunction` publishes the fact `LoweredBody(f)`;
+`AnalyzeActivation` reads it. Nothing schedules the second job after the
+first — the second job simply reads a fact the first job writes, and the
+engine takes care of the rest. The *Tiny walkthrough* section at the end
+works this pair through concretely.
 
 The engine is domain-free. `Scheduler<J, F>` knows nothing about types, modules,
 or fz — it moves jobs (`J`) and fact keys (`F`) around. The fz vocabulary lives
@@ -28,14 +38,20 @@ and artifact emission.
   Derived states: **present** (any publisher),
   **retracted** (none — the slot drops), **locally settled** (present and no
   claimant dirty), **quiet** (no claimant dirty and none unfinal — an absent
-  fact is quiet), and **settled** (present and quiet). See *Content,
-  cleanliness and finality* below.
+  fact is quiet), and **settled** (present and quiet). See *Three questions a
+  fact answers* below.
 - **`DependencyIndex`** — five exact-keyed maps: `reads`↔`subscribers`,
   `waits`↔`waiters`, and `outputs`. Each job owns its reads, waits, and claims.
-  Waking a fact's interested jobs is an O(1) lookup, not a scan.
+  Waking a fact's interested jobs is an O(1) lookup, not a scan: when
+  `LowerFunction(add)` concludes, finding that `AnalyzeActivation(a)` reads
+  `LoweredBody(add)` costs one hash lookup, never a walk over every job in
+  flight.
 - **`Scheduler`** — owns the agenda, facts, and deps, and applies job completions.
-- **`ExecutionContext::drive`** — split-borrows semantic state and telemetry,
-  then pops a job, runs it, applies its effects, and repeats.
+- **`ExecutionContext::drive_until`** — split-borrows semantic state and
+  telemetry, then pops a job, runs it, applies its effects, and repeats.
+  `drive()`, `drive_for(timeout)`, and `drain_pending_for(timeout)` are its
+  entry points; the last runs only already-queued work, without expanding
+  standing demand (see *The drive loop*).
 
 ## Jobs are rules; effects are their contract
 
@@ -48,6 +64,15 @@ waits       facts it needed but  -> "wake me when these appear"   (waiter; also
 outputs     FactKey             -> facts this job OWNS this run
 changed     FactKey             -> stored content that actually moved
 ```
+
+`AnalyzeActivation(a)`, for instance, might conclude with
+`reads: [LoweredBody(add)]`, `outputs: [CallSiteSummary(a)]`, and
+`changed: [CallSiteSummary(a)]` if its answer moved — or `changed: []` if it
+re-derived the exact answer it published last time. (A handful of
+domain-specific fields ride alongside this core shape — product reads and
+waits for the artifact-pull subsystem, and the contribution-map fields
+discussed later — but `reads`/`waits`/`outputs`/`changed` is the contract
+every job honors.)
 
 Each job publishes one answer. Its co-outputs share the reads that justify
 that answer; its waits determine whether the run concluded.
@@ -103,6 +128,22 @@ given fact is never re-demanded to produce it — it is skipped outright,
 because a real subscription (not a stall-poke) is what re-runs it once that
 fact appears.
 
+## The publisher is the job
+
+The agenda, dependency edges, fact claims, rebase flag, and finality state all
+use the same job identity. A job evaluates one answer over one read set, and
+every co-output shares that answer's cleanliness and finality. A changed read
+dirties all of the job's claims; a ground shift also marks the job rebased.
+Source-publisher jobs follow this rule with typed `SourceOwner` keys; exact
+text provenance stays in `SourceVersion` spans rather than becoming a second
+publisher identity. See
+[`quoted-source`](quoted-source.md#source-identity-and-provenance).
+
+Each fact use wakes a subscribed job once. Distinct causes retain distinct
+`Wake` records, including coalesced attempts to enqueue an already pending
+job. The records attribute the work to the job and exact read or wait that
+caused it.
+
 ## Waiting extends, concluding replaces
 
 A completion's meaning depends on whether its run concluded
@@ -110,12 +151,18 @@ A completion's meaning depends on whether its run concluded
 
 - **Concluded** replaces: the job's reads swap subscriptions, its output list
   replaces its claims, and retraction-by-omission is final wherever silence is
-  knowledge (see below). Facts shrink as their owners stop deriving them.
+  knowledge (see *Retraction and preservation* below). Facts shrink as their
+  owners stop deriving them.
 - **Waiting** extends: reads union into the standing subscriptions, listed
   outputs union into the standing claims, prior activation-input contributions
   stand, and every claim the job holds is marked dirty — a waiting job's
   facts are never settled. Pausing is not recanting; a transient wait
   cannot destroy still-valid published work.
+
+If `AnalyzeActivation(a)` had already published `CallSiteSummary(a)` once and
+now blocks on some other fact before it can re-derive an answer, that prior
+claim on `CallSiteSummary(a)` stays published — dirty, not settled, but not
+retracted either. Only a *concluded* run can drop a claim it does not re-list.
 
 ### One block per prerequisite set
 
@@ -134,25 +181,65 @@ one) and the facts its activation key is built from (`Recursive`,
 `InputDemand`) register in one pass, so a caller holding none of them blocks
 once instead of once per rung.
 
-### Absence is bottom; rebasing is the narrowing path
+## Two kinds of fact content: cumulative and replacing
 
-The same reading applies one layer up, to the CLAIM. For a cumulative fact,
-absence and bottom are the same answer: the store maintains a join, a join has a
-bottom, and `World::activation_return` gates on revision presence and returns
-`None` for both. So a first claim that carries no content — `analyze_activation`
-claims `ReturnType` on every run, evidence or not — announces a publisher and
-moves nothing. It is minted at revision **0**: present, at bottom, no content
-movement (`facts::appearance_revision`), and `None` <-> `Some(0)` is not a
-content change in either direction (`FactChange::content_changed`). `Current`
-readers stay asleep; a `Current` wait is now satisfiable, and `Settled`
-subscribers wake on the readiness edge. The first claim that carries real
-evidence is an ordinary ascent, 0 -> 1.
+`FactKey::is_cumulative` declares each fact's content algebra. `ReturnType`
+and `ActivationInputs` are **cumulative**: their `World` stores maintain a
+join, so content only grows between ground shifts. Every other
+fact — `LoweredBody`, `CallSiteSummary`, `CallSiteTargets`, and the rest — is
+**replacing**: a publisher's latest conclusion simply overwrites the fact's
+current content.
+
+### Absence is bottom
+
+For a cumulative fact, absence and bottom are the same answer: the store
+maintains a join, a join has a bottom, and `World::activation_return` gates on
+revision presence and returns `None` for both. So a first claim that carries
+no content — `analyze_activation` claims `ReturnType` on every run, evidence
+or not — announces a publisher and moves nothing. It is minted at revision
+**0**: present, at bottom, no content movement (`facts::appearance_revision`),
+and `None` <-> `Some(0)` is not a content change in either direction
+(`FactChange::content_changed`). `Current` readers stay asleep; a `Current`
+wait is now satisfiable, and `Settled` subscribers wake on the readiness edge.
+The first claim that carries real evidence is an ordinary ascent, 0 -> 1.
 
 A REPLACING fact has no bottom to be at, so this never applies to one: whatever
 it says on arrival is content a reader can see and act on — `CallSiteSummary`
 and `CallSiteTargets`' `Unresolved` IS a reader-visible answer, not the absence
 of one — and it appears at revision 1 and wakes. The existence facts
 (`Activation`, `Executable`) are the same: their readers are gated on presence.
+
+### Ascent and ground shift
+
+The fact table classifies each publication transition while it still knows
+whether a publisher updated, rebased, or withdrew. `FactChange` carries that
+closed `ContentMovement` to the scheduler; the scheduler routes the movement
+and never reconstructs its direction from revisions or key shape:
+
+- **Ascent** — a first appearance carrying content, or growth of a cumulative
+  fact from an unshifted publisher. Readers re-run and join. A cumulative
+  fact's first claim at BOTTOM is not here at all: it is presence, not content
+  (see *Absence is bottom* above). This is the within-epoch
+  chaotic iteration: monotone transfers over finite chains converge to the
+  unique least fixpoint on any fair schedule, so wake order is performance,
+  never correctness.
+- **Ground shift** — a retraction, a replacing fact's content change, any
+  change concluded by a rebased publisher, or a changed contribution
+  withdrawal even when another publisher keeps the cumulative fact present.
+  Each reader's claims go unsettled, the reader is flagged **rebased** and
+  re-enqueued. A rebased job's next conclusion replaces its cumulative store
+  values instead of joining (the only narrowing path) and its changes
+  propagate as shifts in turn; an equal withdrawal or recomputation reports
+  no content movement, so the shift cone is exactly the set of jobs whose
+  recomputed outputs actually differ — narrowing keeps today's minimal-rerun
+  incrementality.
+
+The revision is a change token, not a content hash: stores report `changed`
+only on real content movement (equal joins and equal withdrawals are quiet),
+and `ContentMovement` determines whether subscribers ascend or rebase. The
+revision pair records that content moved; it cannot say in which direction.
+
+### Retraction and preservation
 
 Retraction-by-omission is sound only where a publisher's silence about a key is
 KNOWLEDGE. For `analyze_activation`'s callee `Activation` claims it is not: a
@@ -183,23 +270,17 @@ is withdrawn only by that caller's own rebase, so preserving one publisher's
 standing claim never resurrects another's: the fact retracts exactly when the
 last publisher with an unrefuted claim lets go.
 
-## The publisher is the job
+A rebased conclusion re-lists its claims for a second reason, not just to
+preserve unrefuted ones: `World::standing_claims_and_reads` re-lists BOTH the
+claims a job already holds AND the reads standing behind them, because a
+concluded run replaces both outputs and reads together. Omitting the claims
+silently retracts them; omitting the reads leaves the claims subscribed to
+nothing — and a publisher whose only read is an absent fact is quiet, so the
+claims would settle from amnesia rather than from genuine finality. Re-listing
+both keeps every claim published at its own revision under the subscriptions
+that actually derived it.
 
-The agenda, dependency edges, fact claims, rebase flag, and finality state all
-use the same job identity. A job evaluates one answer over one read set, and
-every co-output shares that answer's cleanliness and finality. A changed read
-dirties all of the job's claims; a ground shift also marks the job rebased.
-Source-publisher jobs follow this rule with typed `SourceOwner` keys; exact
-text provenance stays in `SourceVersion` spans rather than becoming a second
-publisher identity. See
-[`quoted-source`](quoted-source.md#source-identity-and-provenance).
-
-Each fact use wakes a subscribed job once. Distinct causes retain distinct
-`Wake` records, including coalesced attempts to enqueue an already pending
-job. The records attribute the work to the job and exact read or wait that
-caused it.
-
-## Claims declare their shape; ascents wake, ground shifts rebase
+## One job, several facts
 
 One job may own more than one fact when both follow from its answer.
 `Job::DeriveCallGraphComponent` walks the `StaticCallees` edge facts
@@ -237,45 +318,14 @@ The other half is `analyze_activation`'s own gate: an analysis whose
 `Activation` fact is absent CONCLUDES rather than waits. Nothing claims the
 key, so there is no producer for a wait to name; the run records the read
 (the unconditional-read rule above), so a first or later claim wakes it, and
-it re-lists its standing claims (`World::standing_claims`) so a conclusion
-reached with no ground under it retracts nothing it never refuted.
+it re-lists its standing claims and reads (`World::standing_claims_and_reads`,
+see *Retraction and preservation* above) so a conclusion reached with no
+ground under it retracts nothing it never refuted.
 
-## How a claim's content moves: ascent vs. ground shift
+## Three questions a fact answers
 
-`FactKey::is_cumulative` declares each fact's content algebra: `ReturnType`
-and `ActivationInputs` hold monotone joins maintained by their `World` stores
-(content only grows between ground shifts); every other fact's content
-overwrites. The fact table classifies each publication transition while it
-still knows whether a publisher updated, rebased, or withdrew. `FactChange`
-carries that closed `ContentMovement` to the scheduler; the scheduler routes
-the movement and never reconstructs its direction from revisions or key shape:
-
-- **Ascent** — a first appearance carrying content, or growth of a cumulative
-  fact from an unshifted publisher. Readers re-run and join. A cumulative
-  fact's first claim at BOTTOM is not here at all: it is presence, not content
-  (see *Absence is bottom*). This is the within-epoch
-  chaotic iteration: monotone transfers over finite chains converge to the
-  unique least fixpoint on any fair schedule, so wake order is performance,
-  never correctness.
-- **Ground shift** — a retraction, a replacing fact's content change, any
-  change concluded by a rebased publisher, or a changed contribution
-  withdrawal even when another publisher keeps the cumulative fact present.
-  Each reader's claims go unsettled, the reader is flagged **rebased** and
-  re-enqueued. A rebased job's next conclusion replaces its cumulative store
-  values instead of joining (the only narrowing path) and its changes
-  propagate as shifts in turn; an equal withdrawal or recomputation reports
-  no content movement, so the shift cone is exactly the set of jobs whose
-  recomputed outputs actually differ — narrowing keeps today's minimal-rerun
-  incrementality.
-
-The revision is a change token, not a content hash: stores report `changed`
-only on real content movement (equal joins and equal withdrawals are quiet),
-and `ContentMovement` determines whether subscribers ascend or rebase. The
-revision pair records that content moved; it cannot say in which direction.
-
-## Content, cleanliness and finality are three questions
-
-They are asked of the same slot and answered separately.
+Content, cleanliness, and finality sound like one idea. They are three, asked
+of the same slot and answered separately.
 
 - **Current content** — what the fact says right now, gated by `revision()`.
   A `Current` read takes the answer that stands.
@@ -433,12 +483,15 @@ is a tie-break after fact identity, and settled-wait draining uses that same
 fact relation. Only activation-bearing payloads replace raw type ids with typed
 structural comparison.
 
-The type store memoizes `ActivationArrow` verdicts by a normalized `(low Ty,
-high Ty)` pair; asking in the reverse direction reuses the inverse. Descriptors
-and structural addresses are immutable after interning, and callable identities
-must be registered before comparison and cannot be renamed, so the entry lives
-for the owning `Types`/`World` lifetime with no invalidation path. Hit/miss
-counters exist only in tests. ClauseOrder's private storage-canonical relation
+The type store memoizes each activation-order verdict by a normalized
+`(low Ty, high Ty)` pair (`Types::cmp_activation_ty`, cached under
+`ComparisonKey::ActivationArrowOrder`); asking in the reverse direction reuses
+the inverse verdict rather than recomputing it. Descriptors and structural
+addresses are immutable after interning, and callable identities must be
+registered before comparison and cannot be renamed, so the entry lives for the
+owning `Types`/`World` lifetime with no invalidation path. Hit/miss counters
+(`Types::comparison_cache_stats`) exist for tests to assert on, not for
+production use. ClauseOrder's private storage-canonical relation
 remains distinct: it intentionally puts a closure literal before its surface to
 group DNF clauses and must not determine activation order.
 
@@ -455,6 +508,12 @@ while let Some(job) = agenda.pop():
         enqueue dependents and dirty their claims
 ```
 
+This is the shape of `ExecutionContext::drive_until`, simplified; the real loop
+also reconciles product-pull requests each time the agenda empties (see
+*Product pulls for artifacts*) and can exit early on a caller-supplied
+deadline (`DriveOutcome::TimedOut`) or an unproducible product
+(`DriveOutcome::DependencyFailed`).
+
 When the agenda drains, standing demands expand before the drive ends: every
 published activation — root entry or caller-discovered callee — demands its
 own analysis (`World::demand_activation_frontier_analyses`), and
@@ -468,9 +527,9 @@ carry every later revision from there — a key whose first run blocked without
 settling stays reachable through the blocked-waiter expansion instead, never
 through repeated re-demand. A stall pass only re-demands a blocked fact after
 some fact content changed, so byte-identical re-runs cannot loop. The loop
-ends only when nothing can be demanded: `Resolved` (no waiters),
-`Unresolved { waits }` (blocked facts with no mapped producer), or
-`Fatal { job }`.
+ends only when nothing more can be demanded: `Resolved` (no waiters), or
+`Unresolved { waits }` (blocked facts with no mapped producer). A job that
+returns an error ends the loop as `Fatal { job }` instead.
 
 Standing waits come from a `HashMap`, but the dependency index does not guess
 their identity. `DependencyIndex::unresolved` uses the same typed semantic
@@ -484,6 +543,12 @@ the diagnostic goes out through telemetry. Closure never masks an error, and
 there is no diagnostics fact family to reconcile.
 
 ## Product pulls for artifacts
+
+Everything above this section is the scheduler: a push engine that reacts to
+fact changes. Building an artifact — an interpreted run, a native binary — asks
+a different question: "what is `RootBackendProduct(root)` right now?" That is
+a pull, and it uses a separate, demand-driven subsystem layered on top of the
+same `World`.
 
 The interpreter artifact path is not a scheduler pass and it does not enqueue
 follow-up jobs. `Compiler2::run_root_interp` asks the product driver for
@@ -568,7 +633,9 @@ Causality is never inferred from an aggregate or merely adjacent log lines.
 
 ### Recursive product groups
 
-Cyclic products use the same pending-product graph. `ExecutableEffects(E)` is
+Some products depend on themselves through a call cycle, and the pull driver
+resolves that the same way for every producer that asks. Cyclic products use
+one shared pending-product graph. `ExecutableEffects(E)` is
 one ordinary formula over `MaterializedExecutable(E)` and the exact
 `ExecutableEffects(callee)` products named by its local call edges. A pending
 back-edge lets the generic group query identify the members; idempotent effect
@@ -690,10 +757,12 @@ not derive a second table from transport positions. Every fresh construction ste
 (`Tuple`/`List`/`Map`/`MapUpdate`/`Struct`/`Bitstring`/`FunctionRef`/`Lambda`)
 goes through `construction_step_or_omitted` and becomes `BackendStep::Omitted`
 when its own value is proven absent — a closure the plan proves is never invoked
-is never built, on any path. Runtime consumers therefore read an artifact that
-already carries no dead construction. The proof is derived once, in lowering;
-the runtimes honor it rather than re-derive it for constructions — an `Omitted`
-step binds an explicit absent value in both runtimes.
+is never built, on any path. For example, a callback captured but proven dead
+along every branch the planner keeps needs no wrapper allocated for it at all.
+Runtime consumers therefore read an artifact that already carries no dead
+construction. The proof is derived once, in lowering; the runtimes honor it
+rather than re-derive it for constructions — an `Omitted` step binds an
+explicit absent value in both runtimes.
 
 ABI width is a separate question. `BackendValueLayout::publishes_no_lanes`
 means its repr list is empty. `Nothing`/`Absent`, exact zero-capture callables,
@@ -879,6 +948,11 @@ compiled roots, that feature must explicitly compose their schema sets.
 
 ## Tiny walkthrough
 
+Back to the `LowerFunction`/`AnalyzeActivation` pair from the top of this
+document, worked through concretely. Say `AnalyzeActivation(a)` has already
+run once, reading `LoweredBody(add)` at revision 3, and now `add`'s source
+changes and `LowerFunction(add)` re-runs:
+
 ```text
 LowerFunction(f) writes LoweredBody(f) @ rev 4
   FactTable: slot LoweredBody(f) value changed, rev -> 4
@@ -886,6 +960,9 @@ LowerFunction(f) writes LoweredBody(f) @ rev 4
   agenda.enqueue(AnalyzeActivation(a))      # it read LoweredBody(f) before
 AnalyzeActivation(a) re-runs against the new body.
 ```
+
+Nobody told `AnalyzeActivation(a)` to re-run; it re-ran because it had
+subscribed to a fact that just moved. That is the whole engine, applied once.
 
 ## Ownership boundaries
 
