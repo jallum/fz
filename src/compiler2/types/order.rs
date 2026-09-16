@@ -391,6 +391,16 @@ fn lex_elements_first<T>(a: &[T], b: &[T], mut cmp: impl FnMut(&T, &T) -> Orderi
     first_difference(a.iter().zip(b.iter()).map(|(x, y)| cmp(x, y))).then_with(|| a.len().cmp(&b.len()))
 }
 
+/// Lexicographic over the shared elements, and where one slice is an exact
+/// prefix of the other the LONGER one sorts first.
+///
+/// This is the tie-break `cmp_activation_tys` falls through to, and through
+/// `canonically_order_separated_neighbours` it is what picks the seat of a pair
+/// of dispatch arms no value can reach both of. That seat is a determinism
+/// choice and decides nothing else -- neither where a value lands, which
+/// separation already settled, nor how many questions it answers, which
+/// `dispatch_columns` settles by asking the separating input first. Flipping
+/// the direction below moves no surface-membership census row.
 fn lex_elements_then_longer<T>(a: &[T], b: &[T], mut cmp: impl FnMut(&T, &T) -> Ordering) -> Ordering {
     first_difference(a.iter().zip(b.iter()).map(|(x, y)| cmp(x, y))).then_with(|| b.len().cmp(&a.len()))
 }

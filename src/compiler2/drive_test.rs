@@ -12639,24 +12639,34 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// (`00418_enum_count_range` has 2 closure calls, `00183_enum_take_list_range`
 /// 4), while a fixture with both counts only its boxed share:
 /// `enum_take_drop_split` has 65 closure calls, 53 of them direct, and the
-/// twelve that remain are what its 265 is measured over.
+/// twelve that remain are what its count is measured over.
+///
+/// fz-kdt.48.10: ten rows fall, 64 -> 54 and 265 -> 225, escapes flat at 0.
+/// `dispatch_columns` now asks a SEPARATING input before one the arms only
+/// overlap at, so a value bound for the second arm of `List.reduce_while_step/3`'s
+/// `delivered_resume` selection is turned away by the first arm's closure
+/// question instead of first answering its accumulator question. That is one
+/// matched question fewer per such selection -- the denominator falling because
+/// the plan asks less, not because anything stopped being looked at. Every
+/// value reaches the same member it reached before: the column order permutes a
+/// row's conjuncts and leaves each arm admitting exactly the set it admitted.
 const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
-    ("fixtures2/00183_enum_take_list_range.fz", "", 64, 0),
-    ("fixtures2/00230_enum_take_chained.fz", "", 64, 0),
+    ("fixtures2/00183_enum_take_list_range.fz", "", 54, 0),
+    ("fixtures2/00230_enum_take_chained.fz", "", 54, 0),
     ("fixtures2/00418_enum_count_range.fz", "", 9, 0),
-    ("fixtures2/00419_enum_take_mixed.fz", "", 64, 0),
-    ("fixtures2/00420_enum_take_drop_split.fz", "", 265, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "", 265, 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "", 54, 0),
+    ("fixtures2/00420_enum_take_drop_split.fz", "", 225, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "", 225, 0),
     ("fixtures2/behavior/unused_range_binding.fz", "", 9, 0),
     // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
     // hold, re-homed onto the fixture that still selects among members.
-    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 265, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 265, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 265, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 265, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 225, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 225, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 225, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 225, 0),
     // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
     // fixture whose list arms still differ at the element.
-    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 64, 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 54, 0),
     // The fixture written for fz-kdt.131's facet-3 pair reads 0: its header
     // says why (the fold hands the TAIL to the recursive dispatch, so the
     // mixed list never reaches the `[:false | :true]` arm), and this row is
@@ -13528,7 +13538,7 @@ fn interpreted_answer(fixture: &str) -> Vec<String> {
 ///
 /// The two observable surfaces used to be identical, because
 /// `runtime_type_test_envelope` erased both literals to `fun_top`:
-/// `discriminating_inputs` found nothing to test, the plan compiled to an
+/// `dispatch_columns` found nothing to test, the plan compiled to an
 /// unconditional outcome, arm 1 was emitted unreachable, and `n * 3` never ran
 /// (12/12 for 12/90, on all three paths). The erasure was the defect. A closure
 /// value's heap word names the code it was minted from, so the envelope keeps

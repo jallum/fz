@@ -51,21 +51,13 @@ pub(crate) fn call_destinations(
     if summary.targets.len() <= 1 {
         return Ok(sole_destination(summary.targets.first().cloned()));
     }
-    let arity = summary.arity();
     let arrived = arrival_order(types, &summary.targets);
     let surfaces = target_surfaces(&arrived);
-    let (order, observable_inputs) = routable_alternatives(types, &surfaces, &same_callee(&arrived));
+    let (order, plan) = routable_alternatives(types, summary.arity(), &surfaces, &same_callee(&arrived))?;
     let targets = order.iter().map(|index| arrived[*index].clone()).collect::<Vec<_>>();
-    if targets.len() <= 1 {
+    let Some(plan) = plan else {
         return Ok(sole_destination(targets.into_iter().next()));
-    }
-    let discriminating_inputs = discriminating_inputs(arity, observable_inputs.iter().map(Vec::as_slice));
-    let rows = observable_inputs
-        .into_iter()
-        .enumerate()
-        .map(|(index, inputs)| dispatch_row(&inputs, arity, &discriminating_inputs, index as PatternBodyId))
-        .collect::<Vec<_>>();
-    let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(arity, rows))?;
+    };
     let arm_body_ids = (0..targets.len() as u32).collect();
     Ok(CallDestinations::Dispatch(Box::new(CallSiteDispatch {
         plan,
@@ -82,10 +74,9 @@ fn sole_destination(target: Option<CallTargetSummary>) -> CallDestinations {
     }
 }
 
-/// The routable alternatives among two or more: which of them are destinations
-/// at all, named by their arrival index and listed in the order the plan tests
-/// them, each paired with the widened surface its runtime questions are asked
-/// about.
+/// The routable alternatives among two or more -- which of them are
+/// destinations at all, named by their arrival index and listed in the order
+/// the plan tests them -- and the plan that tests them.
 ///
 /// AN ALTERNATIVE IS A SURFACE AND A CALLEE, and nothing else. The drop and
 /// the seat read a semantic surface per input and ask whether two alternatives
@@ -100,13 +91,21 @@ fn sole_destination(target: Option<CallTargetSummary>) -> CallDestinations {
 /// The projection runs ONCE here. Every alternative's observable surface and
 /// the question that surface projects to are computed before the drop, the
 /// survivors' are carried into the seat, and nothing downstream re-derives
-/// either: the drop and the seat read one and the same reading of what the
-/// runtime can ask.
+/// either: the drop, the seat and [`dispatch_columns`] read one and the same
+/// reading of what the runtime can ask.
+///
+/// The plan is built here too, for the same reason: a caller that re-derived
+/// the rows from a returned surface would be a second place deciding what the
+/// plan asks and in what order. Both doors -- a callsite and a construction
+/// wrapper -- get the same answer because there is only one place that gives
+/// it. `None` where one alternative is left, which is a direct call at a
+/// callsite and a single member at a wrapper.
 fn routable_alternatives(
     types: &mut Types,
+    arity: usize,
     surfaces: &[Vec<Ty>],
     same_callee: &dyn Fn(usize, usize) -> bool,
-) -> (Vec<usize>, Vec<Vec<Ty>>) {
+) -> Result<(Vec<usize>, Option<PatternDispatchPlan<Ty>>), PatternDispatchError> {
     let observable_inputs = observable_inputs(types, surfaces);
     let questions = runtime_questions(types, &observable_inputs);
     let unroutable = unroutable_alternatives(types, same_callee, &observable_inputs, &questions);
@@ -118,7 +117,20 @@ fn routable_alternatives(
         .unzip();
     let (observable, questions): (Vec<_>, Vec<_>) = surviving.into_iter().unzip();
     let order = specificity_order(types, &questions, &observable);
-    (permuted(routable, &order), permuted(observable, &order))
+    let alternatives = permuted(routable, &order);
+    if alternatives.len() <= 1 {
+        return Ok((alternatives, None));
+    }
+    let observable = permuted(observable, &order);
+    let questions = permuted(questions, &order);
+    let columns = dispatch_columns(arity, &observable, &questions);
+    let rows = observable
+        .iter()
+        .enumerate()
+        .map(|(index, inputs)| dispatch_row(inputs, arity, &columns, index as PatternBodyId))
+        .collect::<Vec<_>>();
+    let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(arity, rows))?;
+    Ok((alternatives, Some(plan)))
 }
 
 /// The order a callsite tests its arms in: arrival order, corrected wherever
@@ -200,7 +212,9 @@ fn routable_alternatives(
 /// reaches both arms, so neither order routes anything anywhere and the order
 /// they arrived in was never a fact about the program. That one residue is
 /// given a canonical order, by [`canonically_order_separated_neighbours`]
-/// below.
+/// below. It costs nothing either, which [`dispatch_columns`] is what makes
+/// true: the separating input leads, so a value is turned away at the first
+/// question of every arm it walks through, whichever seat the pair was given.
 ///
 /// # Why the result is a seat, and a safe one
 ///
@@ -284,6 +298,19 @@ fn specificity_order(types: &Types, questions: &[Vec<RuntimeTypePredicate>], obs
 /// separated pair is a routing no-op, by construction, and the order they were
 /// in was never a fact about the program: it was the order the semantic
 /// fixpoint's agenda delivered them in.
+///
+/// It is a no-op in COST as well, and that half is [`dispatch_columns`]'s. A
+/// plan asks a separating input before one the arms only overlap at, so a value
+/// is turned away by the first question of every arm it walks through and a
+/// selection costs one question per arm in EITHER seat. Before that rule the
+/// seat was free of meaning but not of work -- put the arm with the covering
+/// question first and the other arm's values answered it on the way past, three
+/// matched questions where two were due, and this repair's choice between two
+/// orders showed up in the surface-membership census. So the order this hands
+/// out is a determinism choice and nothing else, which
+/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it` reads
+/// back: flip `lex_elements_then_longer`'s tie-break, which is what decides
+/// this order, and every census row stands where it stood.
 ///
 /// The other two residues are NOT this: a question group's members and an
 /// overlap-without-containment pair are both reached by a common value, so
@@ -590,20 +617,11 @@ enum Seating {
 /// a surface says nothing about which values the emitted test will actually
 /// hand over.
 ///
-/// ONE AND THE SAME QUESTION SEPARATES NOTHING, and the separation check says
-/// so outright rather than leaving `overlaps` to agree with itself. Two arms
-/// asking the identical question at a position admit the identical set of
-/// values there, whatever that set is, so the position cannot tell them apart
-/// -- and where every arm asks it, `discriminating_inputs` drops the position
-/// and the plan never emits the test at all. Asking `overlaps` there would
-/// make the answer turn on a test being REALIZABLE, which not every one is: a
-/// tuple clause with a subtracted signature loses its whole arity in
-/// projection (`runtime_type_predicate_tuple_arities` removes the negated
-/// signature's arity outright), so a surface holding every non-int pair
-/// projects to a test that admits nothing and does not overlap ITSELF. That is
-/// a defect in the projection and the projection's to cure; what it may not do
-/// is decide a seat or a drop, and stated this way it cannot --
-/// `an_untested_position_is_not_a_separation` is the pair that proves it.
+/// The position verdict itself is [`separated_at`], which is also what
+/// [`dispatch_columns`] folds the other way: two arms asking the identical
+/// question at a position are not separated there, whatever that question
+/// admits, and where EVERY arm asks it the plan drops the position and emits no
+/// test at all.
 ///
 /// So a Separated pair always differs at the separating position, which makes
 /// that position DISCRIMINATING and the plan's own test the thing that keeps
@@ -621,12 +639,12 @@ fn seating(
     late: &[usize],
 ) -> Seating {
     let (early_asks, late_asks) = (&questions[early[0]], &questions[late[0]]);
-    if early_asks.len() != late_asks.len()
-        || !early_asks
+    let separated = early_asks.len() != late_asks.len()
+        || early_asks
             .iter()
             .zip(late_asks)
-            .all(|(early, late)| early == late || early.overlaps(late))
-    {
+            .any(|(early, late)| separated_at(early, late));
+    if separated {
         return Seating::Separated;
     }
     let covering = (0..early_asks.len()).all(|position| {
@@ -641,6 +659,32 @@ fn seating(
         true => Seating::Covering,
         false => Seating::Escaping,
     }
+}
+
+/// Whether two arms' questions at ONE input admit no value in common, so the
+/// plan's own test there keeps the two arms apart whichever way round they sit.
+///
+/// ONE RELATION, TWO READERS, exactly as [`seats_before`] is one relation for
+/// the seat and the drop. [`seating`] folds it across the inputs to answer
+/// whether a PAIR is separated at all; [`dispatch_columns`] folds it across the
+/// pairs to answer whether an INPUT separates anything. Reading the same
+/// verdict two ways is what lets the seat and the column order be one decision
+/// made once.
+///
+/// ONE AND THE SAME QUESTION SEPARATES NOTHING, and this says so outright
+/// rather than leaving `overlaps` to agree with itself. Two arms asking the
+/// identical question at an input admit the identical set of values there,
+/// whatever that set is. Asking `overlaps` there would make the answer turn on
+/// a test being REALIZABLE, which not every one is: a tuple clause with a
+/// subtracted signature loses its whole arity in
+/// `runtime_type_predicate_tuple_arities`, so a surface holding every non-int
+/// pair projects to a test that admits nothing and does not overlap ITSELF.
+/// That is a defect in the projection and the projection's to cure; what it may
+/// not do is decide a seat, a drop or a column order, and stated this way it
+/// cannot -- `an_untested_position_is_not_a_separation` is the pair that proves
+/// it.
+fn separated_at(early: &RuntimeTypePredicate, late: &RuntimeTypePredicate) -> bool {
+    early != late && !early.overlaps(late)
 }
 
 /// Whether every value `narrow`'s group's test admits, `wide`'s admits too,
@@ -870,29 +914,10 @@ pub(crate) fn construction_member_selection(
     types: &mut Types,
     edges: &[CallableFlowEdge],
 ) -> Result<ConstructionSelection, PatternDispatchError> {
-    if edges.len() <= 1 {
-        return Ok(ConstructionSelection {
-            members: (0..edges.len()).collect(),
-            plan: None,
-        });
-    }
-    let arity = edges[0].surface.inputs.len();
+    let arity = edges.first().map_or(0, |edge| edge.surface.inputs.len());
     let surfaces = edges.iter().map(|edge| edge.surface.inputs.clone()).collect::<Vec<_>>();
-    let (members, observable_inputs) = routable_alternatives(types, &surfaces, &|_, _| true);
-    if members.len() <= 1 {
-        return Ok(ConstructionSelection { members, plan: None });
-    }
-    let discriminating_inputs = discriminating_inputs(arity, observable_inputs.iter().map(Vec::as_slice));
-    let rows = observable_inputs
-        .iter()
-        .enumerate()
-        .map(|(index, inputs)| dispatch_row(inputs, arity, &discriminating_inputs, index as PatternBodyId))
-        .collect::<Vec<_>>();
-    let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(arity, rows))?;
-    Ok(ConstructionSelection {
-        members,
-        plan: Some(plan),
-    })
+    let (members, plan) = routable_alternatives(types, arity, &surfaces, &|_, _| true)?;
+    Ok(ConstructionSelection { members, plan })
 }
 
 /// The alternatives no runtime test could ever route to: each is an arm the
@@ -1369,27 +1394,70 @@ fn runtime_dispatch_inputs(types: &mut Types, inputs: &[Ty]) -> Vec<Ty> {
         .collect()
 }
 
-fn discriminating_inputs<'a>(arity: usize, inputs: impl Iterator<Item = &'a [Ty]>) -> Vec<usize> {
-    let inputs = inputs.collect::<Vec<_>>();
-    let Some(first) = inputs.first() else {
+/// The inputs the plan asks about, in the order it asks them -- Maranget's
+/// column selection, decided from the very verdicts the seat reads.
+///
+/// # Which inputs
+///
+/// Only the ones the alternatives do not all carry ONE surface at. Where every
+/// arm carries the same surface the emitted test would admit the same values to
+/// every one of them, so it separates nothing and the plan does not ask it.
+/// [`seating`] states the same fact from the other side: a subject the arms ask
+/// identically is not a separation.
+///
+/// # In what order, and why the order is free to choose
+///
+/// A row is a CONJUNCTION over its inputs, and every row here lists the same
+/// inputs, so listing them in another order leaves each arm admitting exactly
+/// the set it admitted before. Arm order is untouched. A first-match walk over
+/// unchanged arms admitting unchanged sets routes every value where it already
+/// went: the column order decides how many questions a value answers on the
+/// way, and nothing else. That is what makes this a free choice rather than a
+/// routing one.
+///
+/// So spend it. A value bound for a later arm walks through the arms seated
+/// ahead of it and leaves each one at the first question that refuses it. Ask a
+/// SEPARATING input first -- one where some pair of arms admits no common value
+/// -- and the value is turned away at that arm's first question. Ask an input
+/// the arms only OVERLAP at first and the value answers it, is turned away by
+/// the separating question behind it, and then answers its own arm's two: three
+/// matched questions where two were due.
+///
+/// `List.reduce_while_step/3`'s `delivered_resume` continuation is the measured
+/// case. Its two arms carry `{:cont | :halt, {[int], int}}` and `{:cont,
+/// {[int], int}}` at one input -- one inside the other, so the tuple question
+/// cannot turn either value away -- and two disjoint closure sets at another.
+/// Asking the closure first costs two matched questions in EITHER seat, which
+/// is also why the seat of a separated pair is a pure determinism choice
+/// (see [`canonically_order_separated_neighbours`]).
+///
+/// Among inputs of one kind the plan keeps input order, which is a determinism
+/// choice and nothing more.
+fn dispatch_columns(arity: usize, observable: &[Vec<Ty>], questions: &[Vec<RuntimeTypePredicate>]) -> Vec<usize> {
+    let Some(first) = observable.first() else {
         return Vec::new();
     };
-    (0..arity)
-        .filter(|index| inputs.iter().skip(1).any(|input| input[*index] != first[*index]))
-        .collect()
+    let (separating, overlapping): (Vec<usize>, Vec<usize>) = (0..arity)
+        .filter(|input| observable.iter().skip(1).any(|inputs| inputs[*input] != first[*input]))
+        .partition(|input| separates_some_pair(questions, *input));
+    separating.into_iter().chain(overlapping).collect()
 }
 
-fn dispatch_row(
-    observable_inputs: &[Ty],
-    arity: usize,
-    discriminating_inputs: &[usize],
-    body_id: PatternBodyId,
-) -> PatternRow<Ty> {
+/// Whether the plan's own test at this input keeps some pair of arms apart.
+fn separates_some_pair(questions: &[Vec<RuntimeTypePredicate>], input: usize) -> bool {
+    questions.iter().enumerate().any(|(rank, early)| {
+        questions[rank + 1..]
+            .iter()
+            .any(|late| separated_at(&early[input], &late[input]))
+    })
+}
+
+fn dispatch_row(observable_inputs: &[Ty], arity: usize, columns: &[usize], body_id: PatternBodyId) -> PatternRow<Ty> {
     let mut patterns = Vec::with_capacity(arity);
     patterns.resize_with(arity, || Spanned::new(Pattern::Wildcard, Span::DUMMY));
     PatternRow {
         patterns,
-        preconditions: discriminating_inputs
+        preconditions: columns
             .iter()
             .map(|input| (PatternSubjectRef::Input(*input as u32), observable_inputs[*input]))
             .collect(),
@@ -2896,7 +2964,7 @@ mod tests {
     /// separation check has to say so itself rather than trust that every
     /// realizable test overlaps itself.
     ///
-    /// `discriminating_inputs` drops a position where every arm carries the
+    /// [`dispatch_columns`] drops a position where every arm carries the
     /// SAME observable surface -- the plan emits no test there at all -- so a
     /// pair "separated" there is separated by nothing the runtime asks. The
     /// projection makes that reachable: a tuple clause with a SUBTRACTED
@@ -2953,7 +3021,7 @@ mod tests {
         let observable = observable_inputs(world.types_mut(), &target_surfaces(&arms));
         let questions = runtime_questions(world.types_mut(), &observable);
         assert_eq!(
-            discriminating_inputs(2, observable.iter().map(Vec::as_slice)),
+            dispatch_columns(2, &observable, &questions),
             vec![0],
             "subject 1 is the same surface on both arms, so the plan tests subject 0 and nothing else",
         );
@@ -4154,3 +4222,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "callsite_dispatch_test.rs"]
+mod callsite_dispatch_test;
