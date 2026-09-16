@@ -4,7 +4,8 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use crate::compiler2::artifact::{
-    AbiReadyExecutable, BackendBody, BackendCallableReturn, BackendConstructionWrapper, BackendReturnFlow, BackendTail,
+    AbiReadyExecutable, AbiValueRepr, BackendBody, BackendConstructionWrapper, BackendReturnFlow, BackendTail,
+    BackendValueLayout,
 };
 use crate::compiler2::identity::{ExecutableKey, RootId};
 use crate::compiler2::scheduler::FatalError;
@@ -17,10 +18,12 @@ use crate::diag::{Diagnostic, codes};
 use crate::source::Span;
 use crate::telemetry::Telemetry;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// What one boxed closure call in a body reads back from the apply seam: the
+/// arity it calls with, and the lanes its destination expects.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct BoxedApplyRequirement {
     pub arity: usize,
-    pub delivered: usize,
+    pub delivered: Box<[AbiValueRepr]>,
 }
 
 impl BoxedApplyRequirement {
@@ -33,6 +36,7 @@ impl BoxedApplyRequirement {
             .filter_map(|entry| {
                 let BackendTail::ClosureCall {
                     callee,
+                    target,
                     args,
                     return_flow,
                     ..
@@ -40,18 +44,33 @@ impl BoxedApplyRequirement {
                 else {
                     return None;
                 };
-                if !abi
-                    .value_layouts
-                    .get(callee)
-                    .is_some_and(|layout| layout.carrier.is_value_ref())
+                // The call form carries the decision: a named target is a
+                // direct edge to that executable and never meets the seam. Of
+                // the rest, a callee publishing no lanes at all is a call that
+                // reaches nothing and never happens; every other one is a real
+                // call through the seam.
+                if target.is_some()
+                    || abi
+                        .value_layouts
+                        .get(callee)
+                        .is_none_or(BackendValueLayout::publishes_no_lanes)
                 {
                     return None;
                 }
                 let delivered = match return_flow {
+                    // A delivered or continued result lands in a destination
+                    // whose lanes are stated outright.
                     Some(BackendReturnFlow::Deliver { source, .. } | BackendReturnFlow::Continue { source }) => {
-                        source.layout.reprs.len()
+                        source.layout.reprs.clone()
                     }
-                    Some(BackendReturnFlow::Tail | BackendReturnFlow::NoReturn) | None => return None,
+                    // A tail call hands the seam's result straight on to this
+                    // body's own caller without touching it, so this body's own
+                    // return form is what the seam has to produce. `NoReturn`
+                    // and a missing flow lower to the same tail term, so they
+                    // read the same way.
+                    Some(BackendReturnFlow::Tail | BackendReturnFlow::NoReturn) | None => {
+                        abi.return_layout.layout.reprs.clone()
+                    }
                 };
                 Some(Self {
                     arity: args.len(),
@@ -67,18 +86,20 @@ impl BoxedApplyRequirement {
 type Callers = SharedOrder<ExecutableKey, ()>;
 type Publications = SharedOrder<Rc<TransportPosition>, ()>;
 
+type Lanes = Box<[AbiValueRepr]>;
+
 #[derive(Debug, Clone, Default, PartialEq)]
 struct ArityContract {
-    callers: SharedOrder<usize, Callers>,
-    publications: SharedOrder<usize, Publications>,
+    callers: SharedOrder<Lanes, Callers>,
+    publications: SharedOrder<Lanes, Publications>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Mismatch {
     caller: ExecutableKey,
-    delivered: usize,
+    delivered: Lanes,
     wrapper: Rc<TransportPosition>,
-    published: usize,
+    published: Lanes,
 }
 
 impl ArityContract {
@@ -96,7 +117,7 @@ impl ArityContract {
         }
         Some(Mismatch {
             caller: caller.1.entries().next().expect("a lane bucket has a caller").0.clone(),
-            delivered: *caller.0,
+            delivered: caller.0.clone(),
             wrapper: Rc::clone(
                 publication
                     .1
@@ -105,7 +126,7 @@ impl ArityContract {
                     .expect("a lane bucket has a publication")
                     .0,
             ),
-            published: *publication.0,
+            published: publication.0.clone(),
         })
     }
 }
@@ -129,17 +150,23 @@ impl BoxedContracts {
         }
         for requirement in previous {
             if next.binary_search(requirement).is_err() {
-                self.change_caller(key, *requirement, false, types);
+                self.change_caller(key, requirement, false, types);
             }
         }
         for requirement in next {
             if previous.binary_search(requirement).is_err() {
-                self.change_caller(key, *requirement, true, types);
+                self.change_caller(key, requirement, true, types);
             }
         }
     }
 
-    fn change_caller(&mut self, key: &ExecutableKey, requirement: BoxedApplyRequirement, present: bool, types: &Types) {
+    fn change_caller(
+        &mut self,
+        key: &ExecutableKey,
+        requirement: &BoxedApplyRequirement,
+        present: bool,
+        types: &Types,
+    ) {
         let mut contract = self
             .arities
             .lookup(&requirement.arity, &usize::cmp)
@@ -147,7 +174,7 @@ impl BoxedContracts {
             .unwrap_or_default();
         let mut owners = contract
             .callers
-            .lookup(&requirement.delivered, &usize::cmp)
+            .lookup(&requirement.delivered, &Lanes::cmp)
             .cloned()
             .unwrap_or_default();
         if present {
@@ -161,9 +188,11 @@ impl BoxedContracts {
             );
         }
         if owners.is_empty() {
-            contract.callers.remove(&requirement.delivered, &usize::cmp);
+            contract.callers.remove(&requirement.delivered, &Lanes::cmp);
         } else {
-            contract.callers.insert(requirement.delivered, owners, &usize::cmp);
+            contract
+                .callers
+                .insert(requirement.delivered.clone(), owners, &Lanes::cmp);
         }
         self.publish(requirement.arity, contract);
     }
@@ -194,10 +223,8 @@ impl BoxedContracts {
     }
 
     fn change_wrapper(&mut self, wrapper: &BackendConstructionWrapper, present: bool, types: &Types) {
-        let lanes = match wrapper.return_form {
-            BackendCallableReturn::Diverges => return,
-            BackendCallableReturn::Absent => 0,
-            BackendCallableReturn::ValueRef => 1,
+        let Some(lanes) = wrapper.return_form.return_reprs() else {
+            return;
         };
         let mut contract = self
             .arities
@@ -206,7 +233,7 @@ impl BoxedContracts {
             .unwrap_or_default();
         let mut owners = contract
             .publications
-            .lookup(&lanes, &usize::cmp)
+            .lookup(&lanes, &Lanes::cmp)
             .cloned()
             .unwrap_or_default();
         if present {
@@ -223,9 +250,9 @@ impl BoxedContracts {
             );
         }
         if owners.is_empty() {
-            contract.publications.remove(&lanes, &usize::cmp);
+            contract.publications.remove(&lanes, &Lanes::cmp);
         } else {
-            contract.publications.insert(lanes, owners, &usize::cmp);
+            contract.publications.insert(lanes, owners, &Lanes::cmp);
         }
         self.publish(wrapper.call_arity, contract);
     }
@@ -247,21 +274,15 @@ impl BoxedContracts {
         let Some(mismatch) = self.mismatches.first() else {
             return Ok(());
         };
-        let form = if mismatch.published == 0 {
-            BackendCallableReturn::Absent
-        } else {
-            BackendCallableReturn::ValueRef
-        };
         let diagnostic = Diagnostic::error(
             codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,
             format!(
-                "compiler2 backend lowering for root {}: boxed closure call in {:?} expects {} delivered lane(s) but construction wrapper {:?} it can reach publishes {} ({:?}): the two halves of one calling convention were compiled against different contracts",
+                "compiler2 backend lowering for root {}: boxed closure call in {:?} expects delivered lane(s) {:?} but construction wrapper {:?} it can reach publishes {:?}: the two halves of one calling convention were compiled against different contracts",
                 root.as_u32(),
                 mismatch.caller.activation.function,
                 mismatch.delivered,
                 mismatch.wrapper,
                 mismatch.published,
-                form
             ),
             Span::DUMMY,
         );
@@ -271,13 +292,14 @@ impl BoxedContracts {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+    use crate::compiler2::artifact::BackendCallableReturn;
     use crate::compiler2::transport::{ActivationSymbol, CallableId, ExecutableSymbol};
     use crate::compiler2::{ActivationKey, ExecutableNeed, ModuleId, World};
     use crate::telemetry::ConfiguredTelemetry;
 
-    fn caller(world: &mut World, name: &str) -> ExecutableKey {
+    pub(crate) fn caller(world: &mut World, name: &str) -> ExecutableKey {
         let function = world.reference_function(ModuleId::GLOBAL, name, 0);
         ExecutableKey {
             activation: ActivationKey::from_inputs(RootId::for_test(0), function, &[], world.types_mut()),
@@ -285,7 +307,11 @@ mod tests {
         }
     }
 
-    fn wrapper(key: &ExecutableKey, arity: usize, return_form: BackendCallableReturn) -> BackendConstructionWrapper {
+    pub(crate) fn wrapper(
+        key: &ExecutableKey,
+        arity: usize,
+        return_form: BackendCallableReturn,
+    ) -> BackendConstructionWrapper {
         BackendConstructionWrapper {
             denotation: key.activation.function.denotation(),
             source_origin: std::sync::Arc::new(fz_runtime::function_denotation::FunctionDenotation::named(
@@ -316,8 +342,14 @@ mod tests {
     fn replacement_and_withdrawal_preserve_mismatch_rejection_and_agreement() {
         let mut world = World::new();
         let key = caller(&mut world, "caller");
-        let zero = [BoxedApplyRequirement { arity: 1, delivered: 0 }];
-        let one = [BoxedApplyRequirement { arity: 1, delivered: 1 }];
+        let zero = [BoxedApplyRequirement {
+            arity: 1,
+            delivered: Box::default(),
+        }];
+        let one = [BoxedApplyRequirement {
+            arity: 1,
+            delivered: Box::new([AbiValueRepr::ValueRef]),
+        }];
         let absent = wrapper(&key, 1, BackendCallableReturn::Absent);
         let returning = wrapper(&key, 1, BackendCallableReturn::ValueRef);
         let divergent = wrapper(&key, 1, BackendCallableReturn::Diverges);
@@ -366,8 +398,14 @@ mod tests {
         let key = caller(&mut world, "caller");
         let other = caller(&mut world, "other");
         let requirements = [
-            BoxedApplyRequirement { arity: 1, delivered: 0 },
-            BoxedApplyRequirement { arity: 1, delivered: 1 },
+            BoxedApplyRequirement {
+                arity: 1,
+                delivered: Box::default(),
+            },
+            BoxedApplyRequirement {
+                arity: 1,
+                delivered: Box::new([AbiValueRepr::ValueRef]),
+            },
         ];
         let absent = wrapper(&key, 1, BackendCallableReturn::Absent);
         let returning = wrapper(&other, 1, BackendCallableReturn::ValueRef);
@@ -379,8 +417,9 @@ mod tests {
                 .mismatches
                 .first()
                 .expect("second caller lane differs")
-                .delivered,
-            1
+                .delivered
+                .as_ref(),
+            [AbiValueRepr::ValueRef]
         );
         contracts.replace_caller(&key, &requirements, &requirements[..1], world.types());
         assert!(contracts.mismatches.is_empty());
@@ -390,8 +429,9 @@ mod tests {
                 .mismatches
                 .first()
                 .expect("second wrapper lane differs")
-                .published,
-            1
+                .published
+                .as_ref(),
+            [AbiValueRepr::ValueRef]
         );
         contracts.replace_wrapper(Some(&returning), None, world.types());
         assert!(contracts.mismatches.is_empty());
@@ -401,7 +441,10 @@ mod tests {
     fn wrapper_arity_replacement_checks_only_callers_of_its_current_arity() {
         let mut world = World::new();
         let key = caller(&mut world, "caller");
-        let one = [BoxedApplyRequirement { arity: 1, delivered: 1 }];
+        let one = [BoxedApplyRequirement {
+            arity: 1,
+            delivered: Box::new([AbiValueRepr::ValueRef]),
+        }];
         let binary = wrapper(&key, 2, BackendCallableReturn::Absent);
         let unary = wrapper(&key, 1, BackendCallableReturn::Absent);
         let mut contracts = BoxedContracts::default();
@@ -429,9 +472,18 @@ mod tests {
         let mut world = World::new();
         let key = caller(&mut world, "caller");
         let other = caller(&mut world, "other");
-        let one = [BoxedApplyRequirement { arity: 1, delivered: 1 }];
-        let two = [BoxedApplyRequirement { arity: 2, delivered: 1 }];
-        let changed = [BoxedApplyRequirement { arity: 1, delivered: 0 }];
+        let one = [BoxedApplyRequirement {
+            arity: 1,
+            delivered: Box::new([AbiValueRepr::ValueRef]),
+        }];
+        let two = [BoxedApplyRequirement {
+            arity: 2,
+            delivered: Box::new([AbiValueRepr::ValueRef]),
+        }];
+        let changed = [BoxedApplyRequirement {
+            arity: 1,
+            delivered: Box::default(),
+        }];
         let returning = wrapper(&key, 1, BackendCallableReturn::ValueRef);
         let mut contracts = BoxedContracts::default();
         contracts.replace_caller(&key, &[], &one, world.types());
@@ -470,7 +522,10 @@ mod tests {
         let mut world = World::new();
         let key = caller(&mut world, "caller");
         let other = caller(&mut world, "other");
-        let one = [BoxedApplyRequirement { arity: 1, delivered: 1 }];
+        let one = [BoxedApplyRequirement {
+            arity: 1,
+            delivered: Box::new([AbiValueRepr::ValueRef]),
+        }];
         let absent = wrapper(&key, 1, BackendCallableReturn::Absent);
         let other_absent = wrapper(&other, 1, BackendCallableReturn::Absent);
         let mut contracts = BoxedContracts::default();

@@ -512,8 +512,9 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
 
 /// Reports `RootBackendProduct` pull-drive failures as plain `String`s for
 /// the in-memory front door (`run_root_interp`, `product_executable_inventory`,
-/// the CLI dump paths). Unlike the backend job's `FatalError` counterpart,
-/// this path does not emit a diagnostic — it never has, and the drive-loop
+/// the CLI dump paths). This path emits no diagnostic of its own at all —
+/// not even for the exhausted-budget and no-producer cases the backend job's
+/// `FatalError` counterpart reports. It never has, and the drive-loop
 /// unification is not the place to change that.
 impl super::product_drive::ProductDriveError for String {
     fn dependency_failed<T: crate::telemetry::Telemetry>(
@@ -524,13 +525,7 @@ impl super::product_drive::ProductDriveError for String {
     ) -> Self {
         format!("compiler2 product dependency {address:?} failed")
     }
-    fn product_failed<T: Telemetry>(
-        _world: &World,
-        _tel: &T,
-        root: RootId,
-        product: &ProductKey,
-        _failure: super::pull::ProductFailure,
-    ) -> Self {
+    fn product_failed<T: Telemetry>(_world: &World, _tel: &T, root: RootId, product: &ProductKey) -> Self {
         format!("compiler2 root {} failed producing {product:?}", root.as_u32())
     }
 

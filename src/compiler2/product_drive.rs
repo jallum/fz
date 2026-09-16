@@ -15,8 +15,8 @@ use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
 use super::ordered_worklist::OrderedWorklist;
 use super::pull::{
-    ProductDriver, ProductFailure, ProductKey, ProductRequestId, ProductSessions, ProductValidation, ProductValue,
-    PullOutcome, PullWait, WorldProductProducers,
+    ProductDriver, ProductKey, ProductRequestId, ProductSessions, ProductValidation, ProductValue, PullOutcome,
+    PullWait, WorldProductProducers,
 };
 use super::scheduler::{DriveOutcome, FatalError, WorkStartReason};
 use super::semantic::SemanticOrd;
@@ -121,12 +121,14 @@ pub(crate) trait ProductDriveError: Sized {
         root: RootId,
         last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self;
+    /// `product` returned `PullOutcome::Failed`, which means the producer
+    /// refused the program and emitted the diagnostic saying why. The failure
+    /// travels; the explanation is already reported.
     fn product_failed<T: crate::telemetry::Telemetry>(
         world: &World,
         tel: &T,
         root: RootId,
         product: &ProductKey,
-        failure: ProductFailure,
     ) -> Self;
     fn dependency_failed<T: crate::telemetry::Telemetry>(
         world: &World,
@@ -686,13 +688,12 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
                         .expect("a waiting product leaves its owner on the pull stack"),
                     );
                 }
-                PullOutcome::Failed(failure) => {
+                PullOutcome::Failed => {
                     return Err(E::product_failed(
                         world,
                         tel,
                         root,
                         current.as_ref().expect("failed selection").key(),
-                        failure,
                     ));
                 }
             }
@@ -991,13 +992,7 @@ mod wait_frame_tests {
         ) -> Self {
             panic!("unexpected fact budget failure")
         }
-        fn product_failed<T: crate::telemetry::Telemetry>(
-            _: &World,
-            _: &T,
-            _: RootId,
-            _: &ProductKey,
-            _: ProductFailure,
-        ) -> Self {
+        fn product_failed<T: crate::telemetry::Telemetry>(_: &World, _: &T, _: RootId, _: &ProductKey) -> Self {
             panic!("unexpected product failure")
         }
         fn dependency_failed<T: crate::telemetry::Telemetry>(
@@ -1240,7 +1235,7 @@ mod wait_frame_tests {
                         input,
                         "a failed selection still borrows its original input"
                     );
-                    PullOutcome::Failed(ProductFailure::NativeLowering)
+                    PullOutcome::Failed
                 }
             },
         )

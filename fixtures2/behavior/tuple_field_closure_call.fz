@@ -1,0 +1,143 @@
+#---
+# purpose: "a closure projected out of a tuple field is called with the same convention on every door, and a named target is called directly"
+# oracle: oracle.exs
+#---
+#
+# # tuple_field_closure_call
+#
+# A lambda travels inside a tuple, is destructured out of it, and is then
+# called. Nothing in the program hides the lambda's identity: one function
+# builds the tuple, one function takes it apart and applies the field.
+#
+# Both halves of a call have to agree on one convention. A call that names its
+# target passes the target's capture inputs and reads the target's own return
+# lanes; a call through the boxed apply seam passes a closure pointer and reads
+# one boxed word back. Deciding one half one way and the other half the other
+# way is not a diagnostic, because the two conventions can agree on how many
+# lanes come back while disagreeing on what the lane holds: the caller then
+# reads the seam's boxed word as a raw integer and prints an address.
+#
+# Each line below is one shape of that same call:
+#
+# - the tail form, where the projected call is the whole body;
+# - the non-tail form, where its result is placed into another tuple;
+# - a lambda that uses only its capture, and one that uses two captures;
+# - the lambda in the second field instead of the first, and in a 3-tuple;
+# - returns that are not integers: a bool, and a 2-tuple;
+# - a capture-free lambda in a tuple, and a lambda whose return type is
+#   `integer | float` — both already agreed and must keep agreeing;
+# - the tuple taken apart and also handed on whole, which is the one group
+#   here that genuinely goes through the seam.
+#
+# ## Which calls are direct, and what that costs
+#
+# A tuple field that names one target is a direct call: the caller hands the
+# target its captures as ordinary arguments, so no closure object is built.
+# Every call in the first group is that, and the first counter below is the
+# standing proof of it — a closure allocation there would mean the value was
+# boxed to cross a seam nothing needs.
+#
+# The second group is different. It takes the tuple apart, calls the field, and
+# also hands the whole tuple on — into a list, and back to its own caller. The
+# lambda inside it is then a value in its own right, so it travels as one word,
+# and a word is all the caller holds: the call goes through the apply seam and a
+# closure is built to hold it. That is the honest cost of using the tuple whole,
+# and the second counter pins that closures appear and that there are only a
+# handful. How many is path-variant — the interpreter builds one per escaping
+# tuple, while native also builds the continuation closures its own frames need
+# — so the pin is a range rather than a number: more than none, and well inside
+# a single digit. What must not vary at all is the answer.
+#
+# `dbg(t)` is the same shape as the list hand-off and was the first form this
+# refused on, but the two runtimes render a function value differently, so it
+# cannot be an oracle line.
+#
+# One tuple is materialized in the first group: `{:a, 11}` is printed whole,
+# and a printed tuple is a real value. Every other tuple there is taken apart
+# by the function it reaches, so it travels as field lanes and is never built.
+defp make_adder(c), do: fn n -> n + c end
+
+defp pair_adder(n), do: {fn x -> x + n end, n}
+defp call_pair({f, k}), do: f.(k)
+
+defp tag_call({tag, f}, x), do: {tag, f.(x)}
+
+defp pair_const(n), do: {fn _x -> n end, n}
+
+defp pair_two(n, m), do: {fn x -> x + n + m end, n}
+
+defp pair_swapped(n), do: {n, fn x -> x + n end}
+defp call_swapped({k, f}), do: f.(k)
+
+defp triple_adder(n), do: {fn x -> x + n end, n, 99}
+defp call_triple({f, k, z}), do: f.(k) + z
+
+defp pair_pred(n), do: {fn x -> x > n end, n}
+
+defp pair_returning_pair(n), do: {fn x -> {x + n, n} end, n}
+
+defp call_returning_pair({f, k}) do
+  {a, b} = f.(k)
+  a + b
+end
+
+defp pair_capture_free(), do: {fn x -> x + 1 end, 5}
+
+defp pair_widened(n), do: {fn x -> if x > 0, do: x + n, else: x * 1.0 end, n}
+
+defp pair_escaping(n), do: {fn x -> x + n end, n}
+
+defp call_and_hold(t) do
+  {f, k} = t
+  a = f.(k)
+  [held | _] = [t]
+  {_hf, hn} = held
+  a + hn
+end
+
+defp call_and_keep(t) do
+  {f, k} = t
+  {f.(k), t}
+end
+
+def main() do
+  before = Process.heap_alloc_stats()
+
+  dbg(call_pair(pair_adder(5)))
+  dbg(tag_call({:a, make_adder(1)}, 10))
+  dbg(call_pair(pair_const(5)))
+  dbg(call_pair(pair_two(5, 100)))
+  dbg(call_swapped(pair_swapped(5)))
+  dbg(call_triple(triple_adder(5)))
+  dbg(call_pair(pair_pred(5)))
+  dbg(call_returning_pair(pair_returning_pair(5)))
+  dbg(call_pair(pair_capture_free()))
+  dbg(call_pair(pair_widened(5)))
+
+  after_direct = Process.heap_alloc_stats()
+  assert(
+    after_direct[:closure_allocs] - before[:closure_allocs] == 0,
+    "a tuple field that names one target is called directly, so no closure is built"
+  )
+  assert(
+    after_direct[:struct_allocs] - before[:struct_allocs] == 1,
+    "only the printed tuple is materialized; the destructured ones travel as field lanes"
+  )
+
+  dbg(call_and_hold(pair_escaping(5)))
+  {kept_result, kept} = call_and_keep(pair_escaping(5))
+  dbg(kept_result)
+  {_f, kept_n} = kept
+  dbg(kept_n)
+
+  after_whole = Process.heap_alloc_stats()
+  whole_closures = after_whole[:closure_allocs] - after_direct[:closure_allocs]
+  assert(
+    whole_closures > 0,
+    "a tuple handed on whole carries its lambda as a value, so a closure is built to hold it"
+  )
+  assert(
+    whole_closures <= 8,
+    "two escaping tuples cost a handful of closures on any path, not an unbounded number"
+  )
+end

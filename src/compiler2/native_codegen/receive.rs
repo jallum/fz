@@ -1514,8 +1514,7 @@ fn emit_map_kind_test<M: cranelift_module::Module>(
 
 /// Chain of equality / load checks that verifies `val` is a tuple of
 /// the given arity. Branches to `match_b` on success, `next_b` on any
-/// mismatch. Mirrors `compile_tuple_shape` but parameterised on match
-/// vs miss target blocks.
+/// mismatch.
 fn emit_tuple_arity_test<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,

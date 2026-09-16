@@ -8,6 +8,8 @@ use super::drive::{ExecutionContext, Job, JobEffects};
 use super::scheduler::FatalError;
 
 pub(crate) mod artifact;
+#[cfg(test)]
+mod artifact_test;
 pub(crate) mod backend;
 mod body;
 #[cfg(test)]
@@ -21,6 +23,8 @@ mod native;
 pub(super) use native::produce_native_program;
 mod root;
 pub(crate) mod runtime_demand;
+#[cfg(test)]
+mod runtime_demand_test;
 mod semantic;
 mod source;
 #[cfg(test)]

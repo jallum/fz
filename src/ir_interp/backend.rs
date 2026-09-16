@@ -923,23 +923,88 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             ..
         } => {
             let callee_value = env.get(callee).cloned();
-            let missing_direct_callee = callee_value.is_none();
-            let (fn_id, capture_shape, capture_lanes) = match callee_value {
-                Some(BackendBoundValue::Transport { shape, lanes })
-                    if matches!(transport.interners().shape(shape), ShapeDescr::Callable(_)) =>
-                {
-                    let ShapeDescr::Callable(callable) = transport.interners().shape(shape) else {
-                        unreachable!();
+            // The call form carries the decision the artifact layer made with
+            // `callee_supplies_target_captures`. A named target is a direct
+            // edge whose captures come out of the callee value's own lanes; an
+            // unnamed one is a call through the boxed apply seam. This door
+            // emits what that one answer promised, exactly as native does.
+            let (executable_target, call_args) = match target {
+                Some(target) => {
+                    let callee_executable = backend_executable_ref(program, types, target)?;
+                    let capture_inputs_end = callee_executable
+                        .key
+                        .activation
+                        .input_len(types)
+                        .checked_sub(args.len())
+                        .ok_or_else(|| {
+                            format!(
+                                "backend executable {} has fewer inputs than closure call args",
+                                callee_executable.key.activation.function.as_u32()
+                            )
+                        })?;
+                    let captures = match &callee_value {
+                        Some(BackendBoundValue::Transport { shape, lanes })
+                            if matches!(transport.interners().shape(*shape), ShapeDescr::Callable(_)) =>
+                        {
+                            decode_callable_captures(transport, *shape, lanes)?
+                        }
+                        _ => Vec::new(),
                     };
-                    let callable = transport.interners().callable(*callable);
-                    let function = callable.function.ok_or_else(|| {
-                        "backend closure call cannot directly invoke generic callable transport".to_string()
-                    })?;
-                    (FnId(function.as_u32()), Some(shape), lanes)
+                    let mut lanes = Vec::new();
+                    for binding in callee_executable
+                        .abi
+                        .semantic_inputs
+                        .iter()
+                        .filter(|binding| binding.semantic_index < capture_inputs_end)
+                    {
+                        if binding.layout.publishes_no_lanes() {
+                            continue;
+                        }
+                        let capture = captures.get(binding.semantic_index).ok_or_else(|| {
+                            format!(
+                                "closure call executable={:?} function={} callsite={} calls {:?} directly, but callee value {} carries no capture {}",
+                                executable.key,
+                                executable.key.activation.function.as_u32(),
+                                callsite.as_u32(),
+                                callee_executable.key,
+                                callee.as_u32(),
+                                binding.semantic_index
+                            )
+                        })?;
+                        encode_runtime_input_binding(
+                            transport,
+                            program,
+                            runtime.cur_proc(),
+                            capture,
+                            binding,
+                            &mut lanes,
+                        )?;
+                    }
+                    lanes.extend(encode_call_args(
+                        transport,
+                        program,
+                        types,
+                        runtime,
+                        callee_executable.as_ref(),
+                        &env,
+                        args,
+                        capture_inputs_end,
+                    )?);
+                    (callee_executable, lanes)
                 }
-                Some(other) => {
-                    let materialized = materialize_backend_value(transport, runtime.cur_proc(), &other)?;
-                    let (fn_id, captures) = match materialized {
+                None => {
+                    let callee_value = callee_value.ok_or_else(|| {
+                        format!(
+                            "closure call executable={:?} function={} callsite={} callee_value={}: backend value {} is unbound",
+                            executable.key,
+                            executable.key.activation.function.as_u32(),
+                            callsite.as_u32(),
+                            callee.as_u32(),
+                            callee.as_u32()
+                        )
+                    })?;
+                    let materialized = materialize_backend_value(transport, runtime.cur_proc(), &callee_value)?;
+                    let (fn_id, capture_lanes) = match materialized {
                         AnyValue::FnRef(fn_id, _, _) => (fn_id, Vec::new()),
                         other => unpack_closure(other.value(runtime.cur_proc())?).map_err(|error| {
                             format!(
@@ -951,122 +1016,34 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                             )
                         })?,
                     };
-                    (fn_id, None, captures)
-                }
-                None => {
-                    let Some(target) = target else {
-                        return Err(format!(
-                            "closure call executable={:?} function={} callsite={} callee_value={}: backend value {} is unbound",
+                    let wrapper = construction_wrapper_for_fn(program, fn_id).ok_or_else(|| {
+                        format!(
+                            "backend closure call executable={:?} function={} callsite={} reached function {} through the apply seam, which publishes no construction wrapper",
                             executable.key,
                             executable.key.activation.function.as_u32(),
                             callsite.as_u32(),
-                            callee.as_u32(),
-                            callee.as_u32()
-                        ));
-                    };
-                    (FnId(target.activation.function.as_u32()), None, Vec::new())
-                }
-            };
-            let wrapper = construction_wrapper_for_fn(program, fn_id);
-            let executable_target = if let Some(wrapper) = wrapper {
-                let args = args
-                    .iter()
-                    .map(|arg| env_get(transport, runtime.cur_proc(), &env, arg.value))
-                    .collect::<Result<Vec<_>, _>>()?;
-                &select_construction_member(runtime, types, transport, program, module, wrapper, &args)?.target
-            } else if let Some(target) = target {
-                target
-            } else {
-                return Err(format!(
-                    "backend closure call executable={:?} function={} callsite={} has no construction wrapper or direct target",
-                    executable.key,
-                    executable.key.activation.function.as_u32(),
-                    callsite.as_u32()
-                ));
-            };
-            let executable_target = backend_executable_ref(program, types, executable_target)?;
-            let callee_executable = executable_target.as_ref();
-            let capture_inputs_end = callee_executable
-                .key
-                .activation
-                .input_len(types)
-                .checked_sub(args.len())
-                .ok_or_else(|| {
-                    format!(
-                        "backend executable {} has fewer inputs than closure call args",
-                        callee_executable.key.activation.function.as_u32()
-                    )
-                })?;
-            if missing_direct_callee
-                && callee_executable
-                    .abi
-                    .semantic_inputs
-                    .iter()
-                    .any(|input| input.semantic_index < capture_inputs_end && !input.layout.publishes_no_lanes())
-            {
-                return Err(format!(
-                    "closure call executable={:?} function={} callsite={} omitted callee value {} but target {:?} needs semantic inputs",
-                    executable.key,
-                    executable.key.activation.function.as_u32(),
-                    callsite.as_u32(),
-                    callee.as_u32(),
-                    executable_target.key
-                ));
-            }
-            let call_args = if let Some(wrapper) = wrapper {
-                let member = select_construction_member(
-                    runtime,
-                    types,
-                    transport,
-                    program,
-                    module,
-                    wrapper,
-                    &args
+                            fn_id.0
+                        )
+                    })?;
+                    let arg_values = args
                         .iter()
                         .map(|arg| env_get(transport, runtime.cur_proc(), &env, arg.value))
-                        .collect::<Result<Vec<_>, _>>()?,
-                )?;
-                ConstructionInputEncoder {
-                    runtime,
-                    types,
-                    transport,
-                    program,
-                    target: callee_executable,
-                    wrapper,
-                    member,
-                }
-                .encode(&capture_lanes, args, |arg| env_get_value(&env, arg.value))?
-            } else {
-                let captures = match capture_shape {
-                    Some(shape) => decode_callable_captures(transport, shape, &capture_lanes)?,
-                    None => capture_lanes.into_iter().map(BackendBoundValue::Runtime).collect(),
-                };
-                let mut lanes = Vec::new();
-                for binding in callee_executable
-                    .abi
-                    .semantic_inputs
-                    .iter()
-                    .filter(|binding| binding.semantic_index < capture_inputs_end)
-                {
-                    if binding.layout.publishes_no_lanes() {
-                        continue;
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let member =
+                        select_construction_member(runtime, types, transport, program, module, wrapper, &arg_values)?;
+                    let callee_executable = backend_executable_ref(program, types, &member.target)?;
+                    let lanes = ConstructionInputEncoder {
+                        runtime,
+                        types,
+                        transport,
+                        program,
+                        target: callee_executable.as_ref(),
+                        wrapper,
+                        member,
                     }
-                    let capture = captures
-                        .get(binding.semantic_index)
-                        .ok_or_else(|| format!("direct closure call is missing capture {}", binding.semantic_index))?;
-                    encode_runtime_input_binding(transport, program, runtime.cur_proc(), capture, binding, &mut lanes)?;
+                    .encode(&capture_lanes, args, |arg| env_get_value(&env, arg.value))?;
+                    (callee_executable, lanes)
                 }
-                lanes.extend(encode_call_args(
-                    transport,
-                    program,
-                    types,
-                    runtime,
-                    callee_executable,
-                    &env,
-                    args,
-                    capture_inputs_end,
-                )?);
-                lanes
             };
             let continuations = match dest {
                 ControlDestination::Return => continuations,

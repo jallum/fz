@@ -75,6 +75,25 @@ pub enum BackendCallableReturn {
     ValueRef,
 }
 
+impl BackendCallableReturn {
+    /// The lanes the boxed apply seam hands back, or `None` when it never
+    /// hands anything back at all. This is the whole public convention: a
+    /// caller past the seam reads exactly these, whatever its own members
+    /// return behind it.
+    ///
+    /// A seam that returns no lanes and a seam that never returns are
+    /// different facts, so they get different answers: an empty slice is a
+    /// call that completes and delivers nothing, `None` is a call that does
+    /// not come back.
+    pub fn return_reprs(self) -> Option<Box<[AbiValueRepr]>> {
+        match self {
+            Self::Diverges => None,
+            Self::Absent => Some(Box::default()),
+            Self::ValueRef => Some(Box::new([AbiValueRepr::ValueRef])),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConstructionMemberAdapter {
     pub boundary: BoundaryId,
@@ -1293,6 +1312,26 @@ pub enum AbiValueRepr {
     RawInt,
     RawF64,
     RawAtom,
+}
+
+impl AbiValueRepr {
+    /// The physical form a value of this type travels in. Only a scalar has a
+    /// raw form; everything else -- a callable, a tuple, a list, a map -- is
+    /// one boxed word. This is the single rule every lane repr is read from.
+    pub(crate) fn for_ty(world: &mut super::world::World, ty: Ty) -> Self {
+        if world.types().is_floating(&ty) {
+            return Self::RawF64;
+        }
+        if world.types().is_integer(&ty) {
+            return Self::RawInt;
+        }
+        let atom = world.types_mut().atom();
+        if world.types().is_subtype(&ty, &atom) {
+            Self::RawAtom
+        } else {
+            Self::ValueRef
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

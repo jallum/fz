@@ -172,7 +172,7 @@ impl ProductProducers for OwnershipProducers<'_> {
                 PullOutcome::Produced(ProductValue::Unit)
             }
             OwnershipFormula::Value(value) => PullOutcome::Produced(value),
-            OwnershipFormula::Unavailable => PullOutcome::Failed(ProductFailure::NativeLowering),
+            OwnershipFormula::Unavailable => PullOutcome::Failed,
             OwnershipFormula::Copy(child) => match context.read_product(tel, child.clone(), &self.types) {
                 Some(value) => PullOutcome::Produced(value.clone()),
                 None => PullOutcome::wait_on_product(child),
@@ -253,7 +253,7 @@ fn ownership_pull(
         producers,
     ) {
         Ok(value) => PullOutcome::Produced(value),
-        Err(_) => PullOutcome::Failed(ProductFailure::NativeLowering),
+        Err(_) => PullOutcome::Failed,
     }
 }
 
@@ -538,7 +538,7 @@ fn replacing_or_retiring_a_waiting_witness_reports_its_disposal() {
         ));
         assert!(matches!(
             ownership_pull(&mut driver, &mut producers, &packaging),
-            PullOutcome::Failed(_)
+            PullOutcome::Failed
         ));
         producers.formulas.insert(
             packaging.clone(),
@@ -658,7 +658,7 @@ fn a_successful_formula_without_a_rooted_read_retires_only_its_own_witness() {
     );
     assert_eq!(
         ownership_pull(&mut driver, &mut producers, &retained),
-        PullOutcome::Failed(ProductFailure::NativeLowering)
+        PullOutcome::Failed
     );
 }
 
@@ -879,7 +879,7 @@ fn a_waiting_formula_does_not_acknowledge_delivered_rooted_changes() {
         .insert(upstream.clone(), OwnershipFormula::Unavailable);
     assert_eq!(
         ownership_pull(&mut driver, &mut producers, &packaging),
-        PullOutcome::Failed(ProductFailure::NativeLowering)
+        PullOutcome::Failed
     );
     assert!(
         !driver.session().memo.rooted[&packaging].changes.is_empty(),
@@ -1814,7 +1814,7 @@ fn failed_rooted_drives_unregister_their_frames_before_retained_repair() {
     let mut driver = ProductDriver::new(&tel, RootId::for_test(908));
     assert!(matches!(
         ownership_pull(&mut driver, &mut producers, &packaging),
-        PullOutcome::Failed(_)
+        PullOutcome::Failed
     ));
     assert!(
         driver
@@ -1832,7 +1832,7 @@ fn failed_rooted_drives_unregister_their_frames_before_retained_repair() {
         .insert(child, OwnershipFormula::Value(ProductValue::Unit));
     assert!(matches!(
         ownership_pull(&mut driver, &mut producers, &packaging),
-        PullOutcome::Failed(_)
+        PullOutcome::Failed
     ));
     assert_eq!(
         driver.session().memo.pending_dependencies[&packaging].request,
@@ -2053,7 +2053,7 @@ fn sibling_value_backedges_share_one_complete_rooted_proof() {
                 .invalidate_products(&tel, [child.clone()], &producers.types);
             assert_eq!(
                 ownership_pull(&mut driver, &mut producers, &packaging),
-                PullOutcome::Failed(ProductFailure::NativeLowering)
+                PullOutcome::Failed
             );
             assert!(
                 driver.session().memo.dirty_descendants.contains(&left),
@@ -2477,7 +2477,7 @@ fn assert_current_control_ownership(indirect: bool) {
             .invalidate_products(&tel, [changed.clone()], &producers.types);
         assert!(matches!(
             ownership_pull(&mut driver, &mut producers, &reader),
-            PullOutcome::Failed(_)
+            PullOutcome::Failed
         ));
         assert!(
             producers.calls.contains(&old_child),

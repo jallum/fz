@@ -232,19 +232,21 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     assert_eq!(
         *source_work.borrow(),
-        // fz-5xp.30: ordinary generic arithmetic result/status calls add 54
-        // applications and seven executable-fact derivations; their resolved
-        // Kernel definitions replace two source-module derivations.
-        // `==` carries a typed clause per numeric pair, so every `x == 1` site
-        // lowers and plans that whole family; the module and executable-fact
-        // tallies do not see it because the fixture's operands stay integers
-        // and each site settles on one clause.
-        // Each ordering operator's final `any`/`any` clause calls `compare/2`
-        // and compares the result: two applications in one body. This fixture
-        // reaches `<` and `>`, one application apiece, and the operands stay
-        // integers, so the module and executable-fact tallies count nothing
-        // for the catch-all.
-        (4197, 11, 19, 408),
+        // Applied work steps in total, then the `ScopeCode`, `DefineModule`
+        // and `DeriveExecutableFacts` steps among them, for this one fixture
+        // compiled to its backend product.
+        //
+        // What the shape of the numbers says: the fixture reaches `==`, `<`
+        // and `>`, whose Kernel definitions carry a typed clause per numeric
+        // pair plus an `any`/`any` catch-all that calls `compare/2`. Every
+        // operator site lowers and plans that whole family, which is why the
+        // total is large; the module and executable-fact tallies stay small
+        // because the fixture's operands are all integers, so each site
+        // settles on one clause and the catch-all is never reached. Tuple-
+        // field demands join as prefixes, so a field one consumer reads stays
+        // distinct from a field another ignores and each such field earns its
+        // own demand evaluation.
+        (4199, 11, 19, 408),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -270,9 +272,18 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     assert_eq!(
         (*demand_completions, *demand_wake_starts, *demand_wake_causes.borrow()),
-        // fz-5xp.30: generic helper result/status facts add thirteen demand
-        // completions and nine attributed wakes; no unclassified cause appears.
-        (1180, 948, [58, 232, 145, 513, 0]),
+        // `DeriveRuntimeDemand` completions, the wakes that enqueued them,
+        // and those wakes split by the prerequisite that caused each one:
+        // construction target, settled executable facts, one exact runtime-
+        // demand input, the whole input vector, and unclassified.
+        //
+        // The last slot is zero because every wake names the fact that moved.
+        // The exact-input slot carries the wakes the whole-input-vector slot
+        // would otherwise absorb: a formula that reads one target's inputs
+        // wakes on that input alone. Tuple-field demands join as prefixes, so
+        // fields distinct consumers read stay distinct, and each one is its
+        // own completion woken on that same exact cause.
+        (1182, 950, [58, 232, 156, 504, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(

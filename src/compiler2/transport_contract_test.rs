@@ -5598,9 +5598,8 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
         _tel: &T,
         root: super::RootId,
         product: &ProductKey,
-        failure: super::pull::ProductFailure,
     ) -> Self {
-        panic!("root {} product {product:?} failed: {failure:?}", root.as_u32());
+        panic!("root {} product {product:?} failed", root.as_u32());
     }
 
     fn job_failed<T: crate::telemetry::Telemetry>(
@@ -5696,7 +5695,7 @@ fn pull_product_until_produced_with_fact_waits(
                     }
                 }
             }
-            PullOutcome::Failed(failure) => panic!("{message}: product {current:?} failed: {failure:?}"),
+            PullOutcome::Failed => panic!("{message}: product {current:?} failed"),
         }
     }
     panic!("{message}: product {key:?} did not settle; last wait: {last_wait:?}");
@@ -6467,4 +6466,83 @@ end
              input must carry its one lane: {position:?} {descr:?}"
         );
     }
+}
+
+/// A tuple field is one transport position seen from two sides: the function
+/// that builds the tuple publishes what it put there, and the function that
+/// destructures it declares what it will read. A call through that field is
+/// compiled from BOTH, so the two views have to be one layout -- a callable
+/// naming the lambda, carrying the lambda's capture as its own lane. If the
+/// consumer's view of the field forgets the lambda's identity, the two halves
+/// of the call are built against different conventions.
+#[test]
+fn compiler2_transport_agrees_on_a_tuple_field_holding_a_called_callable() {
+    let source = r#"
+def mk(n), do: {fn x -> x + n end, n}
+def call_pair({f, k}), do: f.(k)
+def main(), do: call_pair(mk(5))
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("transport_tuple_field_callable.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
+
+    let produced = TransportPosition::ExecutableReturn {
+        executable: executable_for(&world, session, "mk", 1),
+    };
+    let consumed = TransportPosition::ExecutableInput {
+        executable: executable_for(&world, session, "call_pair", 1),
+        semantic_index: 0,
+    };
+    let produced_field = tuple_field_layout(&world, &plan, &produced, 0);
+    let consumed_field = tuple_field_layout(&world, &plan, &consumed, 0);
+    assert_eq!(
+        produced_field, consumed_field,
+        "the producer and the consumer of one tuple field must name one layout"
+    );
+
+    let ShapeDescr::Callable(callable) = shape_descr(&world, consumed_field.structural) else {
+        panic!("the field holds a lambda that is called, so it is callable-shaped: {consumed_field:?}")
+    };
+    let descr = world.callable(*callable);
+    let function = descr
+        .function
+        .unwrap_or_else(|| panic!("a called field names the lambda it carries: {descr:?}"));
+    let denotation = &world.function_ref(function).denotation;
+    let fz_runtime::function_denotation::FunctionOrigin::Generated { owner, .. } = &denotation.origin else {
+        panic!("the field names the lambda written inside mk, not a generic callable: {denotation:?}")
+    };
+    assert!(
+        owner.is_named("mk"),
+        "the lambda the field names is mk's own: {denotation:?}"
+    );
+    let lanes = callable_capture_lanes(&world, *callable);
+    let [lane] = lanes.as_slice() else {
+        panic!("the lambda captures one integer, so the field carries one capture lane: {lanes:?}")
+    };
+    assert!(
+        world.types().is_integer(&world.lane(*lane).ty),
+        "the capture lane carries the captured integer: {:?}",
+        world.lane(*lane)
+    );
+}
+
+fn tuple_field_layout(
+    world: &World,
+    plan: &super::BackendProgram,
+    position: &TransportPosition,
+    index: usize,
+) -> TransportLayout {
+    let layout =
+        retained_layout_at(plan, position).unwrap_or_else(|| panic!("transport position should exist: {position:?}"));
+    let ShapeDescr::Tuple(fields) = shape_descr(world, layout.structural) else {
+        panic!("position {position:?} should carry a tuple, got {layout:?}")
+    };
+    fields[index]
 }

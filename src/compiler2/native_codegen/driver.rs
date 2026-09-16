@@ -619,8 +619,10 @@ fn declare_receive_dispatch_fns<M: cranelift_module::Module>(
 /// Emit receive-dispatch fn bodies for every Term::ReceiveMatched site
 /// discovered in the pre-pass above. Dispatch fns were declared before the
 /// fn-compilation loop so the park-site terminator arm could take
-/// `func_addr` of the still-undefined symbols. Bodies are pure leaf fns
-/// (no allocation, no extern).
+/// `func_addr` of the still-undefined symbols. A body never parks and runs
+/// no `receive` of its own, so it always returns to its caller; it can still
+/// call a runtime boxing extern when a test needs a raw scalar as an
+/// `AnyValueRef`.
 fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,

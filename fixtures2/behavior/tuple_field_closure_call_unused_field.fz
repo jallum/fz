@@ -1,0 +1,26 @@
+#---
+# purpose: "a closure destructured out of a tuple is callable even when the sibling field is discarded"
+#---
+#
+# # tuple_field_closure_call_unused_field
+#
+# The companion to `tuple_field_closure_call` with one field taken away.
+# `call_pair` binds the lambda and discards the integer beside it, so the body
+# projects field 0 and nothing at all projects field 1.
+#
+# A consumer states what it needs field by field, and a field nobody reads is
+# simply not asked for. That has to leave the field it does read exactly as
+# demanding as it would be in a body that read both: the lambda is still used
+# as a callable, still names one target, and still has that target's capture to
+# carry. Reading fewer fields is not evidence about the fields still read.
+#
+# The claim here is one value equality, so the program checks itself with
+# `assert` and prints nothing. There is no golden and no oracle: a failure
+# aborts, on every path.
+defp pair_adder(n), do: {fn x -> x + n end, n}
+
+defp call_pair({f, _k}), do: f.(7)
+
+def main() do
+  assert(call_pair(pair_adder(5)) == 12, "the projected lambda carries its capture through the unread sibling")
+end

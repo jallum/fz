@@ -58,8 +58,8 @@ pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
     BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
     BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReceive, BackendReturnLayout,
-    BackendSemanticInputLayout, BackendStep, BackendTail, CallEdge, CallTarget, DirectCallEdge, DispatchCallArm,
-    DispatchCallEdge, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
+    BackendSemanticInputLayout, BackendStep, BackendTail, BackendValueLayout, CallEdge, CallTarget, DirectCallEdge,
+    DispatchCallArm, DispatchCallEdge, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{
@@ -179,6 +179,8 @@ mod scheduler_test;
 mod scope_test;
 #[cfg(test)]
 mod semantic_analysis_test;
+#[cfg(test)]
+mod semantic_test;
 #[cfg(test)]
 mod source_publish_test;
 #[cfg(test)]

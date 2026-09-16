@@ -1868,7 +1868,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
                 }
                 out.push(']');
             }
-            crate::compiler2::pull::PullOutcome::Failed(_) => {
+            crate::compiler2::pull::PullOutcome::Failed => {
                 write_str_lit(out, "failed");
                 out.push_str(",\"wait_count\":0");
             }

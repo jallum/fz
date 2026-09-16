@@ -231,12 +231,11 @@ pub enum PullWait {
 pub enum PullOutcome {
     Produced(ProductValue),
     Waiting(Vec<PullWait>),
-    Failed(ProductFailure),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProductFailure {
-    NativeLowering,
+    /// A producer reached a program it cannot lower and said why through a
+    /// diagnostic before returning. The root stops on that diagnostic, and
+    /// the drive boundary above forwards the failure without restating it —
+    /// the same contract `FatalError` carries.
+    Failed,
 }
 
 impl PullOutcome {
@@ -2530,13 +2529,13 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                 self.session_mut().memo.unblock(request, key, dependencies);
                 PullOutcome::Waiting(waits)
             }
-            PullOutcome::Failed(failure) => {
+            PullOutcome::Failed => {
                 assert!(
                     recursive_group.is_none(),
                     "a failed product cannot publish a recursive group"
                 );
                 self.session_mut().memo.abort(key);
-                PullOutcome::Failed(failure)
+                PullOutcome::Failed
             }
         }
     }
@@ -3399,7 +3398,7 @@ mod tests {
                         }
                     }
                     if std::mem::take(&mut self.fail_native_once) {
-                        PullOutcome::Failed(ProductFailure::NativeLowering)
+                        PullOutcome::Failed
                     } else {
                         PullOutcome::Produced(ProductValue::Unit)
                     }
@@ -3482,10 +3481,7 @@ mod tests {
                 settled: true,
             },
         );
-        assert_eq!(
-            driver.pull(&mut producers, key.clone()),
-            PullOutcome::Failed(ProductFailure::NativeLowering)
-        );
+        assert_eq!(driver.pull(&mut producers, key.clone()), PullOutcome::Failed);
         assert!(!driver.session().memo.contains_in_progress(&key));
         assert!(driver.session().memo.pending_product_dependencies(&key).is_none());
         assert_eq!(driver.session().memo.get(&key), None);
@@ -4747,7 +4743,7 @@ mod tests {
                         }
                     }
                 }
-                PullOutcome::Failed(failure) => panic!("effect product failed: {failure:?}"),
+                PullOutcome::Failed => panic!("effect product failed"),
             }
         }
         unreachable!("the requested effects product remains on the work stack until it settles")

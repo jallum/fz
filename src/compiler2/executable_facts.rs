@@ -258,10 +258,7 @@ pub(crate) fn project_executable_facts(
     let callsite_needs = executable_callsite_needs(&body, analysis.entry_reachability.clauses(), executable.need);
     let mut demand_builder =
         prepare_runtime_demand_type_inputs(world, executable, &analysis, &body, entry_dispatch_demand, &callsites);
-    let capture_count = executable
-        .activation
-        .input_len(world.types())
-        .saturating_sub(world.function_arity(executable.activation.function));
+    let capture_count = world.activation_capture_count(&executable.activation);
     let capture_called_with_own_surface = captured_inputs_called_with_own_surface(&body, capture_count);
     let callable_activation_inputs = analysis
         .input_rows

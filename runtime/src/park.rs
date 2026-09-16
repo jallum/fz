@@ -19,9 +19,11 @@ use std::ptr::{read, write};
 /// fz-yxs/fz-st5 — matcher ABI.
 ///
 /// Called from both fz-compiled code (sender's `fz_send`, receiver's
-/// initial scan) and runtime code. Pure leaf function — no allocation,
-/// no extern, no `receive`. F3's `check_pure_codegen` is the static
-/// invariant that proves this.
+/// initial scan) and runtime code. It is a leaf in the scheduling sense: it
+/// never parks and runs no `receive` of its own, so it always returns to its
+/// caller. It is not allocation-free — testing a raw scalar against a value
+/// held as an `AnyValueRef` calls a runtime boxing extern on the process
+/// heap. Nothing checks either property statically.
 ///
 /// - `msg_ref`: the candidate message as a single opaque any value ref.
 /// - `pinned`: pointer to `AnyValueRef` entries in the order

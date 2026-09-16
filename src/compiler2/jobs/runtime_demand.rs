@@ -356,7 +356,7 @@ fn trivial_value_clause_ids(body: &LoweredBody, reachable: &[u32]) -> Vec<u32> {
 }
 
 #[derive(Debug, Clone, Default)]
-struct CallableFlowBuilder {
+pub(super) struct CallableFlowBuilder {
     direct_surfaces: HashMap<ValueId, BTreeSet<CallableSurface>>,
     direct_targets: HashMap<ValueId, BTreeSet<CallableTarget>>,
     first_class_surfaces: HashMap<ValueId, BTreeSet<CallableSurface>>,
@@ -516,7 +516,7 @@ impl<'a> RuntimeDemandFormulaInput<'a> {
 }
 
 impl RuntimeDemandFormulaSnapshot {
-    fn new(
+    pub(super) fn new(
         member: ExecutableKey,
         own: RuntimeDemandOwnInput,
         reads: &HashMap<ExecutableKey, Vec<RuntimeDemand>>,
@@ -700,10 +700,16 @@ fn call_return_demand_contributions(
     out
 }
 
+/// Destination-passing keeps every slot the need declares, so the shape half
+/// is settled before the observation arrives. What the observation still
+/// carries is each field's callable obligation, and reading it against the
+/// need's arity is what `field_prefix` is for: fields the observation never
+/// named pad with `ignore`, fields past the arity describe a tuple this need
+/// is not and drop.
 fn tuple_return_demand_for_observed_need(need: ExecutableNeed, observed: RuntimeDemand) -> RuntimeDemand {
     let mut delivered = RuntimeDemand::for_executable_need(need);
-    if let (ShapeDemand::TupleFields(delivered_fields), ShapeDemand::TupleFields(observed_fields)) =
-        (&mut delivered.shape, observed.shape)
+    if let ShapeDemand::TupleFields(delivered_fields) = &mut delivered.shape
+        && let Some(observed_fields) = observed.shape.field_prefix(delivered_fields.len())
     {
         for (delivered_field, observed_field) in delivered_fields.iter_mut().zip(observed_fields) {
             delivered_field.join_assign(&observed_field);
@@ -1634,7 +1640,7 @@ fn delivered_join_has_distinct_callable_producers(
     producers.len() > 1
 }
 
-fn propagate_steps_reverse(
+pub(super) fn propagate_steps_reverse(
     types: &Types,
     steps: &[LoweredStep],
     live: &mut HashMap<ValueId, RuntimeDemand>,
@@ -1654,33 +1660,17 @@ fn propagate_steps_reverse(
             }
             LoweredStep::Tuple { value, items } => {
                 let demand = take_live_demand(live, *value);
-                if !demand.is_callable() {
-                    match demand.shape {
-                        ShapeDemand::Ignore => {}
-                        ShapeDemand::TupleFields(fields) if fields.len() <= items.len() => {
-                            for (item, demand) in items.iter().zip(fields) {
-                                let demand = boundary_value_flow_demand(facts, callable_flows, item.value, demand);
-                                note_live_demand(out, live, item.value, demand);
-                            }
-                        }
-                        _ => {
-                            for item in items {
-                                let demand = boundary_value_flow_demand(
-                                    facts,
-                                    callable_flows,
-                                    item.value,
-                                    RuntimeDemand::whole(),
-                                );
-                                note_live_demand(out, live, item.value, demand);
-                            }
-                        }
-                    }
+                // A callable demand is a demand on the tuple as a value -- it
+                // asks to call the thing, not to read fields out of it -- so
+                // every item it is built from is needed whole.
+                let fields = if demand.is_callable() {
+                    Some(vec![RuntimeDemand::whole(); items.len()])
                 } else {
-                    for item in items {
-                        let demand =
-                            boundary_value_flow_demand(facts, callable_flows, item.value, RuntimeDemand::whole());
-                        note_live_demand(out, live, item.value, demand);
-                    }
+                    demand.shape.field_prefix(items.len())
+                };
+                for (item, demand) in items.iter().zip(fields.into_iter().flatten()) {
+                    let demand = boundary_value_flow_demand(facts, callable_flows, item.value, demand);
+                    note_live_demand(out, live, item.value, demand);
                 }
             }
             LoweredStep::List { value, items, tail, .. } => {
@@ -1802,6 +1792,11 @@ fn propagate_steps_reverse(
             LoweredStep::TupleField { value, source, index } => {
                 let demand = take_live_demand(live, *value);
                 if !demand.is_ignore() {
+                    // Without an assertion to say how wide the tuple is, this
+                    // names the fields up to the one it reads and stops. That
+                    // is a prefix, not a guess about the arity: a sibling
+                    // projection that reaches further joins its own longer
+                    // prefix onto this one.
                     let arity = asserted_tuple_arities.get(source).copied().unwrap_or(index + 1);
                     let mut fields = vec![RuntimeDemand::ignore(); arity];
                     fields[*index] = demand;

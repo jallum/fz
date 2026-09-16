@@ -20,18 +20,25 @@ struct TargetFixture {
     mainline_runtime_demand_door: ObservationDoor,
 }
 
-// fz-5xp.2 and fz-5xp.18 both remove work these fixtures used to do:
-// `Enum.to_list/1` reaches a list through a clause typed `[a]` instead of
-// reducing and reversing it back, and the comparison operators widen a mixed
-// numeric pair in a typed clause instead of through a coercion codegen inlined
-// behind the operator. The observation-bundle test also pins aggregate work:
-// complete captures require seven late predicate edges, while deleting demand
-// feedback removes 117 walks from the other two fixtures.
+// The walk counts are how many times `DeriveRuntimeDemand` actually walks a
+// body for these three fixtures: `runtime_demand_walks` under the cold
+// compile the target report measures, `mainline_runtime_demand_walks` under
+// the whole mainline run behind the named door. They are the work-is-
+// proportional-to-input signal, so they are pinned exactly and a move in
+// either direction is a finding.
+//
+// What sets them: `Enum.to_list/1` reaches a list through a clause typed
+// `[a]` rather than reducing and reversing it back, the comparison operators
+// widen a mixed numeric pair inside a typed clause rather than through an
+// inlined coercion, complete capture retention makes the predicate fixture's
+// late edges exact, and tuple-field demands join as prefixes so a field one
+// consumer reads stays distinct from a field another ignores instead of
+// coarsening the pair to `whole`.
 const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
-        runtime_demand_walks: 1125,
+        runtime_demand_walks: 1127,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -1208,7 +1215,12 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
             })
             .sum::<u64>();
         assert_eq!(
-            aggregate_walks, 1973,
+            // The sum of the three fixtures' own `runtime_demand_walks`
+            // (1127 + 611 + 237), read back out of the retained bundles. Both
+            // processes of a bundle must reach it, so a walk that depends on
+            // hash seeding or process order shows up here.
+            aggregate_walks,
+            1975,
             "the same retained observations own the aggregate work pin"
         );
         assert!(

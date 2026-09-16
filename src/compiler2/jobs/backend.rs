@@ -40,10 +40,14 @@ use super::super::world::World;
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
 /// Reports `RootBackendProduct` pull-drive failures as `FatalError`,
-/// emitting the diagnostic the fatal-error contract requires. The
-/// `job_failed` hook forwards the job's own `FatalError` unchanged — a job
-/// that fails through `jobs::run` has already emitted its own diagnostic, so
-/// this boundary must not emit a second one for the same failure.
+/// emitting the diagnostic the fatal-error contract requires for the ones
+/// nobody has spoken for yet — a wait with no producer, an exhausted budget,
+/// a drive that never settled.
+///
+/// The three hooks that forward instead carry a failure that already said
+/// why: `FatalError` and `PullOutcome::Failed` both mean "diagnostic
+/// emitted". Restating one of those under the same code, phrased as a
+/// product key, buries the message that named the program's actual problem.
 impl super::super::product_drive::ProductDriveError for FatalError {
     fn dependency_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
@@ -55,16 +59,11 @@ impl super::super::product_drive::ProductDriveError for FatalError {
     }
     fn product_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
-        tel: &T,
-        root: RootId,
-        product: &ProductKey,
-        _failure: super::super::pull::ProductFailure,
+        _tel: &T,
+        _root: RootId,
+        _product: &ProductKey,
     ) -> Self {
-        emit_backend_product_error(
-            tel,
-            Span::DUMMY,
-            format!("compiler2 product {product:?} for root {} failed", root.as_u32()),
-        )
+        FatalError
     }
 
     fn job_failed<T: crate::telemetry::Telemetry>(
