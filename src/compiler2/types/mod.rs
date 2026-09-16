@@ -1263,7 +1263,10 @@ impl Types {
     }
 
     pub fn resource(&mut self, payload: Ty) -> Ty {
-        self.intern(Descr::resource_of(self.ctx(), payload))
+        if payload == self.core.none {
+            return self.core.none;
+        }
+        self.intern(Descr::resource_of(payload))
     }
 
     pub fn arrow(&mut self, args: &[Ty], ret: Ty) -> Ty {
@@ -1305,11 +1308,17 @@ impl Types {
     }
 
     pub fn list(&mut self, elem: Ty) -> Ty {
-        self.intern(Descr::list_of(self.ctx(), elem))
+        if elem == self.core.none {
+            return self.core.empty_list;
+        }
+        self.intern(Descr::list_of(elem))
     }
 
     pub fn non_empty_list(&mut self, elem: Ty) -> Ty {
-        self.intern(Descr::non_empty_list_of(self.ctx(), elem))
+        if elem == self.core.none {
+            return self.core.none;
+        }
+        self.intern(Descr::non_empty_list_of(elem))
     }
 
     pub fn map(&mut self, fields: &[(MapKey, Ty)]) -> Ty {
@@ -4098,8 +4107,7 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
     }
     if let (Some(l), Some(r)) = (lhs.pure_resource(any), rhs.pure_resource(any)) {
         let payload = t.refine_widen(&l.payload, &r.payload);
-        let d = Descr::resource_of(t.ctx(), payload);
-        return t.intern(d);
+        return t.resource(payload);
     }
     if let (Some(l), Some(r)) = (lhs.pure_arrow().cloned(), rhs.pure_arrow().cloned())
         && l.args.len() == r.args.len()

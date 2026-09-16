@@ -182,10 +182,7 @@ impl Descr {
         d
     }
 
-    pub(super) fn resource_of(cx: TyCtx<'_>, payload: Ty) -> Self {
-        if cx.descr(&payload).is_empty(cx) {
-            return Self::none();
-        }
+    pub(super) fn resource_of(payload: Ty) -> Self {
         let mut d = Self::unbranded();
         d.resources = vec![Conj::pos_of(ResourceSig { payload })];
         d
@@ -205,14 +202,12 @@ impl Descr {
         d
     }
 
-    pub(super) fn list_of(cx: TyCtx<'_>, elem: Ty) -> Self {
-        Self::list_sig(ListSig::possibly_empty(&cx, elem))
+    pub(super) fn list_of(elem: Ty) -> Self {
+        Self::list_sig(ListSig::possibly_empty(elem))
     }
 
-    pub(super) fn non_empty_list_of(cx: TyCtx<'_>, elem: Ty) -> Self {
-        ListSig::non_empty(&cx, elem)
-            .map(Self::list_sig)
-            .unwrap_or_else(Self::none)
+    pub(super) fn non_empty_list_of(elem: Ty) -> Self {
+        Self::list_sig(ListSig::non_empty(elem))
     }
 
     pub(super) fn empty_list() -> Self {

@@ -133,6 +133,31 @@ fn canonical_empty_identity_returns_before_the_comparison_cache() {
 }
 
 #[test]
+fn empty_operand_constructors_return_before_the_type_boundary() {
+    let mut t = Types::new();
+    let none = t.none();
+    let empty_list = t.empty_list();
+    let before = t.interning_work_stats();
+
+    assert_eq!(t.resource(none), none, "a resource cannot carry an empty payload");
+    assert_eq!(
+        t.non_empty_list(none),
+        none,
+        "a non-empty list cannot hold an empty element type"
+    );
+    assert_eq!(
+        t.list(none),
+        empty_list,
+        "a list of no possible element is exactly the retained empty-list type"
+    );
+    assert_eq!(
+        t.interning_work_stats(),
+        before,
+        "canonical empty operands already determine these constructors; they must not build, inspect, hash, or probe a descriptor"
+    );
+}
+
+#[test]
 fn repeating_binary_type_algebra_returns_before_it_rebuilds_a_descriptor() {
     let mut t = Types::new();
     let int = t.int();

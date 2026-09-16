@@ -9,7 +9,7 @@ use crate::fz_ir::FnId;
 use crate::compiler2::identity::ModuleId;
 use crate::modules::identity::ModuleName;
 
-use super::{CallableValueKind, MapKey, Sigma, Ty, TyCtx, Types};
+use super::{CallableValueKind, MapKey, Sigma, Ty, Types};
 
 /// Runtime identity of one record-family value. Plain maps and named structs
 /// share the record-field type algebra, but their tags are disjoint and travel
@@ -90,25 +90,17 @@ impl ListSig {
         }
     }
 
-    pub(super) fn possibly_empty(cx: &TyCtx<'_>, elem: Ty) -> Self {
-        if cx.descr(&elem).is_empty(*cx) {
-            Self::empty()
-        } else {
-            Self {
-                empty: true,
-                elem: Some(elem),
-            }
+    pub(super) fn possibly_empty(elem: Ty) -> Self {
+        Self {
+            empty: true,
+            elem: Some(elem),
         }
     }
 
-    pub(super) fn non_empty(cx: &TyCtx<'_>, elem: Ty) -> Option<Self> {
-        if cx.descr(&elem).is_empty(*cx) {
-            None
-        } else {
-            Some(Self {
-                empty: false,
-                elem: Some(elem),
-            })
+    pub(super) fn non_empty(elem: Ty) -> Self {
+        Self {
+            empty: false,
+            elem: Some(elem),
         }
     }
 
@@ -224,7 +216,7 @@ impl MergeSig for ListSig {
 impl MergeSig for ResourceSig {
     fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
         // `res(A) ∩ res(B) = res(A ∩ B)`, and `res(∅) = ∅` (a resource always
-        // carries a payload; `Descr::resource_of` refuses an empty one).
+        // carries a payload; `Types::resource` refuses an empty one).
         let payload = types.intersect(a.payload, b.payload);
         if types.is_empty(&payload) {
             PosMeet::Empty
