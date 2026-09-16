@@ -53,7 +53,7 @@ use closure_surface_var::{closure_ret_var_id, closure_var_id};
 use conj::Conj;
 use descr::Descr;
 use descr::OpaqueTag;
-use dnf::{dnf_intersect_with, list_clause_subsumed, tuple_clause_subsumed};
+use dnf::dnf_intersect_with;
 use sigs::{ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig};
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
@@ -214,42 +214,31 @@ impl TypeInterner {
         self.ctx().descr(t)
     }
 
-    /// The cheap debug half of the interned-DNF invariant: a descriptor that
-    /// reaches the index carries no exact duplicate clause on any axis, no
-    /// provably-empty clause on any axis, and no subsumed tuple clause. This
-    /// runs on an index MISS, so it costs one sweep per distinct descriptor.
-    /// `Types::intern` additionally absorbs typed list containment through the
-    /// memoized comparison cache. Repeating those semantic comparisons here
-    /// through raw descriptors would create a second uncached authority, so
-    /// list hygiene is proved at the canonicalizer's typed boundary tests
-    /// instead.
+    /// The debug half of the interned-DNF invariant: a descriptor that reaches
+    /// the index carries no provably-empty clause on any axis, nothing left to
+    /// absorb on the four denotational axes, and no exact duplicate on the
+    /// callable axis. This runs on an index MISS, so it costs one sweep per
+    /// distinct descriptor.
     #[cfg(debug_assertions)]
     fn debug_assert_dnf_axes_hygienic(&self, d: &Descr) {
         let cx = self.ctx();
-        for (i, c) in d.tuples.iter().enumerate() {
-            for (j, other) in d.tuples.iter().enumerate() {
-                debug_assert!(
-                    i == j || !tuple_clause_subsumed(c, other, |x, y| { cx.descr(x).is_subtype(cx, cx.descr(y)) }),
-                    "interned descr carries a subsumed (or duplicate) tuple clause"
-                );
-            }
-        }
         debug_assert_no_empty_clauses(cx, &d.tuples, emptiness::tuple_clause_empty, "tuples");
         debug_assert_no_empty_clauses(cx, &d.lists, emptiness::list_clause_empty, "lists");
         debug_assert_no_empty_clauses(cx, &d.resources, emptiness::resource_clause_empty, "resources");
         debug_assert_no_empty_clauses(cx, &d.funcs, emptiness::func_clause_empty, "funcs");
         debug_assert_no_empty_clauses(cx, &d.maps, emptiness::map_clause_empty, "maps");
-        debug_assert_no_exact_duplicates(&d.lists, "lists");
-        debug_assert_no_exact_duplicates(&d.resources, "resources");
+        debug_assert_absorbed(cx, &d.tuples, "tuple", &axis::TUPLES);
+        debug_assert_absorbed(cx, &d.lists, "list", &axis::LISTS);
+        debug_assert_absorbed(cx, &d.resources, "resource", &axis::RESOURCES);
+        debug_assert_absorbed(cx, &d.maps, "map", &axis::MAPS);
         debug_assert_no_exact_duplicates(&d.funcs, "funcs");
-        debug_assert_no_exact_duplicates(&d.maps, "maps");
     }
 }
 
-/// `A ∨ A = A` on the three axes that carry no absorption pass of their own.
+/// `A ∨ A = A` on the callable axis, the one axis absorption does not reach.
 ///
-/// The tuple and list axes get stronger subsumption treatment; the rest
-/// get idempotence, which is the rule the ACTIVATION KEY depends on. A key is
+/// The four denotational axes get the stronger coverage rule; this one gets
+/// idempotence, which is the rule the ACTIVATION KEY depends on. A key is
 /// built by erasing what the key language cannot address — closure brands
 /// above all — and erasure runs IN PLACE, so a union that legitimately kept one
 /// clause per brand becomes `A ∨ A` the moment the brands go. Without this
@@ -279,22 +268,6 @@ fn dedupe_exact_clauses<T: PartialEq>(clauses: &mut Vec<Conj<T>>) {
     clauses.truncate(kept);
 }
 
-fn absorb_subsumed_clauses<T>(clauses: &mut Vec<Conj<T>>, mut subsumed: impl FnMut(&Conj<T>, &Conj<T>) -> bool) {
-    if clauses.len() < 2 {
-        return;
-    }
-    let input = std::mem::take(clauses);
-    let mut out = Vec::with_capacity(input.len());
-    for clause in input {
-        if out.iter().any(|kept| subsumed(&clause, kept)) {
-            continue;
-        }
-        out.retain(|kept| !subsumed(kept, &clause));
-        out.push(clause);
-    }
-    *clauses = out;
-}
-
 #[cfg(debug_assertions)]
 fn debug_assert_no_empty_clauses<T>(
     cx: TyCtx<'_>,
@@ -306,6 +279,35 @@ fn debug_assert_no_empty_clauses<T>(
         debug_assert!(
             !clause_empty(cx, c, &mut emptiness::Memo::default()),
             "interned descr carries a provably-empty clause on the {axis} axis"
+        );
+    }
+}
+
+#[cfg(debug_assertions)]
+fn debug_assert_absorbed<T: Clone + 'static>(cx: TyCtx<'_>, clauses: &[Conj<T>], name: &str, view: &axis::AxisView<T>) {
+    if clauses.is_empty() || dnf::is_dnf_top(clauses) {
+        return;
+    }
+    // An axis written as its own maximal sig IS the top, in the one spelling
+    // saturation produces, so there is nothing left to collapse.
+    if let [only] = clauses
+        && (view.clause_is_top)(cx, only)
+    {
+        return;
+    }
+    // Runs on an index MISS only, so it asks both relations directly rather
+    // than through the caches the boundary itself goes through.
+    let subtype = &|narrower: &Ty, wider: &Ty| cx.descr(narrower).is_subtype(cx, cx.descr(wider));
+    let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
+    debug_assert!(
+        !axis::axis_is_saturated(cx, clauses, covers, view),
+        "interned descr carries a saturated {name} axis the boundary did not collapse"
+    );
+    let keep = vec![true; clauses.len()];
+    for index in 0..clauses.len() {
+        debug_assert!(
+            !axis::clause_is_covered(cx, subtype, covers, clauses, &keep, index, view),
+            "interned descr carries a covered clause on the {name} axis"
         );
     }
 }
@@ -396,10 +398,14 @@ impl Types {
     /// exactly when it holds no clause at all, so the collapse's question stops
     /// at the first surviving clause.
     ///
-    /// ABSORPTION and IDEMPOTENCE follow, and all three filters are
-    /// order-preserving (the tuple/list absorbers keep survivors in input
-    /// order; `dedupe_exact_clauses` keeps the first occurrence), so what
-    /// reaches the interner index is still sorted.
+    /// ABSORPTION follows, one rule for every axis whose clauses describe
+    /// nothing but the set they denote: a clause the union of its surviving
+    /// siblings already covers is dropped, and an axis its clauses between
+    /// them cover collapses to that axis's top. The callable axis is the one
+    /// exception — its arrows carry a declared signature and a capture layout
+    /// beside the denotation — so it gets IDEMPOTENCE alone, exact duplicates
+    /// collapsed. Both filters only ever remove, and the coverage walk visits
+    /// in index order, so what reaches the interner index is still sorted.
     ///
     /// The BOTTOM COLLAPSE closes the pass. The empty set is reachable by many
     /// descriptor shapes — an empty brand slot, empty kind axes under a slot
@@ -423,11 +429,8 @@ impl Types {
         self.normalize_tuple_coordinate_differences(&mut d);
         self.order_clauses(&mut d);
         self.drop_empty_clauses(&mut d);
-        self.absorb_subsumed_tuple_clauses(&mut d);
-        self.absorb_subsumed_list_clauses(&mut d);
-        dedupe_exact_clauses(&mut d.resources);
+        self.absorb_covered_clauses(&mut d);
         dedupe_exact_clauses(&mut d.funcs);
-        dedupe_exact_clauses(&mut d.maps);
         if d.looks_empty() {
             d = Descr::none();
         }
@@ -551,12 +554,22 @@ impl Types {
         axis::drop_empty_clauses(self.ctx(), d, &|ty| self.is_empty(ty));
     }
 
-    /// Absorb tuple clauses a sibling already contains: `A ⊆ B ⇒ A ∨ B = B`.
-    /// Products compare coordinatewise where that is decidable.
-    fn absorb_subsumed_tuple_clauses(&self, d: &mut Descr) {
-        absorb_subsumed_clauses(&mut d.tuples, |clause, sibling| {
-            tuple_clause_subsumed(clause, sibling, |x, y| self.is_subtype(x, y))
-        });
+    /// The four axes a denotation fully describes, absorbed by the one rule in
+    /// [`axis`]. The callable axis is left out: an arrow there carries a
+    /// declared signature and a closure's capture layout beside the set it
+    /// denotes, and a rule that reads only the set would drop both.
+    fn absorb_covered_clauses(&self, d: &mut Descr) {
+        self.absorb_one_axis(&mut d.tuples, &axis::TUPLES);
+        self.absorb_one_axis(&mut d.lists, &axis::LISTS);
+        self.absorb_one_axis(&mut d.resources, &axis::RESOURCES);
+        self.absorb_one_axis(&mut d.maps, &axis::MAPS);
+    }
+
+    fn absorb_one_axis<T: Clone + 'static>(&self, clauses: &mut Vec<Conj<T>>, view: &axis::AxisView<T>) {
+        let cx = self.ctx();
+        let subtype = &|narrower: &Ty, wider: &Ty| self.is_subtype(narrower, wider);
+        let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
+        axis::absorb_axis(cx, clauses, subtype, covers, view);
     }
 
     /// `P₀ × … × Pₖ × … × Pₙ \ N₀ × … × Nₖ × … × Nₙ` is one rectangle
@@ -611,15 +624,6 @@ impl Types {
         let mut elems = positive.elems.clone();
         elems[*index] = self.difference(elems[*index], negative.elems[*index]);
         Conj::pos_of(TupleSig { elems })
-    }
-
-    /// Absorb list clauses whose denotation is contained in a sibling. The
-    /// plain-positive relation is exact for the list model: empty membership
-    /// and non-empty element containment are its only two dimensions.
-    fn absorb_subsumed_list_clauses(&self, d: &mut Descr) {
-        absorb_subsumed_clauses(&mut d.lists, |clause, sibling| {
-            list_clause_subsumed(clause, sibling, |x, y| self.is_subtype(x, y))
-        });
     }
 
     fn ctx(&self) -> TyCtx<'_> {

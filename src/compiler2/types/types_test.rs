@@ -2779,6 +2779,89 @@ mod union_clause_order {
     }
 }
 
+/// One absorber for every axis a denotation fully describes.
+///
+/// The callable axis is not among them: an arrow there carries a declared
+/// signature and a closure's capture layout beside its denotation, and both
+/// would be lost to a rule that reads only the set of values. See
+/// `types::axis` for the one statement of that exclusion.
+mod clause_absorption {
+    use super::*;
+
+    /// A clause no SINGLE sibling contains, but the two of them together do.
+    /// This is what union coverage buys over pairwise containment, and it is
+    /// the case a per-axis subsumption rule cannot see.
+    #[test]
+    fn a_clause_two_siblings_cover_between_them_is_dropped() {
+        let mut t = Types::new();
+        let int = t.int();
+        let bin = t.str_t();
+        let float = t.float();
+        let int_or_bin = t.union(int, bin);
+
+        // {int|binary, float} is inside {int, float} ∨ {binary, float} and
+        // inside neither alone.
+        let covered = t.tuple(&[int_or_bin, float]);
+        let left = t.tuple(&[int, float]);
+        let right = t.tuple(&[bin, float]);
+        assert!(!t.is_subtype(&covered, &left) && !t.is_subtype(&covered, &right));
+
+        let siblings = t.union(left, right);
+        let joined = t.union(siblings, covered);
+        assert_eq!(
+            t.descr(&joined).tuples.len(),
+            1,
+            "the two siblings fuse and swallow the clause: {}",
+            t.display(&joined)
+        );
+        assert!(t.is_equivalent(&joined, &siblings));
+
+        // A list that admits `[]` is inside `[] ∨ non_empty_list(int)` and
+        // inside neither alone.
+        let empty = t.empty_list();
+        let non_empty = t.non_empty_list(int);
+        let whole = t.list(int);
+        assert!(!t.is_subtype(&whole, &empty) && !t.is_subtype(&whole, &non_empty));
+        let shapes = t.union(empty, non_empty);
+        assert_eq!(shapes, whole, "the two shapes ARE the possibly-empty list");
+    }
+
+    /// An axis whose clauses between them cover it IS its top, and the top is
+    /// written as the widest single sig the axis can carry — never as an empty
+    /// conjunction, which has no positive sig for a reader to project.
+    #[test]
+    fn an_axis_its_clauses_cover_becomes_its_widest_sig() {
+        let mut t = Types::new();
+        let any = t.any();
+
+        let every_list = {
+            let empty = t.empty_list();
+            let non_empty = t.non_empty_list(any);
+            t.union(empty, non_empty)
+        };
+        assert_eq!(every_list, t.list(any), "one set of lists, one id");
+        assert_eq!(t.display(&every_list), "[any]", "and a type a user could write");
+        assert_eq!(
+            t.list_element_type(&every_list),
+            any,
+            "a reader projecting the element still finds one"
+        );
+
+        let every_resource = t.resource(any);
+        assert_eq!(t.display(&every_resource), "resource(any)");
+        assert_eq!(t.resource_payload_type(&every_resource), Some(any));
+
+        // The other two axes have no top they can reach: tuple arity and
+        // struct tags are both unbounded, so no finite union covers them.
+        let pair = t.tuple(&[any, any]);
+        assert_eq!(t.descr(&pair).tuples.len(), 1);
+        assert!(!t.descr(&pair).tuples[0].pos.is_empty(), "a tuple axis keeps its sig");
+        let key = MapKey::Atom("k".to_string());
+        let open = t.map(&[(key, any)]);
+        assert!(!t.descr(&open).maps[0].pos.is_empty(), "a map axis keeps its sig");
+    }
+}
+
 /// A clause is its factor SET: `A ∧ B` and `B ∧ A` are one clause.
 ///
 /// `Conj::pos` grows as the clause product walks its operands, so an

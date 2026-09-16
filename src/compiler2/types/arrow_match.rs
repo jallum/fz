@@ -1347,7 +1347,9 @@ mod pinned_verdicts {
             "Known params=[[int], (resource(int)) -> :nil] result=[int]",
             "R4 resource-under-param"
         );
-        // And covariantly, for contrast: resource(any) at resource(a).
+        // And covariantly, for contrast: `resource(any)` at `resource(a)`. A
+        // resource over every payload IS every resource, and the axis writes
+        // that top as the resource over `any` it already had.
         let v2 = t.match_arrow(&[pat_res], &a, &no_bounds(), &[wit_res]);
         assert_eq!(
             render(&t, &v2),
@@ -1470,7 +1472,9 @@ mod pinned_verdicts {
             "Known params=[[int], (int) -> :nil] result=[int]",
             "R9 (any)->nil argument"
         );
-        // any as the covariant witness of the element itself.
+        // `any` as the covariant witness of the element itself. A list over
+        // every element is every list, and the axis writes that top as the
+        // list over `any` it already had.
         let list_any = t.list(any);
         let v3 = t.match_arrow(&[list_a, pat_fn], &list_a, &no_bounds(), &[list_any, any_fn]);
         assert_eq!(
