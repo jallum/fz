@@ -30,6 +30,68 @@ use std::sync::Arc;
 type OutputFacts = Vec<(FactKey, bool)>;
 
 #[test]
+fn compiler2_inline_dispatch_plan_is_shared_from_lowering_to_backend() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("shared_inline_dispatch_plan.fz".to_string()),
+        text: "def main(), do: case 1 do\n  1 -> :one\n  _ -> :other\nend\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "the inline case reaches the backend product");
+
+    let main = function_id(&functions, "main", 0);
+    let lowered = lowered_body(&bodies, main);
+    let LoweredBody::Clauses {
+        entries: lowered_entries,
+        ..
+    } = &lowered
+    else {
+        panic!("main/0 should lower as clauses");
+    };
+    let lowered_dispatch = lowered_entries
+        .iter()
+        .find_map(|entry| match &entry.tail {
+            LoweredTail::Dispatch { dispatch, .. } => Some(dispatch),
+            _ => None,
+        })
+        .expect("main/0 should retain its inline case dispatch");
+    let program = backend.last(root).program;
+    let (_, backend_main) = backend_executable(&program, main);
+    let BackendBody::Clauses {
+        entries: backend_entries,
+        ..
+    } = &backend_main.body
+    else {
+        panic!("backend main/0 should retain clause entries");
+    };
+    let backend_dispatch = backend_entries
+        .iter()
+        .find_map(|entry| match &entry.tail {
+            BackendTail::Dispatch { dispatch, .. } => Some(dispatch),
+            _ => None,
+        })
+        .expect("backend main/0 should retain its inline case dispatch");
+
+    assert!(
+        Rc::ptr_eq(&lowered_dispatch.plan, &backend_dispatch.plan),
+        "backend lowering must retain the typed plan allocation built by body lowering"
+    );
+}
+
+#[test]
 fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
     use super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
     let tel = ConfiguredTelemetry::new();

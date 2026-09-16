@@ -39,6 +39,14 @@ should consume `PatternDispatchPlan` or the underlying `DispatchGraph` directly.
 - `src/compiler2/native_codegen/receive.rs` emits the scheduler-facing receive
   probe function by walking the same plan.
 
+Once a typed plan leaves its producer, `Rc<PatternDispatchPlan<Ty>>` is its
+only retained representation. Inline control, receive control, call-edge
+dispatch, and callable-construction selection all carry that same immutable
+allocation through the artifact projections; cloning one retains identity, it
+does not copy the graph or payloads. Native receive is the deliberate type
+boundary: it maps that typed plan once to `RuntimeTypePredicate` and puts the
+result in the scheduler-facing `Arc` receive term.
+
 ## Test First, Project Second
 
 Constructor projections are valid only on a branch where the constructor test

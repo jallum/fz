@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::rc::Rc;
 
 use crate::ast::{Pattern, Spanned};
 use crate::dispatch_matrix::pattern::{
@@ -14,7 +15,7 @@ use super::types::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CallSiteDispatch {
-    pub(crate) plan: PatternDispatchPlan<Ty>,
+    pub(crate) plan: Rc<PatternDispatchPlan<Ty>>,
     pub(crate) targets: Vec<CallTargetSummary>,
 }
 
@@ -57,7 +58,10 @@ pub(crate) fn call_destinations(
     let Some(plan) = plan else {
         return Ok(sole_destination(targets.into_iter().next()));
     };
-    Ok(CallDestinations::Dispatch(Box::new(CallSiteDispatch { plan, targets })))
+    Ok(CallDestinations::Dispatch(Box::new(CallSiteDispatch {
+        plan: Rc::new(plan),
+        targets,
+    })))
 }
 
 /// A callsite with no choice left to make.
@@ -880,7 +884,7 @@ pub(crate) struct ConstructionSelection {
     pub(crate) members: Vec<usize>,
     /// `None` where one member is left: a wrapper with one destination calls
     /// it, exactly as a callsite with one target is a `Direct` call.
-    pub(crate) plan: Option<PatternDispatchPlan<Ty>>,
+    pub(crate) plan: Option<Rc<PatternDispatchPlan<Ty>>>,
 }
 
 /// A construction wrapper's member selection, seated and dropped by the ONE
@@ -911,7 +915,10 @@ pub(crate) fn construction_member_selection(
     let arity = edges.first().map_or(0, |edge| edge.surface.inputs.len());
     let surfaces = edges.iter().map(|edge| edge.surface.inputs.clone()).collect::<Vec<_>>();
     let (members, plan) = routable_alternatives(types, arity, &surfaces, &|_, _| true)?;
-    Ok(ConstructionSelection { members, plan })
+    Ok(ConstructionSelection {
+        members,
+        plan: plan.map(Rc::new),
+    })
 }
 
 /// The alternatives no runtime test could ever route to: each is an arm the

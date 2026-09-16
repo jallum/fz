@@ -5,6 +5,7 @@
 //! it stops above old-world CPS IR and planner concerns.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
@@ -629,7 +630,7 @@ impl<V> Default for DispatchBindings<V> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlDispatch {
-    pub(crate) plan: PatternDispatchPlan<Ty>,
+    pub(crate) plan: Rc<PatternDispatchPlan<Ty>>,
     pub(crate) outcomes: Vec<OutcomeEdge>,
     pub(crate) miss_entry: ControlEntryId,
 }
@@ -661,7 +662,11 @@ pub(crate) enum SubjectOriginRoot {
 }
 
 impl ControlDispatch {
-    pub(crate) fn new(plan: PatternDispatchPlan<Ty>, outcomes: Vec<OutcomeEdge>, miss_entry: ControlEntryId) -> Self {
+    pub(crate) fn new(
+        plan: Rc<PatternDispatchPlan<Ty>>,
+        outcomes: Vec<OutcomeEdge>,
+        miss_entry: ControlEntryId,
+    ) -> Self {
         assert_eq!(
             outcomes.len(),
             plan.outcomes.len(),
@@ -761,7 +766,7 @@ pub struct LoweredReceive {
     pub(crate) outcomes: Vec<OutcomeEdge>,
     pub after: Option<ReceiveAfter>,
     pub dest: ControlDestination,
-    pub(crate) dispatch: PatternDispatchPlan<Ty>,
+    pub(crate) dispatch: Rc<PatternDispatchPlan<Ty>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

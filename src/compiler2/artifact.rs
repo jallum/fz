@@ -66,7 +66,7 @@ pub struct BackendConstructionWrapper {
     pub call_arity: usize,
     pub return_form: BackendCallableReturn,
     pub members: Box<[BackendConstructionMemberAdapter]>,
-    pub(crate) selection: Option<crate::dispatch_matrix::pattern::PatternDispatchPlan<Ty>>,
+    pub(crate) selection: Option<Rc<crate::dispatch_matrix::pattern::PatternDispatchPlan<Ty>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,7 +273,7 @@ pub struct DirectCallEdge<T, F = CallReturnFlow> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchCallEdge<T, F = CallReturnFlow> {
-    pub(crate) plan: PatternDispatchPlan<Ty>,
+    pub(crate) plan: Rc<PatternDispatchPlan<Ty>>,
     /// One artifact target slot per dense, plan-owned outcome.
     pub arms: Vec<DispatchCallArm<T, F>>,
 }
@@ -286,7 +286,7 @@ pub struct DispatchCallArm<T, F = CallReturnFlow> {
 }
 
 impl<T, F> DispatchCallEdge<T, F> {
-    pub(crate) fn new(plan: PatternDispatchPlan<Ty>, arms: Vec<DispatchCallArm<T, F>>) -> Self {
+    pub(crate) fn new(plan: Rc<PatternDispatchPlan<Ty>>, arms: Vec<DispatchCallArm<T, F>>) -> Self {
         assert_eq!(
             arms.len(),
             plan.outcomes.len(),
@@ -991,7 +991,7 @@ pub(crate) struct NativeCallableBoundary {
     pub return_form: BackendCallableReturn,
     pub task_halt_repr: Option<AbiValueRepr>,
     pub members: Box<[NativeConstructionMember]>,
-    pub(crate) selection: Option<crate::dispatch_matrix::pattern::PatternDispatchPlan<Ty>>,
+    pub(crate) selection: Option<Rc<crate::dispatch_matrix::pattern::PatternDispatchPlan<Ty>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1231,7 +1231,7 @@ pub struct BackendReceive {
     pub(crate) outcomes: Vec<OutcomeEdge>,
     pub after: Option<ReceiveAfter>,
     pub dest: ControlDestination,
-    pub(crate) dispatch: PatternDispatchPlan<Ty>,
+    pub(crate) dispatch: Rc<PatternDispatchPlan<Ty>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
