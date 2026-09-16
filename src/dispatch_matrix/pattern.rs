@@ -165,17 +165,14 @@ pub(crate) trait PatternResolver<TypeHandle> {
 
     fn guard_call(
         &mut self,
-        name: &crate::ast::CallableName,
+        callee: &crate::ast::Callee,
         arity: usize,
     ) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError>;
 }
 
 impl<TypeHandle, F> PatternResolver<TypeHandle> for F
 where
-    F: FnMut(
-        &crate::ast::CallableName,
-        usize,
-    ) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError>,
+    F: FnMut(&crate::ast::Callee, usize) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError>,
 {
     fn struct_type(
         &mut self,
@@ -187,10 +184,10 @@ where
 
     fn guard_call(
         &mut self,
-        name: &crate::ast::CallableName,
+        callee: &crate::ast::Callee,
         arity: usize,
     ) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError> {
-        self(name, arity)
+        self(callee, arity)
     }
 }
 
@@ -487,7 +484,7 @@ where
         },
         Expr::Call(target, args) => {
             let arity = args.len();
-            let Some(name) = crate::ast::CallableName::for_call(&target.node, arity) else {
+            let Some(callee) = crate::ast::Callee::for_call(&target.node, arity) else {
                 return Err(SourcePatternError::UnsupportedGuardExpr);
             };
             let args = args
@@ -495,7 +492,7 @@ where
                 .map(|arg| guard_expr_from_ast(&arg.node, bindings, pinned_by_name, prepared_keys, resolver))
                 .collect::<Result<Vec<_>, _>>()?;
             let dispatch = resolver
-                .guard_call(&name, arity)?
+                .guard_call(&callee, arity)?
                 .ok_or(SourcePatternError::UnsupportedGuardExpr)?;
             let prepared = dispatch
                 .plan
@@ -516,7 +513,7 @@ where
 pub(crate) fn pattern_dispatch_from_source<TypeHandle: Clone + PartialEq + Eq>(
     patterns: SourcePatternRows<TypeHandle>,
 ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
-    let mut resolver = |_name: &crate::ast::CallableName,
+    let mut resolver = |_callee: &crate::ast::Callee,
                         _arity: usize|
      -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError> { Ok(None) };
     pattern_dispatch_from_source_with_resolver(patterns, &mut resolver)

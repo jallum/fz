@@ -65,7 +65,7 @@ fn propagate_tuple_step_demand(
 ) -> HashMap<ValueId, RuntimeDemand> {
     let mut types_for_key = Types::new();
     let any = types_for_key.any();
-    let function = FunctionId::for_test(1);
+    let function = FunctionId::from_coordinate(1);
     let member = ExecutableKey {
         activation: ActivationKey::from_inputs(RootId::for_test(0), function, &[], &mut types_for_key),
         need: ExecutableNeed::Value,

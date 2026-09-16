@@ -1,0 +1,60 @@
+#---
+# purpose: "a quoted call to the provider's own macro expands as that macro, whatever the caller calls its module"
+#---
+#
+# # quoted_macro_keeps_its_provider
+#
+# `FutureMacros.outer/1` quotes a call to `inner/1`, a macro of its own module,
+# and `inner/1` in turn quotes a call to `bump/1`, a function of that module.
+# The words a caller ends up holding say `inner` and `bump`, and neither is a
+# name any caller wrote or can see.
+#
+# Expansion must therefore ask the retained callable what it is rather than
+# looking the head spelling up where the quote landed: a head that is a macro
+# still expands, and a head that is a function still does not. `App` binds the
+# provider only as `F` and `Shadowed` binds `FutureMacros` to a different
+# module that defines both names differently; in both, the quoted calls reach
+# the provider's own.
+#
+# The caller needs no `require` for `inner/1`: `require` governs macro names a
+# caller writes, and this one it never wrote.
+#
+defmodule FutureMacros do
+  def bump(x), do: x + 1
+
+  defmacro inner(x) do
+    quote do: bump(unquote(x))
+  end
+
+  defmacro outer(x) do
+    quote do: inner(unquote(x))
+  end
+end
+
+defmodule Decoy do
+  def bump(x), do: x + 100
+
+  defmacro inner(x) do
+    quote do: bump(unquote(x))
+  end
+end
+
+defmodule App do
+  alias FutureMacros, as: F
+  require F
+
+  def run(n), do: F.outer(n)
+end
+
+defmodule Shadowed do
+  alias FutureMacros, as: F
+  alias Decoy, as: FutureMacros
+  require F
+
+  def run(n), do: F.outer(n)
+end
+
+def main() do
+  assert(App.run(41) == 42, "a caller that binds the provider only as F still expands its inner/1")
+  assert(Shadowed.run(41) == 42, "a caller alias bound elsewhere cannot redirect the quoted macro")
+end

@@ -435,7 +435,7 @@ mod tests {
             world: &mut world,
             namespace: Namespace::default(),
             owner: ModuleId::GLOBAL,
-            guard: |_world: &mut World, _name: &crate::ast::CallableName, _arity: usize| Ok(None),
+            guard: |_world: &mut World, _callee: &crate::ast::Callee, _arity: usize| Ok(None),
         };
         let plan = pattern_dispatch_from_source_with_resolver(
             SourcePatternRows::lexical(

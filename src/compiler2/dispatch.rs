@@ -11,7 +11,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::ast::{CallableName, ModuleTarget};
+use crate::ast::{Callee, ModuleTarget};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternResolver, SourcePatternError};
 use crate::source::Span;
 
@@ -94,7 +94,7 @@ pub(crate) struct SourcePatternResolver<'a, F> {
 
 impl<F> PatternResolver<Ty> for SourcePatternResolver<'_, F>
 where
-    F: FnMut(&mut World, &CallableName, usize) -> Result<Option<Arc<PatternGuardDispatch<Ty>>>, SourcePatternError>,
+    F: FnMut(&mut World, &Callee, usize) -> Result<Option<Arc<PatternGuardDispatch<Ty>>>, SourcePatternError>,
 {
     fn struct_type(&mut self, module: &ModuleTarget, _span: Span) -> Result<Ty, SourcePatternError> {
         let module_id = self
@@ -106,9 +106,9 @@ where
 
     fn guard_call(
         &mut self,
-        name: &CallableName,
+        callee: &Callee,
         arity: usize,
     ) -> Result<Option<Arc<PatternGuardDispatch<Ty>>>, SourcePatternError> {
-        (self.guard)(self.world, name, arity)
+        (self.guard)(self.world, callee, arity)
     }
 }

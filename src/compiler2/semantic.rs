@@ -2869,7 +2869,7 @@ mod callsite_resolution_tests {
 
     fn key(callsite: u32, types: &mut Types) -> CallSiteKey {
         CallSiteKey {
-            activation: ActivationKey::from_inputs(RootId::for_test(0), FunctionId::for_test(1), &[], types),
+            activation: ActivationKey::from_inputs(RootId::for_test(0), FunctionId::from_coordinate(1), &[], types),
             callsite: crate::compiler2::body::CallSiteId::from_u32(callsite),
         }
     }
@@ -2877,7 +2877,7 @@ mod callsite_resolution_tests {
     fn boundary_edge() -> CallSiteTargets {
         CallSiteTargets {
             targets: vec![CallTargetEdge {
-                callee: SelectedCallee::ProviderBoundary(FunctionId::for_test(7)),
+                callee: SelectedCallee::ProviderBoundary(FunctionId::from_coordinate(7)),
                 activation: None,
             }],
         }

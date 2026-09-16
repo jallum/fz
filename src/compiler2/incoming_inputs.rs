@@ -93,7 +93,7 @@ mod tests {
         ExecutableKey {
             activation: ActivationKey::from_inputs(
                 RootId::for_test(1),
-                FunctionId::for_test(id),
+                FunctionId::from_coordinate(id),
                 &[],
                 world.types_mut(),
             ),

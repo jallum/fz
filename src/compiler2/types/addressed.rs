@@ -645,7 +645,7 @@ mod tests {
         t.define_test_callable(ClosureTarget(7), "nested", 1);
         t.define_test_callable(ClosureTarget(8), "outer", 1);
         let root = RootId::for_test(1);
-        let function = FunctionId::for_test(2);
+        let function = FunctionId::from_coordinate(2);
         let key = ActivationKey::from_inputs(root, function, &[closure], &mut t);
         let once = key.inputs(&t);
         let outer_captures = t
@@ -702,7 +702,7 @@ mod tests {
             t.define_test_callable(target, "pkg::map", 1);
             let closure = t.closure_lit(target, vec![generic], 1);
             let activation =
-                ActivationKey::from_inputs(RootId::for_test(3), FunctionId::for_test(4), &[closure], &mut t);
+                ActivationKey::from_inputs(RootId::for_test(3), FunctionId::from_coordinate(4), &[closure], &mut t);
             let input = activation.inputs(&t)[0];
             let capture = t.closure_lit_parts(&input).expect("named closure literal").captures[0];
 
@@ -714,7 +714,8 @@ mod tests {
                 "the complete named-closure activation must contain structural addresses only"
             );
             let int = t.int();
-            let ground = ActivationKey::from_inputs(RootId::for_test(3), FunctionId::for_test(4), &[int], &mut t);
+            let ground =
+                ActivationKey::from_inputs(RootId::for_test(3), FunctionId::from_coordinate(4), &[int], &mut t);
             activation.semantic_cmp(&ground, &t)
         }
 
