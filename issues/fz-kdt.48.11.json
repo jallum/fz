@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-kdt.48.8"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-kdt.48",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Activation keys carry their inputs and result themselves, not as an arrow Ty",
   "type": "task",
-  "updated_at": "2026-09-16T10:00:59Z"
+  "updated_at": "2026-09-16T15:34:35Z"
 }
