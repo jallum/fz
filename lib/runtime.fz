@@ -18,6 +18,7 @@ alias Process
 alias Range
 alias String
 alias StringChars
+alias Tuple
 alias Utf8
 
 import Kernel, only: [

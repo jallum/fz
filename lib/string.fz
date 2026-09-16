@@ -266,6 +266,27 @@ defmodule String do
   def byte_slice(s, start, len), do: take_bytes(drop_bytes(s, start), len)
 
   @doc """
+  Returns up to `length` codepoints beginning at `start`.
+  """
+  @spec slice(binary, integer, integer) :: binary
+  def slice(s, start, count), do: slice_codepoints(drop_codepoints(s, start), count)
+
+  @spec drop_codepoints(binary, integer) :: binary
+  defp drop_codepoints(s, count) when count <= 0, do: s
+  defp drop_codepoints("", _count), do: ""
+  defp drop_codepoints(s, count), do: drop_codepoints(drop_bytes(s, next_grapheme_size(s)), count - 1)
+
+  @spec slice_codepoints(binary, integer) :: binary
+  defp slice_codepoints(_s, count) when count <= 0, do: ""
+  defp slice_codepoints("", _count), do: ""
+  defp slice_codepoints(s, count), do: take_codepoints(s, count, "")
+
+  @spec take_codepoints(binary, integer, binary) :: binary
+  defp take_codepoints(_s, 0, acc), do: acc
+  defp take_codepoints("", _count, acc), do: acc
+  defp take_codepoints(s, count, acc), do: take_codepoints(drop_bytes(s, next_grapheme_size(s)), count - 1, acc <> take_bytes(s, next_grapheme_size(s)))
+
+  @doc """
   Replaces `prefix` with `replacement` when `s` starts with it.
 
   Returns `s` unchanged when it does not.

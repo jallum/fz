@@ -40,3 +40,11 @@ defmodule MapSet do
   @spec member?(t, any) :: boolean
   def member?(%MapSet{map: map}, value), do: Map.has_key?(map, value)
 end
+
+defimpl Enumerable, for: MapSet do
+  def reduce(%MapSet{map: map}, acc, reducer), do: Map.reduce(map, acc, fn ({value, _present}, state) -> reducer.(value, state) end)
+  def reduce_while(%MapSet{map: map}, acc, reducer), do: Map.reduce_while(map, acc, fn ({value, _present}, state) -> reducer.(value, state) end)
+  def count(%MapSet{map: map}), do: {:ok, Map.size(map)}
+  def member?(set, value), do: {:ok, MapSet.member?(set, value)}
+  def slice(_set), do: {:error, :unsupported}
+end

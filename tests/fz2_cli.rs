@@ -1990,6 +1990,50 @@ end
     let _ = remove_file(out_bin.with_extension("bin.o"));
 }
 
+#[test]
+fn direct_distill_collection_compatibility_agrees_across_every_execution_door() {
+    let source_path = unique_temp_path("fz2_direct_distill_collections", ".fz");
+    write(
+        &source_path,
+        r#"
+def main() do
+  dbg(Tuple.to_list({"job", 2, 3.0}))
+  dbg({Enum.min([], fn () -> :first end), Enum.max([], fn () -> :last end)})
+  dbg(String.slice("compile", 1, 4))
+  dbg("compile" in MapSet.new(["compile"]))
+end
+"#,
+    )
+    .expect("write direct Distill collection fixture");
+
+    let expected = "[\"job\", 2, 3.0]\n{:first, :last}\n\"ompi\"\ntrue\n";
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[OsStr::new(command), source_path.as_os_str()]);
+        assert_successful_stdout(&out, expected, &format!("fz2 {command} direct Distill collections"));
+    }
+
+    let out_bin = unique_temp_path("fz2_direct_distill_collections_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build direct Distill collections should succeed: {}",
+        output_text(&build)
+    );
+    let run = Command::new(&out_bin)
+        .output()
+        .expect("run built direct Distill collection fixture");
+    assert_successful_stdout(&run, expected, "fz2 build/run direct Distill collections");
+
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
 /// fz-kdt.44: the drain arbiter's readiness step is on the public stream.
 ///
 /// Settledness is transitive — a fact is final only when its whole upstream

@@ -81,6 +81,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/string_chars.fz"),
     },
     RuntimeModuleSource {
+        name: "Tuple",
+        source: include_str!("../../lib/tuple.fz"),
+    },
+    RuntimeModuleSource {
         name: "Json",
         source: include_str!("../../lib/json.fz"),
     },

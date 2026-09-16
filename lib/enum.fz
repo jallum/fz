@@ -1034,6 +1034,9 @@ defmodule Enum do
   """
   @spec max([a]) :: a
   def max(enumerable), do: extreme(to_list(enumerable), 1, "Enum.max: empty")
+  @spec max([a], (() -> a)) :: a
+  def max([], fallback), do: fallback.()
+  def max(enumerable, _fallback), do: max(enumerable)
 
   @doc """
   Returns the smallest element of `enumerable`, by term order.
@@ -1048,6 +1051,9 @@ defmodule Enum do
   """
   @spec min([a]) :: a
   def min(enumerable), do: extreme(to_list(enumerable), -1, "Enum.min: empty")
+  @spec min([a], (() -> a)) :: a
+  def min([], fallback), do: fallback.()
+  def min(enumerable, _fallback), do: min(enumerable)
 
   @doc """
   Returns a `{minimum, maximum}` pair for `enumerable`, by term order.
