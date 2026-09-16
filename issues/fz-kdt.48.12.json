@@ -11,11 +11,15 @@
     {
       "text": "Measured through the test-only type-boundary census on the full `fixtures2/00420_enum_take_drop_split.fz` compiler drive after the identity shortcuts: 2,373 shortcuts; 140,419 remaining raw index probes; 11,875 normalizations; 1,033 inserts. Each shortcut replaces descriptor reconstruction and at least one raw probe. This validates the cut, while also showing that the 11,875 genuine normalizations remain the larger next target rather than being hidden by a cache.",
       "timestamp": "2026-09-16T19:54:22Z"
+    },
+    {
+      "text": "Correction to the prior measurement label: that census is the exact user-reported source, `fixtures2/behavior/enum_take_drop_split.fz` (not its `00420_` twin). The counts are unchanged: 2,373 shortcuts; 140,419 remaining raw probes; 11,875 normalizations; 1,033 inserts.",
+      "timestamp": "2026-09-16T19:55:02Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Preserve Ty identity through no-op type operations",
   "type": "task",
-  "updated_at": "2026-09-16T19:54:22Z"
+  "updated_at": "2026-09-16T19:55:02Z"
 }
