@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-16T01:27:14Z",
@@ -7,8 +7,8 @@
   "id": "fz-8vy",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Brand opaque resource returns in their owner module",
   "type": "bug",
-  "updated_at": "2026-09-16T01:27:14Z"
+  "updated_at": "2026-09-16T01:27:18Z"
 }
