@@ -14,8 +14,8 @@
     }
   ],
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "[BUG] allow_other_structs admits different arities on the interpreter matcher and the native boxed emitter when the tuple axis names a nested arity",
   "type": "bug",
-  "updated_at": "2026-09-15T15:27:34Z"
+  "updated_at": "2026-09-16T16:09:36Z"
 }
