@@ -1049,6 +1049,10 @@ fn a_clause_pinning_two_closure_brands_is_the_bottom() {
         1,
         "one brand, one literal, whatever the two capture layouts said"
     );
+    assert!(
+        t.runtime_type_predicate(&merged).callables.is_exact(),
+        "the runtime predicate receives only the surviving one-literal clause; a target-only fallback would describe an uninterned state"
+    );
 }
 
 /// The predicate projection and the envelope are two roads to the same axis --
@@ -1082,7 +1086,7 @@ fn the_envelope_and_the_predicate_agree_on_a_callable_clause() {
 /// still name the construction, while the anonymous literal the erasure mints
 /// lives only in the activation KEY, which no test is ever asked of. Nothing
 /// in the projection has to arrange this; if it ever stops holding, the
-/// `debug_assert!` in `callable_identity_targets` is what fires.
+/// `debug_assert!` in `callable_identity_literal` is what fires.
 #[test]
 fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
     let mut t = Types::new();

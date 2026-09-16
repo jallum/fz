@@ -2440,26 +2440,21 @@ impl Types {
     /// onto every value it mints (fz-kdt.127), which is what makes the capture
     /// positions answerable without ever loading a capture.
     ///
-    /// A clause is shapeable only when it pins exactly one literal. Several
-    /// literals at once are an INTERSECTION, which is not one shape; that
-    /// degrades the whole axis to the target-only reading, which is what every
-    /// clause answered before fz-kdt.127 and is a sound over-approximation of
-    /// it. `callable_identity_targets` has already refused the clauses that
-    /// name no literal, subtract one, or name an ANONYMOUS one.
+    /// An interned callable clause pins exactly one literal. Equal-target
+    /// literals merge at the type boundary; different targets make the clause
+    /// empty and the boundary drops it. `callable_identity_literal` refuses
+    /// clauses that name no literal, subtract one, or name an anonymous
+    /// literal.
     fn runtime_type_predicate_callables(&self, descr: &Descr) -> CallableShapes {
-        let Some(targets) = callable_identity_targets(&descr.funcs) else {
-            return CallableShapes::any();
-        };
         let mut shapes = Vec::with_capacity(descr.funcs.len());
         for clause in &descr.funcs {
-            let mut lits = clause.pos.iter().filter_map(|sig| sig.lit.as_ref());
-            let (Some(lit), None) = (lits.next(), lits.next()) else {
-                return CallableShapes::target_only(FiniteSet::finite(targets.into_iter().map(ClosureTarget::from)));
+            let Some(lit) = callable_identity_literal(clause) else {
+                return CallableShapes::any();
             };
             shapes.push(CallableShape {
                 target: ClosureTarget::from(
                     lit.fn_id
-                        .expect("callable_identity_targets refused every anonymous literal"),
+                        .expect("callable_identity_literal accepted an anonymous literal"),
                 ),
                 captures: lit
                     .captures
@@ -3598,11 +3593,11 @@ fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
 ///
 /// A clause that pins no closure literal admits any callable at all, and one
 /// such clause makes the whole union unrestricted; so does a clause that
-/// SUBTRACTS a literal, whose remainder is not enumerable from this side. A
-/// clause that pins several literals at once is an intersection, which every
-/// one of them contains, so naming them all over-approximates it — and
-/// over-approximation is the direction a dispatch test must err in, exactly as
-/// the list-shape and tuple-arity axes do.
+/// SUBTRACTS a literal, whose remainder is not enumerable from this side.
+/// A canonical clause has exactly one literal: same-identity literals merged
+/// at the type boundary, while distinct identities made the clause empty and
+/// were dropped. If that invariant breaks, the exact reader below fails rather
+/// than making a runtime predicate for a state the type interner forbids.
 ///
 /// An ANONYMOUS literal (fz-kdt.127) names no code at all, so it is that same
 /// unrestricted answer -- and this is the ONE place that decides it, for the
@@ -3620,25 +3615,38 @@ fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
 fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>> {
     let mut targets = BTreeSet::new();
     for clause in funcs {
-        let lits = clause
-            .pos
-            .iter()
-            .filter_map(|sig| sig.lit.as_ref())
-            .map(|lit| {
-                debug_assert!(
-                    lit.fn_id.is_some(),
-                    "an anonymous literal reached a runtime test: it can only have come from an \
-                     activation key, and a key is never what a test is asked of (fz-kdt.127)"
-                );
-                lit.fn_id
-            })
-            .collect::<Option<Vec<_>>>()?;
-        if lits.is_empty() || !clause.neg.is_empty() {
-            return None;
-        }
-        targets.extend(lits);
+        targets.insert(
+            callable_identity_literal(clause)?
+                .fn_id
+                .expect("callable_identity_literal accepted an anonymous literal"),
+        );
     }
     Some(targets)
+}
+
+/// The one runtime-observable literal of an interned callable clause.
+///
+/// An anonymous literal is valid only in a non-runtime activation key, so it
+/// asks the caller to take the unrestricted predicate path. Several literals
+/// mean the interner invariant was violated and must never be recovered into a
+/// lossy runtime test.
+fn callable_identity_literal(clause: &Conj<ArrowSig>) -> Option<&ClosureLit> {
+    if !clause.neg.is_empty() {
+        return None;
+    }
+    let mut literals = clause.pos.iter().filter_map(|sig| sig.lit.as_ref());
+    let literal = literals.next()?;
+    debug_assert!(
+        literal.fn_id.is_some(),
+        "an anonymous literal reached a runtime test: it can only have come from an \
+         activation key, and a key is never what a test is asked of (fz-kdt.127)"
+    );
+    literal.fn_id?;
+    assert!(
+        literals.next().is_none(),
+        "Types::intern retained a callable clause with several literal identities"
+    );
+    Some(literal)
 }
 
 fn runtime_type_predicate_named_structs(descr: &Descr, structs: FiniteSet<ModuleName>) -> FiniteSet<ModuleName> {
@@ -3888,14 +3896,9 @@ fn runtime_envelope(
 /// The CLAUSE SHAPE survives untouched, and that is the point: how a clause
 /// projects is decided in exactly one place,
 /// [`Types::runtime_type_predicate_callables`], and this function hands it the
-/// same clause it would have seen unenveloped. A clause pinning several
-/// literals at once is an intersection and is not one construction, so that
-/// one place degrades it to the target-only reading -- every capture layout of
-/// those targets -- on both roads. Splitting it here into several literals over
-/// NO captures would instead reach that place as EXACT zero-capture shapes,
-/// which `CallableShape::inside` refuses every capturing construction of, on a
-/// capture-count mismatch: under-admission, the one direction a runtime test
-/// may never err in.
+/// same interned one-literal clause it would have seen unenveloped. The
+/// persistence boundary rejects the impossible several-literal intersection,
+/// so this path never invents a coarse fallback or a capture layout.
 fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec<Conj<ArrowSig>> {
     if callable_identity_targets(funcs).is_none() {
         return Descr::fun_top().funcs;
