@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.228"
+  ],
   "blocks": [
     "fz-kdt.98.2"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "The quiescence drain certifies a fact over dirty ground, one fact at a time",
   "type": "bug",
-  "updated_at": "2026-09-16T14:53:24Z"
+  "updated_at": "2026-09-16T14:53:25Z"
 }
