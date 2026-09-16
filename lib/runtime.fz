@@ -10,6 +10,7 @@ alias Float
 alias IO
 alias Integer
 alias Json
+alias JSON
 alias Kernel
 alias Keyword
 alias List

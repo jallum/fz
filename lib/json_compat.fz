@@ -1,0 +1,14 @@
+defmodule JSON do
+  @moduledoc """
+  The uppercase JSON module spelling used by Elixir's standard JSON API.
+
+  `Json` remains the original fz module name; this module is a compatibility
+  facade so source shared with Elixir can call `JSON.decode!/1` directly.
+  """
+
+  @doc """
+  Delegates to `Json.decode!/1`.
+  """
+  @spec decode!(binary) :: any
+  def decode!(input), do: Json.decode!(input)
+end
