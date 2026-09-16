@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T13:04:24Z",
+  "description": "The direct source audit found the remaining general library surfaces needed to retain the current Elixir telemetry analyzer shape: collection length and map size, Enum.zip_with/2 and Enum.with_index/1, tuple element projection, type predicates used by cell formatting, the JSON module spelling, and fixed-precision float rendering at the original call site. Add only the general APIs that the direct port proves necessary, with a cross-door contract.",
+  "id": "fz-4nh.6",
+  "labels": [],
+  "parent": "fz-4nh",
+  "priority": 2,
+  "status": "open",
+  "title": "Close remaining direct Distill core-library gaps",
+  "type": "task",
+  "updated_at": "2026-09-16T13:04:24Z"
+}
