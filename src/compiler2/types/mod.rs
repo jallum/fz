@@ -79,16 +79,16 @@ impl Ty {
 
 pub struct Types {
     interner: TypeInterner,
-    /// The id of `any`, interned when the store is built.
+    /// The ids of the lattice constants, interned when the store is built.
     ///
-    /// `any` is a CONSTANT of the lattice, not a derived fact: the arena is
-    /// append-only and `Descr::any()` is its own normal form, so the id it is
-    /// given at construction is the id it has for the life of the store.
-    /// Holding it is what keeps `Types::any()` free — the readers that project
-    /// a list or resource axis top ask for it once per recursion step, and
-    /// rebuilding `Descr::any()` to look it up allocates five clause vectors
-    /// to find something the arena already has.
+    /// `any` and `none` are CONSTANTS of the lattice, not derived facts: the
+    /// arena is append-only and both descriptors are already normal forms, so
+    /// their ids are stable for the life of the store. Holding them keeps their
+    /// constructors free — `any` would rebuild five clause vectors, while
+    /// `none` would otherwise hash and probe an empty descriptor every time a
+    /// path needs the lattice bottom.
     any: Ty,
+    none: Ty,
     comparisons: RefCell<ComparisonCache>,
     binary_type_operations: BinaryTypeOperationResults,
     /// Memoized `value_lane_repr`: the transport-lane representative of a type.
@@ -479,20 +479,20 @@ impl Types {
         Self::default()
     }
 
-    /// Every type the store is born knowing. `any` alone: it is the one
-    /// constant the constructors below ask for by name, and the one whose
-    /// descriptor is expensive to rebuild.
+    /// Every type the store is born knowing: the two lattice constants.
     ///
-    /// It goes in through the interner directly because `Descr::any()` is
-    /// already the normal form `Types::intern` would hand back — every axis is
-    /// the single contentless clause that `types::axis` makes an axis top's
-    /// one spelling, no clause is empty, and nothing is left to order.
+    /// They go in through the interner directly because `Descr::any()` and
+    /// `Descr::none()` are already the normal forms `Types::intern` would hand
+    /// back. `any` has one contentless clause on every axis; `none` has none.
+    /// Neither has an empty clause or ordering left to resolve.
     fn with_constants() -> Self {
         let mut interner = TypeInterner::default();
         let any = interner.intern(Descr::any());
+        let none = interner.intern(Descr::none());
         Self {
             interner,
             any,
+            none,
             comparisons: RefCell::default(),
             binary_type_operations: BinaryTypeOperationResults::default(),
             value_lane_reprs: HashMap::new(),
@@ -1188,7 +1188,7 @@ impl Types {
     }
 
     pub fn none(&mut self) -> Ty {
-        self.intern(Descr::none())
+        self.none
     }
 
     pub fn nil(&mut self) -> Ty {
@@ -1874,6 +1874,9 @@ impl Types {
     }
 
     pub fn difference(&mut self, a: Ty, b: Ty) -> Ty {
+        if a == b {
+            return self.none();
+        }
         self.binary_type_operation(BinaryTypeOperation::Difference(a, b), |types| {
             let d = types.descr(&a).diff(types.descr(&b));
             types.intern(d)

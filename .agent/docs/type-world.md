@@ -109,6 +109,11 @@ fingerprints.
 
 The keying and join logic lean on a few `Types` methods, each with a distinct job:
 
+`Types` retains the two lattice constants, `any` and `none`, when its world is
+created. They are already-normal-form descriptors, so later requests return their
+known `Ty` directly instead of rebuilding and looking up a descriptor. This also
+makes the exact law `difference(t, t) = none` a direct handle return.
+
 - **`refine_widen(a, b)`** — finite-height least upper bound. Collapses literal axes
   to their base and merges list shapes (`[] ⊔ nonempty(t) = list(t)`), so a joined
   slot ascends a bounded chain and the fixpoint terminates. This is the join behind
