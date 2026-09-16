@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T02:26:57Z",
+  "description": "GOAL: Make `c_pointer` the sole fz spelling for the builtin C pointer type.\n\nSIGNAL:\n- source declarations, resource contracts, diagnostics, fixtures, and guides use `c_pointer`\n- the old `cpointer` spelling is rejected, rather than retained as a silent alias\n- all three execution doors preserve the existing raw pointer ABI behavior\n\nSTRATEGY: Rename the builtin resolver spelling and every public reference together; pin the accepted/rejected front-door behavior and retain the existing raw I64 C ABI lane.",
+  "id": "fz-gpn.1",
+  "labels": [],
+  "parent": "fz-gpn",
+  "priority": 2,
+  "status": "open",
+  "title": "Normalize FFI c_pointer spelling",
+  "type": "task",
+  "updated_at": "2026-09-16T02:26:57Z"
+}
