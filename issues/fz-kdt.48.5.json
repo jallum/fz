@@ -14,11 +14,15 @@
     {
       "text": "Measured 2026-09-16 on 2cb74c6bf + the .48.5 patch (fusion at intern): census 134 -\u003e 129 (17 held), lib green except compiler2_no_value_reaches_a_construction_member_that_never_named_it, whose SURFACE_MEMBERSHIP_CENSUS moves on seven fixtures: 82-\u003e79 (00183, 00230, 00419), 382-\u003e353 (00420, behavior/enum_take_drop_split), and RISES 12-\u003e14 (00418_enum_count_range, behavior/unused_range_binding). Cause, established two ways (instrumented seating on both trees; one-operand tie-break flip on the parent reproduces every row byte-identically): seating verdicts are identical on both trees (the drop/take arm pair is Separated by the callable position); what changes is canonically_order_separated_neighbours (callsite_dispatch.rs ~376/397) via cmp_activation_tys -\u003e order.rs lex_elements_then_longer, whose b.len().cmp(\u0026a.len()) tie-break reads DNF clause COUNT, i.e. storage shape. Parent: the 2-clause {:cont,C}|{:halt,C} arm sorts first; fused: counts tie and the atom set {cont} \u003c {cont,halt} puts the narrow arm first. Same plan, arms transposed, stdout byte-identical, no question added or removed. The census counts MATCHED questions along a first-match walk, so it is walk length: -10/+7 on 00183 (net -3, a real saving), +2 on 00418 whose only reducer is the arm now seated second. Residual on both trees: n3's weaker Region::Type question {:cont|:halt,C} is asked after a stronger Holds {:cont,C} already on the path (7 of 8 fires redundant on 00183); discharging it would make arm order census-neutral (inferred 79 -\u003e 72). Decision pending with the user: move the two raised pins with this explanation, or land the subsumption discharge first.",
       "timestamp": "2026-09-16T03:39:45Z"
+    },
+    {
+      "text": "Re-ported and re-measured on d25552951 (rebased head; patch 48-5.patch, held in fz-wt-48g): canon census 128 -\u003e 123 (the five tuple carvings), 15 unchanged; SURFACE_MEMBERSHIP_CENSUS ten rows FALL (64-\u003e61 x3, 265-\u003e236 x2 and their arrivals) and two RISE 9 -\u003e 11 (00418_enum_count_range, behavior/unused_range_binding), escapes 0 everywhere; same mechanism as on the old base (clause-count tie-break seat flip; 3 vs 2 matched questions per selection because the non-separating tuple question is asked before the separating closure question). Counts: ids minted +3/+2/-40 (fused union coordinates), intern calls down on all three, absorber questions flat; nested fusion interns 3,685/88/3,210 with ~26% index hits. Full gate green except that one census test. Lands after fz-kdt.48.10 (re-scoped to separating-position-first).",
+      "timestamp": "2026-09-16T12:27:31Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Tuple carving fusion at intern, including the one-coordinate union merge",
   "type": "task",
-  "updated_at": "2026-09-16T09:33:51Z"
+  "updated_at": "2026-09-16T12:27:31Z"
 }
