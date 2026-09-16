@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-16T00:39:27Z",
   "created": "2026-09-15T20:29:48Z",
   "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR2, independent of the other two. plan_entry_dispatch (src/compiler2/jobs/dispatch.rs ~110-119) waits on FactKey::ModuleDefined(owner_module) and never consumes its value; it then asks for exactly TypeDefined, StructDefined, GuardDispatch and FunctionDefined. Delete the gate. Verify first by probe that entry_source_patterns has no unstated dependency on module scoping. Test: the Provider/make_answer case: EntryDispatch(make_answer) settles while ModuleDefined(Provider) is absent, records only its exact function/type/struct reads, and an unrelated module edit causes zero recomputation, asserted from the job trace. Other ModuleDefined waits (jobs/keying.rs, jobs/semantic.rs) carry their own justification and stay.",
   "id": "fz-tfn.62.3",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Delete the ModuleDefined blanket gate on entry planning",
   "type": "task",
-  "updated_at": "2026-09-15T22:24:49Z"
+  "updated_at": "2026-09-16T00:39:27Z"
 }
