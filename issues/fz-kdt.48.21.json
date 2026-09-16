@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T21:34:43Z",
+  "description": "Goal: Return the canonical result for binary type-algebra laws containing the canonical bottom Ty before hashing, cache lookup, descriptor traversal, or interning.\n\nSignal: `Types::union`, `intersect`, and `difference` currently short-circuit only equal operands. With `none` on either side, each enters `binary_type_operation`; union and difference build a descriptor, while intersection can call subtype comparison. Existing semantic tests prove the laws but do not prove their work is absent. Elixir `Module.Types.Descr` applies equivalent neutral/absorbing laws before descriptor traversal.\n\nStrategy: At the Types public algebra boundary, use the retained `core.none` handle to apply `none ∪ t = t`, `none ∩ t = none`, `none \\ t = none`, and `t \\ none = t`. Keep the existing equal-operands rule first so `none \\ none` remains one unambiguous direct result. Do not introduce a cache: remove the operation from the table entirely.\n\nTDD: Prove every orientation has its exact semantic result and leaves both interning-work and binary-operation statistics unchanged. Preserve the existing non-bottom binary-operation accounting and cache behavior.\n\nDocs and acceptance: Document canonical-bottom algebraic short circuits next to the type-world identity law. Run focused types and enum/f98 canaries, fmt, check, strict Clippy, full workspace tests, cold branch-base review, one commit, and close.",
+  "id": "fz-kdt.48.21",
+  "labels": [],
+  "parent": "fz-kdt.48",
+  "priority": 2,
+  "status": "open",
+  "title": "Short-circuit binary Ty algebra at canonical bottom",
+  "type": "task",
+  "updated_at": "2026-09-16T21:34:43Z"
+}
