@@ -7,6 +7,7 @@
   "blocks": [
     "fz-kdt.48.8"
   ],
+  "closed_at": "2026-09-16T11:10:20Z",
   "created": "2026-09-15T20:29:53Z",
   "description": "Plan: ../recursive-denotations-proposal.html. PR3 (fz-kdt.48). Re-cut 2026-09-16 after building and measuring the original 'One Ty per callable value' at the intern boundary (see the comment): landed as the fold of specialize_lit_arrow (construction) and specialize_callable_clause (read) into one sigs::specialize_surface, plus the callable-axis exclusion from the one absorber restated in types/axis.rs as THREE proven facts with tests: (1) a lit-free arrow is the activation key's record carrier and a resolved spec's decomposition, which the kernel calls the whole axis, so saturation would erase what arrow_params/arrow_result read back (arrow_result's callers expect it: a panic); (2) a lit-bearing arrow's params/result are planner evidence added back by row_column_dominates (free-var ids equal, lit_arrow_shapes containment, is_subtype); (3) the kernel endorses closure[f]([mailbox]) \u003c= closure[f]([any]), so absorbing the pair would be exact and would erase the narrower environment callable_clauses hands to transport (pinned by transport_relation_incremental_test::a_nested_source_union_retains_both_environments_of_the_same_function). A first cut wrongly retracted (3); the cold review caught it. Census unchanged 128 / 15. The identity half ('one Ty per callable value') is NOT achievable at Types::intern: Ty on the callable axis carries denotation and planner evidence at once; it moves to fz-kdt.48.11, which blocks fz-kdt.48.8.",
   "id": "fz-kdt.48.7",
@@ -19,8 +20,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "One callable surface specialization, and the callable-axis exclusion as proven facts",
   "type": "task",
-  "updated_at": "2026-09-16T10:28:44Z"
+  "updated_at": "2026-09-16T11:10:20Z"
 }
