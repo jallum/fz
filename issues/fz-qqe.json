@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-16T01:38:52Z",
-  "description": "GOAL: A caller can pattern-match {:ok, handle} = File.open(path) and use handle as resource(integer) without a contract violation or native unboxing fault.\\n\\nSIGNAL:\\n- tuple-field projection respects the proven :ok discriminator\\n- the projected handle retains its resource type through a following File.close/1 call\\n- interpreter, JIT, and AOT agree\\n\\nEVIDENCE: File.open!/2 works because its internal function-clause dispatch narrows the success arm. A direct destructuring assignment currently projects the error tuple payload (:badarg | :io) instead.\\n\\nSTRATEGY: Trace tuple pattern projection from assignment through semantic return refinement; make it carry the arm proof before assigning the second field.",
+  "description": "GOAL: A caller can pattern-match `{:ok, handle} = File.open(path)` and use `handle` as `resource(c_pointer)` without a contract violation or native unboxing fault.\n\nSIGNAL:\n- tuple-field projection respects the proven `:ok` discriminator\n- the projected handle retains its resource type through a following `File.close/1` call\n- interpreter, JIT, and AOT agree\n\nEVIDENCE: `File.open!/2` works because its internal function-clause dispatch narrows the success arm. A direct destructuring assignment currently projects the error tuple payload (`:badarg | :io`) instead.\n\nSTRATEGY: Retain each arity-backed tuple projection in semantic value flow. When an assertion refines a projected field, lift that constraint into its owning tuple before a sibling projection reads it; propagate the proof recursively for nested tuples.",
   "id": "fz-qqe",
   "labels": [],
   "parent": "fz-kdt",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "Preserve resource success fields through tuple destructuring",
   "type": "bug",
-  "updated_at": "2026-09-16T02:42:15Z"
+  "updated_at": "2026-09-16T02:48:03Z"
 }
