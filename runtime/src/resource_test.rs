@@ -90,6 +90,40 @@ fn alloc_release_immediately_fires_dtor() {
 }
 
 #[test]
+fn claiming_a_resource_disarms_its_fallback_destructor() {
+    let (handle, drops) = observed_resource();
+    assert!(unsafe { (*handle.as_raw()).claim() });
+    assert!(!unsafe { (*handle.as_raw()).claim() }, "claim is one-shot");
+    drop(handle);
+    assert_eq!(
+        drops.load(Ordering::Relaxed),
+        0,
+        "claimed resources never run fallback cleanup"
+    );
+    assert_eq!(
+        Arc::strong_count(&drops),
+        2,
+        "the test owns the payload edge because deterministic cleanup now owns it"
+    );
+    drop(unsafe { Arc::from_raw(Arc::as_ptr(&drops)) });
+}
+
+#[test]
+fn an_alias_in_another_thread_observes_the_same_claim() {
+    let (handle, drops) = observed_resource();
+    let alias = handle.clone().into_raw() as usize;
+    assert!(unsafe { (*handle.as_raw()).claim() });
+    let observed = thread::spawn(move || unsafe { (*(alias as *mut Resource)).claim() })
+        .join()
+        .expect("claim observer thread should not panic");
+    assert!(!observed, "the shared lifecycle admits exactly one claimant");
+    drop(handle);
+    drop(unsafe { ResourceHandle::from_raw_already_retained(alias as *mut Resource) });
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+    drop(unsafe { Arc::from_raw(Arc::as_ptr(&drops)) });
+}
+
+#[test]
 fn handle_drop_releases() {
     let (handle, drops) = observed_resource();
     assert_eq!(drops.load(Ordering::Relaxed), 0);
@@ -141,6 +175,16 @@ fn deferred_release_returns_the_exact_payload_without_running_the_inline_destruc
     unsafe { observe_destruction(payload.unwrap()) };
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     assert_eq!(Arc::strong_count(&drops), 1);
+}
+
+#[test]
+fn deferred_release_of_a_claimed_resource_enqueues_no_fallback_payload() {
+    let (handle, drops) = observed_resource();
+    let raw = handle.into_raw();
+    assert!(unsafe { (*raw).claim() });
+    assert_eq!(unsafe { fz_resource_release_deferred(raw) }, None);
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+    drop(unsafe { Arc::from_raw(Arc::as_ptr(&drops)) });
 }
 
 #[test]

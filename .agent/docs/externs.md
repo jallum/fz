@@ -511,11 +511,21 @@ Inside the owning module, `.value` on a resource handle projects the payload.
 Lowering keeps this as ordinary field access, and both backend interpreter and
 native/JIT/AOT paths read it through the shared named-field runtime ABI.
 
+`Kernel.claim_resource/1` is the deterministic counterpart to fallback
+cleanup. It reads the payload and then atomically claims the shared off-heap
+resource, returning `{:ok, payload}` to the one winner or `{:error, :closed}`
+to every other alias. A claim is visible through aliases in other processes and
+disarms the FZ destructor at final release. The successful caller must perform
+cleanup itself. The claim and payload read are one non-yielding runtime-library
+operation today; resource users must not expose a raw payload to application
+code before they own it.
+
 ## Proof gates
 
 ```text
 cargo test --test fixture_matrix file_handle      # resource lifecycle + dtor
 cargo test --test fixture_matrix file_resource_lifecycle
+cargo test --test fixture_matrix resource_claim   # cross-process one-shot claim
 cargo test --lib compiler2_unknown_extern_abi_is_a_lower_diagnostic
 cargo test --lib compiler2_fz_abi_is_reserved_to_the_runtime_library
 cargo test --lib compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic

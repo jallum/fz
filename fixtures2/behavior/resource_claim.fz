@@ -1,0 +1,28 @@
+#---
+# purpose: "A transferable resource can be claimed once; claiming disarms its fallback FZ destructor across all execution doors."
+#---
+extern "C" defp fz_resource_test_print_dtor(integer) :: nil
+
+def close_observable(value) do
+  fz_resource_test_print_dtor(value)
+  nil
+end
+
+def child(parent) do
+  handle = receive do handle -> handle end
+  dbg(Kernel.claim_resource(handle))
+  send(parent, :claimed)
+end
+
+def main() do
+  parent = self()
+  resource = make_resource(42, &close_observable/1)
+
+  child = spawn(fn () -> child(parent) end)
+
+  send(child, resource)
+
+  receive do
+    :claimed -> dbg(:resource_claimed)
+  end
+end

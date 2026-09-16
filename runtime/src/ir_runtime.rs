@@ -423,6 +423,17 @@ pub extern "C" fn fz_make_resource(process: *mut Process, payload_raw: u64, dtor
         .raw_word()
 }
 
+/// Atomically claims a resource's payload for deterministic cleanup. The
+/// caller must read the payload before claiming it; a false result means an
+/// alias has already claimed the shared capability.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_resource_claim(process: *mut Process, resource_ref_word: u64) -> u64 {
+    assert!(!process.is_null(), "fz_resource_claim: no current process");
+    let resource = any_value_ref_from_word(resource_ref_word, "fz_resource_claim resource");
+    let stub = unsafe { ResourceStub::from_raw(resource.resource_addr().expect("fz_resource_claim resource")) };
+    u64::from(stub.claim())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_self(process: *mut Process) -> u64 {
     (unsafe { &mut *process }).pid as u64
