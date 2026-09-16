@@ -2779,6 +2779,42 @@ mod union_clause_order {
     }
 }
 
+/// A clause is its factor SET: `A ∧ B` and `B ∧ A` are one clause.
+///
+/// `Conj::pos` grows as the clause product walks its operands, so an
+/// intersection whose factors cannot merge into one signature records them in
+/// arrival order. Two arrivals then reach the interner as two different
+/// `Vec<Conj<_>>`, hash to two different `Descr`s, and are handed two `Ty`s for
+/// one set of values — the same schedule dependence clause order carries, one
+/// level down.
+mod clause_factor_order {
+    use super::*;
+
+    /// Two arrows of different arity cannot merge into one signature, so their
+    /// meet keeps both as factors of one clause — an overload, and inhabited.
+    #[test]
+    fn two_factor_orders_of_one_intersection_intern_once() {
+        let mut t = Types::new();
+        let int = t.int();
+        let unary = t.arrow(&[int], int);
+        let binary = t.arrow(&[int, int], int);
+
+        let forward = t.intersect(unary, binary);
+        let backward = t.intersect(binary, unary);
+
+        let clauses = &t.descr(&forward).funcs;
+        assert_eq!(clauses.len(), 1, "one clause");
+        assert_eq!(clauses[0].pos.len(), 2, "holding both arrows as factors");
+        assert_eq!(
+            forward,
+            backward,
+            "one denotation, one interned id: got {} vs {}",
+            t.display(&forward),
+            t.display(&backward)
+        );
+    }
+}
+
 /// fz-kdt.198 — the documented brand law, as pins.
 ///
 /// `.agent/docs/set-theoretic-types.md` states it in one line: `utf8 <:

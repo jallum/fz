@@ -74,9 +74,12 @@ makes "same rendering implies equivalent" true by construction:
 - **normalize list clauses from their denotation** — a `ListSig` denotes `[]`
   plus lists over an element type, so `list(T) & not([])` and
   `non_empty_list(T)` are one thing and render as one thing;
-- **sort** — clause order inside a DNF, and factor order inside a clause, follow
-  the order facts arrived in. Sorting them on their rendered bytes is a
-  presentation-boundary sort, the one place sorting is free of consequence.
+- **sort** — the axis lists this module BUILDS (widened rectangles, the clauses
+  left after its own drops) carry no canonical order, so their rendered texts
+  are sorted before they are joined. That is a presentation-boundary sort, the
+  one place sorting is free of consequence. Clause order and factor order
+  inside an interned descriptor are already canonical (`order.rs`), so nothing
+  here re-sorts them.
 
 Dropping empty clauses is not among them, because it is one shared rule
 (`types::axis`) that `Types::intern` applies at the persistence boundary.

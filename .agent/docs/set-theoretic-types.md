@@ -109,12 +109,18 @@ The persistence boundary (`Types::intern`) canonicalizes every descriptor
 entering the interner.
 
 First, ORDER (`order.rs::ClauseOrder`): every DNF axis is sorted by a total
-order on clauses, so a descriptor's clause list is a function of its clause set
-rather than of the arrival order that built it. A DNF axis denotes a set but is
-stored as a `Vec` and every producer appends, so `A ∨ B` and `B ∨ A` used to
-reach the interner as two vectors and be handed two `Ty`s for one type — and a
-`Ty` IS the identity of a specialization, so which bodies exist was a function
-of the schedule (fz-kdt.105). The order is lexicographic over the structure,
+order, factors inside a clause before clauses inside an axis, so a descriptor's
+clause list is a function of its clause set and each clause a function of its
+factor set — not of the arrival order that built either. A DNF axis denotes a
+set but is stored as a `Vec` and every producer appends, so `A ∨ B` and `B ∨ A`
+used to reach the interner as two vectors and be handed two `Ty`s for one type
+— and a `Ty` IS the identity of a specialization, so which bodies exist was a
+function of the schedule (fz-kdt.105). `Conj::pos` grew the same way inside the
+clause product, so `A ∧ B` and `B ∧ A` split one overload in two. Factors have
+to be sorted first: a clause compares by its stored factor lists, so the clause
+order is a function of the clause set only once each clause is a function of
+its own factors. Sorting also puts equal factors adjacent, which is where
+`A ∧ A = A` collapses. The order is lexicographic over the structure,
 compared in place rather than rendered as text: two `Ty`s compare by their
 descriptors, recursively, which terminates because a descriptor can only name
 `Ty`s interned before it. It is injective — ties happen only between identical
@@ -124,10 +130,9 @@ the survivor back to arrival order. Closure literals order by an owner-registere
 shared denotation (`Types::define_callable_origin`): typed module/name/arity for a
 named function, or recursive owner plus structural occurrence for a generated
 one. The displayed label is only a projection. Structural address vars order by
-their `AddrStep` path, never by the mint-order `FnId`/`TypeVarId` behind them. Two residuals are
-deliberate: a tie broken by two FREE type vars falls back to mint order, and
-intra-clause factor order (`Conj::pos`, grown in `dnf_intersect_with` arrival
-order) is a second dimension this pass does not touch.
+their `AddrStep` path, never by the mint-order `FnId`/`TypeVarId` behind them.
+One residual is deliberate: a tie broken by two FREE type vars falls back to
+mint order.
 
 Then the EMPTY-CLAUSE DROP, on all five axes: a DNF axis denotes the union of
 its clauses, so a clause that denotes nothing is that union's identity
