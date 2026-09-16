@@ -5,12 +5,12 @@
   ],
   "blocks": [],
   "created": "2026-09-15T22:40:40Z",
-  "description": "GOAL: Add the built-in File runtime-library module as the first client of the shared resource lifecycle, so fz programs can perform a practical Elixir-shaped filesystem surface directly through C externs.\n\nSIGNAL:\n- The real runtime File module is lazy-loadable from the bootstrap registry.\n- File owns an opaque resource handle and uses the generic guarded-use and one-shot disposal contract.\n- A behavior fixture exercises direct-C create, write, read, append, open, close, link, directory, and failure paths across interp, run, and build.\n- No File-specific Rust filesystem bridge exists; Rust owns only generic resource safety.\n- Rust and fixture gates pass with no new warnings.\n\nSTRATEGY:\n1. Inventory ../elixir/lib/elixir/lib/file.ex against fz capabilities and document accurate supported surface/divergences.\n2. Declare private libc symbols in lib/file.fz and translate their return values in fz source.\n3. Use the resource lifecycle primitives for handles, guarded IO, and deterministic close.\n4. Replace temporary fixture-local File names with the built-in module and pin cross-door behavior.\n5. Document the public contract, including shared-handle close semantics and unsupported Elixir features.",
+  "description": "GOAL: Add the built-in File runtime-library module as the first client of the shared resource lifecycle, so fz programs can perform a practical Elixir-shaped filesystem surface directly through C externs.\\n\\nSIGNAL:\\n- The real runtime File module is lazy-loadable from the bootstrap registry.\\n- File owns a resource handle and uses generic one-shot disposal; close is deterministic across aliases.\\n- A behavior fixture exercises direct-C create, write, read, append, open!, close, link, directory, and failure paths across interp, run, and build.\\n- No File-specific Rust filesystem bridge exists; Rust owns only generic resource safety.\\n- Rust and fixture gates pass with no new warnings.\\n\\nSTRATEGY:\\n1. Inventory ../elixir/lib/elixir/lib/file.ex against fz capabilities and document accurate supported surface/divergences.\\n2. Declare private libc symbols in lib/file.fz and translate their return values in fz source.\\n3. Use the resource lifecycle primitive for handle construction and deterministic close.\\n4. Replace temporary fixture-local File names with the built-in module and pin cross-door behavior.\\n5. Document the public contract, including shared-handle close semantics and unsupported Elixir features.",
   "id": "fz-ope",
   "labels": [],
   "priority": 2,
   "status": "in_progress",
   "title": "Runtime library: add File surface",
   "type": "task",
-  "updated_at": "2026-09-16T01:36:34Z"
+  "updated_at": "2026-09-16T01:38:31Z"
 }
