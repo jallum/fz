@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-16T02:32:54Z",
   "created": "2026-09-16T02:26:57Z",
   "description": "GOAL: Make `c_pointer` and `c_string` the sole fz spellings for the builtin C pointer and NUL-terminated C-string ABI types.\n\nSIGNAL:\n- source declarations, resource contracts, diagnostics, fixtures, and guides use `c_pointer` and `c_string`\n- the old compact spellings are rejected, rather than retained as silent aliases\n- all three execution doors preserve the existing raw pointer and NUL-terminated binary ABI behavior\n\nSTRATEGY: Rename the builtin resolver spelling and every public reference together; pin accepted/rejected front-door behavior and retain the existing ABI lanes.",
   "id": "fz-gpn.1",
   "labels": [],
   "parent": "fz-gpn",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Normalize FFI C type spellings",
   "type": "task",
-  "updated_at": "2026-09-16T02:27:32Z"
+  "updated_at": "2026-09-16T02:32:54Z"
 }
