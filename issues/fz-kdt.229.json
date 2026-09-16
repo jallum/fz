@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T16:09:11Z",
+  "description": "fz-kdt.228's approved design said the three contribution maps (activation_input_contributions, runtime_demand_input_contributions, incoming_input_contributions, world.rs ~555-620) plus preserved_analysis_claims are the same idea as a derivation, hand-rolled three or four times: each keys a slice of a shared fact by (fact key, Job) and forks on whether the run waited (extend) or concluded (conclude_exact, retracting keys the owner no longer names). The design said derivations should replace this, not sit beside it: removed ContributionMap, ContributionReplace, the owner keying on the runtime-demand map, preserved_analysis_claims, the three JobEffects contribution fields, the three waits.is_empty() conclude/extend forks in World::complete, and extend_outputs_after_run's blocked-claims path; added nothing but DerivationKey variants that already exist (Activation, Executable, InputSlot are unused by any producer today) and one derivations field already on JobEffects.\n\nThe landed fz-kdt.228 (df6bd67c1) built the Derivation/DerivationKey mechanism and used it only for the scope walk's Function derivations. The contribution maps are untouched. This ticket is the deferred half of the design: migrate activation input contributions, runtime demand input contributions, incoming input slot contributions and preserved analysis claims onto derivations, and delete the four hand-rolled mechanisms. Failing-first: a generic scheduler test already proves the derivation mechanism (compiler2_scheduler_a_concluded_derivation_is_final_while_its_job_waits); the acceptance here is that AnalyzeActivation's blocked runs use JobEffects::derivations for each contribution instead of the ContributionMap forks, with identical published content and identical or lower census. Corpus canon byte-identical. Concept count must go down: four mechanisms collapse into the one already built.",
+  "id": "fz-kdt.229",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Fold the three contribution maps into derivation identity",
+  "type": "task",
+  "updated_at": "2026-09-16T16:09:11Z"
+}
