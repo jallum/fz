@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T21:34:44Z",
+  "description": "Goal: Return canonical bottom before constructing a tuple when any already-interned tuple field is the canonical bottom Ty.\n\nSignal: `Types::tuple` always allocates a tuple descriptor and enters `Types::intern`; the existing type tests prove `tuple([int, none]) = none`. Thus a shallow scan over immutable Ty handles can decide that construction before descriptor-level tuple-emptiness normalization traverses the field descriptors.\n\nStrategy: First measure the current interning work for a tuple containing `none`, then add the shallow public-boundary short circuit only if it preserves the exact existing law. Keep descriptor emptiness for arbitrary descriptors that have no Ty and do not add a hash/cache.\n\nTDD and acceptance: Assert semantic bottom plus zero interning work, exercise a nested tuple/enum canary, document the product-factor law, and complete fmt, check, strict Clippy, full tests, cold review, one commit, and close.",
+  "id": "fz-kdt.48.22",
+  "labels": [],
+  "parent": "fz-kdt.48",
+  "priority": 2,
+  "status": "open",
+  "title": "Return impossible tuple construction before descriptor normalization",
+  "type": "task",
+  "updated_at": "2026-09-16T21:34:44Z"
+}
