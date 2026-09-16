@@ -216,7 +216,10 @@ A fixture pins its claim in the most direct medium for what it tests.
    The program checks itself and aborts on failure, so the claim is verified on
    every path with no golden file. The default for behavioural claims.
 2. **Rendering golden** — `dbg(x)` + `expected.txt`, when the rendered string
-   itself is the artifact (how a value prints).
+   itself is the artifact (how a value prints). The matrix canonicalizes a
+   closure's process-local numeric denotation to `id` (`#fn<id/arity>`), so a
+   golden can pin its stable form and declared arity without depending on
+   unrelated function allocation order.
 3. **Memory-floor stats** — `Process.heap_alloc_stats()` + a per-path golden.
    Allocation counts are cross-run and path-variant: native reuses cons cells,
    `interp` is the direct-IR baseline, and `run` equals `build`. No single in-program
