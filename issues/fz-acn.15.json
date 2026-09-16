@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T17:29:52Z",
+  "description": "Consume DispatchMatrix when compiling a PatternDispatchPlan. Move the sole retained subject table into DispatchGraph, remove matrix arms/outcomes from retained plans, and route the native receive literal collector and canonical dump through the compiled graph. Preserve dispatch semantics and update the dispatch docs and focused tests.",
+  "id": "fz-acn.15",
+  "labels": [],
+  "parent": "fz-acn",
+  "priority": 1,
+  "status": "open",
+  "title": "Retain only the compiled dispatch graph",
+  "type": "task",
+  "updated_at": "2026-09-16T17:29:52Z"
+}
