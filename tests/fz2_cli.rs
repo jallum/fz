@@ -2034,6 +2034,38 @@ end
     let _ = remove_file(out_bin.with_extension("bin.o"));
 }
 
+#[test]
+fn zero_argument_elixir_lambda_spelling_agrees_across_every_execution_door() {
+    let source_path = unique_temp_path("fz2_zero_argument_elixir_lambda", ".fz");
+    write(&source_path, "def main(), do: dbg((fn -> 42 end).())\n").expect("write zero-argument lambda fixture");
+
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[OsStr::new(command), source_path.as_os_str()]);
+        assert_successful_stdout(&out, "42\n", &format!("fz2 {command} zero-argument Elixir lambda"));
+    }
+
+    let out_bin = unique_temp_path("fz2_zero_argument_elixir_lambda_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build zero-argument Elixir lambda should succeed: {}",
+        output_text(&build)
+    );
+    let run = Command::new(&out_bin)
+        .output()
+        .expect("run built zero-argument lambda fixture");
+    assert_successful_stdout(&run, "42\n", "fz2 build/run zero-argument Elixir lambda");
+
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
 /// fz-kdt.44: the drain arbiter's readiness step is on the public stream.
 ///
 /// Settledness is transitive — a fact is final only when its whole upstream
