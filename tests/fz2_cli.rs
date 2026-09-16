@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::temp_dir;
 use std::ffi::{OsStr, OsString};
-use std::fs::{metadata, read_to_string, remove_file, write};
+use std::fs::{metadata, read, read_to_string, remove_file, write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, id};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1011,6 +1011,79 @@ fn help_lists_compiler2_commands_on_stdout() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+/// `fz.runtime.execution_ready` is the boundary between compiling a program and
+/// running it. The fixture matrix pins where the readiness BYTE falls against a
+/// real compile; what only the stream can show is where the EVENT falls against
+/// the compiler's own work, in emission order inside one process.
+#[test]
+fn execution_ready_separates_the_compile_from_the_program() {
+    let source_path = unique_temp_path("fz2_execution_ready", ".fz");
+    write(&source_path, "def main(), do: dbg(1 + 1)\n").expect("write execution-ready fixture");
+
+    for (command, product) in [
+        ("run", "fz.compiler2.native_backend.compile"),
+        ("interp", "fz.compiler2.backend_request.finished"),
+    ] {
+        let telemetry_path = unique_temp_path(&format!("fz2_execution_ready_{command}"), ".jsonl");
+        let out = run_fz2(&[
+            OsStr::new("--log-telemetry"),
+            telemetry_path.as_os_str(),
+            OsStr::new(command),
+            source_path.as_os_str(),
+        ]);
+        assert_successful_stdout(&out, "2\n", &format!("fz2 {command}"));
+
+        // Read the finished log: the public writer is buffered and flushes its
+        // tail when the compiler process drops it.
+        let log = read(&telemetry_path).unwrap_or_else(|error| {
+            panic!("read telemetry log {}: {error}", telemetry_path.display());
+        });
+        let names = parse_public_trace(&log)
+            .iter()
+            .map(|event| event.name.join("."))
+            .collect::<Vec<_>>();
+
+        let boundaries = names
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| name.as_str() == "fz.runtime.execution_ready")
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            boundaries.len(),
+            1,
+            "fz2 {command} should announce one execution-ready boundary; got {boundaries:?} in {names:?}"
+        );
+        let boundary = boundaries[0];
+
+        let after = names[boundary + 1..]
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            after,
+            BTreeSet::from(["fz.runtime.process_exited"]),
+            "fz2 {command} should do nothing but run the program after the boundary"
+        );
+
+        // The set above is only meaningful if the compile is in the stream at
+        // all: the door's own product event proves it, and precedes the
+        // boundary like everything else the compiler did.
+        let product_at = names
+            .iter()
+            .rposition(|name| name == product)
+            .unwrap_or_else(|| panic!("fz2 {command} should emit {product}"));
+        assert!(
+            product_at < boundary,
+            "fz2 {command} should finish {product} before the boundary; last at {product_at}, boundary at {boundary}"
+        );
+
+        let _ = remove_file(&telemetry_path);
+    }
+
+    let _ = remove_file(&source_path);
 }
 
 #[test]

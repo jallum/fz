@@ -771,6 +771,13 @@ impl JsonlBackend {
             &["fz", "runtime", "send_to_unknown_pid"],
             "pid",
         );
+        let ready_backend = Rc::clone(backend);
+        telemetry.attach_raw_event0(
+            &["fz", "runtime", "execution_ready"],
+            move |name, span_id, parent_span_id| {
+                ready_backend.handle_raw_event(name, span_id, parent_span_id, Metadata::new());
+            },
+        );
         let tokens_backend = Rc::clone(backend);
         telemetry
             .attach_raw_event3::<crate::source::SourceVersion, Option<std::rc::Rc<str>>, Vec<crate::parser::lexer::Token>, _>(

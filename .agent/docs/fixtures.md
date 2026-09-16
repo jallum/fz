@@ -142,24 +142,48 @@ deliberately generous: wall clock varies with machine contention and CI
 coverage instrumentation, so this limit detects nontermination, not compiler
 performance. Performance regressions require deterministic work counters from
 telemetry. `run`/`interp` have two hang phases: a fixed 20s setup guard starts at
-spawn, then the first execution-ready byte resets the clock for the execution
-guard. `kind: test` uses the same boundary: the outer `fz2 test` command signals
-once after discovery, before it starts its per-test child processes. Closing
-the readiness pipe, exiting, or holding it open past the setup guard without
-that signal is a harness failure; the runner terminates the command group and
-reports the missing boundary.
+spawn, then each execution-ready byte resets the clock for the execution guard,
+so every program a command starts gets its own window. The byte is written by `signal_execution_ready` immediately before the
+root process starts — after parsing, the fixpoint drive, the backend product and
+Cranelift — so the setup guard covers the whole compile and the execution guard
+covers only the running program. The same seam emits
+`fz.runtime.execution_ready`, which is how a test orders the boundary against
+compiler work (see [runtime telemetry](runtime-telemetry.md)).
+`execution_guard_covers_the_program_not_the_compile` pins the byte's position
+end to end: a compile-heavy fixture runs under a two-second execution guard,
+which only a byte written ahead of the compile can blow.
+
+`kind: test` announces once per test, from inside the child process that runs
+it, so each test's program gets its own execution window. The residual is
+exact: the compile of test N+1 happens inside test N's execution window, under
+the same 20s limit, and only the first test's compile is covered by the setup
+guard. The parent `fz2 test` runs no program and writes no byte, so a `kind:
+test` command that starts no program at all is caught the same way any other is.
+Ending without starting a program, or holding the pipe open past the setup guard
+without starting one, is a harness failure; the runner terminates the command
+group and reports the missing boundary.
 The readiness descriptor is opaque: commands that need to control it must use
 descriptor syscalls rather than shell redirection grammar, which does not cover
 every valid descriptor number.
 
-`FixtureCommandState` owns the readiness verdict: zero bytes plus either pipe
-EOF or leader exit is `MissingExecutionReady`. Both observations produce
-`<label> ended before execution-ready signal (0 readiness bytes); stderr: <stderr>`
-after group teardown and leader reaping. The diagnostic omits exit status because
-EOF may require terminating a still-live leader. The runner samples process
-status before draining readiness so a final byte from an exited child is counted
-before classification. An inherited writer cannot conceal a leader that exits
-without signaling, and capturing stderr never waits for inherited writers.
+`FixtureCommandState` owns the readiness verdict, and the fixture's own
+`expect:` decides it — `ExecutionBoundary::Announced` for `expect: success` and
+`expect: abort`, `ExecutionBoundary::Refused` for `expect: diagnostic`. An
+announced command that ends with zero bytes is `MissingExecutionReady`,
+reported as `<label> never started a program (0 readiness bytes); stderr:
+<stderr>`; the exit status does not stand in for the boundary, because an
+`expect: abort` program exits nonzero after running. A refused command that
+announces a program is `UnexpectedExecutionReady`, reported as `<label> started
+a program (<n> readiness bytes) though the fixture declares the compiler must
+refuse it` — the compiler accepted a source it was told to reject. A refused
+command that starts nothing hands its status and stderr to the fixture's own
+diagnostic comparison. Both verdicts are reported after group teardown and
+leader reaping. Pipe EOF is not a verdict on its own; it only ends the drain,
+and a leader that closed the descriptor without starting a program is still
+bounded by the setup guard. The runner samples process status before draining
+readiness so a final byte from an exited child is counted before classification.
+An inherited writer cannot conceal a leader that starts no program, and
+capturing stderr never waits for inherited writers.
 
 `build` compilation, including an `expect: diagnostic` build, starts a fixed
 20s nontermination guard at spawn. A successful build's binary then gets its
