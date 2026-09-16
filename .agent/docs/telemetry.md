@@ -663,7 +663,10 @@ Return publication carries raw `World` plus `ActivationKey` only when the
 stored return changes. Event presence is the change signal; handlers read the
 settled return from `World`. `return_type.widened` is a separate raw
 `World`-plus-key event emitted only when the widening operator coarsens the
-candidate.
+candidate. Both are public (allowlisted in `is_public_compiler2_trace_event`),
+as are `activation_analysis.defined` and `callsite.defined`; the JSONL
+projection adds a `semantic` object carrying the standing return and the
+activation's ascent count.
 
 `root.submitted` carries raw `World` and `RootId`. `code.submitted` carries raw
 `World` with the submitted `SourceOwner` or runtime registration. Protocol callback
