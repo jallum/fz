@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T20:54:11Z",
+  "description": "## Goal\n\nMake every fixed core type and built-in opaque a retained handle in `Types`, so common constructors such as `int()`, `atom()`, `empty_list()`, `map_top()`, and `pid()` return directly without rebuilding, hashing, or searching a descriptor.\n\n## Strategy\n\nExtend the existing lattice-constant ownership into one explicit immutable core-type inventory constructed at world creation. Route only descriptors with no operand through it; leave unary and structural constructors for a separate direct-edge design. Prove both the type identities and zero boundary work under TDD.\n\n## Acceptance\n\nFocused type and fixture-canary tests, full-arena canonical gate, format, check, strict Clippy, and full workspace tests pass. No generic result cache or second interning authority is added.",
+  "id": "fz-kdt.48.17",
+  "labels": [],
+  "parent": "fz-kdt.48",
+  "priority": 2,
+  "status": "open",
+  "title": "Retain fixed Ty constructors as world constants",
+  "type": "task",
+  "updated_at": "2026-09-16T20:54:11Z"
+}
