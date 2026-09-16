@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T11:46:15Z",
+  "description": "The runtime source, bootstrap registry, prelude alias, and Kernel.to_string/1 currently name the protocol `StringChars`. This is inconsistent with Elixir, the original ticket fz-5xp.15, its landing commit 39ab898411, the later runtime-library PR description, and repository-facing documentation, all of which call it `String.Chars`.\n\nThis is not a source-language limitation: ModuleName::parse_dotted is used by runtime bootstrap, dotted modules are documented and compiled, and compiler2 quoted-source coverage parses `defimpl String.Chars, for: Box`. No history records an intentional flattening.\n\nDone means: bootstrap the runtime source as `String.Chars`; declare/implement/call the protocol under that name; update the prelude alias and docs/fixtures; and add a three-door behavior test that directly invokes `String.Chars.to_string/1` (in addition to Kernel.to_string/1), proving the public runtime namespace.",
+  "id": "fz-98p",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] Runtime protocol is flattened as StringChars instead of String.Chars",
+  "type": "bug",
+  "updated_at": "2026-09-16T11:46:15Z"
+}
