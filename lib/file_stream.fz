@@ -1,0 +1,64 @@
+defmodule FileStream do
+  @moduledoc """
+  The lazy line stream returned by `File.stream!/1`.
+
+  The value owns no open descriptor. Each enumeration opens its path, reads
+  one line at a time, and closes the descriptor before returning. That makes a
+  stream reusable and keeps an abandoned stream from retaining an OS handle.
+  """
+
+  defstruct [:path]
+
+  @type t :: %FileStream{path: binary}
+
+  extern "C" defp libc::fopen(c_string, c_string) :: c_pointer
+  extern "C" defp libc::fclose(c_pointer) :: c_int
+  extern "C" defp libc::fgetc(c_pointer) :: c_int
+  extern "C" defp libc::ferror(c_pointer) :: c_int
+
+  @spec new(binary) :: t
+  def new(path), do: %FileStream{path: path}
+
+  def reduce(path, {:cont, acc}, reducer), do: reduce_open(libc::fopen(path, "rb"), acc, reducer)
+  def reduce(_path, {:halt, acc}, _reducer), do: {:halted, acc}
+  def reduce(_path, {:suspend, _acc}, _reducer), do: panic("File.Stream cannot begin suspended")
+  def reduce(_path, _command, _reducer), do: panic("Enumerable.ReduceProtocolError")
+
+  def reduce_while(path, acc, reducer), do: reduce_while_open(libc::fopen(path, "rb"), acc, reducer)
+
+  defp reduce_open(0, _acc, _reducer), do: panic(:io)
+  defp reduce_open(stream, acc, reducer), do: reduce_next(stream, read_line(stream, ""), acc, reducer)
+
+  defp reduce_next(stream, :eof, acc, _reducer), do: close_reduce(stream, {:done, acc})
+  defp reduce_next(stream, {:line, line}, acc, reducer), do: reduce_result(stream, reducer.(line, acc), reducer)
+  defp reduce_next(_stream, _next, _acc, _reducer), do: panic("File.Stream line reader returned an invalid result")
+
+  defp reduce_result(stream, {:cont, acc}, reducer), do: reduce_next(stream, read_line(stream, ""), acc, reducer)
+  defp reduce_result(stream, {:halt, acc}, _reducer), do: close_reduce(stream, {:halted, acc})
+  defp reduce_result(stream, {:suspend, _acc}, _reducer), do: close_reduce(stream, panic("File.Stream suspension is not implemented"))
+  defp reduce_result(_stream, _result, _reducer), do: panic("Enumerable.ReduceProtocolError")
+
+  defp reduce_while_open(0, _acc, _reducer), do: panic(:io)
+  defp reduce_while_open(stream, acc, reducer), do: reduce_while_next(stream, read_line(stream, ""), acc, reducer)
+
+  defp reduce_while_next(stream, :eof, acc, _reducer), do: close_reduce(stream, acc)
+  defp reduce_while_next(stream, {:line, line}, acc, reducer), do: reduce_while_result(stream, reducer.(line, acc), reducer)
+  defp reduce_while_next(_stream, _next, _acc, _reducer), do: panic("File.Stream line reader returned an invalid result")
+
+  defp reduce_while_result(stream, {:cont, acc}, reducer), do: reduce_while_next(stream, read_line(stream, ""), acc, reducer)
+  defp reduce_while_result(stream, {:halt, acc}, _reducer), do: close_reduce(stream, acc)
+  defp reduce_while_result(_stream, _result, _reducer), do: panic("Enumerable.ReduceWhileProtocolError")
+
+  defp read_line(stream, bytes), do: read_line_byte(stream, libc::fgetc(stream), bytes)
+  defp read_line_byte(stream, -1, ""), do: read_end(stream)
+  defp read_line_byte(_stream, -1, bytes), do: {:line, bytes}
+  defp read_line_byte(_stream, 10, bytes), do: {:line, bytes <> "\n"}
+  defp read_line_byte(stream, byte, bytes), do: read_line(stream, bytes <> <<byte>>)
+  defp read_end(stream), do: read_end_result(libc::ferror(stream))
+  defp read_end_result(0), do: :eof
+  defp read_end_result(_error), do: panic(:io)
+
+  defp close_reduce(stream, result), do: close_result(libc::fclose(stream), result)
+  defp close_result(0, result), do: result
+  defp close_result(_status, _result), do: panic(:io)
+end

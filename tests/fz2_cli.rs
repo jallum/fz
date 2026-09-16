@@ -1020,6 +1020,68 @@ fn help_lists_compiler2_commands_on_stdout() {
     }
 }
 
+#[test]
+fn file_stream_and_stream_map_are_lazy_enumerables_on_every_execution_door() {
+    let input_path = unique_temp_path("fz2_file_stream", ".jsonl");
+    let source_path = unique_temp_path("fz2_file_stream", ".fz");
+    let output_path = unique_temp_path("fz2_file_stream", ".bin");
+    write(&input_path, "first\nsecond\n").expect("write stream input");
+    write(
+        &source_path,
+        format!(
+            r#"
+def main() do
+  stream = File.stream!("{}")
+  stream
+  |> Stream.map(fn line -> String.trim(line) end)
+  |> Enum.to_list()
+  |> dbg()
+  stream
+  |> Stream.map(fn line -> String.trim(line) end)
+  |> Enum.to_list()
+  |> dbg()
+end
+"#,
+            input_path.to_string_lossy()
+        ),
+    )
+    .expect("write File.stream fixture");
+
+    for command in ["run", "interp"] {
+        let output = run_fz2(&[OsStr::new(command), source_path.as_os_str()]);
+        assert_successful_stdout(
+            &output,
+            "[\"first\", \"second\"]\n[\"first\", \"second\"]\n",
+            &format!("fz2 {command} File.stream"),
+        );
+    }
+
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        output_path.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build File.stream fixture should succeed; stderr={:?}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let output = Command::new(&output_path)
+        .output()
+        .expect("run AOT File.stream fixture");
+    assert_successful_stdout(
+        &output,
+        "[\"first\", \"second\"]\n[\"first\", \"second\"]\n",
+        "AOT File.stream",
+    );
+
+    let _ = remove_file(input_path);
+    let _ = remove_file(source_path);
+    let _ = remove_file(output_path.with_extension("o"));
+    let _ = remove_file(output_path);
+}
+
 /// `fz.runtime.execution_ready` is the boundary between compiling a program and
 /// running it. The fixture matrix pins where the readiness BYTE falls against a
 /// real compile; what only the stream can show is where the EVENT falls against

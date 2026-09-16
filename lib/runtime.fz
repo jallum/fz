@@ -5,6 +5,7 @@ alias Atom
 alias Enum
 alias Enumerable
 alias File
+alias FileStream
 alias Float
 alias Integer
 alias Json
@@ -19,6 +20,7 @@ alias Range
 alias String
 alias StringChars
 alias Tuple
+alias Stream
 alias Utf8
 
 import Kernel, only: [
