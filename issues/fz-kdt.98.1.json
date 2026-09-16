@@ -7,7 +7,7 @@
     "fz-kdt.98.3"
   ],
   "created": "2026-09-16T01:36:18Z",
-  "description": "keying.rs static_edges emits StaticEdge::Lambda for LoweredStep::Lambda and nothing for LoweredStep::FunctionRef, though both mint a callable value naming a function. Fold the two into one construction edge. Witness: call/2 applying \u0026pong/1 and \u0026ping/1 (ping and pong mutually recursive only through function references) is three singleton components today; after, ping and pong share one component and Recursive is true for both. Consumers (activation keying, transport recursion cut) see more recursion for \u0026fun cycles; the corpus canon check records what moves. First commit of fz-kdt.98.",
+  "description": "keying.rs static_edges emits StaticEdge::Lambda for LoweredStep::Lambda and nothing for LoweredStep::FunctionRef, though both mint a callable value naming a function. Fold the two into one construction edge. Witness: call/2 applying \u0026pong/1 and \u0026ping/1 is three singleton components today; after, ping and pong share one component and Recursive is true for both; a function reference closes over nothing so it does not consume callable identity. Built 2026-09-16 (canon identical over 548 fixtures) but held: on 00181_enum_reduce_operator_ref the newly visible edge main -\u003e +/2 costs the component cone walk six more evaluations and raises three census pins (443 -\u003e 454 job starts, trace budget 3062 \u003e 3060, readiness-caused 9 of 11). It lands after fz-kdt.98.2 replaces that walk, so the pins move down or stay, never up. Second commit of fz-kdt.98.",
   "id": "fz-kdt.98.1",
   "labels": [],
   "parent": "fz-kdt.98",
@@ -15,5 +15,5 @@
   "status": "in_progress",
   "title": "A function reference is a construction edge of the call graph, as a lambda already is",
   "type": "task",
-  "updated_at": "2026-09-16T02:07:09Z"
+  "updated_at": "2026-09-16T02:07:10Z"
 }
