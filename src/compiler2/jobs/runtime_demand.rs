@@ -159,7 +159,7 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
             .collect(),
     };
     let mut input =
-        RuntimeDemandFormulaInput::new(executable, &facts, world.runtime_demand_type_projections(), own, &peers);
+        RuntimeDemandFormulaInput::new(executable, &facts, world.runtime_demand_type_projections(), own, peers);
     let mut loaded_target_demands = ordered_peers.into_iter().collect::<HashSet<_>>();
     let mut callable_target_reads = HashSet::new();
     let mut runtime_demand_evaluations = 0;
@@ -505,10 +505,10 @@ impl<'a> RuntimeDemandFormulaInput<'a> {
         facts: &'a ExecutableFacts,
         type_projections: &'a HashMap<Ty, Rc<super::super::semantic::RuntimeDemandTypeProjection>>,
         own: RuntimeDemandOwnInput,
-        reads: &HashMap<ExecutableKey, Vec<RuntimeDemand>>,
+        target_inputs: HashMap<ExecutableKey, Vec<RuntimeDemand>>,
     ) -> Self {
         Self {
-            current: RuntimeDemandFormulaSnapshot::new(member.clone(), own, reads),
+            current: RuntimeDemandFormulaSnapshot::new(member.clone(), own, target_inputs),
             member,
             facts: facts.runtime_demand_facts(type_projections),
         }
@@ -519,12 +519,12 @@ impl RuntimeDemandFormulaSnapshot {
     pub(super) fn new(
         member: ExecutableKey,
         own: RuntimeDemandOwnInput,
-        reads: &HashMap<ExecutableKey, Vec<RuntimeDemand>>,
+        target_inputs: HashMap<ExecutableKey, Vec<RuntimeDemand>>,
     ) -> Self {
         Self {
             member,
             own,
-            target_inputs: reads.clone(),
+            target_inputs,
             construction_targets: HashMap::new(),
         }
     }
