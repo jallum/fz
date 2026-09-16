@@ -71,6 +71,18 @@ fn drive_fixture(name: &str, text: &str) -> Compiler2<ConfiguredTelemetry> {
     compiler
 }
 
+#[test]
+fn enum_take_drop_split_reuses_identity_before_the_type_boundary() {
+    let name = "fixtures2/behavior/enum_take_drop_split.fz";
+    let text = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
+    let compiler = drive_fixture(name, text);
+    let work = compiler.world().types().interning_work_stats();
+    assert!(
+        work.identity_shortcuts > 0,
+        "the fixture must exercise identity reuse before the type boundary: {work:?}"
+    );
+}
+
 fn equivalent(types: &Types, left: Ty, right: Ty) -> bool {
     types.is_subtype(&left, &right) && types.is_subtype(&right, &left)
 }

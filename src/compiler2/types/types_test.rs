@@ -27,6 +27,63 @@ fn factory_interns_equal_descriptors() {
 }
 
 #[test]
+fn union_of_the_same_type_returns_before_it_probes_or_normalizes() {
+    let mut t = Types::new();
+    let int = t.int();
+    let before = t.interning_work_stats();
+
+    assert_eq!(t.union(int, int), int);
+    let expected = InterningWorkStats {
+        identity_shortcuts: before.identity_shortcuts + 1,
+        ..before
+    };
+    assert_eq!(
+        t.interning_work_stats(),
+        expected,
+        "identity union already has its canonical Ty; it must not probe or normalize a descriptor"
+    );
+}
+
+#[test]
+fn unchanged_map_refinement_returns_before_it_probes_or_normalizes() {
+    let mut t = Types::new();
+    let int = t.int();
+    let key = MapKey::Atom("value".to_string());
+    let map = t.map(&[(key.clone(), int)]);
+    let before = t.interning_work_stats();
+
+    assert_eq!(t.refine_map_field(&map, &key, &int), map);
+    let expected = InterningWorkStats {
+        identity_shortcuts: before.identity_shortcuts + 1,
+        ..before
+    };
+    assert_eq!(
+        t.interning_work_stats(),
+        expected,
+        "an unchanged map field already has its canonical Ty; it must not probe or normalize a descriptor"
+    );
+}
+
+#[test]
+fn widening_the_same_type_returns_before_it_probes_or_normalizes() {
+    let mut t = Types::new();
+    let int = t.int();
+    let list = t.list(int);
+    let before = t.interning_work_stats();
+
+    assert_eq!(t.refine_widen(&list, &list), list);
+    let expected = InterningWorkStats {
+        identity_shortcuts: before.identity_shortcuts + 1,
+        ..before
+    };
+    assert_eq!(
+        t.interning_work_stats(),
+        expected,
+        "a self-join already has its canonical Ty; it must not probe or normalize a descriptor"
+    );
+}
+
+#[test]
 fn structural_children_are_interned_handles() {
     let mut t = Types::new();
     let elem = t.int();

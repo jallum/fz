@@ -46,6 +46,23 @@ new one. Two structurally equal types therefore get the **same** id: equality is
 `conj`, `bits`, `emptiness`, `sigs`) is private; callers work through
 `Ty` and the `Types` methods.
 
+## Preserve an identity before constructing a descriptor
+
+The interner is the only persistence boundary for a descriptor whose outer
+structure may have changed. It is not a reason to rebuild a descriptor when an
+operation has already proved its answer is an input handle. The laws
+`union(t, t) = t`, `refine_widen(t, t) = t`, and refining a map field to the
+field's existing `Ty` therefore return that `Ty` directly: no descriptor clone,
+hash-table probe, or normalization pass is due.
+
+This is deliberately narrower than a cache. Constructors such as `tuple` and
+`arrow` receive interned children, but their *outer* clause sets are newly built;
+only the interner can decide whether that new descriptor names an existing type.
+Likewise, transformations with no local equality proof must build their changed
+descriptor and take the ordinary index-before-normalization path. Carry an
+existing `Ty` through a no-op; do not add a second structural equivalence or
+memoization authority beside `Types::intern`.
+
 ## One instance, threaded everywhere
 
 Ids only mean anything against the interner that minted them, so there is exactly

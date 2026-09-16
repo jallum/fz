@@ -135,6 +135,33 @@ impl Default for Types {
 struct TypeInterner {
     arena: Vec<Descr>,
     index: HashMap<Descr, Ty>,
+    #[cfg(test)]
+    work: InterningWork,
+}
+
+/// Test-only accounting for the sole type persistence boundary.
+///
+/// A no-op type operation must return its existing [`Ty`] before it reaches
+/// this boundary. The counters deliberately measure boundary work, rather than
+/// wall time, so the contract holds across machines and build profiles.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct InterningWorkStats {
+    pub identity_shortcuts: usize,
+    pub raw_index_probes: usize,
+    pub normalizations: usize,
+    pub canonical_index_probes: usize,
+    pub inserted: usize,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct InterningWork {
+    identity_shortcuts: usize,
+    raw_index_probes: usize,
+    normalizations: usize,
+    canonical_index_probes: usize,
+    inserted: usize,
 }
 
 #[derive(Default)]
@@ -206,7 +233,19 @@ impl<'a> TyCtx<'a> {
 }
 
 impl TypeInterner {
+    #[inline]
+    fn identity_shortcut(&mut self) {
+        #[cfg(test)]
+        {
+            self.work.identity_shortcuts += 1;
+        }
+    }
+
     fn intern(&mut self, d: Descr) -> Ty {
+        #[cfg(test)]
+        {
+            self.work.canonical_index_probes += 1;
+        }
         if let Some(ty) = self.index.get(&d) {
             return *ty;
         }
@@ -217,6 +256,10 @@ impl TypeInterner {
         let ty = Ty(raw as u32);
         self.arena.push(d.clone());
         self.index.insert(d, ty);
+        #[cfg(test)]
+        {
+            self.work.inserted += 1;
+        }
         ty
     }
 
@@ -229,8 +272,19 @@ impl TypeInterner {
     /// this true of clause order). So the normal form it was given then is the
     /// normal form it would be given now, and the id can be returned without
     /// re-deriving it.
-    fn lookup(&self, d: &Descr) -> Option<Ty> {
+    fn lookup(&mut self, d: &Descr) -> Option<Ty> {
+        #[cfg(test)]
+        {
+            self.work.raw_index_probes += 1;
+        }
         self.index.get(d).copied()
+    }
+
+    fn normalized(&mut self) {
+        #[cfg(test)]
+        {
+            self.work.normalizations += 1;
+        }
     }
 
     fn ctx(&self) -> TyCtx<'_> {
@@ -533,6 +587,7 @@ impl Types {
         if let Some(ty) = self.interner.lookup(&d) {
             return ty;
         }
+        self.interner.normalized();
         self.normalize_tuple_axis(&mut d);
         self.normalize_list_clauses(&mut d);
         self.order_clauses(&mut d);
@@ -543,6 +598,15 @@ impl Types {
             d = Descr::none();
         }
         self.interner.intern(d)
+    }
+
+    /// Return an input whose operation has proved unchanged before any
+    /// descriptor is built. This is deliberately not an interner lookup: the
+    /// caller already owns the canonical identity.
+    #[inline]
+    fn unchanged(&mut self, ty: Ty) -> Ty {
+        self.interner.identity_shortcut();
+        ty
     }
 
     /// The list axis rewritten to the one normal form in [`axis`], clause by
@@ -923,6 +987,18 @@ impl Types {
     }
 
     #[cfg(test)]
+    pub(crate) fn interning_work_stats(&self) -> InterningWorkStats {
+        let work = &self.interner.work;
+        InterningWorkStats {
+            identity_shortcuts: work.identity_shortcuts,
+            raw_index_probes: work.raw_index_probes,
+            normalizations: work.normalizations,
+            canonical_index_probes: work.canonical_index_probes,
+            inserted: work.inserted,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn comparison_cache_stats(&self) -> ComparisonCacheStats {
         let cache = self.comparisons.borrow();
         ComparisonCacheStats {
@@ -1207,7 +1283,9 @@ impl Types {
     }
 
     pub fn refine_map_field(&mut self, a: &Ty, key: &MapKey, v: &Ty) -> Ty {
-        let d = self.descr(a).refine_map_field(key, *v);
+        let Some(d) = self.descr(a).refine_map_field(key, *v) else {
+            return self.unchanged(*a);
+        };
         self.intern(d)
     }
 
@@ -1651,6 +1729,9 @@ impl Types {
     }
 
     pub fn union(&mut self, a: Ty, b: Ty) -> Ty {
+        if a == b {
+            return self.unchanged(a);
+        }
         let d = {
             let cx = self.ctx();
             cx.descr(&a).union(cx, cx.descr(&b))
@@ -3824,6 +3905,9 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
 /// so a widened type is never an un-interned `Descr` that a caller might compare
 /// or store without canonicalization.
 fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
+    if a == b {
+        return t.unchanged(a);
+    }
     let lhs = t.descr(&a).clone();
     let rhs = t.descr(&b).clone();
     if let (Some(l), Some(r)) = (lhs.pure_tuple().cloned(), rhs.pure_tuple().cloned())
