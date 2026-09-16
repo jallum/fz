@@ -59,11 +59,10 @@ Getting there takes normalization, because one type has many descriptors. Each
 step below rewrites a descriptor to a semantically EQUAL one, which is what
 makes "same rendering implies equivalent" true by construction:
 
-- **absorb the callable axis** — one call of the shared rule
-  (`types::axis`), which first collapses the axis to its top when its clauses
-  cover it between them (`(X) -> any` constrains nothing, so it denotes every
-  callable whatever `X` is) and otherwise drops every clause the union of the
-  survivors already covers;
+- **absorb a literal-free callable axis** — the shared rule (`types::axis`)
+  collapses it to its top when its clauses cover it between them (`(X) -> any`
+  constrains nothing, so it denotes every callable whatever `X` is) and
+  otherwise drops every clause the union of the survivors already covers;
 - **sort** — the axis lists this module BUILDS (the clauses left after its own
   drops, and every axis of a synthesized `Descr`) carry no canonical order, so
   their rendered texts are sorted before they are joined. That is a
@@ -71,28 +70,27 @@ makes "same rendering implies equivalent" true by construction:
   Clause order and factor order inside an interned descriptor are already
   canonical (`order.rs`), so nothing here re-sorts them.
 
-Dropping empty clauses, absorbing the four DENOTATIONAL axes, carving the tuple
-axis, and reading a list clause from its denotation are not among the steps
-above, because they are shared rules (`types::axis`, `emptiness::list_denotation`)
-that `Types::intern` applies at the persistence boundary. A `ListSig` denotes
-`[]` plus lists over an element type, so `list(T) & not([])` and
-`non_empty_list(T)` are one thing. The boundary stores the clause that way for a
-ground clause, and for a var-bearing clause that needs no element arithmetic; a
-var-bearing clause that needs it is stored as it was built, because the meet the
-kernel would compute reads a variable as disjoint from everything and stops
-being true once the variable is substituted
+Dropping empty clauses, tuple carving, list normalization, and absorption of
+every literal-free axis happen at the persistence boundary in `Types::intern`.
+A literal-bearing clause retains its capture layout for transport. Its args and
+result reset to the literal owner's deterministic template. A separately
+observed surface travels with the activation input instead of giving the closure
+value a second identity.
+
+A `ListSig` denotes `[]` plus lists over an element type, so `list(T) &
+not([])` and `non_empty_list(T)` are one thing. The boundary stores the clause
+that way for a ground clause, and for a var-bearing clause that needs no element
+arithmetic; a var-bearing clause that needs it is stored as it was built,
+because the meet the kernel would compute reads a variable as disjoint from
+everything and stops being true once the variable is substituted
 (`.agent/docs/set-theoretic-types.md`). This module reads the denotation either
 way, so `non_empty_list(α) \ non_empty_list(int)` renders as the
-`non_empty_list(α)` it denotes, and the two ids over it reach the census as one
-denotation holding two ids — the residue itself — rather than as a difference
-that is not there. Intern is those rules' authority; this module is their second
-caller, for the one descriptor it still builds ITSELF — a list clause's
-intersected element fragment — which never reaches the interner and would
-otherwise be rendered unswept. A descriptor that DID come from the interner is
-already in the boundary's normal form, so this module does not repeat those
-rules on one. Only the CALLABLE axis is absorbed here after the fact and nowhere
-else, for the reason `types/axis.rs` states: the boundary must leave that axis
-alone, while a rendering reads nothing back out of it.
+`non_empty_list(α)` it denotes. Intern is those rules' authority; this module
+is their second caller for the list fragment it builds itself, which never
+reaches the interner. A descriptor that did come from the interner is already
+in the boundary's normal form. Callable clauses render exactly as stored: a
+literal-free axis was absorbed before it received an identity, while a literal
+axis keeps the capture layout transport must inspect.
 
 A synthesized descriptor's clause list carries the order its `Descr::union`
 folds produced, and absorption visits in index order, so two clauses that
@@ -103,6 +101,12 @@ between two spellings of one set can. The one such pair reachable by
 construction, the axis's widest signature beside the contentless clause, is not
 a pair at all any more: the absorber rewrites an axis its clauses cover to the
 contentless clause, which is its one spelling.
+
+A free `TypeVarId` is nominal kernel content, not an alternate spelling of a
+different free variable. The storage comparator's final raw-id tie-break can
+therefore order a set of distinct variables without creating two identities for
+one descriptor. Inputs that must compare across independently introduced
+variables are alpha-normalized before they become activation coordinates.
 
 Normalization runs on DESCRIPTORS rather than on interned `Ty`s alone: a list
 clause's element fragment is a descriptor that was never interned, and interning

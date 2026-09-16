@@ -244,10 +244,10 @@ impl TypeInterner {
     }
 
     /// The debug half of the interned-DNF invariant: a descriptor that reaches
-    /// the index carries no provably-empty clause on any axis, nothing left to
-    /// absorb on the four denotational axes, and no exact duplicate on the
-    /// callable axis. This runs on an index MISS, so it costs one sweep per
-    /// distinct descriptor.
+    /// the index carries no provably-empty clause, no missed absorption on a
+    /// literal-free axis, and no exact duplicate on a literal-bearing callable
+    /// axis. This runs on an index MISS, so it costs one sweep per distinct
+    /// descriptor.
     #[cfg(debug_assertions)]
     fn debug_assert_dnf_axes_hygienic(&self, d: &Descr) {
         let cx = self.ctx();
@@ -260,6 +260,9 @@ impl TypeInterner {
         debug_assert_absorbed(cx, &d.lists, "list", &axis::LISTS);
         debug_assert_absorbed(cx, &d.resources, "resource", &axis::RESOURCES);
         debug_assert_absorbed(cx, &d.maps, "map", &axis::MAPS);
+        if callable_axis_is_literal_free(&d.funcs) {
+            debug_assert_absorbed(cx, &d.funcs, "callable", &axis::FUNCS);
+        }
         debug_assert_lists_merged(&d.lists);
         debug_assert_no_exact_duplicates(&d.funcs, "funcs");
     }
@@ -279,18 +282,20 @@ fn debug_assert_lists_merged(clauses: &[Conj<ListSig>]) {
     );
 }
 
-/// `A ∨ A = A` on the callable axis, the one axis absorption does not reach
-/// ([`axis`] states why).
+fn callable_axis_is_literal_free(clauses: &[Conj<ArrowSig>]) -> bool {
+    clauses
+        .iter()
+        .flat_map(|clause| clause.pos.iter().chain(&clause.neg))
+        .all(|sig| sig.lit.is_none())
+}
+
+/// `A ∨ A = A` on a literal-bearing callable axis.
 ///
-/// The four denotational axes get the stronger coverage rule; this one gets
-/// idempotence, which is the rule the ACTIVATION KEY depends on. A key is
-/// built by erasing what the key language cannot address — closure brands
-/// above all — and erasure runs IN PLACE, so a union that legitimately kept one
-/// clause per brand becomes `A ∨ A` the moment the brands go. Without this
-/// collapse `funcs = [A, A]` interns as a different `Ty` than `funcs = [A]`,
-/// the key stops being a join homomorphism, and a callsite reached down two
-/// rows publishes an edge naming neither activation its walk actually read
-/// (fz-kdt.80).
+/// Literal-free clauses get the stronger coverage rule. Erasure runs in place,
+/// so a union that legitimately kept one clause per closure brand can become
+/// `A ∨ A` when the brands go. Without this collapse `funcs = [A, A]` interns
+/// as a different `Ty` than `funcs = [A]`, and the key stops being a join
+/// homomorphism.
 ///
 /// First occurrence wins, so the canonical order the `order` pass just imposed
 /// survives this filter — which is the whole reason the two compose. The
@@ -501,11 +506,8 @@ impl Types {
     /// nothing but the set they denote: a clause the union of its surviving
     /// siblings already covers is dropped, and an axis its clauses between
     /// them cover collapses to that axis's one top spelling, the clause with no
-    /// factors. The callable axis is the one exception ([`axis`] states why),
-    /// so it gets IDEMPOTENCE alone, exact duplicates collapsed. The coverage
-    /// walk and the dedupe only ever remove, and both visit in index order, so
-    /// what they leave is still sorted; a saturated axis is REPLACED by that
-    /// one clause, and one clause is sorted whatever it is.
+    /// factors. Literal-bearing callable clauses retain their construction
+    /// layout and get exact duplicate removal after their surfaces normalize.
     ///
     /// The BOTTOM COLLAPSE closes the pass. The empty set is reachable by many
     /// descriptor shapes — an empty brand slot, empty kind axes under a slot
@@ -534,6 +536,7 @@ impl Types {
         }
         self.normalize_tuple_axis(&mut d);
         self.normalize_list_clauses(&mut d);
+        self.normalize_literal_callable_surfaces(&mut d);
         self.order_clauses(&mut d);
         self.drop_empty_clauses(&mut d);
         self.absorb_covered_clauses(&mut d);
@@ -550,6 +553,35 @@ impl Types {
         let clauses = std::mem::take(&mut d.lists);
         d.lists = clauses.into_iter().map(|c| self.list_normal_form(c)).collect();
         axis::merge_empty_list_clause(&mut d.lists);
+    }
+
+    /// Direct callable observations are activation coordinates, not value
+    /// identity. A named literal has one reproducible owner template; an
+    /// anonymous literal keeps only its arity.
+    fn normalize_literal_callable_surfaces(&mut self, d: &mut Descr) {
+        for sig in d
+            .funcs
+            .iter_mut()
+            .flat_map(|clause| clause.pos.iter_mut().chain(&mut clause.neg))
+        {
+            let Some(lit) = &sig.lit else {
+                continue;
+            };
+            let arity = sig.args.len();
+            match lit.fn_id {
+                Some(fn_id) => {
+                    sig.args = (0..arity)
+                        .map(|position| self.type_var(closure_var_id(fn_id, position)))
+                        .collect();
+                    sig.ret = self.type_var(closure_ret_var_id(fn_id));
+                }
+                None => {
+                    let any = self.any();
+                    sig.args = vec![any; arity];
+                    sig.ret = any;
+                }
+            }
+        }
     }
 
     /// One list clause rewritten to what it denotes.
@@ -765,13 +797,19 @@ impl Types {
         axis::drop_empty_clauses(self.ctx(), d, &|ty| self.is_empty(ty));
     }
 
-    /// The four axes a denotation fully describes, absorbed by the one rule in
-    /// [`axis`]. The callable axis is left out, for the reason stated there.
+    /// Every literal-free axis is absorbed by the shared rule in [`axis`].
+    ///
+    /// A closure literal retains its capture layout until the value reaches
+    /// the transport projection; the layout is evidence about construction,
+    /// not an alternative spelling of a bare callable value.
     fn absorb_covered_clauses(&self, d: &mut Descr) {
         self.absorb_one_axis(&mut d.tuples, &axis::TUPLES);
         self.absorb_one_axis(&mut d.lists, &axis::LISTS);
         self.absorb_one_axis(&mut d.resources, &axis::RESOURCES);
         self.absorb_one_axis(&mut d.maps, &axis::MAPS);
+        if callable_axis_is_literal_free(&d.funcs) {
+            self.absorb_one_axis(&mut d.funcs, &axis::FUNCS);
+        }
     }
 
     fn absorb_one_axis<T: Clone + 'static>(&self, clauses: &mut Vec<Conj<T>>, view: &axis::AxisView<T>) {
@@ -3818,7 +3856,7 @@ fn is_literal(cx: TyCtx<'_>, a: &Ty) -> bool {
 /// The captures are erased by this same rule, so brands nested inside a
 /// captured closure go too and same-typed literals still share one body. The
 /// literal's argument/result fields are planner observations, so erasure also
-/// replaces them with the generic callable surface; direct activation rows
+/// replaces them with the literal-free callable form; direct activation rows
 /// retain the observations needed to plan a call.
 fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
     let base = t.descr(&a).clone();

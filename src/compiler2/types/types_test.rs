@@ -27,6 +27,59 @@ fn factory_interns_equal_descriptors() {
 }
 
 #[test]
+fn literal_callable_identity_ignores_an_instantiated_surface() {
+    let mut t = Types::new();
+    let literal = t.fn_ref_lit(ClosureTarget(3), 1);
+    let int = t.int();
+    let nil = t.nil();
+    let target = ClosureTarget(3).into();
+    let sigma = [(closure_var_id(target, 0), int), (closure_ret_var_id(target), nil)]
+        .into_iter()
+        .collect();
+    let inventory = t.identity_inventory();
+    let comparisons = t.comparison_cache_stats();
+
+    let instantiated = t.instantiate(&literal, &sigma);
+
+    assert_eq!(instantiated, literal);
+    assert_eq!(t.identity_inventory(), inventory);
+    assert_eq!(t.comparison_cache_stats(), comparisons);
+}
+
+fn assert_reuses_identity(types: &mut Types, expected: Ty, construction: impl FnOnce(&mut Types) -> Ty) {
+    let inventory = types.identity_inventory();
+    assert_eq!(construction(types), expected);
+    assert_eq!(types.identity_inventory(), inventory);
+}
+
+#[test]
+fn construction_order_reuses_identity_for_lists_tuples_and_literals() {
+    let mut t = Types::new();
+    let int = t.int();
+    let empty = t.empty_list();
+    let list = t.list(int);
+    let joined = t.union(empty, list);
+    assert_reuses_identity(&mut t, joined, |t| t.union(list, empty));
+
+    let false_ = t.bool_lit(false);
+    let true_ = t.bool_lit(true);
+    let left = t.tuple(&[list, false_]);
+    let right = t.tuple(&[list, true_]);
+    let carved = t.union(left, right);
+    let either = t.union(false_, true_);
+    assert_reuses_identity(&mut t, carved, |t| t.tuple(&[list, either]));
+
+    let any = t.any();
+    let fun = t.arrow(&[], any);
+    assert_reuses_identity(&mut t, fun, |t| t.arrow(&[int], any));
+
+    let branded = t.closure_lit(ClosureTarget(3), vec![int], 1);
+    let anonymous = t.erase_closure_identity(&branded);
+    let merged = t.intersect(branded, anonymous);
+    assert_reuses_identity(&mut t, merged, |t| t.intersect(anonymous, branded));
+}
+
+#[test]
 fn structural_children_are_interned_handles() {
     let mut t = Types::new();
     let elem = t.int();
@@ -1749,7 +1802,7 @@ macro_rules! closure_helper_conformance_tests {
                 let generic_surface = t.arrow(&[any, any], any);
                 assert_eq!(
                     erased_bare, generic_surface,
-                    "a capture-free literal retains arity but not an observed call surface"
+                    "a capture-free literal becomes the literal-free callable top"
                 );
             }
 
@@ -3020,8 +3073,8 @@ mod clause_absorption {
         assert_eq!(resource_by_sig, resource_by_clause);
     }
 
-    /// `any` has more than one descriptor, because the callable axis is left
-    /// unabsorbed at intern: `f ∨ ¬f` is every callable in two clauses, so a
+    /// `any` has more than one descriptor when a callable axis retains a
+    /// literal capture layout: `f ∨ ¬f` is every callable in two clauses, so a
     /// descriptor carrying it denotes everything without LOOKING full.
     ///
     /// A structural reading of "is this element everything" would then answer
@@ -3035,16 +3088,15 @@ mod clause_absorption {
     fn an_element_that_is_any_written_another_way_still_reaches_the_axis_top() {
         let mut t = Types::new();
         let any = t.any();
-        let int = t.int();
-        let arrow = t.arrow(&[int], int);
+        let literal = t.fn_ref_lit(ClosureTarget(3), 1);
         let every_value = {
-            let rest = t.difference(any, arrow);
-            t.union(rest, arrow)
+            let rest = t.difference(any, literal);
+            t.union(rest, literal)
         };
         assert_ne!(
             t.descr(&every_value).funcs.len(),
             1,
-            "the reproducer needs the unabsorbed callable axis; got {}",
+            "the reproducer needs a retained literal callable axis; got {}",
             t.display(&every_value)
         );
         assert!(t.is_equivalent(&every_value, &any), "but it must still BE any");
