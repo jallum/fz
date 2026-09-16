@@ -1,9 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [
-    "fz-ope"
-  ],
+  "blocks": [],
   "created": "2026-09-16T01:27:14Z",
   "description": "GOAL: A module that declares @type t :: opaque resource(T) can construct its t with make_resource and return it through a declared contract.\\n\\nSIGNAL:\\n- return inference mints the owner’s opaque alias for exact resource payloads before contract refinement\\n- an external caller can pass the returned handle to the module’s t-typed operation\\n- non-owner field access remains rejected\\n- the three execution doors agree\\n\\nSTRATEGY:\\n- resolve the owner t alias’s validated resource inner alongside its nominal tag\\n- apply the existing Types::mint_owned_resource_aliases primitive at the function-return boundary\\n- keep the effect restricted to resources constructed/returned by the declaring module.",
   "id": "fz-8vy",
@@ -12,5 +10,5 @@
   "status": "in_progress",
   "title": "Brand opaque resource returns in their owner module",
   "type": "bug",
-  "updated_at": "2026-09-16T01:27:21Z"
+  "updated_at": "2026-09-16T01:36:34Z"
 }
