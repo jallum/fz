@@ -62,10 +62,10 @@ pub enum AddrStep {
 /// Which binder owns addresses encountered while walking a type.
 ///
 /// Ordinary values are embedded in the surrounding slot, so even an address
-/// left by a prior surface is rewritten under that slot. `ArrowSig::args` and
-/// `ArrowSig::ret` form an explicit callable binder of their own; addresses
-/// already established inside that surface remain stable when the callable is
-/// embedded elsewhere.
+/// left by a prior surface is rewritten under that slot. A literal's args and
+/// result are its owner template, not an observed surface, so only literal-free
+/// arrows form an explicit callable binder here. Observed literal surfaces use
+/// [`ActivationSignature`] coordinates instead.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AddressOwner {
     EmbeddedValue,
@@ -279,20 +279,29 @@ impl Types {
     /// nested below that slot: input zero's first callable parameter is
     /// `a0_p0`, not the top-level `a0` used by a standalone contract arrow.
     pub fn address_signature_at_input(&mut self, input: usize, signature: &ActivationSignature) -> ActivationSignature {
-        let surface = self.arrow(&signature.inputs, signature.result);
-        let any = self.any();
-        let mut inputs = vec![any; input];
-        inputs.push(surface);
-        let addressed = self.address_inputs(&inputs);
-        let surface = addressed[input];
-        let sig = self
-            .descr(&surface)
-            .pure_arrow()
-            .expect("an addressed callable observation must remain a pure arrow");
-        ActivationSignature {
-            inputs: sig.args.clone().into_boxed_slice(),
-            result: sig.ret,
-        }
+        let mut correlations = AddressCorrelations::default();
+        correlations.binders.push(BinderCorrelations::default());
+        let inputs = signature
+            .inputs
+            .iter()
+            .enumerate()
+            .map(|(position, &ty)| {
+                self.address_remap_with(
+                    ty,
+                    &[AddrStep::Param(input as u16), AddrStep::Param(position as u16)],
+                    &mut correlations,
+                    AddressOwner::CallableSurface,
+                )
+            })
+            .collect();
+        let result = self.address_remap_with(
+            signature.result,
+            &[AddrStep::Param(input as u16), AddrStep::Result],
+            &mut correlations,
+            AddressOwner::CallableSurface,
+        );
+        correlations.binders.pop().expect("callable correlation scope");
+        ActivationSignature { inputs, result }
     }
 
     /// Rewrite every variable in `ty` to its first-occurrence address, threading
@@ -455,14 +464,16 @@ impl Types {
         for conj in &mut d.funcs {
             for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
                 correlations.binders.push(BinderCorrelations::default());
-                for (i, ty) in sig.args.iter_mut().enumerate() {
+                if sig.lit.is_none() {
+                    for (i, ty) in sig.args.iter_mut().enumerate() {
+                        let mut child = path.to_vec();
+                        child.push(AddrStep::Param(i as u16));
+                        *ty = self.address_remap_with(*ty, &child, correlations, AddressOwner::CallableSurface);
+                    }
                     let mut child = path.to_vec();
-                    child.push(AddrStep::Param(i as u16));
-                    *ty = self.address_remap_with(*ty, &child, correlations, AddressOwner::CallableSurface);
+                    child.push(AddrStep::Result);
+                    sig.ret = self.address_remap_with(sig.ret, &child, correlations, AddressOwner::CallableSurface);
                 }
-                let mut child = path.to_vec();
-                child.push(AddrStep::Result);
-                sig.ret = self.address_remap_with(sig.ret, &child, correlations, AddressOwner::CallableSurface);
                 if let Some(lit) = &mut sig.lit {
                     for (i, capture) in lit.captures.iter_mut().enumerate() {
                         let mut child = path.to_vec();
@@ -490,9 +501,9 @@ mod tests {
     use super::super::conj::Conj;
     use super::super::sigs::{ArrowSig, ClosureLit};
     use super::super::{CallableValueKind, ClosureTarget};
-    use super::AddrStep::{Elem, Field, Param, VarSlot, Variant};
+    use super::AddrStep::{Capture, Elem, Field, Param, VarSlot, Variant};
     use super::*;
-    use crate::compiler2::identity::{ActivationKey, FunctionId, RootId};
+    use crate::compiler2::identity::{ActivationKey, ActivationSignature, FunctionId, RootId};
     use crate::compiler2::semantic::SemanticOrd;
 
     fn var(t: &mut Types, id: u32) -> Ty {
@@ -665,65 +676,44 @@ mod tests {
     }
 
     #[test]
-    fn captured_values_and_nested_callable_binders_keep_scoped_correlations() {
+    fn callable_surface_coordinates_stay_separate_from_literal_values() {
         let mut t = Types::new();
-        let shared_address = t.param_alpha(0);
-        let nested = t.intern(Descr {
-            funcs: vec![Conj::pos_of(ArrowSig {
-                args: vec![shared_address],
-                ret: shared_address,
-                lit: Some(ClosureLit {
-                    kind: CallableValueKind::Closure,
-                    fn_id: Some(ClosureTarget(7).into()),
-                    captures: vec![shared_address, shared_address],
-                }),
-            })],
-            ..Descr::unbranded()
-        });
-        let closure = t.closure_lit(ClosureTarget(8), vec![shared_address, nested], 1);
-
-        t.define_test_callable(ClosureTarget(7), "nested", 1);
-        t.define_test_callable(ClosureTarget(8), "outer", 1);
+        let shared = var(&mut t, 90);
+        let closure = t.closure_lit(ClosureTarget(8), vec![], 1);
+        let surface = ActivationSignature {
+            inputs: vec![shared].into_boxed_slice(),
+            result: shared,
+        };
         let root = RootId::for_test(1);
         let function = FunctionId::from_coordinate(2);
-        let key = ActivationKey::from_inputs(root, function, &[closure], &mut t);
-        let once = key.inputs();
-        let outer_captures = t
-            .closure_lit_parts(&once[0])
-            .expect("addressed closure literal")
-            .captures;
-        assert_eq!(
-            t.display(&outer_captures[0]),
-            "a0_c0",
-            "the prior value-surface address must be re-owned by the outer capture"
-        );
-        let nested_clause = t.callable_clauses(&outer_captures[1]).expect("nested callable")[0].clone();
-        let nested_captures = t
-            .closure_lit_parts(&outer_captures[1])
-            .expect("nested closure literal")
-            .captures;
-        assert_eq!(
-            nested_clause.args[0], shared_address,
-            "the independent nested callable binder must preserve its own established address"
-        );
-        assert_eq!(
-            nested_clause.args[0], nested_clause.ret,
-            "the nested callable's arg/result correlation must survive"
-        );
-        assert_eq!(
-            nested_captures,
-            vec![nested_clause.args[0], nested_clause.args[0]],
-            "repeated captures in the nested binder must reuse its callable occurrence"
-        );
-        assert_ne!(
-            outer_captures[0], nested_clause.args[0],
-            "identically spelled addresses from independent value and callable scopes must not alias"
-        );
+        let surfaces = [std::collections::BTreeSet::from([surface])];
+        let key = ActivationKey::from_inputs_with_callable_surfaces(root, function, &[closure], &surfaces, &mut t);
 
-        let repeated = ActivationKey::from_inputs(root, function, once, &mut t);
         assert_eq!(
-            repeated.signature, key.signature,
-            "re-addressing an activation key must preserve every scoped correlation exactly"
+            key.inputs()[0],
+            closure,
+            "addressing an activation must not rewrite a callable value's owner template"
+        );
+        let observed = key
+            .callable_surfaces(0)
+            .expect("callable surface for first input")
+            .iter()
+            .next()
+            .expect("one observed callable surface");
+        assert_eq!(
+            observed.inputs[0], observed.result,
+            "a repeated surface variable must keep its input/result correlation"
+        );
+        assert_eq!(
+            t.display(&observed.inputs[0]),
+            "a0_p0",
+            "a nested callable parameter is addressed below its activation input"
+        );
+        let repeated =
+            ActivationKey::from_inputs_with_callable_surfaces(root, function, key.inputs(), &surfaces, &mut t);
+        assert_eq!(
+            repeated, key,
+            "value and callable coordinates must both be stable when an activation is rebuilt"
         );
     }
 
@@ -747,16 +737,6 @@ mod tests {
             let capture = t.closure_lit_parts(&input).expect("named closure literal").captures[0];
 
             assert_eq!(t.display(&capture), "a0_c0");
-            assert!(
-                activation
-                    .inputs()
-                    .iter()
-                    .flat_map(|input| t.free_var_ids(input))
-                    .collect::<std::collections::HashSet<_>>()
-                    .iter()
-                    .all(|id| address_path(&t.address_paths, *id).is_some()),
-                "the complete named-closure activation must contain structural addresses only"
-            );
             let int = t.int();
             let ground =
                 ActivationKey::from_inputs(RootId::for_test(3), FunctionId::from_coordinate(4), &[int], &mut t);
@@ -797,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn sibling_and_nested_callable_binders_push_and_pop_independently() {
+    fn literal_captures_are_reowned_by_structure() {
         fn literal_sig(types: &Types, ty: Ty, target: ClosureTarget) -> ArrowSig {
             let fn_id = target.into();
             types
@@ -861,27 +841,18 @@ mod tests {
         let second_lit = second.lit.as_ref().expect("second literal");
         let nested = literal_sig(&t, first_lit.captures[2], nested_target);
 
-        assert_eq!(first.args[0], first.ret);
-        assert_eq!(first.args[0], first_lit.captures[1]);
-        assert_eq!(nested.args[0], nested.ret);
-        assert_eq!(nested.args[0], nested.lit.as_ref().expect("nested literal").captures[0]);
-        assert_eq!(second.args[1], second.ret);
-        assert_eq!(second.args[1], second_lit.captures[1]);
         assert_ne!(
             first_lit.captures[0], second_lit.captures[2],
-            "an established captured value must be re-owned inside each sibling binder"
-        );
-        assert_ne!(
-            first.args[0], nested.args[0],
-            "a nested binder must shadow its parent binder"
+            "capture positions own distinct structural coordinates"
         );
         assert_eq!(
-            first.args[0], second.args[1],
-            "one unaddressed source generic intentionally shared across siblings must stay correlated"
+            first_lit.captures[1], second_lit.captures[1],
+            "matching capture coordinates share their structural address"
         );
-        assert_ne!(
-            nested.args[0], second.args[1],
-            "popping the nested binder must restore sibling isolation"
+        assert_eq!(
+            nested.lit.as_ref().expect("nested literal").captures[0],
+            t.address_var(&[Param(0), Capture(2), Capture(0)]),
+            "a nested literal capture extends its enclosing capture address"
         );
 
         let repeated = t.address_inputs(&[addressed])[0];
