@@ -468,6 +468,13 @@ impl Descr {
 
     /// A refinement of nothing is nothing, and a value carries at most one
     /// brand, so an empty brand slot (`Meters and Feet`) is empty too.
+    ///
+    /// Several DESCRIPTOR shapes reach the bottom — an empty slot over
+    /// inhabited kind axes, empty kind axes under a slot still at top — and
+    /// this is the test that recognizes all of them, so descriptor arithmetic
+    /// can treat the bottom as the union identity before any id exists. After
+    /// `Types::intern` those shapes are one interned identity, and
+    /// `Types::is_empty(t)` holds exactly when `t` is `none()`.
     pub(super) fn looks_empty(&self) -> bool {
         self.brands.is_none() || self.structure_looks_empty()
     }
@@ -490,15 +497,16 @@ impl Descr {
     /// brands over one inner) and a hull when they differ on both
     /// (`Meters | utf8` widens to "int or binary, any brand").
     ///
-    /// A BOTTOM is the identity first, before any of that. Bottom no longer
-    /// has one shape — a structural meet (`int and binary`) empties the kind
-    /// axes and leaves the slot at top, a brand meet (`Meters and Feet`)
-    /// empties the slot and leaves the kind axes inhabited — so a pointwise
-    /// hull would read an EMPTY operand's factors as constraints and widen the
-    /// other side by them: `nothing | Meters(int)` would answer `int`.
-    /// [`looks_empty`](Self::looks_empty) is the one bottom test, and asking
-    /// it here is what keeps `∅ ∪ x = x` a law rather than a property of one
-    /// interned identity.
+    /// A BOTTOM is the identity first, before any of that. This runs on
+    /// descriptors, BEFORE interning, and there the bottom has several shapes
+    /// — a structural meet (`int and binary`) empties the kind axes and leaves
+    /// the slot at top, a brand meet (`Meters and Feet`) empties the slot and
+    /// leaves the kind axes inhabited. A pointwise hull would read an EMPTY
+    /// operand's factors as constraints and widen the other side by them:
+    /// `nothing | Meters(int)` would answer `int`.
+    /// [`looks_empty`](Self::looks_empty) recognizes every shape, and asking
+    /// it here is what keeps `∅ ∪ x = x` a law of the arithmetic rather than a
+    /// property of the one identity interning later assigns.
     pub(super) fn union(&self, _cx: TyCtx<'_>, other: &Descr) -> Descr {
         if self.looks_empty() {
             // A join of two nothings is THE nothing: answering with either
@@ -665,10 +673,11 @@ impl Descr {
 
     fn erase_nominal(&self, cx: TyCtx<'_>) -> Descr {
         // Erasure drops a REFINEMENT, so it can only ever keep or widen the
-        // set — except at the bottom whose emptiness IS the empty slot
-        // (`Meters and Feet`), where releasing the slot would resurrect the
-        // inner as a live `int` and tell the brand-blind runtime question
-        // (`is_value_disjoint`) that an uninhabited type shares values.
+        // set — except at a bottom whose emptiness IS the empty slot
+        // (`Meters and Feet` before interning), where releasing the slot would
+        // resurrect the inner as a live `int` and tell the brand-blind runtime
+        // question (`is_value_disjoint`) that an uninhabited type shares
+        // values.
         if self.looks_empty() {
             return Descr::none();
         }

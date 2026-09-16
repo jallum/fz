@@ -376,11 +376,19 @@ impl Types {
     /// `dedupe_exact_clauses` keeps the first occurrence), so what reaches the
     /// interner index is still sorted.
     ///
+    /// The BOTTOM COLLAPSE closes the pass. The empty set is reachable by many
+    /// descriptor shapes — an empty brand slot, empty kind axes under a slot
+    /// still at top, a tuple with an empty coordinate — and they all denote
+    /// the one set, so they all take the one `none` identity. It reads
+    /// descriptors only, so the check never mints the id it is about to
+    /// reject, and it runs after the axis canonicalizers so that it sees the
+    /// smallest clause lists.
+    ///
     /// One pass suffices because the composition is idempotent: re-interning an
     /// already-interned descriptor sorts an already-sorted list to itself, finds
     /// no empty or subsumed tuple clause or subsumed list clause left to drop,
-    /// and no exact duplicate left to collapse, so it hashes to the descriptor
-    /// already in the index.
+    /// no exact duplicate left to collapse, and answers `none` for `none`, so it
+    /// hashes to the descriptor already in the index.
     fn intern(&mut self, mut d: Descr) -> Ty {
         self.normalize_tuple_coordinate_differences(&mut d);
         self.order_clauses(&mut d);
@@ -389,6 +397,9 @@ impl Types {
         dedupe_exact_clauses(&mut d.resources);
         dedupe_exact_clauses(&mut d.funcs);
         dedupe_exact_clauses(&mut d.maps);
+        if d.is_empty(self.ctx()) {
+            d = Descr::none();
+        }
         self.interner.intern(d)
     }
 
