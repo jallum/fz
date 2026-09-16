@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T09:18:58Z",
+  "description": "jobs/source.rs scope_code returns ScopePublication::Blocked(effects) when an item macro must expand before scoping can continue. Those effects already carry FactKey::FunctionSourceStash(f) as outputs (source_publish.rs publish_function_source pushes them) for every function scoped before the blocking macro, and ScopeCode(owner) is their publisher. Because the job is waiting, every one of those claims is dirty for as long as the expansion is pending. The expansion root's own compile reads those stashes (its body calls the functions defined above the macro), so RootEntry(expansion root) stands on dirty ground published by the job that is waiting for that very root: a cycle through the nested product. Today the quiescence drain certifies over it because it looks only at the asked fact's own publisher; that leniency is what fz-kdt's drain repair removes, and with it 12 lib tests stall with \"compiler2 backend product for root N waited on Settled(RootEntry(RootId(N))) with no ready producer\" (compiler2_test def_and_defp_bounce..., body_test quote_preserves..., macro_product_test source_less..., port_macros_test x2, port_misc_test x3, product_drive_test standalone_drive_owns..., source_publish_test x2). Probe output: drain refused RootEntry(3): dirty ground Fact(FunctionSourceStash(FunctionId(36))) publishers [ScopeCode(SourceOwner(16))].\n\nThe stash of a function scoped before the macro does not depend on the macro's outcome, so it must not be a claim of a waiting job. Make the stash's publisher a derivation that concludes: research first whether the work graph already distinguishes derivations within a job (fz-tfn.41 speaks of publisher identity (Job, DerivationId); the scheduler's FactSlot publishers are Jobs), and whether the existing single-producer discipline (world.rs demand_fact_producer, the arm-less FunctionSourceStash fallback in jobs/source.rs ~340-376) admits a per-function stash job or a concluding sub-derivation without a second store. Concept count must not rise: fold, do not add a parallel path. Failing-first: a generic scheduler test where a waiting job's independent co-output is read by the very thing the wait needs, plus the 12 tests above green under the strict drain rule (apply the session's drain patch locally to reproduce). Same census pins or lower; corpus canon byte-identical.",
+  "id": "fz-kdt.226",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "ScopeCode publishes function source stashes as co-outputs while blocked on item-macro expansion, so nothing above them can ever be certified final",
+  "type": "bug",
+  "updated_at": "2026-09-16T09:18:58Z"
+}
