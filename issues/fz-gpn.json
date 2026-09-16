@@ -4,13 +4,15 @@
   "blocks": [
     "fz-ope"
   ],
+  "closed_at": "2026-09-16T01:14:59Z",
+  "close_reason": "Implemented shared one-shot claim semantics with cross-process fixture coverage.",
   "created": "2026-09-16T01:05:14Z",
   "description": "GOAL: Give transferable fz resources a shared, explicit lifecycle so a library can deterministically release a capability once without its fallback destructor running again.\n\nSIGNAL:\n- A resource can be atomically claimed exactly once across aliases and process boundaries.\n- A claimed resource never queues its fallback FZ destructor during GC or process teardown.\n- Guarded use cannot overlap deterministic release; a close that races use is deferred until the use completes.\n- All resource lifecycle behavior is pinned across interp, run, and build with no warnings.\n\nSTRATEGY:\n1. Model lifecycle state in the shared off-heap Resource, retaining existing cross-process reference semantics.\n2. Add private runtime-library intrinsics for claim/disposal and guarded payload use; keep raw state inaccessible to application code.\n3. Route the existing final-release and deferred-dtor paths through the state machine, preserving current automatic cleanup for unclaimed resources.\n4. Prove aliases, send/spawn transport, close twice, use after close, teardown after close, and release during use.\n5. Document the lifecycle contract and leave File as its first library client, not a special case.",
   "id": "fz-gpn",
   "labels": [],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Shared resource lifecycle: one-shot release and guarded use",
   "type": "task",
-  "updated_at": "2026-09-16T01:05:34Z"
+  "updated_at": "2026-09-16T01:14:59Z"
 }
