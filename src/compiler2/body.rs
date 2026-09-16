@@ -661,10 +661,29 @@ pub(crate) enum SubjectOriginRoot {
 }
 
 impl ControlDispatch {
+    pub(crate) fn new(plan: PatternDispatchPlan<Ty>, outcomes: Vec<OutcomeEdge>, miss_entry: ControlEntryId) -> Self {
+        assert_eq!(
+            outcomes.len(),
+            plan.outcomes.len(),
+            "an inline dispatch owns one target slot per plan outcome"
+        );
+        assert!(
+            outcomes
+                .iter()
+                .enumerate()
+                .all(|(index, edge)| edge.outcome.0 as usize == index),
+            "inline dispatch target slots stay indexed by OutcomeId"
+        );
+        Self {
+            plan,
+            outcomes,
+            miss_entry,
+        }
+    }
+
     pub(crate) fn outcome(&self, outcome: crate::dispatch_matrix::OutcomeId) -> &OutcomeEdge {
         self.outcomes
-            .iter()
-            .find(|edge| edge.outcome == outcome)
+            .get(outcome.0 as usize)
             .expect("every winning outcome has one target edge")
     }
 }

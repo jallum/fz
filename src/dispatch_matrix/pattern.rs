@@ -28,7 +28,7 @@ pub(crate) struct PatternDispatchPlan<TypeHandle> {
 
 impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
     pub(crate) fn outcome(&self, id: OutcomeId) -> Option<&PatternDispatchOutcome> {
-        self.outcomes.iter().find(|entry| entry.outcome == id)
+        self.outcomes.get(id.0 as usize)
     }
 
     /// The body a winning outcome names. Every outcome the graph can reach is
@@ -659,6 +659,19 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             )));
         }
         let matrix = self.builder.build().map_err(PatternDispatchError::MatrixBuild)?;
+        assert_eq!(
+            matrix.outcomes.len(),
+            self.outcomes.len(),
+            "source pattern production creates one payload per matrix outcome"
+        );
+        assert!(
+            matrix
+                .outcomes
+                .iter()
+                .zip(&self.outcomes)
+                .all(|(matrix, payload)| matrix.id == payload.outcome),
+            "source pattern payloads stay indexed by the matrix-owned OutcomeId"
+        );
         let pinned_inputs = self.pinned.iter().map(|pin| pin.input).collect::<Vec<_>>();
         // A guard question rides a carrier subject, so only its leaves say
         // which inputs the guard demands.

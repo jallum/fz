@@ -1030,8 +1030,8 @@ fn materialize_direct_call_edge(
             ));
         }
     };
-    let mut arms = Vec::new();
-    for (body_id, target) in dispatch.arm_body_ids.into_iter().zip(dispatch.targets) {
+    let mut arms = Vec::with_capacity(dispatch.targets.len());
+    for target in dispatch.targets {
         let (direct, _arm_return_ty) = lower_materialized_call_target(
             world,
             tel,
@@ -1047,7 +1047,6 @@ fn materialize_direct_call_edge(
             target,
         )?;
         arms.push(DispatchCallArm {
-            body_id,
             callee: direct.callee,
             return_flow: direct.return_flow,
             extern_marshals: direct.extern_marshals,
@@ -1055,10 +1054,7 @@ fn materialize_direct_call_edge(
     }
     let return_ty = summary.settled_return(world.types_mut());
     Ok(Some(MaterializedCallEdge::Named {
-        target: CallEdge::Dispatch(Box::new(DispatchCallEdge {
-            plan: dispatch.plan,
-            arms,
-        })),
+        target: CallEdge::Dispatch(Box::new(DispatchCallEdge::new(dispatch.plan, arms))),
         return_ty,
     }))
 }

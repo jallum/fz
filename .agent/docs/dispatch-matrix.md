@@ -1170,8 +1170,10 @@ a fact; there is nothing left for the schedule to pick between.
 The artifact rung materializes a `CallEdge::Dispatch` for the `::Dispatch`
 answer: the plan is the runtime type-test graph, while each `DispatchCallArm`
 carries the existing impl `CallTarget`, return flow, and extern marshal facts
-outside `DispatchMatrix`. Dispatch misses are unreachable for closed receiver
-unions and lower to an explicit halt/trap path; there is no residual
+outside `DispatchMatrix`. The arm table is in dense `OutcomeId` order, so a
+winning outcome routes directly to its artifact-owned arm; it is not translated
+through a copied body-id table. Dispatch misses are unreachable for closed
+receiver unions and lower to an explicit halt/trap path; there is no residual
 protocol-stub outcome in the matrix.
 
 A fired trap is reported at the process-exit boundary as a fault, not unified

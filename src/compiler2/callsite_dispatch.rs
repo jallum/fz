@@ -16,7 +16,6 @@ use super::types::{Ty, Types};
 pub(crate) struct CallSiteDispatch {
     pub(crate) plan: PatternDispatchPlan<Ty>,
     pub(crate) targets: Vec<CallTargetSummary>,
-    pub(crate) arm_body_ids: Vec<u32>,
 }
 
 /// What a callsite's settled targets amount to once the runtime's power to
@@ -58,12 +57,7 @@ pub(crate) fn call_destinations(
     let Some(plan) = plan else {
         return Ok(sole_destination(targets.into_iter().next()));
     };
-    let arm_body_ids = (0..targets.len() as u32).collect();
-    Ok(CallDestinations::Dispatch(Box::new(CallSiteDispatch {
-        plan,
-        targets,
-        arm_body_ids,
-    })))
+    Ok(CallDestinations::Dispatch(Box::new(CallSiteDispatch { plan, targets })))
 }
 
 /// A callsite with no choice left to make.

@@ -1944,11 +1944,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 Ok(())
             }
             DispatchNode::Outcome { outcome, .. } => {
-                let Some(body_id) = dispatch.plan.outcome(outcome).map(|outcome| outcome.body_id) else {
-                    ctx.halt_with_atom(self.atom_id(UNREACHABLE_CONTROL_ATOM));
-                    return Ok(());
-                };
-                let Some(arm) = dispatch.arms.iter().find(|arm| arm.body_id == body_id) else {
+                let Some(arm) = dispatch.arm(outcome) else {
                     ctx.halt_with_atom(self.atom_id(UNREACHABLE_CONTROL_ATOM));
                     return Ok(());
                 };
@@ -2893,18 +2889,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 Ok(())
             }
             DispatchNode::Outcome { outcome, .. } => {
-                let body_id = dispatch
-                    .plan()
-                    .outcome(outcome)
-                    .map(|entry| entry.body_id)
-                    .ok_or_else(|| {
-                        incomplete_native_program(
-                            self.telemetry,
-                            self.root_id,
-                            format!("dispatch outcome {:?} is out of bounds", outcome),
-                        )
-                    })?;
-                let Some(clause_index) = dispatch.clause_index(body_id) else {
+                let Some(clause_index) = dispatch.clause_index(outcome) else {
                     ctx.halt_with_atom(self.atom_id("function_clause"));
                     return Ok(());
                 };
@@ -2970,8 +2955,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             DispatchNode::Outcome { outcome, .. } => {
                 let edge = outcomes
-                    .iter()
-                    .find(|edge| edge.outcome == outcome)
+                    .get(outcome.0 as usize)
                     .expect("every native dispatch outcome has an edge");
                 let arm_entry = edge.target;
                 let mut args = Vec::new();

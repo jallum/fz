@@ -1336,12 +1336,13 @@ impl ProgramCanon<'_> {
             }
             CallEdge::Dispatch(dispatch) => {
                 out.enter("dispatch");
-                for arm in &dispatch.arms {
+                for (outcome, arm) in dispatch.arms.iter().enumerate() {
                     let callee = self.call_target(&arm.callee);
                     let flow = self.return_flow(&arm.return_flow);
+                    let body_id = dispatch.plan.outcomes[outcome].body_id;
                     out.put(&format!(
                         "arm body={} callee={callee} return_flow={flow} marshals={:?}",
-                        arm.body_id, arm.extern_marshals
+                        body_id, arm.extern_marshals
                     ));
                 }
                 let plan = self.plan(&dispatch.plan);
@@ -1448,7 +1449,7 @@ impl ProgramCanon<'_> {
 
     fn entry_dispatch(&mut self, dispatch: &ExecutableDispatch) -> Vec<String> {
         let mut out = Out::default();
-        let clauses: Vec<String> = dispatch.clause_ids().iter().map(u32::to_string).collect();
+        let clauses: Vec<String> = dispatch.clause_ids().map(|body_id| body_id.to_string()).collect();
         out.put(&format!("clause_ids [{}]", clauses.join(", ")));
         let plan = self.plan(dispatch.plan());
         out.section("plan", plan);

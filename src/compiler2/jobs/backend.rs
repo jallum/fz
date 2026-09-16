@@ -385,21 +385,20 @@ fn backend_call_edge(
             return_flow: resolve_return_flow(&direct.return_flow, endpoints)?,
             extern_marshals: direct.extern_marshals.clone(),
         }),
-        CallEdge::Dispatch(dispatch) => CallEdge::Dispatch(Box::new(super::super::artifact::DispatchCallEdge {
-            plan: dispatch.plan.clone(),
-            arms: dispatch
+        CallEdge::Dispatch(dispatch) => CallEdge::Dispatch(Box::new(super::super::artifact::DispatchCallEdge::new(
+            dispatch.plan.clone(),
+            dispatch
                 .arms
                 .iter()
                 .map(|arm| {
                     Ok(DispatchCallArm {
-                        body_id: arm.body_id,
                         callee: arm.callee.clone(),
                         return_flow: resolve_return_flow(&arm.return_flow, endpoints)?,
                         extern_marshals: arm.extern_marshals.clone(),
                     })
                 })
                 .collect::<Result<Vec<_>, FatalError>>()?,
-        })),
+        ))),
         CallEdge::Indirect(flow) => CallEdge::Indirect(resolve_return_flow(flow, endpoints)?),
     })
 }

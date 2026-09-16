@@ -11578,7 +11578,7 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
             plans.push(ArtifactPlan {
                 site: PlanSite::Entry { executable: index },
                 plan: entry.plan(),
-                bodies: entry.clause_ids().to_vec(),
+                bodies: entry.clause_ids().collect(),
             });
         }
         let BackendBody::Clauses { entries, .. } = &executable.body else {
@@ -11596,7 +11596,7 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
                         callsite: callsite.as_u32(),
                     },
                     plan: &dispatch.plan,
-                    bodies: dispatch.arms.iter().map(|arm| arm.body_id).collect(),
+                    bodies: dispatch.plan.outcomes.iter().map(|outcome| outcome.body_id).collect(),
                 }),
                 BackendTail::Dispatch { dispatch, .. } => plans.push(ArtifactPlan {
                     site: PlanSite::Case {

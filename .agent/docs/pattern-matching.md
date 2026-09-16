@@ -194,10 +194,13 @@ and the run that produced it. A winning outcome's arguments are read through
 `Decided::subject_word`, off the operands the decision was made on, so nothing
 rebuilds them and no caller can ask a run that never decided what it bound. A
 guard's nested dispatch runs the helper plan through the same door; a helper
-that matches nothing is a guard that does not hold. Entry dispatch maps the
-winning outcome through `PatternDispatchPlan::body_id` to
-`ExecutableDispatch::clause_index`; a callable construction maps it to a member;
-inline and receive sites route it through their own outcome edges.
+that matches nothing is a guard that does not hold. `OutcomeId` is dense and
+plan-owned: every retained target table is built in that order, validates one
+slot per outcome, and indexes its winner directly. Entry dispatch therefore
+routes an `OutcomeId` straight to `ExecutableDispatch::clause_index`; call
+dispatch, inline dispatch, and receive route it to their own target slot. A
+source `body_id` remains plan payload; it is not duplicated into a retained
+reverse lookup authority for target routing.
 
 `dispatch_values` builds the operands every door needs beyond its inputs, and
 each door goes through it. Its `DispatchSource` says where those come from:
@@ -244,13 +247,14 @@ readings of "did this input arrive" cannot disagree quietly.
 
 ## Outcome Values and Retained Lists
 
-Each inline or receive `OutcomeEdge` owns its outcome, target, and explicit
-`{ subject, parameter: ValueId, role: Semantic | Physical }` arguments. Target
-parameters are constructed from that relation. Semantic typing and the existing
-value-origin machinery borrow the owning body's plan and dispatch inputs;
-keying, tuple/callable transport, and execution do not reconstruct bindings by
-position or source spelling. Execution transfers the actual successful state;
-native miss paths keep the pre-test state.
+Each inline or receive target slot owns its `OutcomeEdge` target and explicit
+`{ subject, parameter: ValueId, role: Semantic | Physical }` arguments. Its
+index is the plan-owned `OutcomeId`; construction validates that alignment once.
+Target parameters are constructed from that relation. Semantic typing and the
+existing value-origin machinery borrow the owning body's plan and dispatch
+inputs; keying, tuple/callable transport, and execution do not reconstruct
+bindings by position or source spelling. Execution transfers the actual
+successful state; native miss paths keep the pre-test state.
 
 Receive origins terminate at `MailboxMessage(owner)`, not a fabricated caller
 value. Semantic parameters project their types from mailbox `any` through the

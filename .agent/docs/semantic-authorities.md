@@ -199,6 +199,15 @@ demands and indexed the arguments, so it refused the call (fz-5xp.74). Charging
 asserts every ordinal is inside the declared count, which keeps a recurrence at
 the plan that produced it rather than at whichever door reads it first.
 
+**Which target a dispatch outcome selects** — owner `OutcomeId` in the
+completed `DispatchGraph`. Matrix construction assigns those ids densely;
+`PatternDispatchPlan` validates and retains the matching source payload in the
+same order. An artifact that owns a target constructs one `OutcomeId`-indexed
+slot per plan outcome, and interpreter, native, and semantic consumers route
+the decision through that slot. An absent executable clause is an explicit
+empty slot. `PatternBodyId` identifies source payload only; it is not a second
+retained body-to-target lookup authority.
+
 **Map key identity and order** — `TermComparator` in `Strict` mode owns both.
 Tuple/list/map keys compare structurally; binary storage kinds share bit
 identity; `SchemaIdentity` distinguishes tuple arity from named source module

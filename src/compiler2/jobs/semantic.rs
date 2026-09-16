@@ -929,11 +929,7 @@ fn analyze_tail(
             let mut merged = None;
             let reachability = calculate_dispatch_reachability(world.types_mut(), &receive.dispatch, &[any]);
             for (outcome, refined_inputs) in reachability.outcome_inputs {
-                let edge = receive
-                    .outcomes
-                    .iter()
-                    .find(|edge| edge.outcome == outcome)
-                    .expect("winning receive edge");
+                let edge = receive.outcomes.get(outcome.0 as usize).expect("winning receive edge");
                 let clause_params = edge
                     .arguments
                     .iter()

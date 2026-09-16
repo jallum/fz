@@ -712,7 +712,7 @@ fn select_clause(
     // as lanes is questioned lane-wise, never rebuilt.
     let operands = values.over(transport, args);
     let decided = Dispatch::new(runtime, types, program, module, plan, operands).run()?;
-    Ok(decided.and_then(|decided| dispatch.clause_index(plan.body_id(decided.outcome()))))
+    Ok(decided.and_then(|decided| dispatch.clause_index(decided.outcome())))
 }
 
 /// An input the plan reads has to have arrived. The demand lattice says which
@@ -885,12 +885,10 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                                 executable.key
                             )
                         })?;
-                    let body_id = dispatch.plan.body_id(decided.outcome());
+                    let outcome = decided.outcome();
                     let arm = dispatch
-                        .arms
-                        .iter()
-                        .find(|arm| arm.body_id == body_id)
-                        .ok_or_else(|| format!("backend dispatch call arm {} is out of bounds", body_id))?;
+                        .arm(outcome)
+                        .ok_or_else(|| format!("backend dispatch outcome {:?} has no target", outcome))?;
                     (&arm.callee, arm.extern_marshals.as_deref())
                 }
                 CallEdge::Indirect { .. } => {
@@ -1200,10 +1198,10 @@ fn try_match_backend_receive(
     let Some(mut decided) = run.run()? else {
         return Ok(None);
     };
+    let outcome = decided.outcome();
     let edge = outcomes
-        .iter()
-        .find(|edge| edge.outcome == decided.outcome())
-        .expect("receive winning edge");
+        .get(outcome.0 as usize)
+        .expect("receive winning outcome has one target edge");
     let mut params = Vec::with_capacity(edge.arguments.len());
     for argument in &edge.arguments {
         let value = decided
