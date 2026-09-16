@@ -3668,7 +3668,7 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
             .call_edges
             .get(callsite)
             .expect("the published argument belongs to a retained ABI call edge");
-        let targets = edge.target.local_callees();
+        let targets = edge.target().local_callees();
         assert!(
             !targets.is_empty(),
             "the joined reducer argument has reached dispatch targets"
@@ -5702,7 +5702,7 @@ fn pull_product_until_produced_with_fact_waits(
 }
 
 fn materialized_call_edge_callees(edge: &super::artifact::MaterializedCallEdge) -> Vec<&ExecutableKey> {
-    match &edge.target {
+    match edge.target() {
         super::artifact::CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
         super::artifact::CallEdge::Dispatch(dispatch) => {
             dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect()
@@ -5712,7 +5712,7 @@ fn materialized_call_edge_callees(edge: &super::artifact::MaterializedCallEdge) 
 }
 
 fn abi_ready_call_edge_callees(edge: &super::artifact::AbiReadyCallEdge) -> Vec<&ExecutableKey> {
-    match &edge.target {
+    match edge.target() {
         super::artifact::CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
         super::artifact::CallEdge::Dispatch(dispatch) => {
             dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect()
@@ -5733,8 +5733,8 @@ fn assert_backend_body_has_typed_targets(body: &super::artifact::BackendBody, ca
                     "backend direct call in {caller:?} should keep ExecutableKey targets"
                 );
             }
-            BackendTail::ClosureCall { target, .. } => {
-                if let Some(target) = target {
+            BackendTail::ClosureCall { edge, .. } => {
+                if let crate::compiler2::ClosureCallEdge::Direct { target, .. } = edge {
                     assert!(
                         target.activation.root == caller.activation.root,
                         "backend closure target should be an ExecutableKey, got {target:?}"

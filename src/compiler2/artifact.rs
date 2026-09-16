@@ -179,10 +179,62 @@ pub struct MaterializedExecutable {
     pub call_edges: HashMap<CallSiteId, MaterializedCallEdge>,
 }
 
+/// One callsite's materialized edge, and what kind of callsite it is.
+///
+/// A named callsite and a closure callsite are not the same call: only the
+/// second one has a form to decide, so only the second one carries one. The
+/// kind is the variant rather than an optional field, which is what keeps a
+/// named call from ever being asked for a form it cannot have.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MaterializedCallEdge {
-    pub target: CallEdge<ExecutableKey>,
-    pub return_ty: Ty,
+pub enum MaterializedCallEdge {
+    /// A callsite whose callee the source names.
+    Named {
+        target: CallEdge<ExecutableKey>,
+        return_ty: Ty,
+    },
+    /// A callsite that calls a VALUE, together with the form
+    /// `closure_call_form` decided that call takes.
+    Closure {
+        form: ClosureCallEdge,
+        target: CallEdge<ExecutableKey>,
+        return_ty: Ty,
+    },
+}
+
+impl MaterializedCallEdge {
+    pub fn target(&self) -> &CallEdge<ExecutableKey> {
+        match self {
+            Self::Named { target, .. } | Self::Closure { target, .. } => target,
+        }
+    }
+
+    pub fn return_ty(&self) -> Ty {
+        match self {
+            Self::Named { return_ty, .. } | Self::Closure { return_ty, .. } => *return_ty,
+        }
+    }
+}
+
+/// How one closure callsite's call is made: the whole answer, in three states.
+///
+/// A caller that holds the target's capture inputs calls that target directly
+/// and hands it those captures. A caller holding one public word calls through
+/// the boxed apply seam, which is the only thing that can open the word. A
+/// callee that is neither reaches nothing, so the call never happens.
+///
+/// `closure_call_form` mints this beside the call edge, and every consumer --
+/// the boxed-apply contract, native lowering and the backend interpreter --
+/// reads it rather than asking the layout again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClosureCallEdge {
+    Direct {
+        target: ExecutableKey,
+        /// How many of the target's inputs are captures the caller supplies,
+        /// which is also where the surface arguments begin.
+        capture_count: usize,
+    },
+    Seam,
+    Dead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -965,10 +1017,33 @@ pub struct PositionedCallableConstructionOwner {
     pub owner: Rc<CallableConstructionOwner>,
 }
 
+/// The same call, once its executable's ABI is settled. The kind and the
+/// closure form travel unchanged from `MaterializedCallEdge`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AbiReadyCallEdge {
-    pub target: CallEdge<ExecutableKey>,
-    pub return_ty: Ty,
+pub enum AbiReadyCallEdge {
+    Named {
+        target: CallEdge<ExecutableKey>,
+        return_ty: Ty,
+    },
+    Closure {
+        form: ClosureCallEdge,
+        target: CallEdge<ExecutableKey>,
+        return_ty: Ty,
+    },
+}
+
+impl AbiReadyCallEdge {
+    pub fn target(&self) -> &CallEdge<ExecutableKey> {
+        match self {
+            Self::Named { target, .. } | Self::Closure { target, .. } => target,
+        }
+    }
+
+    pub fn return_ty(&self) -> Ty {
+        match self {
+            Self::Named { return_ty, .. } | Self::Closure { return_ty, .. } => *return_ty,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1164,7 +1239,7 @@ pub enum BackendTail {
         value: ValueId,
         callsite: CallSiteId,
         callee: ValueId,
-        target: Option<ExecutableKey>,
+        edge: ClosureCallEdge,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
         return_flow: Option<BackendReturnFlow>,

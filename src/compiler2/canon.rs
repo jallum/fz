@@ -53,8 +53,8 @@ use super::artifact::{
     AbiValueRepr, BackendBody, BackendCallArg, BackendClause, BackendConstructionCapture,
     BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
     BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReceive, BackendReturnFlow, BackendReturnLayout,
-    BackendSemanticInputLayout, BackendStep, BackendTail, BackendValueLayout, CallEdge, CallTarget, EffectSummary,
-    ExecutableDispatch,
+    BackendSemanticInputLayout, BackendStep, BackendTail, BackendValueLayout, CallEdge, CallTarget, ClosureCallEdge,
+    EffectSummary, ExecutableDispatch,
 };
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
@@ -1205,7 +1205,7 @@ impl ProgramCanon<'_> {
                 value,
                 callsite,
                 callee,
-                target,
+                edge,
                 args,
                 dest,
                 return_flow,
@@ -1214,12 +1214,15 @@ impl ProgramCanon<'_> {
                 let callsite = self.names.callsite(*callsite);
                 let callee = self.names.value(*callee);
                 let args = self.call_args(args);
-                let target = target
-                    .as_ref()
-                    .map(|target| self.executable_ref(target))
-                    .unwrap_or_else(|| "-".to_string());
+                let edge = match edge {
+                    ClosureCallEdge::Direct { target, capture_count } => {
+                        format!("direct({},captures={capture_count})", self.executable_ref(target))
+                    }
+                    ClosureCallEdge::Seam => "seam".to_string(),
+                    ClosureCallEdge::Dead => "dead".to_string(),
+                };
                 out.enter(&format!(
-                    "tail closure_call {value} {callsite} callee={callee} target={target} args=[{args}] {}",
+                    "tail closure_call {value} {callsite} callee={callee} edge={edge} args=[{args}] {}",
                     destination(dest)
                 ));
                 if let Some(flow) = return_flow {

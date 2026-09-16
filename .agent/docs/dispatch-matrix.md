@@ -259,7 +259,7 @@ mutual and strictness keeps both.
 That surviving order-decided residue is a live wrong answer, not a tolerated
 imprecision: a body specialized on a closure literal can ground a DIRECT call
 to it (`exact_direct_callable_layout` → `TransportCarrier::Absent` →
-`materialize_closure_call_edge`), so a sibling's closure routed into it never
+`closure_call_form`), so a sibling's closure routed into it never
 runs. Keeping the dead arm does not prevent that — the plan has no question to
 separate them either way. See fz-kdt.107 and fz-kdt.125.
 

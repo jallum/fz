@@ -430,6 +430,43 @@ fn transport_position_rank(position: &TransportPosition) -> u8 {
     }
 }
 
+/// A value in the form the door executing it holds: one runtime word, the
+/// lanes of a transport shape, or nothing at all.
+///
+/// `W` is the door's word -- a native SSA variable, or an interpreter value.
+/// Both doors hold values the same three ways, so they hold them in this one
+/// enum.
+///
+/// An explicit `Absent` binding records an omitted semantic value. It is not an
+/// environment miss: missing lane-free inputs can authorize an exact direct
+/// closure target, while `Absent` cannot be called. A `Transport` tuple or
+/// callable retains its structure even when `lanes` is empty.
+#[derive(Debug, Clone)]
+pub(crate) enum BoundValue<W> {
+    Absent,
+    Runtime(W),
+    Transport { shape: ShapeId, lanes: Vec<W> },
+}
+
+impl<W: Copy> BoundValue<W> {
+    /// The single runtime word this value is, if it is one.
+    pub(crate) fn runtime_word(&self) -> Option<W> {
+        match self {
+            Self::Runtime(word) => Some(*word),
+            Self::Absent | Self::Transport { .. } => None,
+        }
+    }
+
+    /// The transport shape this value travels as, if it travels as lanes. What
+    /// that shape admits is a question for the interners.
+    pub(crate) fn transport_shape(&self) -> Option<ShapeId> {
+        match self {
+            Self::Transport { shape, .. } => Some(*shape),
+            Self::Absent | Self::Runtime(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct TransportStore {
     interners: TransportInterners,
@@ -556,28 +593,38 @@ impl TransportInterners {
         }
     }
 
-    /// The lane span each layout in a sequence occupies, in order.
+    /// The fields a composite shape is a sequence of, or `None` for a shape
+    /// that has no fields.
     ///
-    /// Layouts are laid out end to end, so a span starts where the previous one
-    /// finished. Tuple fields and callable captures are both such sequences.
-    pub fn layout_spans(&self, layouts: &[TransportLayout]) -> Vec<(TransportLayout, Range<usize>)> {
+    /// Tuple fields and callable captures are the same sequence by two names,
+    /// so both are read here. Whether a callable's captures may stand in for a
+    /// tuple's fields is the caller's question, and `tuple_arity` is where it
+    /// is asked.
+    pub fn field_layouts(&self, shape: ShapeId) -> Option<&[TransportLayout]> {
+        match self.shape(shape) {
+            ShapeDescr::Tuple(fields) => Some(fields),
+            ShapeDescr::Callable(callable) => Some(&self.callable(*callable).capture_layouts),
+            ShapeDescr::Nothing | ShapeDescr::Lane(_) => None,
+        }
+    }
+
+    /// The lane span each of those fields occupies, in order.
+    ///
+    /// Fields are laid out end to end, so a span starts where the previous one
+    /// finished. Callers that walk the fields once take the iterator as it
+    /// comes; only a caller that reads the table more than once, or that needs
+    /// the borrow released, collects it.
+    pub fn field_spans(&self, shape: ShapeId) -> Option<impl Iterator<Item = (TransportLayout, Range<usize>)> + '_> {
+        let fields = self.field_layouts(shape)?;
         let mut offset = 0_usize;
-        let mut spans = Vec::with_capacity(layouts.len());
-        for layout in layouts.iter().copied() {
+        Some(fields.iter().copied().map(move |layout| {
             let end = offset
                 .checked_add(self.layout_width(layout))
                 .expect("transport layout lane span overflow");
-            spans.push((layout, offset..end));
+            let span = offset..end;
             offset = end;
-        }
-        spans
-    }
-
-    pub fn tuple_field_spans(&self, shape: ShapeId) -> Option<Vec<(TransportLayout, Range<usize>)>> {
-        let ShapeDescr::Tuple(fields) = self.shape(shape) else {
-            return None;
-        };
-        Some(self.layout_spans(fields))
+            (layout, span)
+        }))
     }
 
     /// How many fields a tuple shape has; `None` for every other shape.

@@ -238,8 +238,8 @@ absent edge and for an unresolved one alike; `World::callsite_resolution`/
 `callsite_target_resolution` hand back the published answer itself.
 Naming no targets is not the same claim as never running. For a closure call
 the two are told apart by the callee's transport CARRIER, not by its target
-evidence: `materialize_closure_call_edge` lowers any callee whose layout
-carries a `TransportCarrier::ValueRef` as a live public indirect call, because
+evidence: `closure_call_form` reads any callee whose layout carries a
+`TransportCarrier::ValueRef` as a `Seam` call — a live public indirect one — because
 a runtime callable value reaches that callsite and the boxed-apply wrapper can
 call it. A callable that arrived from outside the analysed world — a mailbox
 message — is exactly this shape: no target is named and none ever will be, so

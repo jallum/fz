@@ -414,3 +414,51 @@ fn transport_callable_descriptors_share_physical_layout_across_capture_annotatio
         vec![int, atom]
     );
 }
+
+/// Tuple fields and callable captures are both sequences of layouts laid end
+/// to end, so one reading answers where each one's lanes are. A shape that is
+/// one lane, or none, has no fields to answer for.
+#[test]
+fn field_spans_read_tuple_fields_and_callable_captures_the_same_way() {
+    let mut types = Types::new();
+    let int = types.int();
+    let mut functions = FunctionMap::new();
+    let add = functions.reference(ModuleId::GLOBAL, None, "add", 2);
+    let mut interners = TransportInterners::default();
+
+    let int_lane = interners.intern_lane(LaneDescr {
+        ty: int,
+        class: TransportClass::Value,
+    });
+    let one_lane = TransportLayout::structural(interners.intern_shape(ShapeDescr::Lane(int_lane)));
+    let two_lanes =
+        TransportLayout::structural(interners.intern_shape(ShapeDescr::Tuple(Box::new([one_lane, one_lane]))));
+
+    let tuple = interners.intern_shape(ShapeDescr::Tuple(Box::new([one_lane, two_lanes])));
+    assert_eq!(
+        interners.field_spans(tuple).map(Iterator::collect::<Vec<_>>),
+        Some(vec![(one_lane, 0..1), (two_lanes, 1..3)])
+    );
+
+    let callable = interners.intern_callable(CallableDescr {
+        function: Some(add),
+        arity: 1,
+        capture_layouts: Box::new([one_lane, two_lanes]),
+    });
+    let callable = interners.intern_shape(ShapeDescr::Callable(callable));
+    assert_eq!(
+        interners.field_spans(callable).map(Iterator::collect::<Vec<_>>),
+        Some(vec![(one_lane, 0..1), (two_lanes, 1..3)]),
+        "a callable's captures occupy the same spans the same layouts would as tuple fields"
+    );
+    assert_eq!(
+        interners.field_layouts(callable),
+        Some([one_lane, two_lanes].as_slice()),
+        "and the spans are read off that one sequence of fields"
+    );
+
+    let nothing = interners.intern_shape(ShapeDescr::Nothing);
+    assert!(interners.field_spans(one_lane.structural).is_none());
+    assert!(interners.field_spans(nothing).is_none());
+    assert_eq!(interners.field_layouts(nothing), None);
+}

@@ -3,7 +3,7 @@ use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{LaneDescr, TransportClass};
 use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendEntryOrigin, BackendSemanticInputLayout, BackendValueLayout, CallSiteId,
-    ControlEntryId, ExecutableNeed, ModuleId, RootId, Ty, World,
+    ClosureCallEdge, ControlEntryId, ExecutableNeed, ModuleId, RootId, Ty, World,
 };
 use crate::source::Span;
 use crate::telemetry::ConfiguredTelemetry;
@@ -1289,7 +1289,10 @@ impl DirectClosureEdge {
                 value: ValueId::from_u32(1),
                 callsite: CallSiteId::from_u32(0),
                 callee,
-                target: Some(key.clone()),
+                edge: ClosureCallEdge::Direct {
+                    target: key.clone(),
+                    capture_count: capture_tys.len(),
+                },
                 args: Vec::new(),
                 dest: ControlDestination::Return,
                 return_flow: None,

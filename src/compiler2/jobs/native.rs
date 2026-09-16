@@ -30,16 +30,16 @@ use crate::telemetry::TelemetryExt as _;
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryCapture, BackendEntryOrigin, BackendExecutable,
-    BackendProgram, BackendReturnFlow, BackendStep, BackendTail, CallEdge, CallTarget, DispatchCallEdge, EffectSummary,
-    NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeConstructionMember,
-    NativeEntryAbi, NativeExecutableEntry, NativeProgram,
+    BackendProgram, BackendReturnFlow, BackendStep, BackendTail, CallEdge, CallTarget, ClosureCallEdge,
+    DispatchCallEdge, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId,
+    NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram,
 };
 use super::super::body::{ControlDestination, ControlEntryId, DispatchBindings, LoweredExtern, ValueId};
 use super::super::identity::RootId;
 use super::super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutcome};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, ShapeDemand};
-use super::super::transport::{CallableId, ShapeDescr, ShapeId, TransportLayout};
+use super::super::transport::{BoundValue, CallableId, ShapeDescr, ShapeId, TransportLayout};
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
 
@@ -1057,8 +1057,16 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let items = items.iter().map(|item| item.value).collect::<Vec<_>>();
                     if let Some(layout) = executable.abi.value_layouts.get(value)
                         && let shape = layout.structural
-                        && let ShapeDescr::Tuple(fields) = self.world.shape(shape).clone()
+                        && self.world.tuple_arity(shape).is_some()
                     {
+                        // Encoding needs the field layouts, not where their
+                        // lanes land, and it needs them while emitting, so it
+                        // takes its own copy of the sequence.
+                        let fields = self
+                            .world
+                            .field_layouts(shape)
+                            .expect("a tuple shape has fields")
+                            .to_vec();
                         if fields.len() != items.len() {
                             return Err(FatalError);
                         }
@@ -1377,7 +1385,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
                 BackendStep::AssertTuple { source, arity } => {
                     let realized = env_local_value(env, *source)?;
-                    if self.transport_tuple_arity(&realized) == Some(*arity) {
+                    if realized
+                        .transport_shape()
+                        .and_then(|shape| self.world.tuple_arity(shape))
+                        == Some(*arity)
+                    {
                         continue;
                     }
                     let source = self.materialize_native_value(ctx, None, &realized)?;
@@ -1496,26 +1508,27 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             },
             BackendTail::ClosureCall {
                 callee,
-                target,
+                edge,
                 args,
                 dest,
                 return_flow,
                 ..
             } => {
                 let callee_value = env.cloned_value(*callee);
-                // The call form already carries the decision: a named target is
-                // a direct edge the artifact layer minted from
-                // `callee_supplies_target_captures`. Native emits what that
-                // answer promised; it does not re-decide.
-                let direct_call = match target {
-                    Some(target) => {
+                // The recorded call form carries the decision the artifact
+                // layer made. Native emits what that answer promised; it does
+                // not re-decide, and it does not re-derive where the target's
+                // captures end.
+                let direct_call = match edge {
+                    ClosureCallEdge::Direct { target, capture_count } => {
+                        let capture_inputs_end = *capture_count;
                         let capture_lanes = self.direct_closure_capture_lanes(
                             ctx,
                             executable,
                             *callee,
                             callee_value.as_ref(),
                             target,
-                            args.len(),
+                            capture_inputs_end,
                         )?;
                         let target = self
                             .program
@@ -1523,12 +1536,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             .ok_or(FatalError)?;
                         let callee_executable = &self.program.executables()[target];
                         let mut call_args = capture_lanes;
-                        let capture_inputs_end = callee_executable
-                            .key
-                            .activation
-                            .input_len(self.world.types())
-                            .checked_sub(args.len())
-                            .ok_or(FatalError)?;
+                        let target_inputs = callee_executable.key.activation.input_len(self.world.types());
+                        if target_inputs != capture_inputs_end + args.len() {
+                            return Err(incomplete_native_program(
+                                self.telemetry,
+                                self.root_id,
+                                format!(
+                                    "native direct closure call owner={:?} target={:?} takes {target_inputs} input(s), but the call form names {capture_inputs_end} capture(s) and passes {} argument(s)",
+                                    executable.key,
+                                    callee_executable.key,
+                                    args.len(),
+                                ),
+                            ));
+                        }
                         for (surface_index, arg) in args.iter().enumerate() {
                             let semantic_index = capture_inputs_end + surface_index;
                             let Some(target_input) = callee_executable
@@ -1596,7 +1616,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         }
                         Some((target, call_args))
                     }
-                    None => None,
+                    // A seam call goes through the callee value's own boundary,
+                    // and a dead call reaches nothing: both lower to the
+                    // indirect term below, whose return flow says which.
+                    ClosureCallEdge::Seam | ClosureCallEdge::Dead => None,
                 };
                 if let Some((target, call_args)) = direct_call {
                     let callee = DirectCallTarget::Local(self.executable_fns[target]);
@@ -3043,15 +3066,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let NativeBoundValue::Transport { shape, lanes } = value else {
             return None;
         };
-        let ShapeDescr::Tuple(fields) = self.world.shape(*shape) else {
-            return None;
-        };
-        let positions = match predicate.tuple_positions(fields.len()) {
+        let arity = self.world.tuple_arity(*shape)?;
+        let positions = match predicate.tuple_positions(arity) {
             TuplePositions::Never => return Some(false),
             TuplePositions::Always => return Some(true),
             TuplePositions::AnyOf(shapes) => shapes,
         };
-        let views = self.transport_field_views(*shape, lanes, fields).ok()?;
+        let views = self.transport_field_views(*shape, lanes).ok()?;
         let mut admitted = Some(false);
         for shape in positions {
             let mut matched = Some(true);
@@ -3110,19 +3131,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             NativeBoundValue::Transport { shape, lanes } => (*shape, lanes.clone()),
         };
-        let ShapeDescr::Tuple(fields) = self.world.shape(shape).clone() else {
+        let Some(arity) = self.world.tuple_arity(shape) else {
             return Err(incomplete_native_program(
                 self.telemetry,
                 self.root_id,
                 format!("native type test cannot read lane-form {shape:?} in {:?}", ctx.origin),
             ));
         };
-        let positions = match predicate.tuple_positions(fields.len()) {
+        let positions = match predicate.tuple_positions(arity) {
             TuplePositions::Never => return Ok(DispatchAnswer::Static(false)),
             TuplePositions::Always => return Ok(DispatchAnswer::Static(true)),
             TuplePositions::AnyOf(shapes) => shapes,
         };
-        let views = self.transport_field_views(shape, &lanes, &fields)?;
+        let views = self.transport_field_views(shape, &lanes)?;
         let mut admitted = DispatchAnswer::Static(false);
         for shape in positions {
             let settled = shape
@@ -3161,7 +3182,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<DispatchAnswer, FatalError> {
         if let Region::TupleArity(arity) = region {
             let value = self.dispatch_subject_value(ctx, plan, state, subject)?;
-            if let Some(known) = self.transport_tuple_arity(&value) {
+            if let Some(known) = value.transport_shape().and_then(|shape| self.world.tuple_arity(shape)) {
                 return Ok(DispatchAnswer::Static(known == *arity as usize));
             }
         }
@@ -3688,7 +3709,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 .map(|pin| {
                     pin.input
                         .and_then(|input| inputs.get(input as usize))
-                        .and_then(NativeBoundValue::runtime_lane)
+                        .and_then(NativeBoundValue::runtime_word)
                         .ok_or_else(|| {
                             incomplete_native_program(
                                 self.telemetry,
@@ -3914,7 +3935,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }),
             ShapeDescr::Tuple(fields) => {
                 let mut vars = Vec::with_capacity(fields.len());
-                for field in self.transport_field_views(shape, lanes, &fields)? {
+                for field in self.transport_field_views(shape, lanes)? {
                     vars.push(self.materialize_native_value(ctx, None, &field)?);
                 }
                 Ok(ctx.emit_let(Prim::MakeTuple(vars)).0)
@@ -3974,13 +3995,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx.emit_let(prim).0
     }
 
-    fn transport_tuple_arity(&self, value: &NativeBoundValue) -> Option<usize> {
-        let NativeBoundValue::Transport { shape, .. } = value else {
-            return None;
-        };
-        self.world.tuple_arity(*shape)
-    }
-
     fn transport_tuple_field(
         &self,
         value: &NativeBoundValue,
@@ -3989,11 +4003,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let NativeBoundValue::Transport { shape, lanes, .. } = value else {
             return Ok(None);
         };
-        let ShapeDescr::Tuple(fields) = self.world.shape(*shape).clone() else {
+        if self.world.tuple_arity(*shape).is_none() {
             return Ok(None);
-        };
+        }
         Ok(Some(
-            self.transport_field_views(*shape, lanes, &fields)?
+            self.transport_field_views(*shape, lanes)?
                 .get(index)
                 .cloned()
                 .ok_or(FatalError)?,
@@ -4014,19 +4028,16 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let Some(function) = descr.function else {
             return Ok(None);
         };
-        Ok(Some((
-            function,
-            self.transport_field_views(*shape, lanes, &descr.capture_layouts)?,
-        )))
+        Ok(Some((function, self.transport_field_views(*shape, lanes)?)))
     }
 
     /// The capture lanes a direct closure call hands its target.
     ///
-    /// Whether the call IS direct was decided by
-    /// `callee_supplies_target_captures` when the edge was minted, so this only
-    /// emits what that answer promised. A callee value that turns out not to
-    /// carry the target's captures is a broken plan, not a reason to call
-    /// through the seam instead.
+    /// Whether the call IS direct, and how many captures it promised to hand
+    /// over, were decided when the edge was minted, so this only emits what
+    /// that answer promised. A callee value that turns out not to carry those
+    /// captures is a broken plan, not a reason to call through the seam
+    /// instead.
     fn direct_closure_capture_lanes(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -4034,19 +4045,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         callee: ValueId,
         value: Option<&NativeBoundValue>,
         target: &ExecutableKey,
-        surface_arity: usize,
+        capture_inputs_end: usize,
     ) -> Result<Vec<Var>, FatalError> {
         let target = self
             .program
             .executable_index(target, self.world.types())
             .ok_or(FatalError)?;
         let executable = Rc::clone(&self.program.executables()[target]);
-        let capture_inputs_end = executable
-            .key
-            .activation
-            .input_len(self.world.types())
-            .checked_sub(surface_arity)
-            .ok_or(FatalError)?;
         if let Some(value) = value
             && let Some((function, captures)) = self.direct_callable_captures(value)?
         {
@@ -4101,10 +4106,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             lanes,
             ..
         } = value
-            && let ShapeDescr::Tuple(source_fields) = self.world.shape(*value_shape)
-            && source_fields.len() == fields.len()
+            && self.world.tuple_arity(*value_shape) == Some(fields.len())
         {
-            return self.transport_field_views(*value_shape, lanes, source_fields);
+            return self.transport_field_views(*value_shape, lanes);
         }
         let tuple = self.materialize_native_value(ctx, None, value)?;
         Ok(fields
@@ -4117,25 +4121,29 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .collect())
     }
 
-    fn transport_field_views(
-        &self,
-        shape: ShapeId,
-        lanes: &[Var],
-        fields: &[TransportLayout],
-    ) -> Result<Vec<NativeBoundValue>, FatalError> {
+    /// Every field of a lane-form value: a tuple's fields, or a callable's
+    /// captures, which occupy their lanes the same way.
+    fn transport_field_views(&self, shape: ShapeId, lanes: &[Var]) -> Result<Vec<NativeBoundValue>, FatalError> {
         if lanes.len() != self.world.shape_width(shape) {
             return Err(incomplete_native_program(
                 self.telemetry,
                 self.root_id,
                 format!(
-                    "native transport tuple view for {shape:?} has {} lanes, but shape width is {}",
+                    "native transport field view for {shape:?} has {} lanes, but shape width is {}",
                     lanes.len(),
                     self.world.shape_width(shape),
                 ),
             ));
         }
-        let mut values = Vec::with_capacity(fields.len());
-        for (field, span) in self.world.layout_spans(fields) {
+        let spans = self.world.field_spans(shape).ok_or_else(|| {
+            incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!("native transport field view for {shape:?}, which has no fields"),
+            )
+        })?;
+        let mut values = Vec::new();
+        for (field, span) in spans {
             let field_lanes = lanes.get(span).ok_or(FatalError)?.to_vec();
             let value = if field.carrier.is_value_ref() {
                 NativeBoundValue::Runtime(*field_lanes.first().ok_or(FatalError)?)
@@ -4503,12 +4511,7 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
     }
 }
 
-#[derive(Debug, Clone)]
-enum NativeBoundValue {
-    Absent,
-    Runtime(Var),
-    Transport { shape: ShapeId, lanes: Vec<Var> },
-}
+type NativeBoundValue = BoundValue<Var>;
 
 fn share_native_value(ctx: &mut NativeFnCtx, value: Option<&NativeBoundValue>) {
     match value {
@@ -4521,15 +4524,6 @@ fn share_native_value(ctx: &mut NativeFnCtx, value: Option<&NativeBoundValue>) {
             }
         }
         Some(NativeBoundValue::Absent) | None => {}
-    }
-}
-
-impl NativeBoundValue {
-    fn runtime_lane(&self) -> Option<Var> {
-        match self {
-            Self::Runtime(var) => Some(*var),
-            Self::Absent | Self::Transport { .. } => None,
-        }
     }
 }
 
@@ -4552,7 +4546,7 @@ impl ValueEnv {
     }
 
     fn runtime_var(&self, value: ValueId) -> Option<Var> {
-        self.value(value).and_then(NativeBoundValue::runtime_lane)
+        self.value(value).and_then(NativeBoundValue::runtime_word)
     }
 }
 
@@ -4821,7 +4815,7 @@ fn bind_local_value(
     value: ValueId,
     bound: NativeBoundValue,
 ) {
-    if let Some(var) = bound.runtime_lane()
+    if let Some(var) = bound.runtime_word()
         && let Some(ty) = executable.abi.materialized.value_types.get(&value).copied()
     {
         ctx.value_types.insert(var, ty);

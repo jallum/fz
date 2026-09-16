@@ -532,10 +532,15 @@ cannot change what any member says.
 
 Closure-call materialization asks ONE question of the callee's positioned
 layout: can this caller supply every capture input the target declares?
-`callee_supplies_target_captures` answers it, and the artifact edge, the
-closure-call return claim, and both lowerings read that one answer — native
-emits the captures it promised, and the interpreter calls the recorded target
-the same way instead of re-deriving a route from the runtime value.
+`callee_supplies_target_captures` answers it, and `closure_call_form` folds that
+answer, the callee's carrier and the callsite summary into the single
+three-valued `ClosureCallEdge` the artifact edge records: `Direct` with the
+target and the number of captures the caller hands it, `Seam`, or `Dead`. Every
+consumer reads the recorded form — native emits the captures it promised, and
+the interpreter calls the recorded target the same way instead of re-deriving a
+route from the runtime value. The closure-call return claim is the one place
+that asks `callee_supplies_target_captures` for itself, because it runs first:
+the claim settles the callee return layout the form is later minted from.
 
 The caller supplies captures out of the lanes it holds, so a value travelling as
 one public word supplies none: only the seam opens it, and target cardinality
@@ -546,28 +551,33 @@ DECOMPOSED callable is never that word however wide it is: a direct callable
 whose single capture happens to be boxed still hands the caller that capture.
 The rustdoc on `callee_supplies_target_captures` owns how the answer is derived
 from the callee's descriptor. A callee that is neither — no word to call
-through and no captures to supply — cannot come from a program: the callsite
-summary and the transport layout describe one value, so that state is a
-contradiction between two authorities and stops the compiler as an internal
-error. Callable-construction ownership remains the authority for
+through and no captures to supply — is `Dead` when the callsite names nothing
+either, and otherwise cannot come from a program: the callsite summary and the
+transport layout describe one value, so that state is a contradiction between
+two authorities and stops the compiler as an internal error inside the
+calculator. Callable-construction ownership remains the authority for
 wrapper construction and packaging, not for rediscovering how the call is made.
 Public delivery names the caller-owned `ReturnPayload` as its source and adapts
 it into the separate delivered-resume destination.
 
-That decision is carried by the emitted call form itself. A `BackendTail::ClosureCall`
-names its target when the edge is direct and names none when it is boxed, and
-that one field is what every consumer reads. Native lowers a named target to a
-`Call`/`TailCall` direct edge to the selected executable and an unnamed one to a
-`CallClosure`/`TailCallClosure` term, which is indirect by construction and
-always dispatches through the callee value's published callable boundary. The
-backend interpreter reads the same field the same way: a named target is called
-with the captures decoded out of the callee value's own callable lanes, and an
-unnamed one materializes the word and goes through the construction wrapper. It
-does not ask whether the function it finds at runtime happens to have a wrapper.
-The boxed-apply contract reads it too — a named target never meets the seam, so
-it records no requirement. There is no per-FnId closure-target surface registry
-and no consumer-side re-derivation of a direct target from an indirect call, on
-any door.
+That decision is carried by the emitted call form itself. A
+`BackendTail::ClosureCall` carries the `ClosureCallEdge` its artifact edge was
+minted with, and that one value is what every consumer reads. Native lowers
+`Direct` to a `Call`/`TailCall` direct edge to the named executable, and `Seam`
+or `Dead` to a `CallClosure`/`TailCallClosure` term, which is indirect by
+construction and always dispatches through the callee value's published callable
+boundary. The backend interpreter reads the same field the same way: `Direct` is
+called with the captures decoded out of the callee value's own callable lanes,
+and the other two materialize the word and go through the construction wrapper.
+It does not ask whether the function it finds at runtime happens to have a
+wrapper. Neither door re-derives where the target's captures end either:
+`capture_count` is the count `World::activation_capture_count` gave when the
+form was minted, and it is also where the surface arguments begin. The
+boxed-apply contract reads the same form — only a `Seam` call records a
+requirement, because a direct edge never meets the seam and a dead one never
+happens. There is no per-FnId closure-target surface registry and no
+consumer-side re-derivation of a direct target from an indirect call, on any
+door.
 
 World movements arrive from the scheduler as borrowed `FactMovement` values,
 one exact final `FactState` per moved key. Product generations and reader edges
@@ -616,8 +626,8 @@ follow, and they are two halves of one convention:
   result **whole**. Whether a call goes through the seam is a property of the
   callee VALUE, not of the callsite: a callsite that names an exact target is
   still a boxed call when the same lambda is handed out of the function two
-  lines later, and `materialize_closure_call_edge` lowers a direct edge only
-  while the caller can still supply that target's captures.
+  lines later, and `closure_call_form` mints a `Direct` edge only while the
+  caller can still supply that target's captures.
 
 A callee the caller can supply needs no rule at all: its result
 aliases the named target executable's own return fact, so caller and callee
@@ -732,8 +742,15 @@ annotate it both decide without building anything, and the winning clause is
 called with the entry lanes as they came. A runtime value is built only for a
 question no decomposition reaches -- a pinned equality, a guard, or a map, list
 or bitstring region -- and then at that question rather than on entry.
-`TransportInterners::layout_spans` is the one calculator both doors use to say
-which lanes a field occupies.
+Both doors hold a value the same three ways -- one runtime word, the lanes of a
+transport shape, or explicit absence -- so they hold it in one `BoundValue<W>`
+over the door's own word type, named `NativeBoundValue` and
+`BackendBoundValue`. `TransportInterners::field_spans` is the one calculator
+both use to say which lanes a field occupies: a tuple's fields and a callable's
+captures alike, since both are the same sequence of layouts laid end to end.
+Whether a callable may answer for a TUPLE is a different question, and
+`tuple_arity` is the one place it is asked, so a reader that needs a tuple
+guards on the arity and then reads the fields.
 
 A callable surface that publishes a transport boundary names a runtime dispatch
 site, so it must be **ground**: type variables are an inference-phase concept and
@@ -762,8 +779,8 @@ A closure callsite's result is the producer fact
 `TransportOrigin::ClosureCallReturn { callsite, callee }` — which callsite, and
 which value is called; no judgment is baked in at collection. The claim is
 decided at transport-recipe evaluation from the callee VALUE's own carrier —
-the same fact `materialize_closure_call_edge` uses to choose the call form —
-so claim and call share one authority (fz-9i4.4.5). An exact (non-`ValueRef`)
+the same fact `closure_call_form` mints the call form from — so claim and call
+share one authority (fz-9i4.4.5). An exact (non-`ValueRef`)
 callee carrier with a settled singleton compiler-owned target lowers as a
 direct edge, and the result aliases that target's own `ExecutableReturn`:
 caller and callee read one fact and agree on the exact return lanes by

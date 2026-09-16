@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::compiler2::artifact::{
     AbiReadyExecutable, AbiValueRepr, BackendBody, BackendConstructionWrapper, BackendReturnFlow, BackendTail,
-    BackendValueLayout,
+    ClosureCallEdge,
 };
 use crate::compiler2::identity::{ExecutableKey, RootId};
 use crate::compiler2::scheduler::FatalError;
@@ -35,8 +35,7 @@ impl BoxedApplyRequirement {
             .iter()
             .filter_map(|entry| {
                 let BackendTail::ClosureCall {
-                    callee,
-                    target,
+                    edge,
                     args,
                     return_flow,
                     ..
@@ -44,17 +43,11 @@ impl BoxedApplyRequirement {
                 else {
                     return None;
                 };
-                // The call form carries the decision: a named target is a
-                // direct edge to that executable and never meets the seam. Of
-                // the rest, a callee publishing no lanes at all is a call that
-                // reaches nothing and never happens; every other one is a real
-                // call through the seam.
-                if target.is_some()
-                    || abi
-                        .value_layouts
-                        .get(callee)
-                        .is_none_or(BackendValueLayout::publishes_no_lanes)
-                {
+                // The call form carries the decision. A direct edge calls its
+                // target and never meets the seam, and a dead call reaches
+                // nothing at all; only a seam call reads something back from
+                // the wrapper.
+                if !matches!(edge, ClosureCallEdge::Seam) {
                     return None;
                 }
                 let delivered = match return_flow {

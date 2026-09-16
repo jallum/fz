@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use std::slice::from_raw_parts;
 
 use super::backend::{
-    backend_callable_identity, env_get, materialize_transport_value, transport_field_view, transport_field_views,
+    backend_callable_identity, decode_field, env_get, field_spans_for, materialize_transport_value,
+    transport_field_view,
 };
 use super::*;
 use crate::compiler2::transport::TransportStore;
@@ -549,8 +550,8 @@ impl<'a> Dispatch<'a> {
                 // A lane-form subject knows its own arity: the transport shape
                 // its caller delivered settles the question, with no value to
                 // inspect.
-                if let Some(BackendBoundValue::Transport { shape, .. }) = self.state.get(subject)
-                    && let Some(known) = self.operands.transport.interners().tuple_arity(*shape)
+                if let Some(shape) = self.state.get(subject).and_then(BackendBoundValue::transport_shape)
+                    && let Some(known) = self.operands.transport.interners().tuple_arity(shape)
                 {
                     return Ok(known == *arity as usize);
                 }
@@ -926,11 +927,20 @@ impl TypeTest<'_> {
             TuplePositions::Always => return Ok(true),
             TuplePositions::AnyOf(shapes) => shapes,
         };
-        let views = transport_field_views(transport, shape, lanes).map_err(DispatchStop::broken)?;
-        for shape in shapes {
+        // Where each field's lanes sit is the same for every candidate shape,
+        // so the table is read once; a field is decoded only where a position
+        // asks about it, and only until one of them refuses.
+        let spans = field_spans_for(transport, shape, lanes)
+            .map_err(DispatchStop::broken)?
+            .collect::<Vec<_>>();
+        for positions in shapes {
             let mut matched = true;
-            for (position, view) in shape.iter().zip(&views) {
-                if !self.matches(position, view)? {
+            for (index, position) in positions.iter().enumerate() {
+                let Some((field_layout, span)) = spans.get(index).cloned() else {
+                    break;
+                };
+                let view = decode_field(transport, shape, lanes, field_layout, span).map_err(DispatchStop::broken)?;
+                if !self.matches(position, &view)? {
                     matched = false;
                     break;
                 }
