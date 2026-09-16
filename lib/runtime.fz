@@ -6,6 +6,7 @@ alias Enum
 alias Enumerable
 alias File
 alias Float
+alias IO
 alias Integer
 alias Json
 alias Kernel
@@ -16,6 +17,7 @@ alias Process
 alias Range
 alias String
 alias String.Chars
+alias System
 alias Utf8
 
 import Kernel, only: [

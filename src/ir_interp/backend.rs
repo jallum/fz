@@ -33,7 +33,7 @@ use fz_runtime::ir_runtime::{
     fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref,
     fz_struct_get_named_field_ref,
 };
-use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
+use fz_runtime::output::{OUTPUT_HOOK, OUTPUT_WRITE_HOOK, OutputContext, OutputSink};
 use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
 
@@ -69,6 +69,7 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
     transport: &TransportStore,
     tel: &T,
     output: &dyn OutputSink,
+    program_args: &[String],
     program: &BackendProgram,
 ) -> Result<i64, String> {
     let atom_names = program
@@ -87,7 +88,17 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
         ..Module::default()
     };
     runtime.enqueue_backend_entry(1, backend_executable_ref(program, types, program.entry())?, Vec::new())?;
-    let completions = drive_backend_until_idle(&mut runtime, types, transport, tel, output, program, &module, None)?;
+    let completions = drive_backend_until_idle(
+        &mut runtime,
+        types,
+        transport,
+        tel,
+        output,
+        program_args,
+        program,
+        &module,
+        None,
+    )?;
     let halt_val = completions
         .iter()
         .rev()
@@ -134,8 +145,18 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
     };
     let result = (|| {
         runtime.enqueue_backend_entry(1, backend_executable_ref(program, types, program.entry())?, args)?;
-        let completions =
-            drive_backend_until_idle(&mut runtime, types, transport, tel, output, program, &module, Some(1))?;
+        let program_args = Vec::new();
+        let completions = drive_backend_until_idle(
+            &mut runtime,
+            types,
+            transport,
+            tel,
+            output,
+            &program_args,
+            program,
+            &module,
+            Some(1),
+        )?;
         completions
             .into_iter()
             .rev()
@@ -414,6 +435,7 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
     transport: &TransportStore,
     tel: &T,
     output: &dyn OutputSink,
+    program_args: &[String],
     program: &BackendProgram,
     module: &Module,
     keepalive_pid: Option<u32>,
@@ -431,10 +453,12 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
     let mut exec_ctx = ExecCtx {
         scheduler: &mut scheduler_adapter as *mut BackendSchedulerAdapter<T> as *mut (),
         output_context: output.as_ptr(),
+        argv: program_args,
         spawn: Some(interp_spawn_hook::<T>),
         send: Some(interp_send_hook::<T>),
         fault: Some(interp_fault_hook::<T>),
         output: Some(OUTPUT_HOOK),
+        output_write: Some(OUTPUT_WRITE_HOOK),
         ..ExecCtx::empty()
     };
 

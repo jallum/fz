@@ -35,6 +35,7 @@ pub struct Compiler2<T: Telemetry> {
     world: World,
     telemetry: T,
     output: Box<dyn fz_runtime::output::OutputSink>,
+    program_args: Vec<String>,
     requested_output: Box<dyn super::dump::RequestedOutputSink>,
     drive_timeout: Option<Duration>,
     product_sessions: ProductSessions,
@@ -60,6 +61,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
             world: World::new(),
             telemetry,
             output: Box::new(fz_runtime::output::StdoutOutput),
+            program_args: Vec::new(),
             requested_output: Box::new(super::dump::NullRequestedOutput),
             drive_timeout: None,
             product_sessions: ProductSessions::default(),
@@ -72,6 +74,13 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
 
     pub fn set_output(&mut self, output: Box<dyn fz_runtime::output::OutputSink>) {
         self.output = output;
+    }
+
+    /// Set the arguments made available to executed source through
+    /// `System.argv/0`. The CLI owns parsing; compiler front doors only carry
+    /// the already-separated user arguments to their execution context.
+    pub fn set_program_args(&mut self, program_args: Vec<String>) {
+        self.program_args = program_args;
     }
 
     pub(crate) fn set_requested_output(&mut self, output: Box<dyn super::dump::RequestedOutputSink>) {
@@ -297,7 +306,14 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         let tel = &self.telemetry;
         let (types, transport) = self.world.types_mut_and_transport();
         signal_execution_ready(tel);
-        crate::ir_interp::run_backend_main(types, transport, tel, self.output.as_ref(), &program)
+        crate::ir_interp::run_backend_main(
+            types,
+            transport,
+            tel,
+            self.output.as_ref(),
+            &self.program_args,
+            &program,
+        )
     }
 
     fn product_backend_program_for_root(&mut self, root: RootId) -> Result<Rc<BackendProgram>, String> {
@@ -415,7 +431,9 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
             .compile_native_backend(&program, super::native_codegen::JitBackend::new())
             .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
         let tel = &self.telemetry;
-        let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, tel).with_output(self.output.as_ref());
+        let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, tel)
+            .with_output(self.output.as_ref())
+            .with_program_args(self.program_args.clone());
         signal_execution_ready(tel);
         let root_pid = runtime.spawn(program.entry);
         runtime.run_until_idle();

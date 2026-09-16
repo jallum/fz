@@ -33,10 +33,16 @@ pub struct ExecCtx {
     pub scheduler: *mut (),
     /// Type-erased scheduler-owned context that receives `dbg`/print bytes.
     pub output_context: *const (),
+    /// Immutable program arguments, excluding the executable name. The owning
+    /// scheduler keeps this vector alive for every process it dispatches.
+    pub argv: *const [String],
     pub spawn: Option<SpawnHook>,
     pub send: Option<SendHook>,
     pub fault: Option<FaultHook>,
     pub output: Option<OutputHook>,
+    /// Raw binary output, distinct from `output` so `dbg` retains its
+    /// line-oriented rendering contract.
+    pub output_write: Option<OutputHook>,
     pub timer_schedule: Option<TimerScheduleHook>,
     pub timer_cancel: Option<TimerCancelHook>,
 }
@@ -48,10 +54,12 @@ impl ExecCtx {
         Self {
             scheduler: null_mut(),
             output_context: null(),
+            argv: std::ptr::slice_from_raw_parts(null(), 0),
             spawn: None,
             send: None,
             fault: None,
             output: None,
+            output_write: None,
             timer_schedule: None,
             timer_cancel: None,
         }
