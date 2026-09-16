@@ -24,7 +24,7 @@ use crate::extern_contract::{
 use crate::function_surface::FunctionSurface;
 use crate::fz_ir::ExternAbi;
 use crate::ground_value::GroundValue;
-use crate::modules::identity::{ModuleDenotation, ModuleName};
+use crate::modules::identity::ModuleDenotation;
 use crate::source::Span;
 
 use super::super::body::{
@@ -36,7 +36,7 @@ use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource, ModuleId};
 use super::super::module_interface::{InterfaceCallableKind, InterfaceRequester};
-use super::super::namespace::{Namespace, NamespaceSymbol};
+use super::super::namespace::{CallableQualifier, Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
 use super::super::world::World;
 use super::dispatch::{collect_guard_calls_in_expr, resolve_guard_callee, resolve_guard_callee_checked};
@@ -2120,12 +2120,10 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         span: Span,
         context: &str,
     ) -> Result<FunctionId, FatalError> {
-        match &name.module {
-            Some(module) => {
-                let module = self.world.reference_module_denotation(module.clone());
-                self.resolve_module_callee(module, &name.name, arity, span)
-            }
-            None => self.resolve_runtime_function(&name.name, arity, span, context),
+        match self.world.callable_name_qualifier(self.namespace, name) {
+            CallableQualifier::Unqualified => self.resolve_runtime_function(&name.name, arity, span, context),
+            CallableQualifier::Module(module) => self.resolve_module_callee(module, &name.name, arity, span),
+            CallableQualifier::Unbound => Err(self.unbound_runtime_function(&name.to_string(), arity, span, context)),
         }
     }
 
@@ -2168,16 +2166,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         span: Span,
         context: &str,
     ) -> Result<FunctionId, FatalError> {
-        if let Some((module_path, local_name)) = name.rsplit_once('.') {
-            let Ok(module_path) = ModuleName::parse_dotted(module_path) else {
-                return Err(self.unbound_runtime_function(name, arity, span, context));
-            };
-            let Some(module) = self.world.lookup_module_path(self.namespace, &module_path) else {
-                return Err(self.unbound_runtime_function(name, arity, span, context));
-            };
-            return self.resolve_module_callee(module, local_name, arity, span);
-        }
-
         match self.world.lookup_callable_namespace(self.namespace, name, arity) {
             Some(NamespaceSymbol::Function(function)) | Some(NamespaceSymbol::Callable(function)) => Ok(function),
             Some(NamespaceSymbol::Macro(_)) => Err(emit_job_diagnostic(

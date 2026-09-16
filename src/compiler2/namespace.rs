@@ -35,6 +35,17 @@ pub enum NamespaceSymbol {
     Splice(QuotedSourceRoot),
 }
 
+/// Where a callable name's module qualifier points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallableQualifier {
+    /// The name carries no qualifier; the surrounding namespace decides.
+    Unqualified,
+    /// The qualifier names this module.
+    Module(ModuleId),
+    /// The qualifier is an alias path that binds nothing here.
+    Unbound,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Binding {
     name: String,

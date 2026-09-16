@@ -87,7 +87,10 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
 - Named `def` / `defp` forms have that same ordinary call shape. The lexer and
   front door do not assign either spelling a dedicated grammar node.
 - Remote calls and closure calls are allowed to carry a quoted callee AST in
-  `head`, not just an atom.
+  `head`, not just an atom. That callee AST is the only remote form. An atom
+  head is a local name whatever it spells, so `{:"Foo.bar", meta, args}` calls
+  a local function literally named `Foo.bar` and is never split into a module
+  and a name. Elixir reads the same shape the same way.
 - Variables use `tail = lexical_context_map`.
 - Module aliases use `{:__aliases__, meta, [:Foo, :Bar]}`.
 - Keyword items are ordinary 2-tuples inside lists.
