@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-15T14:11:05Z",
@@ -7,8 +7,8 @@
   "id": "fz-229",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A caller outside a recursive group is re-analyzed on every rung of the group's return ladder",
   "type": "task",
-  "updated_at": "2026-09-15T14:11:05Z"
+  "updated_at": "2026-09-16T00:37:33Z"
 }
