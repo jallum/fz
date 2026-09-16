@@ -1081,6 +1081,73 @@ defp write_args(_other), do: nil
     let _ = remove_file(output_path);
 }
 
+#[test]
+fn native_telemetry_distiller_reports_compiler_work_and_rejects_bad_jsonl() {
+    let trace_path = unique_temp_path("fz2_distill_telemetry", ".jsonl");
+    write(
+        &trace_path,
+        concat!(
+            "{\"kind\":\"event\",\"name\":[\"fz\",\"compiler2\",\"canon\",\"function\"],\"time_ns\":10,\"metadata\":{\"function_id\":7,\"canon\":\"Main.work/0\"}}\n",
+            "{\"kind\":\"span_start\",\"span_id\":1,\"parent_span_id\":null,\"name\":[\"fz\",\"compiler2\",\"job\"],\"time_ns\":20,\"metadata\":{\"job\":{\"kind\":\"Analyze\",\"function_id\":7}}}\n",
+            "{\"kind\":\"span_start\",\"span_id\":2,\"parent_span_id\":1,\"name\":[\"fz\",\"compiler2\",\"native_backend\",\"compile\"],\"time_ns\":25,\"metadata\":{}}\n",
+            "{\"kind\":\"span_stop\",\"span_id\":2,\"elapsed_ns\":5,\"time_ns\":30}\n",
+            "{\"kind\":\"span_stop\",\"span_id\":1,\"elapsed_ns\":20,\"time_ns\":40}\n",
+            "{\"kind\":\"span_start\",\"span_id\":3,\"parent_span_id\":null,\"name\":[\"fz\",\"compiler2\",\"job\"],\"time_ns\":45,\"metadata\":{\"job\":{\"kind\":\"Analyze\",\"function_id\":7}}}\n",
+            "{\"kind\":\"span_stop\",\"span_id\":3,\"elapsed_ns\":10,\"time_ns\":55}\n",
+            "{\"kind\":\"event\",\"name\":[\"fz\",\"compiler2\",\"work_graph\",\"applied\"],\"time_ns\":60,\"metadata\":{\"completion\":{\"kind\":\"Analyze\",\"function_id\":7,\"wakes\":[{\"job\":{\"kind\":\"Analyze\",\"function_id\":7},\"cause\":{\"kind\":\"ReturnType\",\"use\":\"reads\",\"function_id\":7}}]}}}\n"
+        ),
+    )
+    .expect("write telemetry trace");
+
+    let output = run_fz2(&[
+        OsStr::new("run"),
+        OsStr::new("tools/distill-telemetry.fz"),
+        OsStr::new("--"),
+        trace_path.as_os_str(),
+        OsStr::new("--top"),
+        OsStr::new("6"),
+    ]);
+    assert!(
+        output.status.success(),
+        "native telemetry distiller should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "8 records, 3 spans",
+        "timeline (span times include the stream's own rendering",
+        "span names by inclusive time",
+        "compiler jobs by kind",
+        "compiler jobs by kind and subject",
+        "most re-run jobs",
+        "wake causes of the most re-run jobs",
+        "Analyze Main.work/0",
+        "ReturnType Main.work/0 (reads) after Analyze Main.work/0",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "report should contain {expected:?}; stdout={stdout:?}"
+        );
+    }
+
+    write(&trace_path, "not JSON\n").expect("overwrite malformed telemetry trace");
+    let malformed = run_fz2(&[
+        OsStr::new("run"),
+        OsStr::new("tools/distill-telemetry.fz"),
+        OsStr::new("--"),
+        trace_path.as_os_str(),
+    ]);
+    assert!(!malformed.status.success(), "malformed JSONL must fail");
+    assert!(
+        String::from_utf8_lossy(&malformed.stderr).contains("invalid telemetry JSON on line 1"),
+        "failure should identify the malformed record; stderr={:?}",
+        String::from_utf8_lossy(&malformed.stderr)
+    );
+
+    let _ = remove_file(trace_path);
+}
+
 /// `fz.runtime.execution_ready` is the boundary between compiling a program and
 /// running it. The fixture matrix pins where the readiness BYTE falls against a
 /// real compile; what only the stream can show is where the EVENT falls against
