@@ -94,10 +94,13 @@ pub(super) fn reify_guard_dispatch(
 
 /// Plans ordered function entry selection from clause heads and guards.
 ///
-/// The job consumes the function definition plus any helper guard-dispatch
-/// facts its clause guards call. When every dependency is ready, it publishes
-/// one `EntryDispatch(function)` fact carrying the shared pattern-dispatch
-/// artifact that later semantic jobs will consume.
+/// The job asks for exactly what it reads: `FunctionDefined(function)`, the
+/// `TypeDefined` and `StructDefined` facts its clause heads name, and the
+/// `GuardDispatch` of each helper its guards call. It does not wait on
+/// `ModuleDefined(owner_module)`, whose value it never consumes. When every
+/// dependency is ready the job publishes one `EntryDispatch(function)` fact
+/// carrying the shared pattern-dispatch artifact that later semantic jobs
+/// consume.
 pub(super) fn plan_entry_dispatch(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -109,15 +112,6 @@ pub(super) fn plan_entry_dispatch(
 
     let (source, surface) = world.function_definition(function);
     let mut reads = vec![FactKey::FunctionDefined(function)];
-    let module = source.owner_module;
-    if !module.is_global() {
-        let module_fact = FactKey::ModuleDefined(module);
-        if world.has_fact(&module_fact) {
-            reads.push(module_fact);
-        } else {
-            return Ok(JobEffects::wait_on_current(module_fact));
-        }
-    }
     let mut waits = HashSet::new();
     for referenced in world.function_type_refs(function).iter().cloned() {
         let fact = FactKey::TypeDefined(referenced);

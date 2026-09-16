@@ -703,6 +703,19 @@ fn item_macro_invocation(
                 .atom_name()
                 .map_err(|error| emit_internal_surface_error(tel, format!("item macro head read failed: {error}")))?;
             if !is_scope_definition_head(&head) {
+                // Everything but a definition head expands through the ordinary
+                // call path. The one thing decided here is whose macro it is:
+                // at item position the module is still being defined, so its
+                // own macros are not callable yet.
+                let arity = node.tail.list_items().map_or(0, |args| args.len());
+                let bound = read_bound_callable(&node).map_err(|error| {
+                    emit_internal_surface_error(tel, format!("item macro classification read failed: {error}"))
+                })?;
+                if let Some(NamespaceSymbol::Macro(function)) = call_node_symbol(world, bound, scope, &head, arity)
+                    && own_module_item_call(world, function, scope)
+                {
+                    return Err(item_macro_of_the_module_being_defined(tel, &head, arity, span));
+                }
                 return Ok(ItemMacroInvocation {
                     function: None,
                     args: Vec::new(),
@@ -728,6 +741,9 @@ fn item_macro_invocation(
             let NamespaceSymbol::Macro(function) = symbol else {
                 return Err(item_macro_not_defmacro(tel, &head, span));
             };
+            if own_module_item_call(world, function, scope) {
+                return Err(item_macro_of_the_module_being_defined(tel, &head, args.len(), span));
+            }
             return Ok(ItemMacroInvocation {
                 function: Some(function),
                 args,
@@ -909,6 +925,40 @@ fn call_node_symbol(
         Some(function) => world.retained_callable_symbol(function),
         None => world.lookup_callable_namespace(scope.namespace(), head, arity),
     }
+}
+
+/// Whether this item-position macro belongs to the module being defined.
+///
+/// Top-level source is not a module: it is compiled in order, so a macro
+/// defined above an invocation is callable there.
+fn own_module_item_call(world: &World, function: FunctionId, scope: ScopeSnapshot) -> bool {
+    let owner = world.function_module(function);
+    !owner.is_global() && owner == scope.module_id()
+}
+
+/// A module body cannot invoke a macro the same module defines.
+///
+/// The module is still being defined when its body runs, so its own macros do
+/// not exist to call yet. Elixir draws the same line and reports the call as an
+/// undefined function; the macro has to live in another module the body
+/// imports. A function body of that module may call it — by then the module is
+/// compiled.
+fn item_macro_of_the_module_being_defined(
+    tel: &impl crate::telemetry::Telemetry,
+    name: &str,
+    arity: usize,
+    span: Span,
+) -> super::scheduler::FatalError {
+    emit_job_diagnostic(
+        tel,
+        Diagnostic::error(
+            codes::MACRO_OWN_MODULE_ITEM_CALL,
+            format!(
+                "`{name}/{arity}` is a macro of the module being defined, so it cannot be invoked in that module's body; define it in another module and import it"
+            ),
+            span,
+        ),
+    )
 }
 
 fn item_macro_not_defmacro(

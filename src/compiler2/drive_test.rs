@@ -17179,6 +17179,235 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     );
 }
 
+/// A module whose own body invokes a macro the same module defines.
+///
+/// `make_answer/0` has to be planned, lowered and executed while
+/// `DefineModule(Provider)` is still mid-body, so `ModuleDefined(Provider)`
+/// cannot exist yet at that point.
+const PROVIDER_ITEM_MACRO: &str = include_str!("../../fixtures2/behavior/provider_macros_item_macro.fz");
+
+#[test]
+fn entry_dispatch_settles_without_its_module_aggregate() {
+    // Entry planning asks for the facts it reads: the function definition and
+    // the exact types, structs and helper guard dispatches its clause heads
+    // name. The owning module aggregate is not one of them — the wait on it was
+    // never consumed — so a plan can settle while that aggregate does not exist.
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    outputs.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    let source_owner = compiler.submit_code(CodeSubmission {
+        name: Some("provider_macros_item_macro.fz".into()),
+        text: PROVIDER_ITEM_MACRO.into(),
+    });
+    assert_resolved(compiler.drive(), "first drive should index both modules");
+    assert!(
+        compiler.demand(Job::ScopeCode(source_owner)),
+        "top-level scope should be demandable",
+    );
+    assert_resolved(compiler.drive(), "second drive should scope the file");
+
+    // `main/0` is owned by the global module, which nothing has defined. Its
+    // entry plan settles anyway, which is the shape of the claim; what pins the
+    // deleted gate is the recorded read set of the module-owned functions
+    // below, which would carry their `ModuleDefined` if the wait were back.
+    let main = function_id(&functions, "main", 0);
+    assert!(
+        !compiler.world().has_fact(&FactKey::ModuleDefined(ModuleId::GLOBAL)),
+        "the owning aggregate is unpublished when entry planning is asked for",
+    );
+    assert!(
+        compiler.demand(Job::PlanEntryDispatch(main)),
+        "main/0's entry plan should be demandable",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "entry planning should settle from the function's own facts",
+    );
+    assert!(
+        !compiler.world().has_fact(&FactKey::ModuleDefined(ModuleId::GLOBAL)),
+        "main/0's entry plan settled without its module aggregate existing at all",
+    );
+
+    let effects = outputs.effects(Job::PlanEntryDispatch(main));
+    assert_eq!(
+        effects.reads.into_iter().collect::<HashSet<_>>(),
+        HashSet::from([FactUse::current(FactKey::FunctionDefined(main))]),
+        "main/0's entry plan should record exactly the function fact it consumed",
+    );
+    assert!(
+        effects.waits.is_empty(),
+        "main/0's entry plan should settle with nothing outstanding",
+    );
+
+    // The rest of the program still runs, and the two functions the macro
+    // generates plan the same way.
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(
+        compiler.run_root_interp(root),
+        Ok(0),
+        "an imported item macro should expand, define answer/0 and run through its caller's helper",
+    );
+    let make_answer = function_id(&functions, "make_answer", 0);
+    let answer = function_id(&functions, "answer", 0);
+    let helper = function_id(&functions, "helper", 1);
+    for (function, label) in [
+        (make_answer, "make_answer/0"),
+        (answer, "answer/0"),
+        (helper, "helper/1"),
+    ] {
+        let effects = outputs.effects(Job::PlanEntryDispatch(function));
+        assert_eq!(
+            effects.reads.into_iter().collect::<HashSet<_>>(),
+            HashSet::from([FactUse::current(FactKey::FunctionDefined(function))]),
+            "{label}'s entry plan should record exactly the function fact it consumed",
+        );
+        assert!(
+            effects.waits.is_empty(),
+            "{label}'s entry plan should settle with nothing outstanding",
+        );
+    }
+
+    let plans_before = |function| {
+        outputs
+            .stops_matching(|job| matches!(job, Job::PlanEntryDispatch(id) if *id == function))
+            .len()
+    };
+    let make_answer_plans = plans_before(make_answer);
+    let answer_plans = plans_before(answer);
+    let helper_plans = plans_before(helper);
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("unrelated_module.fz".into()),
+        text: "defmodule Unrelated do\n  def ping(), do: 7\nend\n".into(),
+    });
+    assert_resolved(
+        compiler.drive(),
+        "an unrelated module submission should settle on its own",
+    );
+
+    assert_eq!(
+        (plans_before(make_answer), plans_before(answer), plans_before(helper)),
+        (make_answer_plans, answer_plans, helper_plans),
+        "an unrelated module must not recompute the provider's entry plans",
+    );
+}
+
+#[test]
+fn entry_dispatch_blocks_on_the_exact_struct_or_type_fact_its_heads_name() {
+    // The other half of the same contract: dropping the module gate drops
+    // nothing real. Each genuine prerequisite still blocks entry planning, and
+    // blocks it on exactly the fact the clause head named.
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    outputs.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    let source_owner = compiler.submit_code(CodeSubmission {
+        name: Some("entry_dispatch_exact_prerequisites.fz".into()),
+        text: concat!(
+            "defmodule User do\n",
+            "  @type count :: integer\n",
+            "\n",
+            "  def measure(n :: count), do: n\n",
+            "  def unwrap(%Boxes{x: x}), do: x\n",
+            "end\n",
+            "\n",
+            "defmodule Boxes do\n",
+            "  defstruct [:x]\n",
+            "end\n",
+        )
+        .into(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index both modules");
+    assert!(
+        compiler.demand(Job::ScopeCode(source_owner)),
+        "top-level scope should be demandable",
+    );
+    assert_resolved(compiler.drive(), "second drive should scope both modules");
+
+    let user = compiler.world_mut().reference_module(module_name("User"));
+    let boxes = compiler.world_mut().reference_module(module_name("Boxes"));
+    assert!(
+        compiler.demand(Job::DefineModule(user)),
+        "User's own body should be demandable",
+    );
+    assert_resolved(compiler.drive(), "User should define without Boxes being touched");
+
+    let count = TypeName {
+        module: user,
+        name: "count".to_string(),
+        arity: 0,
+    };
+    let measure = function_id(&functions, "measure", 1);
+    let unwrap = function_id(&functions, "unwrap", 1);
+    assert!(
+        compiler.demand(Job::DefineFunction(measure)),
+        "measure/1's definition should be demandable",
+    );
+    assert!(
+        compiler.demand(Job::DefineFunction(unwrap)),
+        "unwrap/1's definition should be demandable",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "both clause heads should define without deriving the facts they name",
+    );
+    assert!(
+        !compiler.world().has_fact(&FactKey::StructDefined(boxes)),
+        "Boxes' defstruct is still unpublished when entry planning is asked for",
+    );
+    assert!(
+        !compiler.world().has_fact(&FactKey::TypeDefined(count.clone())),
+        "User's @type count is still underived when entry planning is asked for",
+    );
+
+    assert!(
+        compiler.demand(Job::PlanEntryDispatch(measure)),
+        "measure/1's entry plan should be demandable",
+    );
+    assert!(
+        compiler.demand(Job::PlanEntryDispatch(unwrap)),
+        "unwrap/1's entry plan should be demandable",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "entry planning should pull each missing prerequisite's own producer and settle",
+    );
+
+    let first_waits = |function| {
+        outputs
+            .stops_matching(|job| matches!(job, Job::PlanEntryDispatch(id) if *id == function))
+            .first()
+            .and_then(|stop| stop.effects.clone())
+            .expect("an entry-dispatch application")
+            .waits
+            .into_iter()
+            .collect::<HashSet<_>>()
+    };
+    assert_eq!(
+        first_waits(measure),
+        HashSet::from([FactUse::current(FactKey::TypeDefined(count))]),
+        "a parameter annotation blocks entry planning on that type fact and nothing else",
+    );
+    assert_eq!(
+        first_waits(unwrap),
+        HashSet::from([FactUse::current(FactKey::StructDefined(boxes))]),
+        "a struct pattern blocks entry planning on that struct fact and nothing else",
+    );
+}
+
 #[test]
 fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
     let tel = ConfiguredTelemetry::new();
