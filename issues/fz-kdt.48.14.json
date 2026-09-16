@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-16T20:11:57Z",
   "created": "2026-09-16T20:07:22Z",
   "description": "Goal: Stop rebuilding and interning an activation-key arrow when closure-identity erasure has no DispatchDemand::Ignore parameter.\n\nAuthority: erase_transported_closure_identities alone owns this key transformation. A mask that leaves every parameter Whole cannot change the arrow, so the existing Ty is the proof; no descriptor cache or second equality authority.\n\nTDD: first prove an all-Whole mask returns the exact input Ty and causes no raw interner probe, normalization, or insertion; prove an Ignore mask still erases a closure identity and returns the canonical transformed arrow. Exercise the enum_take_drop_split canonical fixture and record the direct reuse count.\n\nAcceptance: focused type/canonical/fixture gates, docs explaining the identity law, format/check/strict Clippy, then one commit and close.",
   "id": "fz-kdt.48.14",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Preserve arrow identity when closure erasure has no target",
   "type": "task",
-  "updated_at": "2026-09-16T20:10:02Z"
+  "updated_at": "2026-09-16T20:11:57Z"
 }
