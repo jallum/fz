@@ -3,6 +3,7 @@
   "blocked_by": [
     "fz-4nh.1",
     "fz-4nh.2",
+    "fz-4nh.6",
     "fz-hqb"
   ],
   "blocks": [
@@ -17,5 +18,5 @@
   "status": "open",
   "title": "Port Distill module directly onto the expanded runtime library",
   "type": "task",
-  "updated_at": "2026-09-16T10:55:00Z"
+  "updated_at": "2026-09-16T13:04:25Z"
 }
