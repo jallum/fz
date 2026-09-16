@@ -4,14 +4,15 @@
   "blocks": [
     "fz-lcx.2"
   ],
+  "closed_at": "2026-09-16T10:07:26Z",
   "created": "2026-09-16T09:52:20Z",
   "description": "Add a correct-by-construction runtime-facing System argument surface and IO text output that work consistently on JIT, interpreter, and AOT, with source-level and CLI coverage. This is the reusable boundary required by command-line fz tools.",
   "id": "fz-lcx.1",
   "labels": [],
   "parent": "fz-lcx",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Expose program arguments and plain text output to fz tools",
   "type": "task",
-  "updated_at": "2026-09-16T09:52:30Z"
+  "updated_at": "2026-09-16T10:07:26Z"
 }
