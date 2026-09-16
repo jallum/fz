@@ -203,6 +203,41 @@ fn impossible_tuple_returns_before_the_type_boundary() {
 }
 
 #[test]
+fn impossible_map_returns_before_the_type_boundary() {
+    let mut t = Types::new();
+    let int = t.int();
+    let none = t.none();
+    let before = t.interning_work_stats();
+
+    assert_eq!(
+        t.map(&[
+            (MapKey::Atom("left".to_string()), int),
+            (MapKey::Atom("missing".to_string()), none),
+            (MapKey::Atom("right".to_string()), int),
+        ]),
+        none,
+        "a map with an uninhabited required field is uninhabited"
+    );
+    assert_eq!(
+        t.interning_work_stats(),
+        before,
+        "a final bottom map field decides emptiness without hashing or normalizing a descriptor"
+    );
+
+    let shadowed = MapKey::Atom("shadowed".to_string());
+    let overwritten = t.map(&[(shadowed.clone(), none), (shadowed.clone(), int)]);
+    assert_ne!(
+        overwritten, none,
+        "the last value for a duplicate map key remains the required field"
+    );
+    assert_eq!(
+        t.map_field_lookup(&overwritten, &shadowed),
+        Some(int),
+        "the last value for a duplicate map key remains its field type"
+    );
+}
+
+#[test]
 fn repeating_binary_type_algebra_returns_before_it_rebuilds_a_descriptor() {
     let mut t = Types::new();
     let int = t.int();
