@@ -9,9 +9,15 @@
   "id": "fz-kdt.226",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Committed de10e2589 on the same branch, PR #185. 00181 443-\u003e399 job starts total (after both .227 and .226), json_roundtrip 4527-\u003e4091. The two enum_take_drop_split pins raise as measured and accepted (rebased_completions 80-\u003e85, DeriveStaticCallees 273/140-\u003e274/141): FunctionSource now exists one round earlier and is present-but-dirty while its walk is blocked. Everything else moves down; canon identical.",
+      "timestamp": "2026-09-16T16:09:10Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Delete the function source stash tier: the scope walk publishes FunctionSource(f) directly",
   "type": "bug",
-  "updated_at": "2026-09-16T14:56:39Z"
+  "updated_at": "2026-09-16T16:09:10Z"
 }
