@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T10:35:22Z",
+  "description": "Provide the missing runtime-library surfaces needed to port ordinary operational Elixir tools directly: lazy file streams, stream transforms, option parsing, collection helpers, formatting, and inspection. Prove the result by keeping the telemetry distiller structurally aligned with its Elixir source.",
+  "id": "fz-4nh",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Elixir-shaped runtime support for native tools",
+  "type": "epic",
+  "updated_at": "2026-09-16T10:35:22Z"
+}
