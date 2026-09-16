@@ -2582,7 +2582,7 @@ mod tests {
 
         let mut types = Types::new();
         let (any, int, atom) = (types.any(), types.int(), types.atom());
-        let function = FunctionId::for_test(1);
+        let function = FunctionId::from_coordinate(1);
         let root = RootId::for_test(0);
         let target = |input, types: &mut Types| ExecutableKey {
             activation: ActivationKey::from_inputs(root, function, &[any, input], types),
@@ -2697,7 +2697,7 @@ mod tests {
                 entry(LoweredTail::DirectCall {
                     value: direct_value,
                     callsite: direct_callsite,
-                    callee: FunctionId::for_test(0),
+                    callee: FunctionId::from_coordinate(0),
                     args: Vec::new(),
                     dest: ControlDestination::Return,
                 }),
@@ -2733,7 +2733,7 @@ mod tests {
         let mut types = Types::new();
         let (any, int, atom) = (types.any(), types.int(), types.atom());
         let target = |ty: Option<Ty>| CallTargetSummary {
-            callee: SelectedCallee::Function(FunctionId::for_test(0)),
+            callee: SelectedCallee::Function(FunctionId::from_coordinate(0)),
             surface_inputs: ty.into_iter().collect(),
             activation: None,
             activation_inputs: None,

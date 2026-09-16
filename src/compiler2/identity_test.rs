@@ -1,3 +1,4 @@
+use super::identity::DeclaredCallableKind;
 use super::quoted_surface::ScopeSurface;
 use super::{
     CodeMap, CodeState, FunctionMap, FunctionSource, FunctionState, Horizon, ModuleId, ModuleMap, ModuleState,
@@ -635,5 +636,51 @@ fn compiler2_activation_key_from_inputs_results_in_addressed_result_alpha_not_no
     assert_ne!(
         result, none,
         "the not-yet-known result must NOT be none() — none, like any, must be earned, never a fallback",
+    );
+}
+
+/// A declared kind is what the source says now, not what it said first.
+///
+/// One key is declared many times over a compile — reserving a scope's forms,
+/// publishing them, and rescoping all re-declare it — and an edit that turns a
+/// `def` into a `defmacro` arrives as another declaration on the same key. A
+/// kind kept from the first declaration would leave a reader calling a macro
+/// body. A reference that no declaration has reached keeps no kind at all: only
+/// its module's interface can settle that.
+#[test]
+fn a_declared_callable_kind_is_the_latest_declaration() {
+    let mut functions = FunctionMap::new();
+    let helper = functions.reference(ModuleId::GLOBAL, None, "helper", 1);
+    let untouched = functions.reference(ModuleId::GLOBAL, None, "elsewhere", 1);
+    assert_eq!(
+        functions.declared_kind(helper),
+        None,
+        "a bare reference declares nothing"
+    );
+
+    functions.declare_kind(helper, DeclaredCallableKind::Function);
+    assert_eq!(functions.declared_kind(helper), Some(DeclaredCallableKind::Function));
+    functions.declare_kind(helper, DeclaredCallableKind::Function);
+    assert_eq!(
+        functions.declared_kind(helper),
+        Some(DeclaredCallableKind::Function),
+        "re-declaring the same kind is the ordinary case and changes nothing"
+    );
+
+    functions.declare_kind(helper, DeclaredCallableKind::Macro);
+    assert_eq!(
+        functions.declared_kind(helper),
+        Some(DeclaredCallableKind::Macro),
+        "the source now says macro, so the id says macro"
+    );
+    assert_eq!(
+        DeclaredCallableKind::Macro.namespace_symbol(helper),
+        NamespaceSymbol::Macro(helper),
+        "and a reader holding the id reads it as one"
+    );
+    assert_eq!(
+        functions.declared_kind(untouched),
+        None,
+        "declaring one key says nothing about another"
     );
 }

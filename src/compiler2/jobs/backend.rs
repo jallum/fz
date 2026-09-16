@@ -1405,7 +1405,7 @@ mod tests {
         let position = TransportPosition::ExecutableReturn {
             executable: ExecutableSymbol {
                 activation: ActivationSymbol {
-                    function: FunctionId::for_test(1),
+                    function: FunctionId::from_coordinate(1),
                     arrow: ty,
                     input: Box::default(),
                 },
@@ -1479,7 +1479,7 @@ mod tests {
             let key = ExecutableKey {
                 activation: ActivationKey {
                     root: RootId::for_test(0),
-                    function: FunctionId::for_test(0),
+                    function: FunctionId::from_coordinate(0),
                     arrow: int,
                 },
                 need: ExecutableNeed::Value,

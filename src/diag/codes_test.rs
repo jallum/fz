@@ -21,6 +21,7 @@ fn all_codes_follow_stage_slash_kind_format() {
         RESOLVE_DUPLICATE_FUNCTION,
         MACRO_NOT_A_DEFMACRO,
         MACRO_NOT_REQUIRED,
+        MACRO_OWN_MODULE_ITEM_CALL,
         LOWER_UNSUPPORTED,
         LOWER_UNBOUND,
         TYPE_NO_MATCHING_CLAUSE,

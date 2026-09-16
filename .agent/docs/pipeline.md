@@ -36,6 +36,9 @@ body      LowerFunction
             survive only as interface-backed FunctionId expectations
 dispatch  ReifyGuardDispatch, PlanEntryDispatch
             guard-pure helpers and clause matching -> GuardDispatch/EntryDispatch
+            PlanEntryDispatch asks for FunctionDefined plus the exact TypeDefined,
+            StructDefined and helper GuardDispatch facts its clause heads name;
+            never the owning ModuleDefined aggregate, whose value it never reads
 macro     source expansion reads RootBackendProduct(hidden macro root)
             exact product waits drive the retained RootBackendProduct
 keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveInputDemand

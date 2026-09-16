@@ -1,0 +1,47 @@
+#---
+# purpose: "a quoted call reaches the helper its own module resolved, whatever the caller calls that module"
+#---
+#
+# # quoted_helper_keeps_its_provider
+#
+# `FutureMacros.twice/1` quotes a call to `double/1`, a helper of its own
+# module. Every caller of that macro ends up holding those quoted words, and
+# `double` is not a name any of them wrote.
+#
+# A caller that binds `FutureMacros` only as `F` has no `FutureMacros` alias to
+# look the helper up under, and `Shadowed` has one that points somewhere else
+# entirely. Neither can change where the quoted call goes: the macro's own
+# module resolved `double/1` once, when the quote was written, and the call
+# carries that exact function from then on.
+#
+defmodule FutureMacros do
+  def double(x), do: x * 2
+
+  defmacro twice(x) do
+    quote do: double(unquote(x))
+  end
+end
+
+defmodule Decoy do
+  def double(x), do: x * 100
+end
+
+defmodule App do
+  alias FutureMacros, as: F
+  require F
+
+  def run(n), do: F.twice(n)
+end
+
+defmodule Shadowed do
+  alias FutureMacros, as: F
+  alias Decoy, as: FutureMacros
+  require F
+
+  def run(n), do: F.twice(n)
+end
+
+def main() do
+  assert(App.run(21) == 42, "a caller that binds the provider only as F still reaches its double/1")
+  assert(Shadowed.run(21) == 42, "a caller alias bound elsewhere cannot redirect the quoted helper")
+end

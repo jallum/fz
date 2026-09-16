@@ -75,6 +75,7 @@ fn meta(context: &QuotedLexicalContext, _source_name: &str, line: u32) -> Quoted
     let version = sources.add_code(Some("quoted-structural-test.fz"), " ".repeat(256));
     QuotedSourceMetadata {
         module: None,
+        bound_callable: None,
         from_brackets: false,
         lexical_context: Some(context.clone()),
         span: Some(Span::new(

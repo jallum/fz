@@ -86,6 +86,7 @@ fn walk_expr(expr: &Spanned<Expr>, diagnostics: &mut Vec<Diagnostic>, resolver: 
         | Expr::Var(_)
         | Expr::FnRef { .. }
         | Expr::Module(_)
+        | Expr::BoundFunction(_)
         | Expr::CaptureArg(_)
         | Expr::Quote(_)
         | Expr::Unquote(_) => {}
@@ -254,7 +255,7 @@ mod tests {
     use crate::ast::{FnClause, Pattern, TypeExprBody};
 
     fn function_warnings(surface: &FunctionSurface) -> Vec<Diagnostic> {
-        let mut resolver = |_name: &crate::ast::CallableName, _arity: usize| Ok(None);
+        let mut resolver = |_callee: &crate::ast::Callee, _arity: usize| Ok(None);
         super::function_warnings(surface, &mut resolver)
     }
 

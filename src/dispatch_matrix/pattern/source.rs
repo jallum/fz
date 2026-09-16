@@ -201,7 +201,9 @@ pub(crate) fn collect_guard_capture_names(
         }
         Expr::UnOp(_, a) | Expr::Ascribe(a, _) => collect_guard_capture_names(a, bound, out),
         Expr::Call(target, args) => {
-            if !matches!(&target.node, Expr::Var(_) | Expr::FnRef { .. }) {
+            // A target the callee authority recognises names a callable, not a
+            // captured value; anything else is an expression to walk.
+            if crate::ast::Callee::for_call(&target.node, args.len()).is_none() {
                 collect_guard_capture_names(target, bound, out);
             }
             for arg in args {

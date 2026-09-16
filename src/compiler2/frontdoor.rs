@@ -1957,6 +1957,7 @@ impl FrontDoorParser {
     ) -> Result<QuotedSourceMetadata, FrontDoorError> {
         Ok(QuotedSourceMetadata {
             module: None,
+            bound_callable: None,
             from_brackets: false,
             lexical_context: Some(QuotedLexicalContext::new(
                 QuotedLexicalContextKind::Source,

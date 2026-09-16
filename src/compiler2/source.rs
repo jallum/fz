@@ -18,6 +18,8 @@ use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, 
 use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::source::{SourceMap, Span};
 
+use super::identity::FunctionId;
+
 const NIL_ATOM: &str = "nil";
 const TRUE_ATOM: &str = "true";
 const FALSE_ATOM: &str = "false";
@@ -48,6 +50,11 @@ pub(crate) fn quoted_span_entries(span: Span) -> [(&'static str, i64); 3] {
 /// `get/2` was silently indexed. Elixir separates the two the same way, with
 /// `from_brackets: true` in meta. Source text cannot produce this key.
 pub(crate) const META_FROM_BRACKETS_KEY: &str = "__fz_from_brackets__";
+
+/// The exact callable a quoted call was resolved to, stamped by the compiler
+/// when the call was quoted. The head beside it is display spelling: once this
+/// is present nothing re-reads that spelling to choose a target.
+pub(crate) const META_BOUND_CALLABLE_KEY: &str = "__fz_bound__";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuotedSourceError {
@@ -166,6 +173,10 @@ pub struct QuotedSourceMetadata {
     /// remain macro-readable display data.
     pub module: Option<ModuleDenotation>,
     pub lexical_context: Option<QuotedLexicalContext>,
+    /// The one callable this quoted call resolved to. `None` means the call
+    /// was not classified where it was quoted and its spelling is still to be
+    /// resolved in the context it is inserted into.
+    pub bound_callable: Option<FunctionId>,
     /// True only on the callee this front door synthesises for `lhs[key]`.
     /// See [`META_FROM_BRACKETS_KEY`].
     pub from_brackets: bool,
@@ -390,6 +401,12 @@ impl QuotedSourceBuilder {
         }
         if let Some(span) = meta.span.filter(|span| !span.is_dummy()) {
             entries.push((self.atom(META_SPAN_KEY), self.span(&span)?));
+        }
+        if let Some(function) = meta.bound_callable {
+            entries.push((
+                self.atom(META_BOUND_CALLABLE_KEY),
+                self.int(i64::from(function.as_u32())),
+            ));
         }
         if meta.from_brackets {
             entries.push((self.atom(META_FROM_BRACKETS_KEY), self.bool(true)));
@@ -616,6 +633,22 @@ impl QuotedSourceCursor {
             },
             _ => return Err(QuotedSourceError::new("invalid module denotation tag or arity")),
         }))
+    }
+
+    /// The callable this metadata map retains, when it retains one. The
+    /// coordinate is only meaningful in the world that stamped it; the world
+    /// is asked to confirm it before anything is lowered against it.
+    pub(crate) fn bound_callable(&self) -> Result<Option<FunctionId>, QuotedSourceError> {
+        if self.root.tag() != ValueKind::MAP {
+            return Ok(None);
+        }
+        let Some(value) = self.map_value(META_BOUND_CALLABLE_KEY)? else {
+            return Ok(None);
+        };
+        let coordinate = u32::try_from(value.int_value()?).map_err(|_| {
+            QuotedSourceError::new("quoted callable classification is outside the function coordinate space")
+        })?;
+        Ok(Some(FunctionId::from_coordinate(coordinate)))
     }
 
     pub fn root(&self) -> AnyValueRef {

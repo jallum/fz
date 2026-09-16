@@ -68,13 +68,15 @@ fn projected_module_identity_survives_call_and_function_reference_decoding() {
         module_expr.span, span,
         "typed module decoding retains exact node provenance"
     );
-    let call = crate::ast::CallableName::for_call(&target.node, 1).unwrap();
-    assert_eq!(call.module, Some(module.clone()));
+    let crate::ast::Callee::Name(call) = crate::ast::Callee::for_call(&target.node, 1).unwrap() else {
+        panic!("a qualified source call names its callee")
+    };
+    assert_eq!(call.module, Some(crate::ast::ModuleTarget::Exact(module.clone())));
     assert_eq!(call.name, "val");
     let Expr::FnRef { name, arity } = &items[1].node else {
         panic!("explicit function reference")
     };
-    assert_eq!(name.module, Some(module));
+    assert_eq!(name.module, Some(crate::ast::ModuleTarget::Exact(module)));
     assert_eq!(name.name, "val");
     assert_eq!(*arity, 1);
 }
