@@ -14,8 +14,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Record the closure call as one three-valued edge: Direct { target, capture_count } / Seam / Dead",
   "type": "task",
-  "updated_at": "2026-09-15T09:43:54Z"
+  "updated_at": "2026-09-16T16:09:35Z"
 }
