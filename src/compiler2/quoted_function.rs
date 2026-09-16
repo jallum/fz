@@ -292,6 +292,17 @@ fn decode_expr(
         if let Some(module) = node.meta.module_denotation()? {
             return Ok(Spanned::new(Expr::Module(module), span));
         }
+        // A retained callable settles the target. The head beside it is the
+        // spelling the call was written with and says nothing about where the
+        // call goes, so it is never read back as source here.
+        if let Some(function) = node.meta.bound_callable()? {
+            if !is_list_like(&node.tail) {
+                return Err(QuotedSourceError::new("a retained callable needs an argument list"));
+            }
+            let args = decode_exprs(occurrences, &node.tail.list_items()?, Some(span), sources)?;
+            let callee = Spanned::new(Expr::BoundFunction(function), span);
+            return Ok(Spanned::new(Expr::Call(Box::new(callee), args), span));
+        }
         if !is_list_like(&node.tail) {
             return Ok(Spanned::new(Expr::Var(atom_name(&node.head)?), span));
         }

@@ -36,9 +36,9 @@ use super::drive::{DependencyKey, fact_dependency};
 use super::drive::{ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
 use super::facts::FactUse;
 use super::identity::{
-    ActivationKey, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionRef,
-    FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, PendingFunctionSourceMap,
-    RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
+    ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
+    FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl,
+    PendingFunctionSourceMap, RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{BodyKeying, BodyKeyingMap, CallGraphComponentMap, InputDemand, InputDemandMap, StaticCalleeMap};
@@ -1162,6 +1162,25 @@ impl World {
         id
     }
 
+    /// References a callable and records what its declaration said it is, so a
+    /// later reader holding the id knows whether it is a macro without waiting
+    /// for the owning module's interface.
+    pub fn reference_declared_callable(
+        &mut self,
+        module: ModuleId,
+        name: impl Into<String>,
+        arity: usize,
+        kind: DeclaredCallableKind,
+    ) -> FunctionId {
+        let id = self.reference_function(module, name, arity);
+        self.functions.declare_kind(id, kind);
+        id
+    }
+
+    pub(crate) fn declared_callable_kind(&self, function: FunctionId) -> Option<DeclaredCallableKind> {
+        self.functions.declared_kind(function)
+    }
+
     /// Share a minted function's typed origin with the type lattice before any
     /// literal can name it. The function interner owns uniqueness, not a scan of
     /// rendered callable labels.
@@ -1752,9 +1771,9 @@ impl World {
     }
 
     /// The reverse reference for `function`, or `None` when it is not a known
-    /// function slot. Lets a caller probe an id of uncertain provenance (e.g. a
-    /// decoded closure-surface var id) without panicking on an out-of-range id.
-    #[cfg(test)]
+    /// function slot. Lets a caller probe an id of uncertain provenance (a
+    /// decoded closure-surface var id, a quoted callable coordinate) without
+    /// panicking on an out-of-range id.
     pub(crate) fn try_function_ref(&self, function: FunctionId) -> Option<&super::identity::FunctionRef> {
         self.functions.try_reference_for(function)
     }
@@ -1946,6 +1965,7 @@ impl World {
         };
         let metadata = QuotedSourceMetadata {
             module: Some(denotation.clone()),
+            bound_callable: None,
             from_brackets: false,
             lexical_context: Some(self.scope_lexical_context(scope, kind)),
             span: None,
@@ -2033,6 +2053,20 @@ impl World {
             .map(|symbol| self.resolve_callable_symbol(symbol))
     }
 
+    /// The symbol a call's callee names here. A retained callable answers from
+    /// its own identity; a source name is resolved lexically.
+    pub(crate) fn lookup_callee(
+        &mut self,
+        head: Namespace,
+        callee: &crate::ast::Callee,
+        arity: usize,
+    ) -> Option<NamespaceSymbol> {
+        match callee {
+            crate::ast::Callee::Bound(function) => self.retained_callable_symbol(*function),
+            crate::ast::Callee::Name(name) => self.lookup_callable_name(head, name, arity),
+        }
+    }
+
     pub(crate) fn lookup_callable_name(
         &mut self,
         head: Namespace,
@@ -2077,6 +2111,25 @@ impl World {
             }
         }
         best.map(|(_, symbol)| symbol)
+    }
+
+    /// How a callable a quoted call already retained dispatches here.
+    ///
+    /// Macro classification still precedes ordinary calls, so this asks the
+    /// exact retained function what it is rather than asking the surrounding
+    /// namespace about the head's spelling. A declaration settles the answer
+    /// on its own; only a bare cross-module reference is left `Callable`, and
+    /// its reader waits on that module's interface, which is the fact that
+    /// decides it.
+    ///
+    /// `None` means the coordinate names no function slot in this world, which
+    /// is all a hand-written classification can be.
+    pub(crate) fn retained_callable_symbol(&mut self, function: FunctionId) -> Option<NamespaceSymbol> {
+        self.try_function_ref(function)?;
+        Some(match self.declared_callable_kind(function) {
+            Some(kind) => kind.namespace_symbol(function),
+            None => self.resolve_callable_symbol(NamespaceSymbol::Callable(function)),
+        })
     }
 
     fn resolve_callable_symbol(&mut self, symbol: NamespaceSymbol) -> NamespaceSymbol {

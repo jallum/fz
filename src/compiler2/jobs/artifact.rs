@@ -2107,7 +2107,7 @@ mod tests {
     fn fake_call_executable(world: &mut World, root: u32, function: u32, inputs: &[Ty]) -> ExecutableKey {
         let activation = ActivationKey::from_inputs(
             RootId::for_test(root),
-            FunctionId::for_test(function),
+            FunctionId::from_coordinate(function),
             inputs,
             world.types_mut(),
         );
@@ -2210,7 +2210,7 @@ mod tests {
                     targets: [302, 303]
                         .into_iter()
                         .map(|function| CallTargetSummary {
-                            callee: SelectedCallee::Function(FunctionId::for_test(function)),
+                            callee: SelectedCallee::Function(FunctionId::from_coordinate(function)),
                             surface_inputs: vec![int],
                             activation: None,
                             activation_inputs: None,

@@ -2622,7 +2622,7 @@ mod erased_closure_dnf_hygiene {
 
         let key_of = |t: &mut Types, ty: Ty| {
             let erased = t.erase_closure_identity(&ty);
-            ActivationKey::from_inputs(RootId::for_test(0), FunctionId::for_test(0), &[erased], t)
+            ActivationKey::from_inputs(RootId::for_test(0), FunctionId::from_coordinate(0), &[erased], t)
         };
         let left_key = key_of(&mut t, left);
         let right_key = key_of(&mut t, right);
@@ -2686,8 +2686,9 @@ mod union_clause_order {
         // key for both arms is also the assertion that the variant numbering —
         // and every `a0_uK_…` var name derived from it — follows canonical
         // order rather than arrival order.
-        let key_of =
-            |t: &mut Types, ty: Ty| ActivationKey::from_inputs(RootId::for_test(0), FunctionId::for_test(0), &[ty], t);
+        let key_of = |t: &mut Types, ty: Ty| {
+            ActivationKey::from_inputs(RootId::for_test(0), FunctionId::from_coordinate(0), &[ty], t)
+        };
         let forward_key = key_of(&mut t, forward);
         let backward_key = key_of(&mut t, backward);
         assert_eq!(

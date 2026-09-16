@@ -5351,13 +5351,13 @@ mod tests {
             });
             let scalar = world.intern_shape(ShapeDescr::Lane(lane));
             let inner = world.intern_callable(CallableDescr {
-                function: Some(FunctionId::for_test(1)),
+                function: Some(FunctionId::from_coordinate(1)),
                 arity: 0,
                 capture_layouts: Box::new([TransportLayout::structural(scalar)]),
             });
             let inner_shape = world.intern_shape(ShapeDescr::Callable(inner));
             let outer = world.intern_callable(CallableDescr {
-                function: Some(FunctionId::for_test(2)),
+                function: Some(FunctionId::from_coordinate(2)),
                 arity: 0,
                 capture_layouts: Box::new([TransportLayout::structural(inner_shape)]),
             });
@@ -5367,7 +5367,7 @@ mod tests {
         let destination = nested_callable(any);
         let root = RootId::for_test(0);
         let key = ExecutableKey {
-            activation: ActivationKey::from_inputs(root, FunctionId::for_test(0), &[], world.types_mut()),
+            activation: ActivationKey::from_inputs(root, FunctionId::from_coordinate(0), &[], world.types_mut()),
             need: ExecutableNeed::Value,
         };
         let executable = test_executable(key.clone(), int, nothing);
@@ -5565,7 +5565,7 @@ mod tests {
         let required_absent_destination = tuple_shape(&mut world, &[scalar, nothing]);
         let arity_mismatch_destination = tuple_shape(&mut world, &[scalar]);
         let root = RootId::for_test(0);
-        let function = FunctionId::for_test(0);
+        let function = FunctionId::from_coordinate(0);
         let activation = ActivationKey::from_inputs(root, function, &[], world.types_mut());
         let key = ExecutableKey {
             activation,
