@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-kdt.98.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-kdt.98",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "A function reference is a construction edge of the call graph, as a lambda already is",
   "type": "task",
-  "updated_at": "2026-09-16T01:36:20Z"
+  "updated_at": "2026-09-16T01:36:21Z"
 }
