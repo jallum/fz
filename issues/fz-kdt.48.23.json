@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T21:54:22Z",
+  "description": "Goal: Return canonical bottom from public plain-map construction when its final required field map contains canonical bottom, without adding a second traversal or changing duplicate-key resolution.\n\nSignal: `Types::map` always gives its input iterator to `Descr::map_of`, which builds an ordered `BTreeMap`, then enters generic descriptor normalization. A plain map requires every listed field; a final field whose `Ty` is `none` makes the product uninhabited. This is the map analogue of the tuple product law, but input pairs can repeat a key, so an earlier bottom may be overwritten by a later inhabited value.\n\nStrategy: Build the final ordered field map once, as today. Account for final bottom-valued fields as each insertion replaces or adds a value, so the completed map tells us whether it is impossible without a second value scan. Transfer the exact `BTreeMap` into `Descr::map_of`; return `none` before descriptor normalization if the final count is nonzero. Do not add a cache, hash, deep comparison, or a broad map-DNF cleanup.\n\nTDD: First prove an interior final bottom field currently goes through interning work. Preserve the duplicate-key case where a later inhabited value overwrites an earlier bottom. Green proof must show no interning work for the final-bottom case.\n\nDocs and acceptance: Explain the required-field product law and duplicate resolution constraint. Run focused type tests and enum/f98 canaries, fmt, check, strict Clippy, full workspace tests, cold branch-base review, one commit, draft stacked PR, and close.",
+  "id": "fz-kdt.48.23",
+  "labels": [],
+  "parent": "fz-kdt.48",
+  "priority": 2,
+  "status": "open",
+  "title": "Return impossible maps before descriptor normalization",
+  "type": "task",
+  "updated_at": "2026-09-16T21:54:22Z"
+}
