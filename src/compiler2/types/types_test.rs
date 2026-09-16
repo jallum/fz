@@ -3,6 +3,7 @@ use std::mem;
 use std::slice;
 
 use super::*;
+use crate::compiler2::ModuleId;
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::finite_set::FiniteSet;
 use crate::runtime_type_predicate::{CallableShape, ListShape, ListShapes, RuntimeTypePredicate};
@@ -234,6 +235,49 @@ fn impossible_map_returns_before_the_type_boundary() {
         t.map_field_lookup(&overwritten, &shadowed),
         Some(int),
         "the last value for a duplicate map key remains its field type"
+    );
+}
+
+#[test]
+fn impossible_struct_returns_before_the_type_boundary() {
+    let mut t = Types::new();
+    let int = t.int();
+    let none = t.none();
+    let before = t.interning_work_stats();
+
+    assert_eq!(
+        t.struct_map(
+            ModuleId::for_test(1),
+            module_name("Pkg.Impossible"),
+            &[
+                (MapKey::Atom("left".to_string()), int),
+                (MapKey::Atom("missing".to_string()), none),
+                (MapKey::Atom("right".to_string()), int),
+            ],
+        ),
+        none,
+        "a struct with an uninhabited required field is uninhabited"
+    );
+    assert_eq!(
+        t.interning_work_stats(),
+        before,
+        "a final bottom struct field decides emptiness without hashing or normalizing a descriptor"
+    );
+
+    let shadowed = MapKey::Atom("shadowed".to_string());
+    let overwritten = t.struct_map(
+        ModuleId::for_test(2),
+        module_name("Pkg.Shadowed"),
+        &[(shadowed.clone(), none), (shadowed.clone(), int)],
+    );
+    assert_ne!(
+        overwritten, none,
+        "the last value for a duplicate struct field remains required"
+    );
+    assert_eq!(
+        t.map_field_lookup(&overwritten, &shadowed),
+        Some(int),
+        "the last value for a duplicate struct field remains its field type"
     );
 }
 

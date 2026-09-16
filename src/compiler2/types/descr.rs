@@ -114,8 +114,13 @@ impl Descr {
         d
     }
 
-    pub(super) fn struct_map(tag: StructTag, fields: impl IntoIterator<Item = (MapKey, Ty)>) -> Self {
-        Self::record(MapTag::Struct(tag), fields)
+    pub(super) fn struct_map(tag: StructTag, fields: BTreeMap<MapKey, Ty>) -> Self {
+        let mut d = Self::unbranded();
+        d.maps.push(Conj::pos_of(MapSig {
+            tag: MapTag::Struct(tag),
+            fields,
+        }));
+        d
     }
 
     pub(super) fn record(tag: MapTag, fields: impl IntoIterator<Item = (MapKey, Ty)>) -> Self {

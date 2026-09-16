@@ -139,10 +139,10 @@ If one is `none`, the product returns `none` without building a tuple descriptor
 or asking normalization to rediscover that fact; inhabited tuples take no extra
 pass over their fields.
 
-Plain-map construction does the same while it builds its ordered required-field
-map. It accounts for replacements, so duplicate keys retain their last value;
-if a final required field is `none`, construction returns `none` without a
-descriptor or a second pass over the fields.
+Plain-map and nominal-struct construction do the same while they build an
+ordered required-field map. They account for replacements, so duplicate keys
+retain their last value; if a final required field is `none`, construction
+returns `none` without a descriptor or a second pass over the fields.
 
 - **`refine_widen(a, b)`** — finite-height least upper bound. Collapses literal axes
   to their base and merges list shapes (`[] ⊔ nonempty(t) = list(t)`), so a joined
