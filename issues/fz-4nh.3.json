@@ -4,7 +4,8 @@
     "fz-4nh.1",
     "fz-4nh.2",
     "fz-4nh.6",
-    "fz-hqb"
+    "fz-hqb",
+    "fz-kdt.177"
   ],
   "blocks": [
     "fz-4nh.4"
@@ -18,5 +19,5 @@
   "status": "in_progress",
   "title": "Port Distill module directly onto the expanded runtime library",
   "type": "task",
-  "updated_at": "2026-09-16T15:18:23Z"
+  "updated_at": "2026-09-16T15:24:51Z"
 }

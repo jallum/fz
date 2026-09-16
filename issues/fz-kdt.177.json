@@ -4,6 +4,7 @@
     "fz-kdt.48"
   ],
   "blocks": [
+    "fz-4nh.3",
     "fz-kdt.64"
   ],
   "created": "2026-09-03T03:08:36Z",
@@ -29,5 +30,5 @@
   "status": "open",
   "title": "Represent recursive denotations without expanding infinite type ladders",
   "type": "task",
-  "updated_at": "2026-09-15T22:12:37Z"
+  "updated_at": "2026-09-16T15:24:51Z"
 }
