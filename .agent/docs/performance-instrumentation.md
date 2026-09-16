@@ -20,10 +20,11 @@ fz2 --log-telemetry <path> interp prog.fz     # JSONL event stream
 fz2 --emit=stats            interp prog.fz    # event counts by name, on exit
 ```
 
-`tools/distill-telemetry.exs` sums a stream's spans into where the time went:
+`tools/distill-telemetry.fz` sums a stream's spans into where the time went:
 by span name, by job kind, by job subject with functions named, by re-run
-count, and by the fact that woke each re-run. The loop that uses it is
-[Profile a Compilation](../strategies/profile-a-compilation.md).
+count, and by the fact that woke each re-run. Run it with
+`fz2 run tools/distill-telemetry.fz -- <trace.jsonl> [--top N]`. The loop that
+uses it is [Profile a Compilation](../strategies/profile-a-compilation.md).
 
 `--dump <kind>=<path>` is per-command (`run`, `build`, `interp`) and writes a
 stage artifact rather than a measurement: `activations`, `types`, `backend`,

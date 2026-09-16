@@ -1,0 +1,27 @@
+6 records, 2 spans, 1.487833 ms from first record to last
+
+timeline (span times include the stream's own rendering; read them as shape, take magnitudes from a sample of the plain binary)
+                  before the first job        0.0 ms
+      first job start to last job stop   1.473917 ms
+             sum of job inclusive time   1.473917 ms
+                   native codegen span        0.0 ms
+     after the last span (program run)   0.013916 ms
+
+span names by inclusive time
+  name  count  inclusive ms  self ms
+  fz.compiler2.job  1  1.473917  1.401542
+  fz.lexer.pass  1  0.072375  0.072375
+
+compiler jobs by kind
+  kind  count  inclusive ms  self ms  max ms
+  IndexCode  1  1.473917  1.401542  1.473917
+
+compiler jobs by kind and subject
+  kind subject  runs  inclusive ms  self ms
+  IndexCode source_owner=19  1  1.473917  1.401542
+
+most re-run jobs
+  kind subject  runs  self ms
+
+wake causes of the most re-run jobs
+

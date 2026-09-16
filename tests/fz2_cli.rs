@@ -1148,6 +1148,21 @@ fn native_telemetry_distiller_reports_compiler_work_and_rejects_bad_jsonl() {
     let _ = remove_file(trace_path);
 }
 
+#[test]
+fn native_telemetry_distiller_matches_a_captured_public_trace() {
+    let output = run_fz2(&[
+        OsStr::new("run"),
+        OsStr::new("tools/distill-telemetry.fz"),
+        OsStr::new("--"),
+        OsStr::new("tests/fixtures/telemetry/distill-sample.jsonl"),
+    ]);
+    assert_successful_stdout(
+        &output,
+        include_str!("fixtures/telemetry/distill-sample.expected.txt"),
+        "native telemetry distiller captured public trace",
+    );
+}
+
 /// `fz.runtime.execution_ready` is the boundary between compiling a program and
 /// running it. The fixture matrix pins where the readiness BYTE falls against a
 /// real compile; what only the stream can show is where the EVENT falls against
