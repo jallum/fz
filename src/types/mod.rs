@@ -34,7 +34,7 @@ impl BuiltinOpaque {
         match self {
             Self::Pid => "pid",
             Self::Ref => "ref",
-            Self::CPointer => "cpointer",
+            Self::CPointer => "c_pointer",
         }
     }
 }
@@ -117,7 +117,7 @@ pub trait Types {
     fn reference(&mut self) -> Self::Ty {
         self.builtin_opaque(BuiltinOpaque::Ref)
     }
-    fn cpointer(&mut self) -> Self::Ty {
+    fn c_pointer(&mut self) -> Self::Ty {
         self.builtin_opaque(BuiltinOpaque::CPointer)
     }
     fn resource(&mut self, payload: Self::Ty) -> Self::Ty;

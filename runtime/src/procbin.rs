@@ -102,7 +102,7 @@ pub unsafe extern "C" fn shared_bin_destructor_noop(_p: *mut SharedBin) {}
 pub fn shared_bin_alloc(bytes: &[u8], bit_len: u64) -> *mut SharedBin {
     // fz-wu9 — overallocate one byte beyond bytes_len and zero it.
     // The trailing NUL is invisible to the language (bytes_len/bit_len
-    // unchanged) and underwrites the cstring extern marshal contract.
+    // unchanged) and underwrites the c_string extern marshal contract.
     let bytes_len = bytes.len();
     let mut v: Vec<u8> = Vec::with_capacity(bytes_len + 1);
     v.extend_from_slice(bytes);

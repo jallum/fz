@@ -30,7 +30,7 @@ fn nullary_scalars_resolve_to_the_same_ty_as_the_direct_types_call() {
         ("boolean", |t| t.bool()),
         ("integer", |t| t.int()),
         ("float", |t| t.float()),
-        ("cpointer", |t| t.cpointer()),
+        ("c_pointer", |t| t.c_pointer()),
         ("binary", |t| t.str_t()),
         ("atom", |t| t.atom()),
         ("any", |t| t.any()),
@@ -72,7 +72,7 @@ fn builtin_opaque_source_names_resolve_to_closed_builtin_identities() {
     for (name, builtin) in [
         ("pid", super::types::BuiltinOpaque::Pid),
         ("ref", super::types::BuiltinOpaque::Ref),
-        ("cpointer", super::types::BuiltinOpaque::CPointer),
+        ("c_pointer", super::types::BuiltinOpaque::CPointer),
     ] {
         let resolved = resolve(&tel, &mut world, name).expect("builtin opaque resolves");
         assert_eq!(world.types_mut().builtin_opaque_singleton(&resolved), Some(builtin));
@@ -96,6 +96,17 @@ fn a_nullary_builtin_applied_with_arguments_reports_the_uniform_arity_error() {
         .expect_err("a nullary builtin applied with an argument should fail to resolve");
 
     assert_eq!(error.msg, "expected 0 type argument(s), got 1 `integer`");
+}
+
+#[test]
+fn compact_c_pointer_spelling_is_not_a_builtin_alias() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+
+    let error = resolve(&tel, &mut world, "cpointer")
+        .expect_err("the legacy spelling should fail rather than silently alias c_pointer");
+
+    assert_eq!(error.msg, "unknown type name `cpointer`");
 }
 
 /// `[T]` (structural), `list(T)`, and bare `list` (defaulting the element to

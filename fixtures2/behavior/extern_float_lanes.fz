@@ -34,7 +34,7 @@
 #                                      from one with the two mixed shapes
 #                                      transposed: each would still answer its
 #                                      own case and fail only the other.
-#   * `(cstring) :: float`          -- integer bank in, float bank out
+#   * `(c_string) :: float`         -- integer bank in, float bank out
 #   * `(c_int) :: c_int`            -- the all-integer control, which always
 #                                      worked and must keep working
 #
@@ -45,7 +45,7 @@ extern "C" defp libc::sqrt(float) :: float
 extern "C" defp libc::pow(float, float) :: float
 extern "C" defp libc::ldexp(float, c_int) :: float
 extern "C" defp libc::jn(c_int, float) :: float
-extern "C" defp libc::atof(cstring) :: float
+extern "C" defp libc::atof(c_string) :: float
 extern "C" defp libc::abs(c_int) :: c_int
 
 def main() do

@@ -186,6 +186,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             fixture_main_detection_follows_def_surface,
         ),
         (
+            "fixture_output_canonicalizes_closure_denotations",
+            fixture_output_canonicalizes_closure_denotations,
+        ),
+        (
             "behavior_fixtures_route_via_filename_not_paths_frontmatter",
             behavior_fixtures_route_via_filename_not_paths_frontmatter,
         ),
@@ -1690,11 +1694,51 @@ fn remove_fz2_build_outputs(out_path: &Path) {
 }
 
 fn normalize(s: &str) -> String {
-    if s.is_empty() || s.ends_with('\n') {
-        s.to_string()
+    let normalized = canonicalize_closure_denotations(s);
+    if normalized.is_empty() || normalized.ends_with('\n') {
+        normalized
     } else {
-        format!("{}\n", s)
+        format!("{normalized}\n")
     }
+}
+
+/// The runtime's closure denotation is a process-local allocation index. It
+/// makes a useful opaque identity while a program is running, but unrelated
+/// source (such as another runtime module) can change it. Fixture output pins
+/// the stable rendered shape and declared arity instead.
+fn canonicalize_closure_denotations(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while cursor < text.len() {
+        let rest = &text[cursor..];
+        if rest.starts_with("#fn<") {
+            let denotation_start = cursor + "#fn<".len();
+            let denotation_end = take_ascii_digits(text.as_bytes(), denotation_start);
+            if denotation_end > denotation_start && text.as_bytes().get(denotation_end) == Some(&b'/') {
+                normalized.push_str(&text[cursor..denotation_start]);
+                normalized.push_str("id");
+                cursor = denotation_end;
+                continue;
+            }
+        }
+        let next = rest.chars().next().expect("cursor remains at a character boundary");
+        normalized.push(next);
+        cursor += next.len_utf8();
+    }
+    normalized
+}
+
+fn fixture_output_canonicalizes_closure_denotations() {
+    assert_eq!(
+        normalize("#fn<111/0>\n#fn<112/2>"),
+        "#fn<id/0>\n#fn<id/2>\n",
+        "fixture output must retain a closure's rendered form and arity without pinning its minted identity",
+    );
+    assert_eq!(
+        normalize("#fn<id/0>\n#fn<missing slash>"),
+        "#fn<id/0>\n#fn<missing slash>\n",
+        "only a numeric denotation in the runtime closure form is canonicalized",
+    );
 }
 
 /// Fixtures whose pinned contract is output + allocations, not compiled

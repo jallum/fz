@@ -1555,7 +1555,7 @@ fn compiler2_frontdoor_quotes_bootstrap_control_and_ffi_forms() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "bootstrap_surface.fz",
-        "extern \"C\" defp libc::open(path :: cstring, flags :: c_int, ...) :: c_int\ndef run(pred) do\n  if pred.(1) do\n    receive do\n      {:ok, value} -> (fn (x) -> x end).(value)\n    after\n      500 -> nil\n    end\n  else\n    nil\n  end\nend\n",
+        "extern \"C\" defp libc::open(path :: c_string, flags :: c_int, ...) :: c_int\ndef run(pred) do\n  if pred.(1) do\n    receive do\n      {:ok, value} -> (fn (x) -> x end).(value)\n    after\n      500 -> nil\n    end\n  else\n    nil\n  end\nend\n",
         &tel,
     )
     .expect("quoted parse");
@@ -1704,7 +1704,7 @@ fn compiler2_frontdoor_parses_complex_extern_signatures() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "extern_surface.fz",
-        "extern \"C\" defp fz_spawn(() -> any) :: pid\nextern \"C\" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer\n",
+        "extern \"C\" defp fz_spawn(() -> any) :: pid\nextern \"C\" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | c_pointer\n",
         &tel,
     )
     .expect("quoted parse");
@@ -1750,7 +1750,7 @@ fn compiler2_frontdoor_parses_complex_extern_signatures() {
         vec![
             Tok::Ident("integer".to_string()),
             Tok::Bar,
-            Tok::Ident("cpointer".to_string()),
+            Tok::Ident("c_pointer".to_string()),
         ],
         "extern constraints should be quoted as token payloads"
     );
