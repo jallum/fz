@@ -25,8 +25,8 @@ def main() do
   assert(File.read(path) == {:ok, "hello!"}, "append extends the file")
   assert(File.exists?(path), "exists? recognizes the file")
 
-  handle = File.open!(path, [:read])
-  assert(File.close(handle) == :ok, "close claims and closes the handle")
+  {:ok, handle} = File.open(path, [:read])
+  assert(File.close(handle) == :ok, "a proven success field retains the open resource")
   assert(File.close(handle) == {:error, :closed}, "close only claims a handle once")
 
   assert(File.rename(path, renamed) == :ok, "rename moves a file")
