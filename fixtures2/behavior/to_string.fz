@@ -18,6 +18,8 @@
 #     impl, not in the primitive, which is why both spellings appear below;
 #   * BINARY, which is identity;
 #   * INTEGER, including a negative;
+#   * the PUBLIC `String.Chars.to_string/1` entry point, rather than only the
+#     `Kernel.to_string/1` convenience wrapper;
 #   * FLOAT, which is `Float.to_string/1` and NOT how `dbg` renders a float.
 #     The pair below prints one value BOTH ways so the divergence is exercised
 #     rather than described: `dbg(1000000000000000.0)` is
@@ -50,6 +52,7 @@ def main() do
 
   dbg(to_string(0))
   dbg(to_string(42))
+  dbg(String.Chars.to_string(42))
   dbg(to_string(-7))
 
   dbg(to_string(2.5))

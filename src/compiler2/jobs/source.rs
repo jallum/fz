@@ -210,13 +210,13 @@ pub(super) fn define_module(
         return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module)));
     }
 
-    if let Some(parent_module) = world.module_named_parent(module_id) {
-        return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module)));
-    }
-
     if let Some(source_owner) = super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(module_id)
     {
         return Ok(JobEffects::wait_on_current(FactKey::CodeIndexed(source_owner)));
+    }
+
+    if let Some(parent_module) = world.module_named_parent(module_id) {
+        return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module)));
     }
 
     Ok(JobEffects::wait_on_current(FactKey::ModuleIndexed(module_id)))

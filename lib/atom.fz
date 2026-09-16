@@ -10,7 +10,7 @@ defmodule Atom do
 
   This always returns the atom's literal name, so `nil` gives `"nil"` here.
   That differs from `to_string/1`, which gives `""` for `nil` by way of the
-  `StringChars` protocol's special case for it.
+  `String.Chars` protocol's special case for it.
 
   ## Examples
 

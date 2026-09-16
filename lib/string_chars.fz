@@ -1,4 +1,4 @@
-# `StringChars`, the protocol behind `to_string/1`, following Elixir's
+# `String.Chars`, the protocol behind `to_string/1`, following Elixir's
 # `String.Chars`. String interpolation lexes to a call to `Kernel.to_string/1`,
 # which dispatches here: `"a#{x}b"` becomes `"a" <> Kernel.to_string(x) <> "b"`
 # before the rest of the compiler ever sees the literal, so an interpolated
@@ -16,12 +16,12 @@
 # The impl has to use fz's name: `for: BitString` would classify as a bare
 # nominal target and silently never match a binary receiver.
 
-defprotocol StringChars do
+defprotocol String.Chars do
   @moduledoc """
   The protocol behind `to_string/1` and string interpolation.
 
   A type converts to a binary by implementing `to_string/1` with `defimpl
-  StringChars, for: SomeType`. `Kernel.to_string/1` dispatches here, and so
+  String.Chars, for: SomeType`. `Kernel.to_string/1` dispatches here, and so
   does every interpolated value, since `"a\#{x}b"` lexes to
   `"a" <> Kernel.to_string(x) <> "b"`.
 
@@ -46,14 +46,14 @@ defprotocol StringChars do
   def to_string(term)
 end
 
-defimpl StringChars, for: Atom do
+defimpl String.Chars, for: Atom do
   # `nil` is the one special case: `to_string(nil)` gives `""`, while
   # `Atom.to_string(nil)` gives `"nil"`.
   def to_string(nil), do: ""
   def to_string(a), do: Atom.to_string(a)
 end
 
-defimpl StringChars, for: Binary do
+defimpl String.Chars, for: Binary do
   extern "C" defp fz_bitstring_is_binary(any) :: integer
 
   # fz's `binary` type does not require byte alignment -- `<<1::4>>` satisfies
@@ -72,10 +72,10 @@ defimpl StringChars, for: Binary do
   end
 end
 
-defimpl StringChars, for: Integer do
+defimpl String.Chars, for: Integer do
   def to_string(i), do: Integer.to_string(i)
 end
 
-defimpl StringChars, for: Float do
+defimpl String.Chars, for: Float do
   def to_string(f), do: Float.to_string(f)
 end
