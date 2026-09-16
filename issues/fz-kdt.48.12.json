@@ -7,9 +7,15 @@
   "id": "fz-kdt.48.12",
   "labels": [],
   "parent": "fz-kdt.48",
+  "comments": [
+    {
+      "text": "Measured through the test-only type-boundary census on the full `fixtures2/00420_enum_take_drop_split.fz` compiler drive after the identity shortcuts: 2,373 shortcuts; 140,419 remaining raw index probes; 11,875 normalizations; 1,033 inserts. Each shortcut replaces descriptor reconstruction and at least one raw probe. This validates the cut, while also showing that the 11,875 genuine normalizations remain the larger next target rather than being hidden by a cache.",
+      "timestamp": "2026-09-16T19:54:22Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Preserve Ty identity through no-op type operations",
   "type": "task",
-  "updated_at": "2026-09-16T19:41:09Z"
+  "updated_at": "2026-09-16T19:54:22Z"
 }
