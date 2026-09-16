@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T02:31:44Z",
+  "description": "GOAL: Let an fz C extern receive bytes into a runtime-owned mutable binary and return the byte count, so libraries can call POSIX `read(2)` directly without a File-specific Rust bridge.\n\nSIGNAL:\n- an explicit C-ABI out-buffer contract passes writable runtime storage and a capacity to C\n- the returned byte count produces a correctly sized immutable fz binary\n- invalid/oversized counts fail loudly\n- interp, JIT, and AOT agree\n- File can use raw descriptors and bare `open`/`read`/`write`/`close` calls for path IO\n\nSTRATEGY: Design one generic output-buffer marshal class and ownership boundary; prove it with a minimal C fixture before migrating File from `FILE *` helpers.",
+  "id": "fz-ope.1",
+  "labels": [],
+  "parent": "fz-ope",
+  "priority": 2,
+  "status": "open",
+  "title": "Add owned binary output buffers for C externs",
+  "type": "task",
+  "updated_at": "2026-09-16T02:31:44Z"
+}
