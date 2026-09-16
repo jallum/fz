@@ -5,7 +5,7 @@
     "fz-4nh.3"
   ],
   "created": "2026-09-16T10:54:50Z",
-  "description": "Add the general runtime operations discovered by the direct source audit: Tuple.to_list/1, Enum.min/2 and Enum.max/2 fallback forms, String.slice/3, and membership through  (or an equally direct language-level equivalent). Document and cross-door test each operation. This is a prerequisite for keeping tools/distill-telemetry.fz structurally faithful rather than rewriting its report code.",
+  "description": "Add the general runtime operations discovered by the direct source audit: Tuple.to_list/1, Enum.min/2 and Enum.max/2 fallback forms, String.slice/3, and the membership operator (or an equally direct language-level equivalent). Document and cross-door test each operation. This is a prerequisite for keeping tools/distill-telemetry.fz structurally faithful rather than rewriting its report code.",
   "id": "fz-hqb",
   "labels": [],
   "parent": "fz-4nh",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Close direct Distill collection compatibility gaps",
   "type": "task",
-  "updated_at": "2026-09-16T10:55:00Z"
+  "updated_at": "2026-09-16T10:55:11Z"
 }
