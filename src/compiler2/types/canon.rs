@@ -216,7 +216,6 @@ impl<'a> TyCanon<'a> {
         }
         let mut factors: Vec<String> = c.pos.iter().map(|p| sig(self, cx, p)).collect();
         factors.extend(c.neg.iter().map(|n| format!("not({})", sig(self, cx, n))));
-        factors.sort();
         factors.join(" & ")
     }
 
@@ -268,10 +267,11 @@ impl<'a> TyCanon<'a> {
             (None, false, _) => unreachable!("an absent fragment is always erased"),
         }];
         if !erased {
-            factors.extend(sorted(c.neg.iter().filter_map(|n| n.elem).map(|elem| {
+            let residuals: Vec<Ty> = c.neg.iter().filter_map(|n| n.elem).collect();
+            factors.extend(residuals.into_iter().map(|elem| {
                 let rendered = self.body(cx, elem);
                 format!("not(non_empty_list({rendered}))")
-            })));
+            }));
         }
         factors.join(" & ")
     }
