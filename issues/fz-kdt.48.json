@@ -23,11 +23,15 @@
     {
       "text": "Third cold review of .48.4 (3cf777603, 2026-09-16), findings outside .48.4's scope, recorded for planning: (1) json_roundtrip carries 2 canon FALSE DIFFERENCES today: Ty(174) '{:error, binary} \u0026 not({any, any, any})' is mutually subtype with Ty(78) '{:error, binary}' (and the same pair under a ':nil |' union). A negative factor of DISJOINT ARITY (a 3-tuple carved out of a 2-tuple clause) is vacuous and nothing prunes it at intern; the absorber cannot see it (one clause, no siblings). Factor-level pruning, not axis-level; not covered by any open .48 sub-ticket; json_roundtrip is not in the census TARGETS so the ratchet does not catch it. Over a 10-fixture sweep it is the only fixture with false differences (2), 53 canon duplicates total. (2) Of the ~5% of intern calls that miss the index-first lookup, most still normalize onto an id the index already holds: 7,198 lookup misses vs 1,036 arena inserts on enum_take_drop_split (~6,100 full normalizations per compile for nothing). Next available reuse after the lookup.",
       "timestamp": "2026-09-16T04:52:33Z"
+    },
+    {
+      "text": "Cold review of .48.6 (2f4e77719, 2026-09-16), residues measured, not filed: (1) canon is not injective-up-to-equivalence on the list axis for a multi-clause axis whose clauses cover one single-clause axis, e.g. list(int) | (list(int|:a) \\ non_empty_list(int)) is equivalent to list(int|:a) but interns and renders apart; absorb_axis cannot see it (the wider clause is not contained in the union of the narrower ones' spellings). Randomized model sweep: 28 (flat) / 142 (nested) such ordered pairs at 2f4e77719, down from 1136 / 1232 at its parent, so .48.6 shrinks the class ~97% / ~88% and does not create it. (2) var-bearing list clauses that need element arithmetic are left as built at the boundary (variable-aware meet is out of scope), so non_empty_list(a) and non_empty_list(a) \\ non_empty_list(int) are two ids that canon renders the same: counted by the census as one denotation, two ids. (3) instantiate's var-as-atom property: 10 of 600 random var-bearing list expressions reach a different id substituting first vs normalizing first, none equivalent, identical set on parent and .48.6.",
+      "timestamp": "2026-09-16T07:25:01Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Intern one Ty per denotation at the sole type boundary",
   "type": "bug",
-  "updated_at": "2026-09-16T04:52:33Z"
+  "updated_at": "2026-09-16T07:25:01Z"
 }
