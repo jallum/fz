@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-16T20:05:31Z",
   "created": "2026-09-16T19:58:39Z",
   "description": "## Goal\n\nWhen `Types::instantiate` is given a concrete `Ty`, return that existing handle before cloning its descriptor or asking `Types::intern` to rediscover it. An empty substitution is likewise an exact identity on every `Ty`.\n\n## Evidence\n\nThe current implementation clones its input descriptor, recursively asks whether it contains variables, then re-interns the unchanged descriptor when no substitution can apply. The newly landed fz-kdt.48.12 boundary census found 2,373 similar identity shortcuts on `fixtures2/behavior/enum_take_drop_split.fz`; instantiation is the next local algebraic identity on the contract-application path.\n\n## Design\n\nUse the existing `Types::unchanged` path from fz-kdt.48.12. Do not add a substitution cache, type hash, raw descriptor comparison, or a second normalization authority. A type that may contain a substituted variable still follows the ordinary recursive instantiation and sole interning boundary.\n\n## TDD / acceptance\n\nFirst prove concrete nested types and empty substitutions leave the interning-work census unchanged except for one identity shortcut. Prove a matching substitution still produces the existing specialized `Ty`, and a nonmatching substitution preserves semantics. Re-measure the exact enum fixture under the boundary census; document the added shortcut count. Focused type/canon/three-door fixture tests, formatting, workspace check and strict Clippy pass.",
   "id": "fz-kdt.48.13",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Retain concrete Ty through instantiation",
   "type": "task",
-  "updated_at": "2026-09-16T20:01:34Z"
+  "updated_at": "2026-09-16T20:05:31Z"
 }
