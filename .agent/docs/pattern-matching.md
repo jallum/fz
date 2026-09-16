@@ -261,7 +261,9 @@ readings of "did this input arrive" cannot disagree quietly.
 
 Each inline or receive target slot owns its `OutcomeEdge` target and explicit
 `{ subject, parameter: ValueId, role: Semantic | Physical }` arguments. Its
-index is the plan-owned `OutcomeId`; construction validates that alignment once.
+index is the plan-owned `OutcomeId`. The pattern payload and every target record
+derive that identity from their shared slot; none repeats it or validates a
+parallel copy.
 Target parameters are constructed from that relation. Semantic typing and the
 existing value-origin machinery borrow the owning body's plan and dispatch
 inputs; keying, tuple/callable transport, and execution do not reconstruct

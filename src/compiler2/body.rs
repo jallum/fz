@@ -637,7 +637,6 @@ pub struct ControlDispatch {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OutcomeEdge {
-    pub(crate) outcome: crate::dispatch_matrix::OutcomeId,
     pub(crate) target: ControlEntryId,
     pub(crate) arguments: Box<[OutcomeArgument]>,
 }
@@ -671,13 +670,6 @@ impl ControlDispatch {
             outcomes.len(),
             plan.outcomes.len(),
             "an inline dispatch owns one target slot per plan outcome"
-        );
-        assert!(
-            outcomes
-                .iter()
-                .enumerate()
-                .all(|(index, edge)| edge.outcome.0 as usize == index),
-            "inline dispatch target slots stay indexed by OutcomeId"
         );
         Self {
             plan,

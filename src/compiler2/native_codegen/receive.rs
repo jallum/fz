@@ -147,12 +147,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
             pinned.len()
         )));
     }
-    if clauses.len() != dispatch.outcomes.len()
-        || !clauses
-            .iter()
-            .enumerate()
-            .all(|(index, clause)| clause.outcome.0 as usize == index)
-    {
+    if clauses.len() != dispatch.outcomes.len() {
         return Err(CodegenError::new(
             "receive dispatch must own one OutcomeId-indexed target slot per plan outcome",
         ));

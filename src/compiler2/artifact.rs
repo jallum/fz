@@ -1696,7 +1696,6 @@ fn native_conts_equal(left: &IrCont, right: &IrCont) -> bool {
 
 fn native_receive_clauses_equal(left: &IrReceiveClause, right: &IrReceiveClause) -> bool {
     native_callsite_idents_equal(&left.ident, &right.ident)
-        && left.outcome == right.outcome
         && left.arguments == right.arguments
         && left.guard == right.guard
         && left.body == right.body

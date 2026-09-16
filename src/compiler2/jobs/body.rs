@@ -69,7 +69,6 @@ struct ExprDispatch {
 
 #[derive(Debug, Clone)]
 struct ExprOutcome {
-    outcome: crate::dispatch_matrix::OutcomeId,
     arguments: Box<[super::super::body::OutcomeArgument]>,
     block: ExprBlock,
 }
@@ -2475,7 +2474,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             dispatch: Box::new(ExprDispatch {
                 plan: Rc::new(self.compile_bool_true_dispatch(span)?),
                 arm_blocks: vec![ExprOutcome {
-                    outcome: crate::dispatch_matrix::OutcomeId(0),
                     arguments: Box::default(),
                     block: arm_block,
                 }],
@@ -2529,7 +2527,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                     dispatch: Box::new(ExprDispatch {
                         plan: Rc::new(plan),
                         arm_blocks: vec![ExprOutcome {
-                            outcome: crate::dispatch_matrix::OutcomeId(0),
                             arguments,
                             block: success_block,
                         }],
@@ -2640,11 +2637,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     ) -> Result<ExprOutcome, FatalError> {
         let arguments = self.bind_outcome_arguments(outcome, &mut env);
         let block = self.lower_expr_as_block(&clause.body, env)?;
-        Ok(ExprOutcome {
-            outcome: outcome.outcome,
-            arguments,
-            block,
-        })
+        Ok(ExprOutcome { arguments, block })
     }
 
     fn bind_outcome_arguments(
@@ -3232,7 +3225,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                                 entries,
                             );
                             super::super::body::OutcomeEdge {
-                                outcome: arm.outcome,
                                 target,
                                 arguments: arm.arguments,
                             }
@@ -3292,7 +3284,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                                 entries,
                             );
                             super::super::body::OutcomeEdge {
-                                outcome: outcome.outcome,
                                 arguments: outcome.arguments.clone(),
                                 target,
                             }

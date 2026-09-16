@@ -311,7 +311,6 @@ fn native_inventory_closes_calls_continuations_and_receive_outcomes_transitively
         ident: CallsiteIdent::synthetic(),
         clauses: vec![ReceiveClause {
             ident: CallsiteIdent::synthetic(),
-            outcome: crate::dispatch_matrix::OutcomeId(0),
             arguments: Vec::new(),
             guard: Some(FnId(5)),
             body: FnId(6),

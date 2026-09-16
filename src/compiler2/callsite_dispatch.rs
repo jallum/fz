@@ -3692,8 +3692,13 @@ mod tests {
         let bodies = plan
             .outcomes
             .iter()
-            .filter(|outcome| reachability.outcomes.contains(&outcome.outcome))
-            .map(|outcome| outcome.body_id)
+            .enumerate()
+            .filter(|(index, _)| {
+                reachability
+                    .outcomes
+                    .contains(&crate::dispatch_matrix::OutcomeId(*index as u32))
+            })
+            .map(|(_, outcome)| outcome.body_id)
             .collect::<Vec<_>>();
         assert_eq!(
             bodies,

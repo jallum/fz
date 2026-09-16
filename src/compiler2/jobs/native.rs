@@ -1801,7 +1801,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         let span = entries[edge.target.as_u32() as usize].span;
                         Ok(ReceiveClause {
                             ident: CallsiteIdent::from_source(span),
-                            outcome: edge.outcome,
                             arguments,
                             guard: None,
                             body,

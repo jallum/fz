@@ -326,7 +326,7 @@ fn collect_reachable_bodies_from_graph<TypeHandle>(
     match node {
         DispatchNode::Fail => {}
         DispatchNode::Outcome { outcome, .. } => {
-            if let Some(outcome) = plan.outcomes.iter().find(|entry| entry.outcome == *outcome) {
+            if let Some(outcome) = plan.outcome(*outcome) {
                 out.insert(outcome.body_id);
             }
         }
