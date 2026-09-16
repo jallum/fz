@@ -217,7 +217,8 @@ impl RuntimeTypePredicate {
         }
     }
 
-    #[cfg(test)]
+    /// The test every value passes. It is what a list clause that admits every
+    /// element asks its head.
     pub(crate) fn any() -> Self {
         Self {
             ints: FiniteSet::any(),

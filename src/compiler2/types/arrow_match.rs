@@ -1253,6 +1253,9 @@ mod pinned_verdicts {
     // legal: the overload accepts ints. If the upper bounds of the two clauses
     // are MET, `a`'s upper is `int ∩ binary = none` and the lower `int` escapes
     // it — a FALSE Invalid.
+    //
+    // `b = none` makes the result `[none]`, which is the empty list and is
+    // stored and rendered as one.
     #[test]
     fn r1_overloaded_callable_argument() {
         let mut t = Types::new();
@@ -1270,7 +1273,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, mapper], &list_b, &no_bounds(), &[list_int, overloaded]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[int], (int) -> none] result=[none]",
+            "Known params=[[int], (int) -> none] result=[]",
             "R1 overloaded"
         );
     }
@@ -1347,7 +1350,9 @@ mod pinned_verdicts {
             "Known params=[[int], (resource(int)) -> :nil] result=[int]",
             "R4 resource-under-param"
         );
-        // And covariantly, for contrast: resource(any) at resource(a).
+        // And covariantly, for contrast: `resource(any)` at `resource(a)`. A
+        // resource over every payload IS every resource, so the axis holds its
+        // top, which display renders back as the `resource(any)` a user writes.
         let v2 = t.match_arrow(&[pat_res], &a, &no_bounds(), &[wit_res]);
         assert_eq!(
             render(&t, &v2),
@@ -1470,7 +1475,9 @@ mod pinned_verdicts {
             "Known params=[[int], (int) -> :nil] result=[int]",
             "R9 (any)->nil argument"
         );
-        // any as the covariant witness of the element itself.
+        // `any` as the covariant witness of the element itself. A list over
+        // every element is every list, so the axis holds its top, which display
+        // renders back as the `[any]` a user writes.
         let list_any = t.list(any);
         let v3 = t.match_arrow(&[list_a, pat_fn], &list_a, &no_bounds(), &[list_any, any_fn]);
         assert_eq!(
@@ -2549,13 +2556,15 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[{:done, []} | {:halted, []} | {:suspended, [], () -> any}] result=[]",
+            "Known params=[{:done | :halted, []} | {:suspended, [], () -> any}] result=[]",
             "X4"
         );
     }
 
     // X4B. The SAME question with a SAME-arity tuple union, which the arity
-    // projection could always descend: X4's control. The two must agree.
+    // projection could always descend: X4's control. The two must agree. Both
+    // arms bind the payload to the same `[]`, so the two rectangles they carve
+    // are one rectangle over the union of their tags.
     #[test]
     fn x4b_same_arity_tuple_union_binds_the_payload_the_argument_supplied() {
         let mut t = Types::new();
@@ -2568,11 +2577,7 @@ mod pinned_verdicts {
         let empty = t.empty_list();
         let arg = t.tuple(&[done, empty]);
         let v = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
-        assert_eq!(
-            render(&t, &v),
-            "Known params=[{:done, []} | {:halted, []}] result=[]",
-            "X4B"
-        );
+        assert_eq!(render(&t, &v), "Known params=[{:done | :halted, []}] result=[]", "X4B");
     }
 
     // X5. A BRANDED argument at a ground pattern field is ACCEPTED, and that
@@ -2677,7 +2682,8 @@ mod pinned_verdicts {
     // element as `none`, so `a = none` -- the BOTTOM lower bound, and the
     // least solution, since instantiating the pattern with it gives back
     // `[[]]`, the argument itself. Sound, and absorbed by the join the moment
-    // any other occurrence contributes.
+    // any other occurrence contributes. A list over `none` holds no non-empty
+    // list, so it IS `[]`, and the rendering says so.
     #[test]
     fn x7_empty_list_one_level_down() {
         let mut t = Types::new();
@@ -2687,7 +2693,7 @@ mod pinned_verdicts {
         let empty = t.empty_list();
         let list_empty = t.list(empty);
         let v = t.match_arrow(&[list_list_a], &list_a, &no_bounds(), &[list_empty]);
-        assert_eq!(render(&t, &v), "Known params=[[[none]]] result=[none]", "X7");
+        assert_eq!(render(&t, &v), "Known params=[[[]]] result=[]", "X7");
         let ArrowMatch::Known { params, .. } = &v else {
             unreachable!("X7 answers Known");
         };

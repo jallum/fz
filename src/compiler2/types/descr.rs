@@ -2,7 +2,7 @@
 
 use super::bits::BasicBits;
 use super::conj::Conj;
-use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top, normalize_empty_nonempty_list_unions};
+use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top};
 use super::emptiness::{
     Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
@@ -324,13 +324,22 @@ impl Descr {
         out
     }
 
-    pub(super) fn as_pure_list(&self, _cx: TyCtx<'_>) -> Option<&ListSig> {
-        self.axis_free()
-            .then_some(())
-            .and_then(|_| single_positive(&self.lists))
-            .filter(|_| {
-                self.tuples.is_empty() && self.resources.is_empty() && self.funcs.is_empty() && self.maps.is_empty()
-            })
+    /// This type read as ONE list signature, when it is purely a list and
+    /// nothing else.
+    ///
+    /// `any_ty` is the caller's interned `any`, and it is what the axis TOP is
+    /// read as: `types::axis` writes every axis's top as the clause with no
+    /// factors, so the widest list carries no sig for this to borrow and the
+    /// widest one has to be built. Every other clause shape answers from what
+    /// it stores.
+    pub(super) fn as_pure_list(&self, any_ty: Ty) -> Option<ListSig> {
+        self.pure_axis(&self.lists, || ListSig {
+            empty: true,
+            elem: Some(any_ty),
+        })
+        .filter(|_| {
+            self.tuples.is_empty() && self.resources.is_empty() && self.funcs.is_empty() && self.maps.is_empty()
+        })
     }
 
     /// True when this type is purely the list FAMILY — one or more list
@@ -403,13 +412,31 @@ impl Descr {
             })
     }
 
-    pub(super) fn pure_resource(&self) -> Option<&ResourceSig> {
-        self.axis_free()
-            .then_some(())
-            .and_then(|_| single_positive(&self.resources))
+    /// This type read as ONE resource signature. `any_ty` spells the axis top's
+    /// payload, for the reason [`as_pure_list`](Self::as_pure_list) states.
+    pub(super) fn pure_resource(&self, any_ty: Ty) -> Option<ResourceSig> {
+        self.pure_axis(&self.resources, || ResourceSig { payload: any_ty })
             .filter(|_| {
                 self.tuples.is_empty() && self.lists.is_empty() && self.funcs.is_empty() && self.maps.is_empty()
             })
+    }
+
+    /// One axis's single clause read as one signature: the sig it stores, or
+    /// `widest` where the clause is the axis's top and stores none.
+    ///
+    /// Only the list and resource axes have a `widest` to name. Every tuple is
+    /// not one `TupleSig` (arity is unbounded), every map is not one `MapSig`
+    /// (tags are), and every callable is not one `ArrowSig`, so the tuple, map
+    /// and arrow readers below answer `None` for their axis top and are right
+    /// to.
+    fn pure_axis<T: Clone>(&self, clauses: &[Conj<T>], widest: impl FnOnce() -> T) -> Option<T> {
+        if !self.axis_free() {
+            return None;
+        }
+        match clauses {
+            [clause] if clause.is_top() => Some(widest()),
+            _ => single_positive(clauses).cloned(),
+        }
     }
 
     pub(super) fn pure_arrow(&self) -> Option<&ArrowSig> {
@@ -468,10 +495,54 @@ impl Descr {
 
     /// A refinement of nothing is nothing, and a value carries at most one
     /// brand, so an empty brand slot (`Meters and Feet`) is empty too.
+    ///
+    /// Several DESCRIPTOR shapes reach the bottom — an empty slot over
+    /// inhabited kind axes, empty kind axes under a slot still at top — and
+    /// this is the test that recognizes all of them, so descriptor arithmetic
+    /// can treat the bottom as the union identity before any id exists. After
+    /// `Types::intern` those shapes are one interned identity, and
+    /// `Types::is_empty(t)` holds exactly when `t` is `none()`.
     pub(super) fn looks_empty(&self) -> bool {
         self.brands.is_none() || self.structure_looks_empty()
     }
 
+    /// Whether this descriptor denotes EVERY value.
+    ///
+    /// [`looks_full`](Self::looks_full) proves it structurally and answers
+    /// almost every ask, but it is INCOMPLETE: an axis can denote its whole
+    /// kind without being written as its top. The callable axis is the one
+    /// intern leaves unabsorbed (`types::axis` says why), so
+    /// `(int) -> int ∨ ¬((int) -> int)` is every callable in two clauses, and
+    /// a descriptor carrying it is `any` that does not look full. The semantic
+    /// check behind it is reached only for a descriptor that already meets
+    /// every necessary condition — every scalar axis saturated and every
+    /// structural axis inhabited — which keeps the negation it costs off the
+    /// common path. It mints nothing: the question is asked of descriptors.
+    ///
+    /// This is the ONE implementation of "is this everything". A structural
+    /// answer alone reports a false difference wherever the two spellings of
+    /// `any` diverge, and both the axis absorber and the canonical rendering
+    /// ask it.
+    pub(super) fn is_full(&self, cx: TyCtx<'_>) -> bool {
+        if self.looks_full() {
+            return true;
+        }
+        let saturated = self.basic == BasicBits::ALL
+            && self.atoms.is_any()
+            && self.opaques.is_any()
+            && self.brands.is_any()
+            && self.vars.is_any()
+            && !self.tuples.is_empty()
+            && !self.lists.is_empty()
+            && !self.resources.is_empty()
+            && !self.funcs.is_empty()
+            && !self.maps.is_empty();
+        saturated && Descr::any().is_subtype(cx, self)
+    }
+
+    /// The structural half of [`is_full`](Self::is_full): every axis written as
+    /// its top. Sound, never complete — ask `is_full` unless the caller wants
+    /// the spelling rather than the denotation.
     pub(super) fn looks_full(&self) -> bool {
         self.basic == BasicBits::ALL
             && self.atoms.is_any()
@@ -490,15 +561,16 @@ impl Descr {
     /// brands over one inner) and a hull when they differ on both
     /// (`Meters | utf8` widens to "int or binary, any brand").
     ///
-    /// A BOTTOM is the identity first, before any of that. Bottom no longer
-    /// has one shape — a structural meet (`int and binary`) empties the kind
-    /// axes and leaves the slot at top, a brand meet (`Meters and Feet`)
-    /// empties the slot and leaves the kind axes inhabited — so a pointwise
-    /// hull would read an EMPTY operand's factors as constraints and widen the
-    /// other side by them: `nothing | Meters(int)` would answer `int`.
-    /// [`looks_empty`](Self::looks_empty) is the one bottom test, and asking
-    /// it here is what keeps `∅ ∪ x = x` a law rather than a property of one
-    /// interned identity.
+    /// A BOTTOM is the identity first, before any of that. This runs on
+    /// descriptors, BEFORE interning, and there the bottom has several shapes
+    /// — a structural meet (`int and binary`) empties the kind axes and leaves
+    /// the slot at top, a brand meet (`Meters and Feet`) empties the slot and
+    /// leaves the kind axes inhabited. A pointwise hull would read an EMPTY
+    /// operand's factors as constraints and widen the other side by them:
+    /// `nothing | Meters(int)` would answer `int`.
+    /// [`looks_empty`](Self::looks_empty) recognizes every shape, and asking
+    /// it here is what keeps `∅ ∪ x = x` a law of the arithmetic rather than a
+    /// property of the one identity interning later assigns.
     pub(super) fn union(&self, _cx: TyCtx<'_>, other: &Descr) -> Descr {
         if self.looks_empty() {
             // A join of two nothings is THE nothing: answering with either
@@ -520,7 +592,7 @@ impl Descr {
             brands: self.brands.union(&other.brands),
             vars: self.vars.union(&other.vars),
             tuples: dnf_union(&self.tuples, &other.tuples),
-            lists: normalize_empty_nonempty_list_unions(dnf_union(&self.lists, &other.lists)),
+            lists: dnf_union(&self.lists, &other.lists),
             resources: dnf_union(&self.resources, &other.resources),
             funcs: dnf_union(&self.funcs, &other.funcs),
             maps: dnf_union(&self.maps, &other.maps),
@@ -665,10 +737,11 @@ impl Descr {
 
     fn erase_nominal(&self, cx: TyCtx<'_>) -> Descr {
         // Erasure drops a REFINEMENT, so it can only ever keep or widen the
-        // set — except at the bottom whose emptiness IS the empty slot
-        // (`Meters and Feet`), where releasing the slot would resurrect the
-        // inner as a live `int` and tell the brand-blind runtime question
-        // (`is_value_disjoint`) that an uninhabited type shares values.
+        // set — except at a bottom whose emptiness IS the empty slot
+        // (`Meters and Feet` before interning), where releasing the slot would
+        // resurrect the inner as a live `int` and tell the brand-blind runtime
+        // question (`is_value_disjoint`) that an uninhabited type shares
+        // values.
         if self.looks_empty() {
             return Descr::none();
         }

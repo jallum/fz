@@ -121,29 +121,87 @@ impl ElemEvidence {
     }
 }
 
-pub(crate) fn list_clause_empty(cx: TyCtx<'_>, c: &Conj<ListSig>, memo: &mut Memo) -> bool {
-    let mut empty = true;
+/// What a list clause DENOTES, read off its factors once.
+///
+/// A `ListSig` denotes `[]` (when `empty`) together with every non-empty list
+/// whose elements all lie in `elem`, so a whole clause says only two things:
+/// does it hold `[]`, and which non-empty lists does it keep. Everything that
+/// reads a list clause -- emptiness here, the normal form the persistence
+/// boundary writes, the canonical rendering -- reads it through this one
+/// answer, so none of them can disagree about what a clause means.
+pub(crate) struct ListDenotation {
+    pub(crate) holds_empty: bool,
+    /// The non-empty lists the clause keeps, absent when it keeps none.
+    pub(crate) non_empty: Option<NonEmptyLists>,
+}
+
+/// Every non-empty list over `elem`, except those whose elements all lie in
+/// one of `minus`.
+///
+/// Each entry of `minus` is already met with `elem`, which is exact
+/// (`L(F) \ L(N) = L(F) \ L(F ∩ N)`) and is what makes a subtraction that
+/// removes nothing recognizable: it survives only when it removes some of
+/// `elem` and not all of it.
+pub(crate) struct NonEmptyLists {
+    pub(crate) elem: Descr,
+    pub(crate) minus: Vec<Descr>,
+}
+
+/// Whether a list clause holds `[]`, read off the `empty` flags alone.
+///
+/// `[]` is in every positive that carries the flag and in no negative that
+/// does, which is the whole rule: it touches no element, so it is the same
+/// answer before and after a substitution, and the axis merge across a clause
+/// set may ask it without a `TyCtx`.
+pub(super) fn clause_holds_empty(c: &Conj<ListSig>) -> bool {
+    c.pos.iter().all(|p| p.empty) && !c.neg.iter().any(|n| n.empty)
+}
+
+/// `None` when the clause denotes nothing.
+///
+/// A subtraction swallows the non-empty fragment on its OWN or not at all: as
+/// soon as no single `minus` covers `elem`, pick one element outside each and
+/// put them in one list -- it is over `elem` and outside every `minus`. That
+/// single-negative rule is the one the axis rewrites above must not outrun.
+pub(crate) fn list_denotation(cx: TyCtx<'_>, c: &Conj<ListSig>, memo: &mut Memo) -> Option<ListDenotation> {
+    let holds_empty = clause_holds_empty(c);
+    let just_empty = || {
+        holds_empty.then_some(ListDenotation {
+            holds_empty: true,
+            non_empty: None,
+        })
+    };
     let mut evidence = ElemEvidence::Unconstrained;
     for p in &c.pos {
-        empty &= p.empty;
         evidence = evidence.meet(cx, p.elem, memo);
     }
-    let t = evidence.fragment();
-    if !empty && t.is_none() {
-        return true;
-    }
-    if c.neg.is_empty() {
-        return false;
-    }
-    let empty_covered = !empty || c.neg.iter().any(|n| n.empty);
-    let non_empty_covered = match t {
-        None => true,
-        Some(ref t) => c.neg.iter().any(|n| {
-            n.elem
-                .is_some_and(|elem| t.diff(cx.descr(&elem)).is_empty_memo(cx, memo))
-        }),
+    let Some(elem) = evidence.fragment() else {
+        return just_empty();
     };
-    empty_covered && non_empty_covered
+    let mut minus: Vec<Descr> = Vec::new();
+    for n in &c.neg {
+        // A negative with no element denotes `[]` alone, so it has already
+        // been read into `holds_empty` and takes nothing off the fragment.
+        let Some(cut) = n.elem else { continue };
+        let cut = elem.intersect(cx.descr(&cut));
+        if cut.is_empty_memo(cx, memo) {
+            continue;
+        }
+        if elem.diff(&cut).is_empty_memo(cx, memo) {
+            return just_empty();
+        }
+        if !minus.contains(&cut) {
+            minus.push(cut);
+        }
+    }
+    Some(ListDenotation {
+        holds_empty,
+        non_empty: Some(NonEmptyLists { elem, minus }),
+    })
+}
+
+pub(crate) fn list_clause_empty(cx: TyCtx<'_>, c: &Conj<ListSig>, memo: &mut Memo) -> bool {
+    list_denotation(cx, c, memo).is_none()
 }
 
 pub(crate) fn resource_clause_empty(cx: TyCtx<'_>, c: &Conj<ResourceSig>, memo: &mut Memo) -> bool {

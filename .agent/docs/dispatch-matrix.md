@@ -79,6 +79,58 @@ and materialization follows the answer. The plan is a `PatternDispatchPlan<Ty>`
 built from the receiver-narrowed `CallTargetSummary.surface_inputs`, with opaque
 body ids assigned to the destinations in order.
 
+### Which inputs the plan asks, and in what order
+
+`dispatch_columns` decides both, once, from the same runtime questions the drop
+and the seat read.
+
+*Which*: only the inputs the alternatives do not all carry one observable
+surface at. Where every arm carries the same surface the emitted test admits the
+same values to all of them, so it separates nothing and the plan does not ask
+it — the same fact *Seating* states from the other side.
+
+*In what order*: an input where some pair of arms is **separated** — their
+questions admit no value in common, `separated_at`, which is the one relation
+`seating` folds across the inputs and this folds across the pairs — is asked
+before an input the arms only **overlap** at. Among inputs of one kind the plan
+keeps input order, which is determinism and nothing more.
+
+The order is free to choose because a row is a conjunction over its inputs and
+every row lists the same inputs: permuting the conjuncts leaves each arm
+admitting exactly the set it admitted, arm order is untouched, and a first-match
+walk over unchanged arms admitting unchanged sets routes every value where it
+already went. What the order does decide is how many questions a value answers
+on the way. A value bound for a later arm walks through the arms seated ahead of
+it and leaves each at the first question that refuses it, so a separating input
+costs it one question per arm skipped, while an overlapping input costs it that
+question *plus* the separating one behind it.
+
+This is Maranget's column selection, with one twist: our "constructors" are
+type-membership tests that OVERLAP — `{:cont, C}` lies inside
+`{:cont | :halt, C}` — so "separates" is the overlap verdict on the runtime
+tests — `RuntimeTypePredicate::overlaps`, read as `separated_at` — and not
+constructor inequality. The decision-tree spine is already in
+`compile_arm_sequence`: it walks the columns in the order the rows state them
+and shares one test node across the run of arms that ask a column identically.
+What it lacked was a principled order, and it needs no verdicts of its own to
+get one — every row of a selection plan lists the same columns in the same
+order, so the block's arms already agree on which column comes next.
+
+`List.reduce_while_step/3`'s `delivered_resume` continuation is the measured
+case: two arms carrying `{:cont | :halt, {[int], int}}` and `{:cont, {[int], int}}`
+at one input and two disjoint closure sets at another. Asking the closure first
+costs two matched questions in either seat; asking the tuple first costs three
+for the values of whichever arm is seated second. That is why the seat a separated pair is
+given is now a determinism choice in COST as well as in meaning — flipping
+`lex_elements_then_longer`'s tie-break, which decides that seat, moves no
+`SURFACE_MEMBERSHIP_CENSUS` row.
+
+What this does NOT do is merge the two arms' separating questions into one test.
+Sharing a test node needs the two arms to ask the SAME question, and a
+separating column's questions are disjoint by definition; collapsing them would
+need a proof that failing one arm's question implies passing the other's, which
+nothing on the path supplies.
+
 A settled target is not automatically a destination. An arm asks its question
 through `RuntimeTypePredicate`, which is coarser than the type it is projected
 from: `[int]` and `[int | :ok]` project to overlapping questions -- the head
@@ -611,7 +663,7 @@ three things:
   that subject on the separation arm and was then judged blind at subject 1 —
   a routing that routes nothing, reported as a seat obligation.
   A subject the two arms ask IDENTICALLY is skipped: it admits the same set to
-  both, whatever that set is, and where every arm asks it `discriminating_inputs`
+  both, whatever that set is, and where every arm asks it `dispatch_columns`
   drops it and the plan emits no test there at all. That is stated rather than
   inferred, because not every projected test is realizable — a tuple clause with
   a subtracted signature loses its whole arity in

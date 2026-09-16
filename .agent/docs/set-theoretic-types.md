@@ -106,50 +106,281 @@ coordinate or resource payload, a non-empty list sig with no element left).
 `dnf_union` drops duplicate clauses and `dnf_neg` skips duplicate factors.
 
 The persistence boundary (`Types::intern`) canonicalizes every descriptor
-entering the interner, in three order-preserving passes.
+entering the interner.
 
-First, ORDER (`order.rs::ClauseOrder`): every DNF axis is sorted by a total
-order on clauses, so a descriptor's clause list is a function of its clause set
-rather than of the arrival order that built it. A DNF axis denotes a set but is
-stored as a `Vec` and every producer appends, so `A ∨ B` and `B ∨ A` used to
-reach the interner as two vectors and be handed two `Ty`s for one type — and a
-`Ty` IS the identity of a specialization, so which bodies exist was a function
-of the schedule (fz-kdt.105). The order is lexicographic over the structure,
+First the TUPLE NORMALIZER (`types/axis.rs`), the tuple axis's own normal form
+and the one rule that reaches a different CARVING of one type. Per clause
+first: a ground difference whose cover differs in exactly one coordinate is
+still one rectangle, and is rewritten to one — which also turns a clause
+carrying a negative into a plain rectangle the axis step can carve. Then the
+axis as a whole, to fixpoint: FUSION merges two rectangles that agree on every
+coordinate but one into the single rectangle over the union of that coordinate
+(`{A,C} ∨ {B,C} = {A∨B, C}`, exact, and what turns a tagged union's width
+growth into depth growth), and WIDENING grows a coordinate to the union of that
+coordinate over its same-arity siblings while the grown rectangle is still
+inside the axis union. A rectangle only grows and never past the union, so the
+denoted set is invariant and the outcome does not depend on the order the steps
+are taken in. Fusion mints the union coordinate it merges on, so this is a fold
+that can spend an interned type to save an identity: the coordinate it builds
+is interned through this same boundary, which terminates because a coordinate
+names only types interned before it.
+
+Then, still before the sort, the LIST NORMAL FORM (`emptiness::list_denotation`,
+`types/axis.rs`). A `ListSig` denotes `[]` (when `empty`) together with every
+non-empty list over `elem`, so a list clause says exactly two things: does it
+hold `[]`, and which non-empty lists does it keep. One function reads those two
+facts off a clause's factors, and the boundary writes them back as the clause —
+one positive sig carrying the fragment and the `[]` flag, one negative sig per
+surviving subtraction. So `list(T) ∧ ¬[]` is stored as `non_empty_list(T)`, a
+subtraction that removes nothing (`[int] \ non_empty_list(:nil)`) is dropped
+instead of kept as a factor, and one that removes the whole fragment leaves
+`[]`. Across the axis, `[]` is held as soon as ONE clause holds it, so every
+clause that keeps only non-empty lists is widened to hold it too and a bare `[]`
+clause is then redundant: `[] ∨ non_empty_list(T)` is `list(T)`. That decision
+reads the finished clause SET, never the order a fold arrived in. A merge that
+reaches `list(any)` leaves the axis's widest SIG, which absorption below rewrites
+to the contentless clause, so the merge feeds the one top spelling rather than
+competing with it.
+`Descr::union` used to carry the same merge and could not: over the members
+`non_empty_list(binary)`, `non_empty_list(:nil)`, `non_empty_list(:nil)`,
+`empty_list()`, folding forward gave `list(:nil) | list(binary)` and folding in
+reverse `non_empty_list(binary) | list(:nil)` — one union, both already in
+canonical clause order, two ids (fz-kdt.48.6). The same denotation reached by
+`difference`, `intersect` or substitution was not merged at all.
+
+Element ARITHMETIC — meeting two positives' elements, or meeting a subtraction
+with the fragment — is skipped when a clause's elements carry type variables.
+The kernel reads a variable as an atom disjoint from everything else, so
+`list(α) ∧ list(int)` has no non-empty fragment and
+`non_empty_list(α) ∧ ¬non_empty_list(int)` subtracts nothing: both true of the
+clause as it stands, neither true once `α` is substituted. Reading the `[]`
+flags carries no such risk — substitution never touches them — so a var-bearing
+clause that needs no element arithmetic still normalizes.
+
+Then ORDER (`order.rs::ClauseOrder`): every DNF axis is sorted by a total
+order, factors inside a clause before clauses inside an axis, so a descriptor's
+clause list is a function of its clause set and each clause a function of its
+factor set — not of the arrival order that built either. A DNF axis denotes a
+set but is stored as a `Vec` and every producer appends, so `A ∨ B` and `B ∨ A`
+used to reach the interner as two vectors and be handed two `Ty`s for one type
+— and a `Ty` IS the identity of a specialization, so which bodies exist was a
+function of the schedule (fz-kdt.105). `Conj::pos` grew the same way inside the
+clause product, so `A ∧ B` and `B ∧ A` split one overload in two. Factors have
+to be sorted first: a clause compares by its stored factor lists, so the clause
+order is a function of the clause set only once each clause is a function of
+its own factors. Sorting also puts equal factors adjacent, which is where
+`A ∧ A = A` collapses. The order is lexicographic over the structure,
 compared in place rather than rendered as text: two `Ty`s compare by their
 descriptors, recursively, which terminates because a descriptor can only name
 `Ty`s interned before it. It is injective — ties happen only between identical
 clauses — because the interner is keyed by `Descr`, so distinct ids have
 distinct structure; a comparator that could tie two DIFFERENT clauses would hand
-the survivor back to arrival order. Closure literals order by an owner-registered
-shared denotation (`Types::define_callable_origin`): typed module/name/arity for a
-named function, or recursive owner plus structural occurrence for a generated
-one. The displayed label is only a projection. Structural address vars order by
-their `AddrStep` path, never by the mint-order `FnId`/`TypeVarId` behind them. Two residuals are
-deliberate: a tie broken by two FREE type vars falls back to mint order, and
-intra-clause factor order (`Conj::pos`, grown in `dnf_intersect_with` arrival
-order) is a second dimension this pass does not touch.
+the survivor back to arrival order. Structural address vars order by their
+`AddrStep` path, never by the mint-order `TypeVarId` behind them.
 
-Then ABSORPTION, on the tuple and list axes: provably-empty tuple clauses are
-dropped (`A ∨ ∅ = A`) and subsumed clauses absorbed
-(`A ⊆ B ⇒ A ∨ B = B`) through the memoized comparison cache. Tuple
-products compare coordinatewise where that is decidable. Plain positive list
-clauses compare their two exact dimensions: whether they admit `[]`, and
-whether their non-empty element type is contained. Thus
-`empty_list() | list(int)` and `list(int)` persist as one `Ty`; the rule does
-not claim to normalize arbitrary DNF carvings. Absorption has to run AFTER the
-sort: it keeps the FIRST of a mutually-subsuming pair, so without a canonical
+Storage order reads NOTHING outside the descriptor and the ids it names. That
+is a hard requirement, not a preference: the index lookup below is sound only
+while a descriptor's normal form cannot move under it. Closure literals are
+where it had to be won. A callable can be interned before its owner exists and
+`Types::define_callable_origin` registers the typed origin later, so ordering
+two literals by their registered origins would rewrite a stored clause order
+the moment a registration landed — and one denotation would then take one id
+before the registration and another after. Storage therefore orders two
+literals by `FnId` alone. The ACTIVATION relation
+(`ClauseOrder::for_activation`, reached through `Types::cmp_activation_ty`)
+keeps the origin order — typed module/name/arity for a named function,
+recursive owner plus structural occurrence for a generated one, the displayed
+label only a projection — and it can, because it runs only over activation
+surfaces where every literal's origin is registered and asserted to be.
+Two residuals are deliberate: a tie broken by two FREE type vars falls back to
+mint order, and so does one broken by two closure literals. The stored order of
+a funcs axis is therefore mint order, not source order — nothing reads it as
+source order, since `TyCanon` sorts its own rendered clause texts, activation
+keys go through the activation relation, and every other reader folds or maps
+the axis rather than selecting a clause by position.
+
+Then the EMPTY-CLAUSE DROP, on all five axes: a DNF axis denotes the union of
+its clauses, so a clause that denotes nothing is that union's identity
+(`A ∨ ∅ = A`) and is filtered out. Each axis asks its own
+`emptiness::*_clause_empty` (`types/axis.rs`); the tuple axis takes a memoized
+`Types::is_empty` shortcut for the common plain-positive product, injected by
+the caller so the rule itself holds no cache. Sweeping all five is also what
+makes the bottom collapse below exact AND cheap: an axis with no empty clause
+left is empty exactly when it holds no clause at all, so the collapse reads the
+descriptor structurally instead of re-running the recursion.
+
+Then ABSORPTION (`types/axis.rs`), one rule for the tuple, list, resource and
+map axes. An axis denotes the UNION of its clauses, so a clause the union of
+its surviving siblings already covers adds nothing and is dropped
+(`A ⊆ B₁ ∨ … ∨ Bₙ ⇒ A ∨ B₁ ∨ … ∨ Bₙ = B₁ ∨ … ∨ Bₙ`), and an axis whose clauses
+between them cover the axis IS that axis's top and collapses to it.
+Union coverage is strictly stronger than the pairwise containment it replaces:
+`list(int)` is inside `empty_list() ∨ non_empty_list(int)` though neither
+sibling holds it alone. Exact duplicates are its degenerate case — once the
+first is dropped it stops covering its twin, so one survives. The containment
+question goes to the shared calculator, by installing the clauses on an
+otherwise contentless descriptor and asking `is_subtype`; there is no per-axis
+subsumption rule left. Absorption has to run AFTER the sort: it visits in index
+order and drops the FIRST of a mutually-covering pair, so without a canonical
 order the schedule would still choose which clause lives.
 
-Then IDEMPOTENCE, on the resources, funcs and maps axes: exact-duplicate
-clauses are dropped (`A ∨ A = A`, `dedupe_exact_clauses`, first occurrence
-kept). Both later passes are order-preserving filters, so what reaches the
-interner index is still sorted — which is also why one pass suffices:
-re-interning an interned descriptor sorts a sorted list to itself, finds nothing
-left to absorb or collapse, and hits the index.
+"Semantically equal" here means equal under the relation the CALCULATOR
+answers with, and on the resource axis that is narrower than reading a
+resource as a set of payloads. `emptiness::resource_clause_empty` decides a
+clause carrying negatives by asking whether a SINGLE negative swallows the
+payload, never whether their union does, so `resource(:a|:b)` is NOT inside
+`resource(:a|:c) ∨ resource(:b|:c)`. A resource clause is absorbed exactly when
+one sibling contains it alone — the same shape the list rule uses for its
+non-empty fragment — and two resource clauses that partition the payloads
+between them are not every resource.
+
+Every axis has ONE spelling of its top: the clause with NO factors, which is
+what `Descr::any()` already writes on all five axes. That is the whole point of
+the rule — an axis written `[ListSig { empty: true, elem: any }]` and an axis
+written `[Conj::top()]` denote the same set, so leaving both spellings in play
+hands one set two identities, and `any | [any]` stops being `any`. A single
+plain clause that IS the axis top is therefore rewritten to the contentless
+clause at the same boundary, and `list(any)`,
+`empty_list() ∨ non_empty_list(any)` and `any | [any]` all land on it.
+
+What that costs is that a reader projecting a positive signature off a list or
+resource clause has to read a contentless clause as the widest signature
+(`[any]`, `resource(any)`) rather than as "no list at all": `Descr::as_pure_list`
+and `Descr::pure_resource` take the caller's interned `any` for exactly that,
+`list_element_type` and `resource_payload_type` already answered `any` there,
+and `Types::display` renders each axis top as the widest type a user could
+write.
+
+Whether an axis IS its top is one rule (`axis::axis_is_top`) for all five. A
+clause with no factors constrains nothing, so an axis carrying one is its top
+whatever sits beside it, and that answer belongs to no axis. Otherwise the axis
+reads its clauses' positive signatures (`AxisView::plain_top`) and only what
+that cannot settle reaches the exact calculator question.
+
+The split falls where it does because a clause carrying a NEGATIVE factor
+carves a set no signature comparison can read. A finite union of positive-only
+TUPLE clauses is never every tuple — a positive `TupleSig` fixes an arity, and
+arity is unbounded — and a finite union of positive-only MAP clauses is never
+every map, for the same reason about struct tags. But `{any, any} ∨ ¬{any, any}`
+IS every tuple and `%{k: any} ∨ ¬%{k: any}` is every map, so "those axes have no
+top to reach" would be false, and the two carvings would intern apart while the
+calculator called them equal. The LIST axis answers its positive-only case
+exactly — one clause admits `[]` and one admits every element — and the
+RESOURCE axis likewise — one clause's payload is every value. Neither rule is
+set reasoning; both are read off the kernel's own clause-emptiness rule. `top`
+minus a union of plain clauses is the single clause negating them all, and
+`emptiness::list_clause_empty` calls that empty exactly when one negated
+signature admits `[]` and one negated signature's element swallows the
+fragment, while `emptiness::resource_clause_empty` calls it empty exactly when
+a SINGLE negated payload swallows `any` — which is why two resource clauses
+that partition the payloads between them are still not every resource. Both go
+to the calculator for the rest, as the CALLABLE axis always does: a clause
+naming a closure literal is one construction, not every callable, and nothing
+in the signature tells them apart.
+
+What those two rules ask of a child — "is this every value" — is a question
+about the DENOTATION, and `Descr::is_full` is its one implementation:
+structural where it can be (`looks_full`), otherwise the exact containment,
+guarded by the necessary conditions so the common answer costs no question.
+A structural reading ALONE is incomplete, because the callable axis is left
+unabsorbed and `f ∨ ¬f` is every callable in two clauses — a descriptor
+carrying it denotes everything without looking full. Reading the spelling
+instead of the denotation would leave `[x]` and `[any]` two ids and two
+canonical forms for one set of lists, the false difference the canon
+faithfulness ratchet exists to forbid. The canonical rendering asks the same
+function, so the boundary and the oracle cannot disagree about what `any` is.
+
+The CALLABLE axis gets IDEMPOTENCE alone: exact-duplicate clauses are dropped
+(`A ∨ A = A`, `dedupe_exact_clauses`, first occurrence kept), which is the rule
+the ACTIVATION KEY depends on. It is the one axis absorption does not reach;
+`types/axis.rs` carries the one statement of why, and all three of its facts
+are measured. A LIT-FREE arrow is the type language's record: `ActivationKey`
+keeps a specialization's canonical inputs and result as one arrow's params and
+result and reads them back with `Types::arrow_params`, and a resolved `@spec`
+is decomposed the same way — while the kernel calls `(any, int) -> any` every
+callable, because an arrow whose result is every value constrains nothing a
+callable could fail. Collapsing such an arrow to the axis top leaves that
+reader `arrow_params` empty and `arrow_result` `None`, which `resolve` and
+`contract` both `expect`: a panic (`axis_test`). An activation key escapes only
+because its result slot is the unknown `r0` and not `any`; a declared callable
+parameter does not. A LIT-BEARING arrow's `args` and `ret` are evidence
+`func_clause_empty` never looks at, so two specializations of one lambda are
+mutually subtypes and a rule reading the denotation alone would merge them;
+`Types::row_column_dominates` is what adds the evidence back, and
+`semantic::activation_input_rows_keep_arrows_that_differ_only_where_subtyping_is_blind`
+pins that against the planner. A closure literal's CAPTURE LAYOUT is the third,
+and it is the one the kernel ENDORSES: the capture-subset rule in
+`func_clause_empty` makes `closure[f]([mailbox]) ⊆ closure[f]([any])`, so
+absorbing the narrower clause would be exact — and would still erase the
+narrower environment, because `Types::callable_clauses` hands transport the
+captures of every clause it finds.
+`transport_relation_incremental_test::a_nested_source_union_retains_both_environments_of_the_same_function`
+is what fails when the axis is absorbed. `TyCanon` still collapses the axis for
+RENDERING, where nothing reads the arrow back.
+
+That is also where the arena's remaining callable duplicates come from, and
+they are two different populations. Measured over the full arena of
+`00420_enum_take_drop_split`, `fz_f98_range_map_converges` and
+`json_roundtrip`, counting the SURPLUS ids per canonical class the census
+sums: 118 / 11 / 0 are ONE closure literal stored at several surfaces
+(construction vars, addressed vars, a ground instantiation), and 5 / 4 / 25 are
+lit-free arrows the kernel already calls the whole axis. The rest — 5 / 0 / 2 —
+are tuple carvings. Neither callable population can be folded at the boundary
+without erasing something a reader takes back out, so the census counts them;
+one `Ty` per callable VALUE would mean the surface evidence leaving the type.
+
+The coverage walk and the dedupe only ever remove, and both visit in index
+order, so what they leave is still sorted; a saturated axis is REPLACED by the
+one clause that spells its top, and one clause is sorted whatever it is. One pass therefore
+suffices, and the pass is idempotent: run on an already-normal descriptor it
+sorts a sorted list to itself, finds nothing left to drop, absorb or collapse,
+and arrives back where it started. That idempotence is what the index lookup
+below turns into a shortcut.
+
+`Types::intern` is absorption's authority, and the list normal form's, but not
+their only caller: `TyCanon` applies the same functions to the descriptors it
+synthesizes itself, because tuple-coordinate widening builds `Descr` values that
+never reach the interner and an unabsorbed or unnormalized coordinate would
+render two carvings of one type as two types. One function each, so neither
+caller can invent a rule the other does not have.
+
+The two callers do not run the list reading over the same clauses. The boundary
+skips element arithmetic on a var-bearing clause (above); the rendering reads
+the denotation unconditionally, because a rendering is a claim about what a type
+IS and substitution never reaches it. So `non_empty_list(α)` and
+`non_empty_list(α) \ non_empty_list(int)` are stored as `[α]` and
+`[α] & not([int])`, two ids over one denotation, and both canon as
+`fp[L] non_empty_list(α0)`. That is the rendering being right: the oracle
+counts the pair as ONE denotation holding two ids, which states the residue — a
+variable-aware meet the boundary does not have — as a finding, where rendering
+them apart would have hidden it as a difference that is not there.
+
+Last, the BOTTOM COLLAPSE: a descriptor that denotes the empty set is replaced
+by `Descr::none()` before an id is assigned, so the empty set has exactly one
+`Ty` however it was reached, and `Types::is_empty(t)` holds exactly when `t` is
+that id. It asks `Descr::looks_empty()`, which the empty-clause drop above
+makes exact; reading the descriptor structurally also means it never descends
+through interned children, so it can neither mint the id it is about to reject
+nor inherit the emptiness recursion's coinductive assumption about a cycle.
+
+The whole pass runs only when the descriptor is not already in the index
+(`TypeInterner::lookup`). The invariant that makes the shortcut sound is that
+an interned descriptor's normal form is a pure function of the descriptor:
+every pass above reads the descriptor's own bytes and the immutable descriptors
+of the ids it names, and storage clause order reads nothing outside them
+either. A descriptor the index holds was normalized once, so it is its own
+normal form and re-deriving it would rewrite it to itself. Asking first keeps
+the boundary's cost proportional to the types a compile mints rather than to
+how often it asks for them, and it is the common case by a wide margin: on
+the target fixtures the overwhelming majority of intern calls are answered by
+the index, which is also what keeps the absorption's containment questions to a
+small constant per compile.
 
 What clause order canNOT reconcile is a different CARVING of one type:
 `{[int], :false} | {[int], :true}` and `{[int], :false | :true}` are one
-denotation in two decompositions and still intern apart (fz-kdt.48).
+denotation in two decompositions, and no clause-by-clause rule sees it because
+neither carving's clauses contain the other's. The TUPLE NORMALIZER above is
+what reconciles them, by rewriting both to the same union of rectangles.
 
 Union-time hygiene is not enough, because clauses are also made
 equal AFTER a union — `erase_closure_identity` strips closure brands in place,
@@ -157,11 +388,11 @@ turning a legitimate two-brand union into `A ∨ A`, and `funcs = [A, A]` would
 otherwise intern as a different `Ty` than `funcs = [A]`. That difference is
 what the activation key is built from, so idempotence at the boundary is what
 makes the key a join homomorphism (fz-kdt.80). A debug-build assert in
-`TypeInterner::intern` (`debug_assert_dnf_axes_hygienic`) checks structural
-idempotence and tuple hygiene in debug builds; the typed list-absorption tests
-exercise the memoized semantic relation without adding a second uncached
-comparison sweep. The tuple-emptiness recursion
-(`emptiness::phi_tuple`) returns early on an empty coordinate and drops
+`TypeInterner::intern` (`debug_assert_dnf_axes_hygienic`) checks the
+empty-clause invariant on all five axes, that the four denotational axes have
+nothing left to absorb, and callable idempotence; it runs on an index miss, so
+it costs one sweep per distinct descriptor. The tuple-emptiness
+recursion (`emptiness::phi_tuple`) returns early on an empty coordinate and drops
 negations disjoint from the product, so it explores only inhabited splits
 instead of fanning out `arity^|negs|` branches.
 
@@ -285,12 +516,15 @@ answer `is_subtype = false` or leave a narrowed branch too wide.
 `Descr::neg_structure` is its private helper, the complement of the kind axes
 alone.
 
-The empty type therefore has more than one interned identity: `Descr::none()`
-carries an empty slot, while `int and binary` meets at empty kind axes with the
-slot still at top. `Descr::looks_empty()` is the bottom test; `== Descr::none()`
-is not, and `union` and `erase_nominal` both ask it first so that no bottom
-widens or resurrects. The canonical form is unaffected — `TyCanon` answers on
-emptiness first, so every bottom renders `none` and fingerprints `fp[none]`.
+A bottom therefore arrives in more than one descriptor shape: `Descr::none()`
+carries an empty slot, `int and binary` meets at empty kind axes with the slot
+still at top, and a tuple with an empty coordinate empties through a structural
+axis. They all denote the same set, so `Types::intern` answers every provably
+empty descriptor with the one `none` identity, and `Types::is_empty(t)` holds
+exactly when `t` is that id. Descriptor arithmetic runs BEFORE interning and
+still meets the several shapes, so `Descr::looks_empty()` — never
+`== Descr::none()` — stays the descriptor-level bottom test that `union` and
+`erase_nominal` ask first, so that no bottom widens or resurrects.
 
 A refinement renders as a refinement, never as a union: `utf8(binary)`,
 `not(Meters)(int)`, `(Feet | Meters)(int)`. Rendering it `binary | utf8` would

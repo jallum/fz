@@ -2631,11 +2631,18 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
         assert!(readme.contains(needle), "enum_sort README must pin `{}`", needle);
     }
 
+    // One list denotation now takes one `Ty`, and the backend inventory holds
+    // 33 executables where the parent held 34. Exactly ONE key went: the
+    // parent minted `Enum.split_sort_list/3[fp[L] non_empty_list(int), fp[L]
+    // list(a1_e), fp[L] list(a2_e)] need=TupleFields(2)` twice, two ids over
+    // one denotation compiled to two bodies. That body carried three retaining
+    // list constructions, so `construction_count` drops by three. The
+    // allocation headline above is unchanged.
     let stats = list_retention_telemetry_stats_for_fixture(&behavior_fixture_case("enum_sort"));
     assert_eq!(
         stats,
         ListRetentionTelemetryStats {
-            construction_count: 14,
+            construction_count: 11,
             physical_capture_count: 8,
             runtime_attempted_count: 132,
             runtime_reused_count: 132,

@@ -296,8 +296,15 @@ impl MergeSig for ArrowSig {
                     }),
                 })
             }
-            (Some(_), None) => PosMeet::Merged(specialize_lit_arrow(types, a, b)),
-            (None, Some(_)) => PosMeet::Merged(specialize_lit_arrow(types, b, a)),
+            (Some(_), None) | (None, Some(_)) => {
+                let (literal, surface) = if a.lit.is_some() { (a, b) } else { (b, a) };
+                let (args, ret) = specialize_surface(types, (&literal.args, literal.ret), (&surface.args, surface.ret));
+                PosMeet::Merged(ArrowSig {
+                    args,
+                    ret,
+                    lit: literal.lit.clone(),
+                })
+            }
             (None, None) => PosMeet::Merged(ArrowSig {
                 args: a
                     .args
@@ -312,17 +319,32 @@ impl MergeSig for ArrowSig {
     }
 }
 
-fn specialize_lit_arrow(types: &mut Types, lit: &ArrowSig, surface: &ArrowSig) -> ArrowSig {
+/// One callable read at the surface it is being viewed through: the
+/// substitution its own params and result take against that surface, applied
+/// to them.
+///
+/// A closure literal is minted carrying the surface vars its lambda owns, and
+/// every caller meets it with the surface its callsite states. The two meet in
+/// two places -- at CONSTRUCTION, where a positive meet folds a lit-free arrow
+/// into a literal's clause, and on READ, where `Types::callable_value_clauses`
+/// views a literal through a surface clause standing beside it -- and this is
+/// the whole computation both times, so neither can report a different shape
+/// for one literal at one surface.
+///
+/// Positions past the shorter side are not substituted through; every caller
+/// has already required the two arities to agree.
+pub(super) fn specialize_surface(types: &mut Types, callable: (&[Ty], Ty), surface: (&[Ty], Ty)) -> (Vec<Ty>, Ty) {
+    let (params, result) = callable;
+    let (witness_params, witness_result) = surface;
     let mut sigma = Sigma::new();
-    for (pattern, witness) in lit.args.iter().zip(surface.args.iter()) {
+    for (pattern, witness) in params.iter().zip(witness_params.iter()) {
         types.collect_instantiation_subst(pattern, witness, &mut sigma);
     }
-    types.collect_instantiation_subst(&lit.ret, &surface.ret, &mut sigma);
-    ArrowSig {
-        args: lit.args.iter().map(|arg| types.instantiate(arg, &sigma)).collect(),
-        ret: types.instantiate(&lit.ret, &sigma),
-        lit: lit.lit.clone(),
-    }
+    types.collect_instantiation_subst(&result, &witness_result, &mut sigma);
+    (
+        params.iter().map(|param| types.instantiate(param, &sigma)).collect(),
+        types.instantiate(&result, &sigma),
+    )
 }
 
 impl MergeSig for MapSig {

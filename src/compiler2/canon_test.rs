@@ -174,16 +174,34 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
             }
         }
 
-        // Pins the CURRENT interner defect (fz-kdt.48): the arena really does
-        // carry distinct ids for one type, so the sweep above is proving canon
-        // collapses a measured defect rather than passing vacuously. When
-        // fz-kdt.48 lands this expectation goes to zero and the sweep keeps its
-        // full value.
+        // The arena still carries distinct ids for one type, so the sweep
+        // above proves canon collapses a measured defect rather than passing
+        // vacuously. Both counts are CEILINGS: every fold at the persistence
+        // boundary may lower them and none may raise them, and the target is
+        // zero duplicates.
         assert!(
-            collapsed > 0,
-            "{name}: expected the arena to still carry mutually-subtype distinct ids (fz-kdt.48); \
-             if that defect is fixed, update this expectation to zero"
+            collapsed <= duplicate_ceiling(name),
+            "{name}: {collapsed} mutually-subtype distinct ids, above the {} this fixture is \
+             pinned at -- a boundary fold may lower this ceiling, never raise it",
+            duplicate_ceiling(name)
         );
+    }
+}
+
+/// How many ids each target fixture still spends on a type it already has.
+/// Lower is better, so a change that improves the boundary lowers the pin in
+/// the same motion.
+///
+/// The number of interned types is deliberately NOT pinned beside it. It is
+/// not a lower-only quantity: fusing two clauses that agree on all but one
+/// coordinate mints the union of that coordinate, so a fold can spend a type
+/// to save an identity. Identities are what a specialization is keyed on;
+/// intermediate types are not.
+fn duplicate_ceiling(name: &str) -> usize {
+    match name {
+        "fixtures2/00420_enum_take_drop_split.fz" => 123,
+        "fixtures2/behavior/fz_f98_range_map_converges.fz" => 15,
+        other => panic!("no pinned ceiling for {other}"),
     }
 }
 
@@ -355,8 +373,12 @@ end
 }
 
 /// Every closure literal has a typed origin shared by the function interner.
-/// A missing origin could silently fall back to storage's standalone raw-id
-/// order. World registers at both mint sites, before any literal can name it.
+/// The ACTIVATION order demands one — `ClauseOrder::cmp_callable` expects it
+/// outright, and asserts two distinct callables have distinct origins — so a
+/// missing registration is a panic on an activation surface, not a quiet
+/// fallback. World registers at both mint sites, before any literal can name
+/// one. (Storage order reads no origin at all; that is what lets the interner
+/// answer from its index.)
 #[test]
 fn every_closure_literal_has_a_registered_origin() {
     for (name, text) in TARGETS {
@@ -364,7 +386,7 @@ fn every_closure_literal_has_a_registered_origin() {
         let unregistered = compiler.world().types().unregistered_callables();
         assert!(
             unregistered.is_empty(),
-            "{name}: closure literals over unregistered callables {unregistered:?} would order by raw FnId"
+            "{name}: closure literals over unregistered callables {unregistered:?} have no activation order"
         );
     }
 }
