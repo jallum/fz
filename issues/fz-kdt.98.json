@@ -7,9 +7,15 @@
   "id": "fz-kdt.98",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Generalisation from the fz-229 refutation (2026-09-16): StaticCallees (keying.rs collect_step_edges / collect_tail_edges) emits call-graph edges only for LoweredTail::DirectCall and LoweredStep::Lambda; ClosureCall, Dispatch and FunctionRef emit none, and a protocol callback is a static leaf. So CallGraphComponent under-approximates recursion for every consumer, not only the transport cut: a Settled read gated on component equality deadlocked on three singleton components mutually recursive through \u0026fun/1 values (call/2 applying \u0026pong/1 and \u0026ping/1; reproducer on fz-229). Any consumer that treats out-of-component as acyclic inherits this hole.",
+      "timestamp": "2026-09-16T01:03:01Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Residual transport-cut hole: a cycle whose every grounded closure-call edge's target cannot statically reach its owner is uncut",
   "type": "task",
-  "updated_at": "2026-08-31T16:18:23Z"
+  "updated_at": "2026-09-16T01:03:01Z"
 }
