@@ -98,7 +98,7 @@ const WIRE_SPELLINGS: &[WireSpelling] = &[
     WireSpelling::names_its_lane("nil", ExternTy::Unit),
     WireSpelling::names_its_lane("binary", ExternTy::Binary),
     WireSpelling::wire_only("c_int", ExternTy::I32, "integer"),
-    WireSpelling::wire_only("cstring", ExternTy::CString, "binary"),
+    WireSpelling::wire_only("c_string", ExternTy::CString, "binary"),
     WireSpelling::wire_only("unit", ExternTy::Unit, "nil"),
 ];
 
@@ -179,6 +179,12 @@ mod tests {
     #[test]
     fn boolean_is_the_extern_source_type_name() {
         assert_eq!(extern_ty_from_name("boolean"), Some(ExternTy::Bool));
+    }
+
+    #[test]
+    fn c_string_is_the_only_nul_terminated_binary_wire_spelling() {
+        assert_eq!(extern_ty_from_name("c_string"), Some(ExternTy::CString));
+        assert_eq!(extern_ty_from_name("cstring"), None);
     }
 
     /// Every wire-only spelling obeys one rule, and the table is what states
@@ -266,10 +272,10 @@ pub(crate) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
     let int = t.int();
     let pid = t.pid();
     let reference = t.reference();
-    let cpointer = t.cpointer();
+    let c_pointer = t.c_pointer();
     let raw_word = t.union(int, pid);
     let raw_word = t.union(raw_word, reference);
-    let raw_word = t.union(raw_word, cpointer);
+    let raw_word = t.union(raw_word, c_pointer);
     if t.is_subtype(d, &raw_word) {
         return ExternTy::I64;
     }
@@ -322,14 +328,14 @@ mod builtin_opaque_wire_test {
         let mut types = Types::new();
         let pid = types.pid();
         let reference = types.reference();
-        let cpointer = types.cpointer();
+        let c_pointer = types.c_pointer();
         let builtin_union = types.union(pid, reference);
-        let builtin_union = types.union(builtin_union, cpointer);
+        let builtin_union = types.union(builtin_union, c_pointer);
 
-        for builtin in [pid, reference, cpointer, builtin_union] {
+        for builtin in [pid, reference, c_pointer, builtin_union] {
             assert_eq!(ty_to_extern_ty(&mut types, &builtin), ExternTy::I64);
         }
-        for spelling in ["pid", "ref", "cpointer"] {
+        for spelling in ["pid", "ref", "c_pointer"] {
             let user_opaque = types.opaque_of(spelling);
             assert_eq!(
                 ty_to_extern_ty(&mut types, &user_opaque),

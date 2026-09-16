@@ -22,7 +22,7 @@
 #
 # ## Scope
 #
-# The epic sketch showed `extern "C" def fd_open(path :: cstring, mode :: cstring)`
+# The epic sketch showed `extern "C" def fd_open(path :: c_string, mode :: c_string)`
 # and a `File.open(path, mode)` entry point. This fixture stays focused on
 # the *resource lifecycle*: fz code creates a temporary fd through libc,
 # wraps that raw integer fd, unlinks the path, and proves the dtor fires.
@@ -70,9 +70,9 @@
 # The `dbg(:dtor_closed)` is the witness that the dtor body fully
 # executed — under the old extracted-Prim::Extern path it would have
 # been silently dead code.
-extern "C" defp libc::creat(path :: cstring, mode :: integer) :: c_int
+extern "C" defp libc::creat(path :: c_string, mode :: integer) :: c_int
 extern "C" defp libc::close(c_int) :: c_int
-extern "C" defp libc::unlink(cstring) :: c_int
+extern "C" defp libc::unlink(c_string) :: c_int
 
 defmodule FileResourceLifecycle do
   @type t :: opaque resource(integer)

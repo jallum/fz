@@ -1,5 +1,5 @@
 
-extern "C" defp libc::printf(fmt :: cstring, ...) :: c_int
+extern "C" defp libc::printf(fmt :: c_string, ...) :: c_int
 
 def main() do
   libc::printf("%d", 7)

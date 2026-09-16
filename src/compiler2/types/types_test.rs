@@ -891,7 +891,7 @@ macro_rules! key_helper_conformance_tests {
             #[test]
             fn default_cpointer_is_builtin_opaque() {
                 let mut t = $ctor;
-                let ptr = t.cpointer();
+                let ptr = t.c_pointer();
                 assert_eq!(
                     t.builtin_opaque_singleton(&ptr),
                     Some(crate::types::BuiltinOpaque::CPointer)

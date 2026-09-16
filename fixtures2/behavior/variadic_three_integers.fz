@@ -24,7 +24,7 @@
 #
 # `printf` reports how many characters it wrote, so the second line also pins
 # the result lane: `11 22 33\n` is nine characters.
-extern "C" defp libc::printf(fmt :: cstring, ...) :: c_int
+extern "C" defp libc::printf(fmt :: c_string, ...) :: c_int
 
 def main() do
   written = libc::printf("%lld %lld %lld\n", 11, 22, 33)

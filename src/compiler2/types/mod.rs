@@ -328,7 +328,7 @@ impl Types {
         self.atom_lit(if value { "true" } else { "false" })
     }
 
-    pub fn cpointer(&mut self) -> Ty {
+    pub fn c_pointer(&mut self) -> Ty {
         self.builtin_opaque(BuiltinOpaque::CPointer)
     }
 

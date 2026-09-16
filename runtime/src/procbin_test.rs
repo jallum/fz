@@ -134,7 +134,7 @@ fn concurrent_retain_release_frees_on_the_last_workers_release() {
 
 /// fz-wu9 — every heap-allocated SharedBin's buffer has a trailing
 /// zero byte at offset `bytes_len` (not counted toward bytes_len /
-/// bit_len). Underwrites the cstring extern marshal contract.
+/// bit_len). Underwrites the c_string extern marshal contract.
 #[test]
 fn shared_bin_alloc_has_trailing_nul() {
     // Non-empty payload.

@@ -1,4 +1,4 @@
-//! fz-9ss — runtime helpers for the `binary` and `cstring` extern marshal
+//! fz-9ss — runtime helpers for the `binary` and `c_string` extern marshal
 //! classes.
 //!
 //! Each helper takes tagged heap bits known to the *declaration* to be a
@@ -48,13 +48,13 @@ unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
         _ => None,
     }) {
         Some(p) => p,
-        _ => panic_arg("extern binary/cstring arg: expected a binary value"),
+        _ => panic_arg("extern binary/c_string arg: expected a binary value"),
     };
     if !unsafe { is_bitstring_like(p) } {
-        panic_arg("extern binary/cstring arg: expected a binary value");
+        panic_arg("extern binary/c_string arg: expected a binary value");
     }
     if unsafe { bitstring_bit_len(p) } % 8 != 0 {
-        panic_arg("extern binary/cstring arg: non-byte-aligned bitstring");
+        panic_arg("extern binary/c_string arg: non-byte-aligned bitstring");
     }
     unsafe { bitstring_byte_ptr(p) }
 }
@@ -68,7 +68,7 @@ pub unsafe extern "C" fn fz_binary_as_ptr(v: u64) -> *const u8 {
     unsafe { coerce_binary_ptr(v) }
 }
 
-/// `cstring` marshal class: pointer to the bytes with a guaranteed
+/// `c_string` marshal class: pointer to the bytes with a guaranteed
 /// trailing NUL. Underwritten by the +1-NUL invariant from [[fz-wu9]].
 ///
 /// # Safety

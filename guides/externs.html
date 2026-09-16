@@ -64,7 +64,7 @@ value." The compiler turns each call into the matching C-ABI invocation.
       <code>"C"</code> is the ABI you want, and the only one you can use. The
       other, <code>"fz"</code>, is reserved for fz's own runtime library: those
       helpers receive the running process as a hidden first argument, and a
-      <code>binary</code> or <code>cstring</code> parameter reaches them as an
+      <code>binary</code> or <code>c_string</code> parameter reaches them as an
       fz value rather than a C pointer. Declaring it outside the runtime
       library is an error, and so is any other ABI name — reported when the
       extern is first called, since an extern nothing calls is never
@@ -119,7 +119,7 @@ expects</em> (and vice versa for returns).</p>
 <tr><td class="cls">boolean</td><td class="shape">raw <code>uint64_t</code></td><td>true or false</td><td class="note">A returned zero is false and any nonzero word is true; source arguments use 0 or 1. This is not C <code>_Bool</code> and not an fz atom id.</td></tr>
 <tr><td class="cls">any</td><td class="shape">raw <code>u64</code></td><td>any value ref</td><td class="note">For one-word C boundaries that intentionally operate on opaque fz values.</td></tr>
 <tr><td class="cls">binary</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Pointer to the binary's bytes. No NUL guarantee.</td></tr>
-<tr><td class="cls">cstring</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Same pointer, but with a guaranteed trailing zero byte.</td></tr>
+<tr><td class="cls">c_string</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Same pointer, but with a guaranteed trailing zero byte.</td></tr>
 <tr><td class="cls">nil</td><td class="shape">(no return value)</td><td>nil</td><td class="note">For C functions that return <code>void</code>.</td></tr>
 </tbody>
 </table>
@@ -139,7 +139,7 @@ word.</p>
 caller ignores one field. Larger or nested aggregate results and aggregate
 arguments are not yet supported.</p>
 
-<p><code>c_int</code>, <code>cstring</code> and <code>unit</code> name a machine
+<p><code>c_int</code>, <code>c_string</code> and <code>unit</code> name a machine
 lane rather than an fz type, and a lane is a whole register, so they stand only
 as a whole parameter or result. A field of a pair has no register of its own,
 so <code>:: {c_int, integer}</code> is refused, and the message says which
@@ -158,7 +158,7 @@ callee receives a single word, so it is only appropriate for helper
 boundaries that already know they are receiving tagged heap bits or another
 documented raw payload shape.</p>
 
-<h3>The <code>cstring</code> trick</h3>
+<h3>The <code>c_string</code> trick</h3>
 
 <p>C strings end with a zero byte. fz binaries don't. So how do we hand a
 fz binary to <code>open(2)</code> without copying?</p>
@@ -177,29 +177,29 @@ to fz code, and costs one byte per binary. So if you write</p>
 [ <span class="num">104</span> | <span class="num">105</span> | <span class="num">0</span> ]
   'h'   'i'   <span class="note">invisible NUL — not part of the binary</span></pre>
 
-<p>When you pass it as <code>cstring</code>, the runtime hands the C function
+<p>When you pass it as <code>c_string</code>, the runtime hands the C function
 <code>bytes_ptr</code>, which is already a valid C string. No copy. No
 branch. The <code>binary</code> class makes no NUL promise; the call site
 picks which contract it wants. Calling <code>write(fd, buf, len)</code>?
 Use <code>binary</code>. Calling <code>open(path, flags)</code>? Use
-<code>cstring</code>.</p>
+<code>c_string</code>.</p>
 
 <h3>Variadic externs</h3>
 
 <p>A C variadic function uses <code>...</code> after its fixed arguments:</p>
 
-<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::printf</span>(fmt <span class="kw">::</span> <span class="ty">cstring</span>, ...) <span class="kw">::</span> <span class="ty">c_int</span></pre>
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::printf</span>(fmt <span class="kw">::</span> <span class="ty">c_string</span>, ...) <span class="kw">::</span> <span class="ty">c_int</span></pre>
 
 <p>Fixed arguments use the declaration's marshal classes. Extra arguments
 are resolved at the call site after type inference: integers default to
 <code>integer</code>, and binaries must be written explicitly because C cannot
 infer whether the pointer should be <code>binary</code> or
-<code>cstring</code>.</p>
+<code>c_string</code>.</p>
 
-<pre><span class="fn">libc::printf</span>(<span class="str">"answer=%lld\n"</span> <span class="kw">::</span> <span class="ty">cstring</span>, <span class="num">42</span>)</pre>
+<pre><span class="fn">libc::printf</span>(<span class="str">"answer=%lld\n"</span> <span class="kw">::</span> <span class="ty">c_string</span>, <span class="num">42</span>)</pre>
 
 <p>An extra argument carries an integer or a pointer, and nothing else. That
-covers <code>integer</code>, <code>c_int</code>, <code>cstring</code>,
+covers <code>integer</code>, <code>c_int</code>, <code>c_string</code>,
 <code>binary</code>, <code>boolean</code> and <code>any</code>; a
 <code>float</code> is refused,
 whether it is inferred or written <code>:: float</code>. The reason is the
@@ -215,9 +215,9 @@ door.</p>
 present when the flags include <code>O_CREAT</code>. Declare the fixed
 arguments first, then <code>...</code>:</p>
 
-<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::open</span>(path <span class="kw">::</span> <span class="ty">cstring</span>, flags <span class="kw">::</span> <span class="ty">c_int</span>, ...) <span class="kw">::</span> <span class="ty">c_int</span>
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::open</span>(path <span class="kw">::</span> <span class="ty">c_string</span>, flags <span class="kw">::</span> <span class="ty">c_int</span>, ...) <span class="kw">::</span> <span class="ty">c_int</span>
 <span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::close</span>(fd <span class="kw">::</span> <span class="ty">c_int</span>) <span class="kw">::</span> <span class="ty">c_int</span>
-<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::unlink</span>(path <span class="kw">::</span> <span class="ty">cstring</span>) <span class="kw">::</span> <span class="ty">c_int</span>
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::unlink</span>(path <span class="kw">::</span> <span class="ty">c_string</span>) <span class="kw">::</span> <span class="ty">c_int</span>
 
 <span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   path = <span class="str">"/tmp/fz-open-example"</span>
@@ -238,7 +238,7 @@ process umask: a requested mode of <code>0o644</code> is created as
 
 <p>You can give the fz-side name a library prefix:</p>
 
-<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::open</span>(<span class="ty">cstring</span>, <span class="ty">c_int</span>) <span class="kw">::</span> <span class="ty">c_int</span></pre>
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::open</span>(<span class="ty">c_string</span>, <span class="ty">c_int</span>) <span class="kw">::</span> <span class="ty">c_int</span></pre>
 
 <p>The C symbol stays <code>open</code> (that's what the linker resolves).
 The fz-side name becomes <code>libc::open</code>. Two reasons this matters:</p>
@@ -267,9 +267,9 @@ back; skip them when the C symbol is already distinctive.</p>
 <p>C returns a raw machine word; fz code needs to know what kind that word
 represents. The return-side marshal class fills the gap.</p>
 
-<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::creat</span>(<span class="ty">cstring</span>, <span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">c_int</span>
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::creat</span>(<span class="ty">c_string</span>, <span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">c_int</span>
 <span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::close</span>(<span class="ty">c_int</span>) <span class="kw">::</span> <span class="ty">c_int</span>
-<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::unlink</span>(<span class="ty">cstring</span>) <span class="kw">::</span> <span class="ty">c_int</span>
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::unlink</span>(<span class="ty">c_string</span>) <span class="kw">::</span> <span class="ty">c_int</span>
 
 <span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   path = <span class="str">"/tmp/fz-close-example"</span>
@@ -353,10 +353,10 @@ dtor.</p>
 
 <p>The type of the handle follows the payload. An integer fd produces
 <code>resource(integer)</code>; a future raw C pointer payload will produce
-<code>resource(cpointer)</code>. In spec form, the primitive behaves like:</p>
+<code>resource(c_pointer)</code>. In spec form, the primitive behaves like:</p>
 
 <pre>@<span class="kw">spec</span> <span class="fn">make_resource</span>(t, (t) -&gt; <span class="ty">nil</span>) <span class="kw">::</span> <span class="kw">resource</span>(t)
-  <span class="kw">when</span> t: <span class="ty">integer</span> | <span class="ty">cpointer</span></pre>
+  <span class="kw">when</span> t: <span class="ty">integer</span> | <span class="ty">c_pointer</span></pre>
 
 <h3>The dtor is real fz code</h3>
 
@@ -438,10 +438,10 @@ module that declared it.</p>
 
 <p>Pulling it all together — the actual fixture from the repo:</p>
 
-<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::creat</span> (<span class="ty">cstring</span>, <span class="ty">integer</span>)          <span class="kw">::</span> <span class="ty">c_int</span>
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::creat</span> (<span class="ty">c_string</span>, <span class="ty">integer</span>)          <span class="kw">::</span> <span class="ty">c_int</span>
 <span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::write</span> (<span class="ty">c_int</span>, <span class="ty">binary</span>, <span class="ty">integer</span>)    <span class="kw">::</span> <span class="ty">integer</span>
 <span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::close</span> (<span class="ty">c_int</span>)                     <span class="kw">::</span> <span class="ty">c_int</span>
-<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::unlink</span>(<span class="ty">cstring</span>)                   <span class="kw">::</span> <span class="ty">c_int</span>
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">libc::unlink</span>(<span class="ty">c_string</span>)                   <span class="kw">::</span> <span class="ty">c_int</span>
 
 <span class="kw">def</span> <span class="fn">close_observable</span>(fd) <span class="kw">do</span>
   <span class="fn">libc::close</span>(fd)
@@ -475,7 +475,7 @@ module that declared it.</p>
 <p>Step by step:</p>
 
 <ul>
-  <li><code>libc::creat</code> takes a cstring (the path; fz hands the C
+  <li><code>libc::creat</code> takes a c_string (the path; fz hands the C
       function a NUL-terminated pointer to the binary's bytes) and an
       integer (the mode). Returns a tagged fd.</li>
   <li><code>libc::write</code> takes the fd, a binary (the bytes
@@ -507,12 +507,12 @@ prototype in the C header.
 
 <ul>
   <li><strong>fz doesn't move buffer bytes during a C call.</strong>
-      A binary passed as <code>binary</code> or <code>cstring</code> stays
+      A binary passed as <code>binary</code> or <code>c_string</code> stays
       where it is for the duration of the call. The C function is welcome
       to read those bytes. It is <em>not</em> welcome to keep the pointer
       after returning — once control returns to fz, the GC may move things.</li>
   <li><strong>C is not allowed to mutate the buffer.</strong> Both
-      <code>binary</code> and <code>cstring</code> are passed by const
+      <code>binary</code> and <code>c_string</code> are passed by const
       pointer; if the C function writes through it, fz will see corrupted
       data on the next read. (A "mutable buffer" marshal class will land
       when we need it.)</li>
