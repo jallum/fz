@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-16T19:34:27Z",
   "created": "2026-09-16T19:17:31Z",
   "description": "Remove repeated OutcomeId fields from outcome-indexed inline, call, and receive target records. DispatchGraph returns the sole dense plan-owned OutcomeId and consumers index their target tables directly. Prove routing stays exact without duplicate identity or validation.",
   "id": "fz-acn.17",
   "labels": [],
   "parent": "fz-acn",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Make outcome table slots the sole target identity",
   "type": "task",
-  "updated_at": "2026-09-16T19:17:31Z"
+  "updated_at": "2026-09-16T19:34:27Z"
 }
