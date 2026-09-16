@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T01:38:52Z",
+  "description": "GOAL: A caller can pattern-match {:ok, handle} = File.open(path) and use handle as resource(integer) without a contract violation or native unboxing fault.\\n\\nSIGNAL:\\n- tuple-field projection respects the proven :ok discriminator\\n- the projected handle retains its resource type through a following File.close/1 call\\n- interpreter, JIT, and AOT agree\\n\\nEVIDENCE: File.open!/2 works because its internal function-clause dispatch narrows the success arm. A direct destructuring assignment currently projects the error tuple payload (:badarg | :io) instead.\\n\\nSTRATEGY: Trace tuple pattern projection from assignment through semantic return refinement; make it carry the arm proof before assigning the second field.",
+  "id": "fz-qqe",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Preserve resource success fields through tuple destructuring",
+  "type": "bug",
+  "updated_at": "2026-09-16T01:38:52Z"
+}
