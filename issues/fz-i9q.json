@@ -17,8 +17,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "The readiness byte precedes the compiler drive, so the execution hang guard times the compiler",
   "type": "bug",
-  "updated_at": "2026-09-16T00:20:22Z"
+  "updated_at": "2026-09-16T16:09:37Z"
 }
