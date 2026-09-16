@@ -4,14 +4,15 @@
   "blocks": [
     "fz-4nh.3"
   ],
+  "closed_at": "2026-09-16T10:47:38Z",
   "created": "2026-09-16T10:35:31Z",
   "description": "Add a resource-safe lazy file stream and the Stream map/collection surface required by `path |\u003e File.stream!() |\u003e Stream.map(\u0026JSON.decode!/1) |\u003e Enum.to_list()`. Preserve errors loudly and prove JIT/interpreter/AOT behavior.",
   "id": "fz-4nh.1",
   "labels": [],
   "parent": "fz-4nh",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Add lazy File.stream! and Stream transforms",
   "type": "task",
-  "updated_at": "2026-09-16T10:35:59Z"
+  "updated_at": "2026-09-16T10:47:38Z"
 }
