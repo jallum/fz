@@ -7,9 +7,15 @@
   "id": "fz-kdt.48.14",
   "labels": [],
   "parent": "fz-kdt.48",
+  "comments": [
+    {
+      "text": "Measured on exact fixtures2/behavior/enum_take_drop_split.fz, atop .48.13. An all-Whole local dispatch mask occurred 197 times: direct identity reuse rises 12,394 -\u003e 12,591 and raw interner probes fall 126,171 -\u003e 125,974. Normalizations (11,875) and unique inserts (1,033) are unchanged. This is precise no-op removal, not a descriptor cache.",
+      "timestamp": "2026-09-16T20:10:02Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Preserve arrow identity when closure erasure has no target",
   "type": "task",
-  "updated_at": "2026-09-16T20:07:30Z"
+  "updated_at": "2026-09-16T20:10:02Z"
 }
