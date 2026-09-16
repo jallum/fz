@@ -15,7 +15,7 @@ alias Map
 alias Process
 alias Range
 alias String
-alias StringChars
+alias String.Chars
 alias Utf8
 
 import Kernel, only: [

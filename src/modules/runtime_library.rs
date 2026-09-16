@@ -69,7 +69,7 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/float.fz"),
     },
     RuntimeModuleSource {
-        name: "StringChars",
+        name: "String.Chars",
         source: include_str!("../../lib/string_chars.fz"),
     },
     RuntimeModuleSource {

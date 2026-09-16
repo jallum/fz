@@ -104,7 +104,7 @@ defmodule Kernel do
   # Here it is an ordinary function, since the macro's expansion has nothing
   # to do at compile time.
   @doc """
-  Converts `term` to a binary via the `StringChars` protocol.
+  Converts `term` to a binary via the `String.Chars` protocol.
 
   ## Examples
 
@@ -116,7 +116,7 @@ defmodule Kernel do
 
   """
   @spec to_string(any) :: binary
-  def to_string(term), do: StringChars.to_string(term)
+  def to_string(term), do: String.Chars.to_string(term)
 
   @doc """
   Prints `x` to standard output and returns it unchanged.

@@ -8,6 +8,7 @@ IO.inspect(to_string(""))
 
 IO.inspect(to_string(0))
 IO.inspect(to_string(42))
+IO.inspect(String.Chars.to_string(42))
 IO.inspect(to_string(-7))
 
 IO.inspect(to_string(2.5))

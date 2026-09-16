@@ -134,7 +134,10 @@ Runtime-library modules are not a special class. At construction the world
 `reference_named`s each runtime module so its name is a stable id, but it does
 **not** submit any source. The first real reference pulls the owning module's
 source through `ensure_runtime_module`, which `submit_code`s it as ordinary code;
-the same `index_code` / `scope_code` / `define_module` jobs handle it.
+the same `index_code` / `scope_code` / `define_module` jobs handle it. Runtime
+registration happens before named-parent resolution, so a dotted runtime module
+such as `String.Chars` owns and indexes its own source instead of waiting for
+its ordinary `String` parent.
 
 The one place the bootstrap is special is *reading*: `is_bootstrap(code)` (the
 prelude plus the runtime modules) is read canonically — definition heads are parsed as
