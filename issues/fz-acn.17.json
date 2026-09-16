@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-16T19:17:31Z",
@@ -8,7 +8,7 @@
   "labels": [],
   "parent": "fz-acn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Make outcome table slots the sole target identity",
   "type": "task",
   "updated_at": "2026-09-16T19:17:31Z"
