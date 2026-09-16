@@ -607,7 +607,7 @@ scope-order work, while body-local expansion remains demand-time work.
 
 Source-order compiler services emit `[fz, compiler2, compiler_service, define]`
 when `Fz.Compiler.define` changes the published grouped source root. Blocked
-scope retries that reproduce the same stash do not emit it again. Its exact raw
+scope retries that reproduce the same source do not emit it again. Its exact raw
 signature is `(&World, &FunctionId, &FunctionSource)`. Handlers derive ids,
 namespace, and quoted-source identity during the callback. Literal functions,
 protocol callbacks, synthesized module-info functions, item-macro returned
@@ -631,7 +631,7 @@ Type-reference publication keeps the two owning key domains explicit.
 and recording borrows the source `TypeName` while the semantic map takes its
 own required key clone.
 
-This schema covers function `defined` and source `stashed`/`noted`/`expanded`,
+This schema covers function `defined` and source `noted`/`expanded`,
 function contracts, lowered bodies, guard and entry dispatch, modules, structs,
 types, protocol dispatch, activation analysis, callsite summaries, roots, and
 code submissions. Backend and native programs live only in the

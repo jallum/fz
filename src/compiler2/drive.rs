@@ -181,7 +181,6 @@ pub enum Job {
     ScopeCode(SourceOwner),
     DefineModule(ModuleId),
     DefineModuleInterface(ModuleId),
-    PublishFunctionSource(FunctionId),
     ExpandFunctionSource(FunctionId),
     DefineFunction(FunctionId),
     DeriveTypeDef(TypeName),
@@ -209,7 +208,6 @@ impl SemanticOrd<Types> for Job {
                 (Job::ScopeCode(left), Job::ScopeCode(right)) => left.cmp(right),
                 (Job::DefineModule(left), Job::DefineModule(right)) => left.cmp(right),
                 (Job::DefineModuleInterface(left), Job::DefineModuleInterface(right)) => left.cmp(right),
-                (Job::PublishFunctionSource(left), Job::PublishFunctionSource(right)) => left.cmp(right),
                 (Job::ExpandFunctionSource(left), Job::ExpandFunctionSource(right)) => left.cmp(right),
                 (Job::DefineFunction(left), Job::DefineFunction(right)) => left.cmp(right),
                 (Job::DeriveTypeDef(left), Job::DeriveTypeDef(right)) => left.cmp(right),
@@ -249,7 +247,6 @@ fn job_order_rank(job: &Job) -> u8 {
         Job::IndexCode(_) => 13,
         Job::LowerFunction(_) => 14,
         Job::PlanEntryDispatch(_) => 15,
-        Job::PublishFunctionSource(_) => 16,
         Job::ReifyGuardDispatch(_) => 17,
         Job::ScopeCode(_) => 18,
         Job::SeedActivation(_) => 19,
@@ -267,7 +264,6 @@ pub enum FactKey {
     ModuleDefined(ModuleId),
     ModuleInterface(ModuleId),
     FunctionSource(FunctionId),
-    FunctionSourceStash(FunctionId),
     ExpandedFunctionSource(FunctionId),
     TypeDefined(TypeName),
     StructDefined(ModuleId),
@@ -318,7 +314,6 @@ impl FactKey {
             | (FactKey::ProtocolDispatch(left), FactKey::ProtocolDispatch(right))
             | (FactKey::ProtocolImplProviders(left), FactKey::ProtocolImplProviders(right)) => left.cmp(right),
             (FactKey::FunctionSource(left), FactKey::FunctionSource(right))
-            | (FactKey::FunctionSourceStash(left), FactKey::FunctionSourceStash(right))
             | (FactKey::ExpandedFunctionSource(left), FactKey::ExpandedFunctionSource(right))
             | (FactKey::FunctionDefined(left), FactKey::FunctionDefined(right))
             | (FactKey::FunctionContract(left), FactKey::FunctionContract(right))
@@ -371,7 +366,6 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::FunctionContract(_) => 13,
         FactKey::FunctionDefined(_) => 14,
         FactKey::FunctionSource(_) => 15,
-        FactKey::FunctionSourceStash(_) => 16,
         FactKey::GuardDispatch(_) => 17,
         FactKey::InputDemand(_) => 18,
         FactKey::LoweredBody(_) => 19,
@@ -611,8 +605,7 @@ impl World {
     ///
     /// Facts whose producers publish them only as a co-output of a broader
     /// job's conclusion (`ModuleIndexed`, `StructDefined`, `ProtocolDispatch`,
-    /// `ProtocolImplProviders`, `Executable`,
-    /// `FunctionSourceStash`) have no arm: their demand rides
+    /// `ProtocolImplProviders`, `Executable`) have no arm: their demand rides
     /// the mapped facts that gate the job that co-produces them. Every fact
     /// with a single sole-producing job gets an arm here, even when that job
     /// is also the blocked branch of a `wait_on_current(fact)` bare wait elsewhere —
@@ -660,7 +653,22 @@ impl World {
             }
             FactKey::InputDemand(function) => Some(Job::DeriveInputDemand(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
-            FactKey::FunctionSource(function) => Some(Job::PublishFunctionSource(*function)),
+            // A function's source is published by the scope walk that defines
+            // it, and which walk that is depends on where the function lives.
+            // `demand_function_scope` names the scope facts that gate it, and
+            // each of those has its own arm here, so expanding them is how
+            // this fact reaches its producer. A function no submitted code
+            // names yet has no scope fact: nothing is demanded, and the wait
+            // is discharged when some later walk publishes the source. A
+            // corpus with two homes for one name is diagnosed by the job that
+            // needs the source, not by this map, which carries no telemetry.
+            FactKey::FunctionSource(function) => {
+                let scopes = self.demand_function_scope(*function).unwrap_or_default();
+                return scopes
+                    .iter()
+                    .map(|scope| self.demand_fact_producer(scope, reason))
+                    .sum();
+            }
             FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),
             FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
                 self.seed_activation_producer(activation)

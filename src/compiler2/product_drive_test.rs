@@ -274,9 +274,11 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         cold_work,
         super::WorkStartTally {
             ignition: 0,
-            changed_revision_wake: 20,
+            // Publishing a function's source from the walk that scoped it
+            // removes a wake and a blocked-waiter expansion per reached body.
+            changed_revision_wake: 18,
             activation_frontier: 2,
-            blocked_waiter_expansion: 24,
+            blocked_waiter_expansion: 22,
             unclassified: 0,
             root_scans: 0,
             drain_discovery_sweeps: 0,
@@ -377,7 +379,9 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         reached_backend_work,
         super::WorkStartTally {
             ignition: 2,
-            changed_revision_wake: 21,
+            // The re-scope publishes the replaced source itself, so the edit no
+            // longer wakes a separate copy job on its way to the body.
+            changed_revision_wake: 19,
             ..super::WorkStartTally::default()
         },
         "a reached edit starts source ingestion and only exact changed-revision readers",

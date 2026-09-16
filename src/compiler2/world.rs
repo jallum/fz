@@ -38,7 +38,7 @@ use super::facts::FactUse;
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
     FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl,
-    PendingFunctionSourceMap, RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
+    RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{BodyKeying, BodyKeyingMap, CallGraphComponentMap, InputDemand, InputDemandMap, StaticCalleeMap};
@@ -132,7 +132,6 @@ pub struct World {
     code: CodeMap,
     modules: ModuleMap,
     functions: FunctionMap,
-    pending_function_sources: PendingFunctionSourceMap,
     expanded_function_sources: ExpandedFunctionSourceMap,
     type_decls: TypeDeclMap,
     type_refs: TypeRefMap,
@@ -269,7 +268,6 @@ impl World {
             code,
             modules,
             functions: FunctionMap::new(),
-            pending_function_sources: PendingFunctionSourceMap::new(),
             expanded_function_sources: ExpandedFunctionSourceMap::new(),
             type_decls: TypeDeclMap::new(),
             type_refs: TypeRefMap::new(),
@@ -1435,28 +1433,8 @@ impl World {
         }
     }
 
-    /// Stashes the source form a scope walk built for `function` without minting
-    /// the consumable `FunctionSource` fact (fz-f98.14.5). This is the eager
-    /// interface-tier record: it carries everything a reference needs that lives
-    /// outside the namespace (notably the variadic flag), while the body stays
-    /// cold until a reached consumer pulls it through `PublishFunctionSource`. A
-    /// function the program never reaches keeps its body cold here forever,
-    /// exactly like an unreferenced `@type` decl.
-    ///
-    /// Returns whether the stashed content changed. The caller — the scope
-    /// job's own conclusion — folds this into its `FactKey::FunctionSourceStash
-    /// (function)` output/changed pair (fz-go4.38): a (re)scope is the only
-    /// event that can supersede a body a consumer already pulled, and it must
-    /// flow to `PublishFunctionSource` the same way every other re-derivation
-    /// does, through a tracked fact's revision moving and waking the standing
-    /// reader that named it — never a job enqueuing another job by name.
-    pub(crate) fn pending_function_source(&self, function: FunctionId) -> Option<&FunctionSource> {
-        self.pending_function_sources.get(function)
-    }
-
-    /// Promotes a stashed source into the consumable `FunctionSource` fact when a
-    /// reached consumer demands the body. Returns `true` when the fact's content
-    /// changed, so the caller publishes the change to the scheduler.
+    /// The raw source form a scope walk built for `function`, present from the
+    /// moment that walk noted it.
     pub(crate) fn function_source(&self, function: FunctionId) -> Option<FunctionSource> {
         match self.functions.get(function) {
             super::identity::FunctionState::Noted { source }
@@ -1838,8 +1816,7 @@ impl World {
         let source = match self.functions.get(function) {
             super::identity::FunctionState::Defined { source, .. }
             | super::identity::FunctionState::Noted { source } => source.as_ref(),
-            // Before the body is pulled the stash still records the owner scope.
-            super::identity::FunctionState::Placeholder => self.pending_function_source(function)?,
+            super::identity::FunctionState::Placeholder => return None,
         };
         Some(ScopeSnapshot::function(source.owner_module, source.namespace, function))
     }
@@ -1861,20 +1838,19 @@ impl World {
     pub(crate) fn function_variadic(&self, function: FunctionId) -> bool {
         match self.functions.get(function) {
             super::identity::FunctionState::Defined { surface, .. } => surface.variadic,
+            // A scope walk notes every function it defines, so the variadic
+            // flag name resolution scores against is present as soon as the
+            // owning scope has been walked. A placeholder is a name nothing
+            // has defined yet.
             super::identity::FunctionState::Noted { source } => source.variadic,
-            // The body is still cold; the eager stash carries the variadic flag
-            // so name resolution scores variadic functions without forcing the
-            // body (fz-f98.14.5).
-            super::identity::FunctionState::Placeholder => self
-                .pending_function_source(function)
-                .is_some_and(|source| source.variadic),
+            super::identity::FunctionState::Placeholder => false,
         }
     }
 
-    /// The scope walk that populates `function`'s pending source stash, named
-    /// as the fact that gates it. `PublishFunctionSource` waits on this scope,
-    /// not on `FunctionSource`, so it never waits on the fact it is itself the
-    /// sole producer of (fz-f98.14.5). Every returned fact has a producer arm
+    /// The scope walk that publishes `function`'s source, named as the fact
+    /// that gates it. A consumer whose source is missing waits on this scope
+    /// rather than on `FunctionSource`, so it never waits behind a fact whose
+    /// producer it would have to name itself. Every returned fact has a producer arm
     /// in `World::demand_fact_producer` (`CodeScoped` -> `Job::ScopeCode`,
     /// `CodeIndexed` -> `Job::IndexCode`, `ModuleDefined` -> `Job::DefineModule`),
     /// so naming the fact is enough — callers do not also need the job.
@@ -1883,8 +1859,9 @@ impl World {
     /// every submitted code unit, so this returns at least one arm-covered
     /// fact whenever any candidate home is still unresolved (`Pending`); it
     /// only returns empty once every code is `Indexed` and none of them is
-    /// the home — the terminal dangling case, where the only remaining wait
-    /// (`FunctionSourceStash`, which has no producer arm) is legitimate. A
+    /// the home — the terminal dangling case, where waiting on `FunctionSource`
+    /// itself is the honest answer: no walk names this function, so nothing is
+    /// there to demand until some later submission does. A
     /// single `Certain` match or `Opaque` item-macro candidate is returned
     /// ALONE (never bundled with the rest of the surface, fz-go4.53): the
     /// scheduler's AND-semantics wake would otherwise force every unrelated
@@ -2835,10 +2812,10 @@ fn source_definition_matches_function(
 /// head is a call to a user-defined `defmacro`: its expansion is unknown
 /// until it actually runs, so the call is only an `Opaque` candidate home for
 /// every still-unresolved global name. Treating it as a non-match here would
-/// strand a macro-produced root or callee name behind a wait no producer arm
-/// ever wakes (the arm-less `FunctionSourceStash` fallback in
-/// `demand_function_scope`), since nothing would ever demand the `ScopeCode`
-/// that expands the macro and stashes the name it produces.
+/// strand a macro-produced root or callee name behind the terminal
+/// `FunctionSource` wait `demand_function_scope` falls back to, since nothing
+/// would ever demand the `ScopeCode` that expands the macro and publishes the
+/// name it produces.
 fn item_macro_call_match(
     source: &QuotedSourceRoot,
     function_ref: &FunctionRef,
@@ -3263,15 +3240,6 @@ impl World {
         self.functions.define(id, source, expanded_source, surface)
     }
 
-    pub(crate) fn stash_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
-        self.pending_function_sources.stash(function, source)
-    }
-
-    pub(crate) fn publish_pending_function_source(&mut self, function: FunctionId) -> Option<bool> {
-        let source = self.pending_function_sources.get(function).cloned()?;
-        Some(self.note_function_source(function, source))
-    }
-
     pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
         self.functions.note(function, source)
     }
@@ -3674,25 +3642,12 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         changed
     }
 
-    pub(crate) fn stash_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
-        let changed = self.world.stash_function_source(function, source);
+    pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
+        let changed = self.world.note_function_source(function, source);
         if changed {
-            self.emit_world_key(&["fz", "compiler2", "function", "source", "stashed"], &function);
+            self.emit_world_key(&["fz", "compiler2", "function", "source", "noted"], &function);
         }
         changed
-    }
-
-    pub(crate) fn publish_pending_function_source(&mut self, function: FunctionId) -> Option<bool> {
-        self.world.pending_function_source(function)?;
-        let changed = self.world.publish_pending_function_source(function)?;
-        if changed {
-            self.emit_function_source_noted(function);
-        }
-        Some(changed)
-    }
-
-    fn emit_function_source_noted(&self, function: FunctionId) {
-        self.emit_world_key(&["fz", "compiler2", "function", "source", "noted"], &function);
     }
 
     pub(crate) fn note_expanded_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {

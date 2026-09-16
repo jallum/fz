@@ -253,9 +253,9 @@ pub(crate) fn publish_protocol_surface(
         true,
         Vec::new(),
     );
-    outputs.push(FactKey::FunctionSourceStash(publication.function));
-    if publication.stashed_changed {
-        changed.push(FactKey::FunctionSourceStash(publication.function));
+    outputs.push(FactKey::FunctionSource(publication.function));
+    if publication.source_changed {
+        changed.push(FactKey::FunctionSource(publication.function));
     }
     if let Some(callable) = publication.callable {
         callables.push(callable);
@@ -859,10 +859,10 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             key: DerivationKey::Function(publication.function),
             reads: current_uses(self.reads.clone()),
             product_reads: self.product_reads.clone(),
-            outputs: vec![FactKey::FunctionSourceStash(publication.function)],
+            outputs: vec![FactKey::FunctionSource(publication.function)],
             changed: publication
-                .stashed_changed
-                .then_some(FactKey::FunctionSourceStash(publication.function))
+                .source_changed
+                .then_some(FactKey::FunctionSource(publication.function))
                 .into_iter()
                 .collect(),
         });
@@ -1630,12 +1630,11 @@ fn required_remote_macro_list(required_remote_macros: &HashSet<FunctionId>) -> V
 struct FunctionPublication {
     function: FunctionId,
     callable: Option<ModuleInterfaceCallable>,
-    /// Whether this scope's stash changed `function`'s pending source. Callers
-    /// fold this into their job's `FactKey::FunctionSourceStash(function)`
-    /// output/changed pair so a (re)scope wakes `PublishFunctionSource` through
-    /// the standing changed-revision path rather than a manual enqueue
-    /// (fz-go4.38).
-    stashed_changed: bool,
+    /// Whether this walk changed `function`'s source. Callers fold this into
+    /// their job's `FactKey::FunctionSource(function)` output/changed pair, so
+    /// a re-scope that supersedes a body reaches every consumer through the
+    /// standing changed-revision path rather than a manual enqueue.
+    source_changed: bool,
 }
 
 fn publish_function_source(
@@ -1655,12 +1654,10 @@ fn publish_function_source(
         function.arity,
         declared_callable_kind(function.is_macro),
     );
-    // Stash the body eagerly but leave it cold: the consumable `FunctionSource`
-    // fact is minted only when a reached consumer pulls it through
-    // `PublishFunctionSource` (fz-f98.14.5). The interface — the callable below,
-    // the `function_id` itself, and the namespace bindings reserve_local_forms
-    // already made — is what every reference and protocol dispatch resolves
-    // against, so it stays eager.
+    // The walk notes the source as it reaches the definition, so the fact is
+    // this walk's own conclusion. Noting a source is not body work: the
+    // expansion, surface and lowering below it stay pulled by consumers, and a
+    // function the program never reaches goes no further than here.
     let source = FunctionSource {
         owner: source_owner,
         owner_module,
@@ -1670,9 +1667,9 @@ fn publish_function_source(
         variadic: function.variadic,
         source: function.source.clone(),
     };
-    let stashed_changed =
-        super::drive::ExecutionContext::new(world, tel).stash_function_source(function_id, source.clone());
-    if stashed_changed {
+    let source_changed =
+        super::drive::ExecutionContext::new(world, tel).note_function_source(function_id, source.clone());
+    if source_changed {
         emit_compiler_service_define(world, tel, &function_id, &source);
     }
 
@@ -1689,7 +1686,7 @@ fn publish_function_source(
     FunctionPublication {
         function: function_id,
         callable,
-        stashed_changed,
+        source_changed,
     }
 }
 

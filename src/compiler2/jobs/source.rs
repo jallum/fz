@@ -328,83 +328,6 @@ pub(super) fn define_function(
     })
 }
 
-/// Mints the consumable `FunctionSource` fact for one function when a reached
-/// consumer pulls its body (fz-f98.14.5).
-///
-/// Scope publication stashes every function's source eagerly but leaves the
-/// body cold. This job promotes the one stashed source a consumer asked for,
-/// so opening a scope produces no cold body work: a function the program never
-/// reaches never reaches this job. If the owning scope has not been walked yet
-/// the stash is empty, so it waits on that scope first. `FunctionSource`'s sole
-/// producer arm (`World::demand_fact_producer`) is this job, so any consumer
-/// blocked on `FunctionSource` restarts it through that map rather than a push.
-pub(super) fn publish_function_source_job(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    function_id: super::super::FunctionId,
-) -> Result<JobEffects, FatalError> {
-    let Some(changed) =
-        super::super::drive::ExecutionContext::new(world, tel).publish_pending_function_source(function_id)
-    else {
-        // The owning scope has not been walked yet, so the stash is empty. Wait
-        // on that scope and re-run once it has stashed this body; never wait on
-        // `FunctionSource`, the fact this job is the sole producer of.
-        //
-        // `demand_function_scope` names each fact directly rather than pushing a
-        // job: a global-module function waits on `CodeIndexed(source_owner)` for
-        // every still-`Pending` candidate home (sole producer `Job::IndexCode`)
-        // until a home is found, then narrows to that home's
-        // `CodeScoped(source_owner)` (sole producer `Job::ScopeCode`); a scoped
-        // function waits on `ModuleDefined(module)` (sole producer
-        // `Job::DefineModule`) -- all three are arms in
-        // `World::demand_fact_producer`, and each is wake-coherent: satisfying
-        // it re-runs this job at the exact step the next scope fact appears.
-        // The satisfying `ScopeCode` co-produces `FunctionSourceStash` in the
-        // *same* `JobEffects` as `CodeScoped` (see `source_publish`), so the
-        // `CodeScoped`-triggered re-run already finds the stash present -- no
-        // separate wait on the stash is needed while a scope fact is named.
-        let mut waits: Vec<FactKey> =
-            super::super::drive::ExecutionContext::new(world, tel).demand_function_scope(function_id)?;
-        if waits.is_empty() {
-            // Only the terminal case -- no code names this function's home yet
-            // (its owning code has not been submitted, or the reference is
-            // dangling) -- falls back to the arm-less
-            // `FunctionSourceStash(function_id)` (fz-go4.38). It is the ONLY
-            // arm-less wait, correct here because there is no arm-covered fact
-            // to name. It must NEVER be bundled with an arm-covered
-            // `CodeIndexed`/`CodeScoped` wait: the scheduler re-runs a waiter
-            // only when ALL its waits are satisfied (`enqueue_dependents`), so
-            // pairing an arm-covered fact (produced now by
-            // `IndexCode`/`ScopeCode`) with `FunctionSourceStash` (produced
-            // only by a later `ScopeCode`) would AND-block the wake and never
-            // fire. Whichever scope eventually stashes this function's body --
-            // first pass or a later (re)scope -- bumps this fact and rewakes
-            // the job through the standing changed-revision path, never a
-            // manual enqueue.
-            waits.push(FactKey::FunctionSourceStash(function_id));
-        }
-        return Ok(JobEffects {
-            waits: current_uses(waits),
-            ..JobEffects::default()
-        });
-    };
-    Ok(JobEffects {
-        // Read the stash fact the scope job that just satisfied us co-produced
-        // (fz-go4.38): this is the standing subscription that lets a later
-        // (re)scope wake this job through the ordinary changed-revision path
-        // instead of a manual enqueue. `stash_function_source` bumps this
-        // fact's revision on redefinition, and the scheduler's rebased check
-        // re-demands every job whose recorded reads shifted.
-        reads: current_uses(vec![FactKey::FunctionSourceStash(function_id)]),
-        outputs: vec![FactKey::FunctionSource(function_id)],
-        changed: changed
-            .then_some(FactKey::FunctionSource(function_id))
-            .into_iter()
-            .collect(),
-        ..JobEffects::default()
-    })
-}
-
 pub(super) fn expand_function_source(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -412,7 +335,32 @@ pub(super) fn expand_function_source(
     function_id: super::super::FunctionId,
 ) -> Result<JobEffects, FatalError> {
     let Some(source) = world.function_source(function_id) else {
-        return Ok(JobEffects::wait_on_current(FactKey::FunctionSource(function_id)));
+        // No walk has scoped this function yet. Wait on the scope that will,
+        // named as a fact: a global-module function waits on
+        // `CodeIndexed(source_owner)` for every still-`Pending` candidate home
+        // until one is found, then narrows to that home's
+        // `CodeScoped(source_owner)`; a scoped function waits on
+        // `ModuleDefined(module)`. Each has a producer arm in
+        // `World::demand_fact_producer`, and each is wake-coherent: satisfying
+        // it re-runs this job at the exact step the next scope fact appears,
+        // and that scope publishes `FunctionSource` in the same conclusion.
+        let mut waits: Vec<FactKey> =
+            super::super::drive::ExecutionContext::new(world, tel).demand_function_scope(function_id)?;
+        if waits.is_empty() {
+            // The terminal case: no submitted code names this function's home,
+            // so there is no scope fact to name and the wait falls back to the
+            // source itself. Naming it ALONE matters -- the scheduler re-runs a
+            // waiter only when ALL its waits are satisfied, so bundling it with
+            // a `CodeIndexed`/`CodeScoped` wait would AND-block the wake.
+            // Whichever walk eventually publishes this source, first pass or a
+            // later re-scope, moves the fact and rewakes this job through the
+            // standing changed-revision path.
+            waits.push(FactKey::FunctionSource(function_id));
+        }
+        return Ok(JobEffects {
+            waits: current_uses(waits),
+            ..JobEffects::default()
+        });
     };
     match FunctionSourceExpander::new(world, tel, products, function_id, &source).expand(&source)? {
         FunctionSourceExpansion::Complete {

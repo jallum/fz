@@ -38,7 +38,7 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
-        runtime_demand_walks: 1127,
+        runtime_demand_walks: 1114,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -1223,11 +1223,11 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
             .sum::<u64>();
         assert_eq!(
             // The sum of the three fixtures' own `runtime_demand_walks`
-            // (1127 + 589 + 234), read back out of the retained bundles. Both
+            // (1114 + 589 + 234), read back out of the retained bundles. Both
             // processes of a bundle must reach it, so a walk that depends on
             // hash seeding or process order shows up here.
             aggregate_walks,
-            1950,
+            1937,
             "the same retained observations own the aggregate work pin"
         );
         assert!(
@@ -2140,16 +2140,20 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // RuntimeDemandInput fact a step ahead of the batched
             // RuntimeDemandInputs fact, and the same drain fix removes three
             // stale no-op re-runs elsewhere in the same job family.
-            evaluations: 433,
+            // Publishing a function's source from the walk that scoped it
+            // removes one formula, one wake and one blocked prerequisite per
+            // reached function; the readiness and runtime-demand classes are
+            // untouched.
+            evaluations: 399,
             runtime_demand_evaluations: 39,
-            initial: 222,
-            content_caused: 211,
+            initial: 205,
+            content_caused: 194,
             readiness_caused: 0,
             uncaused: 0,
-            changed_outputs: 271,
-            unchanged_outputs: 162,
-            wakes: 225,
-            blocked_completions: 187,
+            changed_outputs: 254,
+            unchanged_outputs: 145,
+            wakes: 208,
+            blocked_completions: 170,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );

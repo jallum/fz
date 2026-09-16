@@ -111,10 +111,20 @@ job's conclusion (`ModuleIndexed`, `ProtocolDispatch`,
 `ProtocolImplProviders`, `Executable`) has
 no arm: its demand rides the mapped fact that gates the job that co-produces
 it. Every fact with one sole-producing job gets an arm — including
-`FunctionSource` (`Job::PublishFunctionSource`), `ExpandedFunctionSource`
-(`Job::ExpandFunctionSource`), and `EntryDispatch` (`Job::PlanEntryDispatch`). A fact is
+`ExpandedFunctionSource` (`Job::ExpandFunctionSource`) and `EntryDispatch`
+(`Job::PlanEntryDispatch`). A fact is
 a co-output exception only when no single job is its sole producer, never
 because a caller already knows which job to name.
+
+An arm may name the facts that gate the producer instead of the producer
+itself, when which job publishes the fact depends on the world. A function's
+source is published by whichever scope walk reaches its definition, so
+`FunctionSource(f)` expands through `World::demand_function_scope`: that names
+the scope facts gating the walk — `CodeIndexed` for a candidate home still
+unindexed, then `CodeScoped` for the home found, or `ModuleDefined` for a
+scoped function — and each of those has its own arm. A function no submitted
+code names has no scope fact, so the arm demands nothing and the wait stands
+until some later submission's walk publishes the source.
 Blocked work is not an error; exact waits are how ordering emerges without a
 separate phase schedule.
 
