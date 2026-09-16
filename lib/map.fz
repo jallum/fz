@@ -221,6 +221,42 @@ defmodule Map do
   defp get_or(_map, _key, default, false), do: default
 
   @doc """
+  Returns `{:ok, value}` for `key`, or `:error` when it is absent.
+
+  ## Examples
+
+      Map.fetch(%{a: 1}, :a)
+      #=> {:ok, 1}
+
+      Map.fetch(%{a: 1}, :b)
+      #=> :error
+  """
+  @spec fetch(any, any) :: {:ok, any} | :error
+  def fetch(map, key), do: fetch_result(map, key, has_key?(map, key))
+
+  @spec fetch_result(any, any, boolean) :: {:ok, any} | :error
+  defp fetch_result(map, key, true), do: {:ok, map[key]}
+  defp fetch_result(_map, _key, false), do: :error
+
+  @doc """
+  Returns the value for `key`, or halts when it is absent.
+  """
+  @spec fetch!(any, any) :: any
+  def fetch!(map, key), do: fetch_value!(fetch(map, key), key)
+
+  @spec fetch_value!({:ok, any} | :error, any) :: any
+  defp fetch_value!({:ok, value}, _key), do: value
+  defp fetch_value!(:error, key), do: Kernel.panic({:badkey, key})
+
+  @doc """
+  Applies `fun` to the value at `key` and returns the updated map.
+
+  Halts when `key` is absent.
+  """
+  @spec update!(any, any, (any) -> any) :: any
+  def update!(map, key, fun), do: put(map, key, fun.(fetch!(map, key)))
+
+  @doc """
   Returns the map without `key`, or `map` unchanged if `key` is absent.
 
   Copies the whole array; prefer `drop/2` for removing several keys.

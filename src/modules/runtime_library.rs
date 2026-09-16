@@ -45,6 +45,14 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/map.fz"),
     },
     RuntimeModuleSource {
+        name: "MapSet",
+        source: include_str!("../../lib/map_set.fz"),
+    },
+    RuntimeModuleSource {
+        name: "OptionParser",
+        source: include_str!("../../lib/option_parser.fz"),
+    },
+    RuntimeModuleSource {
         name: "Keyword",
         source: include_str!("../../lib/keyword.fz"),
     },

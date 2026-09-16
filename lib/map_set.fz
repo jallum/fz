@@ -1,0 +1,42 @@
+defmodule MapSet do
+  @moduledoc """
+  An immutable set backed by fz's structural map keys.
+
+  `MapSet` keeps one `true` entry for each member. Its ordering is therefore
+  fz map-key order rather than insertion order; membership is structural and
+  treats integer and float keys as distinct, like `Map`.
+  """
+
+  defstruct [:map]
+
+  @type t :: %MapSet{map: any}
+
+  @doc """
+  Returns an empty set.
+  """
+  @spec new() :: t
+  def new(), do: %MapSet{map: %{}}
+
+  @doc """
+  Returns a set containing each member of `enumerable` once.
+
+  ## Examples
+
+      MapSet.new([:compile, :compile, :link])
+      #=> %MapSet{map: %{:compile => true, :link => true}}
+  """
+  @spec new(Enumerable.t(a)) :: t
+  def new(enumerable), do: Enum.reduce(enumerable, new(), fn (value, set) -> put(set, value) end)
+
+  @doc """
+  Returns a set containing `value`.
+  """
+  @spec put(t, any) :: t
+  def put(%MapSet{map: map}, value), do: %MapSet{map: Map.put(map, value, true)}
+
+  @doc """
+  Returns whether `value` is a member of `set`.
+  """
+  @spec member?(t, any) :: boolean
+  def member?(%MapSet{map: map}, value), do: Map.has_key?(map, value)
+end

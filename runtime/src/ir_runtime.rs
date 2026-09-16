@@ -322,6 +322,14 @@ pub extern "C" fn fz_dbg_value(process: *mut Process, ref_word: u64) -> u64 {
     ref_word
 }
 
+/// `Kernel.inspect/1` and `Kernel.inspect/2` share `dbg/1`'s deterministic
+/// renderer, but return its text instead of emitting it.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_inspect(process: *mut Process, ref_word: u64) -> u64 {
+    let value = any_value_from_ref_word(ref_word, "fz_inspect");
+    alloc_text(process, &render_value(process, value))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_dynamic_float_arith_unsupported() -> u64 {
     panic!("dynamic float arithmetic needs a typed float result carrier")
@@ -1176,6 +1184,14 @@ pub extern "C" fn fz_integer_to_binary(process: *mut Process, value: i64) -> u64
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_float_to_binary(process: *mut Process, value: f64) -> u64 {
     alloc_text(process, &crate::any_value::debug::float_to_string(value))
+}
+
+/// `Float.to_string/2` with the fixed-decimal mode used by report formatters.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_float_to_binary_decimals(process: *mut Process, value: f64, decimals: i64) -> u64 {
+    let decimals =
+        usize::try_from(decimals).unwrap_or_else(|_| panic!("Float.to_string decimals must be non-negative"));
+    alloc_text(process, &format!("{value:.decimals$}"))
 }
 
 #[unsafe(no_mangle)]

@@ -1,0 +1,70 @@
+defmodule OptionParser do
+  @moduledoc """
+  Parses long command-line options declared with `strict:`.
+
+  This deliberately small first surface accepts `--name value` options whose
+  names and types are listed in `strict`. It returns Elixir's
+  `{options, remaining, invalid}` shape, so a command can pattern-match its
+  positional arguments while retaining malformed options for its own error
+  reporting. `:integer` is the supported strict value type.
+  """
+
+  @doc """
+  Parses `args` according to a strict option declaration.
+
+  ## Examples
+
+      OptionParser.parse(["trace.jsonl", "--top", "20"], strict: [top: :integer])
+      #=> {[top: 20], ["trace.jsonl"], []}
+
+  Unknown options and values that do not satisfy their declared type appear in
+  the final `invalid` list. They are not silently treated as positional paths.
+  """
+  @spec parse([binary], any) :: {keyword(any), [binary], [{binary, binary | nil}]}
+  def parse(args, strict: strict), do: parse(args, strict, [], [], [])
+  def parse(_args, _options), do: Kernel.panic(:bad_option_parser_options)
+
+  @spec parse([binary], keyword(atom), keyword(any), [binary], [{binary, binary | nil}]) :: {keyword(any), [binary], [{binary, binary | nil}]}
+  defp parse([], _strict, options, positional, invalid), do: {reverse(options, []), reverse(positional, []), reverse(invalid, [])}
+  defp parse(["--" | rest], _strict, options, positional, invalid), do: {reverse(options, []), reverse(positional, rest), reverse(invalid, [])}
+  defp parse([<<"--", name::binary>>, value | rest], strict, options, positional, invalid) do
+    parse_option(strict_type(strict, name), name, value, rest, strict, options, positional, invalid)
+  end
+  defp parse([<<"--", name::binary>>], strict, options, positional, invalid), do: parse([], strict, options, positional, [{"--" <> name, nil} | invalid])
+  defp parse([arg | rest], strict, options, positional, invalid), do: parse(rest, strict, options, [arg | positional], invalid)
+
+  @spec parse_option({:ok, atom, atom} | :error, binary, binary, [binary], keyword(atom), keyword(any), [binary], [{binary, binary | nil}]) :: {keyword(any), [binary], [{binary, binary | nil}]}
+  defp parse_option({:ok, key, :integer}, _name, value, rest, strict, options, positional, invalid) do
+    parse_integer_option(parse_integer(value), key, value, rest, strict, options, positional, invalid)
+  end
+  defp parse_option(:error, name, value, rest, strict, options, positional, invalid), do: parse(rest, strict, options, positional, [{"--" <> name, value} | invalid])
+  defp parse_option(_declaration, name, value, rest, strict, options, positional, invalid), do: parse(rest, strict, options, positional, [{"--" <> name, value} | invalid])
+
+  @spec parse_integer_option({:ok, integer} | :error, atom, binary, [binary], keyword(atom), keyword(any), [binary], [{binary, binary | nil}]) :: {keyword(any), [binary], [{binary, binary | nil}]}
+  defp parse_integer_option({:ok, value}, key, _raw, rest, strict, options, positional, invalid), do: parse(rest, strict, [{key, value} | options], positional, invalid)
+  defp parse_integer_option(:error, key, raw, rest, strict, options, positional, invalid), do: parse(rest, strict, options, positional, [{"--" <> Atom.to_string(key), raw} | invalid])
+
+  @spec strict_type(keyword(atom), binary) :: {:ok, atom, atom} | :error
+  defp strict_type([], _name), do: :error
+  defp strict_type([{key, value_type} | rest], name) do
+    if Atom.to_string(key) == name, do: {:ok, key, value_type}, else: strict_type(rest, name)
+  end
+
+  @spec parse_integer(binary) :: {:ok, integer} | :error
+  defp parse_integer(<<"-", rest::binary>>), do: parsed_negative(integer_digits(rest, 0, false))
+  defp parse_integer(value), do: integer_digits(value, 0, false)
+
+  @spec parsed_negative({:ok, integer} | :error) :: {:ok, integer} | :error
+  defp parsed_negative({:ok, value}), do: {:ok, -value}
+  defp parsed_negative(:error), do: :error
+
+  @spec integer_digits(binary, integer, boolean) :: {:ok, integer} | :error
+  defp integer_digits(<<>>, value, true), do: {:ok, value}
+  defp integer_digits(<<>>, _value, false), do: :error
+  defp integer_digits(<<digit, rest::binary>>, value, seen) when digit >= 48 and digit <= 57, do: integer_digits(rest, value * 10 + digit - 48, true)
+  defp integer_digits(_value, _acc, _seen), do: :error
+
+  @spec reverse([a], [a]) :: [a]
+  defp reverse([], acc), do: acc
+  defp reverse([head | tail], acc), do: reverse(tail, [head | acc])
+end

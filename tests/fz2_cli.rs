@@ -1934,6 +1934,62 @@ end
     let _ = remove_file(out_bin.with_extension("bin.o"));
 }
 
+#[test]
+fn direct_tool_primitives_agree_across_every_execution_door() {
+    let source_path = unique_temp_path("fz2_direct_tool_primitives", ".fz");
+    write(
+        &source_path,
+        r#"
+def main() do
+  {opts, [path], invalid} = OptionParser.parse(["trace.jsonl", "--top", "7"], strict: [top: :integer])
+  {_, _, rejected} = OptionParser.parse(["--top", "many"], strict: [top: :integer])
+  counts = Map.update!(%{"compile" => 1}, "compile", fn count -> count + 1 end)
+  widened = MapSet.new(["compile", "compile"])
+
+  dbg({opts, path, invalid})
+  dbg(rejected)
+  dbg({Map.fetch!(counts, "compile"), MapSet.member?(widened, "compile")})
+  dbg({String.pad_trailing("job", 6), String.pad_leading("7", 4)})
+  dbg({Float.to_string(12.34, decimals: 1), inspect(%{"name" => "compile"}, limit: 6)})
+end
+"#,
+    )
+    .expect("write direct-tool primitive fixture");
+
+    let expected = r#"{[top: 7], "trace.jsonl", []}
+[{"--top", "many"}]
+{2, true}
+{"job   ", "   7"}
+{"12.3", "%{\"name\" => \"compile\"}"}
+"#;
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[OsStr::new(command), source_path.as_os_str()]);
+        assert_successful_stdout(&out, expected, &format!("fz2 {command} direct-tool primitives"));
+    }
+
+    let out_bin = unique_temp_path("fz2_direct_tool_primitives_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build direct-tool primitives should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&out_bin)
+        .output()
+        .expect("run built direct-tool primitive fixture");
+    assert_successful_stdout(&run, expected, "fz2 build/run direct-tool primitives");
+
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
 /// fz-kdt.44: the drain arbiter's readiness step is on the public stream.
 ///
 /// Settledness is transitive — a fact is final only when its whole upstream
