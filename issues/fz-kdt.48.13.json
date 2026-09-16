@@ -7,9 +7,15 @@
   "id": "fz-kdt.48.13",
   "labels": [],
   "parent": "fz-kdt.48",
+  "comments": [
+    {
+      "text": "Measured on the exact `fixtures2/behavior/enum_take_drop_split.fz` type-boundary census. On top of fz-kdt.48.12, concrete/empty instantiation shortcuts add 10,021 direct reuses (2,373 -\u003e 12,394); raw index probes fall 140,419 -\u003e 126,171. Normalizations hold at 11,875 and inserts at 1,033, confirming this removes identity churn without hiding genuinely changed descriptors.",
+      "timestamp": "2026-09-16T20:01:34Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Retain concrete Ty through instantiation",
   "type": "task",
-  "updated_at": "2026-09-16T19:58:40Z"
+  "updated_at": "2026-09-16T20:01:34Z"
 }
