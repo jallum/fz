@@ -108,7 +108,39 @@ coordinate or resource payload, a non-empty list sig with no element left).
 The persistence boundary (`Types::intern`) canonicalizes every descriptor
 entering the interner.
 
-First, ORDER (`order.rs::ClauseOrder`): every DNF axis is sorted by a total
+Before the sort, the LIST NORMAL FORM (`emptiness::list_denotation`,
+`types/axis.rs`). A `ListSig` denotes `[]` (when `empty`) together with every
+non-empty list over `elem`, so a list clause says exactly two things: does it
+hold `[]`, and which non-empty lists does it keep. One function reads those two
+facts off a clause's factors, and the boundary writes them back as the clause —
+one positive sig carrying the fragment and the `[]` flag, one negative sig per
+surviving subtraction. So `list(T) ∧ ¬[]` is stored as `non_empty_list(T)`, a
+subtraction that removes nothing (`[int] \ non_empty_list(:nil)`) is dropped
+instead of kept as a factor, and one that removes the whole fragment leaves
+`[]`. Across the axis, `[]` is held as soon as ONE clause holds it, so every
+clause that keeps only non-empty lists is widened to hold it too and a bare `[]`
+clause is then redundant: `[] ∨ non_empty_list(T)` is `list(T)`. That decision
+reads the finished clause SET, never the order a fold arrived in. A merge that
+reaches `list(any)` leaves the axis's widest SIG, which absorption below rewrites
+to the contentless clause, so the merge feeds the one top spelling rather than
+competing with it.
+`Descr::union` used to carry the same merge and could not: over the members
+`non_empty_list(binary)`, `non_empty_list(:nil)`, `non_empty_list(:nil)`,
+`empty_list()`, folding forward gave `list(:nil) | list(binary)` and folding in
+reverse `non_empty_list(binary) | list(:nil)` — one union, both already in
+canonical clause order, two ids (fz-kdt.48.6). The same denotation reached by
+`difference`, `intersect` or substitution was not merged at all.
+
+Element ARITHMETIC — meeting two positives' elements, or meeting a subtraction
+with the fragment — is skipped when a clause's elements carry type variables.
+The kernel reads a variable as an atom disjoint from everything else, so
+`list(α) ∧ list(int)` has no non-empty fragment and
+`non_empty_list(α) ∧ ¬non_empty_list(int)` subtracts nothing: both true of the
+clause as it stands, neither true once `α` is substituted. Reading the `[]`
+flags carries no such risk — substitution never touches them — so a var-bearing
+clause that needs no element arithmetic still normalizes.
+
+Then ORDER (`order.rs::ClauseOrder`): every DNF axis is sorted by a total
 order, factors inside a clause before clauses inside an axis, so a descriptor's
 clause list is a function of its clause set and each clause a function of its
 factor set — not of the arrival order that built either. A DNF axis denotes a
@@ -255,11 +287,23 @@ sorts a sorted list to itself, finds nothing left to drop, absorb or collapse,
 and arrives back where it started. That idempotence is what the index lookup
 below turns into a shortcut.
 
-`Types::intern` is absorption's authority, but not its only caller: `TyCanon`
-applies the same function to the descriptors it synthesizes itself, because
-tuple-coordinate widening builds `Descr` values that never reach the interner
-and an unabsorbed coordinate would render two carvings of one type as two
-types. One function, so the boundary and the rendering cannot drift.
+`Types::intern` is absorption's authority, and the list normal form's, but not
+their only caller: `TyCanon` applies the same functions to the descriptors it
+synthesizes itself, because tuple-coordinate widening builds `Descr` values that
+never reach the interner and an unabsorbed or unnormalized coordinate would
+render two carvings of one type as two types. One function each, so neither
+caller can invent a rule the other does not have.
+
+The two callers do not run the list reading over the same clauses. The boundary
+skips element arithmetic on a var-bearing clause (above); the rendering reads
+the denotation unconditionally, because a rendering is a claim about what a type
+IS and substitution never reaches it. So `non_empty_list(α)` and
+`non_empty_list(α) \ non_empty_list(int)` are stored as `[α]` and
+`[α] & not([int])`, two ids over one denotation, and both canon as
+`fp[L] non_empty_list(α0)`. That is the rendering being right: the oracle
+counts the pair as ONE denotation holding two ids, which states the residue — a
+variable-aware meet the boundary does not have — as a finding, where rendering
+them apart would have hidden it as a difference that is not there.
 
 Last, the BOTTOM COLLAPSE: a descriptor that denotes the empty set is replaced
 by `Descr::none()` before an id is assigned, so the empty set has exactly one

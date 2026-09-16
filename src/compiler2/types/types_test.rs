@@ -3760,6 +3760,11 @@ mod normal_form_is_a_function_of_the_descriptor {
     /// A descriptor the index already holds costs nothing but the lookup: the
     /// absorption's containment questions are the calculator's only customer at
     /// this boundary, and on a hit none of them is asked.
+    ///
+    /// Joining a type with itself is what hands the boundary a descriptor it
+    /// already holds: `A ∨ A = A` clause by clause, so the join rebuilds the
+    /// stored descriptor exactly. Rejoining `[] ∨ non_empty_list(int)` would
+    /// not — that is the list normal form's input, not its output.
     #[test]
     fn re_interning_an_indexed_descriptor_asks_the_calculator_nothing() {
         let mut t = Types::new();
@@ -3770,7 +3775,7 @@ mod normal_form_is_a_function_of_the_descriptor {
         let first = t.union(empty, non_empty);
         let after_first = t.comparison_cache_stats();
 
-        assert_eq!(t.union(empty, non_empty), first);
+        assert_eq!(t.union(first, first), first);
         assert_eq!(
             t.comparison_cache_stats(),
             after_first,
@@ -3793,5 +3798,286 @@ mod normal_form_is_a_function_of_the_descriptor {
         assert_eq!(t.union(any, any), any, "and its join with itself is itself");
         assert_eq!(t.identity_inventory(), inventory, "which minted no id");
         assert_eq!(t.comparison_cache_stats(), comparisons, "and re-derived no normal form");
+    }
+}
+
+/// One list normal form, applied where identity is assigned.
+///
+/// A `ListSig` denotes `[]` (when `empty`) together with every non-empty list
+/// whose elements all lie in `elem`. Two facts follow, and both are the
+/// boundary's to enforce: a union is its MEMBER SET, so folding the same
+/// members in any order reaches one id; and a clause is what it DENOTES, so
+/// every construction route to one denotation reaches one id.
+mod list_normal_form {
+    use super::*;
+
+    fn fold(t: &mut Types, members: &[Ty]) -> Ty {
+        let (first, rest) = members.split_first().expect("a union needs a member");
+        rest.iter().fold(*first, |acc, member| t.union(acc, *member))
+    }
+
+    fn folded_every_way(t: &mut Types, members: &[Ty]) -> Vec<(String, Ty)> {
+        let mut orders: Vec<(String, Vec<Ty>)> = vec![("forward".to_string(), members.to_vec())];
+        let mut reversed = members.to_vec();
+        reversed.reverse();
+        orders.push(("reverse".to_string(), reversed));
+        for rotation in 1..members.len() {
+            let mut rotated = members.to_vec();
+            rotated.rotate_left(rotation);
+            orders.push((format!("rotated by {rotation}"), rotated));
+        }
+        orders
+            .into_iter()
+            .map(|(name, order)| (name, fold(t, &order)))
+            .collect()
+    }
+
+    /// The witness a randomized sweep found: four list members whose forward
+    /// and reverse folds reached two ids. Folded forward the union-path
+    /// normalizer saw `[]` last and merged nothing; folded in reverse it saw
+    /// `[]` first and widened only what had already arrived.
+    #[test]
+    fn one_union_of_lists_interns_once_whichever_order_it_is_folded_in() {
+        let mut t = Types::new();
+        let binary = t.str_t();
+        let nil = t.nil();
+        let binaries = t.non_empty_list(binary);
+        let nils = t.non_empty_list(nil);
+        let empty = t.empty_list();
+        let members = vec![binaries, nils, nils, empty];
+
+        let folds = folded_every_way(&mut t, &members);
+        let (_, first) = folds[0].clone();
+        for (order, got) in &folds {
+            assert_eq!(
+                *got,
+                first,
+                "{order} fold is the same union: {} vs {}",
+                t.display(got),
+                t.display(&first)
+            );
+        }
+    }
+
+    /// Four routes to `list(int)`: built directly, joined from its two
+    /// fragments, carved out of a wider list by a subtraction that removes
+    /// nothing, met with a wider list from the side, and substituted into.
+    #[test]
+    fn every_route_to_a_possibly_empty_list_interns_once() {
+        let mut t = Types::new();
+        let int = t.int();
+        let nil = t.nil();
+        let binary = t.str_t();
+
+        let direct = t.list(int);
+
+        let empty = t.empty_list();
+        let non_empty = t.non_empty_list(int);
+        let joined = t.union(empty, non_empty);
+
+        // A non-empty list over `int` is never a non-empty list over `:nil`,
+        // so this subtracts nothing at all.
+        let disjoint_lists = t.non_empty_list(nil);
+        let carved = t.difference(direct, disjoint_lists);
+
+        let with_binary = t.union(direct, binary);
+        let with_nil = t.union(direct, nil);
+        let met = t.intersect(with_binary, with_nil);
+
+        let var = t.type_var(TypeVarId(0));
+        let template = t.list(var);
+        let sigma: Sigma<Ty> = [(TypeVarId(0), int)].into_iter().collect();
+        let substituted = t.instantiate(&template, &sigma);
+
+        for (route, got) in [
+            ("union", joined),
+            ("difference", carved),
+            ("intersect", met),
+            ("substitution", substituted),
+        ] {
+            assert_eq!(
+                got,
+                direct,
+                "the {route} route reaches list(int) and must intern as it: {} vs {}",
+                t.display(&got),
+                t.display(&direct)
+            );
+        }
+    }
+
+    /// `list(T) ∧ ¬[]` IS `non_empty_list(T)`, so the difference route reaches
+    /// the same id the constructor does.
+    #[test]
+    fn every_route_to_a_non_empty_list_interns_once() {
+        let mut t = Types::new();
+        let int = t.int();
+        let direct = t.non_empty_list(int);
+        let list = t.list(int);
+        let empty = t.empty_list();
+        let carved = t.difference(list, empty);
+        assert_eq!(
+            carved,
+            direct,
+            "list(int) without [] is non_empty_list(int): {} vs {}",
+            t.display(&carved),
+            t.display(&direct)
+        );
+
+        let any = t.any();
+        let any_list = t.list(any);
+        let every_non_empty = t.difference(any_list, empty);
+        let direct_any = t.non_empty_list(any);
+        assert_eq!(
+            every_non_empty,
+            direct_any,
+            "and the same holds at the axis top: {} vs {}",
+            t.display(&every_non_empty),
+            t.display(&direct_any)
+        );
+    }
+
+    /// The WIDEST list has one spelling too. Removing the union path's merge
+    /// would leave `[] ∨ non_empty_list(any)` a two-clause axis beside the one
+    /// clause `list(any)` is built as, and the top rule above would then be
+    /// reached from one of them and not the other.
+    #[test]
+    fn the_widest_list_interns_once_whichever_fragments_build_it() {
+        let mut t = Types::new();
+        let any = t.any();
+        let direct = t.list(any);
+        let empty = t.empty_list();
+        let non_empty = t.non_empty_list(any);
+        let joined = t.union(empty, non_empty);
+        assert_eq!(
+            joined,
+            direct,
+            "every list is `[]` plus every non-empty list: {} vs {}",
+            t.display(&joined),
+            t.display(&direct)
+        );
+    }
+
+    /// The union path is a plain DNF concatenation. It owns no list rule, so
+    /// it cannot make the result depend on when a member arrived.
+    #[test]
+    fn the_union_path_owns_no_list_normalizer() {
+        let mut t = Types::new();
+        let int = t.int();
+        let empty = t.empty_list();
+        let non_empty = t.non_empty_list(int);
+        let joined = {
+            let cx = t.ctx();
+            cx.descr(&empty).union(cx, cx.descr(&non_empty))
+        };
+        assert_eq!(
+            joined.lists,
+            vec![
+                Conj::pos_of(ListSig::empty()),
+                Conj::pos_of(ListSig {
+                    empty: false,
+                    elem: Some(int),
+                }),
+            ],
+            "Descr::union concatenates the two clauses and leaves them alone"
+        );
+        let interned = t.union(empty, non_empty);
+        let list = t.list(int);
+        assert_eq!(interned, list, "the boundary is what merges them");
+    }
+
+    /// The one residue: a var-bearing list DIFFERENCE is one denotation with
+    /// two ids.
+    ///
+    /// The boundary skips element arithmetic when a clause's elements carry
+    /// type variables, so `non_empty_list(α) \ non_empty_list(int)` is stored
+    /// as it was built rather than as the `non_empty_list(α)` it denotes. The
+    /// cure is a variable-aware meet, which the kernel does not have. Until it
+    /// does, `TyCanon` reads the denotation on both and gives them one
+    /// canonical form, so the oracle counts this as one denotation holding two
+    /// ids -- the finding -- instead of two renderings, which would hide it.
+    /// Fix the meet and this test flips: the two become one id.
+    #[test]
+    fn a_var_bearing_list_difference_is_one_denotation_with_two_ids() {
+        let mut t = Types::new();
+        let int = t.int();
+        let var = t.type_var(TypeVarId(0));
+        let over_var = t.non_empty_list(var);
+        let over_int = t.non_empty_list(int);
+        let carved = t.difference(over_var, over_int);
+
+        assert!(
+            t.is_equivalent(&carved, &over_var),
+            "a variable is disjoint from int, so the subtraction removes nothing: {} vs {}",
+            t.display(&carved),
+            t.display(&over_var)
+        );
+        assert_ne!(
+            carved,
+            over_var,
+            "but the boundary stores the clause as built: {} vs {}",
+            t.display(&carved),
+            t.display(&over_var)
+        );
+
+        let labels = |_: FnId| String::new();
+        let mut canon = TyCanon::new(&labels);
+        assert_eq!(
+            canon.render(&t, carved),
+            canon.render(&t, over_var),
+            "and the rendering reads the denotation, so the census sees one denotation, two ids"
+        );
+    }
+
+    /// A seeded sweep over list-heavy unions: whatever the members, the fold
+    /// order may not decide the identity.
+    #[test]
+    fn list_heavy_unions_intern_once_whichever_order_they_are_folded_in() {
+        let mut rng = 0x5eed_1234_u64;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        let mut t = Types::new();
+        let leaves: Vec<Ty> = {
+            let int = t.int();
+            let binary = t.str_t();
+            let nil = t.nil();
+            let ok = t.atom_lit("ok");
+            let pair = t.tuple(&[int, binary]);
+            vec![int, binary, nil, ok, pair]
+        };
+
+        for case in 0..400_u64 {
+            let count = 2 + (next() % 4) as usize;
+            let members: Vec<Ty> = (0..count)
+                .map(|_| {
+                    let leaf = leaves[(next() % leaves.len() as u64) as usize];
+                    match next() % 5 {
+                        0 => t.empty_list(),
+                        1 => t.list(leaf),
+                        2 => t.non_empty_list(leaf),
+                        3 => {
+                            let inner = t.list(leaf);
+                            t.non_empty_list(inner)
+                        }
+                        _ => t.tuple(&[leaf, leaf]),
+                    }
+                })
+                .collect();
+            let folds = folded_every_way(&mut t, &members);
+            let (_, first) = folds[0].clone();
+            for (order, got) in &folds {
+                assert_eq!(
+                    *got,
+                    first,
+                    "case {case}: the {order} fold of {:?} reached a second id: {} vs {}",
+                    members.iter().map(|m| t.display(m)).collect::<Vec<_>>(),
+                    t.display(got),
+                    t.display(&first)
+                );
+            }
+        }
     }
 }

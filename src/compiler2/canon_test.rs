@@ -199,8 +199,8 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
 /// intermediate types are not.
 fn duplicate_ceiling(name: &str) -> usize {
     match name {
-        "fixtures2/00420_enum_take_drop_split.fz" => 134,
-        "fixtures2/behavior/fz_f98_range_map_converges.fz" => 17,
+        "fixtures2/00420_enum_take_drop_split.fz" => 128,
+        "fixtures2/behavior/fz_f98_range_map_converges.fz" => 15,
         other => panic!("no pinned ceiling for {other}"),
     }
 }

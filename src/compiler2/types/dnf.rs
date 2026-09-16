@@ -1,8 +1,11 @@
-//! DNF operations: union, intersection, negation, and list-axis
-//! empty/nonempty normalization.
+//! DNF operations: union, intersection and negation.
+//!
+//! Nothing here knows what an axis MEANS. A union concatenates clauses, an
+//! intersection takes their product, a negation distributes -- the rewrites
+//! that read a denotation live in `types::axis` and run where identity is
+//! assigned.
 
 use super::conj::Conj;
-use super::sigs::ListSig;
 
 pub(crate) fn dnf_union<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
     // ∨ is idempotent. Dedup exact-duplicate clauses at
@@ -32,43 +35,6 @@ pub(crate) fn dnf_union<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> V
         }
     }
     out
-}
-
-pub(crate) fn normalize_empty_nonempty_list_unions(clauses: Vec<Conj<ListSig>>) -> Vec<Conj<ListSig>> {
-    let has_empty_list = clauses
-        .iter()
-        .any(|c| c.neg.is_empty() && c.pos.len() == 1 && c.pos[0].is_exact_empty());
-    if !has_empty_list {
-        return clauses;
-    }
-
-    let mut widened_any_non_empty = false;
-    let mut out = Vec::with_capacity(clauses.len());
-    for mut c in clauses {
-        if c.neg.is_empty() && c.pos.len() == 1 {
-            let sig = &mut c.pos[0];
-            if sig.is_exact_empty() {
-                continue;
-            }
-            if sig.is_exact_non_empty() {
-                sig.allow_empty();
-                widened_any_non_empty = true;
-            }
-        }
-        if !out.contains(&c) {
-            out.push(c);
-        }
-    }
-
-    if widened_any_non_empty {
-        out
-    } else {
-        let empty = Conj::pos_of(ListSig::empty());
-        if !out.contains(&empty) {
-            out.push(empty);
-        }
-        out
-    }
 }
 
 pub(crate) fn dnf_intersect<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {

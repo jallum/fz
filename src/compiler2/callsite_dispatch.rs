@@ -1753,6 +1753,12 @@ mod tests {
     /// narrow arm's test therefore admits `[:zzz]`, which the wide arm's
     /// refuses.
     ///
+    /// The carve is rejoined with `[]` to reach that surface. Subtracting
+    /// `[:ok]` takes `[]` with it, and the list normal form reads that off the
+    /// clause, so the difference alone is a NON-EMPTY list type whose shape
+    /// question the wide arm's already refuses -- a second axis of difference,
+    /// which is not what this pair is for.
+    ///
     /// Drop it on surface containment alone and `[:zzz]` stops escaping into
     /// the narrow arm and starts reaching the wide arm's body -- or the plan's
     /// fail node -- which is an outcome no arrival of these two arms ever
@@ -1772,7 +1778,9 @@ mod tests {
         let ints_oks = world.types_mut().union(int, ok_atom);
         let ok_list = world.types_mut().list(ok_atom);
         let wide_list = world.types_mut().list(ints_oks);
-        let narrow_list = world.types_mut().difference(wide_list, ok_list);
+        let carved = world.types_mut().difference(wide_list, ok_list);
+        let empty_list = world.types_mut().empty_list();
+        let narrow_list = world.types_mut().union(empty_list, carved);
         let step = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_step", 1);
         let target = |list| CallTargetSummary {
             callee: SelectedCallee::Function(step),

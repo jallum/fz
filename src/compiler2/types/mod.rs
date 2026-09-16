@@ -259,8 +259,23 @@ impl TypeInterner {
         debug_assert_absorbed(cx, &d.lists, "list", &axis::LISTS);
         debug_assert_absorbed(cx, &d.resources, "resource", &axis::RESOURCES);
         debug_assert_absorbed(cx, &d.maps, "map", &axis::MAPS);
+        debug_assert_lists_merged(&d.lists);
         debug_assert_no_exact_duplicates(&d.funcs, "funcs");
     }
+}
+
+/// The list axis reaches the index already merged: `[]` and a clause of
+/// non-empty lists are ONE clause by then. Stated as a fixpoint of the merge
+/// itself, which is what makes it a statement about the clause SET and holds
+/// for the clauses the boundary left alone as well.
+#[cfg(debug_assertions)]
+fn debug_assert_lists_merged(clauses: &[Conj<ListSig>]) {
+    let mut merged = clauses.to_vec();
+    axis::merge_empty_list_clause(&mut merged);
+    debug_assert!(
+        merged == clauses,
+        "interned list axis still has an empty-list clause to merge"
+    );
 }
 
 /// `A ∨ A = A` on the callable axis, the one axis absorption does not reach
@@ -453,6 +468,16 @@ impl Types {
     /// here makes every construction route share the same semantic normal form
     /// before descriptor identity is assigned.
     ///
+    /// LIST NORMALIZATION comes next, and is the same idea on the list axis. A
+    /// list clause says only two things -- does it hold `[]`, and which
+    /// non-empty lists does it keep -- so every spelling of one denotation is
+    /// rewritten to the one that states them directly: `list(T) ∧ ¬[]` is
+    /// `non_empty_list(T)`, a subtraction that removes nothing is not a
+    /// constraint, and an axis holding an exact `[]` beside a clause of
+    /// non-empty lists is that clause widened. The merge reads the finished
+    /// clause SET, never the order the union arrived in, which is what the
+    /// union-path normalizer it replaces could not do.
+    ///
     /// ORDER follows (fz-kdt.105): every axis goes into canonical clause order, so
     /// a descriptor's clause list is a function of its clause set rather than of
     /// the arrival order that built it. It has to lead the absorption, which
@@ -501,6 +526,7 @@ impl Types {
             return ty;
         }
         self.normalize_tuple_coordinate_differences(&mut d);
+        self.normalize_list_clauses(&mut d);
         self.order_clauses(&mut d);
         self.drop_empty_clauses(&mut d);
         self.absorb_covered_clauses(&mut d);
@@ -509,6 +535,68 @@ impl Types {
             d = Descr::none();
         }
         self.interner.intern(d)
+    }
+
+    /// The list axis rewritten to the one normal form in [`axis`], clause by
+    /// clause and then across the set.
+    fn normalize_list_clauses(&mut self, d: &mut Descr) {
+        let clauses = std::mem::take(&mut d.lists);
+        d.lists = clauses.into_iter().map(|c| self.list_normal_form(c)).collect();
+        axis::merge_empty_list_clause(&mut d.lists);
+    }
+
+    /// One list clause rewritten to what it denotes.
+    ///
+    /// A clause that denotes nothing is left exactly as it is: the
+    /// empty-clause drop below removes it, and rewriting what is about to go
+    /// is work for nobody.
+    fn list_normal_form(&mut self, c: Conj<ListSig>) -> Conj<ListSig> {
+        // A clause that constrains nothing is the axis top, and `is_dnf_top`
+        // reads it structurally, so it keeps its empty conjunction.
+        if c.is_top() {
+            return c;
+        }
+        // One positive sig over an inhabited element already states both
+        // facts, and so does a lone `[]`. The element is interned, so the
+        // bottom collapse has already given it the one empty shape and reading
+        // the descriptor answers exactly, without a query.
+        if let ([sig], []) = (c.pos.as_slice(), c.neg.as_slice())
+            && sig.elem.is_none_or(|elem| !self.descr(&elem).looks_empty())
+        {
+            return c;
+        }
+        if Self::needs_element_arithmetic(&c) && self.clause_has_vars(&c) {
+            return c;
+        }
+        let denotation = {
+            let cx = self.ctx();
+            emptiness::list_denotation(cx, &c, &mut emptiness::Memo::default())
+        };
+        match denotation {
+            None => c,
+            Some(denotation) => axis::list_clause_of(denotation, &mut |d| self.intern(d)),
+        }
+    }
+
+    /// Whether reading a list clause's denotation has to MEET or SUBTRACT
+    /// element types rather than only read the `[]` flags.
+    ///
+    /// That arithmetic is what a type variable makes unsafe to bake in. The
+    /// kernel reads a variable as an atom disjoint from everything else, so
+    /// `list(α) ∧ list(int)` has no non-empty fragment and `non_empty_list(α)
+    /// ∧ ¬non_empty_list(int)` subtracts nothing -- both true of the clause as
+    /// it stands, neither true once `α` is substituted. The `[]` bookkeeping
+    /// carries no such risk: it reads flags the substitution never touches.
+    fn needs_element_arithmetic(c: &Conj<ListSig>) -> bool {
+        c.pos.len() > 1 || c.neg.iter().any(|n| n.elem.is_some())
+    }
+
+    fn clause_has_vars(&self, c: &Conj<ListSig>) -> bool {
+        c.pos
+            .iter()
+            .chain(&c.neg)
+            .filter_map(|sig| sig.elem)
+            .any(|elem| self.has_vars(&elem))
     }
 
     fn order_clauses(&self, d: &mut Descr) {
@@ -3122,13 +3210,25 @@ fn runtime_type_predicate_list_shapes(descr: &Descr) -> FiniteSet<ListShape> {
         for sig in &clause.neg {
             if sig.is_exact_empty() {
                 allowed = runtime_type_predicate_remove(&allowed, &ListShape::Empty);
-            } else if sig.is_exact_non_empty() {
+            } else if negative_swallows_the_fragment(clause, sig) {
                 allowed = runtime_type_predicate_remove(&allowed, &ListShape::NonEmpty);
             }
         }
         out = out.union(&allowed);
     }
     out
+}
+
+/// Whether a negative takes the clause's WHOLE non-empty fragment away.
+///
+/// A negative over a smaller element removes only part of it:
+/// `non_empty_list(int | :a) & not(non_empty_list(int))` still holds
+/// `[1, :a]`. The list normal form leaves no negative that swallows the
+/// fragment behind — a clause one swallowed is `[]` or nothing by the time it
+/// is stored — so the case left is a clause the boundary left alone, where the
+/// negative names the positive's own element.
+fn negative_swallows_the_fragment(clause: &Conj<ListSig>, negative: &ListSig) -> bool {
+    matches!(clause.pos.as_slice(), [positive] if positive.elem.is_some() && positive.elem == negative.elem)
 }
 
 fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {

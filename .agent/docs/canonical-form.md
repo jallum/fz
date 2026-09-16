@@ -74,9 +74,6 @@ makes "same rendering implies equivalent" true by construction:
   contained rectangle becomes the same rectangle with that coordinate
   subtracted, only when every coordinate is ground, so type-variable polarity
   and its runtime envelope remain unchanged;
-- **normalize list clauses from their denotation** — a `ListSig` denotes `[]`
-  plus lists over an element type, so `list(T) & not([])` and
-  `non_empty_list(T)` are one thing and render as one thing;
 - **sort** — the axis lists this module BUILDS (widened rectangles, the clauses
   left after its own drops, and every axis of a synthesized `Descr`) carry no
   canonical order, so their rendered texts are sorted before they are joined.
@@ -84,16 +81,26 @@ makes "same rendering implies equivalent" true by construction:
   consequence. Clause order and factor order inside an interned descriptor are
   already canonical (`order.rs`), so nothing here re-sorts them.
 
-Dropping empty clauses, and absorbing the four DENOTATIONAL axes, are not
-among the steps above, because they are one shared rule (`types::axis`) that
-`Types::intern` applies at the persistence boundary. Intern is that rule's
-authority; this module is its second caller, for the descriptors it builds
-ITSELF — a widened tuple coordinate, a list clause's intersected element
-fragment — which never reach the interner and would otherwise be rendered
-unswept. Only the CALLABLE
-axis is absorbed here after the fact and nowhere else, for the reason
-`types/axis.rs` states: the boundary must leave that axis alone, while a
-rendering reads nothing back out of it.
+Dropping empty clauses, absorbing the four DENOTATIONAL axes, and reading a list
+clause from its denotation are not among the steps above, because they are
+shared rules (`types::axis`, `emptiness::list_denotation`) that `Types::intern`
+applies at the persistence boundary. A `ListSig` denotes `[]` plus lists over an
+element type, so `list(T) & not([])` and `non_empty_list(T)` are one thing. The
+boundary stores the clause that way for a ground clause, and for a var-bearing
+clause that needs no element arithmetic; a var-bearing clause that needs it is
+stored as it was built, because the meet the kernel would compute reads a
+variable as disjoint from everything and stops being true once the variable is
+substituted (`.agent/docs/set-theoretic-types.md`). This module reads the
+denotation either way, so `non_empty_list(α) \ non_empty_list(int)` renders as
+the `non_empty_list(α)` it denotes, and the two ids over it reach the census as
+one denotation holding two ids — the residue itself — rather than as a
+difference that is not there. Intern is those rules' authority; this module is
+their second caller, for the descriptors it builds ITSELF — a widened tuple
+coordinate, a list clause's intersected element fragment — which never reach the
+interner and would otherwise be rendered unswept. Only the CALLABLE axis is
+absorbed here after the fact and nowhere else, for the reason `types/axis.rs`
+states: the boundary must leave that axis alone, while a rendering reads nothing
+back out of it.
 
 A synthesized descriptor's clause list carries the order its `Descr::union`
 folds produced, and absorption visits in index order, so two clauses that

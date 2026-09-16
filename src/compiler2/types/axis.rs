@@ -91,7 +91,7 @@ use super::TyCtx;
 use super::conj::Conj;
 use super::descr::Descr;
 use super::dnf::is_dnf_top;
-use super::emptiness;
+use super::emptiness::{self, ListDenotation, NonEmptyLists};
 use super::sigs::{ListSig, ResourceSig, TupleSig};
 
 /// Install one axis's clauses into an otherwise contentless descriptor. The
@@ -308,6 +308,79 @@ pub(super) const LISTS: AxisView<ListSig> = AxisView {
         }
     },
 };
+
+/// One list clause written from what it DENOTES.
+///
+/// A clause that keeps non-empty lists becomes ONE positive sig carrying the
+/// fragment's element type and the `[]` flag, plus one negative sig per
+/// surviving subtraction, each a bare non-empty fragment. The negatives' own
+/// `[]` flags were read into the positive's, so repeating them would be a
+/// second spelling of one fact; a clause that keeps no non-empty list is `[]`
+/// itself.
+///
+/// `intern` is injected because the fragment and the subtractions are
+/// descriptors that this rewrite computes: giving them identity is the
+/// interner's job, and only the boundary is holding it.
+pub(super) fn list_clause_of(denotation: ListDenotation, intern: &mut dyn FnMut(Descr) -> Ty) -> Conj<ListSig> {
+    let ListDenotation { holds_empty, non_empty } = denotation;
+    let Some(NonEmptyLists { elem, minus }) = non_empty else {
+        return Conj::pos_of(ListSig::empty());
+    };
+    Conj {
+        pos: vec![ListSig {
+            empty: holds_empty,
+            elem: Some(intern(elem)),
+        }],
+        neg: minus
+            .into_iter()
+            .map(|cut| ListSig {
+                empty: false,
+                elem: Some(intern(cut)),
+            })
+            .collect(),
+    }
+}
+
+/// `[] ∨ non_empty(T) = list(T)`, decided from the clause SET.
+///
+/// The axis is a union, so which clause a member joined first may not decide
+/// what the union is. `[]` is held by the axis as soon as ONE clause holds it,
+/// and every clause that keeps only non-empty lists may then hold it too --
+/// widening adds exactly the one list that was already there. Writing `[]`
+/// into every such clause rather than leaving it in a clause of its own is
+/// what makes the form reachable from either end of a fold: a fold that
+/// merged `[]` away early still carries it in the clause it merged into, and
+/// the next member widens against that.
+///
+/// A clause in the list normal form carries no negative that could hold `[]`,
+/// so reading the flags is exact. A clause the boundary left alone (its
+/// elements carry type variables) may, and one is neither widened nor read as
+/// holding `[]`.
+pub(super) fn merge_empty_list_clause(clauses: &mut Vec<Conj<ListSig>>) {
+    fn just_empty(c: &Conj<ListSig>) -> bool {
+        plain_sig(c).is_some_and(ListSig::is_exact_empty)
+    }
+    // Not `plain_sig`: a clause carrying a residual subtraction still keeps
+    // only non-empty lists, and widening its positive is the same one step.
+    fn keeps_only_non_empty(c: &Conj<ListSig>) -> bool {
+        matches!(c.pos.as_slice(), [sig] if !sig.empty && sig.elem.is_some()) && !c.neg.iter().any(|n| n.empty)
+    }
+    if !clauses.iter().any(emptiness::clause_holds_empty) {
+        return;
+    }
+    for c in clauses.iter_mut().filter(|c| keeps_only_non_empty(c)) {
+        c.pos[0].allow_empty();
+    }
+    // The bare `[]` clause is what the widened clauses now carry, so it is
+    // left only when no other clause holds `[]` to carry it.
+    if clauses
+        .iter()
+        .any(|c| !just_empty(c) && emptiness::clause_holds_empty(c))
+    {
+        clauses.retain(|c| !just_empty(c));
+    }
+}
+
 pub(super) const RESOURCES: AxisView<ResourceSig> = AxisView {
     install: |d, clauses| d.resources = clauses,
     // A resource wraps one payload, and the kernel meets two resources by

@@ -36,7 +36,7 @@ use super::axis;
 use super::bits::{BASIC_NAMES, BasicBits};
 use super::conj::Conj;
 use super::descr::Descr;
-use super::emptiness::{self, Memo};
+use super::emptiness::{self, Memo, NonEmptyLists};
 use super::format::brand_refinement;
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, TupleSig};
 use super::{CallableValueKind, MapKey, Ty, TyCtx, TypeVarId, Types};
@@ -226,55 +226,39 @@ impl<'a> TyCanon<'a> {
         self.conj_text(cx, c, Self::tuple_sig, "tuple")
     }
 
-    /// A list clause rendered from what it DENOTES, not from the factors it was
-    /// built out of.
+    /// A list clause rendered from what it DENOTES, by the one reading of a
+    /// list clause ([`emptiness::list_denotation`]).
     ///
-    /// A `ListSig` denotes `{[]}` (when `empty`) together with every list whose
-    /// elements all lie in `elem`, so a clause is fully described by two facts:
-    /// does it hold `[]`, and what is its non-empty fragment's element type.
-    /// Factor-by-factor rendering would keep `list(T) & not([])` and
-    /// `non_empty_list(T)` apart, and they are one type.
-    ///
-    /// A negated sig with no element denotes `{[]}` or `∅`, so it can only
-    /// remove `[]`. A negated sig whose element covers the whole fragment
-    /// removes the fragment outright. Anything else subtracts only part of the
-    /// fragment and survives as a residual factor — rendered without its own
-    /// `empty` flag, which by then cannot matter.
+    /// The reading is computed rather than read off the sig for two reasons.
+    /// The descriptors this module builds ITSELF never reach the interner, and
+    /// one of those rendered unnormalized would report two carvings of a type
+    /// as two types. And `Types::intern` writes the reading back only for
+    /// ground clauses and for var-bearing clauses that need no element
+    /// arithmetic: a var-bearing clause that needs it is stored as it was
+    /// built, so `non_empty_list(α) \ non_empty_list(int)` is a second id over
+    /// the denotation `non_empty_list(α)` already has. Rendering the
+    /// denotation here regardless gives that pair ONE canonical form, which is
+    /// what lets the census count it as one denotation holding two ids instead
+    /// of hiding it as a difference that is not there.
     fn list_clause(&mut self, cx: TyCtx<'_>, c: &Conj<ListSig>) -> String {
         if c.pos.is_empty() && c.neg.is_empty() {
             return "list".to_string();
         }
-        let holds_empty = c.pos.iter().all(|p| p.empty) && !c.neg.iter().any(|n| n.empty);
-        let mut fragment = Some(Descr::any());
-        for p in &c.pos {
-            fragment = match (fragment, p.elem) {
-                (Some(f), Some(e)) => Some(f.intersect(cx.descr(&e))),
-                _ => None,
-            };
-        }
-        if fragment
-            .as_ref()
-            .is_some_and(|f| f.is_empty_memo(cx, &mut Memo::default()))
-        {
-            fragment = None;
-        }
-        let covered = |f: &Descr, elem: &Ty| f.diff(cx.descr(elem)).is_empty_memo(cx, &mut Memo::default());
-        let erased = fragment
-            .as_ref()
-            .is_none_or(|f| c.neg.iter().any(|n| n.elem.is_some_and(|e| covered(f, &e))));
-        let mut factors = vec![match (&fragment, erased, holds_empty) {
-            (_, true, true) => "empty_list()".to_string(),
-            (_, true, false) => "none".to_string(),
-            (Some(f), false, true) => format!("list({})", self.descr_body(cx, f)),
-            (Some(f), false, false) => format!("non_empty_list({})", self.descr_body(cx, f)),
-            (None, false, _) => unreachable!("an absent fragment is always erased"),
-        }];
-        if !erased {
-            let residuals: Vec<Ty> = c.neg.iter().filter_map(|n| n.elem).collect();
-            factors.extend(residuals.into_iter().map(|elem| {
-                let rendered = self.body(cx, elem);
-                format!("not(non_empty_list({rendered}))")
-            }));
+        let Some(denotation) = emptiness::list_denotation(cx, c, &mut Memo::default()) else {
+            return "none".to_string();
+        };
+        let Some(NonEmptyLists { elem, minus }) = denotation.non_empty else {
+            return "empty_list()".to_string();
+        };
+        let head = if denotation.holds_empty {
+            "list"
+        } else {
+            "non_empty_list"
+        };
+        let mut factors = vec![format!("{head}({})", self.descr_body(cx, &elem))];
+        for cut in &minus {
+            let rendered = self.descr_body(cx, cut);
+            factors.push(format!("not(non_empty_list({rendered}))"));
         }
         factors.join(" & ")
     }
@@ -368,6 +352,12 @@ impl<'a> TyCanon<'a> {
     /// reach the interner, and an unabsorbed coordinate would render two
     /// carvings of one type as two types.
     ///
+    /// The list axis's set-level merge (`[] ∨ non_empty(T) = list(T)`) is
+    /// repeated for the same reason: coordinate widening joins two interned
+    /// coordinates with `Descr::union`, which concatenates clauses, and the
+    /// joined coordinate would otherwise render as the two fragments a
+    /// coordinate built the other way renders as one list.
+    ///
     /// The callable axis is the one this module still normalizes after the
     /// fact, with the same call: the boundary leaves that axis alone for the
     /// reason stated in [`axis`](super::axis), while a RENDERING reads nothing
@@ -382,6 +372,7 @@ impl<'a> TyCanon<'a> {
         let tuple_rects = drop_subsumed_rects(cx, tuple_rects);
 
         let mut lists = d.lists.clone();
+        axis::merge_empty_list_clause(&mut lists);
         axis::absorb_axis(cx, &mut lists, subtype, covers, &axis::LISTS);
         let mut resources = d.resources.clone();
         axis::absorb_axis(cx, &mut resources, subtype, covers, &axis::RESOURCES);

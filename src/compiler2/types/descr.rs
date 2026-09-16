@@ -2,7 +2,7 @@
 
 use super::bits::BasicBits;
 use super::conj::Conj;
-use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top, normalize_empty_nonempty_list_unions};
+use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top};
 use super::emptiness::{
     Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
@@ -592,7 +592,7 @@ impl Descr {
             brands: self.brands.union(&other.brands),
             vars: self.vars.union(&other.vars),
             tuples: dnf_union(&self.tuples, &other.tuples),
-            lists: normalize_empty_nonempty_list_unions(dnf_union(&self.lists, &other.lists)),
+            lists: dnf_union(&self.lists, &other.lists),
             resources: dnf_union(&self.resources, &other.resources),
             funcs: dnf_union(&self.funcs, &other.funcs),
             maps: dnf_union(&self.maps, &other.maps),
