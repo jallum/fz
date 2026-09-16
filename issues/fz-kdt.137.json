@@ -34,8 +34,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "P1: native loses callable identity and captures when invoking a closure projected from a tuple",
   "type": "task",
-  "updated_at": "2026-09-15T19:43:22Z"
+  "updated_at": "2026-09-16T16:09:34Z"
 }
