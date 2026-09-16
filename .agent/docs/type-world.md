@@ -65,13 +65,23 @@ parameters whose closure construction identity is freight. If no parameter is
 marked `Ignore`, no identity can be erased, so the existing arrow `Ty` returns
 before its parameter vector is cloned or its descriptor reaches the interner.
 
-This is deliberately narrower than a cache. Constructors such as `tuple` and
-`arrow` receive interned children, but their *outer* clause sets are newly built;
-only the interner can decide whether that new descriptor names an existing type.
-Likewise, transformations with no local equality proof must build their changed
-descriptor and take the ordinary index-before-normalization path. Carry an
-existing `Ty` through a no-op; do not add a second structural equivalence or
-memoization authority beside `Types::intern`.
+Pure binary algebra has one additional, handle-level result table. Its key is
+the operation tag and its immutable operand `Ty`s; its value is the canonical
+`Ty` the ordinary operation returned, whether that was an input handle or a
+handle from `Types::intern`. A repeated pair therefore returns that handle
+before it rebuilds a descriptor.
+The table never compares, hashes, or normalizes a `Descr`, and it lives only for
+the owning `Types` world. `union` normalizes its operand pair because its exact
+result is order-independent. `difference` stays ordered; so does `intersect`
+while distinct mutually-subtype ids remain an observable survivor choice.
+
+This does not turn constructors into a descriptor cache. `tuple` and `arrow`
+receive interned children, but their *outer* clause sets are newly built; only
+the interner can decide whether that new descriptor names an existing type.
+Likewise, transformations without either a local identity law or a pure
+operation-plus-handle key must take the ordinary index-before-normalization
+path. There is no second structural equivalence authority beside
+`Types::intern`.
 
 ## One instance, threaded everywhere
 
