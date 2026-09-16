@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-lcx.1"
+  ],
   "blocks": [],
   "created": "2026-09-16T09:52:21Z",
   "description": "Port the established tools/distill-telemetry.exs reporting contract to fz. Accept a trace path and optional top limit, read JSONL through File and Json, validate the stream loudly, and emit deterministic human-readable analysis.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Implement the telemetry analyzer as an fz tool",
   "type": "task",
-  "updated_at": "2026-09-16T09:52:21Z"
+  "updated_at": "2026-09-16T09:52:23Z"
 }
