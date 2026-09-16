@@ -12,9 +12,15 @@
   "id": "fz-kdt.48.7",
   "labels": [],
   "parent": "fz-kdt.48",
+  "comments": [
+    {
+      "text": "Measured 2026-09-16 on 90b86e0a9. Duplicate pairs by class (enum_take_drop_split / range_map_converges / json_roundtrip): one closure literal stored at several surfaces (construction vars, addressed vars, ground instance) 118 / 11 / 0; lit-free arrows the kernel already calls the whole axis (declared surfaces with an any result) 5 / 4 / 25; tuple carvings 5 / 0 / 2. Three designs built and measured: (A) surface is evidence, dropped from Ty: census 128-\u003e14, 15-\u003e4 but lib 2161/25 fail incl. activation_input_rows_keep_arrows_that_differ_only_where_subtyping_is_blind (the planner keys specializations by surface); (B') literal + surface as distinct factors, specialize on read (the original ticket text): 128-\u003e47, 15-\u003e6, 15 fail, and instantiate still writes the surface onto the literal so it lives in two places = a mechanism, rejected; (C) kernel reads the surface as identity: census test fails immediately (shared canonical form, not mutually subtype), canon must render the surface, kernel semantics change. Conclusion: Ty on the callable axis is doing denotation AND evidence; the cure is a carrier of the key's own.",
+      "timestamp": "2026-09-16T10:00:57Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "One callable surface specialization, and the callable-axis exclusion as proven facts",
   "type": "task",
-  "updated_at": "2026-09-16T10:00:56Z"
+  "updated_at": "2026-09-16T10:00:57Z"
 }
