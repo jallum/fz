@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.48.8"
+  ],
   "created": "2026-09-16T10:00:58Z",
   "description": "Plan: ../recursive-denotations-proposal.html. Epic-sized; sits beside fz-kdt.177 (kernel) and fz-kdt.64 (activation rows). Filed 2026-09-16 with the user's go-ahead after fz-kdt.48.7's measurement (see its comment).\n\nFact: on the callable axis a Ty is doing double duty. The kernel (func_clause_empty), canon and the census read a closure literal as one value whatever surface it is viewed through; the dispatch planner keys specializations by that surface, because ActivationKey stores a specialization's inputs and result AS AN ARROW Ty and reads them back with arrow_params / arrow_result, and a resolved @spec is decomposed the same way. So one closure literal takes one id per surface it meets (118 / 11 / 0 duplicate pairs on enum_take_drop_split / range_map_converges / json_roundtrip), and lit-free declared surfaces with an any result take ids the kernel calls the whole axis (5 / 4 / 25). Dropping the surface from Ty (measured) collapses the census 128-\u003e14, 15-\u003e4 and breaks 25 lib tests whose names state the planner's need (two specializations of one lambda are two rows).\n\nBuild: give the activation key (and the spec decomposition) its own carrier for inputs and result (a typed record of Ty coordinates, not an ArrowSig on the funcs axis), with the key's join homomorphism (erase_closure_identity, row_column_dominates, convergence_class) reading that carrier. Then a callable Ty is pure denotation: one closure value, one id, by construction; the callable axis can join the one absorber at intern (axis.rs FUNCS view and the exclusion statement deleted), dedupe_exact_clauses on funcs retires (absorption's degenerate case), canon's FUNCS special view retires, as_closure_lit's pos.len()==1 special case retires. Inventory first: every reader in fz-kdt.48.7's reader list that reaches into a key's arrow. Acceptance: census pins fall toward zero on the callable classes (leaving tuple carvings to .48.5), no golden rises, activation-row tests keep their meaning on the new carrier, workspace gate green. Unblocks fz-kdt.48.8.",
   "id": "fz-kdt.48.11",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Activation keys carry their inputs and result themselves, not as an arrow Ty",
   "type": "task",
-  "updated_at": "2026-09-16T10:00:58Z"
+  "updated_at": "2026-09-16T10:00:59Z"
 }

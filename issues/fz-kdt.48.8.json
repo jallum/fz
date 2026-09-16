@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-kdt.48.11",
     "fz-kdt.48.7"
   ],
   "blocks": [
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "The identity census reaches zero and stays there",
   "type": "task",
-  "updated_at": "2026-09-15T20:30:10Z"
+  "updated_at": "2026-09-16T10:00:59Z"
 }
