@@ -19,11 +19,15 @@
     {
       "text": "DUPLICATE FOLDED (2026-09-03): fz-kdt.182 filed the same defect from the fz-kdt.120 research -- Types::union(empty_list(), list(int)) interns as `[] | [int]` though is_subtype(empty, list_int) holds (identical=false, is_equivalent=true, mutual subtypes), and fz-kdt.120's rule makes it visible (reduce at a ground reducer answers Known { result: [] | [int] }). Measured downstream at 0889c0b3a: activation keys carrying a `[] | [T]` union across the corpus: 1 at base (main/0#lambda@476-519/2[{any, any}, [] | [{any, any}]]), 0 under 120's prototype; render-identical duplicate executable keys 67 -\u003e 40. So 120 does not need this first, but this ticket's \"mutually-subtype types intern to one ID\" is the general cure. 182 closed.",
       "timestamp": "2026-09-03T08:19:03Z"
+    },
+    {
+      "text": "Third cold review of .48.4 (3cf777603, 2026-09-16), findings outside .48.4's scope, recorded for planning: (1) json_roundtrip carries 2 canon FALSE DIFFERENCES today: Ty(174) '{:error, binary} \u0026 not({any, any, any})' is mutually subtype with Ty(78) '{:error, binary}' (and the same pair under a ':nil |' union). A negative factor of DISJOINT ARITY (a 3-tuple carved out of a 2-tuple clause) is vacuous and nothing prunes it at intern; the absorber cannot see it (one clause, no siblings). Factor-level pruning, not axis-level; not covered by any open .48 sub-ticket; json_roundtrip is not in the census TARGETS so the ratchet does not catch it. Over a 10-fixture sweep it is the only fixture with false differences (2), 53 canon duplicates total. (2) Of the ~5% of intern calls that miss the index-first lookup, most still normalize onto an id the index already holds: 7,198 lookup misses vs 1,036 arena inserts on enum_take_drop_split (~6,100 full normalizations per compile for nothing). Next available reuse after the lookup.",
+      "timestamp": "2026-09-16T04:52:33Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Intern one Ty per denotation at the sole type boundary",
   "type": "bug",
-  "updated_at": "2026-09-12T15:38:52Z"
+  "updated_at": "2026-09-16T04:52:33Z"
 }
