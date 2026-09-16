@@ -173,7 +173,7 @@ fn native_inventory_roots_semantic_entries_and_callable_members() {
     let key = super::ExecutableKey {
         activation: super::ActivationKey::from_inputs(
             super::RootId::for_test(0),
-            super::FunctionId::for_test(0),
+            super::FunctionId::from_coordinate(0),
             &[],
             &mut types,
         ),

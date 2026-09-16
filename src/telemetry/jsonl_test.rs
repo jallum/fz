@@ -471,7 +471,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
         let mut types = crate::compiler2::Types::new();
         let int = types.int();
         let root = RootId::for_test(71);
-        let function = FunctionId::for_test(710);
+        let function = FunctionId::from_coordinate(710);
         let (list, non_empty) = if non_empty_first {
             let non_empty = types.non_empty_list(int);
             let non_empty = ActivationKey::from_inputs(root, function, &[non_empty], &mut types);
@@ -620,8 +620,12 @@ fn incoming_slot_facts_identify_the_exact_root_executable_and_input() {
     let mut identities = std::collections::HashSet::new();
     for root in [7, 8] {
         for index in [0, 1] {
-            let activation =
-                ActivationKey::from_inputs(RootId::for_test(root), FunctionId::for_test(9), &[int, int], &mut types);
+            let activation = ActivationKey::from_inputs(
+                RootId::for_test(root),
+                FunctionId::from_coordinate(9),
+                &[int, int],
+                &mut types,
+            );
             let arrow = activation.arrow.as_u32();
             let slot = InputSlot {
                 executable: ExecutableKey {

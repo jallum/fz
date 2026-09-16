@@ -15,7 +15,7 @@ use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
-use crate::ast::{CallableName, Expr, Pattern, Spanned};
+use crate::ast::{Callee, Expr, Pattern, Spanned};
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
@@ -28,7 +28,7 @@ use crate::source::Span;
 
 #[derive(Debug, Clone)]
 pub(super) struct GuardCall {
-    name: CallableName,
+    callee: Callee,
     arity: usize,
     span: Span,
 }
@@ -94,10 +94,13 @@ pub(super) fn reify_guard_dispatch(
 
 /// Plans ordered function entry selection from clause heads and guards.
 ///
-/// The job consumes the function definition plus any helper guard-dispatch
-/// facts its clause guards call. When every dependency is ready, it publishes
-/// one `EntryDispatch(function)` fact carrying the shared pattern-dispatch
-/// artifact that later semantic jobs will consume.
+/// The job asks for exactly what it reads: `FunctionDefined(function)`, the
+/// `TypeDefined` and `StructDefined` facts its clause heads name, and the
+/// `GuardDispatch` of each helper its guards call. It does not wait on
+/// `ModuleDefined(owner_module)`, whose value it never consumes. When every
+/// dependency is ready the job publishes one `EntryDispatch(function)` fact
+/// carrying the shared pattern-dispatch artifact that later semantic jobs
+/// consume.
 pub(super) fn plan_entry_dispatch(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -109,15 +112,6 @@ pub(super) fn plan_entry_dispatch(
 
     let (source, surface) = world.function_definition(function);
     let mut reads = vec![FactKey::FunctionDefined(function)];
-    let module = source.owner_module;
-    if !module.is_global() {
-        let module_fact = FactKey::ModuleDefined(module);
-        if world.has_fact(&module_fact) {
-            reads.push(module_fact);
-        } else {
-            return Ok(JobEffects::wait_on_current(module_fact));
-        }
-    }
     let mut waits = HashSet::new();
     for referenced in world.function_type_refs(function).iter().cloned() {
         let fact = FactKey::TypeDefined(referenced);
@@ -178,8 +172,8 @@ pub(super) fn plan_entry_dispatch(
         world,
         namespace,
         owner: source.owner_module,
-        guard: |world: &mut World, name: &CallableName, arity: usize| {
-            let callee = resolve_guard_callee_checked(world, namespace, name, arity);
+        guard: |world: &mut World, callee: &Callee, arity: usize| {
+            let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
             Ok(Some(world.guard_dispatch(callee)))
         },
     };
@@ -267,8 +261,8 @@ fn build_guard_dispatch(
         world,
         namespace,
         owner: source.owner_module,
-        guard: |world: &mut World, name: &CallableName, arity: usize| {
-            let callee = resolve_guard_callee_checked(world, namespace, name, arity);
+        guard: |world: &mut World, callee: &Callee, arity: usize| {
+            let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
             let dispatch = build_guard_dispatch(world, callee, cache, stack)?;
             Ok(Some(dispatch))
         },
@@ -399,14 +393,14 @@ pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<Gu
             collect_guard_calls_in_expr(right, out)
         }
         Expr::Call(target, args) => {
-            let Some(name) = CallableName::for_call(&target.node, args.len()) else {
+            let Some(callee) = Callee::for_call(&target.node, args.len()) else {
                 return Err(expr.span);
             };
             for arg in args {
                 collect_guard_calls_in_expr(arg, out)?;
             }
             out.push(GuardCall {
-                name,
+                callee,
                 arity: args.len(),
                 span: expr.span,
             });
@@ -414,6 +408,7 @@ pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<Gu
         }
         Expr::FnRef { .. }
         | Expr::Module(_)
+        | Expr::BoundFunction(_)
         | Expr::Capture(_)
         | Expr::CaptureArg(_)
         | Expr::List(_, _)
@@ -437,22 +432,31 @@ pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<Gu
     }
 }
 
+/// How a guard's callee reads in a diagnostic: a source name as written, a
+/// retained callable as the function it names.
+fn guard_callee_label(world: &World, callee: &Callee, arity: usize) -> String {
+    match callee {
+        Callee::Name(name) => format!("{name}/{arity}"),
+        Callee::Bound(function) => world
+            .try_function_ref(*function)
+            .map_or_else(|| format!("<unknown callable>/{arity}"), |reference| reference.label()),
+    }
+}
+
 pub(super) fn resolve_guard_callee(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
     call: &GuardCall,
 ) -> Result<FunctionId, FatalError> {
-    match world.lookup_callable_name(namespace, &call.name, call.arity) {
+    let label = guard_callee_label(world, &call.callee, call.arity);
+    match world.lookup_callee(namespace, &call.callee, call.arity) {
         Some(NamespaceSymbol::Function(function)) | Some(NamespaceSymbol::Callable(function)) => Ok(function),
         Some(NamespaceSymbol::Macro(_)) => Err(emit_job_diagnostic(
             tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
-                format!(
-                    "compiler2 guard calls must be expanded before dispatch planning: `{}/{}`",
-                    call.name, call.arity
-                ),
+                format!("compiler2 guard calls must be expanded before dispatch planning: `{label}`"),
                 call.span,
             ),
         )),
@@ -461,10 +465,7 @@ pub(super) fn resolve_guard_callee(
                 tel,
                 Diagnostic::error(
                     codes::LOWER_UNBOUND,
-                    format!(
-                        "compiler2 guard call `{}/{}` is unresolved in this namespace",
-                        call.name, call.arity
-                    ),
+                    format!("compiler2 guard call `{label}` is unresolved in this namespace"),
                     call.span,
                 ),
             ))
@@ -475,10 +476,10 @@ pub(super) fn resolve_guard_callee(
 pub(super) fn resolve_guard_callee_checked(
     world: &mut World,
     namespace: Namespace,
-    name: &CallableName,
+    callee: &Callee,
     arity: usize,
 ) -> FunctionId {
-    match world.lookup_callable_name(namespace, name, arity) {
+    match world.lookup_callee(namespace, callee, arity) {
         Some(NamespaceSymbol::Function(function)) | Some(NamespaceSymbol::Callable(function)) => function,
         Some(NamespaceSymbol::Macro(_)) => {
             panic!("guard analysis should reject macro calls before building dispatch artifacts")

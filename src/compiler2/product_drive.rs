@@ -1034,7 +1034,7 @@ mod wait_frame_tests {
         ProductKey::TransportShape(TransportPosition::ExecutableReturn {
             executable: ExecutableSymbol {
                 activation: ActivationSymbol {
-                    function: crate::compiler2::FunctionId::for_test(id),
+                    function: crate::compiler2::FunctionId::from_coordinate(id),
                     arrow,
                     input: vec![arrow; 32].into_boxed_slice(),
                 },
@@ -1456,7 +1456,7 @@ mod wait_frame_tests {
             TransportPosition::ExecutableReturn {
                 executable: ExecutableSymbol {
                     activation: ActivationSymbol {
-                        function: crate::compiler2::FunctionId::for_test(91),
+                        function: crate::compiler2::FunctionId::from_coordinate(91),
                         arrow,
                         input,
                     },

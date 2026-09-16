@@ -87,7 +87,10 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
 - Named `def` / `defp` forms have that same ordinary call shape. The lexer and
   front door do not assign either spelling a dedicated grammar node.
 - Remote calls and closure calls are allowed to carry a quoted callee AST in
-  `head`, not just an atom.
+  `head`, not just an atom. That callee AST is the only remote form. An atom
+  head is a local name whatever it spells, so `{:"Foo.bar", meta, args}` calls
+  a local function literally named `Foo.bar` and is never split into a module
+  and a name. Elixir reads the same shape the same way.
 - Variables use `tail = lexical_context_map`.
 - Module aliases use `{:__aliases__, meta, [:Foo, :Bar]}`.
 - Keyword items are ordinary 2-tuples inside lists.
@@ -217,6 +220,25 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   definition text even when a different caller publishes or decodes it.
 - `__fz_namespace_id__`: transport-only namespace handle; not semantic
   content, skipped by `semantically_eq`.
+- `__fz_bound__`: the exact callable a quoted call was resolved to, as that
+  function's coordinate in the world that stamped it; semantic content,
+  compared by `semantically_eq`. Quote lowering classifies a call once, where
+  the quote is written, and stamps the result here. The head atom beside it
+  stays the spelling the call was written with: display data that no later
+  stage reads to choose a target. Decoding turns the key into
+  `Expr::BoundFunction`, and every reader asks the world about the retained
+  function rather than the head: expansion asks whether it is a macro
+  (`World::retained_callable_symbol`), and body lowering confirms the
+  coordinate, the supplied arity, and that it is a function before calling it.
+  A call the quote's own context cannot classify carries no key and is
+  classified where it is inserted.
+
+  This key lives among the visible entries, so a macro building raw AST can
+  write one. What it cannot write is a callable: a coordinate outside the
+  function space, a macro, or a wrong arity is refused at the read boundary. A
+  coordinate that lands on a real function of the right arity is not
+  distinguishable from a genuine one today, which is what moving the carrier
+  out of the visible entries settles.
 
 ## Scope Authority
 

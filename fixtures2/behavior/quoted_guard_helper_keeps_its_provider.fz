@@ -1,0 +1,39 @@
+#---
+# purpose: "a guard helper whose body came from a quote resolves its retained callable like any other call"
+#---
+#
+# # quoted_guard_helper_keeps_its_provider
+#
+# `Provider.make/0` splices a `small?/1` whose body is a quoted call to
+# `Provider.base/1`. `small?/1` then guards a clause of `App.pick/1`.
+#
+# Guard reification reads a clause's calls to decide what the guard dispatches
+# on, so it has to recognise a retained callable as a call. A reader that only
+# knows source spellings sees no callee at all and reports the helper impure —
+# a true statement about nothing, since `base/1` is a perfectly pure comparison.
+#
+defmodule Provider do
+  def base(x), do: x < 10
+
+  defmacro make() do
+    quote do
+      def small?(x) do
+        base(x)
+      end
+    end
+  end
+end
+
+defmodule App do
+  import Provider, only: [make: 0]
+
+  make()
+
+  def pick(x) when small?(x), do: 1
+  def pick(_x), do: 0
+end
+
+def main() do
+  assert(App.pick(3) == 1, "the quoted helper guards the first clause")
+  assert(App.pick(30) == 0, "and falls through when it misses")
+end

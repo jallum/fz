@@ -8,7 +8,7 @@ use crate::types::ClosureTarget;
 
 use super::code::SourceOwner;
 use super::module_interface::ModuleInterface;
-use super::namespace::Namespace;
+use super::namespace::{Namespace, NamespaceSymbol};
 use super::quoted_surface::ScopeSurface;
 use super::source::{Horizon, QuotedSourceRoot};
 use super::type_expr::TypeDefBody;
@@ -46,8 +46,14 @@ impl FunctionId {
         self.0
     }
 
-    #[cfg(test)]
-    pub(crate) fn for_test(raw: u32) -> Self {
+    /// Rebuilds an id from its raw coordinate.
+    ///
+    /// Two things hold a bare coordinate: a quoted callable classification,
+    /// which carries one so a retained target survives the trip through a
+    /// runtime value, and a test standing in for the interner. Neither knows
+    /// whether the coordinate names a function — the world does, and
+    /// `World::retained_callable_symbol` asks it before a target is used.
+    pub(crate) fn from_coordinate(raw: u32) -> Self {
         Self(raw)
     }
 
@@ -503,10 +509,35 @@ impl ModuleMap {
     }
 }
 
+/// What a declaration said a function is.
+///
+/// Recorded where the name is reserved, so a reader holding only the id can
+/// ask before the owning module publishes an interface. This is a different
+/// question from `InterfaceCallableKind`, which says what a module exports:
+/// a private function has a declared kind and no interface entry at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclaredCallableKind {
+    Function,
+    Macro,
+}
+
+impl DeclaredCallableKind {
+    pub fn namespace_symbol(self, function: FunctionId) -> NamespaceSymbol {
+        match self {
+            Self::Function => NamespaceSymbol::Function(function),
+            Self::Macro => NamespaceSymbol::Macro(function),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct FunctionMap {
     slots: Vec<FunctionState>,
     refs: Vec<Arc<FunctionRef>>,
+    /// What each slot's declaration said it is. `None` until a declaration is
+    /// seen: a bare cross-module reference mints a slot whose kind only its
+    /// owning module's interface can settle.
+    declared_kinds: Vec<Option<DeclaredCallableKind>>,
     by_key: HashMap<FunctionKey, FunctionId>,
     generated_by_key: HashMap<GeneratedFunctionKey, FunctionId>,
 }
@@ -534,6 +565,7 @@ impl FunctionMap {
         }
         let id = FunctionId(self.slots.len() as u32);
         self.slots.push(FunctionState::Placeholder);
+        self.declared_kinds.push(None);
         self.refs.push(Arc::new(FunctionRef {
             module,
             denotation: Arc::new(FunctionDenotation {
@@ -565,6 +597,9 @@ impl FunctionMap {
         }
         let id = FunctionId(self.slots.len() as u32);
         self.slots.push(FunctionState::Placeholder);
+        // A generated lambda is a function by construction; nothing declares it
+        // a macro.
+        self.declared_kinds.push(Some(DeclaredCallableKind::Function));
         self.refs.push(Arc::new(FunctionRef {
             module,
             denotation: Arc::new(FunctionDenotation {
@@ -577,6 +612,22 @@ impl FunctionMap {
         }));
         self.generated_by_key.insert(key, id);
         id
+    }
+
+    /// Records what a declaration says `id` is.
+    ///
+    /// The latest declaration stands. Reserving, publishing and rescoping all
+    /// re-declare the same key, so an edit that turns a `def` into a `defmacro`
+    /// is tracked by the rescope that reads the new source — nothing has to
+    /// notice that it changed. Two contradicting declarations inside one module
+    /// never reach here: grouping the quoted surface refuses them first, as
+    /// `parse/mixed-function-visibility`.
+    pub fn declare_kind(&mut self, id: FunctionId, kind: DeclaredCallableKind) {
+        self.declared_kinds[id.0 as usize] = Some(kind);
+    }
+
+    pub fn declared_kind(&self, id: FunctionId) -> Option<DeclaredCallableKind> {
+        self.declared_kinds.get(id.0 as usize).copied().flatten()
     }
 
     pub fn note(&mut self, id: FunctionId, source: FunctionSource) -> bool {
@@ -641,8 +692,8 @@ impl FunctionMap {
     /// The reverse reference for `id`, or `None` when `id` is not a known
     /// function slot. Unlike [`reference_for`](Self::reference_for) this does
     /// not assume the id is in range, so a caller decoding an id of uncertain
-    /// provenance (e.g. a packed closure-surface var) can probe it safely.
-    #[cfg(test)]
+    /// provenance (a packed closure-surface var, a quoted callable
+    /// coordinate) can probe it safely.
     pub fn try_reference_for(&self, id: FunctionId) -> Option<&FunctionRef> {
         self.refs.get(id.0 as usize).map(Arc::as_ref)
     }

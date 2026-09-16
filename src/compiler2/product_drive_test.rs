@@ -2401,7 +2401,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         .fact_revision(&prerequisite)
         .expect("the lowered body prerequisite should already be published");
     let prerequisite_job = Job::LowerFunction(executable.activation.function);
-    let observer = Job::DefineFunction(super::FunctionId::for_test(u32::MAX));
+    let observer = Job::DefineFunction(super::FunctionId::from_coordinate(u32::MAX));
     let observer_completion = super::drive::ExecutionContext::new(&mut world, &tel).complete_job(
         observer.clone(),
         super::drive::JobEffects {

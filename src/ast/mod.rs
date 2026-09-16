@@ -17,12 +17,41 @@ impl std::fmt::Display for ModuleTarget {
     }
 }
 
-/// A source callable name, optionally qualified by an exact reflected module.
-/// Unresolved source spelling is interpreted only by the lexical resolver.
+/// A source callable name: the callable's own identifier, and the module path
+/// it was written under when it was written under one. The qualifier is a
+/// `ModuleTarget`, so an alias spelling stays separate from an exact reflected
+/// identity and the resolver never recovers one from the other by splitting
+/// display text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableName {
-    pub module: Option<ModuleDenotation>,
+    pub module: Option<ModuleTarget>,
     pub name: String,
+}
+
+/// What a call's callee names.
+///
+/// This is the one enumeration of callee shapes. Every reader that needs a
+/// call's target — body lowering, guard collection, guard reification, and the
+/// guard capture walk — asks here, so they cannot disagree about which shapes
+/// are calls. A `Name` is source spelling the lexical resolver still has to
+/// interpret; a `Bound` callee was resolved where it was written and names its
+/// function outright.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Callee {
+    Name(CallableName),
+    Bound(crate::compiler2::FunctionId),
+}
+
+impl Callee {
+    /// The callee a call on `expr` with `arity` arguments names, or `None`
+    /// when the target is not a name at all.
+    pub fn for_call(expr: &Expr, arity: usize) -> Option<Self> {
+        match expr {
+            Expr::BoundFunction(function) => Some(Self::Bound(*function)),
+            Expr::FnRef { name, arity: declared } => (*declared == arity).then(|| Self::Name(name.clone())),
+            _ => CallableName::from_expr(expr).map(Self::Name),
+        }
+    }
 }
 
 impl CallableName {
@@ -30,13 +59,6 @@ impl CallableName {
         Self {
             module: None,
             name: name.into(),
-        }
-    }
-
-    pub fn for_call(expr: &Expr, arity: usize) -> Option<Self> {
-        match expr {
-            Expr::FnRef { name, arity: declared } => (*declared == arity).then(|| name.clone()),
-            _ => Self::from_expr(expr),
         }
     }
 
@@ -48,7 +70,17 @@ impl CallableName {
                 Expr::Var(name) => {
                     path.push(name.clone());
                     path.reverse();
-                    return Some(Self::source(path.join(".")));
+                    let name = path.pop()?;
+                    // An alias written `A.B` arrives as one identifier, so its
+                    // own spelling is what says where its segments divide.
+                    let segments = path
+                        .iter()
+                        .flat_map(|segment| segment.split('.'))
+                        .map(str::to_string)
+                        .collect::<Vec<_>>();
+                    let module =
+                        (!segments.is_empty()).then(|| ModuleTarget::Unresolved(ModuleName::from_segments(segments)));
+                    return Some(Self { module, name });
                 }
                 Expr::Module(module) => {
                     path.reverse();
@@ -61,7 +93,7 @@ impl CallableName {
                         module = ModuleDenotation::Named(parent.child(segment));
                     }
                     return Some(Self {
-                        module: Some(module),
+                        module: Some(ModuleTarget::Exact(module)),
                         name,
                     });
                 }
@@ -146,10 +178,16 @@ pub enum Expr {
     /// segments are not retained as a second semantic authority.
     Module(ModuleDenotation),
 
+    /// The one callable a quoted call was resolved to, as that call's callee.
+    /// Source spelling never produces this: the quoted-source reader mints it
+    /// from the classification stamped where the call was quoted, so the call
+    /// lowers to that exact function without consulting any name.
+    BoundFunction(crate::compiler2::FunctionId),
+
     /// Explicit function reference: `&name/arity` (fz-swt.5).
-    /// `name` may be dotted (`Mod.fun`). Lowers to a thin `Prim::MakeFnRef`
-    /// over the fn matching `(name, arity)` exactly, rather than the bare-name
-    /// path's "first defined wins".
+    /// `name` carries its module qualifier when it has one. Lowers to a thin
+    /// `Prim::MakeFnRef` over the fn matching `(name, arity)` exactly, rather
+    /// than the bare-name path's "first defined wins".
     FnRef {
         name: CallableName,
         arity: usize,

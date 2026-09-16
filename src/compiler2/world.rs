@@ -36,9 +36,9 @@ use super::drive::{DependencyKey, fact_dependency};
 use super::drive::{ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
 use super::facts::FactUse;
 use super::identity::{
-    ActivationKey, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionRef,
-    FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, PendingFunctionSourceMap,
-    RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
+    ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
+    FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl,
+    PendingFunctionSourceMap, RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{BodyKeying, BodyKeyingMap, CallGraphComponentMap, InputDemand, InputDemandMap, StaticCalleeMap};
@@ -46,7 +46,7 @@ use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap,
 };
-use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
+use super::namespace::{CallableQualifier, Namespace, NamespaceStore, NamespaceSymbol};
 use super::ordered_set::OrderedSet;
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
@@ -1155,6 +1155,25 @@ impl World {
         id
     }
 
+    /// References a callable and records what its declaration said it is, so a
+    /// later reader holding the id knows whether it is a macro without waiting
+    /// for the owning module's interface.
+    pub fn reference_declared_callable(
+        &mut self,
+        module: ModuleId,
+        name: impl Into<String>,
+        arity: usize,
+        kind: DeclaredCallableKind,
+    ) -> FunctionId {
+        let id = self.reference_function(module, name, arity);
+        self.functions.declare_kind(id, kind);
+        id
+    }
+
+    pub(crate) fn declared_callable_kind(&self, function: FunctionId) -> Option<DeclaredCallableKind> {
+        self.functions.declared_kind(function)
+    }
+
     /// Share a minted function's typed origin with the type lattice before any
     /// literal can name it. The function interner owns uniqueness, not a scan of
     /// rendered callable labels.
@@ -1745,9 +1764,9 @@ impl World {
     }
 
     /// The reverse reference for `function`, or `None` when it is not a known
-    /// function slot. Lets a caller probe an id of uncertain provenance (e.g. a
-    /// decoded closure-surface var id) without panicking on an out-of-range id.
-    #[cfg(test)]
+    /// function slot. Lets a caller probe an id of uncertain provenance (a
+    /// decoded closure-surface var id, a quoted callable coordinate) without
+    /// panicking on an out-of-range id.
     pub(crate) fn try_function_ref(&self, function: FunctionId) -> Option<&super::identity::FunctionRef> {
         self.functions.try_reference_for(function)
     }
@@ -1929,6 +1948,7 @@ impl World {
         };
         let metadata = QuotedSourceMetadata {
             module: Some(denotation.clone()),
+            bound_callable: None,
             from_brackets: false,
             lexical_context: Some(self.scope_lexical_context(scope, kind)),
             span: None,
@@ -1999,10 +2019,6 @@ impl World {
         name: &str,
         arity: usize,
     ) -> Option<NamespaceSymbol> {
-        if let Some((module_path, local_name)) = name.rsplit_once('.') {
-            let module = self.lookup_module_path(head, &ModuleName::parse_dotted(module_path).ok()?)?;
-            return self.lookup_module_callable(module, local_name, arity);
-        }
         self.namespaces
             .lookup_best_matching(head, name, |symbol| match symbol {
                 NamespaceSymbol::Function(function)
@@ -2016,18 +2032,49 @@ impl World {
             .map(|symbol| self.resolve_callable_symbol(symbol))
     }
 
+    /// Where a callable name's qualifier points. This is the one place a
+    /// qualifier is read, so no caller recovers a module from display text.
+    /// An exact reflected module is interned as it stands; an alias path is
+    /// walked through `head`.
+    pub(crate) fn callable_name_qualifier(
+        &mut self,
+        head: Namespace,
+        name: &crate::ast::CallableName,
+    ) -> CallableQualifier {
+        let Some(target) = name.module.as_ref() else {
+            return CallableQualifier::Unqualified;
+        };
+        let module = match target {
+            crate::ast::ModuleTarget::Exact(module) => Some(self.reference_module_denotation(module.clone())),
+            crate::ast::ModuleTarget::Unresolved(path) => self.lookup_module_path(head, path),
+        };
+        module.map_or(CallableQualifier::Unbound, CallableQualifier::Module)
+    }
+
+    /// The symbol a call's callee names here. A retained callable answers from
+    /// its own identity; a source name is resolved lexically.
+    pub(crate) fn lookup_callee(
+        &mut self,
+        head: Namespace,
+        callee: &crate::ast::Callee,
+        arity: usize,
+    ) -> Option<NamespaceSymbol> {
+        match callee {
+            crate::ast::Callee::Bound(function) => self.retained_callable_symbol(*function),
+            crate::ast::Callee::Name(name) => self.lookup_callable_name(head, name, arity),
+        }
+    }
+
     pub(crate) fn lookup_callable_name(
         &mut self,
         head: Namespace,
         name: &crate::ast::CallableName,
         arity: usize,
     ) -> Option<NamespaceSymbol> {
-        match &name.module {
-            Some(module) => {
-                let module = self.reference_module_denotation(module.clone());
-                self.lookup_module_callable(module, &name.name, arity)
-            }
-            None => self.lookup_callable_namespace(head, &name.name, arity),
+        match self.callable_name_qualifier(head, name) {
+            CallableQualifier::Unqualified => self.lookup_callable_namespace(head, &name.name, arity),
+            CallableQualifier::Module(module) => self.lookup_module_callable(module, &name.name, arity),
+            CallableQualifier::Unbound => None,
         }
     }
 
@@ -2062,6 +2109,25 @@ impl World {
         best.map(|(_, symbol)| symbol)
     }
 
+    /// How a callable a quoted call already retained dispatches here.
+    ///
+    /// Macro classification still precedes ordinary calls, so this asks the
+    /// exact retained function what it is rather than asking the surrounding
+    /// namespace about the head's spelling. A declaration settles the answer
+    /// on its own; only a bare cross-module reference is left `Callable`, and
+    /// its reader waits on that module's interface, which is the fact that
+    /// decides it.
+    ///
+    /// `None` means the coordinate names no function slot in this world, which
+    /// is all a hand-written classification can be.
+    pub(crate) fn retained_callable_symbol(&mut self, function: FunctionId) -> Option<NamespaceSymbol> {
+        self.try_function_ref(function)?;
+        Some(match self.declared_callable_kind(function) {
+            Some(kind) => kind.namespace_symbol(function),
+            None => self.resolve_callable_symbol(NamespaceSymbol::Callable(function)),
+        })
+    }
+
     fn resolve_callable_symbol(&mut self, symbol: NamespaceSymbol) -> NamespaceSymbol {
         let NamespaceSymbol::Callable(function) = symbol else {
             return symbol;
@@ -2079,10 +2145,6 @@ impl World {
     }
 
     pub(crate) fn min_variadic_arity(&mut self, head: Namespace, name: &str) -> Option<usize> {
-        if let Some((module_path, local_name)) = name.rsplit_once('.') {
-            let module = self.lookup_module_path(head, &ModuleName::parse_dotted(module_path).ok()?)?;
-            return self.min_module_variadic_arity(module, local_name);
-        }
         self.namespaces
             .lookup_best_matching(head, name, |symbol| match symbol {
                 NamespaceSymbol::Function(function) | NamespaceSymbol::Macro(function)
