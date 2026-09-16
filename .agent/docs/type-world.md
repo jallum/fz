@@ -134,6 +134,11 @@ It also resolves binary lattice laws before their operand-pair operation table:
 These results are direct handles, not cache entries whose hashes repeat a fact the
 world already established.
 
+Likewise, public tuple construction checks each field's handle as it copies it.
+If one is `none`, the product returns `none` without building a tuple descriptor
+or asking normalization to rediscover that fact; inhabited tuples take no extra
+pass over their fields.
+
 - **`refine_widen(a, b)`** — finite-height least upper bound. Collapses literal axes
   to their base and merges list shapes (`[] ⊔ nonempty(t) = list(t)`), so a joined
   slot ascends a bounded chain and the fixpoint terminates. This is the join behind

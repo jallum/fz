@@ -1300,7 +1300,14 @@ impl Types {
     }
 
     pub fn tuple(&mut self, elems: &[Ty]) -> Ty {
-        self.intern(Descr::tuple_of(elems.iter().copied()))
+        let mut fields = Vec::with_capacity(elems.len());
+        for &elem in elems {
+            if elem == self.core.none {
+                return self.core.none;
+            }
+            fields.push(elem);
+        }
+        self.intern(Descr::tuple_of(fields))
     }
 
     pub fn empty_list(&mut self) -> Ty {

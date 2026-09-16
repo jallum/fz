@@ -184,6 +184,25 @@ fn canonical_bottom_binary_laws_return_before_the_operation_boundary() {
 }
 
 #[test]
+fn impossible_tuple_returns_before_the_type_boundary() {
+    let mut t = Types::new();
+    let int = t.int();
+    let none = t.none();
+    let before = t.interning_work_stats();
+
+    assert_eq!(
+        t.tuple(&[int, none, int]),
+        none,
+        "a product with an uninhabited coordinate is uninhabited"
+    );
+    assert_eq!(
+        t.interning_work_stats(),
+        before,
+        "an interned bottom field decides tuple emptiness without hashing or normalizing a descriptor"
+    );
+}
+
+#[test]
 fn repeating_binary_type_algebra_returns_before_it_rebuilds_a_descriptor() {
     let mut t = Types::new();
     let int = t.int();
