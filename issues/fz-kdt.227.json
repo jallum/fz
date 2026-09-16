@@ -4,6 +4,7 @@
     "fz-kdt.228"
   ],
   "blocks": [
+    "fz-kdt.226",
     "fz-kdt.98.2"
   ],
   "created": "2026-09-16T09:18:59Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "The quiescence drain certifies a fact over dirty ground, one fact at a time",
   "type": "bug",
-  "updated_at": "2026-09-16T14:53:25Z"
+  "updated_at": "2026-09-16T14:56:39Z"
 }
