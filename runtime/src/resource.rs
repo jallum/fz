@@ -21,6 +21,11 @@
 //! Refcount ordering uses the same canonical Arc pattern as procbin:
 //! Relaxed on retain, Release on dec, Acquire fence + dtor on 1→0.
 //!
+//! A resource may also be claimed explicitly. Claiming is a shared one-way
+//! transition: every alias, including aliases transported to another process,
+//! observes it. A claim disarms the fallback destructor; the library that
+//! claims the capability owns deterministic cleanup of its payload.
+//!
 //! # Lifetime contract (fz-swt.9 — interp leg)
 //!
 //! fz is value-semantics + immutable: a heap handle is a tagged 64-bit
@@ -97,10 +102,11 @@ pub struct Resource {
     pub destructor: unsafe extern "C" fn(payload: u64), // offset 8..16
     pub payload: u64,                                   // offset 16..24
     id: ResourceId,                                     // offset 24..32
+    lifecycle: AtomicUsize,                             // offset 32..40
 }
 
-/// The identity occupies the owner's existing alignment padding.
-pub const RESOURCE_BYTES: usize = 32;
+/// 40 bytes of fields, rounded up to the resource's 16-byte alignment.
+pub const RESOURCE_BYTES: usize = 48;
 
 const _: () = {
     assert!(size_of::<Resource>() == RESOURCE_BYTES);
@@ -112,6 +118,9 @@ const _: () = {
 // liveness is the host author's responsibility — NIF-style trust model.
 unsafe impl Send for Resource {}
 unsafe impl Sync for Resource {}
+
+const RESOURCE_LIVE: usize = 0;
+const RESOURCE_CLAIMED: usize = 1;
 
 // ===== Built-in dtors =======================================================
 
@@ -148,8 +157,23 @@ pub fn resource_alloc(payload: u64, dtor: unsafe extern "C" fn(u64)) -> *mut Res
         destructor: dtor,
         payload,
         id: ResourceId::fresh(),
+        lifecycle: AtomicUsize::new(RESOURCE_LIVE),
     });
     Box::into_raw(r)
+}
+
+impl Resource {
+    /// Atomically transfers cleanup responsibility from fallback teardown to
+    /// the caller. Exactly one alias can claim a resource.
+    pub fn claim(&self) -> bool {
+        self.lifecycle
+            .compare_exchange(RESOURCE_LIVE, RESOURCE_CLAIMED, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn is_claimed(&self) -> bool {
+        self.lifecycle.load(Ordering::Acquire) == RESOURCE_CLAIMED
+    }
 }
 
 /// Increment the refcount on an already-owned Resource.
@@ -179,12 +203,15 @@ pub unsafe extern "C" fn fz_resource_release(p: *mut Resource) {
         fence(Ordering::Acquire);
         let dtor = r.destructor;
         let payload = r.payload;
+        let claimed = r.is_claimed();
         // SAFETY: refcount went 1 → 0, so we own the unique reference.
         // Reconstruct the Box BEFORE invoking the dtor so the wrapper is
         // reclaimed even if the dtor panics (Box::from_raw drop is in the
         // scope; we've already snapshotted payload/dtor above).
         let _wrapper = unsafe { Box::from_raw(p) };
-        unsafe { dtor(payload) };
+        if !claimed {
+            unsafe { dtor(payload) };
+        }
     }
 }
 
@@ -208,8 +235,9 @@ pub unsafe fn fz_resource_release_deferred(p: *mut Resource) -> Option<u64> {
     if r.refcount.fetch_sub(1, Ordering::Release) == 1 {
         fence(Ordering::Acquire);
         let payload = r.payload;
+        let claimed = r.is_claimed();
         let _wrapper = unsafe { Box::from_raw(p) };
-        Some(payload)
+        (!claimed).then_some(payload)
     } else {
         None
     }
@@ -346,6 +374,12 @@ impl ResourceStub {
 
     pub fn payload(&self) -> u64 {
         unsafe { (*self.shared_raw()).payload }
+    }
+
+    /// Claims the shared resource. A successful caller owns deterministic
+    /// cleanup; its fallback destructor will not run at final release.
+    pub fn claim(&self) -> bool {
+        unsafe { (*self.shared_raw()).claim() }
     }
 
     pub fn id(&self) -> ResourceId {

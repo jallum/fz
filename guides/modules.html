@@ -303,6 +303,14 @@ module graph.</p>
 contracts. They are not exported as public module functions. The public
 surface is the fz wrapper API.</p>
 
+<p><code>File</code> follows that pattern: its public <code>read</code>,
+<code>write</code>, directory, link, permission, and open/close functions are
+fz source. Private libc declarations do the small native calls, while the
+wrapper turns their status values into <code>:ok</code> or
+<code>{:error, :io}</code>. An open handle is a resource; call
+<code>File.close/1</code> when it must close now, or let its fallback cleanup
+run when the handle is no longer reachable.</p>
+
 <p>Private module helpers use <code>defp</code>. They have the same body shape as
 <code>def</code> and can be called by sibling functions in the same module, but
 they are omitted from public interfaces and do not require public

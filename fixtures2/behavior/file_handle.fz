@@ -1,5 +1,5 @@
 #---
-# purpose: "FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle"
+# purpose: "FileHandle = fd + dtor, exercising c_string/binary/integer marshal classes against real libc with an observable resource lifecycle"
 # budget.codegen.functions: 6
 # budget.codegen.instructions: 74
 # budget.planner.worklist_pops: 6
@@ -18,10 +18,10 @@
 # classes plumbed through `make_resource`.
 #
 # ```
-# libc::creat (path :: cstring, mode :: integer)  :: c_int
+# libc::creat (path :: c_string, mode :: integer) :: c_int
 # libc::write (c_int, binary, integer)            :: integer
 # libc::close (c_int)                             :: c_int
-# libc::unlink(cstring)                           :: c_int
+# libc::unlink(c_string)                          :: c_int
 # ```
 #
 # The fixture wraps the fd in a `FileHandle` resource whose dtor calls
@@ -30,10 +30,10 @@
 # apart for an extracted C symbol; the wrapper's `print` actually fires.
 # The `:dtor_closed` line at the end of expected.txt is what proves the
 # destructor ran.
-extern "C" defp libc::creat(path :: cstring, mode :: integer) :: c_int
+extern "C" defp libc::creat(path :: c_string, mode :: integer) :: c_int
 extern "C" defp libc::write(c_int, binary, integer) :: integer
 extern "C" defp libc::close(c_int) :: c_int
-extern "C" defp libc::unlink(cstring) :: c_int
+extern "C" defp libc::unlink(c_string) :: c_int
 
 # Dtor body runs as real fz code at task-exit (fz-4mk). We can call
 # libc::close directly AND print so the test can observe the dtor fired

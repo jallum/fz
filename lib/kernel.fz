@@ -26,7 +26,8 @@ defmodule Kernel do
   extern "fz" defp fz_self() :: pid
   extern "fz" defp fz_send(pid, t) :: t when t: any
   extern "C" defp fz_make_ref() :: ref
-  extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+  extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | c_pointer
+  extern "fz" defp fz_resource_claim(resource(t)) :: boolean when t: integer | c_pointer
   extern "fz" defp fz_binary_concat(binary, binary) :: binary
   extern "C" defp fz_op_neg_i(integer) :: {integer, boolean}
   extern "C" defp fz_op_neg_f(float) :: float
@@ -237,8 +238,25 @@ defmodule Kernel do
   resource is garbage-collected, even if the handle has been bound to
   more than one name.
   """
-  @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+  @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | c_pointer
   def make_resource(value, dtor), do: fz_make_resource(value, dtor)
+
+  @doc """
+  Claims `resource` for deterministic cleanup.
+
+  Exactly one alias can claim a resource, including an alias sent to another
+  process. A successful claim disables its fallback destructor; the caller
+  now owns cleanup of the returned raw payload.
+  """
+  @spec claim_resource(resource(t)) :: {:ok, t} | {:error, :closed} when t: integer | c_pointer
+  def claim_resource(resource) do
+    value = resource.value
+    claim_resource_result(fz_resource_claim(resource), value)
+  end
+
+  @spec claim_resource_result(boolean, t) :: {:ok, t} | {:error, :closed} when t: integer | c_pointer
+  defp claim_resource_result(true, value), do: {:ok, value}
+  defp claim_resource_result(false, _value), do: {:error, :closed}
 
   @doc """
   Constructs a `Range` from `first` to `last`, stepping by `step`.

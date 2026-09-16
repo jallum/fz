@@ -7937,7 +7937,7 @@ fn compiler2_native_lowering_narrows_c_int_arguments_and_sign_extends_c_int_resu
     );
 
     let variadic_c_int = lowered_clif_text(
-        "extern \"C\" defp libc::open(path :: cstring, flags :: c_int, ...) :: c_int\n\
+        "extern \"C\" defp libc::open(path :: c_string, flags :: c_int, ...) :: c_int\n\
          def main(), do: libc::open(\"/fz_c_int_clif_probe\", 0, 420 :: integer)\n",
     );
     assert!(
@@ -10501,7 +10501,7 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
 ///
 /// `make_resource(42, fn (x) -> _resource_test_dtor(x) end)` passes the
 /// destructor lambda across the `fz_make_resource(t, (t) -> nil) :: resource(t)
-/// when t: integer | cpointer` boundary. The literal `42` pins `t := integer`,
+/// when t: integer | c_pointer` boundary. The literal `42` pins `t := integer`,
 /// so the boundary's settled surface for the lambda is `(integer) -> nil`. The
 /// lambda's *own* type stays the polymorphic template `(t) -> nil` -- that is
 /// correct, and is left untouched. What must happen is that the escape demand

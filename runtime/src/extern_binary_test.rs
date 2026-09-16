@@ -11,7 +11,7 @@ fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
 }
 
 /// Heap-allocated inline Bitstring goes through as_ptr cleanly and the
-/// byte at `bytes_len` reads as 0 via the cstring helper.
+/// byte at `bytes_len` reads as 0 via the c_string helper.
 #[test]
 fn ptr_and_cstring_on_inline_bitstring() {
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
