@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-ope"
@@ -9,8 +9,8 @@
   "id": "fz-gpn",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Shared resource lifecycle: one-shot release and guarded use",
   "type": "task",
-  "updated_at": "2026-09-16T01:05:26Z"
+  "updated_at": "2026-09-16T01:05:34Z"
 }
