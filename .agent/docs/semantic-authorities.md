@@ -174,8 +174,10 @@ and every reader reads that recorded fact: the interpreter through
 `PatternDispatchPlan::input_demand`/`required_input`, native lowering through
 `required_input`, the executable facts through
 `ExecutableFacts::entry_dispatch_demand`, and activation keying by taking the
-slice as a body's local demand. A slot that stays `Ignore` is an input the plan
-never reads, and a backend is free to pass it as nil.
+slice as a body's local demand. Semantic reachability asks `required_input`
+before interpreting graph proofs; it does not scan the graph to invent a
+second tested-input fact. A slot that stays `Ignore` is an input the plan never
+reads, and a backend is free to pass it as nil.
 
 Three rules decide what a question charges. A test charges its own subject at
 the demand its region asks for, plus the input that delivers any pin it names --
