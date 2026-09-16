@@ -17227,6 +17227,118 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     );
 }
 
+/// A module whose own body invokes a macro the same module defines.
+///
+/// `make_answer/0` has to be planned, lowered and executed while
+/// `DefineModule(Provider)` is still mid-body, so `ModuleDefined(Provider)`
+/// cannot exist yet at that point.
+#[test]
+fn entry_dispatch_blocks_on_the_exact_struct_or_type_fact_its_heads_name() {
+    // The other half of the same contract: dropping the module gate drops
+    // nothing real. Each genuine prerequisite still blocks entry planning, and
+    // blocks it on exactly the fact the clause head named.
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    outputs.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    let source_owner = compiler.submit_code(CodeSubmission {
+        name: Some("entry_dispatch_exact_prerequisites.fz".into()),
+        text: concat!(
+            "defmodule User do\n",
+            "  @type count :: integer\n",
+            "\n",
+            "  def measure(n :: count), do: n\n",
+            "  def unwrap(%Boxes{x: x}), do: x\n",
+            "end\n",
+            "\n",
+            "defmodule Boxes do\n",
+            "  defstruct [:x]\n",
+            "end\n",
+        )
+        .into(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index both modules");
+    assert!(
+        compiler.demand(Job::ScopeCode(source_owner)),
+        "top-level scope should be demandable",
+    );
+    assert_resolved(compiler.drive(), "second drive should scope both modules");
+
+    let user = compiler.world_mut().reference_module(module_name("User"));
+    let boxes = compiler.world_mut().reference_module(module_name("Boxes"));
+    assert!(
+        compiler.demand(Job::DefineModule(user)),
+        "User's own body should be demandable",
+    );
+    assert_resolved(compiler.drive(), "User should define without Boxes being touched");
+
+    let count = TypeName {
+        module: user,
+        name: "count".to_string(),
+        arity: 0,
+    };
+    let measure = function_id(&functions, "measure", 1);
+    let unwrap = function_id(&functions, "unwrap", 1);
+    assert!(
+        compiler.demand(Job::DefineFunction(measure)),
+        "measure/1's definition should be demandable",
+    );
+    assert!(
+        compiler.demand(Job::DefineFunction(unwrap)),
+        "unwrap/1's definition should be demandable",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "both clause heads should define without deriving the facts they name",
+    );
+    assert!(
+        !compiler.world().has_fact(&FactKey::StructDefined(boxes)),
+        "Boxes' defstruct is still unpublished when entry planning is asked for",
+    );
+    assert!(
+        !compiler.world().has_fact(&FactKey::TypeDefined(count.clone())),
+        "User's @type count is still underived when entry planning is asked for",
+    );
+
+    assert!(
+        compiler.demand(Job::PlanEntryDispatch(measure)),
+        "measure/1's entry plan should be demandable",
+    );
+    assert!(
+        compiler.demand(Job::PlanEntryDispatch(unwrap)),
+        "unwrap/1's entry plan should be demandable",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "entry planning should pull each missing prerequisite's own producer and settle",
+    );
+
+    let first_waits = |function| {
+        outputs
+            .stops_matching(|job| matches!(job, Job::PlanEntryDispatch(id) if *id == function))
+            .first()
+            .and_then(|stop| stop.effects.clone())
+            .expect("an entry-dispatch application")
+            .waits
+            .into_iter()
+            .collect::<HashSet<_>>()
+    };
+    assert_eq!(
+        first_waits(measure),
+        HashSet::from([FactUse::current(FactKey::TypeDefined(count))]),
+        "a parameter annotation blocks entry planning on that type fact and nothing else",
+    );
+    assert_eq!(
+        first_waits(unwrap),
+        HashSet::from([FactUse::current(FactKey::StructDefined(boxes))]),
+        "a struct pattern blocks entry planning on that struct fact and nothing else",
+    );
+}
+
 #[test]
 fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
     let tel = ConfiguredTelemetry::new();
@@ -18231,7 +18343,7 @@ struct GuardDispatchCapture {
     dispatches: GuardDispatchMap,
 }
 
-struct LoweredBodyCapture {
+pub(crate) struct LoweredBodyCapture {
     bodies: LoweredBodyDefs,
 }
 
@@ -18762,13 +18874,13 @@ impl EntryDispatchCapture {
 }
 
 impl LoweredBodyCapture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             bodies: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
-    fn install(&self, telemetry: &ConfiguredTelemetry) {
+    pub(crate) fn install(&self, telemetry: &ConfiguredTelemetry) {
         let bodies = Rc::clone(&self.bodies);
         telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
             &["fz", "compiler2", "lowered_body", "defined"],
@@ -18887,7 +18999,7 @@ fn latest_entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -
         .unwrap_or_else(|| panic!("entry_dispatch.defined for {function:?}"))
 }
 
-fn lowered_body(capture: &LoweredBodyCapture, function: FunctionId) -> LoweredBody {
+pub(crate) fn lowered_body(capture: &LoweredBodyCapture, function: FunctionId) -> LoweredBody {
     capture
         .take(function)
         .unwrap_or_else(|| panic!("lowered_body.defined for {function:?}"))
@@ -19179,7 +19291,17 @@ fn direct_call_in_entry(
     }
 }
 
-fn direct_callee_in_entry(
+/// The exact function this caller's lowered body calls.
+pub(crate) fn lowered_direct_callee(bodies: &LoweredBodyCapture, caller: FunctionId) -> Option<FunctionId> {
+    let LoweredBody::Clauses { clauses, entries, .. } = lowered_body(bodies, caller) else {
+        panic!("clause body")
+    };
+    clauses
+        .iter()
+        .find_map(|clause| direct_callee_in_entry(&entries, clause.entry))
+}
+
+pub(crate) fn direct_callee_in_entry(
     entries: &[crate::compiler2::LoweredEntry],
     entry_id: crate::compiler2::ControlEntryId,
 ) -> Option<FunctionId> {
@@ -21174,7 +21296,7 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
         let mut types = Types::new();
         let int = types.int();
         let root = crate::compiler2::RootId::for_test(0);
-        let function = FunctionId::for_test(0);
+        let function = FunctionId::from_coordinate(0);
         let (list, non_empty, list_key, non_empty_key) = if non_empty_first {
             let non_empty = types.non_empty_list(int);
             let non_empty_key = ActivationKey::from_inputs(root, function, &[non_empty], &mut types);
@@ -21247,7 +21369,7 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
     let mut types = Types::new();
     let int = types.int();
     let root = crate::compiler2::RootId::for_test(0);
-    let function = FunctionId::for_test(0);
+    let function = FunctionId::from_coordinate(0);
     let list = types.list(int);
     let non_empty = types.non_empty_list(int);
     let mut jobs = vec![
@@ -21731,5 +21853,173 @@ fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
          reaching it (fz-kdt.183) or the published return being built from it and the recursion not \
          supplying it (fz-kdt.199). A slot NEITHER axis reaches stays collapsed, and brand erasure \
          keeps asking the local question: {moved:#?}",
+    );
+}
+
+/// One resolution, retained. The provider's macro quotes a call to its own
+/// `helper/1`; the caller never sees that name. What travels with the quoted
+/// call is the provider's exact function, and the head beside it stays the
+/// bare spelling the call was written with.
+#[test]
+fn quoted_call_retains_the_provider_function_id() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00120_cross_module_macro.fz".to_string()),
+        text: include_str!("../../fixtures2/00120_cross_module_macro.fz").to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "cross-module macro expansion");
+
+    let helper = function_id(&functions, "helper", 1);
+    let run = function_id(&functions, "run", 0);
+
+    let expanded = compiler
+        .world()
+        .expanded_function_source(run)
+        .expect("expanded source for the macro caller");
+    let (spelling, retained) =
+        retained_quoted_call(&expanded.source.cursor()).expect("the expanded call retains its callable");
+    assert_eq!(
+        retained, helper,
+        "the quoted call keeps the callable the provider resolved, not a name to resolve again"
+    );
+    assert_eq!(
+        spelling, "helper",
+        "the head stays the spelling the call was written with; it is display data, not the target"
+    );
+
+    assert_eq!(
+        lowered_direct_callee(&bodies, run),
+        Some(helper),
+        "the caller lowers to the retained function itself"
+    );
+}
+
+/// The first quoted call under `cursor` that retains a callable, as its head
+/// spelling paired with the function it retained.
+fn retained_quoted_call(cursor: &crate::compiler2::QuotedSourceCursor) -> Option<(String, FunctionId)> {
+    use fz_runtime::any_value::ValueKind;
+    if let Some(node) = cursor.trusted_ast_node().ok().flatten()
+        && let Ok(Some(function)) = node.meta.bound_callable()
+        && let Ok(spelling) = node.head.atom_name()
+    {
+        return Some((spelling, function));
+    }
+    let children = match cursor.root().tag() {
+        ValueKind::LIST => cursor.list_items().ok()?,
+        ValueKind::STRUCT => cursor.tuple_items().ok()?,
+        _ => return None,
+    };
+    children.iter().find_map(retained_quoted_call)
+}
+
+/// Macro classification asks the retained callable what it is. The provider's
+/// macro quotes a call to another of its own macros, and that inner macro
+/// quotes a call to a provider function; no caller can see either name, and a
+/// caller that binds the provider's module name to a decoy cannot redirect
+/// them.
+#[test]
+fn a_quoted_macro_keeps_its_provider() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("quoted_macro_keeps_its_provider.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/quoted_macro_keeps_its_provider.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "a quoted macro head expands where it is inserted");
+
+    // Two modules define `bump/1` and two define `run/1`, so each subject is
+    // named by its owner rather than by spelling alone.
+    let owned = |module: &str, name: &str, arity: u64| {
+        use crate::compiler2::identity::FunctionOrigin;
+        functions
+            .all()
+            .into_iter()
+            .find(|record| {
+                record.function_ref.is_named(name)
+                    && record.arity == arity
+                    && matches!(
+                        &record.function_ref.denotation.origin,
+                        FunctionOrigin::Named {
+                            module: Some(ModuleDenotation::Named(owner)),
+                            ..
+                        } if owner.last_segment() == module
+                    )
+            })
+            .map(|record| record.function_id)
+    };
+    let provider_bump = owned("FutureMacros", "bump", 1).expect("the provider's bump/1");
+    for caller in ["App", "Shadowed"] {
+        let run = owned(caller, "run", 1).unwrap_or_else(|| panic!("{caller}'s run/1"));
+        assert_eq!(
+            lowered_direct_callee(&bodies, run),
+            Some(provider_bump),
+            "{caller} expands the provider's inner/1 and lands on the provider's bump/1"
+        );
+    }
+    assert_eq!(
+        owned("Decoy", "bump", 1),
+        None,
+        "the decoy's same-named function is never referenced"
+    );
+    assert!(
+        compiler.run_root_interp(root).is_ok(),
+        "both of the fixture's assertions hold"
+    );
+}
+
+/// A guard helper whose body came from a quote reifies like any other. The
+/// reader that decides what a guard dispatches on has to recognise a retained
+/// callable as a call; one that knows only source spellings finds no callee and
+/// calls the helper impure.
+#[test]
+fn a_quoted_guard_helper_reifies_its_retained_callable() {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let guards = GuardDispatchCapture::new();
+    guards.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("quoted_guard_helper_keeps_its_provider.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/quoted_guard_helper_keeps_its_provider.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "a quoted guard helper is reifiable");
+    assert!(
+        guards.take(function_id(&functions, "small?", 1)).is_some(),
+        "the spliced helper reified into guard dispatch, rather than being called impure: {:?}",
+        diagnostics.find(&["fz", "diag"]),
+    );
+    assert!(
+        compiler.run_root_interp(root).is_ok(),
+        "both of the fixture's assertions hold"
     );
 }

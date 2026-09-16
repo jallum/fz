@@ -247,9 +247,15 @@ pub(crate) trait QuotedExpansionCtx {
                 })?;
             return Ok(Some(ExpandedValue::Complete(rebuilt)));
         }
+        let bound = read_bound_callable(node).map_err(|error| {
+            emit_internal_surface_error(
+                self.telemetry(),
+                format!("quoted call classification read failed: {error}"),
+            )
+        })?;
         let symbol = {
             let world = self.world();
-            world.lookup_callable_namespace(scope.namespace(), &head, args.len())
+            call_node_symbol(world, bound, scope, &head, args.len())
         };
         let Some(symbol) = symbol else {
             return Ok(None);
@@ -878,6 +884,31 @@ fn remote_macro_not_required(
             span,
         ),
     )
+}
+
+/// The callable a call node retained, if it retained one.
+fn read_bound_callable(node: &QuotedAstNode) -> Result<Option<FunctionId>, QuotedSourceError> {
+    node.meta.bound_callable()
+}
+
+/// The symbol a call node names.
+///
+/// A retained callable settles which function the call names, and its kind is
+/// then asked of that exact function; the head spelling is only consulted when
+/// nothing was retained. Every reader that classifies a call asks here, so the
+/// expander and the item-macro boundary cannot disagree about whose macro a
+/// head is.
+fn call_node_symbol(
+    world: &mut World,
+    bound: Option<FunctionId>,
+    scope: ScopeSnapshot,
+    head: &str,
+    arity: usize,
+) -> Option<NamespaceSymbol> {
+    match bound {
+        Some(function) => world.retained_callable_symbol(function),
+        None => world.lookup_callable_namespace(scope.namespace(), head, arity),
+    }
 }
 
 fn item_macro_not_defmacro(

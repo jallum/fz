@@ -25,6 +25,32 @@ pub struct CallableName {
     pub name: String,
 }
 
+/// What a call's callee names.
+///
+/// This is the one enumeration of callee shapes. Every reader that needs a
+/// call's target — body lowering, guard collection, guard reification, and the
+/// guard capture walk — asks here, so they cannot disagree about which shapes
+/// are calls. A `Name` is source spelling the lexical resolver still has to
+/// interpret; a `Bound` callee was resolved where it was written and names its
+/// function outright.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Callee {
+    Name(CallableName),
+    Bound(crate::compiler2::FunctionId),
+}
+
+impl Callee {
+    /// The callee a call on `expr` with `arity` arguments names, or `None`
+    /// when the target is not a name at all.
+    pub fn for_call(expr: &Expr, arity: usize) -> Option<Self> {
+        match expr {
+            Expr::BoundFunction(function) => Some(Self::Bound(*function)),
+            Expr::FnRef { name, arity: declared } => (*declared == arity).then(|| Self::Name(name.clone())),
+            _ => CallableName::from_expr(expr).map(Self::Name),
+        }
+    }
+}
+
 impl CallableName {
     pub fn source(name: impl Into<String>) -> Self {
         Self {
@@ -145,6 +171,12 @@ pub enum Expr {
     /// A resolved module alias supplied by compiler reflection. Display
     /// segments are not retained as a second semantic authority.
     Module(ModuleDenotation),
+
+    /// The one callable a quoted call was resolved to, as that call's callee.
+    /// Source spelling never produces this: the quoted-source reader mints it
+    /// from the classification stamped where the call was quoted, so the call
+    /// lowers to that exact function without consulting any name.
+    BoundFunction(crate::compiler2::FunctionId),
 
     /// Explicit function reference: `&name/arity` (fz-swt.5).
     /// `name` may be dotted (`Mod.fun`). Lowers to a thin `Prim::MakeFnRef`

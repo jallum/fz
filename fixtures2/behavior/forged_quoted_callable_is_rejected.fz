@@ -1,0 +1,27 @@
+#---
+# purpose: "a compiler-minted callable classification a macro wrote by hand names no function"
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+#
+# # forged_quoted_callable_is_rejected
+#
+# The classification quote lowering stamps on a call travels as an entry of the
+# node's visible metadata map, so a macro building raw AST can write the key
+# itself. What it cannot write is a callable: the entry carries this world's
+# coordinate for a function, and the reader asks the world about that
+# coordinate before anything is lowered against it.
+#
+# A coordinate outside the function space names nothing and is refused here.
+# A coordinate that lands on a real function is still checked for arity and for
+# being a function at all, but the world has no way to ask whether the macro was
+# entitled to name it; that is what moving the carrier out of the visible
+# entries settles.
+#
+defmacro forge(x) do
+  {:a, %{__fz_bound__: 4000000000}, [x]}
+end
+
+def main() do
+  forge(1)
+end

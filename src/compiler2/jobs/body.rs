@@ -8,7 +8,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    AfterClause, BitField, BitSize, CallableName, Expr, FnClause, LambdaClause, MatchClause, Pattern, Spanned,
+    AfterClause, BitField, BitSize, CallableName, Callee, Expr, FnClause, LambdaClause, MatchClause, Pattern, Spanned,
     WithBinding,
 };
 use crate::diag::Diagnostic;
@@ -701,6 +701,7 @@ fn collect_local_dispatch_requirements(
         Expr::Lambda { .. } => {}
         Expr::CaptureArg(_)
         | Expr::Module(_)
+        | Expr::BoundFunction(_)
         | Expr::FnRef { .. }
         | Expr::Var(_)
         | Expr::Int(_)
@@ -1105,6 +1106,7 @@ fn collect_unquote_dispatch_requirements(
         }
         Expr::Lambda { .. }
         | Expr::Module(_)
+        | Expr::BoundFunction(_)
         | Expr::CaptureArg(_)
         | Expr::FnRef { .. }
         | Expr::Var(_)
@@ -1229,13 +1231,20 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
             }
             Expr::Call(callee, args) => {
                 let values = args.iter().map(|arg| self.lower(arg)).collect::<Result<Vec<_>, _>>()?;
-                if let Expr::Var(name) = &callee.node {
-                    let name = self.quoted_callable_name(name, values.len());
-                    self.lower_atom_node(&name, values, expr.span)
-                } else {
-                    let head = self.lower(callee)?;
-                    let tail = self.push_list(values, None);
-                    Ok(self.push_ast_node(head, tail, expr.span))
+                match &callee.node {
+                    Expr::Var(name) => {
+                        let bound = self.resolve_quoted_callable(name, values.len());
+                        Ok(self.lower_call_node(name, bound, values, expr.span))
+                    }
+                    Expr::BoundFunction(function) => {
+                        let spelling = self.lowerer.world.function_ref(*function).display_name();
+                        Ok(self.lower_call_node(&spelling, Some(*function), values, expr.span))
+                    }
+                    _ => {
+                        let head = self.lower(callee)?;
+                        let tail = self.push_list(values, None);
+                        Ok(self.push_ast_node(head, tail, expr.span))
+                    }
                 }
             }
             Expr::BinOp(op, left, right) => {
@@ -1282,6 +1291,7 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
             }
             Expr::Index(base, key) => self.lower_index(base, key, expr.span),
             Expr::Quote(_)
+            | Expr::BoundFunction(_)
             | Expr::FnRef { .. }
             | Expr::Capture(_)
             | Expr::CaptureArg(_)
@@ -1304,33 +1314,20 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
         }
     }
 
-    fn quoted_callable_name(&mut self, name: &str, arity: usize) -> String {
-        if name.contains('.') {
-            return name.to_string();
-        }
-        let Some(symbol) = self
+    /// The callable this quoted call names here, where the quote is written.
+    /// `None` leaves the call unclassified, to be resolved in whatever context
+    /// the quoted syntax is inserted into.
+    fn resolve_quoted_callable(&mut self, name: &str, arity: usize) -> Option<FunctionId> {
+        match self
             .lowerer
             .world
-            .lookup_callable_namespace(self.lowerer.namespace, name, arity)
-        else {
-            return name.to_string();
-        };
-        let function = match symbol {
+            .lookup_callable_namespace(self.lowerer.namespace, name, arity)?
+        {
             NamespaceSymbol::Function(function)
             | NamespaceSymbol::Macro(function)
-            | NamespaceSymbol::Callable(function) => function,
-            NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) | NamespaceSymbol::Splice(_) => {
-                return name.to_string();
-            }
-        };
-        let module = self.lowerer.world.function_module(function);
-        if module.is_global() {
-            return name.to_string();
+            | NamespaceSymbol::Callable(function) => Some(function),
+            NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) | NamespaceSymbol::Splice(_) => None,
         }
-        let Some(module_name) = self.lowerer.world.module_name(module) else {
-            return name.to_string();
-        };
-        format!("{module_name}.{name}")
     }
 
     fn lower_variable(&mut self, name: &str, span: Span) -> Result<ValueId, FatalError> {
@@ -1412,6 +1409,42 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
         let head = self.lowerer.push_const(self.steps, GroundValue::Atom(name.to_string()));
         let tail = self.push_list(args, None);
         Ok(self.push_ast_node(head, tail, span))
+    }
+
+    /// A call node whose head is display spelling and whose metadata retains
+    /// the callable, when the call was classified here.
+    fn lower_call_node(
+        &mut self,
+        spelling: &str,
+        bound: Option<FunctionId>,
+        args: Vec<ValueId>,
+        span: Span,
+    ) -> ValueId {
+        let head = self
+            .lowerer
+            .push_const(self.steps, GroundValue::Atom(spelling.to_string()));
+        let tail = self.push_list(args, None);
+        let entries = self.bound_callable_entries(bound);
+        let meta = self.push_meta(span, entries);
+        self.push_tuple(vec![head, meta, tail])
+    }
+
+    fn bound_callable_entries(&mut self, bound: Option<FunctionId>) -> Vec<(LoweredMapKey, ValueId)> {
+        let Some(function) = bound else {
+            return Vec::new();
+        };
+        let literal = GroundValue::Atom(super::super::source::META_BOUND_CALLABLE_KEY.to_string());
+        let key = self.lowerer.push_const(self.steps, literal.clone());
+        let coordinate = self
+            .lowerer
+            .push_const(self.steps, GroundValue::Int(i64::from(function.as_u32())));
+        vec![(
+            LoweredMapKey {
+                value: key,
+                literal: Some(literal),
+            },
+            coordinate,
+        )]
     }
 
     fn push_ast_node(&mut self, head: ValueId, tail: ValueId, span: Span) -> ValueId {
@@ -1831,12 +1864,12 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             Expr::Call(target, args) => {
                 let lowered_args = self.lower_call_args(args, env, steps)?;
                 let callsite = self.fresh_callsite(expr.span);
-                if let Some(name) = direct_call_name(target, env) {
+                if let Some(callee) = direct_callee(target, args.len(), env) {
                     let value = self.fresh_value();
                     steps.push(ExprStep::DirectCall {
                         value,
                         callsite,
-                        callee: self.resolve_callable_name(&name, args.len(), target.span, "direct runtime callee")?,
+                        callee: self.resolve_callee(&callee, args.len(), target.span, "direct runtime callee")?,
                         args: lowered_args,
                     });
                     return Ok(value);
@@ -1969,6 +2002,14 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                     expr.span,
                 ),
             )),
+            Expr::BoundFunction(_) => Err(emit_job_diagnostic(
+                self.telemetry,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    "a retained callable is a call's callee, not a value".to_string(),
+                    expr.span,
+                ),
+            )),
             Expr::Capture(_) | Expr::CaptureArg(_) => Err(emit_job_diagnostic(
                 self.telemetry,
                 Diagnostic::error(
@@ -1980,9 +2021,96 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         }
     }
 
+    /// The callable a quoted call retained, once this world confirms it can be
+    /// called here. Nothing consults a name: the target was chosen where the
+    /// call was quoted. What is checked is what the world knows about that
+    /// exact function — that it exists, that the call supplies its arity, that
+    /// it is a function rather than a macro, and, when nothing has declared it
+    /// yet, that its module owes an export.
+    fn retained_callee(&mut self, function: FunctionId, arity: usize, span: Span) -> Result<FunctionId, FatalError> {
+        let Some(symbol) = self.world.retained_callable_symbol(function) else {
+            return Err(emit_job_diagnostic(
+                self.telemetry,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    "quoted call retains a callable this compiler does not know".to_string(),
+                    span,
+                ),
+            ));
+        };
+        let declared = self.world.function_ref(function).arity;
+        let supplies_arity = if self.world.function_variadic(function) {
+            arity >= declared
+        } else {
+            arity == declared
+        };
+        if !supplies_arity {
+            return Err(self.retained_callee_error(function, span, format!("supplies {arity} arg(s)")));
+        }
+        match symbol {
+            NamespaceSymbol::Function(function) => Ok(function),
+            NamespaceSymbol::Macro(_) => {
+                Err(self.retained_callee_error(function, span, "is a macro and expands, it is not called".to_string()))
+            }
+            // Nothing has declared this function and its module has published
+            // no interface. The name path would have recorded an expectation
+            // here, and so does this one: an owner that never exports it is a
+            // diagnostic at the interface boundary, not a silent placeholder.
+            NamespaceSymbol::Callable(function) => {
+                self.expect_retained_export(function, span);
+                Ok(function)
+            }
+            NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) | NamespaceSymbol::Splice(_) => {
+                Err(self.retained_callee_error(function, span, "is not a callable".to_string()))
+            }
+        }
+    }
+
+    fn retained_callee_error(&self, function: FunctionId, span: Span, complaint: String) -> FatalError {
+        let label = self.world.function_ref(function).label();
+        emit_job_diagnostic(
+            self.telemetry,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("quoted call retains `{label}`, which {complaint}"),
+                span,
+            ),
+        )
+    }
+
+    /// Records that the retained callee's module owes this export, the same
+    /// obligation `resolve_module_callee` records for a name.
+    fn expect_retained_export(&mut self, function: FunctionId, span: Span) {
+        let reference = self.world.function_ref(function);
+        let module = reference.module;
+        let name = reference.name().to_string();
+        let arity = reference.arity;
+        let requester = self.interface_requester(span);
+        self.world.reference_module_interface_callable(
+            module,
+            name,
+            arity,
+            InterfaceCallableKind::PublicFunction,
+            Some(requester),
+        );
+    }
+
     fn resolve_direct_callee(&mut self, name: &str, arity: usize, span: Span) -> Result<FunctionId, FatalError> {
         let function = self.resolve_runtime_function(name, arity, span, "direct runtime callee")?;
         Ok(function)
+    }
+
+    fn resolve_callee(
+        &mut self,
+        callee: &Callee,
+        arity: usize,
+        span: Span,
+        context: &str,
+    ) -> Result<FunctionId, FatalError> {
+        match callee {
+            Callee::Bound(function) => self.retained_callee(*function, arity, span),
+            Callee::Name(name) => self.resolve_callable_name(name, arity, span, context),
+        }
     }
 
     fn resolve_callable_name(
@@ -2562,8 +2690,8 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             world: self.world,
             namespace,
             owner: self.source.owner_module,
-            guard: |world: &mut World, name: &CallableName, arity: usize| {
-                let callee = resolve_guard_callee_checked(world, namespace, name, arity);
+            guard: |world: &mut World, callee: &Callee, arity: usize| {
+                let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
                 Ok(Some(world.guard_dispatch(callee)))
             },
         };
@@ -4491,6 +4619,7 @@ fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut 
         | Expr::Bool(_)
         | Expr::Nil
         | Expr::Module(_)
+        | Expr::BoundFunction(_)
         | Expr::FnRef { .. }
         | Expr::CaptureArg(_) => {}
         Expr::Capture(body) => collect_expr_free_names(&body.node, bound, free),
@@ -4786,6 +4915,7 @@ fn expr_name(expr: &Expr) -> &'static str {
         Expr::Var(_) => "Var",
         Expr::FnRef { .. } => "FnRef",
         Expr::Module(_) => "Module",
+        Expr::BoundFunction(_) => "BoundFunction",
         Expr::Capture(_) => "Capture",
         Expr::CaptureArg(_) => "CaptureArg",
         Expr::List(_, _) => "List",
@@ -4847,7 +4977,11 @@ fn quoted_unop_atom(op: crate::ast::UnOp) -> &'static str {
     }
 }
 
-fn direct_call_name(expr: &Spanned<Expr>, env: &HashMap<String, ValueId>) -> Option<CallableName> {
+/// The callable this call target names, unless a local of that name shadows it.
+///
+/// Which shapes name a callable is [`Callee`]'s question; the only thing added
+/// here is that a bound local wins over a same-spelled definition.
+fn direct_callee(expr: &Spanned<Expr>, arity: usize, env: &HashMap<String, ValueId>) -> Option<Callee> {
     let mut current = &expr.node;
     loop {
         match current {
@@ -4857,14 +4991,14 @@ fn direct_call_name(expr: &Spanned<Expr>, env: &HashMap<String, ValueId>) -> Opt
                 }
                 break;
             }
-            Expr::Module(_) => break,
+            Expr::Module(_) | Expr::BoundFunction(_) => break,
             Expr::Index(target, _) => {
                 current = &target.node;
             }
             _ => return None,
         }
     }
-    CallableName::from_expr(&expr.node)
+    Callee::for_call(&expr.node, arity)
 }
 
 fn direct_operator_name(op: crate::ast::BinOp) -> Option<&'static str> {

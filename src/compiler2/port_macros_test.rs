@@ -1,5 +1,5 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
-use super::drive_test::assert_resolved;
+use super::drive_test::{FunctionCapture, LoweredBodyCapture, assert_resolved, function_id, lowered_direct_callee};
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -204,16 +204,20 @@ fn macro_hygiene_consistent_gensym_within_invocation() {
     // TODO: JIT-execute and assert result == 42 (t__hyg_N = 21; t__hyg_N + t__hyg_N = 42)
 }
 
-// Ported from src/frontend/macros_test.rs: cross-module macro expansion qualifies bare names against home module
+// Ported from src/frontend/macros_test.rs: a macro's quoted call keeps its home module's callable
 #[test]
 fn cross_module_macro_qualifies_names_against_home_module() {
     let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00120_cross_module_macro.fz".to_string()),
         text: include_str!("../../fixtures2/00120_cross_module_macro.fz").to_string(),
     });
-    compiler.submit_root(RootSubmission {
+    let root = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
         arity: 0,
@@ -223,7 +227,12 @@ fn cross_module_macro_qualifies_names_against_home_module() {
         compiler.drive(),
         "cross-module macro qualifying bare names should resolve",
     );
-    // TODO: JIT-execute and assert result == 107 (M.bump(7) expands to M.helper(7) = 7+100 = 107)
+    assert_eq!(
+        lowered_direct_callee(&bodies, function_id(&functions, "run", 0)),
+        Some(function_id(&functions, "helper", 1)),
+        "`M.bump(7)` expands to the `helper/1` M resolved, not to a name User resolves again"
+    );
+    assert_eq!(compiler.run_root_interp(root), Ok(107), "7 + 100");
 }
 
 // Ported from src/frontend/macros_test.rs: imported macro is callable unqualified in importing module

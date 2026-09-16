@@ -4665,7 +4665,7 @@ mod tests {
     }
 
     fn fake_executable_in(types: &mut super::super::Types, root: RootId, function: u32) -> ExecutableKey {
-        let function = super::super::FunctionId::for_test(function);
+        let function = super::super::FunctionId::from_coordinate(function);
         let activation = super::super::ActivationKey::from_inputs(root, function, &[], types);
         ExecutableKey {
             activation,
@@ -4677,7 +4677,7 @@ mod tests {
         let mut types = super::super::Types::new();
         let _ = super::super::ActivationKey::from_inputs(
             RootId::for_test(0),
-            super::super::FunctionId::for_test(0),
+            super::super::FunctionId::from_coordinate(0),
             &[],
             &mut types,
         );
@@ -5012,7 +5012,7 @@ mod tests {
         let replacement_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 354));
         let mut world = World::new();
         let callable = world.intern_callable(super::super::transport::CallableDescr {
-            function: Some(FunctionId::for_test(355)),
+            function: Some(FunctionId::from_coordinate(355)),
             arity: 0,
             capture_layouts: Box::default(),
         });

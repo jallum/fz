@@ -17,7 +17,9 @@ use crate::telemetry::TelemetryExt as _;
 
 use super::code::SourceOwner;
 use super::drive::{FactKey, JobEffects, current_uses};
-use super::identity::{FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource, TypeName};
+use super::identity::{
+    DeclaredCallableKind, FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource, TypeName,
+};
 use super::module_interface::{InterfaceCallableKind, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable};
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
@@ -622,14 +624,14 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         for form in forms {
             match form {
                 ScopeForm::Function(function) => {
-                    let function_id =
-                        self.world
-                            .reference_function(self.current_module, function.name.clone(), function.arity);
-                    let symbol = if function.is_macro {
-                        NamespaceSymbol::Macro(function_id)
-                    } else {
-                        NamespaceSymbol::Function(function_id)
-                    };
+                    let kind = declared_callable_kind(function.is_macro);
+                    let function_id = self.world.reference_declared_callable(
+                        self.current_module,
+                        function.name.clone(),
+                        function.arity,
+                        kind,
+                    );
+                    let symbol = kind.namespace_symbol(function_id);
                     self.local_callables
                         .insert((function.name.clone(), function.arity), symbol.clone());
                     self.namespace = self.world.bind_namespace(self.namespace, function.name.clone(), symbol);
@@ -671,12 +673,11 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                     };
                     match definition {
                         ReservedSourceDefinition::Function { name, arity, is_macro } => {
-                            let function_id = self.world.reference_function(self.current_module, name.clone(), arity);
-                            let symbol = if is_macro {
-                                NamespaceSymbol::Macro(function_id)
-                            } else {
-                                NamespaceSymbol::Function(function_id)
-                            };
+                            let kind = declared_callable_kind(is_macro);
+                            let function_id =
+                                self.world
+                                    .reference_declared_callable(self.current_module, name.clone(), arity, kind);
+                            let symbol = kind.namespace_symbol(function_id);
                             self.local_callables.insert((name.clone(), arity), symbol.clone());
                             self.namespace = self.world.bind_namespace(self.namespace, name, symbol);
                         }
@@ -1589,6 +1590,14 @@ fn module_info_match_clause(
     builder.call("->", meta, &[patterns, body])
 }
 
+fn declared_callable_kind(is_macro: bool) -> DeclaredCallableKind {
+    if is_macro {
+        DeclaredCallableKind::Macro
+    } else {
+        DeclaredCallableKind::Function
+    }
+}
+
 fn required_remote_macro_list(required_remote_macros: &HashSet<FunctionId>) -> Vec<FunctionId> {
     let mut macros = required_remote_macros.iter().copied().collect::<Vec<_>>();
     macros.sort_by_key(|function| function.as_u32());
@@ -1617,7 +1626,12 @@ fn publish_function_source(
     export_public: bool,
     required_remote_macros: Vec<FunctionId>,
 ) -> FunctionPublication {
-    let function_id = world.reference_function(function_module, function.name.clone(), function.arity);
+    let function_id = world.reference_declared_callable(
+        function_module,
+        function.name.clone(),
+        function.arity,
+        declared_callable_kind(function.is_macro),
+    );
     // Stash the body eagerly but leave it cold: the consumable `FunctionSource`
     // fact is minted only when a reached consumer pulls it through
     // `PublishFunctionSource` (fz-f98.14.5). The interface — the callable below,
