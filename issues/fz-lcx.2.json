@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-lcx.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-lcx.3"
+  ],
   "created": "2026-09-16T09:52:21Z",
   "description": "Port the established tools/distill-telemetry.exs reporting contract to fz. Accept a trace path and optional top limit, read JSONL through File and Json, validate the stream loudly, and emit deterministic human-readable analysis.",
   "id": "fz-lcx.2",
