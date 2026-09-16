@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-kdt.98.1"
-  ],
+  "blocked_by": [],
   "blocks": [],
   "created": "2026-09-16T01:36:19Z",
   "description": "The call graph's edge fact is StaticCallees(f), derived from the lowered body alone, so a call through a value (LoweredTail::ClosureCall) contributes no edge even after AnalyzeActivation has resolved its targets (CallSiteTargets per activation). Witness: loop(f, n) calling f.(f, n - 1), entered as loop(\u0026loop/2, 3), is recursion the graph never sees; Recursive(loop) is false and the transport cut's one-way reachability question cannot find the owner. Replace StaticCallees with one cumulative per-function edge fact: the body's contribution (direct calls and constructions) plus, from every analysis of one of f's activations, the value-call targets it resolved, using the existing contribution discipline (accumulate on extend, replace on conclude, retraction frontier). DeriveCallGraphComponent and the transport cut walk that one fact; the StaticCallees concept and its separate derivation fold into it. Recursive may flip false to true mid-compile when a value call resolves; callers re-key through the Recursive(callee) read they hold. Proof: the witness keys as recursive on both doors, artifacts byte-identical under permuted submission orders, no orphan activation keys after the flip, corpus canon compared against base. Second commit of fz-kdt.98; closes the hole the ticket describes.",
@@ -13,5 +11,5 @@
   "status": "open",
   "title": "One cumulative call-graph edge fact: body edges plus the value-call targets each analysis resolves",
   "type": "task",
-  "updated_at": "2026-09-16T01:36:20Z"
+  "updated_at": "2026-09-16T02:07:05Z"
 }
