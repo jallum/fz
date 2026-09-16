@@ -324,13 +324,22 @@ impl Descr {
         out
     }
 
-    pub(super) fn as_pure_list(&self, _cx: TyCtx<'_>) -> Option<&ListSig> {
-        self.axis_free()
-            .then_some(())
-            .and_then(|_| single_positive(&self.lists))
-            .filter(|_| {
-                self.tuples.is_empty() && self.resources.is_empty() && self.funcs.is_empty() && self.maps.is_empty()
-            })
+    /// This type read as ONE list signature, when it is purely a list and
+    /// nothing else.
+    ///
+    /// `any_ty` is the caller's interned `any`, and it is what the axis TOP is
+    /// read as: `types::axis` writes every axis's top as the clause with no
+    /// factors, so the widest list carries no sig for this to borrow and the
+    /// widest one has to be built. Every other clause shape answers from what
+    /// it stores.
+    pub(super) fn as_pure_list(&self, any_ty: Ty) -> Option<ListSig> {
+        self.pure_axis(&self.lists, || ListSig {
+            empty: true,
+            elem: Some(any_ty),
+        })
+        .filter(|_| {
+            self.tuples.is_empty() && self.resources.is_empty() && self.funcs.is_empty() && self.maps.is_empty()
+        })
     }
 
     /// True when this type is purely the list FAMILY — one or more list
@@ -403,13 +412,31 @@ impl Descr {
             })
     }
 
-    pub(super) fn pure_resource(&self) -> Option<&ResourceSig> {
-        self.axis_free()
-            .then_some(())
-            .and_then(|_| single_positive(&self.resources))
+    /// This type read as ONE resource signature. `any_ty` spells the axis top's
+    /// payload, for the reason [`as_pure_list`](Self::as_pure_list) states.
+    pub(super) fn pure_resource(&self, any_ty: Ty) -> Option<ResourceSig> {
+        self.pure_axis(&self.resources, || ResourceSig { payload: any_ty })
             .filter(|_| {
                 self.tuples.is_empty() && self.lists.is_empty() && self.funcs.is_empty() && self.maps.is_empty()
             })
+    }
+
+    /// One axis's single clause read as one signature: the sig it stores, or
+    /// `widest` where the clause is the axis's top and stores none.
+    ///
+    /// Only the list and resource axes have a `widest` to name. Every tuple is
+    /// not one `TupleSig` (arity is unbounded), every map is not one `MapSig`
+    /// (tags are), and every callable is not one `ArrowSig`, so the tuple, map
+    /// and arrow readers below answer `None` for their axis top and are right
+    /// to.
+    fn pure_axis<T: Clone>(&self, clauses: &[Conj<T>], widest: impl FnOnce() -> T) -> Option<T> {
+        if !self.axis_free() {
+            return None;
+        }
+        match clauses {
+            [clause] if clause.is_top() => Some(widest()),
+            _ => single_positive(clauses).cloned(),
+        }
     }
 
     pub(super) fn pure_arrow(&self) -> Option<&ArrowSig> {
@@ -479,6 +506,43 @@ impl Descr {
         self.brands.is_none() || self.structure_looks_empty()
     }
 
+    /// Whether this descriptor denotes EVERY value.
+    ///
+    /// [`looks_full`](Self::looks_full) proves it structurally and answers
+    /// almost every ask, but it is INCOMPLETE: an axis can denote its whole
+    /// kind without being written as its top. The callable axis is the one
+    /// intern leaves unabsorbed (`types::axis` says why), so
+    /// `(int) -> int ∨ ¬((int) -> int)` is every callable in two clauses, and
+    /// a descriptor carrying it is `any` that does not look full. The semantic
+    /// check behind it is reached only for a descriptor that already meets
+    /// every necessary condition — every scalar axis saturated and every
+    /// structural axis inhabited — which keeps the negation it costs off the
+    /// common path. It mints nothing: the question is asked of descriptors.
+    ///
+    /// This is the ONE implementation of "is this everything". A structural
+    /// answer alone reports a false difference wherever the two spellings of
+    /// `any` diverge, and both the axis absorber and the canonical rendering
+    /// ask it.
+    pub(super) fn is_full(&self, cx: TyCtx<'_>) -> bool {
+        if self.looks_full() {
+            return true;
+        }
+        let saturated = self.basic == BasicBits::ALL
+            && self.atoms.is_any()
+            && self.opaques.is_any()
+            && self.brands.is_any()
+            && self.vars.is_any()
+            && !self.tuples.is_empty()
+            && !self.lists.is_empty()
+            && !self.resources.is_empty()
+            && !self.funcs.is_empty()
+            && !self.maps.is_empty();
+        saturated && Descr::any().is_subtype(cx, self)
+    }
+
+    /// The structural half of [`is_full`](Self::is_full): every axis written as
+    /// its top. Sound, never complete — ask `is_full` unless the caller wants
+    /// the spelling rather than the denotation.
     pub(super) fn looks_full(&self) -> bool {
         self.basic == BasicBits::ALL
             && self.atoms.is_any()

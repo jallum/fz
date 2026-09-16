@@ -373,8 +373,12 @@ end
 }
 
 /// Every closure literal has a typed origin shared by the function interner.
-/// A missing origin could silently fall back to storage's standalone raw-id
-/// order. World registers at both mint sites, before any literal can name it.
+/// The ACTIVATION order demands one — `ClauseOrder::cmp_callable` expects it
+/// outright, and asserts two distinct callables have distinct origins — so a
+/// missing registration is a panic on an activation surface, not a quiet
+/// fallback. World registers at both mint sites, before any literal can name
+/// one. (Storage order reads no origin at all; that is what lets the interner
+/// answer from its index.)
 #[test]
 fn every_closure_literal_has_a_registered_origin() {
     for (name, text) in TARGETS {
@@ -382,7 +386,7 @@ fn every_closure_literal_has_a_registered_origin() {
         let unregistered = compiler.world().types().unregistered_callables();
         assert!(
             unregistered.is_empty(),
-            "{name}: closure literals over unregistered callables {unregistered:?} would order by raw FnId"
+            "{name}: closure literals over unregistered callables {unregistered:?} have no activation order"
         );
     }
 }

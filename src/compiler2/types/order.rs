@@ -46,21 +46,47 @@
 //! sort canonical — if two DIFFERENT clauses could tie, the sort would leave
 //! them in arrival order and hand the schedule its dependence right back.
 //!
+//! # Why storage order reads nothing outside the descriptor
+//!
+//! The storage relation is a function of the descriptor's own bytes and the
+//! ids it names, and of nothing else. That is what lets the interner trust its
+//! index: a descriptor already in the index was normalized once, and because
+//! nothing the normal form depends on can change afterwards, the id it was
+//! given then is still the id it would be given now. So a hit is answered
+//! without normalizing at all.
+//!
+//! The one place that could have broken it is the closure literal. A callable
+//! can be interned before its owner exists, and `Types::define_callable_origin`
+//! registers the typed origin later; ordering two literals by their registered
+//! origins would make the stored clause order — and with it the descriptor's
+//! normal form — move the moment a registration landed, so one denotation
+//! would take one id before the registration and another after. Storage
+//! therefore orders two literals by `FnId` alone. `for_activation` keeps the
+//! origin order, and it can: it runs only over activation surfaces, where
+//! every literal's origin is registered and asserted to be.
+//!
+//! [`OrderPurpose`] is what holds that apart: the registration map lives in
+//! the `Activation` variant, so the storage relation has no origins in hand
+//! and could not read one if a future comparison wanted to.
+//!
+//! What that costs is stated plainly: the stored order of a funcs axis is the
+//! order its callables were minted in, not their source order. Nothing reads
+//! it as source order — canon sorts its own rendered clause texts, activation
+//! keys go through `cmp_activation_ty`, and every other reader folds or maps
+//! the axis rather than selecting by position.
+//!
 //! # Version stability, and the one residual
 //!
-//! A closure literal orders by its owner's shared typed source origin, never a
-//! rendered label or raw `FnId`. Named origins contain module/name/arity;
-//! generated origins contain their owner's origin and structural source occurrence.
-//! Unrelated functions and diagnostic-span changes cannot alter their order.
-//! Structural address vars likewise order by
-//! their `AddrStep` path rather than by the id interned for it.
+//! Structural address vars order by their `AddrStep` path rather than by the
+//! id interned for it, so a schedule flip cannot move them.
 //!
 //! The residual: a FREE type var (bit 31 clear — a closure-surface var, a
 //! resolver encounter var, a typedef param) has no structural name, so a tie
 //! broken by two free vars is broken by mint order, which is schedule-dependent.
-//! It is narrow — it decides an order only between two clauses that agree on
-//! everything up to a pair of free var ids — but it is real, and it is the one
-//! place this module cannot promise confluence.
+//! A closure literal's `FnId` is now a second such tie-break. Both are narrow
+//! — they decide an order only between clauses that agree on everything up to
+//! a pair of ids — but they are real, and they are where this module cannot
+//! promise confluence across arenas.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -76,9 +102,8 @@ use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{Ty, TyCtx, TypeVarId};
 
 /// The shared typed origin of every callable a closure literal can name, keyed
-/// by the `FnId` the literal carries. `World` registers it when minting ids;
-/// a `Types` built standalone (unit tests) leaves it empty and falls back to id
-/// order, which is deterministic within one instance but not across versions.
+/// by the `FnId` the literal carries. `World` registers it when minting ids.
+/// Only the activation relation reads it; storage order deliberately does not.
 pub(super) type CallableOrigins = HashMap<FnId, Arc<fz_runtime::function_denotation::FunctionDenotation>>;
 
 /// A signature that knows its own place in the canonical order. One impl per
@@ -89,21 +114,23 @@ trait OrderedSig: Sized {
 
 pub(super) struct ClauseOrder<'a> {
     cx: TyCtx<'a>,
-    origins: &'a CallableOrigins,
-    purpose: OrderPurpose,
+    purpose: OrderPurpose<'a>,
 }
 
+/// Which of the two relations this comparator is, and — for the activation
+/// one — the registration state it is allowed to read. Storage carries no
+/// origins at all, so the relation the interner's index depends on cannot
+/// reach registration state even by accident.
 #[derive(Clone, Copy)]
-enum OrderPurpose {
+enum OrderPurpose<'a> {
     Storage,
-    Activation,
+    Activation(&'a CallableOrigins),
 }
 
 impl<'a> ClauseOrder<'a> {
-    pub(super) fn new(cx: TyCtx<'a>, origins: &'a CallableOrigins) -> Self {
+    pub(super) fn new(cx: TyCtx<'a>) -> Self {
         Self {
             cx,
-            origins,
             purpose: OrderPurpose::Storage,
         }
     }
@@ -116,8 +143,7 @@ impl<'a> ClauseOrder<'a> {
     pub(super) fn for_activation(cx: TyCtx<'a>, origins: &'a CallableOrigins) -> Self {
         Self {
             cx,
-            origins,
-            purpose: OrderPurpose::Activation,
+            purpose: OrderPurpose::Activation(origins),
         }
     }
 
@@ -185,7 +211,7 @@ impl<'a> ClauseOrder<'a> {
     pub(super) fn cmp_tys(&self, a: &[Ty], b: &[Ty]) -> Ordering {
         match self.purpose {
             OrderPurpose::Storage => lex(a, b, |x, y| self.cmp_ty(*x, *y)),
-            OrderPurpose::Activation => lex_elements_first(a, b, |x, y| self.cmp_ty(*x, *y)),
+            OrderPurpose::Activation(_) => lex_elements_first(a, b, |x, y| self.cmp_ty(*x, *y)),
         }
     }
 
@@ -204,7 +230,7 @@ impl<'a> ClauseOrder<'a> {
     fn cmp_axis<T: OrderedSig>(&self, a: &[Conj<T>], b: &[Conj<T>]) -> Ordering {
         match self.purpose {
             OrderPurpose::Storage => lex(a, b, |x, y| self.cmp_conj(x, y)),
-            OrderPurpose::Activation => lex_elements_then_longer(a, b, |x, y| self.cmp_conj(x, y)),
+            OrderPurpose::Activation(_) => lex_elements_then_longer(a, b, |x, y| self.cmp_conj(x, y)),
         }
     }
 
@@ -229,7 +255,7 @@ impl<'a> ClauseOrder<'a> {
                 .cmp_lit(a.lit.as_ref(), b.lit.as_ref())
                 .then_with(|| self.cmp_tys(&a.args, &b.args))
                 .then_with(|| self.cmp_ty(a.ret, b.ret)),
-            OrderPurpose::Activation => self
+            OrderPurpose::Activation(_) => self
                 .cmp_tys(&a.args, &b.args)
                 .then_with(|| self.cmp_ty(a.ret, b.ret))
                 .then_with(|| self.cmp_lit(a.lit.as_ref(), b.lit.as_ref())),
@@ -253,37 +279,28 @@ impl<'a> ClauseOrder<'a> {
     }
 
     /// Activation identities order only by their registered typed origins.
-    /// Storage canonicalization retains its local-id fallback because types can
-    /// be interned before an owner exists; activation comparison asserts the
-    /// stronger owner contract instead of caching a mint-order tie-break.
+    /// Storage canonicalization orders by the id alone, which is the only
+    /// reading available to it: registration happens AFTER a literal can be
+    /// interned, so reading an origin here would make a stored clause order —
+    /// and with it a descriptor's normal form — change under the arena. The
+    /// storage relation holds no origins to read, so that is settled by the
+    /// type rather than by this match.
     fn cmp_callable(&self, a: FnId, b: FnId) -> Ordering {
         if a == b {
             return Ordering::Equal;
         }
-        if matches!(self.purpose, OrderPurpose::Activation) {
-            let a_origin = self
-                .origins
-                .get(&a)
-                .expect("activation callable has a registered origin");
-            let b_origin = self
-                .origins
-                .get(&b)
-                .expect("activation callable has a registered origin");
-            let order = a_origin.semantic_cmp(b_origin);
-            assert_ne!(
-                order,
-                Ordering::Equal,
-                "distinct activation callables must have distinct typed origins"
-            );
-            order
-        } else {
-            match (self.origins.get(&a), self.origins.get(&b)) {
-                (Some(x), Some(y)) => x.semantic_cmp(y).then_with(|| a.0.cmp(&b.0)),
-                (Some(_), None) => Ordering::Less,
-                (None, Some(_)) => Ordering::Greater,
-                (None, None) => a.0.cmp(&b.0),
-            }
-        }
+        let OrderPurpose::Activation(origins) = self.purpose else {
+            return a.0.cmp(&b.0);
+        };
+        let a_origin = origins.get(&a).expect("activation callable has a registered origin");
+        let b_origin = origins.get(&b).expect("activation callable has a registered origin");
+        let order = a_origin.semantic_cmp(b_origin);
+        assert_ne!(
+            order,
+            Ordering::Equal,
+            "distinct activation callables must have distinct typed origins"
+        );
+        order
     }
 
     fn cmp_map_sig(&self, a: &MapSig, b: &MapSig) -> Ordering {

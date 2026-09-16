@@ -45,20 +45,25 @@ canon(a) == canon(b)   iff   a and b are mutually subtype
 ```
 
 `Types::display` cannot serve, because it is not injective: it renders
-`list(int)` and `non_empty_list(int)` identically as `[int]`, and it renders
-each axis's saturated clause as the bare word `any`. For an equivalence oracle a
-false equivalence is far worse than a false difference, so the canonical form
-distinguishes every shape the lattice does — `empty_list()`, `list(T)` and
-`non_empty_list(T)` all render apart, and `tuple`/`list`/`fun`/`map`/`resource`
-name the five axis tops.
+`list(int)` and `non_empty_list(int)` identically as `[int]`, and it renders a
+clause from the factors it was built out of rather than from what it denotes.
+For an equivalence oracle a false equivalence is far worse than a false
+difference, so the canonical form distinguishes every shape the lattice does —
+`empty_list()`, `list(T)` and `non_empty_list(T)` all render apart. A clause
+with no factors denotes every value of ITS kind, which is not `any`, and both
+surfaces say so — canon names the five axis tops
+`tuple`/`list`/`fun`/`map`/`resource`, while `display` names each as the widest
+type a user could write where there is one (`[any]`, `resource(any)`).
 
 Getting there takes normalization, because one type has many descriptors. Each
 step below rewrites a descriptor to a semantically EQUAL one, which is what
 makes "same rendering implies equivalent" true by construction:
 
-- **saturate** — clauses that between them cover a whole axis collapse to that
-  axis's top. `(X) -> any` constrains nothing, so it denotes every callable
-  whatever `X` is;
+- **absorb the callable axis** — one call of the shared rule
+  (`types::axis`), which first collapses the axis to its top when its clauses
+  cover it between them (`(X) -> any` constrains nothing, so it denotes every
+  callable whatever `X` is) and otherwise drops every clause the union of the
+  survivors already covers;
 - **widen tuple coordinates** — replace coordinate *k* of a rectangle with the
   union of coordinate *k* across every same-arity rectangle, keeping the result
   only while it stays inside the axis union. This is what reconciles
@@ -69,24 +74,36 @@ makes "same rendering implies equivalent" true by construction:
   contained rectangle becomes the same rectangle with that coordinate
   subtracted, only when every coordinate is ground, so type-variable polarity
   and its runtime envelope remain unchanged;
-- **drop subsumed clauses** — a clause covered by the union of the survivors
-  adds nothing;
 - **normalize list clauses from their denotation** — a `ListSig` denotes `[]`
   plus lists over an element type, so `list(T) & not([])` and
   `non_empty_list(T)` are one thing and render as one thing;
 - **sort** — the axis lists this module BUILDS (widened rectangles, the clauses
-  left after its own drops) carry no canonical order, so their rendered texts
-  are sorted before they are joined. That is a presentation-boundary sort, the
-  one place sorting is free of consequence. Clause order and factor order
-  inside an interned descriptor are already canonical (`order.rs`), so nothing
-  here re-sorts them.
+  left after its own drops, and every axis of a synthesized `Descr`) carry no
+  canonical order, so their rendered texts are sorted before they are joined.
+  That is a presentation-boundary sort, the one place sorting is free of
+  consequence. Clause order and factor order inside an interned descriptor are
+  already canonical (`order.rs`), so nothing here re-sorts them.
 
-Dropping empty clauses is not among them, because it is one shared rule
-(`types::axis`) that `Types::intern` applies at the persistence boundary.
-Intern is that rule's authority; this module is its second caller, for the
-descriptors it builds ITSELF — a widened tuple coordinate, a list clause's
-intersected element fragment — which never reach the interner and would
-otherwise be rendered unswept.
+Dropping empty clauses, and absorbing the four DENOTATIONAL axes, are not
+among the steps above, because they are one shared rule (`types::axis`) that
+`Types::intern` applies at the persistence boundary. Intern is that rule's
+authority; this module is its second caller, for the descriptors it builds
+ITSELF — a widened tuple coordinate, a list clause's intersected element
+fragment — which never reach the interner and would otherwise be rendered
+unswept. Only the CALLABLE
+axis is absorbed here after the fact and nowhere else, for the reason
+`types/axis.rs` states: the boundary must leave that axis alone, while a
+rendering reads nothing back out of it.
+
+A synthesized descriptor's clause list carries the order its `Descr::union`
+folds produced, and absorption visits in index order, so two clauses that
+cover EACH OTHER — two carvings of one set, neither inside the other's
+containment rule — leave the survivor that position picked. The rendered parts
+are sorted, so the order itself never reaches the output; only the choice
+between two spellings of one set can. The one such pair reachable by
+construction, the axis's widest signature beside the contentless clause, is not
+a pair at all any more: the absorber rewrites an axis its clauses cover to the
+contentless clause, which is its one spelling.
 
 Normalization runs on DESCRIPTORS rather than on interned `Ty`s alone: widening
 builds descriptors that were never interned, and interning them would mutate the

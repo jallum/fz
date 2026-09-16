@@ -57,9 +57,14 @@ fn function_denotation_is_retained_across_new_functions_and_generated_sites() {
     ));
 }
 
+/// A function's typed origin carries module, name and NUMERIC arity, so two
+/// references to `same` order 2 before 10 whichever was minted first. The
+/// relation on types that reads this is the activation order; storage clause
+/// order deliberately reads no origin at all, and
+/// `types::types_test::normal_form_is_a_function_of_the_descriptor` holds both
+/// halves of that split.
 #[test]
-fn callable_order_reads_source_fields_and_numeric_arity_independent_of_mint_order() {
-    use crate::types::ClosureTarget;
+fn callable_origin_orders_by_source_fields_and_numeric_arity_independent_of_mint_order() {
     for reverse in [false, true] {
         let mut world = super::World::new();
         let arities = if reverse { [10, 2] } else { [2, 10] };
@@ -67,13 +72,6 @@ fn callable_order_reads_source_fields_and_numeric_arity_independent_of_mint_orde
         let (two, ten) = if reverse { (ids[1], ids[0]) } else { (ids[0], ids[1]) };
         assert_eq!(
             world.function_ref(two).semantic_cmp(world.function_ref(ten)),
-            std::cmp::Ordering::Less
-        );
-        let types = world.types_mut();
-        let two_ty = types.closure_lit(ClosureTarget(two.as_u32()), Vec::new(), 2);
-        let ten_ty = types.closure_lit(ClosureTarget(ten.as_u32()), Vec::new(), 10);
-        assert_eq!(
-            types.cmp_ty(two_ty, ten_ty),
             std::cmp::Ordering::Less,
             "typed numeric arity must not inherit the lexical order of rendered /10 and /2"
         );

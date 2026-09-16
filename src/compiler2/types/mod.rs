@@ -53,7 +53,7 @@ use closure_surface_var::{closure_ret_var_id, closure_var_id};
 use conj::Conj;
 use descr::Descr;
 use descr::OpaqueTag;
-use dnf::{dnf_intersect_with, list_clause_subsumed, tuple_clause_subsumed};
+use dnf::dnf_intersect_with;
 use sigs::{ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig};
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
@@ -75,9 +75,18 @@ impl Ty {
     }
 }
 
-#[derive(Default)]
 pub struct Types {
     interner: TypeInterner,
+    /// The id of `any`, interned when the store is built.
+    ///
+    /// `any` is a CONSTANT of the lattice, not a derived fact: the arena is
+    /// append-only and `Descr::any()` is its own normal form, so the id it is
+    /// given at construction is the id it has for the life of the store.
+    /// Holding it is what keeps `Types::any()` free — the readers that project
+    /// a list or resource axis top ask for it once per recursion step, and
+    /// rebuilding `Descr::any()` to look it up allocates five clause vectors
+    /// to find something the arena already has.
+    any: Ty,
     comparisons: RefCell<ComparisonCache>,
     /// Memoized `value_lane_repr`: the transport-lane representative of a type.
     /// A derived fact about each type, computed once rather than on every lane.
@@ -112,6 +121,12 @@ pub struct Types {
     /// produced it instead of leaking into the next reader. Threading a
     /// first-class sink through the join stays fz-0xp's.
     activation_input_collapses: u64,
+}
+
+impl Default for Types {
+    fn default() -> Self {
+        Self::with_constants()
+    }
 }
 
 #[derive(Default)]
@@ -203,6 +218,19 @@ impl TypeInterner {
         ty
     }
 
+    /// The id already given to this exact descriptor, if it has one.
+    ///
+    /// A descriptor the index holds was normalized on its way in, and
+    /// normalization is a pure function of the descriptor — every step reads
+    /// the descriptor's own bytes and the immutable descriptors of the ids it
+    /// names, and nothing else (`super::order` states the one rule that makes
+    /// this true of clause order). So the normal form it was given then is the
+    /// normal form it would be given now, and the id can be returned without
+    /// re-deriving it.
+    fn lookup(&self, d: &Descr) -> Option<Ty> {
+        self.index.get(d).copied()
+    }
+
     fn ctx(&self) -> TyCtx<'_> {
         TyCtx {
             arena: &self.arena,
@@ -214,42 +242,32 @@ impl TypeInterner {
         self.ctx().descr(t)
     }
 
-    /// The cheap debug half of the interned-DNF invariant: a descriptor that
-    /// reaches the index carries no exact duplicate clause on any axis, no
-    /// provably-empty clause on any axis, and no subsumed tuple clause. This
-    /// runs on an index MISS, so it costs one sweep per distinct descriptor.
-    /// `Types::intern` additionally absorbs typed list containment through the
-    /// memoized comparison cache. Repeating those semantic comparisons here
-    /// through raw descriptors would create a second uncached authority, so
-    /// list hygiene is proved at the canonicalizer's typed boundary tests
-    /// instead.
+    /// The debug half of the interned-DNF invariant: a descriptor that reaches
+    /// the index carries no provably-empty clause on any axis, nothing left to
+    /// absorb on the four denotational axes, and no exact duplicate on the
+    /// callable axis. This runs on an index MISS, so it costs one sweep per
+    /// distinct descriptor.
     #[cfg(debug_assertions)]
     fn debug_assert_dnf_axes_hygienic(&self, d: &Descr) {
         let cx = self.ctx();
-        for (i, c) in d.tuples.iter().enumerate() {
-            for (j, other) in d.tuples.iter().enumerate() {
-                debug_assert!(
-                    i == j || !tuple_clause_subsumed(c, other, |x, y| { cx.descr(x).is_subtype(cx, cx.descr(y)) }),
-                    "interned descr carries a subsumed (or duplicate) tuple clause"
-                );
-            }
-        }
         debug_assert_no_empty_clauses(cx, &d.tuples, emptiness::tuple_clause_empty, "tuples");
         debug_assert_no_empty_clauses(cx, &d.lists, emptiness::list_clause_empty, "lists");
         debug_assert_no_empty_clauses(cx, &d.resources, emptiness::resource_clause_empty, "resources");
         debug_assert_no_empty_clauses(cx, &d.funcs, emptiness::func_clause_empty, "funcs");
         debug_assert_no_empty_clauses(cx, &d.maps, emptiness::map_clause_empty, "maps");
-        debug_assert_no_exact_duplicates(&d.lists, "lists");
-        debug_assert_no_exact_duplicates(&d.resources, "resources");
+        debug_assert_absorbed(cx, &d.tuples, "tuple", &axis::TUPLES);
+        debug_assert_absorbed(cx, &d.lists, "list", &axis::LISTS);
+        debug_assert_absorbed(cx, &d.resources, "resource", &axis::RESOURCES);
+        debug_assert_absorbed(cx, &d.maps, "map", &axis::MAPS);
         debug_assert_no_exact_duplicates(&d.funcs, "funcs");
-        debug_assert_no_exact_duplicates(&d.maps, "maps");
     }
 }
 
-/// `A ∨ A = A` on the three axes that carry no absorption pass of their own.
+/// `A ∨ A = A` on the callable axis, the one axis absorption does not reach
+/// ([`axis`] states why).
 ///
-/// The tuple and list axes get stronger subsumption treatment; the rest
-/// get idempotence, which is the rule the ACTIVATION KEY depends on. A key is
+/// The four denotational axes get the stronger coverage rule; this one gets
+/// idempotence, which is the rule the ACTIVATION KEY depends on. A key is
 /// built by erasing what the key language cannot address — closure brands
 /// above all — and erasure runs IN PLACE, so a union that legitimately kept one
 /// clause per brand becomes `A ∨ A` the moment the brands go. Without this
@@ -279,22 +297,6 @@ fn dedupe_exact_clauses<T: PartialEq>(clauses: &mut Vec<Conj<T>>) {
     clauses.truncate(kept);
 }
 
-fn absorb_subsumed_clauses<T>(clauses: &mut Vec<Conj<T>>, mut subsumed: impl FnMut(&Conj<T>, &Conj<T>) -> bool) {
-    if clauses.len() < 2 {
-        return;
-    }
-    let input = std::mem::take(clauses);
-    let mut out = Vec::with_capacity(input.len());
-    for clause in input {
-        if out.iter().any(|kept| subsumed(&clause, kept)) {
-            continue;
-        }
-        out.retain(|kept| !subsumed(kept, &clause));
-        out.push(clause);
-    }
-    *clauses = out;
-}
-
 #[cfg(debug_assertions)]
 fn debug_assert_no_empty_clauses<T>(
     cx: TyCtx<'_>,
@@ -306,6 +308,40 @@ fn debug_assert_no_empty_clauses<T>(
         debug_assert!(
             !clause_empty(cx, c, &mut emptiness::Memo::default()),
             "interned descr carries a provably-empty clause on the {axis} axis"
+        );
+    }
+}
+
+#[cfg(debug_assertions)]
+fn debug_assert_absorbed<T: Clone + PartialEq + 'static>(
+    cx: TyCtx<'_>,
+    clauses: &[Conj<T>],
+    name: &str,
+    view: &axis::AxisView<T>,
+) {
+    if clauses.is_empty() || dnf::is_dnf_top(clauses) {
+        return;
+    }
+    debug_assert!(
+        !clauses.iter().any(Conj::is_top),
+        "interned descr carries a contentless clause beside others on the {name} axis"
+    );
+    // Runs on an index MISS only, so it asks both relations directly rather
+    // than through the caches the boundary itself goes through.
+    let subtype = &|narrower: &Ty, wider: &Ty| cx.descr(narrower).is_subtype(cx, cx.descr(wider));
+    let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
+    // An axis its clauses cover is written as the ONE spelling of its top, the
+    // contentless clause, which the early return above has already let through.
+    // Reaching here saturated means the boundary left a second spelling.
+    debug_assert!(
+        !axis::axis_is_top(cx, clauses, covers, view),
+        "interned descr carries a saturated {name} axis the boundary did not collapse"
+    );
+    let keep = vec![true; clauses.len()];
+    for index in 0..clauses.len() {
+        debug_assert!(
+            !axis::clause_is_covered(cx, subtype, covers, clauses, &keep, index, view),
+            "interned descr carries a covered clause on the {name} axis"
         );
     }
 }
@@ -323,6 +359,29 @@ fn debug_assert_no_exact_duplicates<T: PartialEq>(clauses: &[Conj<T>], axis: &st
 impl Types {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Every type the store is born knowing. `any` alone: it is the one
+    /// constant the constructors below ask for by name, and the one whose
+    /// descriptor is expensive to rebuild.
+    ///
+    /// It goes in through the interner directly because `Descr::any()` is
+    /// already the normal form `Types::intern` would hand back — every axis is
+    /// the single contentless clause that `types::axis` makes an axis top's
+    /// one spelling, no clause is empty, and nothing is left to order.
+    fn with_constants() -> Self {
+        let mut interner = TypeInterner::default();
+        let any = interner.intern(Descr::any());
+        Self {
+            interner,
+            any,
+            comparisons: RefCell::default(),
+            value_lane_reprs: HashMap::new(),
+            address_vars: HashMap::new(),
+            address_paths: Vec::new(),
+            callable_origins: order::CallableOrigins::new(),
+            activation_input_collapses: 0,
+        }
     }
 
     /// Record one correlated-input row set widened past
@@ -378,6 +437,17 @@ impl Types {
     /// The persistence boundary, in passes that each leave the next one's
     /// precondition intact.
     ///
+    /// THE INDEX ANSWERS FIRST. An interned descriptor's normal form is a pure
+    /// function of the descriptor: every pass below reads the descriptor's own
+    /// bytes and the immutable descriptors of the ids it names, and storage
+    /// clause order reads nothing outside them either (`order`'s module doc
+    /// carries that rule and why the callable axis is where it had to be won).
+    /// A descriptor the index already holds is therefore its own normal form,
+    /// and the id it was given is the id the whole pass below would arrive at,
+    /// so the lookup returns it and the derivation is skipped. That is the
+    /// common case by a wide margin — the overwhelming majority of intern calls
+    /// re-present a descriptor the arena already has.
+    ///
     /// TUPLE NORMALIZATION first: a ground tuple difference whose cover differs
     /// in exactly one coordinate is still one rectangle. Rewriting that form
     /// here makes every construction route share the same semantic normal form
@@ -396,10 +466,15 @@ impl Types {
     /// exactly when it holds no clause at all, so the collapse's question stops
     /// at the first surviving clause.
     ///
-    /// ABSORPTION and IDEMPOTENCE follow, and all three filters are
-    /// order-preserving (the tuple/list absorbers keep survivors in input
-    /// order; `dedupe_exact_clauses` keeps the first occurrence), so what
-    /// reaches the interner index is still sorted.
+    /// ABSORPTION follows, one rule for every axis whose clauses describe
+    /// nothing but the set they denote: a clause the union of its surviving
+    /// siblings already covers is dropped, and an axis its clauses between
+    /// them cover collapses to that axis's one top spelling, the clause with no
+    /// factors. The callable axis is the one exception ([`axis`] states why),
+    /// so it gets IDEMPOTENCE alone, exact duplicates collapsed. The coverage
+    /// walk and the dedupe only ever remove, and both visit in index order, so
+    /// what they leave is still sorted; a saturated axis is REPLACED by that
+    /// one clause, and one clause is sorted whatever it is.
     ///
     /// The BOTTOM COLLAPSE closes the pass. The empty set is reachable by many
     /// descriptor shapes — an empty brand slot, empty kind axes under a slot
@@ -418,16 +493,18 @@ impl Types {
     /// already-interned descriptor sorts an already-sorted list to itself, finds
     /// no empty or subsumed clause left to drop on any axis, no exact duplicate
     /// left to collapse, and answers `none` for `none`, so it hashes to the
-    /// descriptor already in the index.
+    /// descriptor already in the index. Idempotence is also what makes the
+    /// lookup above an optimization rather than a second rule: running the pass
+    /// on an indexed descriptor would return it unchanged.
     fn intern(&mut self, mut d: Descr) -> Ty {
+        if let Some(ty) = self.interner.lookup(&d) {
+            return ty;
+        }
         self.normalize_tuple_coordinate_differences(&mut d);
         self.order_clauses(&mut d);
         self.drop_empty_clauses(&mut d);
-        self.absorb_subsumed_tuple_clauses(&mut d);
-        self.absorb_subsumed_list_clauses(&mut d);
-        dedupe_exact_clauses(&mut d.resources);
+        self.absorb_covered_clauses(&mut d);
         dedupe_exact_clauses(&mut d.funcs);
-        dedupe_exact_clauses(&mut d.maps);
         if d.looks_empty() {
             d = Descr::none();
         }
@@ -439,7 +516,7 @@ impl Types {
     }
 
     fn clause_order(&self) -> order::ClauseOrder<'_> {
-        order::ClauseOrder::new(self.ctx(), &self.callable_origins)
+        order::ClauseOrder::new(self.ctx())
     }
 
     fn activation_order(&self) -> order::ClauseOrder<'_> {
@@ -551,12 +628,20 @@ impl Types {
         axis::drop_empty_clauses(self.ctx(), d, &|ty| self.is_empty(ty));
     }
 
-    /// Absorb tuple clauses a sibling already contains: `A ⊆ B ⇒ A ∨ B = B`.
-    /// Products compare coordinatewise where that is decidable.
-    fn absorb_subsumed_tuple_clauses(&self, d: &mut Descr) {
-        absorb_subsumed_clauses(&mut d.tuples, |clause, sibling| {
-            tuple_clause_subsumed(clause, sibling, |x, y| self.is_subtype(x, y))
-        });
+    /// The four axes a denotation fully describes, absorbed by the one rule in
+    /// [`axis`]. The callable axis is left out, for the reason stated there.
+    fn absorb_covered_clauses(&self, d: &mut Descr) {
+        self.absorb_one_axis(&mut d.tuples, &axis::TUPLES);
+        self.absorb_one_axis(&mut d.lists, &axis::LISTS);
+        self.absorb_one_axis(&mut d.resources, &axis::RESOURCES);
+        self.absorb_one_axis(&mut d.maps, &axis::MAPS);
+    }
+
+    fn absorb_one_axis<T: Clone + 'static>(&self, clauses: &mut Vec<Conj<T>>, view: &axis::AxisView<T>) {
+        let cx = self.ctx();
+        let subtype = &|narrower: &Ty, wider: &Ty| self.is_subtype(narrower, wider);
+        let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
+        axis::absorb_axis(cx, clauses, subtype, covers, view);
     }
 
     /// `P₀ × … × Pₖ × … × Pₙ \ N₀ × … × Nₖ × … × Nₙ` is one rectangle
@@ -611,15 +696,6 @@ impl Types {
         let mut elems = positive.elems.clone();
         elems[*index] = self.difference(elems[*index], negative.elems[*index]);
         Conj::pos_of(TupleSig { elems })
-    }
-
-    /// Absorb list clauses whose denotation is contained in a sibling. The
-    /// plain-positive relation is exact for the list model: empty membership
-    /// and non-empty element containment are its only two dimensions.
-    fn absorb_subsumed_list_clauses(&self, d: &mut Descr) {
-        absorb_subsumed_clauses(&mut d.lists, |clause, sibling| {
-            list_clause_subsumed(clause, sibling, |x, y| self.is_subtype(x, y))
-        });
     }
 
     fn ctx(&self) -> TyCtx<'_> {
@@ -806,7 +882,7 @@ impl Types {
     }
 
     pub fn any(&mut self) -> Ty {
-        self.intern(Descr::any())
+        self.any
     }
 
     pub fn none(&mut self) -> Ty {
@@ -1023,8 +1099,8 @@ impl Types {
 
     pub fn convergence_class(&mut self, a: &Ty) -> Ty {
         let descr = self.descr(a).clone();
-        if descr.as_pure_list(self.ctx()).is_some() {
-            let any = self.any();
+        let any = self.any();
+        if descr.as_pure_list(any).is_some() {
             self.list(any)
         } else if let Some(tuple) = descr.pure_tuple() {
             let elems = tuple
@@ -1033,7 +1109,7 @@ impl Types {
                 .map(|elem| self.convergence_class(elem))
                 .collect::<Vec<_>>();
             self.tuple(&elems)
-        } else if let Some(resource) = descr.pure_resource() {
+        } else if let Some(resource) = descr.pure_resource(any) {
             let payload = self.convergence_class(&resource.payload);
             self.resource(payload)
         } else if descr.is_pure_callable() {
@@ -1105,7 +1181,7 @@ impl Types {
                 })
                 .collect::<Vec<_>>();
             self.tuple(&elems)
-        } else if let Some(resource) = descr.pure_resource() {
+        } else if let Some(resource) = descr.pure_resource(self.any()) {
             let payload = resource.payload;
             let mut child = path.to_vec();
             child.push(AddrStep::Payload);
@@ -1857,11 +1933,12 @@ impl Types {
     /// clause is the unit the lattice keeps correlated -- the same reason
     /// [`Self::runtime_type_predicate_tuples`] keeps one shape per clause.
     ///
-    /// A clause is head-projectable only when it is exactly one positive
-    /// signature with nothing subtracted, and that signature names an element
-    /// type. Several positive signatures are an INTERSECTION of list types and
-    /// negations are a DIFFERENCE; neither is one element type, and inventing
-    /// one would claim a precision the emitted test could not honour. Those
+    /// A clause is head-projectable when it is the axis TOP, which admits every
+    /// head, or when it is exactly one positive signature with nothing
+    /// subtracted and that signature names an element type. Several positive
+    /// signatures are an INTERSECTION of list types and negations are a
+    /// DIFFERENCE; neither is one element type, and inventing one would claim
+    /// a precision the emitted test could not honour. Those
     /// degrade the whole axis to the shape-only reading, which is what every
     /// clause answered before fz-kdt.107 step 3.
     ///
@@ -1874,6 +1951,13 @@ impl Types {
         }
         let mut heads = Vec::with_capacity(descr.lists.len());
         for clause in &descr.lists {
+            if clause.is_top() {
+                // The axis top is written as the clause with no factors
+                // (`types::axis`), so this clause is `[any]` and its head
+                // question is the one every value passes.
+                heads.push(RuntimeTypePredicate::any());
+                continue;
+            }
             if clause.pos.len() != 1 || !clause.neg.is_empty() {
                 return ListShapes::shape_only(shapes);
             }
@@ -3623,7 +3707,8 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
             .collect();
         return t.intern(Descr::tuple_of(elems));
     }
-    if let (Some(l), Some(r)) = (lhs.as_pure_list(t.ctx()).cloned(), rhs.as_pure_list(t.ctx()).cloned()) {
+    let any = t.any();
+    if let (Some(l), Some(r)) = (lhs.as_pure_list(any), rhs.as_pure_list(any)) {
         let elem = match (l.elem, r.elem) {
             (Some(l), Some(r)) => Some(refine_widen(t, l, r)),
             (Some(l), None) => Some(l),
@@ -3639,7 +3724,7 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
         };
         return t.intern(d);
     }
-    if let (Some(l), Some(r)) = (lhs.pure_resource().cloned(), rhs.pure_resource().cloned()) {
+    if let (Some(l), Some(r)) = (lhs.pure_resource(any), rhs.pure_resource(any)) {
         let payload = refine_widen(t, l.payload, r.payload);
         let d = Descr::resource_of(t.ctx(), payload);
         return t.intern(d);
@@ -3779,12 +3864,13 @@ fn collect_subst_into(
             collect_subst_into(t, *p, *w, side, target, sigma);
         }
     }
-    if let (Some(ps), Some(ws)) = (pat.as_pure_list(t.ctx()), wit.as_pure_list(t.ctx()))
+    let any = t.any();
+    if let (Some(ps), Some(ws)) = (pat.as_pure_list(any), wit.as_pure_list(any))
         && let (Some(p), Some(w)) = (ps.elem, ws.elem)
     {
         collect_subst_into(t, p, w, side, target, sigma);
     }
-    if let (Some(ps), Some(ws)) = (pat.pure_resource(), wit.pure_resource()) {
+    if let (Some(ps), Some(ws)) = (pat.pure_resource(any), wit.pure_resource(any)) {
         collect_subst_into(t, ps.payload, ws.payload, side, target, sigma);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_arrow(), wit.pure_arrow())

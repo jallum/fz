@@ -84,14 +84,14 @@ where
 }
 
 fn format_tuple_clause(cx: TyCtx<'_>, c: &Conj<TupleSig>) -> String {
-    format_conj(c, |sig| {
+    format_conj(c, "tuple", |sig| {
         let elems: Vec<String> = sig.elems.iter().map(|ty| display(cx, cx.descr(ty))).collect();
         format!("{{{}}}", elems.join(", "))
     })
 }
 
 fn format_list_clause(cx: TyCtx<'_>, c: &Conj<ListSig>) -> String {
-    format_conj(c, |sig| match (sig.empty, sig.elem) {
+    format_conj(c, "[any]", |sig| match (sig.empty, sig.elem) {
         (true, None) => "[]".to_string(),
         (_, Some(elem)) => format!("[{}]", display(cx, cx.descr(&elem))),
         (false, None) => "nonempty([])".to_string(),
@@ -99,11 +99,13 @@ fn format_list_clause(cx: TyCtx<'_>, c: &Conj<ListSig>) -> String {
 }
 
 fn format_resource_clause(cx: TyCtx<'_>, c: &Conj<ResourceSig>) -> String {
-    format_conj(c, |sig| format!("resource({})", display(cx, cx.descr(&sig.payload))))
+    format_conj(c, "resource(any)", |sig| {
+        format!("resource({})", display(cx, cx.descr(&sig.payload)))
+    })
 }
 
 fn format_arrow_clause(cx: TyCtx<'_>, c: &Conj<ArrowSig>) -> String {
-    format_conj(c, |sig| {
+    format_conj(c, "fun", |sig| {
         let args: Vec<String> = sig.args.iter().map(|ty| display(cx, cx.descr(ty))).collect();
         let base = format!("({}) -> {}", args.join(", "), display(cx, cx.descr(&sig.ret)));
         match &sig.lit {
@@ -144,7 +146,7 @@ fn format_closure_lit_suffix(cx: TyCtx<'_>, base: &str, lit: &super::sigs::Closu
 }
 
 fn format_map_clause(cx: TyCtx<'_>, c: &Conj<MapSig>) -> String {
-    format_conj(c, |sig| {
+    format_conj(c, "map", |sig| {
         let fields: Vec<String> = sig
             .fields
             .iter()
@@ -157,12 +159,19 @@ fn format_map_clause(cx: TyCtx<'_>, c: &Conj<MapSig>) -> String {
     })
 }
 
-fn format_conj<T, F>(c: &Conj<T>, render: F) -> String
+/// One clause, with `top` naming the clause that carries no factors at all.
+///
+/// That clause denotes every value of ITS kind, which is not `any` — the whole
+/// descriptor is `any` only when all five axes carry it, and `display` has
+/// already answered that case. So each axis names its top as the widest type a
+/// user could write (`[any]`, `resource(any)`) or, where the surface has no
+/// such spelling, as the kind's own name.
+fn format_conj<T, F>(c: &Conj<T>, top: &str, render: F) -> String
 where
     F: Fn(&T) -> String,
 {
     if c.pos.is_empty() && c.neg.is_empty() {
-        return "any".to_string();
+        return top.to_string();
     }
     let mut parts: Vec<String> = c.pos.iter().map(&render).collect();
     parts.extend(c.neg.iter().map(|sig| format!("not({})", render(sig))));

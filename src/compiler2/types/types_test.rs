@@ -2779,6 +2779,321 @@ mod union_clause_order {
     }
 }
 
+/// One absorber for every axis a denotation fully describes.
+///
+/// The callable axis is not among them; `types::axis` states why.
+mod clause_absorption {
+    use super::*;
+
+    /// A clause no SINGLE sibling contains, but the two of them together do.
+    /// This is what union coverage buys over pairwise containment, and it is
+    /// the case a per-axis subsumption rule cannot see.
+    #[test]
+    fn a_clause_two_siblings_cover_between_them_is_dropped() {
+        let mut t = Types::new();
+        let int = t.int();
+        let bin = t.str_t();
+        let float = t.float();
+        let int_or_bin = t.union(int, bin);
+
+        // {int|binary, float} is inside {int, float} ∨ {binary, float} and
+        // inside neither alone.
+        let covered = t.tuple(&[int_or_bin, float]);
+        let left = t.tuple(&[int, float]);
+        let right = t.tuple(&[bin, float]);
+        assert!(!t.is_subtype(&covered, &left) && !t.is_subtype(&covered, &right));
+
+        let siblings = t.union(left, right);
+        let joined = t.union(siblings, covered);
+        assert_eq!(
+            t.descr(&joined).tuples.len(),
+            1,
+            "the two siblings fuse and swallow the clause: {}",
+            t.display(&joined)
+        );
+        assert!(t.is_equivalent(&joined, &siblings));
+
+        // A list that admits `[]` is inside `[] ∨ non_empty_list(int)` and
+        // inside neither alone.
+        let empty = t.empty_list();
+        let non_empty = t.non_empty_list(int);
+        let whole = t.list(int);
+        assert!(!t.is_subtype(&whole, &empty) && !t.is_subtype(&whole, &non_empty));
+        let shapes = t.union(empty, non_empty);
+        assert_eq!(shapes, whole, "the two shapes ARE the possibly-empty list");
+    }
+
+    /// An axis whose clauses between them cover it IS its top, and there is ONE
+    /// spelling of that top: the contentless clause, the same one `Descr::any()`
+    /// writes. A second spelling would be a second identity for one set.
+    #[test]
+    fn an_axis_its_clauses_cover_becomes_the_contentless_clause() {
+        let mut t = Types::new();
+        let any = t.any();
+
+        let every_list = {
+            let empty = t.empty_list();
+            let non_empty = t.non_empty_list(any);
+            t.union(empty, non_empty)
+        };
+        assert_eq!(every_list, t.list(any), "one set of lists, one id");
+        assert!(
+            t.descr(&every_list).lists.iter().all(Conj::is_top),
+            "the top is the contentless clause: {:?}",
+            t.descr(&every_list).lists
+        );
+        assert_eq!(t.display(&every_list), "[any]", "and a type a user could write");
+        assert_eq!(
+            t.list_element_type(&every_list),
+            any,
+            "a reader projecting the element still finds one"
+        );
+
+        let every_resource = t.resource(any);
+        assert!(t.descr(&every_resource).resources.iter().all(Conj::is_top));
+        assert_eq!(t.display(&every_resource), "resource(any)");
+        assert_eq!(t.resource_payload_type(&every_resource), Some(any));
+
+        // A single positive clause on the other two axes is never their top:
+        // a positive tuple sig fixes an arity and a positive map sig fixes a
+        // tag, and both are unbounded.
+        let pair = t.tuple(&[any, any]);
+        assert_eq!(t.descr(&pair).tuples.len(), 1);
+        assert!(!t.descr(&pair).tuples[0].pos.is_empty(), "a tuple axis keeps its sig");
+        let key = MapKey::Atom("k".to_string());
+        let open = t.map(&[(key, any)]);
+        assert!(!t.descr(&open).maps[0].pos.is_empty(), "a map axis keeps its sig");
+    }
+
+    /// One spelling means `any` stays `any`: unioning it with a type it already
+    /// contains cannot mint a second identity for the whole lattice.
+    #[test]
+    fn any_absorbs_what_it_already_contains() {
+        let mut t = Types::new();
+        let any = t.any();
+        let int = t.int();
+        let key = MapKey::Atom("k".to_string());
+        let operands = [
+            t.list(any),
+            t.resource(any),
+            t.list(int),
+            t.tuple(&[any, any]),
+            t.map(&[(key, any)]),
+            t.empty_list(),
+            int,
+        ];
+        for operand in operands {
+            let joined = t.union(any, operand);
+            assert_eq!(
+                joined,
+                any,
+                "any | {} minted a second identity for the whole lattice: {}",
+                t.display(&operand),
+                t.display(&joined)
+            );
+            assert!(t.descr(&joined).looks_full(), "and it must still LOOK full");
+        }
+    }
+
+    /// The list top written the long way round and the list top written as a
+    /// single sig are one descriptor, so they are one id.
+    #[test]
+    fn the_axis_top_has_one_spelling_however_it_is_built() {
+        let mut t = Types::new();
+        let any = t.any();
+
+        let by_sig = t.list(any);
+        let by_shapes = {
+            let empty = t.empty_list();
+            let non_empty = t.non_empty_list(any);
+            t.union(empty, non_empty)
+        };
+        let by_clause = t.intern(Descr {
+            lists: vec![Conj::top()],
+            ..Descr::unbranded()
+        });
+        assert_eq!(by_sig, by_shapes);
+        assert_eq!(by_sig, by_clause, "the widest sig IS the contentless clause");
+
+        let resource_by_sig = t.resource(any);
+        let resource_by_clause = t.intern(Descr {
+            resources: vec![Conj::top()],
+            ..Descr::unbranded()
+        });
+        assert_eq!(resource_by_sig, resource_by_clause);
+    }
+
+    /// `any` has more than one descriptor, because the callable axis is left
+    /// unabsorbed at intern: `f ∨ ¬f` is every callable in two clauses, so a
+    /// descriptor carrying it denotes everything without LOOKING full.
+    ///
+    /// A structural reading of "is this element everything" would then answer
+    /// no for that spelling, `[x]` would keep its sig clause while `[any]`
+    /// became the contentless one, and one set of lists would take two ids and
+    /// two canonical forms — a false difference from the oracle
+    /// `canon_is_faithful_over_the_full_arena_of_both_target_fixtures` exists
+    /// to forbid. So the question goes to `Descr::is_full`, which falls through
+    /// to the calculator, and the same rule answers the resource axis.
+    #[test]
+    fn an_element_that_is_any_written_another_way_still_reaches_the_axis_top() {
+        let mut t = Types::new();
+        let any = t.any();
+        let int = t.int();
+        let arrow = t.arrow(&[int], int);
+        let every_value = {
+            let rest = t.difference(any, arrow);
+            t.union(rest, arrow)
+        };
+        assert_ne!(
+            t.descr(&every_value).funcs.len(),
+            1,
+            "the reproducer needs the unabsorbed callable axis; got {}",
+            t.display(&every_value)
+        );
+        assert!(t.is_equivalent(&every_value, &any), "but it must still BE any");
+
+        let labels = |_: FnId| String::new();
+        let mut canon = TyCanon::new(&labels);
+
+        let (widest, top) = (t.list(every_value), t.list(any));
+        assert_eq!(
+            widest,
+            top,
+            "one set of lists, one id: {} vs {}",
+            t.display(&widest),
+            t.display(&top)
+        );
+        assert_eq!(canon.render(&t, widest), canon.render(&t, top));
+
+        let (widest, top) = (t.resource(every_value), t.resource(any));
+        assert_eq!(widest, top, "and one set of resources: {}", t.display(&widest));
+        assert_eq!(canon.render(&t, widest), canon.render(&t, top));
+    }
+
+    /// A finite union of POSITIVE-ONLY tuple or map clauses never covers its
+    /// axis: a positive tuple sig fixes an arity and a positive map sig fixes a
+    /// tag, and both are unbounded. A clause carrying a NEGATIVE factor is a
+    /// different shape — `A ∨ ¬A` is every value of the kind, whatever `A` is —
+    /// and no structural rule reads it, so the exact calculator question
+    /// decides. All four axes then reach the one spelling of their top.
+    #[test]
+    fn a_clause_and_its_complement_are_the_whole_axis() {
+        let mut t = Types::new();
+        let any = t.any();
+        let int = t.int();
+
+        let every_tuple = t.intern(Descr {
+            tuples: vec![Conj::top()],
+            ..Descr::unbranded()
+        });
+        let pair = t.tuple(&[any, any]);
+        let carved = t.difference(every_tuple, pair);
+        let joined = t.union(carved, pair);
+        assert_eq!(
+            joined,
+            every_tuple,
+            "the pairs and everything that is not a pair are every tuple: {}",
+            t.display(&joined)
+        );
+
+        let every_map = t.intern(Descr {
+            maps: vec![Conj::top()],
+            ..Descr::unbranded()
+        });
+        let open = t.map(&[(MapKey::Atom("k".to_string()), any)]);
+        let carved = t.difference(every_map, open);
+        let joined = t.union(carved, open);
+        assert_eq!(joined, every_map, "got {}", t.display(&joined));
+
+        let every_list = t.list(any);
+        let ints = t.list(int);
+        let carved = t.difference(every_list, ints);
+        let joined = t.union(carved, ints);
+        assert_eq!(joined, every_list, "got {}", t.display(&joined));
+
+        let every_resource = t.resource(any);
+        let int_resource = t.resource(int);
+        let carved = t.difference(every_resource, int_resource);
+        let joined = t.union(carved, int_resource);
+        assert_eq!(joined, every_resource, "got {}", t.display(&joined));
+    }
+
+    /// Absorption rewrites a descriptor to a semantically equal one, and
+    /// "equal" means equal under the relation the calculator answers with. On
+    /// the resource axis that relation is narrower than reading a resource as
+    /// a set of payloads: the kernel decides a resource clause carrying
+    /// negatives by asking whether a SINGLE negative swallows the payload
+    /// (`emptiness::resource_clause_empty`), never whether their union does.
+    /// So `resource(:a|:b)` is NOT inside
+    /// `resource(:a|:c) ∨ resource(:b|:c)`, and an axis rule that folded the
+    /// payloads would drop it and leave a union that does not contain its own
+    /// operand.
+    #[test]
+    fn a_resource_union_keeps_a_clause_no_single_sibling_contains() {
+        let mut t = Types::new();
+        let a = t.atom_lit("a");
+        let b = t.atom_lit("b");
+        let c = t.atom_lit("c");
+        let (ab, ac, bc) = (t.union(a, b), t.union(a, c), t.union(b, c));
+        let (rab, rac, rbc) = (t.resource(ab), t.resource(ac), t.resource(bc));
+
+        let siblings = t.union(rac, rbc);
+        assert!(
+            !t.is_subtype(&rab, &siblings),
+            "the calculator's own relation: {} is not inside {}",
+            t.display(&rab),
+            t.display(&siblings)
+        );
+
+        let joined = t.union(siblings, rab);
+        assert_eq!(t.descr(&joined).resources.len(), 3, "got {}", t.display(&joined));
+        assert!(
+            t.is_subtype(&rab, &joined),
+            "a union must contain the operand it was built from"
+        );
+    }
+
+    /// The other half of the same rule: one sibling containing the clause
+    /// alone is exactly when a resource clause is absorbed, and it still is.
+    #[test]
+    fn a_resource_clause_one_sibling_contains_is_dropped() {
+        let mut t = Types::new();
+        let a = t.atom_lit("a");
+        let b = t.atom_lit("b");
+        let c = t.atom_lit("c");
+        let ab = t.union(a, b);
+        let abc = t.union(ab, c);
+        let (rab, rabc) = (t.resource(ab), t.resource(abc));
+
+        let joined = t.union(rab, rabc);
+        assert_eq!(joined, rabc, "got {}", t.display(&joined));
+    }
+
+    /// And the axis top follows the same relation. `resource(int)` and
+    /// `resource(not int)` partition the payloads between them, but under the
+    /// kernel's containment their union is not every resource, so the axis
+    /// does not saturate and keeps both clauses.
+    #[test]
+    fn two_resource_clauses_that_partition_the_payload_are_not_every_resource() {
+        let mut t = Types::new();
+        let any = t.any();
+        let int = t.int();
+        let not_int = t.difference(any, int);
+        let split = {
+            let lhs = t.resource(int);
+            let rhs = t.resource(not_int);
+            t.union(lhs, rhs)
+        };
+        assert_eq!(t.descr(&split).resources.len(), 2, "got {}", t.display(&split));
+
+        let every_resource = t.resource(any);
+        assert!(
+            !t.is_subtype(&every_resource, &split),
+            "the calculator says the split is not every resource, so the axis must not say it is"
+        );
+    }
+}
+
 /// A clause is its factor SET: `A ∧ B` and `B ∧ A` are one clause.
 ///
 /// `Conj::pos` grows as the clause product walks its operands, so an
@@ -3357,5 +3672,126 @@ mod brand_lattice_algebra {
             t.display(&wider),
             "a structurally different minuend gets no slot subtraction at all"
         );
+    }
+}
+
+/// The interner answers from its index before it normalizes, which is sound
+/// only because a descriptor's normal form is a pure function of the
+/// descriptor. Storage clause order is the part of that which had to be won:
+/// a closure literal orders by its `FnId` alone, so registering the owner's
+/// typed origin later cannot move a clause that is already interned.
+mod normal_form_is_a_function_of_the_descriptor {
+    use super::*;
+
+    fn closure_pair(t: &mut Types) -> (Ty, Ty) {
+        let low = t.closure_lit(ClosureTarget(2), Vec::new(), 1);
+        let high = t.closure_lit(ClosureTarget(9), Vec::new(), 1);
+        (low, high)
+    }
+
+    /// The defect this rule closes: a union of two closure literals interned
+    /// BEFORE either owner registered, then registered, then unioned again.
+    /// Under an origin-reading storage order the second union hit the index on
+    /// its stale pre-registration form while the mirror-image union minted a
+    /// fresh id — two identities for one set, decided by arrival.
+    #[test]
+    fn registering_an_origin_does_not_move_an_interned_clause() {
+        let mut t = Types::new();
+        let (low, high) = closure_pair(&mut t);
+
+        let before = t.union(low, high);
+        assert_eq!(t.union(high, low), before, "the union is a set before registration");
+
+        t.define_test_callable(ClosureTarget(9), "a", 1);
+        t.define_test_callable(ClosureTarget(2), "z", 1);
+
+        assert_eq!(
+            t.union(low, high),
+            before,
+            "an interned union keeps its identity when an owner registers"
+        );
+        assert_eq!(
+            t.union(high, low),
+            before,
+            "and the mirror-image union reaches that same identity, not a fresh one"
+        );
+    }
+
+    /// The same statement read the other way: the origins decide the ACTIVATION
+    /// order, and that order is free to read them because every activation
+    /// surface has registered by the time it is asked. Registration must not
+    /// leak into storage, and this is the relation it is allowed to reach.
+    #[test]
+    fn the_activation_order_still_reads_the_registered_origin() {
+        for reverse in [false, true] {
+            let mut t = Types::new();
+            let (low, high) = closure_pair(&mut t);
+            let (ordered_first, ordered_second) = if reverse { (high, low) } else { (low, high) };
+            let (first_target, second_target) = if reverse {
+                (ClosureTarget(9), ClosureTarget(2))
+            } else {
+                (ClosureTarget(2), ClosureTarget(9))
+            };
+            t.define_test_callable(first_target, "same", 2);
+            t.define_test_callable(second_target, "same", 10);
+            let arrow = |t: &mut Types, lit: Ty| {
+                let int = t.int();
+                let nil = t.nil();
+                let sig = ArrowSig {
+                    args: vec![int],
+                    ret: nil,
+                    lit: t.descr(&lit).as_closure_lit().cloned(),
+                };
+                t.intern(Descr {
+                    funcs: vec![Conj::pos_of(sig)],
+                    ..Descr::unbranded()
+                })
+            };
+            let two = arrow(&mut t, ordered_first);
+            let ten = arrow(&mut t, ordered_second);
+            assert_eq!(
+                t.cmp_activation_ty(two, ten),
+                std::cmp::Ordering::Less,
+                "arity 2 precedes arity 10 numerically, whichever id was minted first"
+            );
+        }
+    }
+
+    /// A descriptor the index already holds costs nothing but the lookup: the
+    /// absorption's containment questions are the calculator's only customer at
+    /// this boundary, and on a hit none of them is asked.
+    #[test]
+    fn re_interning_an_indexed_descriptor_asks_the_calculator_nothing() {
+        let mut t = Types::new();
+        let int = t.int();
+        let empty = t.empty_list();
+        let non_empty = t.non_empty_list(int);
+
+        let first = t.union(empty, non_empty);
+        let after_first = t.comparison_cache_stats();
+
+        assert_eq!(t.union(empty, non_empty), first);
+        assert_eq!(
+            t.comparison_cache_stats(),
+            after_first,
+            "the second union answers from the index without re-deriving the normal form"
+        );
+    }
+
+    /// `any` is a CONSTANT, not a derived fact. The store interns it when it is
+    /// built and hands the same id back forever, so asking for it builds no
+    /// descriptor — and joining it with itself lands on that id through the
+    /// index, minting nothing and asking the calculator nothing.
+    #[test]
+    fn the_id_of_any_is_held_rather_than_re_derived() {
+        let mut t = Types::new();
+        let any = t.any();
+        let inventory = t.identity_inventory();
+        let comparisons = t.comparison_cache_stats();
+
+        assert_eq!(t.any(), any, "the id of a constant does not move");
+        assert_eq!(t.union(any, any), any, "and its join with itself is itself");
+        assert_eq!(t.identity_inventory(), inventory, "which minted no id");
+        assert_eq!(t.comparison_cache_stats(), comparisons, "and re-derived no normal form");
     }
 }

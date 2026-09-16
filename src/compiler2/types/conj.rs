@@ -16,6 +16,11 @@ impl<T> Conj<T> {
             neg: Vec::new(),
         }
     }
+
+    /// Whether this clause constrains nothing, so it denotes its whole kind.
+    pub(crate) fn is_top(&self) -> bool {
+        self.pos.is_empty() && self.neg.is_empty()
+    }
 }
 impl<T: Clone> Conj<T> {
     pub(crate) fn pos_of(t: T) -> Self {
