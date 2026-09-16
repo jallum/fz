@@ -11,9 +11,15 @@
   "id": "fz-kdt.48.5",
   "labels": [],
   "parent": "fz-kdt.48",
+  "comments": [
+    {
+      "text": "Measured 2026-09-16 on 2cb74c6bf + the .48.5 patch (fusion at intern): census 134 -\u003e 129 (17 held), lib green except compiler2_no_value_reaches_a_construction_member_that_never_named_it, whose SURFACE_MEMBERSHIP_CENSUS moves on seven fixtures: 82-\u003e79 (00183, 00230, 00419), 382-\u003e353 (00420, behavior/enum_take_drop_split), and RISES 12-\u003e14 (00418_enum_count_range, behavior/unused_range_binding). Cause, established two ways (instrumented seating on both trees; one-operand tie-break flip on the parent reproduces every row byte-identically): seating verdicts are identical on both trees (the drop/take arm pair is Separated by the callable position); what changes is canonically_order_separated_neighbours (callsite_dispatch.rs ~376/397) via cmp_activation_tys -\u003e order.rs lex_elements_then_longer, whose b.len().cmp(\u0026a.len()) tie-break reads DNF clause COUNT, i.e. storage shape. Parent: the 2-clause {:cont,C}|{:halt,C} arm sorts first; fused: counts tie and the atom set {cont} \u003c {cont,halt} puts the narrow arm first. Same plan, arms transposed, stdout byte-identical, no question added or removed. The census counts MATCHED questions along a first-match walk, so it is walk length: -10/+7 on 00183 (net -3, a real saving), +2 on 00418 whose only reducer is the arm now seated second. Residual on both trees: n3's weaker Region::Type question {:cont|:halt,C} is asked after a stronger Holds {:cont,C} already on the path (7 of 8 fires redundant on 00183); discharging it would make arm order census-neutral (inferred 79 -\u003e 72). Decision pending with the user: move the two raised pins with this explanation, or land the subsumption discharge first.",
+      "timestamp": "2026-09-16T03:39:45Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Tuple carving fusion at intern, including the one-coordinate union merge",
   "type": "task",
-  "updated_at": "2026-09-15T20:30:08Z"
+  "updated_at": "2026-09-16T03:39:45Z"
 }
