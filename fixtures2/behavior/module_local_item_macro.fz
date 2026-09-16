@@ -1,0 +1,34 @@
+#---
+# purpose: "a module body cannot invoke a macro the same module defines"
+# expect: diagnostic
+# diagnostic.code: macro/own-module-item-call
+#---
+#
+# # module_local_item_macro
+#
+# `Provider` defines `make_answer/0` and then invokes it in its own body. The
+# module is still being defined at that point, so its own macros do not exist
+# to call yet, and the call is refused where the item macro is classified.
+#
+# Elixir draws the same line. On this program it reports `undefined function
+# make_answer/0 (there is no such import)` and refuses to compile the module,
+# because a module's macros become callable only once the module is compiled.
+# A function body of that same module may call them — by then it is.
+#
+# The way to write this is `provider_macros_item_macro`: put the macro in
+# another module and import it.
+#
+defmodule Provider do
+  def helper(x), do: x + 1
+
+  defmacro make_answer() do
+    body = quote do: Provider.helper(41)
+    {:def, %{}, [{:answer, %{}, []}, [{:do, body}]]}
+  end
+
+  make_answer()
+end
+
+def main() do
+  assert(Provider.answer() == 42, "unreachable: the module body is refused")
+end

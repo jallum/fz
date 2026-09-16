@@ -29,6 +29,13 @@ until the expansion result is known. `ScopeSession::apply_item_macro_call` in
 `src/compiler2/source_publish.rs` hands the quoted call to
 `QuotedExpansionCtx::expand_ast_call(...)`, reads the returned root as a source
 fragment, reserves any new local definitions, and applies them in source order.
+A module body cannot invoke a macro the same module defines. The module is
+still being defined when its body runs, so its own macros do not exist to call
+yet, and `item_macro_invocation` refuses the call with
+`macro/own-module-item-call` at the call's span. Elixir draws the same line and
+reports the call as an undefined function. The macro belongs in another module
+the body imports; a function body of the defining module may call it, because
+by then the module is compiled.
 
 **Ordinary function-body macros expand only when the function is demanded.**
 `ScopeCode` publishes raw `FunctionSource(function)` facts without walking

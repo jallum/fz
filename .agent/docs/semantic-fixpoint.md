@@ -604,3 +604,10 @@ call targets gate per FUNCTION (the same `wait_for_unresolved_function_module`
 the direct-call path uses) — the old `ModuleDefined(owner_module)` wait
 re-serialized every protocol call behind whole-module scoping and was
 removed as over-waiting.
+
+Entry planning is gated the same way. `PlanEntryDispatch(f)` asks for
+`FunctionDefined(f)` and the exact `TypeDefined`, `StructDefined` and helper
+`GuardDispatch` facts f's clause heads name. It does not wait on
+`ModuleDefined(f's owner)`: the wait was there, and nothing ever read its
+value. A plan settles whether or not that aggregate exists, which is what
+`entry_dispatch_settles_without_its_module_aggregate` records.
