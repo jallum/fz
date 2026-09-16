@@ -4,7 +4,9 @@
     "fz-4nh.1",
     "fz-4nh.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-4nh.4"
+  ],
   "created": "2026-09-16T10:35:32Z",
   "description": "Replace the adapted analyzer with a structurally near-verbatim `defmodule Distill` port and top-level `def main(), do: Distill.main(System.argv())`. Keep only unavoidable namespace spelling differences and pin its report against captured public telemetry.",
   "id": "fz-4nh.3",
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "Port Distill module directly onto the expanded runtime library",
   "type": "task",
-  "updated_at": "2026-09-16T10:35:39Z"
+  "updated_at": "2026-09-16T10:35:40Z"
 }

@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-4nh.3"
+  ],
   "blocks": [],
   "created": "2026-09-16T10:35:33Z",
   "description": "Update runtime-library and profiling documentation to describe the new direct-port surfaces, examples, ownership and failure contracts. Remove temporary adapters once Distill needs none.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Document native tool runtime surfaces and retire compatibility debt",
   "type": "task",
-  "updated_at": "2026-09-16T10:35:33Z"
+  "updated_at": "2026-09-16T10:35:40Z"
 }
