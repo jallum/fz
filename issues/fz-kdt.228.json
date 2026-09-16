@@ -15,5 +15,5 @@
   "status": "open",
   "title": "The scheduler owns claims per job; a job that publishes several facts in one run must be able to conclude each on its own reads (derivation identity)",
   "type": "bug",
-  "updated_at": "2026-09-16T11:23:42Z"
+  "updated_at": "2026-09-16T11:23:51Z"
 }
