@@ -1,25 +1,30 @@
 # The Addressed Arrow
 
-Every function surface in compiler2 — activation keys, callable surfaces, and
-source contracts — speaks one type language: an interned, structurally-addressed
-arrow, `(a0, {a1_0, a1_1}, a2) -> r0`. A type variable's canonical identity is
-its **structural address** in a signature, not a counter value. Because vars are
-addressed the moment a surface is built, the hash-consing interner folds each
-alpha-equivalence class to a single integer by construction — so interned
-identity *is* the canonical form, and there is no separate normalization pass.
+Every function surface in compiler2 uses structurally-addressed coordinates:
+`(a0, {a1_0, a1_1}, a2) => r0`. Callable *values* remain `Ty`s; an activation
+and a resolved source contract carry their inputs and result as a typed
+coordinate record, not as a synthetic callable `Ty`. A type variable's canonical
+identity is its **structural address** in a signature, not a counter value.
+Because each coordinate is addressed when its surface is built, the interner
+folds the coordinate types' alpha-equivalence classes by construction; the
+carrier itself cannot mint a callable identity.
 
 The pieces, and what each owns:
 
 - `types/addressed.rs` — the address vocabulary (`AddrStep`), the var-id
   partition (`ADDRESS_TAG`), and the addressing builders (`address_arrow`,
-  `address_inputs`, `own_surface`). This is the construction machinery.
-- `identity.rs` — `ActivationKey { root, function, arrow: Ty }`. Dispatch
-  identity is the arrow's param side.
-- `semantic.rs` — `CallableSurface { inputs }`, addressed at birth.
+  `address_signature_with_env`, `address_inputs`, `own_surface`). This is the
+  construction machinery.
+- `identity.rs` — `ActivationKey { root, function, signature: ActivationSignature }`.
+  Dispatch identity is `signature.inputs`, plus the direct callable observations
+  retained beside each value coordinate.
+- `semantic.rs` — `ActivationInput { ty, callable_surfaces }`: a value
+  denotation and its direct callable observations travel together without being
+  conflated. `CallableSurface { inputs }` is the runtime-demand projection.
 - `resolve.rs` — `resolve_spec` resolves an `@spec` and addresses it at the
   binder, emitting params/result/bounds all in the address frame.
-- `contract.rs` — `ContractArrow { arrow, bounds }`: one interned arrow plus an
-  address-keyed bounds sidecar.
+- `contract.rs` — `ContractArrow { params, result, bounds }`: one addressed
+  coordinate record plus an address-keyed bounds sidecar.
 - `types/arrow_match.rs` — `match_arrow`, the trichotomy calculator that decides
   contract application. This is the authority for every *compatibility* question.
 
@@ -81,9 +86,10 @@ same integer. That, alone, is **alpha-blind**. `(a5, a5) -> a5` and
 intern to two integers; the interner cannot fold them.
 
 Addressing closes the gap at the binder. Every member of an alpha-equivalence
-class is built with the *same* ids (`a0`, `a1`, `r0`), so the members are
-byte-identical and the interner folds them into one integer — and that integer
-is the canonical form.
+class is built with the *same* ids (`a0`, `a1`, `r0`), so the coordinate types
+are byte-identical and the interner folds them into one integer. An `ActivationSignature`
+then keeps those canonical coordinates directly, without constructing a
+callable type merely to transport them.
 
 ```text
 addressing  canonicalizes variable identity  (assigned once, at the binder)
@@ -93,7 +99,7 @@ together →  one integer per alpha-equivalence class, by construction
 
 Addresses are interned through `Types::address_id`, so `param_alpha(0)` always
 yields the same `a0` for a given `Types` instance: structurally identical
-signatures build byte-identical arrows.
+signatures build byte-identical coordinate records.
 
 ## Var ids are partitioned by kind
 
@@ -115,8 +121,8 @@ and equality are untouched: alpha-equivalent arrows still fold to one identity,
 
 **The resolver binder** (`resolve.rs::resolve_spec`). The resolver allocates
 first-occurrence ids as raw material, then addresses the whole spec scope in one
-pass: `address_arrow_with_env(&params, result)` returns the canonical arrow plus
-an `original-id -> address-id` map. Names and bounds re-key through that map —
+pass: `address_signature_with_env(&params, result)` returns canonical params and
+result plus an `original-id -> address-id` map. Names and bounds re-key through that map —
 the `when`-clause bounds become an address-keyed `HashMap<TypeVarId, Ty>` — so
 nothing escapes un-addressed. Source contracts (`ContractArrow`) are therefore
 *born* canonical: two alpha-equivalent specs intern byte-identical.
@@ -126,7 +132,7 @@ Activation inputs are produced by *inference* with arbitrary unification ids, no
 by the resolver. `from_inputs` addresses the whole input vector with
 `address_inputs`: the inputs map into the param-address space `(a0, a1, …)` in
 one shared pass — distinct positions stay distinct, repeats share — and the
-arrow is canonical the instant it is built. `CallableSurface::new` and the
+coordinate record is canonical the instant it is built. `CallableSurface::new` and the
 contribution/callsite normalizers (`normalize_contributions`,
 `define_callsite_summary`) call the *same* `address_inputs`, so every
 compiler2-side surface lands in one canonical frame.
@@ -137,15 +143,35 @@ key is minted from inputs only, dispatch is on inputs, and nothing keys on the
 result. The activation's real pending return lives in the `ReturnType` fact
 (an `Option`, where "unknown" is distinct from the type `none`). `from_inputs` is the
 single mint shared by `World::canonical_activation_key` and every other
-key-construction site; `realpha_inputs` carries a key minted elsewhere (a flow
-edge, a cloned summary) back onto the canonical addresses, and is idempotent on
-an already-addressed arrow.
+key-construction site; coordinate transforms carry a key minted elsewhere (a
+flow edge, a cloned summary) back onto canonical addresses, and are idempotent
+on an already-addressed coordinate vector.
+
+## A callable has a value coordinate and an observation coordinate
+
+`Ty` answers the runtime question: which closure value can arrive, including
+its literal owner and capture values. `ActivationSignature` answers the planning question:
+which direct parameter/result surface was observed for that value. An
+`ActivationInput` holds both, and `SemanticValue` preserves both while a body
+walks tuples, containers, bindings, and calls. A literal contributes its owner
+signature; a matched function contract contributes its matched direct signature.
+Neither contribution intersects an arrow into the closure's `Ty`.
+
+`ActivationKey::from_inputs_with_callable_surfaces` addresses the outer value
+inputs as `a0`, `a1`, … and then addresses each nested callable signature below
+the owning input (`a0_p0`, `a0_r`, …). Thus equal observations share a carrier
+coordinate and an observation cannot accidentally alias the enclosing body
+parameter. A non-consuming forwarding body clears the carrier of every
+locally-ignored callable slot together with the erased closure brand, and a
+recursive key clears the whole carrier during convergence. Precise
+`ActivationInputs` rows always retain it, so downstream calls still receive the
+observation.
 
 ## The dispatch key is a derived collapse, not the evidence
 
-`canonical_activation_key` mints the precise evidence arrow with `from_inputs`,
+`canonical_activation_key` mints precise input coordinates with `from_inputs`,
 then — for recursive functions only — derives the dispatch key with
-`convergence_collapse(arrow, demand, returned)`, where `demand` is
+`convergence_collapse_inputs(inputs, demand, returned)`, where `demand` is
 `InputDemand::forwarded_dispatch` — this body's own entry dispatch joined with
 what every callee it forwards a slot to asks of that slot (fz-kdt.183) — and
 `returned` is `InputDemand::returned`, the positions this activation's
@@ -173,12 +199,12 @@ for the initial cons case, another for the possibly-empty tail, or another for
 an already-joined equivalent list family. A recursive ascent therefore settles
 without erasing the discriminator that chose the clause.
 
-Key != evidence is intentional. The precise arrow stays in the
-`ActivationInputs` fact; the collapsed arrow is the `HashMap` dispatch key.
+Key != evidence is intentional. The precise coordinates stay in the
+`ActivationInputs` fact; the collapsed coordinates are the `HashMap` dispatch key.
 Recursive activation-input evidence uses the same demand shape, but only widens
 variable-bearing ignored payloads so concrete caller evidence is not lowered by
 key convergence. This is a bounded-specialization control, and it is
-one whole-arrow operation on the interned arrow — not a per-input pre-pass.
+one whole-coordinate operation — not a per-input pre-pass.
 
 ## Matching is subsumption — the trichotomy calculator
 
@@ -347,8 +373,8 @@ suppressed the claim without naming why it was wrong. The partial-join rule
 marks that rung, and every occurrence the walk cannot read with it, so nothing
 is left for a witness-shaped veto to do.
 
-`ContractArrow::apply` is then a thin loop: for each clause, read
-`arrow_params`/`arrow_result`, call `match_arrow` with the bounds sidecar, and
+`ContractArrow::apply` is then a thin loop: for each clause, read its direct
+`params`/`result`, call `match_arrow` with the bounds sidecar, and
 fold `Known`/`Underconstrained` param projections into the applied contract,
 unioning the per-clause results.
 
@@ -368,8 +394,8 @@ has erased transported closure identity.
 
 ## The backend boundary: value templates
 
-The interned addressed arrow is the only thing that crosses into keying,
-transport, and the backend; names and bounds stop at the semantics boundary. The
+Addressed coordinates cross into keying, transport, and the backend; names and
+bounds stop at the semantics boundary. The
 one thing that must NOT cross is an activation whose argument has no runtime
 representation. `is_value_template` is that predicate: a bare type variable, or a
 tuple one of whose fields is a bare variable. It is narrower than `has_vars` — a

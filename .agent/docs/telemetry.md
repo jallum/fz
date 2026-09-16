@@ -379,16 +379,22 @@ then the referencing event:
 type, `compiler2::canon::function_label` for a function), never
 `Types::display` — display is measured non-injective, so two different
 activations would compare equal. The `type` domain covers every raw `Ty` on the
-stream: the `arrow` field and the elements of an `ActivationSymbol`'s `input`
-array both resolve through it. The canonical form is an EQUIVALENCE, not an
+stream: the `inputs` array, `result` field, and every nested input/result pair
+in `callable_surfaces` of activation identities all resolve through it. A
+`callable_surfaces` entry is an array per activation input; each inner record
+is `{inputs, result}` in that input's addressed frame. The canonical form is an EQUIVALENCE, not an
 injection on ids: two mutually-subtype arena slots share one canonical form and
 are one identity to a reader, which is the point — that is the pair a
 renumbering is free to swap.
 
+Causal reports apply that dictionary to the same activation coordinates before
+they group fact and product identities, so their cross-process summaries do not
+depend on one run's raw type ids.
+
 This lives entirely in the sink (`CanonStream`, `jsonl.rs`). No production emit
 site changed, telemetry-off renders nothing, and the cost is per DISTINCT id
-(measured on `00181_enum_reduce_operator_ref`: 203 definition lines, 38KB, on a
-917KB log). Definitions need a `&World`, which only some events carry, so a line
+(measured on `00181_enum_reduce_operator_ref`: 304 definition lines, 58KB, on a
+1.68MB log). Definitions need a `&World`, which only some events carry, so a line
 naming a still-undefined id is PARKED until an event arrives that can define it;
 once anything is parked everything parks, so the stream's own order never
 changes and a streaming reader never sees an id it has no dictionary entry for.

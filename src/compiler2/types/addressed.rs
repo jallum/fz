@@ -29,6 +29,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use super::super::identity::ActivationSignature;
 use super::descr::Descr;
 use super::{Ty, TypeVarId, Types};
 use crate::finite_set::FiniteSet;
@@ -191,7 +192,8 @@ impl Types {
     /// Concrete structure (tuples, lists, brands, refinements) is preserved
     /// exactly — only variable identity is canonicalized.
     pub fn address_arrow(&mut self, params: &[Ty], result: Ty) -> Ty {
-        self.address_arrow_with_env(params, result).0
+        let (signature, _) = self.address_signature_with_env(params, result);
+        self.arrow(&signature.inputs, signature.result)
     }
 
     /// Address an input vector among ITSELF — params left-to-right, sharing one
@@ -244,6 +246,18 @@ impl Types {
     /// human names) onto addresses through this map so they stay aligned with
     /// the canonical arrow.
     pub fn address_arrow_with_env(&mut self, params: &[Ty], result: Ty) -> (Ty, HashMap<TypeVarId, TypeVarId>) {
+        let (signature, env) = self.address_signature_with_env(params, result);
+        (self.arrow(&signature.inputs, signature.result), env)
+    }
+
+    /// Address one input/result coordinate record with the same binder rule as
+    /// an arrow, without interning a callable value merely to carry planner or
+    /// contract evidence.
+    pub fn address_signature_with_env(
+        &mut self,
+        params: &[Ty],
+        result: Ty,
+    ) -> (ActivationSignature, HashMap<TypeVarId, TypeVarId>) {
         let mut correlations = AddressCorrelations::default();
         let params: Vec<Ty> = params
             .iter()
@@ -251,8 +265,34 @@ impl Types {
             .map(|(i, &p)| self.address_remap(p, &[AddrStep::Param(i as u16)], &mut correlations))
             .collect();
         let result = self.address_remap(result, &[AddrStep::Result], &mut correlations);
-        let arrow = self.arrow(&params, result);
-        (arrow, correlations.values)
+        (
+            ActivationSignature {
+                inputs: params.into_boxed_slice(),
+                result,
+            },
+            correlations.values,
+        )
+    }
+
+    /// Address a callable observation as the value at one input slot of an
+    /// enclosing activation. Its own parameter/result coordinates remain
+    /// nested below that slot: input zero's first callable parameter is
+    /// `a0_p0`, not the top-level `a0` used by a standalone contract arrow.
+    pub fn address_signature_at_input(&mut self, input: usize, signature: &ActivationSignature) -> ActivationSignature {
+        let surface = self.arrow(&signature.inputs, signature.result);
+        let any = self.any();
+        let mut inputs = vec![any; input];
+        inputs.push(surface);
+        let addressed = self.address_inputs(&inputs);
+        let surface = addressed[input];
+        let sig = self
+            .descr(&surface)
+            .pure_arrow()
+            .expect("an addressed callable observation must remain a pure arrow");
+        ActivationSignature {
+            inputs: sig.args.clone().into_boxed_slice(),
+            result: sig.ret,
+        }
     }
 
     /// Rewrite every variable in `ty` to its first-occurrence address, threading
@@ -647,7 +687,7 @@ mod tests {
         let root = RootId::for_test(1);
         let function = FunctionId::from_coordinate(2);
         let key = ActivationKey::from_inputs(root, function, &[closure], &mut t);
-        let once = key.inputs(&t);
+        let once = key.inputs();
         let outer_captures = t
             .closure_lit_parts(&once[0])
             .expect("addressed closure literal")
@@ -680,9 +720,9 @@ mod tests {
             "identically spelled addresses from independent value and callable scopes must not alias"
         );
 
-        let repeated = ActivationKey::from_inputs(root, function, &once, &mut t);
+        let repeated = ActivationKey::from_inputs(root, function, once, &mut t);
         assert_eq!(
-            repeated.arrow, key.arrow,
+            repeated.signature, key.signature,
             "re-addressing an activation key must preserve every scoped correlation exactly"
         );
     }
@@ -703,12 +743,16 @@ mod tests {
             let closure = t.closure_lit(target, vec![generic], 1);
             let activation =
                 ActivationKey::from_inputs(RootId::for_test(3), FunctionId::from_coordinate(4), &[closure], &mut t);
-            let input = activation.inputs(&t)[0];
+            let input = activation.inputs()[0];
             let capture = t.closure_lit_parts(&input).expect("named closure literal").captures[0];
 
             assert_eq!(t.display(&capture), "a0_c0");
             assert!(
-                t.free_var_ids(&activation.arrow)
+                activation
+                    .inputs()
+                    .iter()
+                    .flat_map(|input| t.free_var_ids(input))
+                    .collect::<std::collections::HashSet<_>>()
                     .iter()
                     .all(|id| address_path(&t.address_paths, *id).is_some()),
                 "the complete named-closure activation must contain structural addresses only"

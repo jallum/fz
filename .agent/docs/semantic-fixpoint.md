@@ -15,12 +15,14 @@ fact stands between local semantic settlement and the requesting product.
 
 ## What an activation is today
 
-An **activation** is `ActivationKey { root, function, arrow: Ty }`: one
-function specialized for one root at one canonical input shape. The canonical
-inputs are the parameter side of an interned arrow type (`arrow_params`); the
-result side is the addressed result var `r0` — "return not yet known", an
-unknown to resolve, never a `none()` fallback. Read the inputs with
-`key.inputs(types)` / `key.input_len(types)`
+An **activation** is `ActivationKey { root, function, signature,
+callable_surfaces }`: one function specialized for one root at one canonical
+input shape. The canonical inputs live directly in `signature.inputs`; its
+result coordinate is the addressed result var `r0` — "return not yet known", an
+unknown to resolve, never a `none()` fallback. `callable_surfaces` is a
+per-input set of direct signature observations. It complements, rather than
+changes, the input `Ty`: the `Ty` denotes the closure value; the sidecar records
+the call shape a body can use. Read the inputs with `key.inputs()` / `key.input_len()`
 and build a key from raw inputs with `ActivationKey::from_inputs`. Demand and
 evidence are separate facts:
 
@@ -54,6 +56,14 @@ example, rows `(list(int), list(:left))` and `(list(:right), list(int))`
 remain two rows even when they select one callee key. The column-wise call
 summary is a transport projection, never a new call to resolve or an input
 row to publish.
+
+At an extern or provider boundary, the runtime still needs the direct call
+contract. The semantic summary therefore retains raw value inputs for closure
+identity and a separate addressed boundary-input vector for that contract.
+Runtime demand reads the boundary vector only for those boundaries; ordinary
+compiler-owned calls read the value vector. This keeps an escaping closure's
+literal target available to construction and dispatch while giving an ABI its
+direct parameter shape.
 
 - whole-row EQUIVALENCE (pointwise `Types::is_equivalent`): the incoming row
   says exactly what a standing row says;

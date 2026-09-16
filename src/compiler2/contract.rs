@@ -4,7 +4,7 @@
 //! resolution applies it to observed arguments before minting callee
 //! activations or deriving callable-boundary demand.
 //!
-//! A contract clause is one interned ADDRESSED ARROW plus its variable bounds
+//! A contract clause is one addressed input/result coordinate record plus its variable bounds
 //! (fz-hwn.27.9). The arrow's variables are structural addresses — the resolver
 //! assigns them at the binder (fz-hwn.27.14), so two alpha-equivalent contracts
 //! intern byte-identical — and the bounds are keyed by those same addresses, so
@@ -54,13 +54,14 @@ impl ResolvedContractArrow {
     }
 }
 
-/// One resolved contract clause: the addressed arrow surface and its
+/// One resolved contract clause: addressed input/result coordinates and their
 /// address-keyed variable bounds. Protocol-domain obligations are classified
 /// from the resolved `Ty` marker tags, so current structural enforceability is
 /// derived from `protocol_domain_obligations.is_empty()`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractArrow {
-    pub arrow: Ty,
+    pub params: Box<[Ty]>,
+    pub result: Ty,
     pub bounds: HashMap<TypeVarId, Ty>,
     pub protocol_domain_obligations: BTreeSet<ProtocolDomainObligation>,
 }
@@ -94,18 +95,20 @@ impl FunctionContract {
             .into_iter()
             .map(|decl| ResolvedContractArrow::classify(types, decl))
             .collect();
-        Self::from_classified_arrows(types, arrows)
+        Self::from_classified_arrows(arrows)
     }
 
-    pub(crate) fn from_classified_arrows(types: &mut Types, arrows: Vec<ResolvedContractArrow>) -> Self {
+    pub(crate) fn from_classified_arrows(arrows: Vec<ResolvedContractArrow>) -> Self {
         Self {
             arrows: arrows
                 .into_iter()
                 .map(|arrow| ContractArrow {
-                    // params/result arrive addressed from the resolver binder
-                    // (fz-hwn.27.14), so this packs them into the interned arrow
-                    // surface; the bounds are already keyed by those addresses.
-                    arrow: types.arrow(&arrow.decl.params, arrow.decl.result),
+                    // Params/result arrive addressed from the resolver binder.
+                    // They are contract coordinates, not a
+                    // callable value, so retain them directly; the bounds are
+                    // keyed by those same addresses.
+                    params: arrow.decl.params.into_boxed_slice(),
+                    result: arrow.decl.result,
                     bounds: arrow.decl.constraints,
                     protocol_domain_obligations: arrow.protocol_domain_obligations,
                 })
@@ -126,11 +129,7 @@ impl FunctionContract {
         for clause in &self.arrows {
             let clause_enforceable = clause.protocol_domain_obligations.is_empty();
             enforceable |= clause_enforceable;
-            let params = types.arrow_params(&clause.arrow);
-            let clause_result = types
-                .arrow_result(&clause.arrow)
-                .expect("a contract clause is an arrow with a result slot");
-            match types.match_arrow(&params, &clause_result, &clause.bounds, arg_tys) {
+            match types.match_arrow(&clause.params, &clause.result, &clause.bounds, arg_tys) {
                 ArrowMatch::Known {
                     params,
                     result: matched,
@@ -158,14 +157,10 @@ impl FunctionContract {
                 let Some(narrowed) = self.narrow_args_to_clause(types, clause, arg_tys) else {
                     continue;
                 };
-                let params = types.arrow_params(&clause.arrow);
-                let clause_result = types
-                    .arrow_result(&clause.arrow)
-                    .expect("a contract clause is an arrow with a result slot");
                 if let ArrowMatch::Known {
                     params,
                     result: matched,
-                } = types.match_arrow(&params, &clause_result, &clause.bounds, &narrowed)
+                } = types.match_arrow(&clause.params, &clause.result, &clause.bounds, &narrowed)
                 {
                     result = Some(match result {
                         Some(current) => types.union(current, matched),
@@ -251,9 +246,9 @@ impl FunctionContract {
 
 impl ContractArrow {
     fn input_domain_row(&self, types: &mut Types) -> Vec<Ty> {
-        types
-            .arrow_params(&self.arrow)
-            .into_iter()
+        self.params
+            .iter()
+            .copied()
             .map(|param| instantiate_domain(types, param, &self.bounds))
             .collect()
     }

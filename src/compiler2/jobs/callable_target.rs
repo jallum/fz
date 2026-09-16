@@ -130,7 +130,7 @@ mod tests {
             .callable_construction_target(&key)
             .expect("the exact construction target should be published")
             .clone();
-        let target_inputs = target.activation.inputs(world.types());
+        let target_inputs = target.activation.inputs();
         assert_eq!(target_inputs.len(), key.surface.inputs.len() + 1);
         assert_eq!(
             &target_inputs[1..],
@@ -289,10 +289,7 @@ mod tests {
             .expect("the target producer should observe the replaced owner facts");
         assert_ne!(replacement, &original);
         assert!(world.fact_revision(&target_fact) > revision);
-        assert_eq!(
-            &replacement.activation.inputs(world.types())[1..],
-            key.surface.inputs.as_slice(),
-        );
+        assert_eq!(&replacement.activation.inputs()[1..], key.surface.inputs.as_slice(),);
     }
 
     #[test]
@@ -437,7 +434,7 @@ mod tests {
         let target = world
             .callable_construction_target(&late)
             .expect("the late surface should have its own exact target");
-        let inputs = target.activation.inputs(world.types());
+        let inputs = target.activation.inputs();
         assert_eq!(&inputs[inputs.len() - late_surface.inputs.len()..], late_surface.inputs);
         assert!(
             world.callable_construction_target(&existing).is_some(),

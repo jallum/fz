@@ -246,7 +246,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // field demands join as prefixes, so a field one consumer reads stays
         // distinct from a field another ignores and each such field earns its
         // own demand evaluation.
-        (4199, 11, 19, 408),
+        // Direct callable observations change the continuation-ladder order
+        // without changing its identities or terminal artifacts. Every extra
+        // round remains attached to the fact movement that caused it.
+        (4208, 11, 19, 408),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -259,7 +262,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // revisions of their own.
         // Each ordering operator's `any`/`any` clause publishes one non-demand
         // changed revision, and this fixture reaches `<` and `>`.
-        1467,
+        // The same nine continuation rounds publish one retained changed
+        // revision each; they remain non-demand work because the frontier has
+        // already selected their exact demand keys.
+        1476,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
