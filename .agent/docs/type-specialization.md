@@ -84,6 +84,11 @@ TupleField      values[value]  := tuple_field_type(source, index)
 SplitList       values[head] := elem(source); values[tail] := list(elem(source))
 ```
 
+An assertion on a `TupleField` also refines its owning tuple before a later
+sibling projection reads it. Thus `{:ok, handle} = result` filters `result` to
+its `:ok` tuple alternative before typing `handle`; the field proof is not
+discarded as a fact about a temporary projection.
+
 `If` clones the value map per branch so a narrowing in one arm does not leak into
 the other, then unions the arm results — the same shape `union` gives any branch.
 The clause-level dispatch already proved the head shape, so clause params bind
