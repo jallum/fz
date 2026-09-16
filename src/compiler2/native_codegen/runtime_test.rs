@@ -13,6 +13,25 @@
 //! its axes' flags, and [`emit_axis`] matches the table exhaustively, so an
 //! axis added to the lattice stops both doors compiling until it is decided
 //! here.
+//!
+//! The three struct axes share one schema read and divide the STRUCT values
+//! between them. Which arities the other-structs axis takes is the predicate's
+//! own answer -- exactly the ones the tuple axis does not name, through
+//! [`crate::runtime_type_predicate::RuntimeTypePredicate::other_struct_arities`]
+//! -- and the arity-only reading of both axes renders that set into schema
+//! space through [`emit_arity_set_membership`]. An exact tuple axis instead
+//! fuses the arity question with the per-arity shape guard, because a value's
+//! arity chooses which shapes it can match. Reading the door's own registered schemas
+//! instead would give a different answer, because a schema is registered for
+//! every arity a test asks about AT EVERY DEPTH while naming is a top-level
+//! reading.
+//!
+//! A named struct and a tuple are both `ValueKind::STRUCT` at runtime, and only
+//! their schema ids tell them apart, so the named-struct and arity readings
+//! stay separate functions. Folding them into one schema-id question would lose
+//! the distinction
+//! [`crate::runtime_type_predicate::RuntimeTypePredicate::tuple_positions`]
+//! depends on: a named struct never answers a tuple's position questions.
 
 use std::collections::HashMap;
 
@@ -326,8 +345,10 @@ fn emit_struct_axes<'f, E: RuntimeTestEmitter<'f>>(
     value: E::Value,
     predicate: &RuntimeTypePredicate,
 ) -> Result<ir::Value, CodegenError> {
-    let arities = predicate.tuples.arities().clone();
-    if predicate.allow_other_structs && arities.is_any() && predicate.named_structs.is_any() {
+    // Where the other-structs axis takes every arity and the named-structs axis
+    // every name, the three axes between them admit every struct, so the kind
+    // is the whole answer and no schema need be read.
+    if predicate.other_struct_arities().is_any() && predicate.named_structs.is_any() {
         return e.kind_flag(value, ValueKind::STRUCT);
     }
     let is_struct = e.kind_flag(value, ValueKind::STRUCT)?;
@@ -335,17 +356,7 @@ fn emit_struct_axes<'f, E: RuntimeTestEmitter<'f>>(
         let schema = e.schema_id(value)?;
         let tuple_flag = emit_tuple_axis(e, value, predicate, schema)?;
         let named_flag = emit_named_struct_axis(e, schema, &predicate.named_structs);
-        let other_flag = if predicate.allow_other_structs {
-            let tuple_ids: Vec<u32> = e.tuple_schema_ids().values().copied().collect();
-            let named_ids: Vec<u32> = e.named_schema_ids().values().copied().collect();
-            let known_tuple = emit_any_schema_id_match(e.builder(), schema, tuple_ids);
-            let known_named = emit_any_schema_id_match(e.builder(), schema, named_ids);
-            let b = e.builder();
-            let known_struct = b.ins().bor(known_tuple, known_named);
-            b.ins().icmp_imm(IntCC::Equal, known_struct, 0)
-        } else {
-            e.builder().ins().iconst(types::I8, 0)
-        };
+        let other_flag = emit_arity_set_membership(e, schema, &predicate.other_struct_arities());
         let b = e.builder();
         let tuple_or_named = b.ins().bor(tuple_flag, named_flag);
         Ok(b.ins().bor(tuple_or_named, other_flag))
@@ -360,18 +371,16 @@ fn emit_tuple_axis<'f, E: RuntimeTestEmitter<'f>>(
     predicate: &RuntimeTypePredicate,
     schema: ir::Value,
 ) -> Result<ir::Value, CodegenError> {
-    let arities = predicate.tuples.arities().clone();
+    let arities = predicate.tuples.arities();
     if arities.is_none() {
         return Ok(e.builder().ins().iconst(types::I8, 0));
     }
     if !predicate.tuples.is_exact() {
-        return Ok(emit_tuple_arity_membership(e, schema, &arities));
+        return Ok(emit_arity_set_membership(e, schema, arities));
     }
-    // An exact axis names a finite set of arities, one per shape, so shape
+    // An exact axis derives its arities from its shapes' lengths, so shape
     // membership IS arity membership and the two are asked as one question.
-    let mut arities_in_order: Vec<usize> = predicate.tuples.shapes().iter().map(Vec::len).collect();
-    arities_in_order.sort_unstable();
-    arities_in_order.dedup();
+    let arities_in_order: Vec<usize> = arities.values.iter().copied().collect();
     let mut hit = e.builder().ins().iconst(types::I8, 0);
     for arity in arities_in_order {
         let Some(schema_id) = e.tuple_schema_ids().get(&arity).copied() else {
@@ -433,33 +442,43 @@ fn emit_shapes_of_arity<'f, E: RuntimeTestEmitter<'f>>(
     Ok(hit)
 }
 
-/// The arity-only reading: does the schema belong to an admitted arity, and is
-/// it not one of the module's named structs?
-fn emit_tuple_arity_membership<'f, E: RuntimeTestEmitter<'f>>(
+/// Whether the schema is an UNNAMED struct whose arity `arities` admits.
+///
+/// One rendering of an arity set into schema space, for both struct axes that
+/// have one: the tuple axis asks it of the arities it names, the other-structs
+/// axis of the complement those leave behind. A tuple is a struct the module
+/// never named, so a cofinite set is "not a named schema, and not one of the
+/// excluded arities' schemas" while a finite one is exactly the schemas of the
+/// arities it lists -- and an arity no schema was registered for names no
+/// value, so it drops out of either reading rather than refusing to compile.
+/// `RuntimeValueReader::unnamed_struct_of_arity` is the interpreter's twin.
+///
+/// Reached only under a STRUCT guard, which is what makes `schema` this value's
+/// own schema id.
+fn emit_arity_set_membership<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     schema: ir::Value,
     arities: &FiniteSet<usize>,
 ) -> ir::Value {
-    let named: Vec<u32> = e.named_schema_ids().values().copied().collect();
     let of_arities: Vec<u32> = arities
         .values
         .iter()
         .filter_map(|arity| e.tuple_schema_ids().get(arity).copied())
         .collect();
+    if !arities.cofinite {
+        return emit_any_schema_id_match(e.builder(), schema, of_arities);
+    }
+    let named: Vec<u32> = e.named_schema_ids().values().copied().collect();
+    let known_named = emit_any_schema_id_match(e.builder(), schema, named);
     if arities.is_any() {
-        let known_named = emit_any_schema_id_match(e.builder(), schema, named);
         return e.builder().ins().icmp_imm(IntCC::Equal, known_named, 0);
     }
-    if arities.cofinite {
-        let known_named = emit_any_schema_id_match(e.builder(), schema, named);
-        let excluded = emit_any_schema_id_match(e.builder(), schema, of_arities);
-        let b = e.builder();
-        let is_named = b.ins().icmp_imm(IntCC::NotEqual, known_named, 0);
-        let excluded_ok = b.ins().icmp_imm(IntCC::Equal, excluded, 0);
-        let not_named = b.ins().bxor_imm(is_named, 1);
-        return b.ins().band(not_named, excluded_ok);
-    }
-    emit_any_schema_id_match(e.builder(), schema, of_arities)
+    let excluded = emit_any_schema_id_match(e.builder(), schema, of_arities);
+    let b = e.builder();
+    let is_named = b.ins().icmp_imm(IntCC::NotEqual, known_named, 0);
+    let excluded_ok = b.ins().icmp_imm(IntCC::Equal, excluded, 0);
+    let not_named = b.ins().bxor_imm(is_named, 1);
+    b.ins().band(not_named, excluded_ok)
 }
 
 fn emit_named_struct_axis<'f, E: RuntimeTestEmitter<'f>>(

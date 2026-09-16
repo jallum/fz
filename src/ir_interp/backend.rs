@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::binop::{eval_binop, eval_unop, interp_value_eq, unpack_callable, unpack_closure};
-use super::dispatch_exec::{Dispatch, DispatchSource, dispatch_values};
+use super::dispatch_exec::{Dispatch, DispatchSource, TypeTest, dispatch_values};
 use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
 use super::value::{
@@ -19,7 +19,7 @@ use crate::compiler2::{
 };
 use crate::compiler2::{ExecutableKey, FunctionId};
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
-use crate::runtime_type_predicate::CallableShape;
+use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use crate::types::ClosureTarget;
 use fz_runtime::any_value::{
@@ -1525,17 +1525,21 @@ fn eval_steps<T: Telemetry + ?Sized>(
             }
             ProgramStep::AssertTuple { source, arity } => {
                 let source_value = env_get_value(env, *source)?;
-                if source_value
+                let lane_form_arity = source_value
                     .transport_shape()
-                    .and_then(|shape| transport.interners().tuple_arity(shape))
-                    != Some(*arity)
-                    && !is_tuple_arity(
+                    .and_then(|shape| transport.interners().tuple_arity(shape));
+                if lane_form_arity != Some(*arity) {
+                    let whole = materialize_backend_value(transport, runtime.cur_proc(), &source_value)?;
+                    let mut test = TypeTest {
                         runtime,
-                        materialize_backend_value(transport, runtime.cur_proc(), &source_value)?,
-                        *arity,
-                    )?
-                {
-                    return Err(format!("match_error: expected tuple arity {}", arity));
+                        types: &*types,
+                        program,
+                        module,
+                        transport,
+                    };
+                    if !test.whole_value_matches(&RuntimeTypePredicate::tuple_arity(*arity), whole) {
+                        return Err(format!("match_error: expected tuple arity {}", arity));
+                    }
                 }
             }
             ProgramStep::TupleField { value, source, index } => {
@@ -3089,14 +3093,6 @@ fn drain_pending_dtors_backend<T: Telemetry + ?Sized>(
 
 fn unpack_pending_dtor_closure(closure: RuntimeAnyValue) -> Result<(FnId, Vec<AnyValue>), String> {
     unpack_closure(closure).map_err(|error| format!("backend dtor drain: invalid closure: {error}"))
-}
-
-fn is_tuple_arity(runtime: &mut IrInterpRuntime, value: AnyValue, arity: usize) -> Result<bool, String> {
-    let slot = value.value(runtime.cur_proc())?;
-    Ok(slot.kind() == ValueKind::STRUCT
-        && slot
-            .heap_addr()
-            .is_some_and(|p| unsafe { struct_schema_id(p) } == interp_tuple_schema_id(runtime, arity)))
 }
 
 fn backend_bit_type_tag(ty: crate::ast::BitType) -> u32 {

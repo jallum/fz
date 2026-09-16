@@ -887,12 +887,12 @@ impl<'a> Dispatch<'a> {
 
 /// The reader half of a run: what a type test needs to ask a value its
 /// question, held apart from the state that says what the value is.
-struct TypeTest<'a> {
-    runtime: &'a mut IrInterpRuntime,
-    types: &'a Types,
-    program: &'a BackendProgram,
-    module: &'a Module,
-    transport: &'a TransportStore,
+pub(super) struct TypeTest<'a> {
+    pub(super) runtime: &'a mut IrInterpRuntime,
+    pub(super) types: &'a Types,
+    pub(super) program: &'a BackendProgram,
+    pub(super) module: &'a Module,
+    pub(super) transport: &'a TransportStore,
 }
 
 impl TypeTest<'_> {
@@ -957,7 +957,7 @@ impl TypeTest<'_> {
     /// The partner of the decomposition above: where a lane-form subject is
     /// asked one question per position, a value that exists as one word is
     /// offered whole to the shared matcher.
-    fn whole_value_matches(&mut self, predicate: &RuntimeTypePredicate, value: AnyValue) -> bool {
+    pub(super) fn whole_value_matches(&mut self, predicate: &RuntimeTypePredicate, value: AnyValue) -> bool {
         let proc = self.runtime.cur_proc();
         let Ok(runtime_value) = value.value(proc) else {
             return false;

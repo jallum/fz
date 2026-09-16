@@ -1,0 +1,30 @@
+#---
+# purpose: "a receive clause may name a tuple arity the module never constructs"
+# oracle: oracle.exs
+#---
+#
+# # receive_unconstructed_tuple_arity
+#
+# A receive clause naming a tuple arity that nothing in the module builds is a
+# clause no message can match. It is still a legal clause, and it compiles to
+# that answer on every door.
+#
+# The module here constructs only a 2-tuple, so no 4-tuple schema is ever
+# registered. The receive matcher's arity question for the `{:b, p, q, r}`
+# clause therefore has no schema id to compare against, and the right answer is
+# false: no value in this program can carry a schema that was never minted.
+#
+# Before the receive matcher asked its arity question through
+# `RuntimeTypePredicate`, the native door raised a codegen error on the missing
+# registration instead. The interpreter answered false and printed 1, so this
+# shape failed to compile on `run` and `build` while succeeding on `interp`.
+def main() do
+  send(self(), {:a, 1})
+
+  x = receive do
+    {:a, n} -> n
+    {:b, p, q, r} -> p + q + r
+  end
+
+  dbg(x)
+end
