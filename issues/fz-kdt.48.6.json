@@ -11,9 +11,15 @@
   "id": "fz-kdt.48.6",
   "labels": [],
   "parent": "fz-kdt.48",
+  "comments": [
+    {
+      "text": "Measured cause of fold-order non-confluence (2026-09-15, on fz-kdt.48/one-ty-per-denotation at f0c28c2a8): dnf::normalize_empty_nonempty_list_unions is an order-dependent rewrite inside Descr::union, before intern. When an exact [] clause is present it widens every exact non-empty clause present at that moment to admit [] and drops the [] clause, so the result depends on when [] arrives. Members nel(binary), nel(nil), nel(nil), empty_list(): folded forward -\u003e list(nil) | list(binary); folded reverse -\u003e nel(binary) | list(nil). Both are in canonical clause order, both equivalent, two ids. Clause order (.48.3) and absorption (.48.4) cannot see it; the census counts the pair but not the cause. Fix belongs here: one list normal form applied at intern, the union-path rewrite deleted. Reproducer kept at the coordinator's scratchpad (48-6-fold-order-reproducer.rs) for the test.",
+      "timestamp": "2026-09-16T01:35:29Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "One list normal form, one authority",
   "type": "task",
-  "updated_at": "2026-09-15T20:30:08Z"
+  "updated_at": "2026-09-16T01:35:29Z"
 }
