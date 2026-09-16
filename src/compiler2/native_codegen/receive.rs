@@ -453,7 +453,7 @@ fn resolve_dispatch_subject<M: cranelift_module::Module>(
     }
     let subject_data = ctx
         .dispatch
-        .matrix
+        .graph
         .subjects
         .get(subject.0 as usize)
         .ok_or_else(|| CodegenError::new(format!("dispatch subject {:?} out of bounds", subject)))?;
@@ -1526,9 +1526,9 @@ fn collect_binary_literals_in_dispatch(dispatch: &ReceiveDispatchPlan, out: &mut
     for key in &dispatch.prepared_keys {
         collect_binary_literals_in_const(key, out);
     }
-    for arm in &dispatch.matrix.arms {
-        for question in &arm.questions {
-            collect_binary_literals_in_region(&question.predicate.region, out);
+    for node in &dispatch.graph.nodes {
+        if let DispatchNode::Test { predicate, .. } = node {
+            collect_binary_literals_in_region(&predicate.region, out);
         }
     }
     for guard in &dispatch.guards {

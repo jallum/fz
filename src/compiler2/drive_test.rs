@@ -11159,7 +11159,7 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
         for finding in indistinguishable_dispatch_arms(fixture) {
             let (site, group) = finding
                 .split_once(" arm ")
-                .expect("a twin names its site then its arms");
+                .expect("a twin names its site then its source arms");
             *measured.entry((fixture, site.to_string())).or_default() += 1;
             twins.push(format!("{fixture} {site}: arm {group}"));
         }
@@ -11250,13 +11250,13 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
     for entry in artifact_plans(compiler.world(), &program) {
         let asked = entry
             .plan
-            .matrix
-            .arms
+            .outcomes
             .iter()
-            .map(|arm| {
-                arm.questions
-                    .iter()
-                    .filter_map(|question| match &question.predicate.region {
+            .filter_map(|outcome| outcome_match_questions(entry.plan, outcome.outcome))
+            .map(|questions| {
+                questions
+                    .into_iter()
+                    .filter_map(|question| match &question.region {
                         Region::Type(ty) => Some(types.runtime_type_predicate(ty)),
                         _ => None,
                     })
@@ -11415,16 +11415,21 @@ fn compiler2_source_struct_patterns_publish_typed_tests_and_named_field_evidence
     let mut receive_projected = false;
     for artifact in plans {
         let plan = artifact.plan;
-        for arm in &plan.matrix.arms {
-            for question in &arm.questions {
-                for result in &question.match_evidence.projections {
+        for node in &plan.graph.nodes {
+            if let crate::dispatch_matrix::DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } = node
+            {
+                for result in &on_match.evidence.projections {
                     let SubjectSource::Projection(projection) = plan.subject(*result) else {
                         panic!("field evidence must name a projected subject");
                     };
                     let ProjectionKind::StructField(_) = &projection.kind else {
                         continue;
                     };
-                    let Region::Type(ty) = question.predicate.region else {
+                    let Region::Type(ty) = predicate.region else {
                         panic!("a named field projection must be owned by a successful type discriminator");
                     };
                     assert_eq!(
@@ -11432,9 +11437,9 @@ fn compiler2_source_struct_patterns_publish_typed_tests_and_named_field_evidence
                         1,
                         "a source struct question must retain exactly one World module identity"
                     );
-                    assert_eq!(projection.source, question.predicate.subject);
+                    assert_eq!(projection.source, predicate.subject);
                     assert!(
-                        question.miss_evidence.projections.is_empty(),
+                        on_miss.evidence.projections.is_empty(),
                         "a rejected schema grants no access to its fields"
                     );
                     projected += 1;
@@ -11444,7 +11449,7 @@ fn compiler2_source_struct_patterns_publish_typed_tests_and_named_field_evidence
         }
         for outcome in &plan.outcomes {
             for binding in &outcome.bindings {
-                if let SubjectSource::Projection(projection) = &plan.matrix.subjects[binding.source.0 as usize].source
+                if let SubjectSource::Projection(projection) = &plan.graph.subjects[binding.source.0 as usize].source
                     && let ProjectionKind::StructField(field) = &projection.kind
                 {
                     assert_eq!(
@@ -11647,7 +11652,7 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
 /// outcome the first time it is reached.
 ///
 /// This is the only order execution has -- the runtime executes `plan.graph`
-/// and never `plan.matrix.arms` -- so whether a site's own list agrees with it
+/// and source arms are not retained -- so whether a site's own list agrees with it
 /// is a measurement, which
 /// `compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order`
 /// takes.
@@ -11674,6 +11679,41 @@ fn graph_first_match_bodies(plan: &PatternDispatchPlan<Ty>) -> Vec<u32> {
         }
     }
     order
+}
+
+/// The positive tests that route the graph to one source outcome. Failed tests
+/// belong to earlier arms the graph skipped; only a taken match edge belongs to
+/// the outcome's own conjunction.
+fn outcome_match_questions(
+    plan: &PatternDispatchPlan<Ty>,
+    outcome: crate::dispatch_matrix::OutcomeId,
+) -> Option<Vec<&crate::dispatch_matrix::RegionPredicate<Ty>>> {
+    fn visit<'a>(
+        plan: &'a PatternDispatchPlan<Ty>,
+        node: crate::dispatch_matrix::GraphNodeId,
+        outcome: crate::dispatch_matrix::OutcomeId,
+        questions: &mut Vec<&'a crate::dispatch_matrix::RegionPredicate<Ty>>,
+    ) -> bool {
+        match plan.graph.node(node) {
+            None | Some(crate::dispatch_matrix::DispatchNode::Fail) => false,
+            Some(crate::dispatch_matrix::DispatchNode::Outcome { outcome: found, .. }) => *found == outcome,
+            Some(crate::dispatch_matrix::DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            }) => {
+                if visit(plan, on_match.target, outcome, questions) {
+                    questions.push(predicate);
+                    true
+                } else {
+                    visit(plan, on_miss.target, outcome, questions)
+                }
+            }
+        }
+    }
+
+    let mut questions = Vec::new();
+    visit(plan, plan.graph.root, outcome, &mut questions).then_some(questions)
 }
 
 /// fz-kdt.178: every census here reads a plan's bodies off the site's own
@@ -12167,8 +12207,13 @@ fn unreadable_reason(plan: &PatternDispatchPlan<Ty>, bodies: &[u32]) -> Option<&
         let Some(outcome) = plan.outcomes.iter().find(|outcome| outcome.body_id == *body_id) else {
             return Some("a listed body has no outcome");
         };
-        let Some(arm) = plan.matrix.arms.iter().find(|arm| arm.outcome == outcome.outcome) else {
-            return Some("an outcome has no arm");
+        let Some(arm) = plan
+            .source_matrix
+            .arms
+            .iter()
+            .find(|arm| arm.outcome == outcome.outcome)
+        else {
+            return Some("a listed body has no source arm");
         };
         for question in &arm.questions {
             let variant = match &question.predicate.region {
@@ -12205,7 +12250,12 @@ fn seated_arm_surfaces(plan: &PatternDispatchPlan<Ty>, bodies: &[u32]) -> Vec<BT
         let Some(outcome) = plan.outcomes.iter().find(|outcome| outcome.body_id == *body_id) else {
             return Vec::new();
         };
-        let Some(arm) = plan.matrix.arms.iter().find(|arm| arm.outcome == outcome.outcome) else {
+        let Some(arm) = plan
+            .source_matrix
+            .arms
+            .iter()
+            .find(|arm| arm.outcome == outcome.outcome)
+        else {
             return Vec::new();
         };
         let mut asked = BTreeMap::new();
@@ -12229,7 +12279,7 @@ fn seated_arm_surfaces(plan: &PatternDispatchPlan<Ty>, bodies: &[u32]) -> Vec<BT
 /// routes each value to the arm that named it.
 fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<String> {
     let mut asked = Vec::new();
-    for arm in &plan.matrix.arms {
+    for arm in &plan.source_matrix.arms {
         let mut questions = std::collections::BTreeMap::new();
         for question in &arm.questions {
             let Region::Type(ty) = &question.predicate.region else {
@@ -19430,15 +19480,10 @@ fn plan_body_has_type_question(plan: &PatternDispatchPlan<Ty>, body_id: u32) -> 
         .iter()
         .find(|outcome| outcome.body_id == body_id)
         .unwrap_or_else(|| panic!("entry-dispatch outcome for body {body_id}"));
-    let arm = plan
-        .matrix
-        .arms
-        .iter()
-        .find(|arm| arm.outcome == outcome.outcome)
-        .unwrap_or_else(|| panic!("dispatch arm for body {body_id}"));
-    arm.questions
-        .iter()
-        .any(|question| matches!(question.predicate.region, Region::Type(_)))
+    outcome_match_questions(plan, outcome.outcome)
+        .unwrap_or_else(|| panic!("compiled dispatch path for body {body_id}"))
+        .into_iter()
+        .any(|question| matches!(question.region, Region::Type(_)))
 }
 
 fn guard_dispatch_has_nested_dispatch(dispatch: &PatternGuardDispatch<Ty>) -> bool {

@@ -1218,7 +1218,7 @@ fn collect_dispatch_atoms(
     for prepared in &plan.prepared_keys {
         collect_dispatch_const_atoms(prepared, seen, atoms);
     }
-    for subject in &plan.matrix.subjects {
+    for subject in &plan.graph.subjects {
         match &subject.source {
             SubjectSource::Input { .. } => {}
             SubjectSource::Projection(projection) => {

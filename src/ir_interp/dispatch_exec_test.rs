@@ -110,7 +110,7 @@ impl Door {
 
 /// The subject a plan names for one of its inputs.
 fn input_subject(plan: &PatternDispatchPlan<Ty>, ordinal: u32) -> SubjectId {
-    plan.matrix
+    plan.graph
         .subjects
         .iter()
         .find(|subject| matches!(subject.source, SubjectSource::Input { ordinal: read } if read == ordinal))
@@ -120,7 +120,7 @@ fn input_subject(plan: &PatternDispatchPlan<Ty>, ordinal: u32) -> SubjectId {
 
 /// The subject a plan names for one field of its tuple input.
 fn tuple_field_subject(plan: &PatternDispatchPlan<Ty>, index: u32) -> SubjectId {
-    plan.matrix
+    plan.graph
         .subjects
         .iter()
         .find(|subject| {
@@ -133,7 +133,7 @@ fn tuple_field_subject(plan: &PatternDispatchPlan<Ty>, index: u32) -> SubjectId 
 
 /// The subjects a plan extracts out of a bitstring input.
 fn bitstring_field_subjects(plan: &PatternDispatchPlan<Ty>) -> Vec<SubjectId> {
-    plan.matrix
+    plan.graph
         .subjects
         .iter()
         .filter(|subject| {

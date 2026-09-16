@@ -93,6 +93,7 @@ pub(crate) struct DispatchMatrix<TypeHandle> {
     pub(crate) arms: Vec<DispatchArm<TypeHandle>>,
 }
 
+#[cfg(test)]
 impl<TypeHandle> DispatchMatrix<TypeHandle> {
     pub(crate) fn map_type_handle<MappedHandle>(
         &self,
@@ -142,8 +143,9 @@ pub(crate) struct DispatchArm<TypeHandle> {
     pub(crate) outcome: OutcomeId,
 }
 
+#[cfg(test)]
 impl<TypeHandle> DispatchArm<TypeHandle> {
-    pub(crate) fn map_type_handle<MappedHandle>(
+    fn map_type_handle<MappedHandle>(
         &self,
         map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
     ) -> DispatchArm<MappedHandle> {
@@ -462,8 +464,11 @@ impl<TypeHandle> RegionQuestion<TypeHandle> {
             predicate,
         }
     }
+}
 
-    pub(crate) fn map_type_handle<MappedHandle>(
+#[cfg(test)]
+impl<TypeHandle> RegionQuestion<TypeHandle> {
+    fn map_type_handle<MappedHandle>(
         &self,
         map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
     ) -> RegionQuestion<MappedHandle> {
@@ -477,6 +482,8 @@ impl<TypeHandle> RegionQuestion<TypeHandle> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DispatchGraph<TypeHandle> {
+    /// The declared inputs and branch-proven projections its nodes name.
+    pub(crate) subjects: Vec<Subject>,
     pub(crate) nodes: Vec<DispatchNode<TypeHandle>>,
     pub(crate) root: GraphNodeId,
     /// What the graph's questions ask of each declared input, one slot per
@@ -485,6 +492,10 @@ pub(crate) struct DispatchGraph<TypeHandle> {
 }
 
 impl<TypeHandle> DispatchGraph<TypeHandle> {
+    pub(crate) fn subject(&self, id: SubjectId) -> Option<&Subject> {
+        self.subjects.get(id.0 as usize)
+    }
+
     pub(crate) fn node(&self, id: GraphNodeId) -> Option<&DispatchNode<TypeHandle>> {
         self.nodes.get(id.0 as usize)
     }
@@ -494,6 +505,7 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
         map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
     ) -> DispatchGraph<MappedHandle> {
         DispatchGraph {
+            subjects: self.subjects.clone(),
             nodes: self.nodes.iter().map(|node| node.map_type_handle(map)).collect(),
             root: self.root,
             input_demand: self.input_demand.clone(),
@@ -603,9 +615,9 @@ struct ArmCompileState<'a, TypeHandle> {
     questions: Vec<RegionQuestion<TypeHandle>>,
 }
 
-/// Everything a question's demand is resolved against: how many inputs the
-/// plan declares, the subjects that name them, the input each pin arrives on,
-/// and what each guard reads.
+/// Everything a question's demand is resolved against besides the matrix it is
+/// compiling: how many inputs the plan declares, the input each pin arrives
+/// on, and what each guard reads.
 ///
 /// `count` is the DECLARED input count, not the number of input subjects the
 /// matrix holds: a producer may mint a subject to carry a guard on a plan that
@@ -613,7 +625,6 @@ struct ArmCompileState<'a, TypeHandle> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlanInputs<'a> {
     pub(crate) count: usize,
-    pub(crate) subjects: &'a [Subject],
     /// The input each pinned value arrives on, when the rows' prematch bound it.
     pub(crate) pinned: &'a [Option<u32>],
     /// What each guard reads, in the plan's own subject and pin space.
@@ -629,25 +640,30 @@ pub(crate) enum GuardLeaf {
 }
 
 pub(crate) fn compile_dispatch_matrix<TypeHandle: Clone + Eq>(
-    matrix: &DispatchMatrix<TypeHandle>,
+    matrix: DispatchMatrix<TypeHandle>,
     inputs: PlanInputs<'_>,
 ) -> Result<CompiledDispatchGraph<TypeHandle>, DispatchCompileError> {
-    let ordered_arms = matrix.arms.iter().collect();
-    compile_ordered_arms(ordered_arms, inputs)
+    let DispatchMatrix {
+        subjects,
+        outcomes: _,
+        arms,
+    } = matrix;
+    compile_ordered_arms(arms, subjects, inputs)
 }
 
 fn compile_ordered_arms<TypeHandle: Clone + Eq>(
-    ordered_arms: Vec<&DispatchArm<TypeHandle>>,
+    ordered_arms: Vec<DispatchArm<TypeHandle>>,
+    subjects: Vec<Subject>,
     inputs: PlanInputs<'_>,
 ) -> Result<CompiledDispatchGraph<TypeHandle>, DispatchCompileError> {
     let mut stats = DispatchCompileStats {
         arms: ordered_arms.len(),
         ..DispatchCompileStats::default()
     };
-    let mut builder = DispatchGraphBuilder::typed(inputs);
+    let mut builder = DispatchGraphBuilder::typed(subjects, inputs);
     let fallback = fallback_node(&mut builder, &mut stats);
     let states = ordered_arms
-        .into_iter()
+        .iter()
         .map(|arm| ArmCompileState {
             arm,
             questions: arm.questions.clone(),
@@ -872,14 +888,16 @@ pub(crate) enum DispatchGraphError {
 }
 
 pub(crate) struct DispatchGraphBuilder<'a, TypeHandle> {
+    subjects: Vec<Subject>,
     nodes: Vec<DispatchNode<TypeHandle>>,
     inputs: PlanInputs<'a>,
     input_demand: Vec<DispatchDemand>,
 }
 
 impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
-    pub(crate) fn typed(inputs: PlanInputs<'a>) -> Self {
+    pub(crate) fn typed(subjects: Vec<Subject>, inputs: PlanInputs<'a>) -> Self {
         Self {
+            subjects,
             nodes: Vec::new(),
             input_demand: vec![DispatchDemand::Ignore; inputs.count],
             inputs,
@@ -903,6 +921,7 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
         }
         self.ensure_projections_ride_a_charged_input();
         Ok(DispatchGraph {
+            subjects: self.subjects,
             nodes: self.nodes,
             root,
             input_demand: self.input_demand,
@@ -955,20 +974,22 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
     /// A bitstring field whose size was bound before the pattern began reads
     /// the input that delivers the pin, on top of the bitstring itself.
     fn charge_bitstring_sizes(&mut self, shape: &BitstringShape) {
-        let subjects = self.inputs.subjects;
         for field in &shape.fields {
-            let Some(Subject {
-                source: SubjectSource::Projection(projection),
-                ..
-            }) = subjects.get(field.0 as usize)
-            else {
-                continue;
-            };
-            let ProjectionKind::BitstringField(extraction) = &projection.kind else {
-                continue;
-            };
-            if let Some(BitstringFieldSize::Pinned(pinned)) = &extraction.spec.size {
-                self.charge_pin(*pinned);
+            let pinned = self
+                .subjects
+                .get(field.0 as usize)
+                .and_then(|subject| match &subject.source {
+                    SubjectSource::Projection(projection) => match &projection.kind {
+                        ProjectionKind::BitstringField(extraction) => match &extraction.spec.size {
+                            Some(BitstringFieldSize::Pinned(pinned)) => Some(*pinned),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    _ => None,
+                });
+            if let Some(pinned) = pinned {
+                self.charge_pin(pinned);
             }
         }
     }
@@ -988,12 +1009,12 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
     /// The input a subject descends from, and what a demand on that subject
     /// asks of that input.
     fn subject_demand(&self, subject: SubjectId, demand: DispatchDemand) -> (u32, DispatchDemand) {
-        subject_demand(self.inputs.subjects, subject, demand).unwrap_or_else(|| missing_subject(subject))
+        subject_demand(&self.subjects, subject, demand).unwrap_or_else(|| missing_subject(subject))
     }
 
     /// The input a subject descends from, for a caller that asks nothing of it.
     fn subject_root(&self, subject: SubjectId) -> u32 {
-        subject_root(self.inputs.subjects, subject).unwrap_or_else(|| missing_subject(subject))
+        subject_root(&self.subjects, subject).unwrap_or_else(|| missing_subject(subject))
     }
 
     /// Every ordinal charged here names a declared input of THIS plan. A

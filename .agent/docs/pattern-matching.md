@@ -11,7 +11,6 @@ The pipeline is direct:
 source clauses
   -> SourcePatternRows
   -> PatternDispatchPlan
-       matrix: DispatchMatrix
        graph: DispatchGraph
        payloads: outcomes, bindings, guards, pinned inputs, prepared keys
        graph payload: input_demand -- what the questions read of each input
@@ -29,8 +28,9 @@ should consume `PatternDispatchPlan` or the underlying `DispatchGraph` directly.
 - `src/dispatch_matrix/mod.rs` owns the generic dispatch model: `Region`,
   `Order`, `Outcome`, branch-local `EdgeEvidence`, and `DispatchGraph`.
 - `src/dispatch_matrix/pattern.rs` owns source-pattern production. It converts
-  AST patterns into `RegionQuestion`s and stores pattern-specific payloads beside
-  the matrix as `PatternDispatchPlan`.
+  AST patterns into `RegionQuestion`s, consumes that temporary matrix into a
+  graph, and stores pattern-specific payloads beside the retained graph as
+  `PatternDispatchPlan`.
 - `src/compiler2/jobs/body.rs` constructs inline outcome edges and their target
   signatures together; `jobs/native.rs` lowers the graph and its winning values.
 - `src/ir_interp/dispatch_exec.rs` owns `Dispatch`, the interpreter's one
@@ -148,7 +148,7 @@ something its own head bound or something that was never bound, and lowering
 the body says which, so an unresolved helper name is a construction diagnostic
 against the helper even when the caller has a same-spelled binding.
 
-`matrix.subjects` is the sole retained subject graph. Source-facing
+`graph.subjects` is the sole retained subject graph. Source-facing
 `PatternSubjectRef` values exist only during construction. Bitstring field
 subjects carry their exact extraction recipe: source, preceding field subject,
 kind, size (including a dependent subject), endian, signedness, unit, and whether
@@ -156,6 +156,10 @@ the field is last. Shape questions reference those subjects; consumers do not
 recover field meaning from an arm or field ordinal.
 Edge evidence reveals only projected subject IDs; it stores no second copy of
 their source or projection recipe.
+
+Test builds retain the consumed matrix only as a compile-phase witness for
+source-arm census assertions. Release `PatternDispatchPlan`s do not contain it
+or map it across type handles.
 
 The generic `DispatchMatrix` sees only regions and opaque outcome ids. Bodies,
 receive wakeup behavior, and guard result interpretation belong to the producer.
@@ -174,7 +178,7 @@ reader half of that context, borrowed apart from the subject state they are
 asking about; `backend.rs` answers only what the representation owns, which
 callable a code word denotes.
 
-The subject state is one slot per subject the plan's matrix declares, allocated
+The subject state is one slot per subject the plan's graph declares, allocated
 once for the run, beside a journal of the subjects written since the branch
 point the test being walked opened. A test that misses clears the slots its
 journal names and a test that matches keeps them, so the questions after a taken

@@ -54,7 +54,7 @@ pub(crate) fn calculate_dispatch_reachability(
         #[cfg(test)]
         max_root_slots: 0,
     };
-    let list_shapes = vec![None; plan.matrix.subjects.len()];
+    let list_shapes = vec![None; plan.graph.subjects.len()];
     calculator.visit(plan.graph.root, ReachabilityState { roots, list_shapes });
     DispatchReachability {
         outcomes: calculator.outcomes.into_iter().collect(),
@@ -716,7 +716,7 @@ mod tests {
             reachability.visited_states,
         );
         assert_eq!(reachability.max_root_slots, plan.input_count);
-        assert!(plan.matrix.subjects.len() > reachability.max_root_slots);
+        assert!(plan.graph.subjects.len() > reachability.max_root_slots);
     }
 
     #[test]

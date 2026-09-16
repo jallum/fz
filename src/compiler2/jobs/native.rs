@@ -3589,7 +3589,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         if let Some(value) = state.values.get(&subject) {
             return Ok(value.clone());
         }
-        let Some(subject_data) = plan.matrix.subjects.get(subject.0 as usize) else {
+        let Some(subject_data) = plan.graph.subjects.get(subject.0 as usize) else {
             return Err(incomplete_native_program(
                 self.telemetry,
                 self.root_id,
