@@ -1176,6 +1176,8 @@ impl FrontDoorParser {
                 let params = self.parse_exprs_until(&Tok::RParen, module_path, scope)?;
                 self.expect(&Tok::RParen, "`)`")?;
                 params
+            } else if self.peek_is(&Tok::Arrow) {
+                Vec::new()
             } else {
                 vec![self.parse_expr(module_path, scope)?.root]
             };
