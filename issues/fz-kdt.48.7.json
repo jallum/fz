@@ -8,13 +8,13 @@
     "fz-kdt.48.8"
   ],
   "created": "2026-09-15T20:29:53Z",
-  "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR3, after fz-tfn.62's retained-target commits. Types::intersect(closure_lit, surface) merges the surface into the literal's ArrowSig (sigs.rs ~299-326 specialize_lit_arrow), but a lone lit clause's value set is decided by fn_id + captures alone (emptiness.rs ~194-226), so every surface mints another Ty for one callable value; every duplicate identity in the measured sample is a callable. Keep the literal and its surface constraint as distinct factors of one clause and specialize on read; specialize_lit_arrow (construction) and specialize_callable_clause (mod.rs ~3112, read) are one computation written twice; fold them. Inventory every pos.len()==1 / lit-bearing ArrowSig reader first. Tests: two_surfaces_over_one_closure_intern_once, anonymous-vs-branded callable controls.",
+  "description": "Plan: ../recursive-denotations-proposal.html. PR3 (fz-kdt.48). Re-cut 2026-09-16 after building and measuring the original 'One Ty per callable value' at the intern boundary (see the comment): landed as 2ffa0df0b = specialize_lit_arrow (construction) and specialize_callable_clause (read) folded into one sigs::specialize_surface; the callable-axis exclusion from the one absorber restated in types/axis.rs as two proven facts with tests (a lit-free arrow is the activation key's record carrier and a resolved spec's decomposition, which the kernel calls the whole axis; a lit-bearing arrow's params/result are evidence the kernel never reads, added back by row_column_dominates); the unprovable capture-layout claim removed. Census unchanged 128 / 15. The identity half ('one Ty per callable value') is NOT achievable at Types::intern: Ty on the callable axis carries denotation and planner evidence at once; it moves to the carrier ticket that now blocks fz-kdt.48.8.",
   "id": "fz-kdt.48.7",
   "labels": [],
   "parent": "fz-kdt.48",
   "priority": 1,
   "status": "open",
-  "title": "One Ty per callable value",
+  "title": "One callable surface specialization, and the callable-axis exclusion as proven facts",
   "type": "task",
-  "updated_at": "2026-09-15T20:30:09Z"
+  "updated_at": "2026-09-16T10:00:56Z"
 }
