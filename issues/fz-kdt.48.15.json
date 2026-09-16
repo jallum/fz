@@ -7,9 +7,15 @@
   "id": "fz-kdt.48.15",
   "labels": [],
   "parent": "fz-kdt.48",
+  "comments": [
+    {
+      "text": "Measured on exact fixtures2/behavior/enum_take_drop_split.fz atop .48.14. Binary result table: union 7,066 hits / 215 first evaluations; intersect 9,260 / 287; difference 623 / 24; refine_widen 0 / 0. That is 16,949 reuses versus 526 first evaluations. Raw interner probes fall 125,974 -\u003e 109,510; normalizations 11,875 -\u003e 2,892; unique inserts remain 1,033. Identity-shortcut count falls 12,591 -\u003e 9,777 because cached pair results return before their local operation can discover its own no-op.",
+      "timestamp": "2026-09-16T20:22:07Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Memoize pure binary Ty algebra by operand identity",
   "type": "task",
-  "updated_at": "2026-09-16T20:14:09Z"
+  "updated_at": "2026-09-16T20:22:07Z"
 }
