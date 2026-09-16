@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-16T20:14:08Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-kdt.48",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Memoize pure binary Ty algebra by operand identity",
   "type": "task",
-  "updated_at": "2026-09-16T20:14:08Z"
+  "updated_at": "2026-09-16T20:14:09Z"
 }
