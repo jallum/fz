@@ -9,9 +9,15 @@
   "id": "fz-kdt.228",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Committed df6bd67c1 on fz-kdt.226-227/finality-over-dirty-ground, PR #185 (base main, fz-i9q already merged). Gate green, canon identical. One gap against the approved design: the contribution-map fold (ContributionMap, ContributionReplace, preserved_analysis_claims, the three JobEffects contribution fields) was NOT done -- derivation identity landed beside them, not in place of them. DerivationKey carries Activation/Executable/InputSlot variants that no producer uses yet. Filing a follow-up ticket for that fold.",
+      "timestamp": "2026-09-16T16:09:08Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "The scheduler owns claims per job; a job that publishes several facts in one run must be able to conclude each on its own reads (derivation identity)",
   "type": "bug",
-  "updated_at": "2026-09-16T14:56:39Z"
+  "updated_at": "2026-09-16T16:09:08Z"
 }
