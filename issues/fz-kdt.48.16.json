@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-16T20:38:44Z",
+  "description": "## Goal\n\nRetain the canonical empty lattice constant alongside `any`, so a request for `none()` and the exact law `difference(t, t) = none` return an existing `Ty` without rebuilding, hashing, or probing a descriptor.\n\n## Strategy\n\nConstruct `any` and `none` once at `Types` creation, preserve the existing append-only type identity model, and short-circuit equal operands before the binary-operation table. Test the semantic law and boundary-work invariant; document why both constants are retained.\n\n## Acceptance\n\nFocused type and fixture canary tests, canonical corpus gate, formatting, check, strict Clippy, and the full workspace suite pass. No second descriptor-index authority or normalized-descriptor cache is introduced.",
+  "id": "fz-kdt.48.16",
+  "labels": [],
+  "parent": "fz-kdt.48",
+  "priority": 2,
+  "status": "open",
+  "title": "Retain the canonical empty Ty",
+  "type": "task",
+  "updated_at": "2026-09-16T20:38:44Z"
+}
