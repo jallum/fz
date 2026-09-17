@@ -15,11 +15,15 @@
     {
       "text": "Implementation plan: (1) red loop(\u0026loop/2, n) witness proves resolved value calls are missing from the existing StaticCallees authority; (2) retain one contributor-keyed edge aggregate for the existing StaticCallees fact, with DeriveStaticCallees owning body edges and AnalyzeActivation owning only its resolved targets; (3) use the scheduler output frontier for exact extend/replace/withdrawal, never a private activation edge store; (4) prove the false→true Recursive rebase and target withdrawal affect only the owner closure; (5) compare canon and json_roundtrip causal counts. fz-kdt.98.2/Reaches remains out of scope.",
       "timestamp": "2026-09-17T22:00:46Z"
+    },
+    {
+      "text": "Atomicity finding: the red resolved-value SCC witness was implemented against a contribution-backed StaticCallees aggregate, then exercised. Once the value edge completes the SCC, the current per-activation return path does not quiesce, even when the recursive target returns a constant and the back edge is an unused FunctionRef. This is fz-kdt.177.9’s cyclic-copy failure, not an implementation detail of the edge store. Landing complete dynamic SCC membership without the group return solver would turn a valid program into nontermination. Scratch implementation and witness were removed; no source diff remains. Need a ticket-boundary decision: make .98.3 + .177.16 + .177.9 one atomic landing unit, or identify a semantic boundary that disproves this dependency.",
+      "timestamp": "2026-09-17T22:15:57Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "One cumulative call-graph edge fact: body edges plus the value-call targets each analysis resolves",
   "type": "task",
-  "updated_at": "2026-09-17T22:00:46Z"
+  "updated_at": "2026-09-17T22:15:57Z"
 }
