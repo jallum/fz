@@ -314,14 +314,26 @@ impl Descr {
             .unwrap_or(0)
     }
 
-    pub(super) fn refine_map_field(&self, key: &MapKey, vt: Ty) -> Descr {
+    /// Replacing a map field with the very same interned type changes no
+    /// descriptor. Returning `None` keeps that proof at the structural owner,
+    /// so callers can retain their existing `Ty` without rebuilding and
+    /// re-interning this descriptor.
+    pub(super) fn refine_map_field(&self, key: &MapKey, vt: Ty) -> Option<Descr> {
+        let changed = self
+            .maps
+            .iter()
+            .flat_map(|clause| clause.pos.iter())
+            .any(|sig| sig.fields.get(key) != Some(&vt));
+        if !changed {
+            return None;
+        }
         let mut out = self.clone();
         for clause in &mut out.maps {
             for sig in &mut clause.pos {
                 sig.fields.insert(key.clone(), vt);
             }
         }
-        out
+        Some(out)
     }
 
     /// This type read as ONE list signature, when it is purely a list and
