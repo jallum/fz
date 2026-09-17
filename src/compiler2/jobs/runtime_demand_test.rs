@@ -55,6 +55,42 @@ fn an_over_long_field_demand_reads_the_fields_the_tuple_has() {
     );
 }
 
+#[test]
+fn formula_snapshot_takes_peer_input_vectors_without_copying_them() {
+    let mut types = Types::new();
+    let any = types.any();
+    let member = ExecutableKey {
+        activation: ActivationKey::from_inputs(RootId::for_test(0), FunctionId::from_coordinate(0), &[], &mut types),
+        need: ExecutableNeed::Value,
+    };
+    let peer = ExecutableKey {
+        activation: ActivationKey::from_inputs(RootId::for_test(0), FunctionId::from_coordinate(1), &[any], &mut types),
+        need: ExecutableNeed::Value,
+    };
+    let inputs = vec![RuntimeDemand::whole()];
+    let input_buffer = inputs.as_ptr();
+    let peer_inputs = HashMap::from([(peer.clone(), inputs)]);
+
+    let snapshot = RuntimeDemandFormulaSnapshot::new(
+        member,
+        RuntimeDemandOwnInput {
+            return_demand: RuntimeDemand::ignore(),
+            input_demands: Vec::new(),
+        },
+        peer_inputs,
+    );
+
+    assert_eq!(
+        snapshot
+            .target_inputs
+            .get(&peer)
+            .expect("peer inputs are retained")
+            .as_ptr(),
+        input_buffer,
+        "the snapshot owns the peer input allocation; it must not clone an immutable vector"
+    );
+}
+
 /// Run the reverse demand walk over `steps` with one live demand on `value`,
 /// and answer with the demands it leaves on the values behind it.
 fn propagate_tuple_step_demand(
@@ -98,7 +134,7 @@ fn propagate_tuple_step_demand(
             return_demand: RuntimeDemand::ignore(),
             input_demands: Vec::new(),
         },
-        &HashMap::new(),
+        HashMap::new(),
     );
 
     let mut live = HashMap::from([(value, demand)]);

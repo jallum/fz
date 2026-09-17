@@ -229,6 +229,11 @@ again only after that input grows. Scheduler completions and body walks are
 different measures, carried by the same completion record and grouped by the
 same typed executable identity. The count is not part of that identity.
 
+The fresh peer-input map belongs to that one formula snapshot. Its immutable
+input vectors move into the snapshot once rather than being cloned to make a
+second working view; a formula read may grow the map with a newly available
+target, but it never needs a duplicate of inputs it already owns.
+
 `RuntimeDemandInputs(E)` is an independently revisioned view of the input
 vector in the one stored demand value. For `00420_enum_take_drop_split`,
 4,153 scheduler completions include 11 scope, 21 module and 1,241 RuntimeDemand
