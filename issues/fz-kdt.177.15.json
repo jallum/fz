@@ -10,9 +10,15 @@
   "id": "fz-kdt.177.15",
   "labels": [],
   "parent": "fz-kdt.177",
+  "comments": [
+    {
+      "text": "The original PR #213 remains on the recursive-type stack. The necessary standalone restack is draft PR #215, based on fz-kdt.98.1/#214, commit 6a352a867. It is the prerequisite consumed by fz-kdt.98.3.",
+      "timestamp": "2026-09-17T22:50:57Z"
+    }
+  ],
   "priority": 1,
   "status": "closed",
   "title": "ReturnType payload follows its activation derivation",
   "type": "task",
-  "updated_at": "2026-09-17T19:19:50Z"
+  "updated_at": "2026-09-17T22:50:57Z"
 }
