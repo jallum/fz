@@ -245,8 +245,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // settles on one clause and the catch-all is never reached. Tuple-
         // field demands join as prefixes, so a field one consumer reads stays
         // distinct from a field another ignores and each such field earns its
-        // own demand evaluation.
-        (4199, 11, 19, 408),
+        // own demand evaluation. The drain arbiter certifies a whole clean
+        // cone at once instead of one layer per stall, so the executable-fact
+        // tally no longer double-counts layers re-arbitrated after they were
+        // already proven final. Publishing a function's source from the walk
+        // that scoped it removes one source job per reached function.
+        (3813, 11, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -259,7 +263,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // revisions of their own.
         // Each ordering operator's `any`/`any` clause publishes one non-demand
         // changed revision, and this fixture reaches `<` and `>`.
-        1467,
+        // A function's source and its consumable fact are one publication now,
+        // so each reached body costs one changed revision instead of two.
+        1192,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -267,7 +273,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-5xp.30: 1162 -> 1184. The ordinary generic result/status
         // contracts retain twenty-two more blocked prerequisite waits.
         // The typed `==` clauses retain blocked prerequisite waits of their own.
-        1211,
+        // A consumer of a function's source no longer waits behind a copy job,
+        // so each reached body retains one blocked prerequisite fewer.
+        1113,
         "the blocked-waiter census includes every ordinary generic helper prerequisite",
     );
     assert_eq!(
@@ -282,8 +290,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // would otherwise absorb: a formula that reads one target's inputs
         // wakes on that input alone. Tuple-field demands join as prefixes, so
         // fields distinct consumers read stay distinct, and each one is its
-        // own completion woken on that same exact cause.
-        (1182, 950, [58, 232, 156, 504, 0]),
+        // own completion woken on that same exact cause. The drain arbiter's
+        // whole-cone certification removes the re-arbitration wakes that used
+        // to inflate the whole-input-vector slot.
+        (1169, 937, [58, 232, 165, 482, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(

@@ -4,7 +4,7 @@ use std::hash::Hash;
 
 use super::agenda::Agenda;
 use super::deps::{DependencyIndex, UnresolvedWait};
-use super::facts::{ClaimShape, ContentMovement, FactChange, FactMovement, FactState, FactTable, FactUse};
+use super::facts::{ClaimShape, ContentMovement, FactChange, FactMovement, FactState, FactTable, FactUse, Publisher};
 use super::ordered_set::OrderedSet;
 use super::semantic::SemanticOrd;
 
@@ -13,9 +13,6 @@ use super::semantic::SemanticOrd;
 /// including when that dependency has no current value.
 pub(crate) trait ExternalDependencyStates<F> {
     fn external_state(&self, key: &F) -> Option<FactState>;
-    fn has_unsettled_dependencies(&self) -> bool {
-        true
-    }
 }
 
 pub(crate) struct NoExternalDependencyStates;
@@ -23,9 +20,6 @@ pub(crate) struct NoExternalDependencyStates;
 impl<F> ExternalDependencyStates<F> for NoExternalDependencyStates {
     fn external_state(&self, _key: &F) -> Option<FactState> {
         None
-    }
-    fn has_unsettled_dependencies(&self) -> bool {
-        false
     }
 }
 
@@ -170,14 +164,50 @@ pub struct AppliedStep<J, F> {
     pub blocked: Vec<FactUse<F>>,
 }
 
-/// One job's exact reads, waits, and owned outputs from a run.
-/// Empty waits conclude and replace; standing waits extend the prior answer.
+/// What draining a wave of fact changes produced: the wakes it caused, in wake
+/// order, and the movements it published.
+type DispatchedWave<J, F> = (Vec<Wake<J, F>>, Vec<FactMovement<F>>);
+
+/// One answer: the reads it stands on and the facts it owns. Concluding one
+/// replaces both; the publisher's previous claims it no longer lists are
+/// retracted.
 #[derive(Debug, Clone)]
-pub struct CompletionEffects<F> {
+pub struct DerivationEffects<P, F> {
+    pub publisher: P,
     pub reads: HashSet<FactUse<F>>,
-    pub waits: HashSet<FactUse<F>>,
     pub outputs: Vec<F>,
     pub changed: Vec<F>,
+}
+
+/// One job run: the answers it reached, in emission order, and the waits that
+/// stopped it. A run that finished lists the job's own publisher among them;
+/// a run with standing waits has not reached that answer yet, so the job's own
+/// publisher keeps its claims dirty while every other answer it reached stands.
+#[derive(Debug, Clone)]
+pub struct CompletionEffects<P, F> {
+    pub derivations: Vec<DerivationEffects<P, F>>,
+    pub waits: HashSet<FactUse<F>>,
+}
+
+impl<P, F> CompletionEffects<P, F> {
+    /// The shape of a job that answers one question per run.
+    pub fn single(
+        publisher: P,
+        reads: HashSet<FactUse<F>>,
+        waits: HashSet<FactUse<F>>,
+        outputs: Vec<F>,
+        changed: Vec<F>,
+    ) -> Self {
+        Self {
+            derivations: vec![DerivationEffects {
+                publisher,
+                reads,
+                outputs,
+                changed,
+            }],
+            waits,
+        }
+    }
 }
 
 pub(super) fn take_next_fact_change<F, Ctx>(pending: &mut Vec<FactChange<F>>, ctx: &Ctx) -> Option<FactChange<F>>
@@ -238,22 +268,22 @@ impl ReadFinality {
 }
 
 #[derive(Debug)]
-pub struct Scheduler<J, F> {
-    agenda: Agenda<J>,
-    facts: FactTable<J, F>,
-    deps: DependencyIndex<J, F>,
+pub struct Scheduler<P: Publisher, F> {
+    agenda: Agenda<P::Run>,
+    facts: FactTable<P, F>,
+    deps: DependencyIndex<P, F>,
     /// Jobs whose ground shifted: a fact they read changed in a way that can
     /// invalidate their claims. A rebased job's next conclusion replaces its
     /// cumulative store values instead of joining, and its content changes
     /// propagate as shifts in turn. Cleared on conclusion; kept while waiting.
-    rebased: HashSet<J>,
+    rebased: HashSet<P>,
     /// How many of each JOB's recorded reads currently name a fact that
     /// is NOT quiet, with the drain's quiescence certificate where one exists.
     /// A new unquiet edge revokes that certificate; quiet edges decrement the
     /// real count without erasing another input's pending movement. This is the reader half of
     /// transitive finality; the fact half is `FactSlot::unfinal_publishers`,
     /// keyed by the same publisher identity. An absent entry means zero.
-    read_finality: HashMap<J, ReadFinality>,
+    read_finality: HashMap<P, ReadFinality>,
     /// Work-start attribution tally: how many jobs actually entered the
     /// agenda (deduped coalescing does not count) under each
     /// `WorkStartReason`. Observation-only — see `WorkStartReason`.
@@ -270,9 +300,9 @@ pub struct Scheduler<J, F> {
     drain_discovery_sweeps: u64,
 }
 
-impl<J, F> Default for Scheduler<J, F>
+impl<P, F> Default for Scheduler<P, F>
 where
-    J: Clone + Debug + Eq + Hash,
+    P: Publisher,
     F: Clone + Eq + Hash + ClaimShape,
 {
     fn default() -> Self {
@@ -280,9 +310,9 @@ where
     }
 }
 
-impl<J, F> Scheduler<J, F>
+impl<P, F> Scheduler<P, F>
 where
-    J: Clone + Debug + Eq + Hash,
+    P: Publisher,
     F: Clone + Eq + Hash + ClaimShape,
 {
     pub(crate) fn dependency_state(&self, key: &F, external: &impl ExternalDependencyStates<F>) -> FactState {
@@ -303,17 +333,24 @@ where
         }
     }
 
-    pub fn complete_ordered<Ctx>(&mut self, job: &J, effects: CompletionEffects<F>, ctx: &Ctx) -> AppliedStep<J, F>
+    pub fn complete_ordered<Ctx>(
+        &mut self,
+        job: &P::Run,
+        effects: CompletionEffects<P, F>,
+        ctx: &Ctx,
+    ) -> AppliedStep<P::Run, F>
     where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
         F: SemanticOrd<Ctx>,
     {
         self.complete_ordered_with_external(job, effects, &NoExternalDependencyStates, ctx)
     }
 
-    pub fn settle_quiescent_ordered<Ctx>(&mut self, facts: &[F], ctx: &Ctx) -> AppliedStep<J, F>
+    pub fn settle_quiescent_ordered<Ctx>(&mut self, facts: &[F], ctx: &Ctx) -> AppliedStep<P::Run, F>
     where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
         F: SemanticOrd<Ctx>,
     {
         self.settle_quiescent_ordered_with_external(facts, &NoExternalDependencyStates, ctx)
@@ -325,9 +362,10 @@ where
         mut changes: Vec<FactChange<F>>,
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
-    ) -> AppliedStep<J, F>
+    ) -> AppliedStep<P::Run, F>
     where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
         F: SemanticOrd<Ctx>,
     {
         changes.sort_by(|left, right| left.key.semantic_cmp(&right.key, ctx));
@@ -384,15 +422,20 @@ where
     }
 
     /// Whether `job`'s ground has shifted since it last concluded.
-    pub fn rebased(&self, job: &J) -> bool {
-        self.rebased.contains(job)
+    /// Whether any answer this job owns stood on ground that shifted. The job
+    /// re-runs as a whole, so this is the question a re-demand asks.
+    pub fn rebased(&self, job: &P::Run) -> bool {
+        self.deps
+            .derivations_of(job)
+            .iter()
+            .any(|publisher| self.rebased.contains(publisher))
     }
 
     pub fn pending_jobs(&self) -> usize {
         self.agenda.len()
     }
 
-    pub fn facts(&self) -> &FactTable<J, F> {
+    pub fn facts(&self) -> &FactTable<P, F> {
         &self.facts
     }
 
@@ -407,25 +450,46 @@ where
     }
 
     /// Every key the job claims, in retained publication order.
-    pub fn output_keys(&self, job: &J) -> OrderedSet<F> {
-        self.deps.output_keys(job)
+    /// Every fact this job claims, across every answer it owns.
+    pub fn output_keys(&self, job: &P::Run) -> OrderedSet<F> {
+        let mut keys = OrderedSet::default();
+        for publisher in self.deps.derivations_of(job).iter() {
+            keys.extend(self.deps.output_keys(publisher).iter().cloned());
+        }
+        keys
     }
 
     /// Every fact use the job's standing answer read.
-    pub fn reads(&self, job: &J) -> HashSet<FactUse<F>> {
-        self.deps.reads(job).cloned().unwrap_or_default()
+    /// Every fact use this job read, across every answer it owns.
+    pub fn reads(&self, job: &P::Run) -> HashSet<FactUse<F>> {
+        self.deps
+            .derivations_of(job)
+            .iter()
+            .filter_map(|publisher| self.deps.reads(publisher))
+            .flatten()
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn has_dependency_consumers(&self, key: &F) -> bool {
         self.deps.has_consumers(key)
     }
 
-    pub(crate) fn dependency_uses(&self, job: &J) -> impl Iterator<Item = &FactUse<F>> {
-        self.deps.dependency_uses(job)
+    /// Every fact use this job depends on: what each of its answers read, plus
+    /// the waits that stopped its last run.
+    pub(crate) fn dependency_uses(&self, job: &P::Run) -> Vec<FactUse<F>> {
+        self.deps
+            .derivations_of(job)
+            .iter()
+            .filter_map(|publisher| self.deps.reads(publisher))
+            .flatten()
+            .cloned()
+            .chain(self.deps.waits_for(job))
+            .collect()
     }
 
     #[cfg(test)]
-    pub fn unfinal_reads(&self, job: &J) -> usize {
+    pub fn unfinal_reads(&self, job: &P) -> usize {
         self.read_finality
             .get(job)
             .filter(|state| state.is_pending())
@@ -440,12 +504,12 @@ where
     /// recorded, even empty) or blocked (waits are standing). A job that has
     /// run is reachable by the graph's own wakes; a never-run job has no wake
     /// source, so only a fresh demand can start it.
-    pub(crate) fn has_run(&self, job: &J) -> bool {
+    pub(crate) fn has_run(&self, job: &P::Run) -> bool {
         self.deps.has_run(job)
     }
 
     /// Whether `job`'s most recent completion left waits standing.
-    pub(crate) fn blocked(&self, job: &J) -> bool {
+    pub(crate) fn blocked(&self, job: &P::Run) -> bool {
         self.deps.blocked(job)
     }
 
@@ -454,9 +518,10 @@ where
     }
 
     /// Every standing wait in the semantic order owned by `ctx`.
-    pub fn unresolved<Ctx>(&self, ctx: &Ctx) -> Vec<UnresolvedWait<J, F>>
+    pub fn unresolved<Ctx>(&self, ctx: &Ctx) -> Vec<UnresolvedWait<P::Run, F>>
     where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
         F: SemanticOrd<Ctx>,
     {
         self.deps.unresolved(ctx)
@@ -466,7 +531,7 @@ where
     /// whether the job was newly enqueued (`false` means it was already
     /// pending and this call coalesced into it — not a new work start, so
     /// the tally does not count it).
-    pub fn enqueue(&mut self, job: J, reason: WorkStartReason) -> bool {
+    pub fn enqueue(&mut self, job: P::Run, reason: WorkStartReason) -> bool {
         let started = self.agenda.enqueue(job);
         if started {
             *self.work_starts.entry(reason).or_insert(0) += 1;
@@ -474,7 +539,7 @@ where
         started
     }
 
-    pub fn pop(&mut self) -> Option<J> {
+    pub fn pop(&mut self) -> Option<P::Run> {
         self.agenda.pop()
     }
 
@@ -482,81 +547,144 @@ where
     /// every owned claim dirty. One completion dispatches one ordered wave.
     pub(crate) fn complete_ordered_with_external<Ctx>(
         &mut self,
-        job: &J,
-        mut effects: CompletionEffects<F>,
+        job: &P::Run,
+        effects: CompletionEffects<P, F>,
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
-    ) -> AppliedStep<J, F>
+    ) -> AppliedStep<P::Run, F>
     where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
         F: SemanticOrd<Ctx>,
     {
         assert!(
             effects
-                .outputs
+                .derivations
                 .iter()
-                .chain(&effects.changed)
+                .flat_map(|derivation| derivation.outputs.iter().chain(&derivation.changed))
                 .all(|key| external.external_state(key).is_none()),
             "external dependencies cannot be published as scheduler facts"
         );
         let waiting = !effects.waits.is_empty();
-        // Only a conclusion has re-derived the standing claims from shifted ground.
-        let was_rebased = if waiting {
-            self.rebased.contains(job)
-        } else {
-            self.rebased.remove(job)
-        };
+        let own = P::of_run(job);
         let mut blocked = effects.waits.iter().cloned().collect::<Vec<_>>();
         blocked.sort_by(|left, right| left.semantic_cmp(right, ctx));
         self.deps.replace_waits(job.clone(), effects.waits);
-        effects.outputs.sort_by(|left, right| left.semantic_cmp(right, ctx));
-        effects.changed.sort_by(|left, right| left.semantic_cmp(right, ctx));
-        if waiting {
-            self.deps.union_reads(job.clone(), effects.reads);
-        } else {
-            self.deps.replace_reads(job.clone(), effects.reads);
+
+        let previously_owned = self.deps.derivations_of(job);
+        let mut pending_changes = Vec::new();
+        let mut conclusions = Vec::new();
+        let mut listed = OrderedSet::default();
+        for mut derivation in effects.derivations {
+            // The job's own answer is the one a standing wait leaves
+            // unfinished; every other answer this run reached is complete.
+            let concluding = !(waiting && derivation.publisher == own);
+            derivation.outputs.sort_by(|left, right| left.semantic_cmp(right, ctx));
+            derivation.changed.sort_by(|left, right| left.semantic_cmp(right, ctx));
+            if concluding {
+                self.deps
+                    .replace_reads(derivation.publisher.clone(), std::mem::take(&mut derivation.reads));
+            } else {
+                self.deps
+                    .union_reads(derivation.publisher.clone(), std::mem::take(&mut derivation.reads));
+            }
+            // Only a conclusion has re-derived the standing claims from
+            // shifted ground.
+            let rebased = if concluding {
+                self.rebased.remove(&derivation.publisher)
+            } else {
+                self.rebased.contains(&derivation.publisher)
+            };
+            self.refresh_finality(&derivation.publisher, &mut pending_changes, external, ctx);
+            let unfinal = self.is_unfinal(&derivation.publisher);
+            listed.insert(derivation.publisher.clone());
+            conclusions.push((derivation, concluding, rebased, unfinal));
         }
 
-        let mut pending_changes = Vec::new();
-        // Refresh standing claims before publishing with the new read set's finality.
-        self.refresh_finality(job, &mut pending_changes, external, ctx);
-        let unfinal = self.is_unfinal(job);
-        let previous_output_keys = self.deps.output_keys(job);
-        let touched = effects
-            .outputs
+        // Answers this job owned and this run did not reach. A conclusion
+        // walked the whole job, so what it does not list is refuted and
+        // retracted; a run that is still waiting has simply not got there, so
+        // those claims stand, dirty, until it does.
+        let unreached = previously_owned
             .iter()
+            .filter(|publisher| !listed.contains(publisher))
             .cloned()
-            .chain(previous_output_keys.iter().cloned())
-            .collect::<OrderedSet<F>>();
+            .collect::<Vec<_>>();
+
+        let mut touched = OrderedSet::default();
+        for (derivation, ..) in &conclusions {
+            touched.extend(derivation.outputs.iter().cloned());
+            touched.extend(self.deps.output_keys(&derivation.publisher).iter().cloned());
+        }
+        for publisher in &unreached {
+            touched.extend(self.deps.output_keys(publisher).iter().cloned());
+        }
         let quiet_before = self.quiet_snapshot(&touched);
-        let mut dirtied = Vec::new();
-        let replaced = if waiting {
-            let extended =
+
+        let mut changed = Vec::new();
+        for (derivation, concluding, rebased, unfinal) in conclusions {
+            let publisher = derivation.publisher;
+            let previous_keys = self.deps.output_keys(&publisher);
+            if concluding {
+                let concluded = self.facts.replace_outputs_after_run(
+                    &publisher,
+                    &previous_keys,
+                    derivation.outputs,
+                    derivation.changed,
+                    unfinal,
+                    rebased,
+                );
+                self.deps
+                    .replace_outputs(publisher.clone(), concluded.output_keys.clone());
+                changed.extend(concluded.changed);
+            } else {
+                let extended = self.facts.extend_outputs_after_run(
+                    &publisher,
+                    derivation.outputs,
+                    derivation.changed,
+                    unfinal,
+                    rebased,
+                );
+                let mut claims = previous_keys;
+                claims.extend(extended.output_keys.iter().cloned());
+                let dirtied = self.facts.mark_dirty(&publisher, &claims);
+                self.deps.replace_outputs(publisher.clone(), claims);
+                changed.extend(extended.changed);
+                pending_changes.extend(dirtied);
+            }
+        }
+
+        for publisher in &unreached {
+            let previous_keys = self.deps.output_keys(publisher);
+            if waiting {
+                pending_changes.extend(self.facts.mark_dirty(publisher, &previous_keys));
+                continue;
+            }
+            let retracted =
                 self.facts
-                    .extend_outputs_after_run(job, effects.outputs, effects.changed, unfinal, was_rebased);
-            let mut claims = previous_output_keys;
-            claims.extend(extended.output_keys.iter().cloned());
-            dirtied = self.facts.mark_dirty(job, &claims);
-            self.deps.replace_outputs(job.clone(), claims);
-            extended
+                    .replace_outputs_after_run(publisher, &previous_keys, Vec::new(), Vec::new(), false, true);
+            changed.extend(retracted.changed);
+            self.deps.forget(publisher);
+            self.rebased.remove(publisher);
+            self.read_finality.remove(publisher);
+        }
+
+        let owned = if waiting {
+            previously_owned
+                .iter()
+                .cloned()
+                .chain(listed.iter().cloned())
+                .collect::<OrderedSet<P>>()
         } else {
-            let concluded = self.facts.replace_outputs_after_run(
-                job,
-                &previous_output_keys,
-                effects.outputs,
-                effects.changed,
-                unfinal,
-                was_rebased,
-            );
-            self.deps.replace_outputs(job.clone(), concluded.output_keys.clone());
-            concluded
+            listed
         };
-        pending_changes.extend(replaced.changed.iter().cloned());
-        pending_changes.extend(dirtied);
+        self.deps.replace_derivations(job.clone(), owned);
+
+        pending_changes.extend(changed.iter().cloned());
         self.propagate_quiet_flips(&touched, quiet_before, &mut pending_changes, ctx);
         let (wakes, movements) = self.dispatch_changes(pending_changes, external, ctx);
         AppliedStep {
-            changed: replaced.changed,
+            changed,
             movements,
             wakes,
             blocked,
@@ -578,9 +706,10 @@ where
         mut pending_changes: Vec<FactChange<F>>,
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
-    ) -> (Vec<Wake<J, F>>, Vec<FactMovement<F>>)
+    ) -> DispatchedWave<P::Run, F>
     where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
         F: SemanticOrd<Ctx>,
     {
         let mut wakes = Vec::new();
@@ -661,27 +790,30 @@ where
     /// So at a drain, and only at a drain, the agenda itself decides. With no
     /// runnable job, the only publisher that could still move a fact is one
     /// paused on a wait. Waking it later dirties its claims and
-    /// unfinalizes its readers through the ordinary path. So `Settled(F)` at a drain is exactly
-    /// `locally settled`, which is what it meant everywhere before this
-    /// ticket. The transitive rule is what holds DURING the ascent; the drain
-    /// is where it is discharged.
+    /// unfinalizes its readers through the ordinary path, so a fact is
+    /// certified only once the walk of its transitive read ground finds no
+    /// dirty publisher and no unsettled external product beneath it; every
+    /// unquiet fact that walk visited is certified along with it. The
+    /// transitive rule is what holds DURING the ascent; the drain is where it
+    /// is discharged.
     ///
     /// That makes drain finality optimistic in precisely the way settledness
     /// has always been optimistic: a waiter woken here may publish something
     /// that re-moves the cone, and its readers re-wake through the normal
-    /// movement path and re-run. A requested fact names the exact jobs
-    /// being certified: each retains its real read count under a quiescence
-    /// certificate and finalizes
-    /// its own claims together. Ordinary quiet propagation carries that one
-    /// ownership decision downstream; independent publishers stay untouched.
+    /// movement path and re-run. Arbitration starts only from the requested
+    /// facts, and each certified publisher retains its real read count under
+    /// a quiescence certificate and finalizes its own claims together.
+    /// Ordinary quiet propagation carries that ownership decision downstream;
+    /// independent publishers stay untouched.
     pub(crate) fn settle_quiescent_ordered_with_external<Ctx>(
         &mut self,
         facts: &[F],
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
-    ) -> AppliedStep<J, F>
+    ) -> AppliedStep<P::Run, F>
     where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
         F: SemanticOrd<Ctx>,
     {
         let mut changes = Vec::new();
@@ -706,15 +838,25 @@ where
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
     ) where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
     {
         if self.facts.is_quiet(fact) || !self.facts.is_locally_settled(fact) {
             return;
         }
-        if external.has_unsettled_dependencies() && self.has_unsettled_external_ground(fact, external) {
+        let Some(cone) = self.quiescent_cone(fact, external) else {
             return;
-        }
-        let mut publishers = self.facts.publishers(fact).cloned().collect::<Vec<_>>();
+        };
+        // The walk proved every unquiet fact in the cone final by the same
+        // argument, so certify them all: leaving the members unfinal would
+        // re-arbitrate each at a later drain and wake their readers again.
+        let mut publishers = cone
+            .iter()
+            .flat_map(|key| self.facts.publishers(key))
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         publishers.sort_by(|left, right| left.semantic_cmp(right, ctx));
         for publisher in publishers {
             let keys = self.deps.output_keys(&publisher);
@@ -731,39 +873,53 @@ where
         }
     }
 
-    fn has_unsettled_external_ground(&self, fact: &F, external: &impl ExternalDependencyStates<F>) -> bool {
+    /// The unquiet facts beneath this one, when nothing there can still move;
+    /// `None` when something can. The walk follows every publisher's reads
+    /// down to quiet ground and stops on a dirty publisher or an unsettled
+    /// external product. A dirty publisher is a job that has not re-run since
+    /// its own ground moved, or one still waiting for a fact nobody has
+    /// produced yet; either way the facts above it are clean only because
+    /// that run has not happened. A quiet fact ends the walk: nothing beneath
+    /// a quiet fact moves. A cycle of clean publishers is therefore final, and
+    /// a partial accumulation over an undiscovered layer is not.
+    fn quiescent_cone(&self, fact: &F, external: &impl ExternalDependencyStates<F>) -> Option<Vec<F>> {
         let mut pending = vec![fact];
         let mut seen = HashSet::new();
+        let mut cone = Vec::new();
         while let Some(key) = pending.pop() {
             if !seen.insert(key) {
                 continue;
             }
             if let Some(state) = external.external_state(key) {
                 if !state.settled {
-                    return true;
+                    return None;
                 }
                 continue;
             }
             if self.facts.is_quiet(key) {
                 continue;
             }
+            if !self.facts.is_locally_settled(key) {
+                return None;
+            }
+            cone.push(key.clone());
             for publisher in self.facts.publishers(key) {
                 if let Some(reads) = self.deps.reads(publisher) {
                     pending.extend(reads.iter().map(FactUse::fact));
                 }
             }
         }
-        false
+        Some(cone)
     }
 
     /// Whether something this job read can still move.
-    fn is_unfinal(&self, publisher: &J) -> bool {
+    fn is_unfinal(&self, publisher: &P) -> bool {
         self.read_finality
             .get(publisher)
             .is_some_and(|state| state.is_pending())
     }
 
-    fn count_unfinal_reads(&self, publisher: &J, external: &impl ExternalDependencyStates<F>) -> usize {
+    fn count_unfinal_reads(&self, publisher: &P, external: &impl ExternalDependencyStates<F>) -> usize {
         self.deps.reads(publisher).map_or(0, |reads| {
             reads
                 .iter()
@@ -772,11 +928,11 @@ where
         })
     }
 
-    fn set_unfinal_reads(&mut self, publisher: &J, count: usize) {
+    fn set_unfinal_reads(&mut self, publisher: &P, count: usize) {
         self.set_read_finality(publisher, ReadFinality::Pending(count));
     }
 
-    fn set_read_finality(&mut self, publisher: &J, state: ReadFinality) {
+    fn set_read_finality(&mut self, publisher: &P, state: ReadFinality) {
         if state.count() == 0 {
             self.read_finality.remove(publisher);
         } else {
@@ -795,12 +951,13 @@ where
     /// cannot leave it stale.
     fn refresh_finality<Ctx>(
         &mut self,
-        publisher: &J,
+        publisher: &P,
         changes: &mut Vec<FactChange<F>>,
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
     ) where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
     {
         let count = self.count_unfinal_reads(publisher, external);
         let was_unfinal = self.is_unfinal(publisher);
@@ -827,7 +984,8 @@ where
         changes: &mut Vec<FactChange<F>>,
         ctx: &Ctx,
     ) where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
     {
         let mut became_quiet = Vec::new();
         let mut became_unquiet = Vec::new();
@@ -860,7 +1018,8 @@ where
         changes: &mut Vec<FactChange<F>>,
         ctx: &Ctx,
     ) where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
     {
         let mut frontier = seeds;
         while let Some(fact) = frontier.pop() {
@@ -897,7 +1056,7 @@ where
     /// one `Wake` attributing `job` to `cause`, whatever the disposition —
     /// there is no dedupe here, since a distinct cause is a distinct
     /// attribution even when it lands on an already-pending job.
-    fn enqueue_step(&mut self, job: J, cause: &FactUse<F>, shift: bool, wakes: &mut Vec<Wake<J, F>>) {
+    fn enqueue_step(&mut self, job: P::Run, cause: &FactUse<F>, shift: bool, wakes: &mut Vec<Wake<P::Run, F>>) {
         let disposition = if self.agenda.enqueue(job.clone()) {
             *self
                 .work_starts
@@ -920,17 +1079,28 @@ where
         fact_use: FactUse<F>,
         shift: bool,
         pending_changes: &mut Vec<FactChange<F>>,
-        wakes: &mut Vec<Wake<J, F>>,
+        wakes: &mut Vec<Wake<P::Run, F>>,
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
     ) where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
     {
-        for job in self.deps.subscribers(&fact_use, ctx) {
-            self.dirty_claims(&job, pending_changes, ctx);
+        // A movement reopens exactly the answers that read it, and wakes the
+        // job that gives them once: the run is what re-derives them, so one
+        // movement is one work start. An answer of the same job that did not
+        // read this fact is not in question -- re-deriving it will say what it
+        // already says -- and dirtying it anyway would reopen, on every wake,
+        // the very thing a concluded answer is for.
+        let mut woken = OrderedSet::default();
+        for publisher in self.deps.subscribers(&fact_use, ctx) {
             if shift {
-                self.rebased.insert(job.clone());
+                self.rebased.insert(publisher.clone());
             }
+            self.dirty_claims(&publisher, pending_changes, ctx);
+            woken.insert(publisher.run().clone());
+        }
+        for job in woken.iter().cloned().collect::<Vec<_>>() {
             self.enqueue_step(job, &fact_use, shift, wakes);
         }
 
@@ -948,31 +1118,36 @@ where
         fact_use: FactUse<F>,
         shift: bool,
         pending_changes: &mut Vec<FactChange<F>>,
-        wakes: &mut Vec<Wake<J, F>>,
+        wakes: &mut Vec<Wake<P::Run, F>>,
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
     ) where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
     {
         for job in self.deps.waiters(&fact_use, ctx) {
             let waits = self.deps.waits_for(&job);
             if !waits.iter().all(|wait| self.dependency_satisfies(wait, external)) {
                 continue;
             }
-            self.dirty_claims(&job, pending_changes, ctx);
+            // A standing wait belongs to the job's own answer, so satisfying
+            // it reopens that answer and no other.
+            let own = P::of_run(&job);
+            self.dirty_claims(&own, pending_changes, ctx);
             if shift {
-                self.rebased.insert(job.clone());
+                self.rebased.insert(own);
             }
             self.enqueue_step(job, &fact_use, shift, wakes);
         }
     }
 
-    /// Marks every fact this JOB claims dirty and carries the resulting
-    /// unquiet flips down the cone. A woken publisher's claims stop being
-    /// final for everyone downstream of them, not just for their own readers.
-    fn dirty_claims<Ctx>(&mut self, publisher: &J, pending_changes: &mut Vec<FactChange<F>>, ctx: &Ctx)
+    /// Marks every fact this answer claims dirty and carries the resulting
+    /// unquiet flips down the cone. A reopened answer stops being final for
+    /// everyone downstream of it, not just for its own readers.
+    fn dirty_claims<Ctx>(&mut self, publisher: &P, pending_changes: &mut Vec<FactChange<F>>, ctx: &Ctx)
     where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
     {
         let keys = self.deps.output_keys(publisher);
         let quiet_before = self.quiet_snapshot(&keys);

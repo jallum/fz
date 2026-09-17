@@ -2236,8 +2236,7 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
     match job {
         Job::IndexCode(code) | Job::ScopeCode(code) => write_source_owner(out, *code),
         Job::DefineModule(module) | Job::DefineModuleInterface(module) => write_module_id(out, *module),
-        Job::PublishFunctionSource(function)
-        | Job::ExpandFunctionSource(function)
+        Job::ExpandFunctionSource(function)
         | Job::DefineFunction(function)
         | Job::DeriveFunctionContract(function)
         | Job::LowerFunction(function)
@@ -2268,7 +2267,6 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::ProtocolDispatch(module)
         | FactKey::ProtocolImplProviders(module) => write_module_id(out, *module),
         FactKey::FunctionSource(function)
-        | FactKey::FunctionSourceStash(function)
         | FactKey::ExpandedFunctionSource(function)
         | FactKey::FunctionDefined(function)
         | FactKey::FunctionContract(function)
@@ -2491,7 +2489,6 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::ModuleDefined(_) => "ModuleDefined",
         FactKey::ModuleInterface(_) => "ModuleInterface",
         FactKey::FunctionSource(_) => "FunctionSource",
-        FactKey::FunctionSourceStash(_) => "FunctionSourceStash",
         FactKey::ExpandedFunctionSource(_) => "ExpandedFunctionSource",
         FactKey::TypeDefined(_) => "TypeDefined",
         FactKey::StructDefined(_) => "StructDefined",
@@ -2531,7 +2528,6 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::ScopeCode(_) => "ScopeCode",
         Job::DefineModule(_) => "DefineModule",
         Job::DefineModuleInterface(_) => "DefineModuleInterface",
-        Job::PublishFunctionSource(_) => "PublishFunctionSource",
         Job::ExpandFunctionSource(_) => "ExpandFunctionSource",
         Job::DefineFunction(_) => "DefineFunction",
         Job::DeriveTypeDef(_) => "DeriveTypeDef",

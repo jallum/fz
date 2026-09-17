@@ -33,15 +33,22 @@ and artifact emission.
   `publishers` claiming the fact, the `dirty_publishers` queued to re-run, the
   `unfinal_publishers` whose own reads can still move, and a `revision`
   counter (1 on a replacing fact's appearance, 0 on a cumulative fact claimed
-  at bottom). Each publisher is the job that owns the claim. Slots hold no
+  at bottom). Each publisher is a `Derivation`: the job that reached an answer,
+  paired with which answer of that job's run it is (see *The publisher is the
+  job's derivation* below). Slots hold no
   values — typed values live in `World` stores; the fact gates their visibility.
   Derived states: **present** (any publisher),
   **retracted** (none — the slot drops), **locally settled** (present and no
   claimant dirty), **quiet** (no claimant dirty and none unfinal — an absent
-  fact is quiet), and **settled** (present and quiet). See *Three questions a
-  fact answers* below.
-- **`DependencyIndex`** — five exact-keyed maps: `reads`↔`subscribers`,
-  `waits`↔`waiters`, and `outputs`. Each job owns its reads, waits, and claims.
+  fact is quiet), and **settled** (present and quiet). See *Content,
+  cleanliness and finality* below.
+- **`DependencyIndex`** — `reads`↔`subscribers` and `outputs` are keyed by
+  publisher (`Derivation`): each answer owns its own reads and its own claims.
+  `waits`↔`waiters` are keyed by the job's run identity (`Derivation::Run`)
+  instead: a wait is what stopped the run, so it belongs to the job that will
+  re-run, not to any one answer that run already reached. A `derivations` map
+  records which publishers each job currently owns, in emission order, so the
+  next run can tell which of its own past answers it no longer reaches.
   Waking a fact's interested jobs is an O(1) lookup, not a scan: when
   `LowerFunction(add)` concludes, finding that `AnalyzeActivation(a)` reads
   `LoweredBody(add)` costs one hash lookup, never a walk over every job in
@@ -74,10 +81,15 @@ waits for the artifact-pull subsystem, and the contribution-map fields
 discussed later — but `reads`/`waits`/`outputs`/`changed` is the contract
 every job honors.)
 
-Each job publishes one answer. Its co-outputs share the reads that justify
-that answer; its waits determine whether the run concluded.
-`World` combines fact and product dependencies into one `CompletionEffects`
-before applying the answer to the scheduler.
+`outputs`/`changed` above are the job's own answer — most jobs publish exactly
+this one. A job whose walk reaches more than one answer in a run (see *The
+publisher is the job's derivation*) also returns `derivations`, one per answer
+reached before its own conclusion; each carries its own reads, outputs and
+changed set. Co-outputs listed together under the same answer share the reads
+that justify it; the job's own waits determine whether that answer's run
+concluded. `World` combines fact and product dependencies, and every
+derivation reached, into one `CompletionEffects` before applying them to the
+scheduler.
 
 A job that cannot proceed records `waits` and returns; it never names another
 job to run. Restarting blocked work is the fact->producer map's job, not the
@@ -99,10 +111,20 @@ job's conclusion (`ModuleIndexed`, `ProtocolDispatch`,
 `ProtocolImplProviders`, `Executable`) has
 no arm: its demand rides the mapped fact that gates the job that co-produces
 it. Every fact with one sole-producing job gets an arm — including
-`FunctionSource` (`Job::PublishFunctionSource`), `ExpandedFunctionSource`
-(`Job::ExpandFunctionSource`), and `EntryDispatch` (`Job::PlanEntryDispatch`). A fact is
+`ExpandedFunctionSource` (`Job::ExpandFunctionSource`) and `EntryDispatch`
+(`Job::PlanEntryDispatch`). A fact is
 a co-output exception only when no single job is its sole producer, never
 because a caller already knows which job to name.
+
+An arm may name the facts that gate the producer instead of the producer
+itself, when which job publishes the fact depends on the world. A function's
+source is published by whichever scope walk reaches its definition, so
+`FunctionSource(f)` expands through `World::demand_function_scope`: that names
+the scope facts gating the walk — `CodeIndexed` for a candidate home still
+unindexed, then `CodeScoped` for the home found, or `ModuleDefined` for a
+scoped function — and each of those has its own arm. A function no submitted
+code names has no scope fact, so the arm demands nothing and the wait stands
+until some later submission's walk publishes the source.
 Blocked work is not an error; exact waits are how ordering emerges without a
 separate phase schedule.
 
@@ -280,6 +302,64 @@ claims would settle from amnesia rather than from genuine finality. Re-listing
 both keeps every claim published at its own revision under the subscriptions
 that actually derived it.
 
+## The publisher is the job's derivation
+
+A job run may conclude more than one derivation. A `Derivation` is
+`(Job, DerivationKey)`: the job that ran, and which answer of that run this
+is. `DerivationKey::Job` is the run's own answer — the one its standing waits
+leave unfinished. Other keys (`Function(FunctionId)`, and, reserved for future
+publishers of the same shape, `Activation`/`Executable`/`InputSlot`) name an
+answer the run reached on the way to its own conclusion. Reads, claims,
+dirtiness, rebase flag, and finality are all per derivation, not per job: two
+derivations of the same run can be clean and dirty at once. The agenda and
+standing waits stay per job — a job's run is one unit of scheduling even when
+it yields several answers.
+
+Today the scope walk (`source_publish.rs`) is the one publisher that reaches
+more than its own answer: `ScopeSession::define_source_function` records a
+`Function(f)` derivation as soon as it defines each function, carrying the
+reads accumulated up to that point (`ground_derivations` in `jobs/source.rs`
+splices in the reads the scope walk's own job had before the walk began, so an
+answer that read nothing downstream still stands on real ground rather than
+looking quiet by omission). When the walk later blocks on something further
+down — an item-macro expansion, say — `blocked_effects` carries every
+derivation reached so far out with the job's wait.
+`World::complete_job_with_external` always
+appends the job's own `DerivationKey::Job` derivation last, carrying the
+ordinary `JobEffects::{reads,outputs,changed}` exactly as before; a job that
+answers one question per run only ever has this one derivation, so its shape
+is unchanged.
+
+A run's conclusion replaces reads and claims for each derivation it concludes
+this time (`concluding` — every derivation except the job's own while the job
+is still waiting); a still-waiting job's own derivation extends instead,
+exactly as *Waiting extends, concluding replaces* describes below, now scoped
+to the one derivation that wait belongs to. A run also retracts by complete
+re-listing at derivation grain: `Scheduler::complete_ordered_with_external`
+compares what the job owned before this run (`DependencyIndex::derivations_of`)
+against what it lists this time, and any derivation it owned but did not
+re-emit is unreached — retracted outright if the job concluded, or left
+standing and dirty if the job is still waiting on something else. The scope
+walk's re-derivation of a shorter function list (a definition dropped by a
+rebase upstream) retracts exactly the `Function(f)` derivations it no longer
+reaches, the same way an ordinary job's shrinking output list retracts a fact.
+
+Source-publisher jobs follow this rule with typed `SourceOwner` keys; exact
+text provenance stays in `SourceVersion` spans rather than becoming a second
+publisher identity. See
+[`quoted-source`](quoted-source.md#source-identity-and-provenance).
+
+Cumulative-claim discipline (`ContributionMap`, `preserved_analysis_claims`,
+`activation_input_contributions` — see *Absence is bottom* and *Withdrawal is
+scoped, not lost* above) is unaffected: those contributions are owned by a
+job's own run, not split per derivation, because the jobs that make them
+(`analyze_activation` and friends) answer one question per run today.
+
+Each fact use wakes a subscribed job once. Distinct causes retain distinct
+`Wake` records, including coalesced attempts to enqueue an already pending
+job. The records attribute the work to the job and exact read or wait that
+caused it.
+
 ## One job, several facts
 
 One job may own more than one fact when both follow from its answer.
@@ -380,25 +460,33 @@ run.
 So at a drain — and only at a drain — the agenda decides. With no pending job,
 the only publisher that could still move a fact is one paused on a wait, and a
 paused publisher cannot run until something wakes it, at which point its claims
-dirty and its readers unfinalize through the ordinary path. `Settled(F)` at a
-drain is therefore exactly locally settled, which is what it meant everywhere
-before finality became transitive. The transitive rule is what holds DURING the
-ascent; the drain is where it is discharged.
+dirty and its readers unfinalize through the ordinary path. A locally clean
+publisher says nothing about the publishers it reads through, though: a dirty
+publisher several hops down looks the same, from the fact's own slot, as a
+settled cycle, until something actually walks the reads. So the drain arbiter
+walks the fact's transitive read ground and refuses to certify while it finds a
+dirty publisher there, or an external product beneath it that is unsettled.
+Only a cone with no dirty publisher and no unsettled external product in it is
+final, discharging the transitive rule that holds DURING the ascent.
 
 `Scheduler::settle_quiescent_ordered_with_external(facts, external, ctx)` is
 that discharge, and it is
-demand-driven: it answers the exact settled questions something is actually
+demand-driven: it walks from the exact settled questions something is actually
 asking — the blocked waiters' own settled waits (`World::settle_quiescent_waits`)
 and one product evaluation's exact prerequisite set
 (`product_drive::drive_product_fact_waits_with_sessions`). A product producer
 names every prerequisite it can identify in the same evaluation, and the pull
 driver presents that set to the arbiter atomically; serially arbitrating the
 members would turn one semantic barrier into multiple public readiness steps.
-Arbitration starts only from those requested facts. The selected fact must be
-locally clean and have no unsettled external-product ground. For each of its
-exact publishers, the scheduler records quiescent certification while retaining
-the actual unquiet-read count, and clears that publisher's unfinal claims through
-its existing output frontier.
+Arbitration starts only from those requested facts, but the walk that proves
+one of them final visits every unquiet fact in its transitive read ground, and
+the same argument proves each of those final too. The scheduler certifies the
+whole walked cone together, not only the fact that was asked — leaving a
+proven member uncertified would only re-arbitrate it at a later drain and wake
+its readers again. For each certified fact's exact publishers, the scheduler
+records quiescent certification while retaining the actual unquiet-read count,
+and clears that publisher's unfinal claims through its existing output
+frontier.
 Other publishers of a shared output still control their own claims. Ordinary
 quiet propagation carries the resulting readiness edges to readers.
 

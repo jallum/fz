@@ -66,7 +66,7 @@ pub(super) fn derive_static_callees(
         let module = world.function_module(function);
         if !module.is_global() && world.module_defined_revision(module).is_none() {
             // Demand the scope that produces the `ModuleDefined` this site
-            // waits on, not the body (fz-f98.14.5): `ensure_runtime_module`
+            // waits on, not the body: `ensure_runtime_module`
             // mints a runtime module's code the first time the call graph
             // reaches it, instead of leaving that submission to whenever
             // `Job::DefineModule` happens to run. `ModuleDefined`'s sole
@@ -82,7 +82,7 @@ pub(super) fn derive_static_callees(
     if !world.has_fact(&lowered) {
         // One wait, for the one fact this derivation reads. `LoweredBody`'s
         // sole producer arm is `Job::LowerFunction`, and the chain behind it
-        // (`DefineFunction` -> `PublishFunctionSource` -> `demand_function_scope`)
+        // (`DefineFunction` -> `ExpandFunctionSource` -> `demand_function_scope`)
         // is what scopes the code the body comes from. Waiting on
         // `FunctionDefined` first, as a separate rung, would buy nothing but
         // one more blocked evaluation per function.

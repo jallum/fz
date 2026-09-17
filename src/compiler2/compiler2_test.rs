@@ -1703,14 +1703,19 @@ fn compiler2_macro_ignoring_caller_runs_with_elided_caller_lane() {
     );
 }
 
-fn drive_and_count_function_source_production(name: &str, source: &str) -> (usize, usize) {
+/// Compiles `source` for its backend product and reports how many of the
+/// function sources the scope walks published were expanded, against how many
+/// were published at all. Scoping a definition publishes its source; expanding
+/// it is the first step that costs body work, and only a reached function pays
+/// it.
+fn drive_and_count_expanded_against_scoped_sources(name: &str, source: &str) -> (usize, usize) {
     let tel = ConfiguredTelemetry::new();
-    let stashed = Rc::new(RefCell::new(HashSet::<super::FunctionId>::new()));
-    let stash_sink = Rc::clone(&stashed);
+    let scoped = Rc::new(RefCell::new(HashSet::<super::FunctionId>::new()));
+    let scope_sink = Rc::clone(&scoped);
     tel.attach_raw_event3::<super::World, super::FunctionId, super::FunctionSource, _>(
         &["fz", "compiler2", "compiler_service", "define"],
         move |_, _, _, _, function, _| {
-            stash_sink.borrow_mut().insert(*function);
+            scope_sink.borrow_mut().insert(*function);
         },
     );
 
@@ -1733,30 +1738,32 @@ fn drive_and_count_function_source_production(name: &str, source: &str) -> (usiz
         "{name} should settle a backend product with executable functions",
     );
 
-    let stashed = stashed.borrow();
-    let stash_count = stashed.len();
-    let minted = stashed
+    let scoped = scoped.borrow();
+    let scoped_count = scoped.len();
+    let expanded = scoped
         .iter()
-        .filter(|&&id| compiler.world().has_fact(&super::FactKey::FunctionSource(id)))
+        .filter(|&&id| compiler.world().has_fact(&super::FactKey::ExpandedFunctionSource(id)))
         .count();
 
-    (minted, stash_count)
+    (expanded, scoped_count)
 }
 
 #[test]
 fn quicksort_compiles_through_definition_macros() {
     let source = include_str!("../../fixtures2/behavior/quicksort.fz");
-    let (minted, stashed) = drive_and_count_function_source_production("quicksort_def_surface.fz", source);
+    let (expanded, scoped) = drive_and_count_expanded_against_scoped_sources("quicksort_def_surface.fz", source);
 
-    assert!(minted > 0, "the def surface must mint reached quicksort functions");
+    assert!(expanded > 0, "the def surface must expand reached quicksort functions");
     assert!(
-        minted < stashed,
-        "the def surface must leave cold runtime definitions lazy: minted={minted}, stashed={stashed}"
+        expanded < scoped,
+        "the def surface must leave cold runtime definitions unexpanded: expanded={expanded}, scoped={scoped}"
     );
 }
 
+/// Scoping is eager about a definition's source and lazy about its body: a
+/// function nothing reaches is published and then left alone.
 #[test]
-fn function_source_is_demand_minted_not_stash_eager() {
+fn unreached_function_bodies_are_never_expanded() {
     for (name, source) in [
         (
             "quicksort_plus_foo.fz",
@@ -1771,11 +1778,11 @@ fn function_source_is_demand_minted_not_stash_eager() {
             include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz"),
         ),
     ] {
-        let (minted, stash) = drive_and_count_function_source_production(name, source);
-        assert!(minted > 0, "{name} should demand at least one function source");
+        let (expanded, scoped) = drive_and_count_expanded_against_scoped_sources(name, source);
+        assert!(expanded > 0, "{name} should expand at least one function body");
         assert!(
-            minted < stash,
-            "{name} should leave unreached function sources unminted: minted={minted}, stash={stash}",
+            expanded < scoped,
+            "{name} should leave unreached function bodies unexpanded: expanded={expanded}, scoped={scoped}",
         );
     }
 }

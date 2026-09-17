@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::telemetry::{RawSpanGuard, RawSpanStop0, RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt};
 
 use super::code::SourceOwner;
-use super::facts::{ClaimShape, FactUse};
+use super::facts::{ClaimShape, FactUse, Publisher};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::pull::ProductKey;
 use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
@@ -60,6 +60,7 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
             .world
             .work_graph
             .dependency_uses(&job)
+            .iter()
             .filter_map(|usage| match usage.fact() {
                 DependencyKey::Product(address) => Some(address.clone()),
                 _ => None,
@@ -180,7 +181,6 @@ pub enum Job {
     ScopeCode(SourceOwner),
     DefineModule(ModuleId),
     DefineModuleInterface(ModuleId),
-    PublishFunctionSource(FunctionId),
     ExpandFunctionSource(FunctionId),
     DefineFunction(FunctionId),
     DeriveTypeDef(TypeName),
@@ -208,7 +208,6 @@ impl SemanticOrd<Types> for Job {
                 (Job::ScopeCode(left), Job::ScopeCode(right)) => left.cmp(right),
                 (Job::DefineModule(left), Job::DefineModule(right)) => left.cmp(right),
                 (Job::DefineModuleInterface(left), Job::DefineModuleInterface(right)) => left.cmp(right),
-                (Job::PublishFunctionSource(left), Job::PublishFunctionSource(right)) => left.cmp(right),
                 (Job::ExpandFunctionSource(left), Job::ExpandFunctionSource(right)) => left.cmp(right),
                 (Job::DefineFunction(left), Job::DefineFunction(right)) => left.cmp(right),
                 (Job::DeriveTypeDef(left), Job::DeriveTypeDef(right)) => left.cmp(right),
@@ -248,7 +247,6 @@ fn job_order_rank(job: &Job) -> u8 {
         Job::IndexCode(_) => 13,
         Job::LowerFunction(_) => 14,
         Job::PlanEntryDispatch(_) => 15,
-        Job::PublishFunctionSource(_) => 16,
         Job::ReifyGuardDispatch(_) => 17,
         Job::ScopeCode(_) => 18,
         Job::SeedActivation(_) => 19,
@@ -266,7 +264,6 @@ pub enum FactKey {
     ModuleDefined(ModuleId),
     ModuleInterface(ModuleId),
     FunctionSource(FunctionId),
-    FunctionSourceStash(FunctionId),
     ExpandedFunctionSource(FunctionId),
     TypeDefined(TypeName),
     StructDefined(ModuleId),
@@ -317,7 +314,6 @@ impl FactKey {
             | (FactKey::ProtocolDispatch(left), FactKey::ProtocolDispatch(right))
             | (FactKey::ProtocolImplProviders(left), FactKey::ProtocolImplProviders(right)) => left.cmp(right),
             (FactKey::FunctionSource(left), FactKey::FunctionSource(right))
-            | (FactKey::FunctionSourceStash(left), FactKey::FunctionSourceStash(right))
             | (FactKey::ExpandedFunctionSource(left), FactKey::ExpandedFunctionSource(right))
             | (FactKey::FunctionDefined(left), FactKey::FunctionDefined(right))
             | (FactKey::FunctionContract(left), FactKey::FunctionContract(right))
@@ -370,7 +366,6 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::FunctionContract(_) => 13,
         FactKey::FunctionDefined(_) => 14,
         FactKey::FunctionSource(_) => 15,
-        FactKey::FunctionSourceStash(_) => 16,
         FactKey::GuardDispatch(_) => 17,
         FactKey::InputDemand(_) => 18,
         FactKey::LoweredBody(_) => 19,
@@ -464,13 +459,110 @@ pub(crate) fn as_fact_use(usage: FactUse<DependencyKey>) -> Option<FactUse<FactK
     }
 }
 
-pub type WorkGraph = Scheduler<Job, DependencyKey>;
+/// Which answer of a job a claim belongs to. A job that answers one question
+/// per run publishes every fact under `Job`. A job that answers several --
+/// a scope walk gives one answer per function it reaches, an analysis one per
+/// activation it contributes to -- names the key of each answer, and each
+/// stands on exactly the reads that produced it.
+///
+/// The key is the question, never the position: a walk that stops earlier one
+/// run and later the next must still name the same answers, or a re-run could
+/// not replace what it re-derived nor retract what it no longer reaches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub enum DerivationKey {
+    /// The job's own answer -- the one its standing waits leave deriving.
+    #[default]
+    Job,
+    Function(FunctionId),
+    Activation(ActivationKey),
+    Executable(ExecutableKey),
+    InputSlot(super::incoming_inputs::InputSlot),
+}
 
-/// One job's answer: exact dependencies, owned facts, and contributions.
+/// One answer a job gave. Reads, claims, cleanliness and finality are all
+/// per answer; the agenda, standing waits and wakes are per job.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Derivation {
+    pub job: Job,
+    pub key: DerivationKey,
+}
+
+impl Derivation {
+    pub(crate) fn of(job: Job, key: DerivationKey) -> Self {
+        Self { job, key }
+    }
+}
+
+impl Publisher for Derivation {
+    type Run = Job;
+
+    fn run(&self) -> &Job {
+        &self.job
+    }
+
+    fn of_run(job: &Job) -> Self {
+        Self {
+            job: job.clone(),
+            key: DerivationKey::Job,
+        }
+    }
+}
+
+impl SemanticOrd<Types> for Derivation {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        self.job
+            .semantic_cmp(&other.job, types)
+            .then_with(|| self.key.semantic_cmp(&other.key, types))
+    }
+}
+
+impl SemanticOrd<Types> for DerivationKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        derivation_key_rank(self)
+            .cmp(&derivation_key_rank(other))
+            .then_with(|| match (self, other) {
+                (DerivationKey::Function(left), DerivationKey::Function(right)) => left.cmp(right),
+                (DerivationKey::Activation(left), DerivationKey::Activation(right)) => left.semantic_cmp(right, types),
+                (DerivationKey::Executable(left), DerivationKey::Executable(right)) => left.semantic_cmp(right, types),
+                (DerivationKey::InputSlot(left), DerivationKey::InputSlot(right)) => left.semantic_cmp(right, types),
+                _ => std::cmp::Ordering::Equal,
+            })
+    }
+}
+
+fn derivation_key_rank(key: &DerivationKey) -> u8 {
+    match key {
+        DerivationKey::Job => 0,
+        DerivationKey::Function(_) => 1,
+        DerivationKey::Activation(_) => 2,
+        DerivationKey::Executable(_) => 3,
+        DerivationKey::InputSlot(_) => 4,
+    }
+}
+
+pub type WorkGraph = Scheduler<Derivation, DependencyKey>;
+
+/// One answer a job reached before its own conclusion: the facts it owns and
+/// the ground it stood on when it reached them. Each is published as its own
+/// derivation, so a run that blocks later cannot unsettle what it already
+/// decided, and a reader of one answer never inherits the reads of another.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct JobDerivation {
+    pub(crate) key: DerivationKey,
+    pub(crate) reads: Vec<FactUse<FactKey>>,
+    pub(crate) product_reads: Vec<ProductAddress>,
+    pub(crate) outputs: Vec<FactKey>,
+    pub(crate) changed: Vec<FactKey>,
+}
+
+/// One job run: the answers it reached, and its own dependencies, owned facts
+/// and contributions.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct JobEffects {
     /// Actual RuntimeDemand body walks; prerequisite-only returns perform none.
     pub(crate) runtime_demand_evaluations: u64,
+    /// The answers this run reached on the way to its own conclusion.
+    pub(crate) derivations: Vec<JobDerivation>,
     pub(crate) reads: Vec<FactUse<FactKey>>,
     pub(crate) waits: Vec<FactUse<FactKey>>,
     pub(crate) product_reads: Vec<ProductAddress>,
@@ -513,8 +605,7 @@ impl World {
     ///
     /// Facts whose producers publish them only as a co-output of a broader
     /// job's conclusion (`ModuleIndexed`, `StructDefined`, `ProtocolDispatch`,
-    /// `ProtocolImplProviders`, `Executable`,
-    /// `FunctionSourceStash`) have no arm: their demand rides
+    /// `ProtocolImplProviders`, `Executable`) have no arm: their demand rides
     /// the mapped facts that gate the job that co-produces them. Every fact
     /// with a single sole-producing job gets an arm here, even when that job
     /// is also the blocked branch of a `wait_on_current(fact)` bare wait elsewhere —
@@ -562,7 +653,22 @@ impl World {
             }
             FactKey::InputDemand(function) => Some(Job::DeriveInputDemand(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
-            FactKey::FunctionSource(function) => Some(Job::PublishFunctionSource(*function)),
+            // A function's source is published by the scope walk that defines
+            // it, and which walk that is depends on where the function lives.
+            // `demand_function_scope` names the scope facts that gate it, and
+            // each of those has its own arm here, so expanding them is how
+            // this fact reaches its producer. A function no submitted code
+            // names yet has no scope fact: nothing is demanded, and the wait
+            // is discharged when some later walk publishes the source. A
+            // corpus with two homes for one name is diagnosed by the job that
+            // needs the source, not by this map, which carries no telemetry.
+            FactKey::FunctionSource(function) => {
+                let scopes = self.demand_function_scope(*function).unwrap_or_default();
+                return scopes
+                    .iter()
+                    .map(|scope| self.demand_fact_producer(scope, reason))
+                    .sum();
+            }
             FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),
             FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
                 self.seed_activation_producer(activation)
@@ -663,11 +769,15 @@ impl World {
     ///
     /// Transitive finality is maintained by counting, and counting can never
     /// finalize a cycle — `Scheduler::settle_quiescent` carries the proof. At
-    /// a drain the agenda decides instead: a locally clean cone holding no
-    /// dirty fact cannot move, so it is final. This is demand-driven, not a
-    /// sweep — nothing is arbitrated that nobody asked about — and the step it
-    /// produces is stashed for the execution context to emit, so the wake it
-    /// causes always has a movement on the public stream to name.
+    /// a drain the agenda decides instead: a fact is certified only when no
+    /// publisher in its transitive read ground is dirty and no external
+    /// product beneath it is unsettled. The walk that proves this visits
+    /// every unquiet fact in that ground and certifies all of them, since the
+    /// same argument proved each one final. This is demand-driven, not a
+    /// sweep — the walk starts only from `facts` and follows what they
+    /// actually read — and the step it produces is stashed for the execution
+    /// context to emit, so the wake it causes always has a movement on the
+    /// public stream to name.
     pub(crate) fn settle_quiescent_with_sessions(
         &mut self,
         facts: &[FactKey],

@@ -1887,9 +1887,9 @@ fn wait_for_unresolved_function_module(world: &mut World, function: FunctionId, 
         return false;
     }
     // This site needs the function's module DEFINED (its scope walked), not its
-    // body published: a protocol callback has no body of its own, so pulling
-    // `PublishFunctionSource` here would chase a source that never exists
-    // (fz-f98.14.5). The wait names `ModuleDefined(module)` directly — its
+    // body expanded: a protocol callback has no body of its own, so pulling
+    // `ExpandFunctionSource` here would chase a source that never exists. The
+    // wait names `ModuleDefined(module)` directly — its
     // producer arm is `Job::DefineModule`, which bootstraps a runtime
     // module's code (`World::ensure_runtime_module`) itself when it runs, so
     // this site does not need to call `demand_function_scope` for that side
