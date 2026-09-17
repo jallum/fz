@@ -86,3 +86,61 @@ fn re_scoping_the_runtime_prelude_does_not_churn_def_macro_source() {
         "re-scoping the unchanged prelude must keep the def/1 source revision stable",
     );
 }
+
+#[test]
+fn blocked_scope_keeps_prelude_ground_on_reached_function_sources() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let code = world.submit_code(
+        Some("blocked-ground.fz".into()),
+        "def early(), do: 1\nimport MissingReviewModule\n".into(),
+    );
+    world.demand(Job::ScopeCode(code));
+    let mut sessions = crate::compiler2::pull::ProductSessions::default();
+    let _ = crate::compiler2::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive();
+
+    let effects = scope_code(&mut world, &tel, Some(&sessions), code).expect("scope returns a wait");
+    assert!(
+        !effects.waits.is_empty(),
+        "the unresolved import must leave the scope walk blocked"
+    );
+
+    let early = world.reference_function(ModuleId::GLOBAL, "early", 0);
+    let derivation = effects
+        .derivations
+        .iter()
+        .find(|derivation| derivation.outputs.contains(&FactKey::FunctionSource(early)))
+        .expect("early source reached");
+    let prelude = crate::compiler2::facts::FactUse::current(FactKey::CodeScoped(world.runtime_prelude()));
+    assert!(
+        derivation.reads.contains(&prelude),
+        "a reached function source must retain the prelude ground that scoped it"
+    );
+    assert!(
+        effects.reads.contains(&prelude),
+        "the blocked scope job must retain the prelude ground that scoped it"
+    );
+
+    world.complete_job(Job::ScopeCode(code), effects);
+    assert!(
+        world.fact_is_settled(&FactKey::FunctionSource(early)),
+        "the reached function source must settle while its prelude ground remains published"
+    );
+    let prelude_retraction = world.complete_job(
+        Job::ScopeCode(world.runtime_prelude()),
+        crate::compiler2::drive::JobEffects::default(),
+    );
+    assert!(
+        !world.fact_is_settled(&FactKey::FunctionSource(early)),
+        "retracting the prelude must unsettle the reached function source"
+    );
+    assert!(
+        prelude_retraction.step.wakes.iter().any(|wake| {
+            wake.job == Job::ScopeCode(code)
+                && wake.cause.readiness() == prelude.readiness()
+                && wake.cause.fact().fact() == Some(prelude.fact())
+                && wake.shift
+        }),
+        "prelude retraction must wake the blocked scope job through its base read"
+    );
+}

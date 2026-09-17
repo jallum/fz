@@ -325,7 +325,10 @@ splices in the reads the scope walk's own job had before the walk began, so an
 answer that read nothing downstream still stands on real ground rather than
 looking quiet by omission). When the walk later blocks on something further
 down — an item-macro expansion, say — `blocked_effects` carries every
-derivation reached so far out with the job's wait.
+derivation reached so far out with the job's wait, and `scope_code` adds the
+pre-walk base ground to both those derivations and the blocked job answer. The
+later reads collected inside the blocked walk remain specific to the answers
+that actually reached them.
 `AnalyzeActivation(a)` publishes `ReturnType(a)` under its own `Activation(a)`
 derivation, so its waits, reads, claims, rebase state, and return payload have
 one identity. An inactive activation re-lists that same own derivation through
