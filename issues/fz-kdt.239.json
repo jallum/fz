@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-17T23:57:59Z",
+  "description": "Current TypeDef holds acyclic hard Ty and DeriveTypeDef blocks on recursive TypeDefined itself. Red source @type tree :: integer | {tree, tree}, demanded by spec/root, must resolve and distinguish allowed recursive values without any-widening; alpha-renamed/unfolded regular types canonicalize equally. Need graph-backed regular recursive types/cycle-safe operations, contractive validation and mutual recursion; do not just hide unresolved errors. One fresh agent, design/code/tests/docs, one commit onto PR215.",
+  "id": "fz-kdt.239",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "Resolve recursive type definitions without stalled self-dependencies",
+  "type": "bug",
+  "updated_at": "2026-09-17T23:57:59Z"
+}
