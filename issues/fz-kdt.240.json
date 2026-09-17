@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-17T23:58:00Z",
+  "description": "arrow_match has known-wrong p5/p10 pins. Red f(a,%{:k=\u003ec,:missing=\u003ea})::a at (int, alpha | %{:k=\u003eint}) cannot report Known(int) after skipping missing field. Also heterogeneous tuple arity union cannot ignore mismatched alternative. Preserve Match Known/Unknown/Invalid soundness, inspect existing pins and use actual expected semantics, test enclosing contract path. One fresh agent, one commit onto PR215.",
+  "id": "fz-kdt.240",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "Reject polymorphic arrow matches with unread structural obligations",
+  "type": "bug",
+  "updated_at": "2026-09-17T23:58:00Z"
+}
