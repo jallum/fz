@@ -5,6 +5,8 @@
     "fz-kdt.177.3"
   ],
   "blocks": [],
+  "closed_at": "2026-09-17T22:31:13Z",
+  "close_reason": "Superseded before implementation by atomic fz-kdt.98.3; its required group-return model and gates are preserved there.",
   "created": "2026-09-15T20:29:59Z",
   "description": "Superseded before implementation by fz-kdt.98.3, Complete the dynamic recursive return cut atomically. This ticket is closed so future agents do not land a group-return solver without its complete dynamic call graph and retained exact membership.\n\nThe preserved obligation is: SolveRecursiveReturns(ActivationComponent) owns all recursive member ReturnType derivations, reads external ground only, and treats an internal cyclic copy as structure rather than fresh ground. μ equation closure and deletion of the widening/address-collapse budgets remain fz-kdt.177.10, after fz-kdt.98.3.",
   "id": "fz-kdt.177.9",
@@ -21,8 +23,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Superseded: solve dynamic recursive returns once",
   "type": "task",
-  "updated_at": "2026-09-17T22:31:12Z"
+  "updated_at": "2026-09-17T22:31:13Z"
 }
