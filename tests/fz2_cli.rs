@@ -1020,6 +1020,150 @@ fn help_lists_compiler2_commands_on_stdout() {
     }
 }
 
+#[test]
+fn file_stream_and_stream_map_are_lazy_enumerables_on_every_execution_door() {
+    let input_path = unique_temp_path("fz2_file_stream", ".jsonl");
+    let source_path = unique_temp_path("fz2_file_stream", ".fz");
+    let output_path = unique_temp_path("fz2_file_stream", ".bin");
+    write(&input_path, "first\nsecond\n").expect("write stream input");
+    write(
+        &source_path,
+        format!(
+            r#"
+def main() do
+  stream = File.stream!("{}")
+  stream
+  |> Stream.map(fn line -> String.trim(line) end)
+  |> Enum.to_list()
+  |> dbg()
+  stream
+  |> Stream.map(fn line -> String.trim(line) end)
+  |> Enum.to_list()
+  |> dbg()
+end
+"#,
+            input_path.to_string_lossy()
+        ),
+    )
+    .expect("write File.stream fixture");
+
+    for command in ["run", "interp"] {
+        let output = run_fz2(&[OsStr::new(command), source_path.as_os_str()]);
+        assert_successful_stdout(
+            &output,
+            "[\"first\", \"second\"]\n[\"first\", \"second\"]\n",
+            &format!("fz2 {command} File.stream"),
+        );
+    }
+
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        output_path.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build File.stream fixture should succeed; stderr={:?}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let output = Command::new(&output_path)
+        .output()
+        .expect("run AOT File.stream fixture");
+    assert_successful_stdout(
+        &output,
+        "[\"first\", \"second\"]\n[\"first\", \"second\"]\n",
+        "AOT File.stream",
+    );
+
+    let _ = remove_file(input_path);
+    let _ = remove_file(source_path);
+    let _ = remove_file(output_path.with_extension("o"));
+    let _ = remove_file(output_path);
+}
+
+#[test]
+fn native_telemetry_distiller_reports_compiler_work_and_rejects_bad_jsonl() {
+    let trace_path = unique_temp_path("fz2_distill_telemetry", ".jsonl");
+    write(
+        &trace_path,
+        concat!(
+            "{\"kind\":\"event\",\"name\":[\"fz\",\"compiler2\",\"canon\",\"function\"],\"time_ns\":10,\"metadata\":{\"function_id\":7,\"canon\":\"Main.work/0\"}}\n",
+            "{\"kind\":\"span_start\",\"span_id\":1,\"parent_span_id\":null,\"name\":[\"fz\",\"compiler2\",\"job\"],\"time_ns\":20,\"metadata\":{\"job\":{\"kind\":\"Analyze\",\"function_id\":7}}}\n",
+            "{\"kind\":\"span_start\",\"span_id\":2,\"parent_span_id\":1,\"name\":[\"fz\",\"compiler2\",\"native_backend\",\"compile\"],\"time_ns\":25,\"metadata\":{}}\n",
+            "{\"kind\":\"span_stop\",\"span_id\":2,\"elapsed_ns\":5,\"time_ns\":30}\n",
+            "{\"kind\":\"span_stop\",\"span_id\":1,\"elapsed_ns\":20,\"time_ns\":40}\n",
+            "{\"kind\":\"span_start\",\"span_id\":3,\"parent_span_id\":null,\"name\":[\"fz\",\"compiler2\",\"job\"],\"time_ns\":45,\"metadata\":{\"job\":{\"kind\":\"Analyze\",\"function_id\":7}}}\n",
+            "{\"kind\":\"span_stop\",\"span_id\":3,\"elapsed_ns\":10,\"time_ns\":55}\n",
+            "{\"kind\":\"event\",\"name\":[\"fz\",\"compiler2\",\"work_graph\",\"applied\"],\"time_ns\":60,\"metadata\":{\"completion\":{\"kind\":\"Analyze\",\"function_id\":7,\"wakes\":[{\"job\":{\"kind\":\"Analyze\",\"function_id\":7},\"cause\":{\"kind\":\"ReturnType\",\"use\":\"reads\",\"function_id\":7}}]}}}\n"
+        ),
+    )
+    .expect("write telemetry trace");
+
+    let output = run_fz2(&[
+        OsStr::new("run"),
+        OsStr::new("tools/distill-telemetry.fz"),
+        OsStr::new("--"),
+        trace_path.as_os_str(),
+        OsStr::new("--top"),
+        OsStr::new("6"),
+    ]);
+    assert!(
+        output.status.success(),
+        "native telemetry distiller should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "8 records, 3 spans",
+        "timeline (span times include the stream's own rendering",
+        "span names by inclusive time",
+        "compiler jobs by kind",
+        "compiler jobs by kind and subject",
+        "most re-run jobs",
+        "wake causes of the most re-run jobs",
+        "Analyze Main.work/0",
+        "ReturnType Main.work/0 (reads) after Analyze Main.work/0",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "report should contain {expected:?}; stdout={stdout:?}"
+        );
+    }
+
+    write(&trace_path, "not JSON\n").expect("overwrite malformed telemetry trace");
+    let malformed = run_fz2(&[
+        OsStr::new("run"),
+        OsStr::new("tools/distill-telemetry.fz"),
+        OsStr::new("--"),
+        trace_path.as_os_str(),
+    ]);
+    assert!(!malformed.status.success(), "malformed JSONL must fail");
+    assert!(
+        String::from_utf8_lossy(&malformed.stderr).contains("invalid telemetry JSON on line 1"),
+        "failure should identify the malformed record; stderr={:?}",
+        String::from_utf8_lossy(&malformed.stderr)
+    );
+
+    let _ = remove_file(trace_path);
+}
+
+#[test]
+fn native_telemetry_distiller_matches_a_captured_public_trace() {
+    let output = run_fz2(&[
+        OsStr::new("run"),
+        OsStr::new("tools/distill-telemetry.fz"),
+        OsStr::new("--"),
+        OsStr::new("tests/fixtures/telemetry/distill-sample.jsonl"),
+    ]);
+    assert_successful_stdout(
+        &output,
+        include_str!("fixtures/telemetry/distill-sample.expected.txt"),
+        "native telemetry distiller captured public trace",
+    );
+}
+
 /// `fz.runtime.execution_ready` is the boundary between compiling a program and
 /// running it. The fixture matrix pins where the readiness BYTE falls against a
 /// real compile; what only the stream can show is where the EVENT falls against
@@ -1928,6 +2072,183 @@ end
     );
     let run = Command::new(&out_bin).output().expect("run built cond binary");
     assert_successful_stdout(&run, ":ok\n", "fz2 build/run cond source");
+
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
+#[test]
+fn direct_tool_primitives_agree_across_every_execution_door() {
+    let source_path = unique_temp_path("fz2_direct_tool_primitives", ".fz");
+    write(
+        &source_path,
+        r#"
+def main() do
+  {opts, [path], invalid} = OptionParser.parse(["trace.jsonl", "--top", "7"], strict: [top: :integer])
+  {_, _, rejected} = OptionParser.parse(["--top", "many"], strict: [top: :integer])
+  counts = Map.update!(%{"compile" => 1}, "compile", fn count -> count + 1 end)
+  widened = MapSet.new(["compile", "compile"])
+
+  dbg({opts, path, invalid})
+  dbg(rejected)
+  dbg({Map.fetch!(counts, "compile"), MapSet.member?(widened, "compile")})
+  dbg({String.pad_trailing("job", 6), String.pad_leading("7", 4)})
+  dbg({Float.to_string(12.34, decimals: 1), inspect(%{"name" => "compile"}, limit: 6)})
+end
+"#,
+    )
+    .expect("write direct-tool primitive fixture");
+
+    let expected = r#"{[top: 7], "trace.jsonl", []}
+[{"--top", "many"}]
+{2, true}
+{"job   ", "   7"}
+{"12.3", "%{\"name\" => \"compile\"}"}
+"#;
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[OsStr::new(command), source_path.as_os_str()]);
+        assert_successful_stdout(&out, expected, &format!("fz2 {command} direct-tool primitives"));
+    }
+
+    let out_bin = unique_temp_path("fz2_direct_tool_primitives_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build direct-tool primitives should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&out_bin)
+        .output()
+        .expect("run built direct-tool primitive fixture");
+    assert_successful_stdout(&run, expected, "fz2 build/run direct-tool primitives");
+
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
+#[test]
+fn direct_distill_compatibility_surfaces_agree_across_every_execution_door() {
+    let source_path = unique_temp_path("fz2_direct_distill_compatibility", ".fz");
+    write(
+        &source_path,
+        r#"
+def main() do
+  record = JSON.decode!("{\"name\":\"compile\",\"elapsed\":12}")
+  columns = Enum.zip_with([["name", "compile"], ["elapsed", "12"]], fn column -> Enum.join(column, "=") end)
+
+  dbg({Map.fetch!(record, "name"), columns})
+end
+"#,
+    )
+    .expect("write direct Distill compatibility fixture");
+
+    let expected = "{\"compile\", [\"name=elapsed\", \"compile=12\"]}\n";
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[OsStr::new(command), source_path.as_os_str()]);
+        assert_successful_stdout(&out, expected, &format!("fz2 {command} direct Distill compatibility"));
+    }
+
+    let out_bin = unique_temp_path("fz2_direct_distill_compatibility_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build direct Distill compatibility should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&out_bin)
+        .output()
+        .expect("run built direct Distill compatibility fixture");
+    assert_successful_stdout(&run, expected, "fz2 build/run direct Distill compatibility");
+
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
+#[test]
+fn direct_distill_collection_compatibility_agrees_across_every_execution_door() {
+    let source_path = unique_temp_path("fz2_direct_distill_collections", ".fz");
+    write(
+        &source_path,
+        r#"
+def main() do
+  dbg(Tuple.to_list({"job", 2, 3.0}))
+  dbg({Enum.min([], fn () -> :first end), Enum.max([], fn () -> :last end)})
+  dbg(String.slice("compile", 1, 4))
+  dbg("compile" in MapSet.new(["compile"]))
+end
+"#,
+    )
+    .expect("write direct Distill collection fixture");
+
+    let expected = "[\"job\", 2, 3.0]\n{:first, :last}\n\"ompi\"\ntrue\n";
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[OsStr::new(command), source_path.as_os_str()]);
+        assert_successful_stdout(&out, expected, &format!("fz2 {command} direct Distill collections"));
+    }
+
+    let out_bin = unique_temp_path("fz2_direct_distill_collections_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build direct Distill collections should succeed: {}",
+        output_text(&build)
+    );
+    let run = Command::new(&out_bin)
+        .output()
+        .expect("run built direct Distill collection fixture");
+    assert_successful_stdout(&run, expected, "fz2 build/run direct Distill collections");
+
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
+#[test]
+fn zero_argument_elixir_lambda_spelling_agrees_across_every_execution_door() {
+    let source_path = unique_temp_path("fz2_zero_argument_elixir_lambda", ".fz");
+    write(&source_path, "def main(), do: dbg((fn -> 42 end).())\n").expect("write zero-argument lambda fixture");
+
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[OsStr::new(command), source_path.as_os_str()]);
+        assert_successful_stdout(&out, "42\n", &format!("fz2 {command} zero-argument Elixir lambda"));
+    }
+
+    let out_bin = unique_temp_path("fz2_zero_argument_elixir_lambda_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build zero-argument Elixir lambda should succeed: {}",
+        output_text(&build)
+    );
+    let run = Command::new(&out_bin)
+        .output()
+        .expect("run built zero-argument lambda fixture");
+    assert_successful_stdout(&run, "42\n", "fz2 build/run zero-argument Elixir lambda");
 
     let _ = remove_file(&source_path);
     let _ = remove_file(&out_bin);

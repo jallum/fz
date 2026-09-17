@@ -5,17 +5,25 @@ alias Atom
 alias Enum
 alias Enumerable
 alias File
+alias FileStream
 alias Float
+alias IO
 alias Integer
 alias Json
+alias JSON
 alias Kernel
 alias Keyword
 alias List
 alias Map
+alias MapSet
+alias OptionParser
 alias Process
 alias Range
 alias String
 alias String.Chars
+alias Tuple
+alias Stream
+alias System
 alias Utf8
 
 import Kernel, only: [
@@ -39,6 +47,8 @@ import Kernel, only: [
   make_ref: 0,
   byte_size: 1,
   make_resource: 2,
+  inspect: 1,
+  inspect: 2,
   panic: 1,
   range: 3,
   refute: 1,

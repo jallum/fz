@@ -37,12 +37,24 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/file.fz"),
     },
     RuntimeModuleSource {
+        name: "IO",
+        source: include_str!("../../lib/io.fz"),
+    },
+    RuntimeModuleSource {
         name: "List",
         source: include_str!("../../lib/list.fz"),
     },
     RuntimeModuleSource {
         name: "Map",
         source: include_str!("../../lib/map.fz"),
+    },
+    RuntimeModuleSource {
+        name: "MapSet",
+        source: include_str!("../../lib/map_set.fz"),
+    },
+    RuntimeModuleSource {
+        name: "OptionParser",
+        source: include_str!("../../lib/option_parser.fz"),
     },
     RuntimeModuleSource {
         name: "Keyword",
@@ -53,8 +65,20 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/string.fz"),
     },
     RuntimeModuleSource {
+        name: "System",
+        source: include_str!("../../lib/system.fz"),
+    },
+    RuntimeModuleSource {
         name: "Enum",
         source: include_str!("../../lib/enum.fz"),
+    },
+    RuntimeModuleSource {
+        name: "Stream",
+        source: include_str!("../../lib/stream.fz"),
+    },
+    RuntimeModuleSource {
+        name: "FileStream",
+        source: include_str!("../../lib/file_stream.fz"),
     },
     RuntimeModuleSource {
         name: "Atom",
@@ -73,8 +97,16 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/string_chars.fz"),
     },
     RuntimeModuleSource {
+        name: "Tuple",
+        source: include_str!("../../lib/tuple.fz"),
+    },
+    RuntimeModuleSource {
         name: "Json",
         source: include_str!("../../lib/json.fz"),
+    },
+    RuntimeModuleSource {
+        name: "JSON",
+        source: include_str!("../../lib/json_compat.fz"),
     },
     RuntimeModuleSource {
         name: "Utf8",

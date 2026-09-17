@@ -38,6 +38,7 @@ use crate::bitstr::{
 use crate::emit_print_line;
 use crate::exec_ctx::{ExecCtx, timer_schedule};
 use crate::heap::{AllocStat, HeapAllocKind, closure_capture_ref, list_head_ref, list_tail_ref, map_entry_refs};
+use crate::heap::{FieldKind, SchemaIdentity};
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
     ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
@@ -320,6 +321,43 @@ pub extern "C" fn fz_dbg_value_ref(process: *mut Process, ref_word: u64) {
 pub extern "C" fn fz_dbg_value(process: *mut Process, ref_word: u64) -> u64 {
     fz_dbg_value_ref(process, ref_word);
     ref_word
+}
+
+/// `Kernel.inspect/1` and `Kernel.inspect/2` share `dbg/1`'s deterministic
+/// renderer, but return its text instead of emitting it.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_inspect(process: *mut Process, ref_word: u64) -> u64 {
+    let value = any_value_from_ref_word(ref_word, "fz_inspect");
+    alloc_text(process, &render_value(process, value))
+}
+
+/// Return the current program's arguments as freshly allocated fz binaries.
+/// The execution context owns the host strings; this process owns the fz
+/// list, so no runtime value can outlive its heap.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_system_argv(process: *mut Process) -> u64 {
+    let args = unsafe { process_ctx(process) }.argv;
+    assert!(
+        !args.is_null(),
+        "fz_system_argv: execution context has no program arguments"
+    );
+    let mut list = AnyValueRef::empty_list();
+    for arg in unsafe { &*args }.iter().rev() {
+        let head = alloc_text(process, arg);
+        list = AnyValueRef::from_raw_word(fz_list_cons_ref(process, head, list.raw_word()))
+            .expect("fz_system_argv list value");
+    }
+    list.raw_word()
+}
+
+/// Write one byte-aligned binary without adding a newline. The caller owns
+/// presentation; `IO.puts/1` composes its newline in fz.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_io_write(process: *mut Process, ref_word: u64) -> u64 {
+    let (ptr, len) = byte_aligned_binary_slice(ref_word, "fz_io_write");
+    let ctx = unsafe { process_ctx(process) };
+    unsafe { (ctx.output_write.expect("fz_io_write: output callback installed"))(ctx.output_context, ptr, len) };
+    nil_atom_ref().raw_word()
 }
 
 #[unsafe(no_mangle)]
@@ -1178,6 +1216,14 @@ pub extern "C" fn fz_float_to_binary(process: *mut Process, value: f64) -> u64 {
     alloc_text(process, &crate::any_value::debug::float_to_string(value))
 }
 
+/// `Float.to_string/2` with the fixed-decimal mode used by report formatters.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_float_to_binary_decimals(process: *mut Process, value: f64, decimals: i64) -> u64 {
+    let decimals =
+        usize::try_from(decimals).unwrap_or_else(|_| panic!("Float.to_string decimals must be non-negative"));
+    alloc_text(process, &format!("{value:.decimals$}"))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_ref: u64) -> u64 {
     let (left_ptr, left_len) = byte_aligned_binary_slice(left_ref, "fz_binary_concat left");
@@ -1863,6 +1909,43 @@ pub extern "C" fn fz_list_cons_any(process: *mut Process, head_ref_word: u64, ta
         .alloc_list_cons_any(head, tail)
         .expect("fz_list_cons_any")
         .raw_word()
+}
+
+/// `Tuple.to_list/1`: project the tuple schema's value fields and allocate a
+/// proper list in source order. Struct schemas are deliberately refused: a
+/// named record has fields, not positional tuple elements.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_tuple_to_list(process: *mut Process, tuple_ref_word: u64) -> u64 {
+    let tuple = any_value_ref_from_word(tuple_ref_word, "fz_tuple_to_list");
+    let addr = tuple.struct_addr().expect("Tuple.to_list expects a tuple");
+    let process_ref = unsafe { &mut *process };
+    let offsets: Vec<u32> = {
+        let registry = process_ref.heap.schemas_registry();
+        let registry = registry.borrow();
+        let schema = registry.get(unsafe { struct_schema_id(addr) });
+        assert!(
+            matches!(schema.identity, SchemaIdentity::Tuple(_)),
+            "Tuple.to_list expects a tuple"
+        );
+        schema
+            .fields
+            .iter()
+            .filter(|field| field.kind == FieldKind::AnyValue)
+            .map(|field| field.offset)
+            .collect()
+    };
+    let mut list = AnyValueRef::empty_list();
+    for offset in offsets.into_iter().rev() {
+        let value = process_ref
+            .heap
+            .read_struct_field_ref(tuple, offset)
+            .expect("tuple field");
+        list = process_ref
+            .heap
+            .alloc_list_cons_any(AnyValue::from_ref(value).expect("tuple field value"), list)
+            .expect("tuple list allocation");
+    }
+    list.raw_word()
 }
 
 #[unsafe(no_mangle)]

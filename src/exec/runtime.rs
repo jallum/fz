@@ -33,7 +33,7 @@ use crate::telemetry::{Telemetry, TelemetryExt as _};
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::exec_ctx::{ExecCtx, timer_cancel};
 use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
-use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
+use fz_runtime::output::{OUTPUT_HOOK, OUTPUT_WRITE_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
 use fz_runtime::park::materialize_outcome_closure;
 use fz_runtime::pinned_abi::call2;
 use fz_runtime::procbin::mso_drop_all_deferred;
@@ -67,6 +67,7 @@ pub struct Runtime<'a, T: Telemetry + ?Sized> {
     /// instead of poking task internals.
     tel: &'a T,
     output: &'a dyn OutputSink,
+    program_args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,11 +258,20 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             timers: TimerWheel::new(),
             tel,
             output: &STDOUT_OUTPUT,
+            program_args: Vec::new(),
         }
     }
 
     pub fn with_output(mut self, output: &'a dyn OutputSink) -> Self {
         self.output = output;
+        self
+    }
+
+    /// Arguments visible through `System.argv/0`, excluding the executable
+    /// name. They are held by this scheduler and borrowed only while it
+    /// dispatches a process.
+    pub fn with_program_args(mut self, program_args: Vec<String>) -> Self {
+        self.program_args = program_args;
         self
     }
 
@@ -357,10 +367,12 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         let mut exec_ctx = ExecCtx {
             scheduler: self_ptr,
             output_context: output.as_ptr(),
+            argv: self.program_args.as_slice(),
             spawn: Some(spawn_hook_thunk::<T>),
             send: Some(send_hook_thunk::<T>),
             fault: Some(fz_runtime::STDERR_FAULT_HOOK),
             output: Some(OUTPUT_HOOK),
+            output_write: Some(OUTPUT_WRITE_HOOK),
             timer_schedule: Some(timer_schedule_hook_thunk::<T>),
             timer_cancel: Some(timer_cancel_hook_thunk::<T>),
         };

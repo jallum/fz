@@ -26,8 +26,12 @@ magnitudes as inflated and the shape as true.
 2. Distill it.
 
 ```
-elixir tools/distill-telemetry.exs trace.jsonl --top 20
+fz2 run tools/distill-telemetry.fz -- trace.jsonl --top 20
 ```
+
+The fz tool reads the trace as JSONL and rejects a malformed record instead of
+silently omitting it. Its arguments follow the usual `fz2 run` separator: the
+tool path comes first, then `--`, then the trace path and optional `--top N`.
 
 Read the sections in order, each narrower than the last:
 

@@ -537,6 +537,22 @@ Run through the interpreter:
 fz2 interp fixtures2/behavior/quicksort.fz
 ```
 
+Pass data to either execution mode after `--`. Programs read the arguments with
+`System.argv/0`; `IO.write/1` writes bytes as-is and `IO.puts/1` appends one
+newline:
+
+```sh
+fz2 run tools/analyze.fz -- telemetry.jsonl --top 10
+```
+
+Native executables receive their arguments from the operating system in the
+same way:
+
+```sh
+fz2 build tools/analyze.fz -o /tmp/analyze
+/tmp/analyze telemetry.jsonl --top 10
+```
+
 Start the REPL:
 
 ```sh

@@ -1,0 +1,18 @@
+defmodule Tuple do
+  @moduledoc """
+  Operations on ordinary, fixed-arity tuples.
+  """
+
+  extern "fz" defp fz_tuple_to_list(any) :: [any]
+
+  @doc """
+  Returns the tuple's elements in position order.
+
+  ## Examples
+
+      Tuple.to_list({:compile, 2})
+      #=> [:compile, 2]
+  """
+  @spec to_list(any) :: [any]
+  def to_list(value), do: fz_tuple_to_list(value)
+end

@@ -86,3 +86,25 @@ defimpl Enumerable, for: Range do
     {:ok, Range.count(first, last, step), (fn (start, amount, stride) -> Range.slice(first, last, step, start, amount, stride) end)}
   end
 end
+
+defimpl Enumerable, for: Stream do
+  def reduce(%Stream{source: source, mapper: mapper}, acc, reducer) do
+    Enumerable.reduce(source, acc, fn (entry, inner) -> reducer.(mapper.(entry), inner) end)
+  end
+
+  def reduce_while(%Stream{source: source, mapper: mapper}, acc, reducer) do
+    Enumerable.reduce_while(source, acc, fn (entry, inner) -> reducer.(mapper.(entry), inner) end)
+  end
+
+  def count(%Stream{source: source}), do: Enumerable.count(source)
+  def member?(_stream, _value), do: {:error, :unsupported}
+  def slice(_stream), do: {:error, :unsupported}
+end
+
+defimpl Enumerable, for: FileStream do
+  def reduce(%FileStream{path: path}, acc, reducer), do: FileStream.reduce(path, acc, reducer)
+  def reduce_while(%FileStream{path: path}, acc, reducer), do: FileStream.reduce_while(path, acc, reducer)
+  def count(_stream), do: {:error, :unsupported}
+  def member?(_stream, _value), do: {:error, :unsupported}
+  def slice(_stream), do: {:error, :unsupported}
+end

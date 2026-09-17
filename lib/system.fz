@@ -1,0 +1,16 @@
+defmodule System do
+  @moduledoc """
+  Information supplied by the host process.
+
+  `argv/0` returns the program arguments after the source file (for `fz2`) or
+  executable name (for an AOT binary). Every entry is a UTF-8 binary. The
+  returned list is fresh for the calling process, so it follows ordinary fz
+  value ownership rather than borrowing the host command line.
+  """
+
+  extern "fz" defp fz_system_argv() :: [binary]
+
+  @doc "Returns the arguments passed to the current fz program."
+  @spec argv() :: [binary]
+  def argv(), do: fz_system_argv()
+end
