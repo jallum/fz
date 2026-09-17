@@ -174,8 +174,10 @@ and every reader reads that recorded fact: the interpreter through
 `PatternDispatchPlan::input_demand`/`required_input`, native lowering through
 `required_input`, the executable facts through
 `ExecutableFacts::entry_dispatch_demand`, and activation keying by taking the
-slice as a body's local demand. A slot that stays `Ignore` is an input the plan
-never reads, and a backend is free to pass it as nil.
+slice as a body's local demand. Semantic reachability asks `required_input`
+before interpreting graph proofs; it does not scan the graph to invent a
+second tested-input fact. A slot that stays `Ignore` is an input the plan never
+reads, and a backend is free to pass it as nil.
 
 Three rules decide what a question charges. A test charges its own subject at
 the demand its region asks for, plus the input that delivers any pin it names --
@@ -198,6 +200,15 @@ it never looked at the impossible ordinal, while the interpreter iterated the
 demands and indexed the arguments, so it refused the call (fz-5xp.74). Charging
 asserts every ordinal is inside the declared count, which keeps a recurrence at
 the plan that produced it rather than at whichever door reads it first.
+
+**Which target a dispatch outcome selects** — owner `OutcomeId` in the
+completed `DispatchGraph`. Matrix construction assigns those ids densely;
+`PatternDispatchPlan` validates and retains the matching source payload in the
+same order. An artifact that owns a target constructs one `OutcomeId`-indexed
+slot per plan outcome, and interpreter, native, and semantic consumers route
+the decision through that slot. An absent executable clause is an explicit
+empty slot. `PatternBodyId` identifies source payload only; it is not a second
+retained body-to-target lookup authority.
 
 **Map key identity and order** — `TermComparator` in `Strict` mode owns both.
 Tuple/list/map keys compare structurally; binary storage kinds share bit

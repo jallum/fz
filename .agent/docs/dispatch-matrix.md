@@ -51,8 +51,10 @@ governs type collapsing and activation keying, not the physical layout a
 parameter arrives in. The lattice is defined in `dispatch_matrix::demand`; the keying jobs in
 `compiler2::jobs::keying` join it across bodies into the published input demand.
 
-`compile_dispatch_matrix` is pure and side-effect-free. It compiles ordered arms
-into a deterministic graph and returns `DispatchCompileStats` so tests can assert
+`compile_dispatch_matrix` is pure and side-effect-free. It consumes ordered arms
+into a deterministic graph, moving the matrix's subject table into that graph
+and dropping the arms and matrix-level outcome bookkeeping. It returns
+`DispatchCompileStats` so tests can assert
 shape signals such as test count, fallback count, and shared-prefix tests without
 depending on formatted graph dumps. It takes the producer's `DeclaredInputs` --
 the declared input count, where each pin arrives, and what each guard reads --
@@ -1170,8 +1172,10 @@ a fact; there is nothing left for the schedule to pick between.
 The artifact rung materializes a `CallEdge::Dispatch` for the `::Dispatch`
 answer: the plan is the runtime type-test graph, while each `DispatchCallArm`
 carries the existing impl `CallTarget`, return flow, and extern marshal facts
-outside `DispatchMatrix`. Dispatch misses are unreachable for closed receiver
-unions and lower to an explicit halt/trap path; there is no residual
+outside `DispatchMatrix`. The arm table is in dense `OutcomeId` order, so a
+winning outcome routes directly to its artifact-owned arm; it is not translated
+through a copied body-id table. Dispatch misses are unreachable for closed
+receiver unions and lower to an explicit halt/trap path; there is no residual
 protocol-stub outcome in the matrix.
 
 A fired trap is reported at the process-exit boundary as a fault, not unified
@@ -1201,23 +1205,26 @@ projected outcome-closure payload for the winning clause body; a miss outcome is
 
 Compiler2 semantic reachability is another consumer, not another dispatch
 model. `compiler2/dispatch_reachability.rs` interprets the graph's edge proofs
-against root input `Ty` rows and walks the plan's flat subject graph to
-derive every tested projection. It never stores types by `SubjectId` and never
-adds type/domain policy to this generic module. Before traversal, a runtime
-envelope replaces bare inference templates in positive, recursively inspectable
-tuple/list/map/resource slots with `any`, narrows unresolved negative exclusions
-instead of widening them, and preserves callable arrows that the pattern graph
-cannot inspect. Negative finite variable branches are erased while preserving
-their concrete axes; negative cofinite branches with excluded variable IDs
-become empty. A cofinite variable axis with no excluded IDs remains ordinary
-top. Exact tuple and named-struct projections lift to their roots;
-ambiguous positional list projections keep their root type on both edges. The
-traversal separately retains the graph's branch-local empty/cons fact for each
-subject. When the projected domain is already a proper list, `not empty`
-therefore proves cons and `not cons` proves empty; contradictory tail-shape
-paths are rejected without adding spine length to the type lattice or covering
-non-list inputs. Each reachable outcome retains its refined root inputs for
-clause analysis, so reachability and clause binding consume the same proof.
+against root input `Ty` rows. Before traversal it asks the plan's
+`required_input` fact for each root: only a root the plan reads receives a
+runtime envelope. It then follows the graph's proof subjects to project and
+refine those roots; it does not scan graph nodes to derive a second
+tested-input set. It never stores types by `SubjectId` and never adds
+type/domain policy to this generic module. A runtime envelope replaces bare
+inference templates in positive, recursively inspectable tuple/list/map/resource
+slots with `any`, narrows unresolved negative exclusions instead of widening
+them, and preserves callable arrows that the pattern graph cannot inspect.
+Negative finite variable branches are erased while preserving their concrete
+axes; negative cofinite branches with excluded variable IDs become empty. A
+cofinite variable axis with no excluded IDs remains ordinary top. Exact tuple
+and named-struct projections lift to their roots; ambiguous positional list
+projections keep their root type on both edges. The traversal separately
+retains the graph's branch-local empty/cons fact for each subject. When the
+projected domain is already a proper list, `not empty` therefore proves cons
+and `not cons` proves empty; contradictory tail-shape paths are rejected
+without adding spine length to the type lattice or covering non-list inputs.
+Each reachable outcome retains its refined root inputs for clause analysis, so
+reachability and clause binding consume the same proof.
 
 ## Vocabulary Boundary
 

@@ -42,9 +42,8 @@ use crate::dispatch_matrix::pattern::{
     PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr, PatternPinnedInput,
 };
 use crate::dispatch_matrix::{
-    BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchArm, DispatchEdge, DispatchGraph,
-    DispatchMatrix, DispatchNode, EdgeEvidence, GroundValue, ProjectionKind, Proof, Region, RegionPredicate,
-    RegionQuestion, Subject, SubjectSource,
+    BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchEdge, DispatchGraph,
+    DispatchNode, EdgeEvidence, GroundValue, ProjectionKind, Proof, Region, RegionPredicate, Subject, SubjectSource,
 };
 use crate::source::Span;
 use crate::type_expr::ResolvedSpecDecl;
@@ -1336,12 +1335,13 @@ impl ProgramCanon<'_> {
             }
             CallEdge::Dispatch(dispatch) => {
                 out.enter("dispatch");
-                for arm in &dispatch.arms {
+                for (outcome, arm) in dispatch.arms.iter().enumerate() {
                     let callee = self.call_target(&arm.callee);
                     let flow = self.return_flow(&arm.return_flow);
+                    let body_id = dispatch.plan.outcomes[outcome].body_id;
                     out.put(&format!(
                         "arm body={} callee={callee} return_flow={flow} marshals={:?}",
-                        arm.body_id, arm.extern_marshals
+                        body_id, arm.extern_marshals
                     ));
                 }
                 let plan = self.plan(&dispatch.plan);
@@ -1448,7 +1448,7 @@ impl ProgramCanon<'_> {
 
     fn entry_dispatch(&mut self, dispatch: &ExecutableDispatch) -> Vec<String> {
         let mut out = Out::default();
-        let clauses: Vec<String> = dispatch.clause_ids().iter().map(u32::to_string).collect();
+        let clauses: Vec<String> = dispatch.clause_ids().map(|body_id| body_id.to_string()).collect();
         out.put(&format!("clause_ids [{}]", clauses.join(", ")));
         let plan = self.plan(dispatch.plan());
         out.section("plan", plan);
@@ -1468,7 +1468,8 @@ impl ProgramCanon<'_> {
     fn plan(&mut self, plan: &PatternDispatchPlan<Ty>) -> Vec<String> {
         let mut out = Out::default();
         out.put(&format!("inputs {}", plan.input_count));
-        self.matrix(&mut out, &plan.matrix);
+        let subjects: Vec<String> = plan.graph.subjects.iter().map(subject).collect();
+        out.section("subjects", subjects);
         self.graph(&mut out, &plan.graph);
         let outcomes: Vec<String> = plan.outcomes.iter().map(|outcome| self.plan_outcome(outcome)).collect();
         out.section("outcomes", outcomes);
@@ -1488,42 +1489,6 @@ impl ProgramCanon<'_> {
             plan.prepared_keys.iter().map(ground).collect::<Vec<_>>(),
         );
         lines(out)
-    }
-
-    fn matrix(&mut self, out: &mut Out, matrix: &DispatchMatrix<Ty>) {
-        out.enter("matrix");
-        let subjects: Vec<String> = matrix.subjects.iter().map(subject).collect();
-        out.section("subjects", subjects);
-        let outcomes: Vec<String> = matrix
-            .outcomes
-            .iter()
-            .map(|outcome| format!("o{} {:?}", outcome.id.0, outcome.multiplicity))
-            .collect();
-        out.section("outcomes", outcomes);
-        for arm in &matrix.arms {
-            self.arm(out, arm);
-        }
-        out.exit();
-    }
-
-    fn arm(&mut self, out: &mut Out, arm: &DispatchArm<Ty>) {
-        out.enter(&format!("arm a{} -> o{}", arm.id.0, arm.outcome.0));
-        for question in &arm.questions {
-            self.question(out, question);
-        }
-        let evidence = self.evidence(&arm.evidence);
-        out.put(&format!("evidence {evidence}"));
-        out.exit();
-    }
-
-    fn question(&mut self, out: &mut Out, question: &RegionQuestion<Ty>) {
-        let predicate = self.predicate(&question.predicate);
-        out.enter(&format!("question {predicate}"));
-        let matched = self.evidence(&question.match_evidence);
-        out.put(&format!("match {matched}"));
-        let missed = self.evidence(&question.miss_evidence);
-        out.put(&format!("miss {missed}"));
-        out.exit();
     }
 
     fn graph(&mut self, out: &mut Out, graph: &DispatchGraph<Ty>) {

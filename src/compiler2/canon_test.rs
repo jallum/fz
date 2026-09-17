@@ -659,14 +659,13 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
 }
 
 /// The artifact side of the same claim (fz-kdt.91). An executable's
-/// `clause_ids` is the reachable-clause SET carried into the artifact; its
-/// order is content only because something has to write it down. Ordering it
-/// by `body_id` — minted in source order by `entry_source_patterns` and
-/// required to ascend with source priority by the dispatch planner — is what
-/// keeps the canonical form still when a precision fix repopulates the keys.
-/// Try-order is not at stake: both backends select through
-/// `ExecutableDispatch::plan()` and use `clause_ids` only as the
-/// `body_id`-to-position lookup `clause_index` performs.
+/// The retained outcome-to-clause target table derives the source-body SET for
+/// presentation. Its order is content only because something has to write it
+/// down. Ordering it by `body_id` — minted in source order by
+/// `entry_source_patterns` and required to ascend with source priority by the
+/// dispatch planner — keeps the canonical form still when a precision fix
+/// repopulates target slots. Try-order is not at stake: both backends select
+/// through `ExecutableDispatch::plan()` and route through `OutcomeId` slots.
 #[test]
 fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
     for (name, text) in [
@@ -687,7 +686,13 @@ fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
             .executables()
             .iter()
             .filter_map(|executable| {
-                let clause_ids = executable.abi.materialized.entry_dispatch.as_ref()?.clause_ids();
+                let clause_ids = executable
+                    .abi
+                    .materialized
+                    .entry_dispatch
+                    .as_ref()?
+                    .clause_ids()
+                    .collect::<Vec<_>>();
                 let ascends = clause_ids.windows(2).all(|pair| pair[0] < pair[1]);
                 (!ascends).then(|| {
                     format!(

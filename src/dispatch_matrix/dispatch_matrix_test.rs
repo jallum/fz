@@ -353,7 +353,7 @@ fn compile_source_order_uses_first_matching_arm() {
         .expect("source fallback arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix.subjects)).expect("compile");
+    let compiled = compile_dispatch_matrix(matrix, one_input()).expect("compile");
 
     assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(1)), Some(one));
     assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(2)), Some(fallback));
@@ -387,7 +387,7 @@ fn compile_orthogonal_arms_in_deterministic_source_order() {
         .expect("second orthogonal arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix.subjects)).expect("compile");
+    let compiled = compile_dispatch_matrix(matrix, one_input()).expect("compile");
     let Some(DispatchNode::Test { predicate, .. }) = compiled.graph.node(compiled.graph.root) else {
         panic!("expected root test");
     };
@@ -436,7 +436,7 @@ fn compile_shares_consecutive_common_prefix_tests() {
         .expect("second cons arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix.subjects)).expect("compile");
+    let compiled = compile_dispatch_matrix(matrix, one_input()).expect("compile");
     let Some(DispatchNode::Test { predicate, .. }) = compiled.graph.node(compiled.graph.root) else {
         panic!("expected shared root test");
     };
@@ -462,7 +462,7 @@ fn compile_closed_residual_fails_unmatched_values() {
         .expect("specific arm");
     let matrix = builder.build().expect("matrix");
 
-    let closed = compile_dispatch_matrix(&matrix, one_input(&matrix.subjects)).expect("closed compile");
+    let closed = compile_dispatch_matrix(matrix, one_input()).expect("closed compile");
 
     assert_eq!(eval_graph(&closed.graph, subject, TestValue::Int(2)), None);
     assert_eq!(closed.stats.fail_nodes, 1);
@@ -495,7 +495,7 @@ fn compile_places_projection_only_on_proven_edge() {
         .expect("map presence arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix.subjects)).expect("compile");
+    let compiled = compile_dispatch_matrix(matrix, one_input()).expect("compile");
     let Some(DispatchNode::Test {
         predicate,
         on_match,
@@ -521,9 +521,46 @@ fn compile_places_projection_only_on_proven_edge() {
 }
 
 #[test]
+fn compiled_graph_keeps_the_matrix_subjects_after_consuming_it() {
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed();
+    let map = builder.add_input_subject();
+    let value = builder
+        .add_projected_subject(
+            map,
+            ProjectionKind::MapValue {
+                key: GroundValue::Atom("id".to_string()),
+            },
+        )
+        .expect("map value subject");
+    let matched = builder.add_outcome(OutcomeMultiplicity::Unique);
+    builder
+        .add_arm_questions(
+            vec![RegionQuestion::map_key_present(
+                map,
+                GroundValue::Atom("id".to_string()),
+                value,
+            )],
+            EdgeEvidence::empty(),
+            matched,
+        )
+        .expect("map presence arm");
+
+    let compiled = compile_dispatch_matrix(builder.build().expect("matrix"), one_input())
+        .expect("compile consumes the source matrix");
+
+    assert!(matches!(
+        compiled.graph.subject(value).expect("retained projected subject").source,
+        SubjectSource::Projection(SubjectProjection {
+            source,
+            kind: ProjectionKind::MapValue { .. },
+        }) if source == map
+    ));
+}
+
+#[test]
 fn graph_builder_preserves_node_identity_and_validates_edges() {
-    let subjects = [input_subject()];
-    let mut builder = DispatchGraphBuilder::<Ty>::typed(one_input(&subjects));
+    let subjects = vec![input_subject()];
+    let mut builder = DispatchGraphBuilder::<Ty>::typed(subjects, one_input());
     let fail = builder.add_node(DispatchNode::Fail);
     let out = builder.add_node(DispatchNode::Outcome {
         outcome: OutcomeId(0),
@@ -545,15 +582,15 @@ fn graph_builder_preserves_node_identity_and_validates_edges() {
 
 #[test]
 fn graph_builder_rejects_unknown_root_or_edge_node() {
-    let subjects = [input_subject()];
-    let mut unknown_root = DispatchGraphBuilder::<Ty>::typed(one_input(&subjects));
+    let subjects = vec![input_subject()];
+    let mut unknown_root = DispatchGraphBuilder::<Ty>::typed(subjects.clone(), one_input());
     unknown_root.add_node(DispatchNode::Fail);
     assert_eq!(
         unknown_root.build(GraphNodeId(9)).expect_err("root must exist"),
         DispatchGraphError::UnknownNode(GraphNodeId(9))
     );
 
-    let mut unknown_edge = DispatchGraphBuilder::<Ty>::typed(one_input(&subjects));
+    let mut unknown_edge = DispatchGraphBuilder::<Ty>::typed(subjects, one_input());
     let fail = unknown_edge.add_node(DispatchNode::Fail);
     let test = unknown_edge.add_node(DispatchNode::Test {
         predicate: RegionPredicate::new(SubjectId(0), Region::Equal(ComparisonValue::Const(GroundValue::Nil))),
@@ -566,13 +603,11 @@ fn graph_builder_rejects_unknown_root_or_edge_node() {
     );
 }
 
-/// The inputs of a plan whose questions read one declared input and neither
-/// pins nor guards. The subjects come from the caller, so a matrix hands its
-/// own and a graph assembled node by node hands the ones its nodes question.
-fn one_input(subjects: &[Subject]) -> PlanInputs<'_> {
+/// The non-subject inputs of a plan whose questions read one declared input
+/// and neither pins nor guards.
+fn one_input() -> PlanInputs<'static> {
     PlanInputs {
         count: 1,
-        subjects,
         pinned: &[],
         guard_leaves: &[],
     }
@@ -627,30 +662,29 @@ fn plan_body_ids(plan: &pattern::PatternDispatchPlan<Ty>) -> Vec<PatternBodyId> 
     ids
 }
 
-fn arm_for_body(
+fn outcome_for_body(
     plan: &pattern::PatternDispatchPlan<Ty>,
     body_id: PatternBodyId,
-) -> (&DispatchArm<Ty>, &pattern::PatternDispatchOutcome) {
+) -> (&DispatchNode<Ty>, &pattern::PatternDispatchOutcome) {
     let outcome = plan
         .outcomes
         .iter()
         .find(|outcome| outcome.body_id == body_id)
         .expect("body outcome exists");
-    let arm = plan
-        .matrix
-        .arms
+    let node = plan
+        .graph
+        .nodes
         .iter()
-        .find(|arm| arm.outcome == outcome.outcome)
-        .expect("outcome arm exists");
-    (arm, outcome)
+        .find(|node| matches!(node, DispatchNode::Outcome { outcome: id, .. } if *id == outcome.outcome))
+        .expect("compiled outcome node exists");
+    (node, outcome)
 }
 
 fn has_region(plan: &pattern::PatternDispatchPlan<Ty>, pred: impl Fn(&Region<Ty>) -> bool) -> bool {
-    plan.matrix
-        .arms
+    plan.graph
+        .nodes
         .iter()
-        .flat_map(|arm| arm.questions.iter())
-        .any(|question| pred(&question.predicate.region))
+        .any(|node| matches!(node, DispatchNode::Test { predicate, .. } if pred(&predicate.region)))
 }
 
 /// A lambda head is entered with its captures already bound, delivered as the
@@ -792,8 +826,8 @@ fn pattern_dispatch_matrix_preserves_literal_outcomes_and_default() {
         Region::Equal(ComparisonValue::Const(GroundValue::Utf8Binary(bytes))) if bytes == b"hi"
     )));
 
-    let (fallback_arm, fallback) = arm_for_body(&plan, 5);
-    assert!(fallback_arm.questions.is_empty());
+    let (fallback_node, fallback) = outcome_for_body(&plan, 5);
+    assert!(matches!(fallback_node, DispatchNode::Outcome { .. }));
     assert!(fallback.bindings.is_empty());
 }
 
@@ -835,21 +869,21 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
         Region::List(ListRegion::Empty)
     )));
 
-    let (_tuple_arm, tuple_outcome) = arm_for_body(&plan, 0);
+    let (_tuple_node, tuple_outcome) = outcome_for_body(&plan, 0);
     let x = tuple_outcome
         .bindings
         .iter()
         .find(|binding| binding.name == "x")
         .expect("x binding");
     assert!(matches!(
-        plan.matrix.subjects[x.source.0 as usize].source,
+        plan.graph.subjects[x.source.0 as usize].source,
         SubjectSource::Projection(SubjectProjection {
             kind: ProjectionKind::TupleField(1),
             ..
         })
     ));
 
-    let (_list_arm, list_outcome) = arm_for_body(&plan, 1);
+    let (_list_node, list_outcome) = outcome_for_body(&plan, 1);
     let h = list_outcome
         .bindings
         .iter()
@@ -861,14 +895,14 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
         .find(|binding| binding.name == "t")
         .expect("t binding");
     assert!(matches!(
-        plan.matrix.subjects[h.source.0 as usize].source,
+        plan.graph.subjects[h.source.0 as usize].source,
         SubjectSource::Projection(SubjectProjection {
             kind: ProjectionKind::ListHead,
             ..
         })
     ));
     assert!(matches!(
-        plan.matrix.subjects[t.source.0 as usize].source,
+        plan.graph.subjects[t.source.0 as usize].source,
         SubjectSource::Projection(SubjectProjection {
             kind: ProjectionKind::ListTail,
             ..
@@ -893,21 +927,27 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
 
     assert_eq!(plan.prepared_keys, vec![GroundValue::Atom("id".to_string())]);
     assert!(has_region(&plan, |region| matches!(region, Region::MapKind)));
-    let map_key_question = plan
-        .matrix
-        .arms
+    let map_key_match = plan
+        .graph
+        .nodes
         .iter()
-        .flat_map(|arm| arm.questions.iter())
-        .find(|question| {
-            matches!(
-                question.predicate.region,
-                Region::MapKeyPresent {
-                    key: GroundValue::Atom(ref name),
-                } if name == "id"
-            )
+        .find_map(|node| match node {
+            DispatchNode::Test {
+                predicate:
+                    RegionPredicate {
+                        region:
+                            Region::MapKeyPresent {
+                                key: GroundValue::Atom(name),
+                            },
+                        ..
+                    },
+                on_match,
+                ..
+            } if name == "id" => Some(on_match),
+            _ => None,
         })
-        .expect("map-key-present question");
-    assert!(map_key_question.match_evidence.projections.iter().any(|subject| {
+        .expect("map-key-present test");
+    assert!(map_key_match.evidence.projections.iter().any(|subject| {
         let SubjectSource::Projection(projection) = plan.subject(*subject) else {
             return false;
         };
@@ -955,12 +995,18 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
 
     let plan = pattern_plan(source_patterns);
     let bitstring = plan
-        .matrix
-        .arms
+        .graph
+        .nodes
         .iter()
-        .flat_map(|arm| arm.questions.iter())
-        .find_map(|question| match &question.predicate.region {
-            Region::Bitstring(shape) => Some(shape),
+        .find_map(|node| match node {
+            DispatchNode::Test {
+                predicate:
+                    RegionPredicate {
+                        region: Region::Bitstring(shape),
+                        ..
+                    },
+                ..
+            } => Some(shape),
             _ => None,
         })
         .expect("bitstring region");
@@ -984,7 +1030,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
         panic!("expected dynamic size binding");
     };
 
-    let (_arm, outcome) = arm_for_body(&plan, 0);
+    let (_node, outcome) = outcome_for_body(&plan, 0);
     let n = outcome
         .bindings
         .iter()
@@ -992,7 +1038,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
         .expect("n binding");
     assert_eq!(size_subject, n.source);
     assert!(matches!(
-        plan.matrix.subjects[n.source.0 as usize].source,
+        plan.graph.subjects[n.source.0 as usize].source,
         SubjectSource::Projection(SubjectProjection {
             kind: ProjectionKind::BitstringField(BitstringExtraction { previous: None, .. }),
             ..
@@ -1059,12 +1105,18 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
     )));
     assert!(has_region(&plan, |region| matches!(region, Region::Guard(_))));
     let bitstring = plan
-        .matrix
-        .arms
+        .graph
+        .nodes
         .iter()
-        .flat_map(|arm| arm.questions.iter())
-        .find_map(|question| match &question.predicate.region {
-            Region::Bitstring(shape) => Some(shape),
+        .find_map(|node| match node {
+            DispatchNode::Test {
+                predicate:
+                    RegionPredicate {
+                        region: Region::Bitstring(shape),
+                        ..
+                    },
+                ..
+            } => Some(shape),
             _ => None,
         })
         .expect("bitstring region");
@@ -1111,23 +1163,11 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
         plan.guards,
         vec![pattern::PatternGuardExpr::Const(GroundValue::Bool(true))]
     );
-    let (arm, _outcome) = arm_for_body(&plan, 0);
-    assert!(arm.questions.iter().any(|question| {
-        matches!(
-            question.predicate.region,
-            Region::Equal(ComparisonValue::Pinned(PinnedValueId(0)))
-        )
+    assert!(has_region(&plan, |region| {
+        matches!(region, Region::Equal(ComparisonValue::Pinned(PinnedValueId(0))))
     }));
-    assert!(
-        arm.questions
-            .iter()
-            .any(|question| question.predicate.region == Region::Type(int))
-    );
-    assert!(
-        arm.questions
-            .iter()
-            .any(|question| question.predicate.region == Region::Guard(GuardId(0)))
-    );
+    assert!(has_region(&plan, |region| *region == Region::Type(int)));
+    assert!(has_region(&plan, |region| *region == Region::Guard(GuardId(0))));
 }
 
 #[test]
@@ -1139,7 +1179,10 @@ fn receive_policy_is_not_encoded_in_pattern_dispatch_matrix() {
     assert_eq!(plan.outcomes.len(), 1);
     assert_eq!(plan.outcomes[0].body_id, 0);
     assert!(plan.guards.is_empty());
-    assert!(plan.matrix.arms[0].questions.is_empty());
+    assert!(matches!(
+        plan.graph.node(plan.graph.root),
+        Some(DispatchNode::Outcome { .. })
+    ));
 }
 
 /// What a plan reads of its inputs is recorded while its graph is built, one

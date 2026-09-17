@@ -1,10 +1,11 @@
 use self::source::{collect_pinned_names, direct_bitfield_bindings};
+#[cfg(test)]
+use super::DispatchMatrix;
 use super::{
     BitstringEndian, BitstringFieldKind, BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue,
-    DispatchCompileError, DispatchGraph, DispatchMatrix, DispatchMatrixBuilder, DispatchMatrixError, EdgeEvidence,
-    GroundValue, GuardId, GuardLeaf, OutcomeId, OutcomeMultiplicity, PinnedValueId, PlanInputs, PreparedKeyId,
-    ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
-    demand::DispatchDemand,
+    DispatchCompileError, DispatchGraph, DispatchMatrixBuilder, DispatchMatrixError, EdgeEvidence, GroundValue,
+    GuardId, GuardLeaf, OutcomeId, OutcomeMultiplicity, PinnedValueId, PlanInputs, PreparedKeyId, ProjectionKind,
+    Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix, demand::DispatchDemand,
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned};
 use crate::function_surface::CallableSurface;
@@ -17,8 +18,9 @@ pub(crate) use source::{PatternBodyId, PatternRow, SourcePatternError, SourcePat
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternDispatchPlan<TypeHandle> {
-    pub(crate) matrix: DispatchMatrix<TypeHandle>,
     pub(crate) graph: DispatchGraph<TypeHandle>,
+    #[cfg(test)]
+    pub(crate) source_matrix: DispatchMatrix<TypeHandle>,
     pub(crate) input_count: usize,
     pub(crate) outcomes: Vec<PatternDispatchOutcome>,
     pub(crate) guards: Vec<PatternGuardExpr<TypeHandle>>,
@@ -28,7 +30,7 @@ pub(crate) struct PatternDispatchPlan<TypeHandle> {
 
 impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
     pub(crate) fn outcome(&self, id: OutcomeId) -> Option<&PatternDispatchOutcome> {
-        self.outcomes.iter().find(|entry| entry.outcome == id)
+        self.outcomes.get(id.0 as usize)
     }
 
     /// The body a winning outcome names. Every outcome the graph can reach is
@@ -38,7 +40,11 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
     }
 
     pub(crate) fn subject(&self, id: SubjectId) -> &super::SubjectSource {
-        &self.matrix.subjects[id.0 as usize].source
+        &self
+            .graph
+            .subject(id)
+            .expect("a plan subject must be retained by its graph")
+            .source
     }
 
     /// What this plan reads of each of its inputs, one slot per declared input.
@@ -76,8 +82,9 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
         map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
     ) -> PatternDispatchPlan<MappedHandle> {
         PatternDispatchPlan {
-            matrix: self.matrix.map_type_handle(map),
             graph: self.graph.map_type_handle(map),
+            #[cfg(test)]
+            source_matrix: self.source_matrix.map_type_handle(map),
             input_count: self.input_count,
             outcomes: self.outcomes.clone(),
             guards: self.guards.iter().map(|guard| guard.map_type_handle(map)).collect(),
@@ -659,6 +666,19 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             )));
         }
         let matrix = self.builder.build().map_err(PatternDispatchError::MatrixBuild)?;
+        assert_eq!(
+            matrix.outcomes.len(),
+            self.outcomes.len(),
+            "source pattern production creates one payload per matrix outcome"
+        );
+        assert!(
+            matrix
+                .outcomes
+                .iter()
+                .zip(&self.outcomes)
+                .all(|(matrix, payload)| matrix.id == payload.outcome),
+            "source pattern payloads stay indexed by the matrix-owned OutcomeId"
+        );
         let pinned_inputs = self.pinned.iter().map(|pin| pin.input).collect::<Vec<_>>();
         // A guard question rides a carrier subject, so only its leaves say
         // which inputs the guard demands.
@@ -667,16 +687,18 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             // The DECLARED input count, not the matrix's subject count: a plan
             // that declares no inputs still mints one subject to carry guards.
             count: self.input_count,
-            subjects: &matrix.subjects,
             pinned: &pinned_inputs,
             guard_leaves: &guard_leaves,
         };
-        let graph = compile_dispatch_matrix(&matrix, inputs)
+        #[cfg(test)]
+        let source_matrix = matrix.clone();
+        let graph = compile_dispatch_matrix(matrix, inputs)
             .map_err(PatternDispatchError::Compile)?
             .graph;
         Ok(PatternDispatchPlan {
-            matrix,
             graph,
+            #[cfg(test)]
+            source_matrix,
             input_count: self.input_count,
             outcomes: self.outcomes,
             guards: self.guards,

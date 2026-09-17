@@ -3250,11 +3250,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                         LoweredTail::Dispatch {
                             inputs: inputs.clone(),
                             bindings: bindings.clone(),
-                            dispatch: Box::new(ControlDispatch {
-                                plan: dispatch.plan.clone(),
-                                outcomes,
-                                miss_entry,
-                            }),
+                            dispatch: Box::new(ControlDispatch::new(dispatch.plan.clone(), outcomes, miss_entry)),
                         },
                     );
                 }

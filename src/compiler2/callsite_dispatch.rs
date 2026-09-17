@@ -16,7 +16,6 @@ use super::types::{Ty, Types};
 pub(crate) struct CallSiteDispatch {
     pub(crate) plan: PatternDispatchPlan<Ty>,
     pub(crate) targets: Vec<CallTargetSummary>,
-    pub(crate) arm_body_ids: Vec<u32>,
 }
 
 /// What a callsite's settled targets amount to once the runtime's power to
@@ -58,12 +57,7 @@ pub(crate) fn call_destinations(
     let Some(plan) = plan else {
         return Ok(sole_destination(targets.into_iter().next()));
     };
-    let arm_body_ids = (0..targets.len() as u32).collect();
-    Ok(CallDestinations::Dispatch(Box::new(CallSiteDispatch {
-        plan,
-        targets,
-        arm_body_ids,
-    })))
+    Ok(CallDestinations::Dispatch(Box::new(CallSiteDispatch { plan, targets })))
 }
 
 /// A callsite with no choice left to make.
@@ -1472,7 +1466,7 @@ mod tests {
     use crate::compiler2::dispatch_reachability::calculate_dispatch_reachability;
     use crate::compiler2::types::ClosureTarget;
     use crate::compiler2::{SelectedCallee, World};
-    use crate::dispatch_matrix::{DispatchNode, Region, SubjectId, SubjectSource};
+    use crate::dispatch_matrix::{DispatchNode, Region, RegionPredicate, SubjectId, SubjectSource};
     use crate::telemetry::ConfiguredTelemetry;
 
     #[test]
@@ -1519,7 +1513,7 @@ mod tests {
         assert_eq!(dispatch.targets, summary.targets);
         assert_eq!(dispatch.plan.input_count, 1);
         assert_eq!(
-            dispatch.plan.matrix.subjects.first().map(|subject| &subject.source),
+            dispatch.plan.graph.subjects.first().map(|subject| &subject.source),
             Some(&SubjectSource::Input { ordinal: 0 }),
             "callsite dispatch should test the receiver input"
         );
@@ -1535,20 +1529,22 @@ mod tests {
         );
         let type_regions = dispatch
             .plan
-            .matrix
-            .arms
+            .graph
+            .nodes
             .iter()
-            .map(|arm| {
-                arm.questions
-                    .iter()
-                    .find_map(|question| match question.predicate.region {
-                        Region::Type(ty) => Some(ty),
-                        _ => None,
-                    })
-                    .expect("each callsite dispatch arm should type-test the receiver")
+            .filter_map(|node| match node {
+                DispatchNode::Test {
+                    predicate:
+                        RegionPredicate {
+                            region: Region::Type(ty),
+                            ..
+                        },
+                    ..
+                } => Some(*ty),
+                _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(type_regions, vec![list, range]);
+        assert!(type_regions.contains(&list) && type_regions.contains(&range));
         assert!(
             matches!(
                 dispatch.plan.graph.node(dispatch.plan.graph.root),
@@ -2051,12 +2047,18 @@ mod tests {
             dispatch.targets,
         );
         assert!(
-            dispatch.plan.matrix.arms.iter().all(|arm| arm
-                .questions
-                .iter()
-                .any(|question| question.predicate.subject == SubjectId(1))),
-            "every arm must ask which reducer arrived: {:#?}",
-            dispatch.plan.matrix.arms,
+            dispatch.plan.graph.nodes.iter().any(|node| matches!(
+                node,
+                DispatchNode::Test {
+                    predicate: RegionPredicate {
+                        subject: SubjectId(1),
+                        ..
+                    },
+                    ..
+                }
+            )),
+            "the compiled graph must ask which reducer arrived: {:#?}",
+            dispatch.plan.graph.nodes,
         );
     }
 
@@ -3350,7 +3352,7 @@ mod tests {
         assert!(
             dispatch
                 .plan
-                .matrix
+                .graph
                 .subjects
                 .iter()
                 .any(|subject| subject.source == SubjectSource::Input { ordinal: 1 }),
@@ -3392,7 +3394,7 @@ mod tests {
 
         assert!(
             dispatch
-                .matrix
+                .graph
                 .subjects
                 .iter()
                 .any(|subject| subject.source == SubjectSource::Input { ordinal: 1 }),
@@ -3673,7 +3675,10 @@ mod tests {
             "distinct callables are distinct runtime-observable predicates",
         );
         assert!(
-            plan.matrix.arms.iter().all(|arm| !arm.questions.is_empty()),
+            plan.graph
+                .nodes
+                .iter()
+                .any(|node| matches!(node, DispatchNode::Test { .. })),
             "callable-flow dispatch must ask which callable arrived",
         );
         let reachability = calculate_dispatch_reachability(world.types_mut(), &plan, &[closure_b]);

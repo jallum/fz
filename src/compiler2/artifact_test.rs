@@ -12,6 +12,8 @@ use crate::compiler2::transport::{
     BoundaryId, CallableId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportClass, TransportStore,
 };
 use crate::compiler2::types::Ty;
+use crate::dispatch_matrix::OutcomeId;
+use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
 use crate::fz_ir::{
     Block, BlockId, ExternAbi, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term,
     Var,
@@ -133,6 +135,33 @@ fn compiler2_native_program_contract_test_shapes_use_one_interner() {
         int_shape, float_shape,
         "contract fixtures must allocate transport ids from one interner; fresh stores can assign the same ShapeId to different descriptors",
     );
+}
+
+#[test]
+fn executable_dispatch_routes_dense_outcomes_to_sparse_source_bodies() {
+    let plan = pattern_dispatch_from_source::<Ty>(SourcePatternRows::lexical(
+        1,
+        vec![
+            PatternRow {
+                patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Atom("first".into()))],
+                preconditions: Vec::new(),
+                guard: None,
+                body_id: 10,
+            },
+            PatternRow {
+                patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard)],
+                preconditions: Vec::new(),
+                guard: None,
+                body_id: 30,
+            },
+        ],
+    ))
+    .expect("strictly increasing source body ids are valid");
+    let dispatch = super::ExecutableDispatch::new(std::rc::Rc::new(plan), vec![10, 30]);
+
+    assert_eq!(dispatch.clause_index(OutcomeId(0)), Some(0));
+    assert_eq!(dispatch.clause_index(OutcomeId(1)), Some(1));
+    assert_eq!(dispatch.clause_index(OutcomeId(2)), None);
 }
 
 #[test]

@@ -147,6 +147,16 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
             pinned.len()
         )));
     }
+    if clauses.len() != dispatch.outcomes.len()
+        || !clauses
+            .iter()
+            .enumerate()
+            .all(|(index, clause)| clause.outcome.0 as usize == index)
+    {
+        return Err(CodegenError::new(
+            "receive dispatch must own one OutcomeId-indexed target slot per plan outcome",
+        ));
+    }
 
     let mut unique_bytes = Vec::new();
     collect_binary_literals_in_dispatch(dispatch, &mut unique_bytes);
@@ -379,11 +389,10 @@ fn emit_dispatch_node<M: cranelift_module::Module>(
             Ok(())
         }
         DispatchNode::Outcome { outcome, .. } => {
-            let (clause_index, edge) = ctx
+            let clause_index = outcome.0 as usize;
+            let edge = ctx
                 .outcomes
-                .iter()
-                .enumerate()
-                .find(|(_, edge)| edge.outcome == *outcome)
+                .get(clause_index)
                 .ok_or_else(|| CodegenError::new(format!("dispatch outcome {:?} has no target edge", outcome)))?;
             let target = ctx.fz_module.fn_by_id(edge.body);
             let parameters = &target.blocks[target.entry.0 as usize].params;
@@ -444,7 +453,7 @@ fn resolve_dispatch_subject<M: cranelift_module::Module>(
     }
     let subject_data = ctx
         .dispatch
-        .matrix
+        .graph
         .subjects
         .get(subject.0 as usize)
         .ok_or_else(|| CodegenError::new(format!("dispatch subject {:?} out of bounds", subject)))?;
@@ -1517,9 +1526,9 @@ fn collect_binary_literals_in_dispatch(dispatch: &ReceiveDispatchPlan, out: &mut
     for key in &dispatch.prepared_keys {
         collect_binary_literals_in_const(key, out);
     }
-    for arm in &dispatch.matrix.arms {
-        for question in &arm.questions {
-            collect_binary_literals_in_region(&question.predicate.region, out);
+    for node in &dispatch.graph.nodes {
+        if let DispatchNode::Test { predicate, .. } = node {
+            collect_binary_literals_in_region(&predicate.region, out);
         }
     }
     for guard in &dispatch.guards {

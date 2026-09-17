@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use crate::ast::{BinOp, UnOp};
+use crate::dispatch_matrix::OutcomeId;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{
     Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternMarshalSite, ExternTy,
@@ -273,15 +274,30 @@ pub struct DirectCallEdge<T, F = CallReturnFlow> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchCallEdge<T, F = CallReturnFlow> {
     pub(crate) plan: PatternDispatchPlan<Ty>,
+    /// One artifact target slot per dense, plan-owned outcome.
     pub arms: Vec<DispatchCallArm<T, F>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchCallArm<T, F = CallReturnFlow> {
-    pub body_id: u32,
     pub callee: CallTarget<T>,
     pub return_flow: F,
     pub extern_marshals: Option<Vec<ExternTy>>,
+}
+
+impl<T, F> DispatchCallEdge<T, F> {
+    pub(crate) fn new(plan: PatternDispatchPlan<Ty>, arms: Vec<DispatchCallArm<T, F>>) -> Self {
+        assert_eq!(
+            arms.len(),
+            plan.outcomes.len(),
+            "a callsite dispatch owns one target slot per plan outcome"
+        );
+        Self { plan, arms }
+    }
+
+    pub(crate) fn arm(&self, outcome: OutcomeId) -> Option<&DispatchCallArm<T, F>> {
+        self.arms.get(outcome.0 as usize)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1140,24 +1156,46 @@ pub enum BackendBody {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutableDispatch {
     plan: Rc<PatternDispatchPlan<Ty>>,
-    clause_ids: Vec<u32>,
+    clause_index_by_outcome: Box<[Option<usize>]>,
 }
 
 impl ExecutableDispatch {
-    pub(crate) fn new(plan: Rc<PatternDispatchPlan<Ty>>, clause_ids: Vec<u32>) -> Self {
-        Self { plan, clause_ids }
+    pub(crate) fn new(plan: Rc<PatternDispatchPlan<Ty>>, materialized_clause_ids: Vec<u32>) -> Self {
+        let mut clause_indexes = HashMap::new();
+        for (index, body_id) in materialized_clause_ids.iter().copied().enumerate() {
+            assert!(
+                clause_indexes.insert(body_id, index).is_none(),
+                "an executable dispatch may route each source body once"
+            );
+        }
+        let clause_index_by_outcome = plan
+            .outcomes
+            .iter()
+            .map(|outcome| clause_indexes.get(&outcome.body_id).copied())
+            .collect();
+        Self {
+            plan,
+            clause_index_by_outcome,
+        }
     }
 
     pub(crate) fn plan(&self) -> &PatternDispatchPlan<Ty> {
         &self.plan
     }
 
-    pub(crate) fn clause_ids(&self) -> &[u32] {
-        &self.clause_ids
+    /// Source body ids for the retained target slots, in source-plan order.
+    /// This is presentation metadata derived from the one retained route table.
+    pub(crate) fn clause_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.clause_index_by_outcome
+            .iter()
+            .enumerate()
+            .filter_map(|(outcome, clause)| clause.map(|_| self.plan.outcomes[outcome].body_id))
     }
 
-    pub(crate) fn clause_index(&self, body_id: u32) -> Option<usize> {
-        self.clause_ids.iter().position(|candidate| *candidate == body_id)
+    /// The executable target selected for one graph-owned outcome. `None`
+    /// means semantic reachability did not materialize that source body.
+    pub(crate) fn clause_index(&self, outcome: OutcomeId) -> Option<usize> {
+        self.clause_index_by_outcome.get(outcome.0 as usize).copied().flatten()
     }
 }
 

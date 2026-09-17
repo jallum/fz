@@ -34,11 +34,10 @@ pub(crate) fn calculate_dispatch_reachability(
     // slots some test actually looks at: a slot no test names cannot change
     // any outcome, so passing it through unchanged keeps the fixpoint's
     // pending bindings intact (fz-f98.14.11).
-    let tested = tested_input_ordinals(plan);
     let roots = (0..plan.input_count)
         .map(|ordinal| {
             let input = inputs.get(ordinal).copied().unwrap_or(any);
-            if tested.contains(&ordinal) {
+            if plan.required_input(ordinal) {
                 types.runtime_envelope(input)
             } else {
                 input
@@ -55,7 +54,7 @@ pub(crate) fn calculate_dispatch_reachability(
         #[cfg(test)]
         max_root_slots: 0,
     };
-    let list_shapes = vec![None; plan.matrix.subjects.len()];
+    let list_shapes = vec![None; plan.graph.subjects.len()];
     calculator.visit(plan.graph.root, ReachabilityState { roots, list_shapes });
     DispatchReachability {
         outcomes: calculator.outcomes.into_iter().collect(),
@@ -270,23 +269,6 @@ fn predicate_target(types: &mut Types, region: &Region<Ty>) -> Option<PredicateT
     Some(PredicateTarget { ty, exact })
 }
 
-/// The input ordinals some test in the plan reads, directly or through a
-/// projection. Guards are conservative: a guard's inputs are not modelled
-/// here, so every ordinal a guard could observe is treated as tested.
-fn tested_input_ordinals(plan: &PatternDispatchPlan<Ty>) -> HashSet<usize> {
-    if !plan.guards.is_empty() {
-        return (0..plan.input_count).collect();
-    }
-    plan.graph
-        .nodes
-        .iter()
-        .filter_map(|node| match node {
-            DispatchNode::Test { predicate, .. } => subject_input(plan, predicate.subject),
-            _ => None,
-        })
-        .collect()
-}
-
 fn subject_input(plan: &PatternDispatchPlan<Ty>, subject: SubjectId) -> Option<usize> {
     match plan.subject(subject) {
         SubjectSource::Input { ordinal } => Some(*ordinal as usize),
@@ -388,8 +370,9 @@ fn join_optional(types: &mut Types, current: Option<Ty>, next: Ty) -> Option<Ty>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Pattern, Spanned};
+    use crate::ast::{Expr, Pattern, Spanned};
     use crate::compiler2::types::{MapKey, Sigma, TypeVarId};
+    use crate::dispatch_matrix::demand::DispatchDemand;
     use crate::dispatch_matrix::pattern::{
         PatternRow, PatternSubjectRef, SourcePatternRows, pattern_dispatch_from_source,
     };
@@ -409,6 +392,71 @@ mod tests {
             preconditions: Vec::new(),
             guard: None,
             body_id,
+        }
+    }
+
+    /// A guard uses a carrier subject to enter the graph, but that carrier is
+    /// not necessarily a runtime read. Its leaves are the authority for which
+    /// roots reachability may envelope.
+    #[test]
+    fn a_guard_envelopes_only_the_input_its_leaves_read() {
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            3,
+            vec![
+                PatternRow {
+                    patterns: vec![
+                        Spanned::dummy(Pattern::Var("first".to_string())),
+                        Spanned::dummy(Pattern::Var("second".to_string())),
+                        Spanned::dummy(Pattern::Var("tested".to_string())),
+                    ],
+                    preconditions: Vec::new(),
+                    guard: Some(Spanned::dummy(Expr::Var("tested".to_string()))),
+                    body_id: 0,
+                },
+                PatternRow {
+                    patterns: vec![
+                        Spanned::dummy(Pattern::Wildcard),
+                        Spanned::dummy(Pattern::Wildcard),
+                        Spanned::dummy(Pattern::Wildcard),
+                    ],
+                    preconditions: Vec::new(),
+                    guard: None,
+                    body_id: 1,
+                },
+            ],
+        ))
+        .expect("the guard reads its third input");
+        assert_eq!(
+            plan.input_demand(),
+            [DispatchDemand::Ignore, DispatchDemand::Ignore, DispatchDemand::Whole],
+            "the plan, not reachability, records the guard's exact input read"
+        );
+
+        let mut types = Types::new();
+        let first = types.type_var(TypeVarId(40));
+        let second = types.type_var(TypeVarId(41));
+        let tested = types.type_var(TypeVarId(42));
+        let reachability = calculate_dispatch_reachability(&mut types, &plan, &[first, second, tested]);
+        let any = types.any();
+
+        assert_eq!(
+            reachable_body_ids(&plan, &reachability),
+            vec![0, 1],
+            "the guard and fallback both remain reachable"
+        );
+        for (outcome, inputs) in &reachability.outcome_inputs {
+            assert_eq!(
+                inputs[0], first,
+                "outcome {outcome:?} must retain its first untouched variable"
+            );
+            assert_eq!(
+                inputs[1], second,
+                "outcome {outcome:?} must retain its second untouched variable"
+            );
+            assert!(
+                types.is_equivalent(&inputs[2], &any),
+                "outcome {outcome:?} must envelope only the guard's third input"
+            );
         }
     }
 
@@ -668,7 +716,7 @@ mod tests {
             reachability.visited_states,
         );
         assert_eq!(reachability.max_root_slots, plan.input_count);
-        assert!(plan.matrix.subjects.len() > reachability.max_root_slots);
+        assert!(plan.graph.subjects.len() > reachability.max_root_slots);
     }
 
     #[test]

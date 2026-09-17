@@ -11,7 +11,6 @@ The pipeline is direct:
 source clauses
   -> SourcePatternRows
   -> PatternDispatchPlan
-       matrix: DispatchMatrix
        graph: DispatchGraph
        payloads: outcomes, bindings, guards, pinned inputs, prepared keys
        graph payload: input_demand -- what the questions read of each input
@@ -29,8 +28,9 @@ should consume `PatternDispatchPlan` or the underlying `DispatchGraph` directly.
 - `src/dispatch_matrix/mod.rs` owns the generic dispatch model: `Region`,
   `Order`, `Outcome`, branch-local `EdgeEvidence`, and `DispatchGraph`.
 - `src/dispatch_matrix/pattern.rs` owns source-pattern production. It converts
-  AST patterns into `RegionQuestion`s and stores pattern-specific payloads beside
-  the matrix as `PatternDispatchPlan`.
+  AST patterns into `RegionQuestion`s, consumes that temporary matrix into a
+  graph, and stores pattern-specific payloads beside the retained graph as
+  `PatternDispatchPlan`.
 - `src/compiler2/jobs/body.rs` constructs inline outcome edges and their target
   signatures together; `jobs/native.rs` lowers the graph and its winning values.
 - `src/ir_interp/dispatch_exec.rs` owns `Dispatch`, the interpreter's one
@@ -148,7 +148,7 @@ something its own head bound or something that was never bound, and lowering
 the body says which, so an unresolved helper name is a construction diagnostic
 against the helper even when the caller has a same-spelled binding.
 
-`matrix.subjects` is the sole retained subject graph. Source-facing
+`graph.subjects` is the sole retained subject graph. Source-facing
 `PatternSubjectRef` values exist only during construction. Bitstring field
 subjects carry their exact extraction recipe: source, preceding field subject,
 kind, size (including a dependent subject), endian, signedness, unit, and whether
@@ -156,6 +156,10 @@ the field is last. Shape questions reference those subjects; consumers do not
 recover field meaning from an arm or field ordinal.
 Edge evidence reveals only projected subject IDs; it stores no second copy of
 their source or projection recipe.
+
+Test builds retain the consumed matrix only as a compile-phase witness for
+source-arm census assertions. Release `PatternDispatchPlan`s do not contain it
+or map it across type handles.
 
 The generic `DispatchMatrix` sees only regions and opaque outcome ids. Bodies,
 receive wakeup behavior, and guard result interpretation belong to the producer.
@@ -174,7 +178,7 @@ reader half of that context, borrowed apart from the subject state they are
 asking about; `backend.rs` answers only what the representation owns, which
 callable a code word denotes.
 
-The subject state is one slot per subject the plan's matrix declares, allocated
+The subject state is one slot per subject the plan's graph declares, allocated
 once for the run, beside a journal of the subjects written since the branch
 point the test being walked opened. A test that misses clears the slots its
 journal names and a test that matches keeps them, so the questions after a taken
@@ -194,10 +198,13 @@ and the run that produced it. A winning outcome's arguments are read through
 `Decided::subject_word`, off the operands the decision was made on, so nothing
 rebuilds them and no caller can ask a run that never decided what it bound. A
 guard's nested dispatch runs the helper plan through the same door; a helper
-that matches nothing is a guard that does not hold. Entry dispatch maps the
-winning outcome through `PatternDispatchPlan::body_id` to
-`ExecutableDispatch::clause_index`; a callable construction maps it to a member;
-inline and receive sites route it through their own outcome edges.
+that matches nothing is a guard that does not hold. `OutcomeId` is dense and
+plan-owned: every retained target table is built in that order, validates one
+slot per outcome, and indexes its winner directly. Entry dispatch therefore
+routes an `OutcomeId` straight to `ExecutableDispatch::clause_index`; call
+dispatch, inline dispatch, and receive route it to their own target slot. A
+source `body_id` remains plan payload; it is not duplicated into a retained
+reverse lookup authority for target routing.
 
 `dispatch_values` builds the operands every door needs beyond its inputs, and
 each door goes through it. Its `DispatchSource` says where those come from:
@@ -244,13 +251,14 @@ readings of "did this input arrive" cannot disagree quietly.
 
 ## Outcome Values and Retained Lists
 
-Each inline or receive `OutcomeEdge` owns its outcome, target, and explicit
-`{ subject, parameter: ValueId, role: Semantic | Physical }` arguments. Target
-parameters are constructed from that relation. Semantic typing and the existing
-value-origin machinery borrow the owning body's plan and dispatch inputs;
-keying, tuple/callable transport, and execution do not reconstruct bindings by
-position or source spelling. Execution transfers the actual successful state;
-native miss paths keep the pre-test state.
+Each inline or receive target slot owns its `OutcomeEdge` target and explicit
+`{ subject, parameter: ValueId, role: Semantic | Physical }` arguments. Its
+index is the plan-owned `OutcomeId`; construction validates that alignment once.
+Target parameters are constructed from that relation. Semantic typing and the
+existing value-origin machinery borrow the owning body's plan and dispatch
+inputs; keying, tuple/callable transport, and execution do not reconstruct
+bindings by position or source spelling. Execution transfers the actual
+successful state; native miss paths keep the pre-test state.
 
 Receive origins terminate at `MailboxMessage(owner)`, not a fabricated caller
 value. Semantic parameters project their types from mailbox `any` through the

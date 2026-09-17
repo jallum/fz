@@ -140,8 +140,8 @@ fn matched_questions(types: &Types, plan: &PatternDispatchPlan<Ty>, value: &[Ty]
 /// The declared input a subject names. Every subject of a selection plan is one:
 /// its rows are wildcards carrying preconditions, so nothing is projected.
 fn input_ordinal(plan: &PatternDispatchPlan<Ty>, subject: SubjectId) -> usize {
-    match plan.matrix.subjects[subject.0 as usize].source {
-        SubjectSource::Input { ordinal } => ordinal as usize,
+    match &plan.graph.subjects[subject.0 as usize].source {
+        SubjectSource::Input { ordinal } => *ordinal as usize,
         SubjectSource::Projection(_) => panic!("a selection plan projects nothing"),
     }
 }

@@ -358,7 +358,7 @@ impl<'a> Dispatch<'a> {
             module,
             plan,
             operands,
-            state: DispatchExecState::new(plan.matrix.subjects.len()),
+            state: DispatchExecState::new(plan.graph.subjects.len()),
         }
     }
 
@@ -447,7 +447,7 @@ impl<'a> Dispatch<'a> {
         let plan = self.plan;
         let proc = self.proc();
         let transport = self.operands.transport;
-        let subject_data = required(plan.matrix.subjects.get(subject.0 as usize))?;
+        let subject_data = required(plan.graph.subjects.get(subject.0 as usize))?;
         let value = match &subject_data.source {
             SubjectSource::Input { ordinal } => match self.operands.inputs.get(*ordinal as usize).cloned().flatten() {
                 Some(value) => value,
