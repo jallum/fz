@@ -1329,20 +1329,9 @@ impl Types {
     }
 
     pub fn map(&mut self, fields: &[(MapKey, Ty)]) -> Ty {
-        let none = self.core.none;
-        let mut final_fields = BTreeMap::new();
-        let mut empty_required_fields = 0;
-        for (key, value) in fields {
-            if final_fields.insert(key.clone(), *value) == Some(none) {
-                empty_required_fields -= 1;
-            }
-            if *value == none {
-                empty_required_fields += 1;
-            }
-        }
-        if empty_required_fields != 0 {
-            return none;
-        }
+        let Some(final_fields) = self.final_required_fields(fields) else {
+            return self.core.none;
+        };
         self.intern(Descr::map_of(final_fields))
     }
 
@@ -1385,7 +1374,25 @@ impl Types {
         name: ModuleName,
         fields: &[(MapKey, Ty)],
     ) -> Ty {
-        self.intern(Descr::struct_map(StructTag { module, name }, fields.iter().cloned()))
+        let Some(final_fields) = self.final_required_fields(fields) else {
+            return self.core.none;
+        };
+        self.intern(Descr::struct_map(StructTag { module, name }, final_fields))
+    }
+
+    fn final_required_fields(&self, fields: &[(MapKey, Ty)]) -> Option<BTreeMap<MapKey, Ty>> {
+        let none = self.core.none;
+        let mut final_fields = BTreeMap::new();
+        let mut empty_required_fields = 0;
+        for (key, value) in fields {
+            if final_fields.insert(key.clone(), *value) == Some(none) {
+                empty_required_fields -= 1;
+            }
+            if *value == none {
+                empty_required_fields += 1;
+            }
+        }
+        (empty_required_fields == 0).then_some(final_fields)
     }
 
     pub fn list_element_type(&mut self, a: &Ty) -> Ty {
