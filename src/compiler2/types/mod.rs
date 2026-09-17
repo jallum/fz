@@ -15,6 +15,8 @@ mod dnf;
 mod emptiness;
 mod format;
 mod order;
+#[cfg(test)]
+mod regular;
 mod sigs;
 
 use std::cell::RefCell;
@@ -52,10 +54,14 @@ use addressed::AddrStep;
 pub(crate) use closure_surface_var::{ClosureSurfacePos, decode_closure_surface_var};
 use closure_surface_var::{closure_ret_var_id, closure_var_id};
 use conj::Conj;
-use descr::Descr;
 use descr::OpaqueTag;
+use descr::{Descr, DescrOf};
 use dnf::dnf_intersect_with;
-use sigs::{ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig};
+#[cfg(test)]
+use regular::ComponentRef;
+use sigs::{ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig, TupleSigOf};
+#[cfg(test)]
+use sigs::{ArrowSigOf, ClosureLitOf, ListSigOf};
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
 /// `(brand, captures, args, ret)`, the brand `None` for an anonymous literal.
@@ -152,10 +158,116 @@ impl Default for Types {
 
 #[derive(Default)]
 struct TypeInterner {
-    arena: Vec<Option<Descr>>,
-    index: HashMap<Descr, Ty>,
+    arena: Vec<Descr>,
+    index: HashMap<InternKey, Ty>,
     #[cfg(test)]
     work: InterningWork,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, expect(clippy::large_enum_variant))]
+enum InternKey {
+    Direct(Descr),
+    #[cfg(test)]
+    Regular(Box<regular::RegularKey>),
+}
+
+pub(super) trait TupleCoordinateOps<R: Clone> {
+    fn is_subtype(&self, positive: &R, negative: &R) -> bool;
+    fn has_vars(&self, reference: &R) -> bool;
+    fn difference(&mut self, positive: R, negative: R) -> Option<R>;
+}
+
+pub(super) trait CallableSurfaceOps<R: Clone> {
+    fn named_arg(&mut self, fn_id: FnId, position: usize) -> R;
+    fn named_ret(&mut self, fn_id: FnId) -> R;
+    fn any(&mut self) -> R;
+}
+
+impl TupleCoordinateOps<Ty> for Types {
+    fn is_subtype(&self, positive: &Ty, negative: &Ty) -> bool {
+        Types::is_subtype(self, positive, negative)
+    }
+
+    fn has_vars(&self, reference: &Ty) -> bool {
+        Types::has_vars(self, reference)
+    }
+
+    fn difference(&mut self, positive: Ty, negative: Ty) -> Option<Ty> {
+        Some(Types::difference(self, positive, negative))
+    }
+}
+
+impl CallableSurfaceOps<Ty> for Types {
+    fn named_arg(&mut self, fn_id: FnId, position: usize) -> Ty {
+        self.type_var(closure_var_id(fn_id, position))
+    }
+
+    fn named_ret(&mut self, fn_id: FnId) -> Ty {
+        self.type_var(closure_ret_var_id(fn_id))
+    }
+
+    fn any(&mut self) -> Ty {
+        Types::any(self)
+    }
+}
+
+pub(super) fn normalize_tuple_coordinate_difference_with<R: Clone>(
+    ops: &mut impl TupleCoordinateOps<R>,
+    clause: Conj<TupleSigOf<R>>,
+) -> Conj<TupleSigOf<R>> {
+    let ([positive], [negative]) = (clause.pos.as_slice(), clause.neg.as_slice()) else {
+        return clause;
+    };
+    if positive.elems.len() != negative.elems.len()
+        || positive
+            .elems
+            .iter()
+            .chain(&negative.elems)
+            .any(|reference| ops.has_vars(reference))
+    {
+        return clause;
+    }
+    let differing = positive
+        .elems
+        .iter()
+        .zip(&negative.elems)
+        .enumerate()
+        .filter_map(|(index, (positive, negative))| (!ops.is_subtype(positive, negative)).then_some(index))
+        .collect::<Vec<_>>();
+    let [index] = differing.as_slice() else {
+        return clause;
+    };
+    let Some(difference) = ops.difference(positive.elems[*index].clone(), negative.elems[*index].clone()) else {
+        return clause;
+    };
+    let mut elems = positive.elems.clone();
+    elems[*index] = difference;
+    Conj::pos_of(TupleSigOf { elems })
+}
+
+fn normalize_literal_callable_surfaces_with<R: Clone>(ops: &mut impl CallableSurfaceOps<R>, d: &mut DescrOf<R>) {
+    for sig in d
+        .funcs
+        .iter_mut()
+        .flat_map(|clause| clause.pos.iter_mut().chain(&mut clause.neg))
+    {
+        let Some(lit) = &sig.lit else {
+            continue;
+        };
+        let arity = sig.args.len();
+        match lit.fn_id {
+            Some(fn_id) => {
+                sig.args = (0..arity).map(|position| ops.named_arg(fn_id, position)).collect();
+                sig.ret = ops.named_ret(fn_id);
+            }
+            None => {
+                let any = ops.any();
+                sig.args = vec![any.clone(); arity];
+                sig.ret = any;
+            }
+        }
+    }
 }
 
 /// Test-only accounting for the sole type persistence boundary.
@@ -272,7 +384,7 @@ pub(crate) struct ComparisonCacheStats {
 
 #[derive(Clone, Copy)]
 pub(super) struct TyCtx<'a> {
-    arena: &'a [Option<Descr>],
+    arena: &'a [Descr],
     /// The address reverse table (path per address id), so display can render a
     /// structural address as `a1_0`/`r0`. Empty for the interner-internal ctx,
     /// which only resolves descriptors and never renders.
@@ -282,8 +394,7 @@ pub(super) struct TyCtx<'a> {
 impl<'a> TyCtx<'a> {
     fn descr(&self, t: &Ty) -> &'a Descr {
         match self.arena.get(t.0 as usize) {
-            Some(Some(descr)) => descr,
-            Some(None) => panic!("unfinished interned type id {}", t.0),
+            Some(descr) => descr,
             None => panic!("unknown interned type id {}", t.0),
         }
     }
@@ -312,39 +423,21 @@ impl TypeInterner {
         {
             self.work.canonical_index_probes += 1;
         }
-        if let Some(ty) = self.index.get(&d) {
+        if let Some(ty) = self.index.get(&InternKey::Direct(d.clone())) {
             return *ty;
         }
         #[cfg(debug_assertions)]
         self.debug_assert_dnf_axes_hygienic(&d);
-        let ty = self.reserve();
-        self.fill_normalized(ty, d);
-        ty
-    }
-
-    fn reserve(&mut self) -> Ty {
         let raw = self.arena.len();
         assert!(u32::try_from(raw).is_ok(), "type interner exhausted ids");
         let ty = Ty(raw as u32);
-        self.arena.push(None);
-        ty
-    }
-
-    fn fill_normalized(&mut self, ty: Ty, d: Descr) {
-        let Some(slot) = self.arena.get_mut(ty.0 as usize) else {
-            panic!("unknown reserved type id {}", ty.0);
-        };
-        assert!(slot.is_none(), "type id {} is already filled", ty.0);
-        assert!(
-            !self.index.contains_key(&d),
-            "two-phase intern received an already-interned descriptor"
-        );
-        *slot = Some(d.clone());
-        self.index.insert(d, ty);
+        self.arena.push(d.clone());
+        self.index.insert(InternKey::Direct(d), ty);
         #[cfg(test)]
         {
             self.work.inserted += 1;
         }
+        ty
     }
 
     /// The id already given to this exact descriptor, if it has one.
@@ -361,7 +454,52 @@ impl TypeInterner {
         {
             self.work.raw_index_probes += 1;
         }
-        self.index.get(d).copied()
+        self.index.get(&InternKey::Direct(d.clone())).copied()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.arena.len()
+    }
+
+    #[cfg(test)]
+    fn lookup_regular(&self, key: &regular::RegularKey) -> Option<Ty> {
+        self.index.get(&InternKey::Regular(Box::new(key.clone()))).copied()
+    }
+
+    #[cfg(test)]
+    fn intern_regular(&mut self, keys: Vec<regular::RegularKey>, descriptors: Vec<Descr>) -> Vec<Ty> {
+        assert_eq!(keys.len(), descriptors.len(), "regular keys and descriptors must align");
+        assert!(
+            keys.iter().all(|key| self.lookup_regular(key).is_none()),
+            "regular component insertion raced an existing identity"
+        );
+        let first = self.arena.len();
+        let last = first
+            .checked_add(descriptors.len())
+            .expect("type interner exhausted ids");
+        assert!(
+            u32::try_from(last.saturating_sub(1)).is_ok(),
+            "type interner exhausted ids"
+        );
+        let tys = (first..last).map(|raw| Ty(raw as u32)).collect::<Vec<_>>();
+
+        for (ty, descriptor) in tys.iter().copied().zip(descriptors.iter()) {
+            assert!(
+                !self.index.contains_key(&InternKey::Direct(descriptor.clone())),
+                "regular component body was already interned directly"
+            );
+            self.arena.push(descriptor.clone());
+            self.index.insert(InternKey::Direct(descriptor.clone()), ty);
+        }
+        for (key, ty) in keys.into_iter().zip(tys.iter().copied()) {
+            assert!(self.index.insert(InternKey::Regular(Box::new(key)), ty).is_none());
+        }
+        #[cfg(test)]
+        {
+            self.work.inserted += tys.len();
+        }
+        tys
     }
 
     fn normalized(&mut self) {
@@ -702,6 +840,15 @@ impl Types {
         self.interner.intern(d)
     }
 
+    #[cfg(test)]
+    fn intern_regular_component(
+        &mut self,
+        count: usize,
+        build: impl FnOnce(&[ComponentRef]) -> Vec<DescrOf<ComponentRef>>,
+    ) -> Vec<Ty> {
+        regular::intern(self, count, build)
+    }
+
     /// Return an input whose operation has proved unchanged before any
     /// descriptor is built. This is deliberately not an interner lookup: the
     /// caller already owns the canonical identity.
@@ -709,18 +856,6 @@ impl Types {
     fn unchanged(&mut self, ty: Ty) -> Ty {
         self.interner.identity_shortcut();
         ty
-    }
-
-    #[cfg(test)]
-    fn intern_two_phase(&mut self, count: usize, build: impl FnOnce(&[Ty]) -> Vec<Descr>) -> Vec<Ty> {
-        assert!(count > 0, "two-phase intern needs at least one reserved type");
-        let reserved = (0..count).map(|_| self.interner.reserve()).collect::<Vec<_>>();
-        let bodies = build(&reserved);
-        assert_eq!(bodies.len(), reserved.len(), "every reserved type needs one body");
-        for (ty, body) in reserved.iter().copied().zip(bodies) {
-            self.interner.fill_normalized(ty, body);
-        }
-        reserved
     }
 
     /// The list axis rewritten to the one normal form in [`axis`], clause by
@@ -735,29 +870,7 @@ impl Types {
     /// identity. A named literal has one reproducible owner template; an
     /// anonymous literal keeps only its arity.
     fn normalize_literal_callable_surfaces(&mut self, d: &mut Descr) {
-        for sig in d
-            .funcs
-            .iter_mut()
-            .flat_map(|clause| clause.pos.iter_mut().chain(&mut clause.neg))
-        {
-            let Some(lit) = &sig.lit else {
-                continue;
-            };
-            let arity = sig.args.len();
-            match lit.fn_id {
-                Some(fn_id) => {
-                    sig.args = (0..arity)
-                        .map(|position| self.type_var(closure_var_id(fn_id, position)))
-                        .collect();
-                    sig.ret = self.type_var(closure_ret_var_id(fn_id));
-                }
-                None => {
-                    let any = self.any();
-                    sig.args = vec![any; arity];
-                    sig.ret = any;
-                }
-            }
-        }
+        normalize_literal_callable_surfaces_with(self, d)
     }
 
     /// One list clause rewritten to what it denotes.
@@ -1048,39 +1161,7 @@ impl Types {
     /// is assigned. More than one differing coordinate needs a union of
     /// rectangles and deliberately stays in its existing DNF form.
     fn normalize_tuple_coordinate_difference(&mut self, clause: Conj<TupleSig>) -> Conj<TupleSig> {
-        let ([positive], [negative]) = (clause.pos.as_slice(), clause.neg.as_slice()) else {
-            return clause;
-        };
-        if positive.elems.len() != negative.elems.len() {
-            return clause;
-        }
-        // This changes which side of the enclosing tuple's negative polarity
-        // owns a child. Ground coordinates describe the same rectangle either
-        // way. A variable does not: `runtime_envelope` deliberately removes a
-        // finite negative variable before it descends, so moving it inside the
-        // child would also remove the concrete exclusions beside it.
-        if positive
-            .elems
-            .iter()
-            .chain(&negative.elems)
-            .any(|elem| self.has_vars(elem))
-        {
-            return clause;
-        }
-        let differing = positive
-            .elems
-            .iter()
-            .zip(&negative.elems)
-            .enumerate()
-            .filter_map(|(index, (positive, negative))| (!self.is_subtype(positive, negative)).then_some(index))
-            .collect::<Vec<_>>();
-        let [index] = differing.as_slice() else {
-            return clause;
-        };
-
-        let mut elems = positive.elems.clone();
-        elems[*index] = self.difference(elems[*index], negative.elems[*index]);
-        Conj::pos_of(TupleSig { elems })
+        normalize_tuple_coordinate_difference_with(self, clause)
     }
 
     fn ctx(&self) -> TyCtx<'_> {
@@ -1159,7 +1240,7 @@ impl Types {
             .arena
             .iter()
             .enumerate()
-            .filter_map(|(index, descr)| descr.as_ref().map(|_| Ty(index as u32)))
+            .map(|(index, _)| Ty(index as u32))
             .collect()
     }
 
@@ -1188,7 +1269,7 @@ impl Types {
     /// untouched: interned type descriptors and interned structural addresses.
     #[cfg(test)]
     pub(crate) fn identity_inventory(&self) -> (usize, usize) {
-        (self.interner.arena.iter().flatten().count(), self.address_paths.len())
+        (self.interner.arena.len(), self.address_paths.len())
     }
 
     #[cfg(test)]
@@ -2879,7 +2960,6 @@ impl Types {
         self.interner
             .arena
             .iter()
-            .flatten()
             .flat_map(|d| d.funcs.iter())
             .flat_map(|c| c.pos.iter().chain(c.neg.iter()))
             .filter_map(|sig| sig.lit.as_ref())
@@ -4534,7 +4614,11 @@ fn map_recursive_inputs_with(t: &mut Types, mut d: Descr, f: &mut impl FnMut(&mu
     }
     for conj in &mut d.maps {
         for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.fields = sig.fields.iter().map(|(k, v)| (k.clone(), f(t, *v))).collect();
+            sig.fields = sig
+                .fields
+                .iter()
+                .map(|(key, value)| (key.clone(), f(t, *value)))
+                .collect();
         }
     }
     d

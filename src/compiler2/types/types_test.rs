@@ -439,12 +439,291 @@ fn closure_input_erasure_leaves_unignored_inputs_unchanged() {
 }
 
 #[test]
-fn types_intern_two_phase_is_idempotent() {
+fn regular_component_replays_its_completed_descriptor() {
     let mut t = Types::new();
-    let recursive = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of(vec![reserved[0]])])[0];
+    let recursive = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
     let inventory = t.identity_inventory();
 
     assert_eq!(t.intern(Descr::tuple_of(vec![recursive])), recursive);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+fn recursive_tuple_body(reference: ComponentRef) -> DescrOf<ComponentRef> {
+    recursive_tuple_body_named("start", reference)
+}
+
+fn recursive_tuple_body_named(name: &str, reference: ComponentRef) -> DescrOf<ComponentRef> {
+    let mut descr = DescrOf::<ComponentRef>::atom_lit(name);
+    descr.tuples.push(Conj::pos_of(TupleSigOf { elems: vec![reference] }));
+    descr
+}
+
+fn recursive_tuple_descr(reference: Ty) -> Descr {
+    let mut descr = Descr::atom_lit("start");
+    descr.tuples.push(Conj::pos_of(TupleSig { elems: vec![reference] }));
+    descr
+}
+
+fn recursive_capture_body(capture: ComponentRef, result: Ty) -> DescrOf<ComponentRef> {
+    let mut descr = DescrOf::unbranded();
+    descr.funcs.push(Conj::pos_of(ArrowSigOf {
+        args: Vec::new(),
+        ret: ComponentRef::Published(result),
+        lit: Some(ClosureLitOf {
+            kind: CallableValueKind::Closure,
+            fn_id: None,
+            captures: vec![capture],
+        }),
+    }));
+    descr
+}
+
+#[test]
+fn regular_component_interns_bisimilar_unrollings_once() {
+    let mut t = Types::new();
+    let self_recursive = t.intern_regular_component(1, |nodes| vec![recursive_tuple_body(nodes[0])])[0];
+    let inventory = t.identity_inventory();
+
+    let mutual = t.intern_regular_component(2, |nodes| {
+        vec![recursive_tuple_body(nodes[1]), recursive_tuple_body(nodes[0])]
+    });
+
+    assert_eq!(mutual, vec![self_recursive, self_recursive]);
+    assert_eq!(t.identity_inventory(), inventory);
+    assert_eq!(t.intern(recursive_tuple_descr(self_recursive)), self_recursive);
+}
+
+#[test]
+fn regular_components_follow_closure_captures() {
+    let mut t = Types::new();
+    let int = t.int();
+    let self_recursive = t.intern_regular_component(1, |nodes| vec![recursive_capture_body(nodes[0], int)])[0];
+    let inventory = t.identity_inventory();
+
+    let mutual = t.intern_regular_component(2, |nodes| {
+        vec![
+            recursive_capture_body(nodes[1], int),
+            recursive_capture_body(nodes[0], int),
+        ]
+    });
+
+    assert_eq!(mutual, vec![self_recursive, self_recursive]);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_normalize_anonymous_closure_surfaces() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let int_surface = t.intern_regular_component(1, |nodes| vec![recursive_capture_body(nodes[0], int)])[0];
+    let inventory = t.identity_inventory();
+
+    let float_surface = t.intern_regular_component(1, |nodes| vec![recursive_capture_body(nodes[0], float)])[0];
+
+    assert_eq!(float_surface, int_surface);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_absorb_a_recursive_tuple_clause() {
+    let mut t = Types::new();
+    let any = t.any();
+    let direct = t.tuple(&[any]);
+    let inventory = t.identity_inventory();
+
+    let component = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::unbranded();
+        body.tuples = vec![
+            Conj::pos_of(TupleSigOf { elems: vec![nodes[0]] }),
+            Conj::pos_of(TupleSigOf {
+                elems: vec![ComponentRef::Published(any)],
+            }),
+        ];
+        vec![body]
+    })[0];
+
+    assert_eq!(component, direct);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_fuse_tuple_carvings_through_a_recursive_coordinate() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let numeric = t.union(int, float);
+    let fused = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.tuples = vec![Conj::pos_of(TupleSigOf {
+            elems: vec![nodes[0], ComponentRef::Published(numeric)],
+        })];
+        vec![body]
+    })[0];
+    let inventory = t.identity_inventory();
+
+    let carved = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.tuples = vec![
+            Conj::pos_of(TupleSigOf {
+                elems: vec![nodes[0], ComponentRef::Published(int)],
+            }),
+            Conj::pos_of(TupleSigOf {
+                elems: vec![nodes[0], ComponentRef::Published(float)],
+            }),
+        ];
+        vec![body]
+    })[0];
+
+    assert_eq!(carved, fused);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_widen_tuple_carvings_through_a_recursive_coordinate() {
+    let mut t = Types::new();
+    let int = t.int();
+    let ints = t.list(int);
+    let empty = t.empty_list();
+    let non_empty = t.non_empty_list(int);
+    let wide = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.tuples = vec![
+            Conj::pos_of(TupleSigOf {
+                elems: vec![nodes[0], ComponentRef::Published(ints), ComponentRef::Published(empty)],
+            }),
+            Conj::pos_of(TupleSigOf {
+                elems: vec![nodes[0], ComponentRef::Published(empty), ComponentRef::Published(ints)],
+            }),
+        ];
+        vec![body]
+    })[0];
+    let inventory = t.identity_inventory();
+
+    let narrow = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.tuples = vec![
+            Conj::pos_of(TupleSigOf {
+                elems: vec![nodes[0], ComponentRef::Published(ints), ComponentRef::Published(empty)],
+            }),
+            Conj::pos_of(TupleSigOf {
+                elems: vec![
+                    nodes[0],
+                    ComponentRef::Published(empty),
+                    ComponentRef::Published(non_empty),
+                ],
+            }),
+        ];
+        vec![body]
+    })[0];
+
+    assert_eq!(narrow, wide);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_keep_distinct_published_children() {
+    let mut t = Types::new();
+    let self_recursive = t.intern_regular_component(1, |nodes| vec![recursive_tuple_body(nodes[0])])[0];
+    let int = t.int();
+
+    let with_int = t.intern_regular_component(1, |nodes| {
+        vec![DescrOf::tuple_of(vec![ComponentRef::Published(int), nodes[0]])]
+    })[0];
+
+    assert_ne!(self_recursive, with_int);
+}
+
+#[test]
+fn regular_components_normalize_empty_list_alternatives() {
+    let mut t = Types::new();
+    let direct = t.intern_regular_component(1, |nodes| vec![DescrOf::list_of(nodes[0])])[0];
+    let inventory = t.identity_inventory();
+
+    let split = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::unbranded();
+        body.lists = vec![
+            Conj::pos_of(ListSigOf::empty()),
+            Conj::pos_of(ListSigOf::non_empty(nodes[0])),
+        ];
+        vec![body]
+    })[0];
+
+    assert_eq!(split, direct);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_ignore_declaration_order() {
+    let mut t = Types::new();
+    let forward = t.intern_regular_component(2, |nodes| {
+        vec![
+            recursive_tuple_body_named("left", nodes[1]),
+            recursive_tuple_body_named("right", nodes[0]),
+        ]
+    });
+    let inventory = t.identity_inventory();
+
+    let reverse = t.intern_regular_component(2, |nodes| {
+        vec![
+            recursive_tuple_body_named("right", nodes[1]),
+            recursive_tuple_body_named("left", nodes[0]),
+        ]
+    });
+
+    assert_eq!(reverse, vec![forward[1], forward[0]]);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_ignore_declaration_order_after_refinement() {
+    let mut t = Types::new();
+    let variable = t.type_var(TypeVarId(91));
+    let forward = t.intern_regular_component(2, |nodes| {
+        vec![
+            DescrOf::tuple_of(vec![nodes[1]]),
+            DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(variable)]),
+        ]
+    });
+    let inventory = t.identity_inventory();
+
+    let reverse = t.intern_regular_component(2, |nodes| {
+        vec![
+            DescrOf::tuple_of(vec![nodes[1], ComponentRef::Published(variable)]),
+            DescrOf::tuple_of(vec![nodes[0]]),
+        ]
+    });
+
+    assert_eq!(reverse, vec![forward[1], forward[0]]);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_normalize_one_coordinate_tuple_difference() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let direct = t.intern_regular_component(1, |nodes| {
+        vec![DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(int)])]
+    })[0];
+    let inventory = t.identity_inventory();
+
+    let carved = t.intern_regular_component(1, |nodes| {
+        let positive = TupleSigOf {
+            elems: vec![nodes[0], ComponentRef::Published(int)],
+        };
+        let negative = TupleSigOf {
+            elems: vec![nodes[0], ComponentRef::Published(float)],
+        };
+        let mut body = DescrOf::unbranded();
+        body.tuples = vec![Conj {
+            pos: vec![positive],
+            neg: vec![negative],
+        }];
+        vec![body]
+    })[0];
+
+    assert_eq!(carved, direct);
     assert_eq!(t.identity_inventory(), inventory);
 }
 
@@ -454,17 +733,17 @@ fn cyclic_readers_collect_the_finite_variable_and_substitution_result() {
     let alpha = TypeVarId(97);
     let variable = t.type_var(alpha);
     let int = t.int();
-    let self_recursive = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of(vec![reserved[0]])])[0];
-    let pattern = t.intern_two_phase(2, |reserved| {
+    let self_recursive = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
+    let pattern = t.intern_regular_component(2, |nodes| {
         vec![
-            Descr::tuple_of(vec![reserved[1]]),
-            Descr::tuple_of(vec![reserved[0], variable]),
+            DescrOf::tuple_of(vec![nodes[1]]),
+            DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(variable)]),
         ]
     })[0];
-    let witness = t.intern_two_phase(2, |reserved| {
+    let witness = t.intern_regular_component(2, |nodes| {
         vec![
-            Descr::tuple_of(vec![reserved[1]]),
-            Descr::tuple_of(vec![reserved[0], int]),
+            DescrOf::tuple_of(vec![nodes[1]]),
+            DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(int)]),
         ]
     })[0];
 
@@ -480,11 +759,9 @@ fn cyclic_readers_collect_the_finite_variable_and_substitution_result() {
 #[test]
 fn types_emptiness_discharges_a_negation_bearing_cycle() {
     let mut t = Types::new();
-    let recursive = t.intern_two_phase(1, |reserved| {
-        let sig = TupleSig {
-            elems: vec![reserved[0]],
-        };
-        let mut descr = Descr::unbranded();
+    let recursive = t.intern_regular_component(1, |nodes| {
+        let sig = TupleSigOf { elems: vec![nodes[0]] };
+        let mut descr = DescrOf::<ComponentRef>::unbranded();
         descr.tuples.push(Conj {
             pos: vec![sig.clone()],
             neg: vec![sig],
@@ -496,18 +773,18 @@ fn types_emptiness_discharges_a_negation_bearing_cycle() {
 }
 
 fn regular_test_tys(t: &mut Types) -> Vec<Ty> {
-    let first_self = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of(vec![reserved[0]])])[0];
-    let second_self = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of(vec![reserved[0]])])[0];
+    let first_self = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
+    let second_self = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
     let mut nodes = vec![t.any(), t.int(), first_self, second_self];
     for graph in 0..27 {
         let children = [graph % 3, graph / 3 % 3, graph / 9];
-        if children[0] == children[1] || children[0] == children[2] || children[1] == children[2] {
+        if !matches!(children, [1, 2, 0] | [2, 0, 1]) {
             continue;
         }
-        nodes.extend(t.intern_two_phase(3, |reserved| {
+        nodes.extend(t.intern_regular_component(3, |component| {
             children
                 .into_iter()
-                .map(|child| Descr::tuple_of(vec![reserved[child]]))
+                .map(|child| DescrOf::tuple_of(vec![component[child]]))
                 .collect()
         }));
     }
