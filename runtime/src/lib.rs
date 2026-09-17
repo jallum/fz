@@ -19,6 +19,7 @@ pub mod module_name;
 pub mod output;
 pub mod park;
 pub mod pinned_abi;
+pub mod predicate_program;
 pub mod procbin;
 pub mod process;
 pub mod process_abi;

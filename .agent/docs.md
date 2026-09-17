@@ -25,6 +25,7 @@ Read:
 - [telemetry](docs/telemetry.md) — compile-time telemetry internals plus the emission contract, trace harness, and test-observability guidance.
 - [performance instrumentation](docs/performance-instrumentation.md) — finding where compile time goes and why work started: the `--log-telemetry` / `--emit=stats` switches, causal job/product/work-start records, and reading settle counts against per-settle cost.
 - [runtime telemetry](docs/runtime-telemetry.md) — the runtime exit event and semantic output sink contracts, and how tests observe a run without poking process internals.
+- [runtime predicate programs](docs/runtime-predicate-program.md) — immutable runtime-owned regular predicate graphs, their static-data ABI, ownership boundary, and exact worklist evaluator.
 - [parser syntax](docs/parser-syntax.md) — source front-door boundary: `src/parser` is lexer-only; compiler2 parses tokens to quoted source in `compiler2/frontdoor.rs`.
 - [dispatch matrix](docs/dispatch-matrix.md) — the shared `DispatchMatrix`/`DispatchGraph` model behind function heads, `case`, receive, guard helpers, and protocol dispatch.
 - [pattern matching](docs/pattern-matching.md) — one decision model (`SourcePatternRows`→`PatternDispatchPlan`): test-first/project-second, payloads, and guards.
