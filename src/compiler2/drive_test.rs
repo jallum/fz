@@ -20018,37 +20018,355 @@ const TUPLE_LADDER_MAIN_ANALYSES: u64 = 22;
 const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 2;
 
 #[test]
-fn compiler2_recursive_typedef_deadlocks_on_its_own_definition() {
-    // @type t :: :start | {integer, t} is a legal recursive declaration, and
-    // resolving it needs a type whose definition names itself. There is no such
-    // denotation, so DeriveTypeDef(t) waits on TypeDefined(t) — its own output —
-    // and the product pull every door makes fails on a stall rather than on a
-    // diagnostic. The stalled waits name the cycle.
+fn compiler2_recursive_typedef_resolves_to_one_mu_identity() {
     let (mut compiler, root) = submit_main_root(
         ConfiguredTelemetry::new(),
         "recursive_typedef.fz",
         include_str!("../../fixtures2/behavior/recursive_typedef.fz"),
     );
-    let outcome = compiler.drive_root_to_dump_stage(root, super::dump::DumpStage::Backend);
     assert!(
-        outcome.is_err(),
-        "a self-referential typedef must stall the product, not deliver one",
+        compiler
+            .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+            .is_ok(),
+        "a recursive declaration reaches backend materialization through the ordinary root path",
     );
-    let waits = compiler.world().unresolved_waits();
-    let self_wait = waits
-        .iter()
-        .find(|wait| {
-            wait.jobs
-                .iter()
-                .any(|job| matches!(job, Job::DeriveTypeDef(name) if name.name == "t"))
-        })
-        .expect("DeriveTypeDef(t) is among the stalled jobs");
-    let FactUse::Current(DependencyKey::Fact(FactKey::TypeDefined(awaited))) = &self_wait.fact else {
-        panic!("DeriveTypeDef(t) stalls on the current TypeDefined fact: {self_wait:?}");
+    let t = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "t".to_string(),
+        arity: 0,
     };
+    let ty = compiler
+        .world()
+        .type_def(&t)
+        .expect("the recursive declaration resolves")
+        .ty;
     assert_eq!(
-        awaited.name, "t",
-        "the fact DeriveTypeDef(t) waits on is the one it is itself the producer of",
+        compiler.world().types().display(&ty),
+        "μX. :start | {int, X}",
+        "the definition receives a finite recursive denotation",
+    );
+    let inventory = compiler.world().types().identity_inventory();
+    assert_resolved(compiler.drive(), "an unchanged root does no further type work");
+    assert_eq!(
+        compiler.world().types().identity_inventory(),
+        inventory,
+        "re-driving unchanged declarations preserves the recursive identity inventory",
+    );
+}
+
+#[test]
+fn compiler2_mutually_recursive_typedefs_resolve_together() {
+    let source = r#"
+@type odd :: :one | {integer, even}
+@type even :: {integer, odd}
+
+@spec main() :: odd
+def main(), do: :one
+"#;
+    let (mut compiler, root) = submit_main_root(ConfiguredTelemetry::new(), "mutual_typedefs.fz", source);
+    assert!(
+        compiler
+            .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+            .is_ok(),
+        "a mutually recursive declaration group reaches backend materialization",
+    );
+    let odd = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "odd".to_string(),
+        arity: 0,
+    };
+    let even = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "even".to_string(),
+        arity: 0,
+    };
+    let odd_ty = compiler.world().type_def(&odd).expect("odd resolves").ty;
+    let even_ty = compiler.world().type_def(&even).expect("even resolves").ty;
+    assert_eq!(
+        compiler.world().types().display(&odd_ty),
+        "μX. :one | {int, {int, X}}",
+        "the first declaration is rooted at its own canonical recursive identity",
+    );
+    assert_eq!(
+        compiler.world().types().display(&even_ty),
+        "μX. {int, :one | {int, X}}",
+        "the second declaration is a distinct root into the same regular component",
+    );
+}
+
+#[test]
+fn compiler2_mutual_typedef_member_demand_uses_its_component_owner() {
+    let source = r#"
+@type alpha :: :end | {integer, beta}
+@type beta :: {integer, alpha}
+
+@spec main() :: beta
+def main(), do: {0, :end}
+"#;
+    let (mut compiler, root) = submit_main_root(ConfiguredTelemetry::new(), "owned_mutual_typedefs.fz", source);
+    assert!(
+        compiler
+            .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+            .is_ok(),
+        "a demand for beta/0 resolves the alpha/beta component through its one owner",
+    );
+    let alpha = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "alpha".to_string(),
+        arity: 0,
+    };
+    let beta = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "beta".to_string(),
+        arity: 0,
+    };
+    let alpha_ty = compiler.world().type_def(&alpha).expect("alpha resolves").ty;
+    let beta_ty = compiler.world().type_def(&beta).expect("beta resolves").ty;
+    assert_eq!(
+        compiler.world().job_outputs(&Job::DeriveTypeDef(alpha.clone())),
+        vec![FactKey::TypeDefined(alpha.clone()), FactKey::TypeDefined(beta.clone())],
+        "the canonical component producer owns both facts",
+    );
+    assert!(
+        compiler
+            .world()
+            .job_outputs(&Job::DeriveTypeDef(beta.clone()))
+            .is_empty(),
+        "a member never becomes a competing component producer",
+    );
+
+    let revisions = [
+        compiler.world().fact_revision(&FactKey::TypeDefined(alpha.clone())),
+        compiler.world().fact_revision(&FactKey::TypeDefined(beta.clone())),
+    ];
+    assert!(
+        compiler.demand(Job::DeriveTypeDef(alpha.clone())),
+        "the owner can be re-driven"
+    );
+    assert_resolved(
+        compiler.drive(),
+        "an unchanged component owner re-derives its complete claim set",
+    );
+    assert_eq!(
+        compiler.world().fact_revision(&FactKey::TypeDefined(beta.clone())),
+        revisions[1],
+        "an owner re-drive retains beta's fact rather than retracting it",
+    );
+    assert_eq!(
+        compiler.world().type_def(&beta).expect("beta remains defined").ty,
+        beta_ty
+    );
+    assert_eq!(
+        compiler.world().type_def(&alpha).expect("alpha remains defined").ty,
+        alpha_ty
+    );
+}
+
+#[test]
+fn compiler2_module_source_replacement_withdraws_its_removed_type_declaration() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("type_declaration_before.fz".to_string()),
+        text: r#"
+defmodule M do
+  defstruct [:value]
+  @type u :: integer
+  @type t :: u
+  @type record :: %M{value: integer}
+  @spec main() :: t
+  def main(), do: 1
+end
+"#
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: Some("M".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(1));
+
+    let name = TypeName {
+        module: compiler.world_mut().reference_module(module_name("M")),
+        name: "t".to_string(),
+        arity: 0,
+    };
+    let record = TypeName {
+        module: name.module,
+        name: "record".to_string(),
+        arity: 0,
+    };
+    assert!(compiler.world().has_fact(&FactKey::TypeDeclared(name.clone())));
+    assert!(compiler.world().type_decl(&name).is_some());
+    assert!(compiler.world().type_def(&name).is_some());
+    assert_eq!(
+        compiler.world().type_def_refs(&name),
+        &[TypeName {
+            module: name.module,
+            name: "u".to_string(),
+            arity: 0,
+        }],
+        "the scoped declaration owns its recorded reference edge"
+    );
+    assert_eq!(compiler.world().type_def_struct_refs(&record), &[name.module]);
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("type_declaration_after.fz".to_string()),
+        text: r#"
+defmodule M do
+  def main(), do: 2
+end
+"#
+        .to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(2));
+    assert!(
+        !compiler.world().has_fact(&FactKey::TypeDeclared(name.clone())),
+        "the replaced module stops publishing its removed declaration"
+    );
+    assert!(
+        compiler.world().type_decl(&name).is_none(),
+        "the declaration store drops stale scope state"
+    );
+    assert!(
+        compiler.world().type_def_refs(&name).is_empty(),
+        "the declaration's reference contribution retracts with its source scope"
+    );
+    assert!(
+        compiler.world().type_def_struct_refs(&record).is_empty(),
+        "the declaration's struct-reference contribution retracts with its source scope"
+    );
+    assert!(
+        compiler.world().type_def(&name).is_none(),
+        "the derived definition retracts with its declaration"
+    );
+}
+
+#[test]
+fn compiler2_late_typedef_edge_rebuilds_its_existing_component_owner() {
+    use super::type_expr::{NominalKind, TypeDefBody, TypeExpr};
+    use super::{NamespaceSymbol, NotedTypeDecl};
+    use crate::source::Span;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let a = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "a".to_string(),
+        arity: 0,
+    };
+    let b = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "b".to_string(),
+        arity: 0,
+    };
+    let namespace = world.bind_namespace(Namespace::default(), "a", NamespaceSymbol::Type(a.clone()));
+    let namespace = world.bind_namespace(namespace, "b", NamespaceSymbol::Type(b.clone()));
+    let declaration = |reference: &str| NotedTypeDecl {
+        params: Vec::new(),
+        body: TypeDefBody {
+            kind: NominalKind::Plain,
+            inner: TypeExpr::Tuple(vec![TypeExpr::Name {
+                path: vec![reference.to_string()],
+                args: Vec::new(),
+            }]),
+        },
+        namespace,
+        span: Span::DUMMY,
+    };
+
+    assert!(world.note_type_decl(&a, declaration("b")));
+    assert!(world.record_type_def_refs(&a, vec![b.clone()]));
+    let a_source = super::SourceOwner::for_test(0);
+    world.complete_job(
+        Job::ScopeCode(a_source),
+        JobEffects {
+            outputs: vec![FactKey::TypeDeclared(a.clone())],
+            changed: vec![FactKey::TypeDeclared(a.clone())],
+            ..JobEffects::default()
+        },
+    );
+    assert!(world.demand(Job::DeriveTypeDef(a.clone())));
+    assert!(matches!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Unresolved { .. }
+    ));
+    assert!(
+        !world.has_fact(&FactKey::TypeDefined(a.clone())),
+        "a waits for b while only a -> b is available"
+    );
+
+    assert!(world.note_type_decl(&b, declaration("a")));
+    assert!(world.record_type_def_refs(&b, vec![a.clone()]));
+    let before = world.work_start_tally();
+    world.complete_job(
+        Job::ScopeCode(super::SourceOwner::for_test(1)),
+        JobEffects {
+            outputs: vec![FactKey::TypeDeclared(b.clone())],
+            changed: vec![FactKey::TypeDeclared(b.clone())],
+            ..JobEffects::default()
+        },
+    );
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "b's exact declaration movement wakes a, the canonical component owner",
+    );
+
+    assert!(world.has_fact(&FactKey::TypeDefined(a.clone())));
+    assert!(world.has_fact(&FactKey::TypeDefined(b.clone())));
+    assert_eq!(
+        world.job_outputs(&Job::DeriveTypeDef(a.clone())),
+        vec![FactKey::TypeDefined(a.clone()), FactKey::TypeDefined(b.clone())],
+        "the pre-existing canonical owner publishes the completed equation",
+    );
+    assert!(
+        world.job_outputs(&Job::DeriveTypeDef(b)).is_empty(),
+        "the late member never owns a competing component producer",
+    );
+    let work = world.work_start_tally().delta_since(before);
+    assert_eq!(
+        work.root_scans, 0,
+        "the edge fact wakes its exact subscriber without a root scan"
+    );
+    assert_eq!(
+        work.drain_discovery_sweeps, 0,
+        "the edge fact wakes its exact subscriber without a drain-time sweep"
+    );
+}
+
+#[test]
+fn compiler2_opaque_typedef_edge_does_not_force_a_regular_component() {
+    let source = r#"
+@type hidden :: opaque {integer, visible}
+@type visible :: {integer, hidden}
+
+@spec main() :: visible
+def main(), do: {0, :hidden}
+"#;
+    let (mut compiler, root) = submit_main_root(ConfiguredTelemetry::new(), "opaque_typedef_edge.fz", source);
+    let result = compiler.drive_root_to_dump_stage(root, super::dump::DumpStage::Backend);
+    assert!(
+        result.is_ok(),
+        "an opaque declaration cuts its discarded body edge before regular interning: {result:?}",
+    );
+    let hidden = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "hidden".to_string(),
+        arity: 0,
+    };
+    let visible = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "visible".to_string(),
+        arity: 0,
+    };
+    assert!(
+        compiler.world().type_def(&hidden).is_some(),
+        "the opaque name has its nominal denotation"
+    );
+    assert!(
+        compiler.world().type_def(&visible).is_some(),
+        "the visible type resolves through that nominal denotation"
     );
 }
 

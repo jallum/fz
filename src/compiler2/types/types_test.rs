@@ -1745,6 +1745,23 @@ fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
     );
 }
 
+#[test]
+fn forwarder_erasure_reuses_a_recursive_type_without_callable_literals() {
+    let mut t = Types::new();
+    let recursive = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
+    let before = t.interning_work_stats();
+
+    let erased = t.erase_transported_closure_identity_inputs(&[recursive], &[DispatchDemand::Ignore]);
+
+    assert_eq!(erased.as_ref(), [recursive]);
+    let after = t.interning_work_stats();
+    assert_eq!(after.identity_shortcuts, before.identity_shortcuts + 1);
+    assert_eq!(after.raw_index_probes, before.raw_index_probes);
+    assert_eq!(after.normalizations, before.normalizations);
+    assert_eq!(after.canonical_index_probes, before.canonical_index_probes);
+    assert_eq!(after.inserted, before.inserted);
+}
+
 /// fz-kdt.127 -- a closure holds exactly one value per capture slot, so a
 /// literal whose capture TYPE is empty denotes nothing at all.
 ///

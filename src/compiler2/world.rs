@@ -10,7 +10,7 @@ use std::any::Any;
 #[cfg(test)]
 use std::cell::Cell;
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
@@ -75,7 +75,7 @@ use super::transport::{
     BoundaryDescr, BoundaryId, CallableDescr, CallableId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportLayout,
     TransportStore,
 };
-use super::typedef::{TypeDef, TypeDefMap};
+use super::typedef::{TypeDef, TypeDefComponent, TypeDefMap};
 use super::types::{ClosureTarget, MapKey, Ty, Types};
 use crate::ir_interp::AnyValue as RuntimeValue;
 use fz_runtime::any_value::AnyValueRef;
@@ -704,6 +704,20 @@ impl World {
             external,
             &self.types,
         );
+        for movement in &step.movements {
+            if movement.state.revision.is_none() {
+                match &movement.key {
+                    DependencyKey::Fact(FactKey::TypeDeclared(name)) => {
+                        self.type_decls.remove(name);
+                        self.type_refs.remove_type(name);
+                    }
+                    DependencyKey::Fact(FactKey::TypeDefined(name)) => {
+                        self.type_defs.remove(name);
+                    }
+                    _ => {}
+                }
+            }
+        }
         for key in analyzed_published {
             if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
                 self.activation_frontier.remove(&key);
@@ -788,6 +802,14 @@ impl World {
     /// directly) -- it exists for tests that seed jobs without going through
     /// submission.
     pub fn demand(&mut self, job: Job) -> bool {
+        let job = match job {
+            Job::DeriveTypeDef(name) => Job::DeriveTypeDef(
+                self.recursive_type_def_component(&name)
+                    .map(|component| component.owner)
+                    .unwrap_or(name),
+            ),
+            job => job,
+        };
         self.work_graph.enqueue(job, WorkStartReason::Unclassified)
     }
 
@@ -1262,6 +1284,56 @@ impl World {
         self.type_decls.get(name)
     }
 
+    /// The recursive declaration equation containing `root`, if its recorded
+    /// references form one. This follows only the named declaration edges
+    /// reachable from `root`; it never consults `TypeDefined`, so publishing a
+    /// member cannot change who owns the next re-drive.
+    pub(crate) fn recursive_type_def_component(&self, root: &TypeName) -> Option<TypeDefComponent> {
+        let mut reachable = BTreeSet::new();
+        self.collect_type_def_reachable(root, &mut reachable);
+        let members = reachable
+            .iter()
+            .filter(|candidate| self.type_def_reaches(candidate, root, &reachable, &mut BTreeSet::new()))
+            .cloned()
+            .collect::<Vec<_>>();
+        (members.len() > 1 || self.type_def_refs(root).iter().any(|reference| reference == root)).then(|| {
+            TypeDefComponent {
+                owner: members
+                    .first()
+                    .cloned()
+                    .expect("a recursive type-definition component has a member"),
+                members,
+            }
+        })
+    }
+
+    fn collect_type_def_reachable(&self, name: &TypeName, reachable: &mut BTreeSet<TypeName>) {
+        if !reachable.insert(name.clone()) || self.type_decl(name).is_none() {
+            return;
+        }
+        for referenced in self.type_def_refs(name) {
+            self.collect_type_def_reachable(referenced, reachable);
+        }
+    }
+
+    fn type_def_reaches(
+        &self,
+        from: &TypeName,
+        target: &TypeName,
+        reachable: &BTreeSet<TypeName>,
+        seen: &mut BTreeSet<TypeName>,
+    ) -> bool {
+        if from == target {
+            return true;
+        }
+        seen.insert(from.clone())
+            && self
+                .type_def_refs(from)
+                .iter()
+                .filter(|next| reachable.contains(*next))
+                .any(|next| self.type_def_reaches(next, target, reachable, seen))
+    }
+
     /// Resolves a type-position name against a captured scope to its identity,
     /// or `None` when it is not a named type (a builtin scalar, a free type
     /// variable, or an unresolvable bare name — all of which resolution, not
@@ -1319,9 +1391,9 @@ impl World {
     /// Records the struct modules a `@type` body's `%Mod{...}` records name
     /// — the `StructDefined` half of `DeriveTypeDef`'s wait-set, alongside
     /// `record_type_def_refs`'s `TypeDefined` half (fz-rh2.17.5.6.10).
-    pub(crate) fn record_type_def_struct_refs(&mut self, name: TypeName, mut refs: Vec<ModuleId>) {
+    pub(crate) fn record_type_def_struct_refs(&mut self, name: TypeName, mut refs: Vec<ModuleId>) -> bool {
         dedup_module_ids(&mut refs);
-        self.type_refs.record_type_structs(name, refs);
+        self.type_refs.record_type_structs(name, refs)
     }
 
     /// The struct modules a `@type` body references — `DeriveTypeDef`'s
@@ -3649,9 +3721,12 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         Ok(())
     }
 
-    pub fn note_type_decl(&mut self, name: &TypeName, decl: NotedTypeDecl) {
+    pub fn note_type_decl(&mut self, name: &TypeName, decl: NotedTypeDecl) -> bool {
         if self.world.note_type_decl(name, decl) {
             self.emit_world_key(&["fz", "compiler2", "type", "noted"], name);
+            true
+        } else {
+            false
         }
     }
 
@@ -3664,9 +3739,12 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         }
     }
 
-    pub(crate) fn record_type_def_refs(&mut self, name: &TypeName, refs: Vec<TypeName>) {
+    pub(crate) fn record_type_def_refs(&mut self, name: &TypeName, refs: Vec<TypeName>) -> bool {
         if self.world.record_type_def_refs(name, refs) {
             self.emit_world_key(&["fz", "compiler2", "type", "references", "type", "recorded"], name);
+            true
+        } else {
+            false
         }
     }
 

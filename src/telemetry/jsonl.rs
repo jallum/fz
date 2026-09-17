@@ -2316,7 +2316,7 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::CallGraphComponent(function)
         | FactKey::Recursive(function)
         | FactKey::InputDemand(function) => write_function_id(out, *function),
-        FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
+        FactKey::TypeDeclared(type_name) | FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
         FactKey::RootEntry(root) => write_root_id(out, *root),
         FactKey::Activation(key)
         | FactKey::ActivationInputs(key)
@@ -2529,6 +2529,7 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::ModuleInterface(_) => "ModuleInterface",
         FactKey::FunctionSource(_) => "FunctionSource",
         FactKey::ExpandedFunctionSource(_) => "ExpandedFunctionSource",
+        FactKey::TypeDeclared(_) => "TypeDeclared",
         FactKey::TypeDefined(_) => "TypeDefined",
         FactKey::StructDefined(_) => "StructDefined",
         FactKey::ProtocolDispatch(_) => "ProtocolDispatch",
