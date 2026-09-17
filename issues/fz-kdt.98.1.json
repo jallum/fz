@@ -1,8 +1,6 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [
-    "fz-kdt.98.2"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-kdt.98.3"
   ],
@@ -15,5 +13,5 @@
   "status": "in_progress",
   "title": "A function reference is a construction edge of the call graph, as a lambda already is",
   "type": "task",
-  "updated_at": "2026-09-16T02:07:10Z"
+  "updated_at": "2026-09-17T21:38:53Z"
 }

@@ -4,7 +4,6 @@
     "fz-kdt.227"
   ],
   "blocks": [
-    "fz-kdt.98.1",
     "fz-kdt.98.3"
   ],
   "created": "2026-09-16T01:36:19Z",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Reachability is one monotone formula per function; the component cone walk and the transport reachability walk go away",
   "type": "task",
-  "updated_at": "2026-09-16T09:19:00Z"
+  "updated_at": "2026-09-17T21:38:53Z"
 }
