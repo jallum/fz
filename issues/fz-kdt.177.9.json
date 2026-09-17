@@ -17,11 +17,15 @@
     {
       "text": "Plan correction after merged PR #185: .177.9 consumes the merged derivation-identity scheduler foundation (fz-kdt.228), but does not need recursive @type resolution (#212 / fz-kdt.177.8). Its causal work is scheduling one return group via CallGraphComponent; μ equation closure belongs to .177.10. The .177.8 dependency was removed. Post-#185 json_roundtrip baseline is 4091 job starts and 2 drain arbitrations (from 4527 / 155), with byte-identical corpus canon. .98.3 remains the hard graph-completeness gate via .98.2.",
       "timestamp": "2026-09-17T18:47:51Z"
+    },
+    {
+      "text": "Dependency correction: .98.2 is not on the json_roundtrip reduction path. The required graph-completeness path is .98.1 → .98.3 → .177.16 → .177.9; .177.16 supplies retained component membership, so the redundant direct .98.3 → .177.9 edge was removed. .98.2 remains open as a separately measured Reaches experiment, not a prerequisite.",
+      "timestamp": "2026-09-17T21:46:58Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A recursive group's returns are solved once; cyclic copies are never new ground",
   "type": "task",
-  "updated_at": "2026-09-17T21:46:50Z"
+  "updated_at": "2026-09-17T21:46:58Z"
 }
