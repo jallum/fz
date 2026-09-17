@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-17T12:48:44Z",
+  "description": "On 2026-09-17, cargo test --test fz2_cli on fz-4nh.3/direct-distill rebased onto origin/main started the two native analyzer tests (captured trace and synthetic --top 6 input). Both fz2 run tools/distill-telemetry.fz processes remained CPU-bound for more than five minutes and did not complete; the test processes were stopped. Reproduce with cargo test --test fz2_cli native_telemetry_distiller. Find the non-converging compilation/runtime work, add a bounded regression signal, and restore the two tests to completion.",
+  "id": "fz-kmk",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Investigate native telemetry distiller end-to-end compilation hang",
+  "type": "bug",
+  "updated_at": "2026-09-17T12:48:44Z"
+}
