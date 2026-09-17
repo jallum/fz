@@ -6,7 +6,7 @@ what it is actually testing. This file defines those media, the rule for choosin
 between them, and the realignment map for the current suite.
 
 See `.agent/docs/fixtures.md` for the holistic orientation (anatomy, the
-four-path matrix, pass/fail mechanics, the BLESS workflow).
+three-path matrix, pass/fail mechanics, the BLESS workflow).
 
 ## The media
 
@@ -29,10 +29,10 @@ A fixture proves its claim through one (occasionally two) of these:
    default: if only a few counters matter, print or assert those scalars and
    keep the sidecar as small as the actual claim.
 
-4. **Compiler-shape budget** — `budget.*` frontmatter, checked by
-   `fz dump --emit stats` against a ±20% band. Pins codegen/planner shape
-   (instruction counts, spec counts, planner work). Use when the *shape* is the
-   point. (Detail below.)
+4. **Compiler-shape contract** — compiler2 fixtures can assert selected
+   semantic metrics, call edges, or canonical snapshots. Use one when the
+   *shape* is the point. `budget.*` frontmatter records intended targets but
+   is not enforced by the fixture matrix yet.
 
 5. **Expect-failure** — `expect: abort` / `expect: diagnostic` frontmatter +
    `expected.stderr`. The claim is that a program is *rejected* (compile-time
@@ -56,11 +56,11 @@ metrics, selected call edges, or a dense canonical snapshot.
   **assertion**, no golden.
 - Purpose is "this value renders as exactly this string" → **rendering golden**.
 - Purpose is "this allocates exactly this much" → **memory-floor stats**.
-- Purpose is "this lowers to this shape" → **budget** or a **compiler2 contract**.
+- Purpose is "this lowers to this shape" → a **compiler2 contract**.
 - Purpose is "this is rejected / aborts" → **expect-failure** (`expect:` +
   `expected.stderr`).
 
-Behavioural correctness is path-invariant, so an assertion runs all four paths
+Behavioural correctness is path-invariant, so an assertion runs all three paths
 for free. Compiler-shape and memory facts are not the program's behaviour, so
 they do not belong in the program; they stay as frontmatter budgets and stats
 goldens respectively. Do **not** add an assertion to a shape-primary fixture: the
@@ -112,7 +112,7 @@ behavioural assertions only.
 tuples are the informative artifact — both the `:ok`-wrapped decoded string and
 the `:error` tag are visible in one golden).
 
-**Keep budget — shape-primary (assert would pollute the pin):** the `vr*` group
+**Shape-primary fixtures (assert would pollute the pin):** the `vr*` group
 (`vr1_int_arith`, `vr2_float_arith`, `vr3_int_args`, `vr3_float_args`,
 `vr3_4_typed_capture`, `vr4_2_native_call`, `vr5a_typed_eq`, `vr5a_cross_kind_eq`,
 `vr5b_typed_print`), `add1`, `cold_fn`, `hot_fn`, `if_constant_cond_with_call`,
@@ -128,8 +128,8 @@ the `:error` tag are visible in one golden).
 
 **Keep memory-floor stats (harness-level):** `append`, `reverse`, `filter`,
 `tree`, `quicksort`, `enum_sort`, `enum_list_allocations`, `enum_reduce_suspend`,
-`process_heap_stats`, `opaque_fn_value_join`, `map_key_unreached`. Budgets
-realigned case by case (`quicksort` keeps its budget).
+`process_heap_stats`, `opaque_fn_value_join`, `map_key_unreached`. Their
+`budget.*` metadata records the intended shape, but does not yet enforce it.
 
 **Keep golden — observed side-effect ordering:** `resource_lifecycle`,
 `file_resource_lifecycle`, `file_handle`, `a-resource_aot_dtor` (the dtor firing is
@@ -138,72 +138,14 @@ observed through printed output order).
 
 ---
 
-# Fixture Dump Budgets
+# Compiler-shape metadata
 
-Fixture dump shape is checked with telemetry-backed budgets in each fixture's
-source frontmatter. The fixture harness runs
-`fz dump --emit stats <fixture>.fz` with JSON telemetry enabled and
-compares compiler-emitted counters against those targets.
+Some fixtures carry `budget.*` frontmatter describing the compiler shape their
+authors expect. The parser retains those values, but the fixture matrix does
+not compare them to a measurement yet. They are useful breadcrumbs, not a
+passing test.
 
-This keeps the review signal without committing generated CLIF/spec dumps. The
-compiler reports the facts we care about directly:
-
-- `budget.codegen.functions`
-- `budget.codegen.instructions`
-- `budget.planner.worklist_pops`
-- `budget.planner.walk_calls`
-- `budget.planner.type_fn_calls`
-- `budget.planner.matcher_specs`
-- `budget.planner.vars`
-- `budget.planner.blocks`
-- `budget.planner.stmts`
-- `budget.planner.dispatches`
-
-Budget values are targets. The fixture harness derives the acceptance band from
-`DUMP_BUDGET_TOLERANCE_PERCENT` in `tests/fixture_matrix.rs`, so the policy stays
-in one place.
-
-A budget can only be measured against a runnable program: `fz dump --emit stats`
-compiles a fixture with a `main`. There is no per-module budget for a `main`-less
-runtime-library module (e.g. `enum.fz`); its shape is pinned through a fixture
-that exercises it.
-
-## Workflow
-
-Run the budget trial:
-
-```sh
-cargo test --test fixture_matrix dump_budgets
-```
-
-When a budget passes, no CLIF or specs artifact is produced. When a budget
-fails, the harness writes:
-
-- `fixtures2/behavior/<name>.actual.clif`
-- `fixtures2/behavior/<name>.actual.specs`
-
-Those files are local debugging artifacts. They explain the failed budget, but
-they are not checked in and there is no bless step for them.
-
-## Updating Budgets
-
-If an intentional compiler change shifts a fixture's shape, update the target
-values in that fixture's README frontmatter in the same commit as the code
-change. Review the metrics first. If the failure wrote `actual.clif` or
-`actual.specs`, use them to understand the structural change, then remove the
-local artifacts before committing.
-
-Runtime stdout/diagnostic fixtures still use their existing `BLESS=1` workflow.
-Dump budgets do not.
-
-## Why Budgets
-
-Full dump files made every codegen or planner change legible, but they also kept
-thousands of generated lines in the repo and forced every test run to
-pretty-print CLIF/specs just to prove nothing surprising happened.
-
-Telemetry budgets ask the compiler for the underlying facts instead: function
-bodies lowered, instruction counts, spec counts, matcher specs, and planner work
-counters. That is cheaper to run, easier to review, and still catches broad shape
-regressions. When a number moves outside the accepted band, the harness produces
-the full CLIF/specs on demand.
+When compiler shape is the contract today, use a compiler2 fixture contract:
+selected semantic metrics, selected call edges, or a canonical snapshot. Keep
+behavioural assertions out of those fixtures — an assertion adds its own branch
+and panic path, which is exactly the noise a shape test is trying to avoid.
