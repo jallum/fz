@@ -4,6 +4,7 @@
   "blocks": [
     "fz-kdt.98.3"
   ],
+  "closed_at": "2026-09-17T21:57:17Z",
   "created": "2026-09-16T01:36:18Z",
   "description": "The return-group cut needs a complete call-edge authority, not the broader fz-kdt.98.2 Reaches experiment. static_edges emits StaticEdge::Lambda for LoweredStep::Lambda but omits LoweredStep::FunctionRef, though both mint a callable value naming a function. Fold the two into one construction edge. Witness: ping/1 applying \u0026pong/1 and pong/1 applying \u0026ping/1 are singleton components today; after, they share one component and Recursive is true for both. A function reference closes over nothing, so it must not consume callable identity.\n\nThis is the body-edge half of fz-kdt.98.3. Keep the existing StaticCallees → DeriveCallGraphComponent path for this cut; do not introduce Reaches(f) or alter transport reachability here. TDD: both body edge sets are exact, both functions are recursive, corpus canon/artifacts remain identical, and json_roundtrip causal counts are recorded. Identical-source submission doing zero work is the separately blocked fz-tfn.57 source-replacement contract; this edge cut must not disguise that gap. Second commit of fz-kdt.98.",
   "id": "fz-kdt.98.1",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A function reference is a construction edge of the call graph, as a lambda already is",
   "type": "task",
-  "updated_at": "2026-09-17T21:51:34Z"
+  "updated_at": "2026-09-17T21:57:17Z"
 }
