@@ -4,8 +4,7 @@
     "fz-kdt.177.4"
   ],
   "blocks": [
-    "fz-kdt.177.11",
-    "fz-kdt.177.6"
+    "fz-kdt.177.11"
   ],
   "closed_at": "2026-09-17T01:47:36Z",
   "created": "2026-09-15T20:29:56Z",
@@ -17,5 +16,5 @@
   "status": "closed",
   "title": "Cyclic type reader guards and emptiness proof",
   "type": "task",
-  "updated_at": "2026-09-17T01:47:36Z"
+  "updated_at": "2026-09-17T01:53:23Z"
 }
