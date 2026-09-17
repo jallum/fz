@@ -10,6 +10,7 @@ use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, St
 use super::{BuiltinOpaque, MapKey, Ty, TyCtx, TypeVarId};
 use crate::finite_set::FiniteSet;
 use crate::modules::identity::ModuleName;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum OpaqueTag {
@@ -226,8 +227,13 @@ impl Descr {
         Self::record(MapTag::Plain, [])
     }
 
-    pub(super) fn map_of(fields: impl IntoIterator<Item = (MapKey, Ty)>) -> Self {
-        Self::record(MapTag::Plain, fields)
+    pub(super) fn map_of(fields: BTreeMap<MapKey, Ty>) -> Self {
+        let mut d = Self::unbranded();
+        d.maps.push(Conj::pos_of(MapSig {
+            tag: MapTag::Plain,
+            fields,
+        }));
+        d
     }
 
     pub(super) fn as_atom_singleton(&self) -> Option<&str> {

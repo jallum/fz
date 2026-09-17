@@ -1329,7 +1329,21 @@ impl Types {
     }
 
     pub fn map(&mut self, fields: &[(MapKey, Ty)]) -> Ty {
-        self.intern(Descr::map_of(fields.iter().cloned()))
+        let none = self.core.none;
+        let mut final_fields = BTreeMap::new();
+        let mut empty_required_fields = 0;
+        for (key, value) in fields {
+            if final_fields.insert(key.clone(), *value) == Some(none) {
+                empty_required_fields -= 1;
+            }
+            if *value == none {
+                empty_required_fields += 1;
+            }
+        }
+        if empty_required_fields != 0 {
+            return none;
+        }
+        self.intern(Descr::map_of(final_fields))
     }
 
     pub fn str_t(&mut self) -> Ty {
