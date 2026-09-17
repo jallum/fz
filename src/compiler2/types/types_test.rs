@@ -448,8 +448,48 @@ fn regular_component_replays_its_completed_descriptor() {
     assert_eq!(t.identity_inventory(), inventory);
 }
 
+#[test]
+fn renderers_bind_a_recursive_self_type() {
+    let mut t = Types::new();
+    let recursive = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.tuples.push(Conj::pos_of(TupleSigOf { elems: vec![nodes[0]] }));
+        vec![body]
+    })[0];
+    let labels = |_: FnId| String::new();
+    let mut canon = TyCanon::new(&labels);
+
+    assert_eq!(t.display(&recursive), "μX. :start | {X}");
+    assert_eq!(canon.render(&t, recursive).as_ref(), "fp[a:start;T] μX. :start | {X}");
+}
+
+#[test]
+fn renderers_name_independently_built_recursive_components_identically() {
+    let mut first = Types::new();
+    let first_root = first.intern_regular_component(1, |nodes| vec![recursive_tuple_body(nodes[0])])[0];
+
+    let mut second = Types::new();
+    second.atom_lit("unrelated");
+    let second_root = second.intern_regular_component(1, |nodes| vec![recursive_tuple_body(nodes[0])])[0];
+    let labels = |_: FnId| String::new();
+    let mut first_canon = TyCanon::new(&labels);
+    let mut second_canon = TyCanon::new(&labels);
+
+    assert_eq!(first.display(&first_root), second.display(&second_root));
+    assert_eq!(
+        first_canon.render(&first, first_root),
+        second_canon.render(&second, second_root)
+    );
+}
+
 fn recursive_tuple_body(reference: ComponentRef) -> DescrOf<ComponentRef> {
     recursive_tuple_body_named("start", reference)
+}
+
+fn recursive_list_body(reference: ComponentRef) -> DescrOf<ComponentRef> {
+    let mut descr = DescrOf::atom_lit("start");
+    descr.lists.push(Conj::pos_of(ListSigOf::possibly_empty(reference)));
+    descr
 }
 
 fn recursive_tuple_body_named(name: &str, reference: ComponentRef) -> DescrOf<ComponentRef> {
@@ -462,6 +502,39 @@ fn recursive_tuple_descr(reference: Ty) -> Descr {
     let mut descr = Descr::atom_lit("start");
     descr.tuples.push(Conj::pos_of(TupleSig { elems: vec![reference] }));
     descr
+}
+
+#[test]
+fn renderers_bind_mutually_recursive_types() {
+    let mut t = Types::new();
+    let roots = t.intern_regular_component(2, |nodes| {
+        vec![recursive_tuple_body(nodes[1]), DescrOf::list_of(nodes[0])]
+    });
+    let labels = |_: FnId| String::new();
+    let mut canon = TyCanon::new(&labels);
+
+    assert_eq!(t.display(&roots[0]), "μX. :start | {[X]}");
+    assert_eq!(t.display(&roots[1]), "μX. [:start | {X}]");
+    assert_eq!(
+        canon.render(&t, roots[0]).as_ref(),
+        "fp[a:start;T] μX. :start | {list(X)}"
+    );
+    assert_eq!(canon.render(&t, roots[1]).as_ref(), "fp[L] μX. list(:start | {X})");
+}
+
+#[test]
+fn canon_distinguishes_recursive_denotations_without_ids() {
+    let mut t = Types::new();
+    let tuple = t.intern_regular_component(1, |nodes| vec![recursive_tuple_body(nodes[0])])[0];
+    let list = t.intern_regular_component(1, |nodes| vec![recursive_list_body(nodes[0])])[0];
+    let labels = |_: FnId| String::new();
+    let mut canon = TyCanon::new(&labels);
+
+    let tuple = canon.render(&t, tuple);
+    let list = canon.render(&t, list);
+    assert_ne!(tuple, list);
+    assert!(!tuple.contains("Ty("));
+    assert!(!list.contains("Ty("));
 }
 
 fn recursive_capture_body(capture: ComponentRef, result: Ty) -> DescrOf<ComponentRef> {
@@ -491,6 +564,10 @@ fn regular_component_interns_bisimilar_unrollings_once() {
     assert_eq!(mutual, vec![self_recursive, self_recursive]);
     assert_eq!(t.identity_inventory(), inventory);
     assert_eq!(t.intern(recursive_tuple_descr(self_recursive)), self_recursive);
+    let labels = |_: FnId| String::new();
+    let mut canon = TyCanon::new(&labels);
+    assert_eq!(t.display(&self_recursive), t.display(&mutual[0]));
+    assert_eq!(canon.render(&t, self_recursive), canon.render(&t, mutual[0]));
 }
 
 #[test]

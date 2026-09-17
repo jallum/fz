@@ -39,10 +39,12 @@ use super::conj::Conj;
 use super::descr::Descr;
 use super::emptiness::{self, Memo, NonEmptyLists};
 use super::format::brand_refinement;
+use super::render_bindings::{BindingVisit, RenderBindings};
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, TupleSig};
 use super::{CallableValueKind, MapKey, Ty, TyCtx, TypeVarId, Types};
 
-/// Renders types in their canonical external form, memoized by `Ty`.
+/// Renders types in their canonical external form, with completed root forms
+/// memoized by `Ty`.
 ///
 /// A compile mints ~1.4k distinct types against ~17.5k events, so the cost is
 /// per distinct type rather than per rendering site. Build one per comparison
@@ -52,9 +54,10 @@ pub(crate) struct TyCanon<'a> {
     /// a mint-order index, so it can never be the rendered identity; the owner
     /// (`World`) knows the module/name/arity behind it.
     labels: &'a dyn Fn(FnId) -> String,
-    bodies: HashMap<Ty, Arc<str>>,
     fingerprints: HashMap<Ty, Arc<str>>,
     whole: HashMap<Ty, Arc<str>>,
+    bindings: RenderBindings,
+    active_descriptors: HashMap<Descr, Ty>,
     #[cfg(test)]
     alpha_names: Option<HashMap<TypeVarId, usize>>,
     #[cfg(test)]
@@ -65,9 +68,10 @@ impl<'a> TyCanon<'a> {
     pub(crate) fn new(labels: &'a dyn Fn(FnId) -> String) -> Self {
         Self {
             labels,
-            bodies: HashMap::new(),
             fingerprints: HashMap::new(),
             whole: HashMap::new(),
+            bindings: RenderBindings::default(),
+            active_descriptors: HashMap::new(),
             #[cfg(test)]
             alpha_names: None,
             #[cfg(test)]
@@ -93,6 +97,11 @@ impl<'a> TyCanon<'a> {
         if let Some(hit) = self.whole.get(&ty) {
             return Arc::clone(hit);
         }
+        self.bindings.reset();
+        assert!(
+            self.active_descriptors.is_empty(),
+            "a canonical render left an active descriptor"
+        );
         let cx = types.ctx();
         let text: Arc<str> = format!("{} {}", self.fingerprint_at(cx, ty), self.body(cx, ty)).into();
         self.whole.insert(ty, Arc::clone(&text));
@@ -140,13 +149,17 @@ impl<'a> TyCanon<'a> {
         text
     }
 
-    fn body(&mut self, cx: TyCtx<'_>, ty: Ty) -> Arc<str> {
-        if let Some(hit) = self.bodies.get(&ty) {
-            return Arc::clone(hit);
+    fn body(&mut self, cx: TyCtx<'_>, ty: Ty) -> String {
+        match self.bindings.enter(ty) {
+            BindingVisit::Reference(name) => name,
+            BindingVisit::Fresh => {
+                let descriptor = cx.descr(&ty);
+                assert!(self.active_descriptors.insert(descriptor.clone(), ty).is_none());
+                let body = self.descr_body(cx, descriptor, Provenance::Interned);
+                assert_eq!(self.active_descriptors.remove(descriptor), Some(ty));
+                self.bindings.finish(ty, body)
+            }
         }
-        let text: Arc<str> = self.descr_body(cx, cx.descr(&ty), Provenance::Interned).into();
-        self.bodies.insert(ty, Arc::clone(&text));
-        text
     }
 
     // ------------------------------------------------------------------
@@ -159,6 +172,11 @@ impl<'a> TyCanon<'a> {
     /// built itself — a list clause's intersected element fragment — never
     /// reached the interner, so it gets them here, from the same functions.
     fn descr_body(&mut self, cx: TyCtx<'_>, d: &Descr, provenance: Provenance) -> String {
+        if matches!(provenance, Provenance::Synthesized)
+            && let Some(ty) = self.active_descriptors.get(d)
+        {
+            return self.bindings.reference(*ty);
+        }
         if d.is_empty_memo(cx, &mut Memo::default()) {
             return "none".to_string();
         }
@@ -283,7 +301,7 @@ impl<'a> TyCanon<'a> {
     }
 
     fn tuple_sig(&mut self, cx: TyCtx<'_>, sig: &TupleSig) -> String {
-        let elems: Vec<String> = sig.elems.iter().map(|ty| self.body(cx, *ty).to_string()).collect();
+        let elems: Vec<String> = sig.elems.iter().map(|ty| self.body(cx, *ty)).collect();
         format!("{{{}}}", elems.join(", "))
     }
 
@@ -292,7 +310,7 @@ impl<'a> TyCanon<'a> {
     }
 
     fn arrow_sig(&mut self, cx: TyCtx<'_>, sig: &ArrowSig) -> String {
-        let args: Vec<String> = sig.args.iter().map(|ty| self.body(cx, *ty).to_string()).collect();
+        let args: Vec<String> = sig.args.iter().map(|ty| self.body(cx, *ty)).collect();
         let base = format!("({}) -> {}", args.join(", "), self.body(cx, sig.ret));
         match &sig.lit {
             None => base,
@@ -321,7 +339,7 @@ impl<'a> TyCanon<'a> {
         match lit.kind {
             CallableValueKind::FnRef => format!("fnref[{label}]"),
             CallableValueKind::Closure => {
-                let caps: Vec<String> = lit.captures.iter().map(|ty| self.body(cx, *ty).to_string()).collect();
+                let caps: Vec<String> = lit.captures.iter().map(|ty| self.body(cx, *ty)).collect();
                 format!("closure[{label}]({})", caps.join(", "))
             }
         }
