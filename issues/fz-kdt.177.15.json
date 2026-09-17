@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-17T18:49:53Z",
+  "description": "PR #185 made claim, read, finality, and rebase identity a Derivation = (Job, DerivationKey). ReturnType still violates that model: ActivationMap stores one mutable return payload per ActivationKey, World resolves its rebase through Job::AnalyzeActivation, and last-claim withdrawal leaves the old payload behind. Make the existing AnalyzeActivation publisher use DerivationKey::Activation and make its ReturnType payload replace, rebase, and clear by that exact derivation. This is a semantic-state migration only; it must preserve current answers before any return-group solver is added. TDD: two activation derivations with independent grounds; move/withdraw one and prove the other has no revision, wake, rebase, allocation, or stored-value change; last-claim withdrawal clears the value before re-claim; unchanged fixture facts and artifacts remain identical. This is required before fz-kdt.177.9 can publish member returns from a canonical group job.",
+  "id": "fz-kdt.177.15",
+  "labels": [],
+  "parent": "fz-kdt.177",
+  "priority": 1,
+  "status": "open",
+  "title": "ReturnType payload follows its activation derivation",
+  "type": "task",
+  "updated_at": "2026-09-17T18:49:53Z"
+}
