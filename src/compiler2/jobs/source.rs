@@ -194,13 +194,14 @@ pub(super) fn define_module(
             ScopePublication::Complete {
                 namespace,
                 revision_floor: _revision_floor,
-                reads,
+                mut reads,
                 product_reads,
                 derivations,
                 mut outputs,
                 mut changed,
                 interface,
             } => {
+                reads.push(FactKey::ModuleIndexed(module_id));
                 let interface = world.merge_module_interface_expectations(module_id, interface);
                 super::super::drive::ExecutionContext::new(world, tel)
                     .validate_module_interface_expectations(module_id, &interface)?;

@@ -10,13 +10,19 @@ use super::{
 use crate::fz_ir::FnId;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) enum ComponentRef {
+pub(crate) enum ComponentRef {
     Published(Ty),
     Local(NodeId),
 }
 
+impl ComponentRef {
+    pub(crate) fn local(index: usize) -> Self {
+        Self::Local(NodeId(index))
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) struct NodeId(usize);
+pub(crate) struct NodeId(usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum RegularRef {
@@ -85,6 +91,137 @@ pub(super) fn intern(
         .collect();
     let interned = types.interner.intern_regular(keys, descriptors);
     classes.into_iter().map(|class| interned[class]).collect()
+}
+
+/// Intern every root in an equation forest. Source-level recursion and the
+/// retained descriptor graph need not have identical components: an opaque
+/// declaration, for example, validates a body but retains only its nominal
+/// leaf. The descriptor graph is therefore partitioned before each strongly
+/// connected piece enters the regular interner.
+pub(super) fn intern_bodies(types: &mut Types, bodies: Vec<DescrOf<ComponentRef>>) -> Vec<Ty> {
+    let components = strongly_connected_components(&bodies);
+    let mut component_of = vec![0; bodies.len()];
+    for (component, members) in components.iter().enumerate() {
+        for &member in members {
+            component_of[member] = component;
+        }
+    }
+    let mut resolved = vec![None; bodies.len()];
+    let mut remaining = components.iter().enumerate().collect::<Vec<_>>();
+    while !remaining.is_empty() {
+        let ready = remaining
+            .iter()
+            .position(|(component, members)| {
+                members.iter().all(|&member| {
+                    local_children(&bodies[member])
+                        .all(|child| component_of[child] == *component || resolved[child].is_some())
+                })
+            })
+            .expect("regular descriptor components form a finite acyclic quotient");
+        let (component, members) = remaining.remove(ready);
+        let mut local_index = vec![None; bodies.len()];
+        for (local, &global) in members.iter().enumerate() {
+            local_index[global] = Some(local);
+        }
+        let component_bodies = members
+            .iter()
+            .map(|&member| {
+                bodies[member].clone().map_children(|reference| match reference {
+                    ComponentRef::Published(ty) => ComponentRef::Published(ty),
+                    ComponentRef::Local(NodeId(child)) if component_of[child] == component => {
+                        ComponentRef::local(local_index[child].expect("component member has a local id"))
+                    }
+                    ComponentRef::Local(NodeId(child)) => {
+                        ComponentRef::Published(resolved[child].expect("outgoing descriptor component resolves first"))
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let tys = intern(types, members.len(), |_| component_bodies);
+        for (member, ty) in members.iter().copied().zip(tys) {
+            resolved[member] = Some(ty);
+        }
+    }
+    resolved
+        .into_iter()
+        .map(|ty| ty.expect("every descriptor root resolves"))
+        .collect()
+}
+
+fn strongly_connected_components(bodies: &[DescrOf<ComponentRef>]) -> Vec<Vec<usize>> {
+    fn visit(
+        node: usize,
+        bodies: &[DescrOf<ComponentRef>],
+        next_index: &mut usize,
+        indices: &mut [Option<usize>],
+        lowlinks: &mut [usize],
+        stack: &mut Vec<usize>,
+        active: &mut [bool],
+        components: &mut Vec<Vec<usize>>,
+    ) {
+        indices[node] = Some(*next_index);
+        lowlinks[node] = *next_index;
+        *next_index += 1;
+        stack.push(node);
+        active[node] = true;
+        for child in local_children(&bodies[node]) {
+            assert!(
+                child < bodies.len(),
+                "component body refers to a node outside its component forest"
+            );
+            if indices[child].is_none() {
+                visit(child, bodies, next_index, indices, lowlinks, stack, active, components);
+                lowlinks[node] = lowlinks[node].min(lowlinks[child]);
+            } else if active[child] {
+                lowlinks[node] = lowlinks[node].min(indices[child].expect("active node has an index"));
+            }
+        }
+        if lowlinks[node] == indices[node].expect("visited node has an index") {
+            let mut component = Vec::new();
+            loop {
+                let member = stack.pop().expect("component root is on the stack");
+                active[member] = false;
+                component.push(member);
+                if member == node {
+                    break;
+                }
+            }
+            component.sort_unstable();
+            components.push(component);
+        }
+    }
+
+    let mut next_index = 0;
+    let mut indices = vec![None; bodies.len()];
+    let mut lowlinks = vec![0; bodies.len()];
+    let mut stack = Vec::new();
+    let mut active = vec![false; bodies.len()];
+    let mut components = Vec::new();
+    for node in 0..bodies.len() {
+        if indices[node].is_none() {
+            visit(
+                node,
+                bodies,
+                &mut next_index,
+                &mut indices,
+                &mut lowlinks,
+                &mut stack,
+                &mut active,
+                &mut components,
+            );
+        }
+    }
+    components
+}
+
+fn local_children(body: &DescrOf<ComponentRef>) -> impl Iterator<Item = usize> + '_ {
+    let mut children = Vec::new();
+    visit_children(body, |reference| {
+        if let ComponentRef::Local(NodeId(child)) = reference {
+            children.push(child);
+        }
+    });
+    children.into_iter()
 }
 
 fn assert_strongly_connected(bodies: &[DescrOf<ComponentRef>]) {
