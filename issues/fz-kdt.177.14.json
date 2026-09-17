@@ -7,9 +7,15 @@
   "id": "fz-kdt.177.14",
   "labels": [],
   "parent": "fz-kdt.177",
+  "comments": [
+    {
+      "text": "2026-09-17 deferred by direction: the finite-unrolling proof establishes the relation laws, but no evidence puts cyclic contained_in/overlap/erasing-overlap on json_roundtrip’s ReturnType/activation ladder. Keep this ticket open for the first production μ path reaching callsite/receive seating; it does not block the core recursive-return reduction or .177.12.",
+      "timestamp": "2026-09-17T14:52:29Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Specify cyclic runtime-predicate relation semantics",
   "type": "task",
-  "updated_at": "2026-09-17T14:52:28Z"
+  "updated_at": "2026-09-17T14:52:29Z"
 }
