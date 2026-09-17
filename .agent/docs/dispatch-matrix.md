@@ -453,6 +453,16 @@ door and the receive door go through — each decide the axes by matching the
 table exhaustively, so an axis cannot join the lattice without every lowering
 refusing to compile until it is taught to test it.
 
+The tree relations have one founded extension when a predicate becomes a finite
+regular component: containment is the greatest fixed point over ordered node
+pairs, while overlap and erasing-overlap are least fixed points. A recursive
+edge therefore proves self-containment but never invents a value shared by two
+tests, nor a payload either test erased. The test-only regular-component oracle
+in `runtime_type_predicate_test.rs` checks those rules against finite tuple,
+list, and callable-capture unrollings: a component with no leaf is contained in
+itself but does not overlap itself; a productive leaf supplies an overlap
+witness; and erasure appears only through a productive erasing edge.
+
 An axis is a question about a language value, not about a storage kind, and
 those are not one-to-one. A binary is held two ways — an inline `Bitstring`
 below `SHARED_BIN_THRESHOLD_BYTES` and a shared-buffer `ProcBin` above it — so
