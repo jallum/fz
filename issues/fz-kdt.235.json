@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-kdt.238",
     "fz-kdt.239"
   ],
   "created": "2026-09-17T23:57:54Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Preserve structural and brand correlation in unions",
   "type": "bug",
-  "updated_at": "2026-09-17T23:58:30Z"
+  "updated_at": "2026-09-17T23:58:43Z"
 }

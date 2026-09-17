@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.234",
+    "fz-kdt.235",
     "fz-kdt.236",
     "fz-kdt.237"
   ],
@@ -17,5 +18,5 @@
   "status": "open",
   "title": "Make type identity independent of equivalent construction and metadata",
   "type": "bug",
-  "updated_at": "2026-09-17T23:58:42Z"
+  "updated_at": "2026-09-17T23:58:43Z"
 }
