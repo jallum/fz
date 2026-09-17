@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.177.5"
+  ],
   "blocks": [],
   "created": "2026-09-17T01:31:16Z",
   "description": "Extend the existing TypeInterner's one persistence boundary so it can atomically publish a canonical regular component. This is not a second Types, an alternate type language, a fact, or a compiler pass.\n\nA type operation may use private NodeIds while it is constructing one finite regular component. Before any Ty leaves the call, the interner normalizes the component through the existing descriptor laws, minimizes equivalent local nodes by bisimulation, derives a canonical rooted component key, and consults the same canonical index that owns ordinary descriptors. A hit returns the already-published Ty. A miss assigns every member its final arena id and indexes every rooted member together. No reserved, redirectable, or provisional Ty may reach a descriptor, cache, fact, key, or caller.\n\nRefactor the existing interner index rather than adding an equality authority: acyclic descriptors retain their direct structural key; cyclic members use their canonical regular-tree key. The arena remains the single Ty -\u003e Descr authority. The temporary graph is discarded at commit return.\n\nAcceptance:\n- separately constructed bisimilar self and mutual cycles return the same final Ty per root;\n- every published member is complete and stable before observation;\n- acyclic interning, normalization, work counters, and identity shortcuts retain their current behavior;\n- the canonical census reports no duplicate regular denotation;\n- no World, fact key, job, or public recursive-Ty carrier is introduced.\n\nThis unblocks all transforms that construct new types (intersection, widening, instantiation, erasure, envelope, addressed remapping, convergence) and recursive typedef resolution.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Canonical regular-component commit at the sole type interner boundary",
   "type": "task",
-  "updated_at": "2026-09-17T01:31:44Z"
+  "updated_at": "2026-09-17T01:31:45Z"
 }
