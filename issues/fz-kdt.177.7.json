@@ -11,9 +11,15 @@
   "id": "fz-kdt.177.7",
   "labels": [],
   "parent": "fz-kdt.177",
+  "comments": [
+    {
+      "text": "2026-09-17 spike/audit: ground projection is unsound. Runtime predicates retain observable nested tuple/list/capture questions across interpreter, JIT, AOT; today their by-value tree and shared native inliner diverge on a μ type before transport. WIP cf12208d1 proves the transport half: cut only active Ty -\u003e whole demand and active (Ty, RuntimeDemand) -\u003e boxed ValueRef, preserving siblings. Audit rejected shipping it separately because mixed recursive unions/lists/captures reach runtime_type_predicate first. Complete .177.7 atomically with a finite predicate component/graph, pair-keyed predicate relations, and shared cyclic CFG lowering for prim + receive; fold the transport cuts into that commit. No budget or interpreter-only path is sound.",
+      "timestamp": "2026-09-17T11:09:21Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A recursive denotation at the runtime-dispatch boundary",
   "type": "task",
-  "updated_at": "2026-09-17T01:53:24Z"
+  "updated_at": "2026-09-17T11:09:21Z"
 }
