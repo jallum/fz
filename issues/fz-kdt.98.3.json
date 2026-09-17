@@ -5,6 +5,7 @@
     "fz-kdt.98.2"
   ],
   "blocks": [
+    "fz-kdt.177.16",
     "fz-kdt.177.9"
   ],
   "created": "2026-09-16T02:07:06Z",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "One cumulative call-graph edge fact: body edges plus the value-call targets each analysis resolves",
   "type": "task",
-  "updated_at": "2026-09-17T00:43:37Z"
+  "updated_at": "2026-09-17T18:50:09Z"
 }
