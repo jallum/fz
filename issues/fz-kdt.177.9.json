@@ -4,9 +4,7 @@
     "fz-kdt.177.15",
     "fz-kdt.177.3"
   ],
-  "blocks": [
-    "fz-kdt.177.10"
-  ],
+  "blocks": [],
   "created": "2026-09-15T20:29:59Z",
   "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR5. Hard prerequisite: fz-kdt.98.3 must land first. This solver consumes CallGraphComponent as its group-membership authority; before fz-kdt.98.3 adds function-reference and resolved value-call edges, that authority under-approximates recursion.\n\nDeriveCallGraphComponent (jobs/keying.rs ~167) publishes CallGraphComponent(f), consumed by nothing in the semantic fixpoint; returns are published per activation per revision to every caller through a Current read (jobs/semantic.rs ~1782). Consume the SCC fact: one job iterates the members' returns locally and publishes each member's ReturnType once; a return read whose only support is inside the reader's own cone contributes no ascent (fz-kdt.64's cyclic-copies clause, landing here). Model on pull.rs ~793/2077 stage_recursive_group. Tests: compiler2_recursive_group_publishes_one_settled_return_per_member, compiler2_recursive_group_wakes_callers_once, admission-order invariance (FIFO, LIFO, permuted: identical facts and artifacts). Signal: ReturnType-caused applied steps on json_roundtrip from 1007 toward the member count; AnalyzeActivation runs per activation single digits.",
   "id": "fz-kdt.177.9",
@@ -26,5 +24,5 @@
   "status": "open",
   "title": "A recursive group's returns are solved once; cyclic copies are never new ground",
   "type": "task",
-  "updated_at": "2026-09-17T22:31:09Z"
+  "updated_at": "2026-09-17T22:31:10Z"
 }
