@@ -45,6 +45,61 @@ fn union_of_the_same_type_returns_before_it_probes_or_normalizes() {
 }
 
 #[test]
+fn repeating_binary_type_algebra_returns_before_it_rebuilds_a_descriptor() {
+    let mut t = Types::new();
+    let int = t.int();
+    let atom = t.atom();
+
+    let union = t.union(int, atom);
+    let intersection = t.intersect(int, atom);
+    let difference = t.difference(int, atom);
+    let widened = t.refine_widen(&int, &atom);
+    assert!(t.is_empty(&intersection));
+    assert_eq!(difference, int);
+    assert_eq!(widened, union);
+    assert_eq!(
+        t.binary_type_operation_stats(),
+        BinaryTypeOperationStats {
+            union: BinaryTypeOperationCount { hits: 1, misses: 1 },
+            intersect: BinaryTypeOperationCount { hits: 0, misses: 1 },
+            difference: BinaryTypeOperationCount { hits: 0, misses: 1 },
+            refine_widen: BinaryTypeOperationCount { hits: 0, misses: 1 },
+        },
+        "the refinement reuses the union it reaches, while each first operation publishes one result"
+    );
+
+    let before_replay = t.interning_work_stats();
+    assert_eq!(t.union(int, atom), union);
+    assert_eq!(t.union(atom, int), union, "union is exact in either operand order");
+    assert_eq!(t.intersect(int, atom), intersection);
+    assert_eq!(t.difference(int, atom), difference);
+    assert_eq!(t.refine_widen(&int, &atom), widened);
+    assert_eq!(
+        t.interning_work_stats(),
+        before_replay,
+        "a repeated immutable operand pair must return its remembered Ty before it rebuilds or interns a descriptor"
+    );
+    assert_eq!(
+        t.binary_type_operation_stats(),
+        BinaryTypeOperationStats {
+            union: BinaryTypeOperationCount { hits: 3, misses: 1 },
+            intersect: BinaryTypeOperationCount { hits: 1, misses: 1 },
+            difference: BinaryTypeOperationCount { hits: 1, misses: 1 },
+            refine_widen: BinaryTypeOperationCount { hits: 1, misses: 1 },
+        },
+        "each replay must use its operation-tagged, immutable operand result"
+    );
+
+    let before_inverse = t.interning_work_stats();
+    assert_eq!(t.difference(atom, int), atom);
+    assert_eq!(
+        t.interning_work_stats().raw_index_probes,
+        before_inverse.raw_index_probes + 1,
+        "the inverse of an ordered operation must not collide with its original pair"
+    );
+}
+
+#[test]
 fn unchanged_map_refinement_returns_before_it_probes_or_normalizes() {
     let mut t = Types::new();
     let int = t.int();
@@ -891,6 +946,23 @@ fn symmetric_comparisons_share_one_cache_entry() {
         "the reversed disjointness query should reuse the symmetric comparison"
     );
     assert_eq!(after_second.hits, after_first.hits + 1);
+}
+
+#[test]
+fn value_disjointness_reuses_the_symmetric_operand_pair() {
+    let mut t = Types::new();
+    let int = t.int();
+    let atom = t.atom();
+
+    let before = t.comparison_cache_stats();
+    assert!(t.is_value_disjoint(&int, &atom));
+    let after_first = t.comparison_cache_stats();
+    assert_eq!(after_first.misses, before.misses + 1);
+
+    assert!(t.is_value_disjoint(&atom, &int));
+    let after_reverse = t.comparison_cache_stats();
+    assert_eq!(after_reverse.misses, after_first.misses);
+    assert_eq!(after_reverse.hits, after_first.hits + 1);
 }
 
 #[test]

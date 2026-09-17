@@ -90,6 +90,7 @@ pub struct Types {
     /// to find something the arena already has.
     any: Ty,
     comparisons: RefCell<ComparisonCache>,
+    binary_type_operations: BinaryTypeOperationResults,
     /// Memoized `value_lane_repr`: the transport-lane representative of a type.
     /// A derived fact about each type, computed once rather than on every lane.
     value_lane_reprs: HashMap<Ty, Ty>,
@@ -177,11 +178,57 @@ struct ComparisonCache {
     semantic_order_misses: usize,
 }
 
+/// Results of pure binary operations over immutable type handles.
+///
+/// A result enters only after the ordinary operation has produced an interned
+/// `Ty`. The table is therefore not an alternate descriptor index or
+/// normalization authority: its keys are two `u32` handles and an operation
+/// tag, and its values are identities the interner already owns.
+#[derive(Default)]
+struct BinaryTypeOperationResults {
+    results: HashMap<BinaryTypeOperation, Ty>,
+    #[cfg(test)]
+    work: BinaryTypeOperationStats,
+}
+
+/// The operand order belongs to the operation's current exact result unless
+/// the operation explicitly normalizes it at the call site. In particular,
+/// `difference` is directional, and `intersect` currently preserves its
+/// directional survivor where distinct ids are mutually subtype.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum BinaryTypeOperation {
+    Union(Ty, Ty),
+    Intersect(Ty, Ty),
+    Difference(Ty, Ty),
+    RefineWiden(Ty, Ty),
+}
+
+/// Test-only work accounting for the immutable binary-operation result table.
+///
+/// The production table stores only canonical answers. These counts make its
+/// reuse observable without charging telemetry or wall-clock noise to a test.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BinaryTypeOperationStats {
+    pub union: BinaryTypeOperationCount,
+    pub intersect: BinaryTypeOperationCount,
+    pub difference: BinaryTypeOperationCount,
+    pub refine_widen: BinaryTypeOperationCount,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BinaryTypeOperationCount {
+    pub hits: usize,
+    pub misses: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ComparisonKey {
     Empty(Ty),
     Subtype(Ty, Ty),
     Disjoint(Ty, Ty),
+    ValueDisjoint(Ty, Ty),
     Equivalent(Ty, Ty),
     /// `Types::row_column_dominates`. NOT symmetric: the two positions mean
     /// different things, so this key is never built through `symmetric_key`.
@@ -447,6 +494,7 @@ impl Types {
             interner,
             any,
             comparisons: RefCell::default(),
+            binary_type_operations: BinaryTypeOperationResults::default(),
             value_lane_reprs: HashMap::new(),
             address_vars: HashMap::new(),
             address_paths: Vec::new(),
@@ -914,6 +962,15 @@ impl Types {
         result
     }
 
+    fn binary_type_operation(&mut self, key: BinaryTypeOperation, compute: impl FnOnce(&mut Self) -> Ty) -> Ty {
+        if let Some(result) = self.binary_type_operations.lookup(key) {
+            return result;
+        }
+        let result = compute(self);
+        self.binary_type_operations.remember(key, result);
+        result
+    }
+
     fn symmetric_key(kind: fn(Ty, Ty) -> ComparisonKey, a: Ty, b: Ty) -> ComparisonKey {
         if a <= b { kind(a, b) } else { kind(b, a) }
     }
@@ -999,6 +1056,11 @@ impl Types {
     }
 
     #[cfg(test)]
+    pub(crate) fn binary_type_operation_stats(&self) -> BinaryTypeOperationStats {
+        self.binary_type_operations.work
+    }
+
+    #[cfg(test)]
     pub(crate) fn comparison_cache_stats(&self) -> ComparisonCacheStats {
         let cache = self.comparisons.borrow();
         ComparisonCacheStats {
@@ -1012,6 +1074,40 @@ impl Types {
                 .count(),
             semantic_order_hits: cache.semantic_order_hits,
             semantic_order_misses: cache.semantic_order_misses,
+        }
+    }
+}
+
+impl BinaryTypeOperationResults {
+    fn lookup(&mut self, key: BinaryTypeOperation) -> Option<Ty> {
+        let result = self.results.get(&key).copied();
+        #[cfg(test)]
+        if result.is_some() {
+            self.work.count_for(key).hits += 1;
+        }
+        result
+    }
+
+    fn remember(&mut self, key: BinaryTypeOperation, result: Ty) {
+        assert!(
+            self.results.insert(key, result).is_none(),
+            "an acyclic type operation must not re-enter the same operand pair"
+        );
+        #[cfg(test)]
+        {
+            self.work.count_for(key).misses += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+impl BinaryTypeOperationStats {
+    fn count_for(&mut self, operation: BinaryTypeOperation) -> &mut BinaryTypeOperationCount {
+        match operation {
+            BinaryTypeOperation::Union(_, _) => &mut self.union,
+            BinaryTypeOperation::Intersect(_, _) => &mut self.intersect,
+            BinaryTypeOperation::Difference(_, _) => &mut self.difference,
+            BinaryTypeOperation::RefineWiden(_, _) => &mut self.refine_widen,
         }
     }
 }
@@ -1302,7 +1398,12 @@ impl Types {
     }
 
     pub fn refine_widen(&mut self, a: &Ty, b: &Ty) -> Ty {
-        refine_widen(self, *a, *b)
+        if a == b {
+            return self.unchanged(*a);
+        }
+        self.binary_type_operation(BinaryTypeOperation::RefineWiden(*a, *b), |types| {
+            refine_widen_uncached(types, *a, *b)
+        })
     }
 
     pub fn convergence_class(&mut self, a: &Ty) -> Ty {
@@ -1740,32 +1841,43 @@ impl Types {
         if a == b {
             return self.unchanged(a);
         }
-        let d = {
-            let cx = self.ctx();
-            cx.descr(&a).union(cx, cx.descr(&b))
+        let key = if a <= b {
+            BinaryTypeOperation::Union(a, b)
+        } else {
+            BinaryTypeOperation::Union(b, a)
         };
-        self.intern(d)
+        self.binary_type_operation(key, |types| {
+            let d = {
+                let cx = types.ctx();
+                cx.descr(&a).union(cx, cx.descr(&b))
+            };
+            types.intern(d)
+        })
     }
 
     pub fn intersect(&mut self, a: Ty, b: Ty) -> Ty {
         if a == b {
             return a;
         }
-        if self.is_subtype(&a, &b) {
-            return a;
-        }
-        if self.is_subtype(&b, &a) {
-            return b;
-        }
-        let left = self.descr(&a).clone();
-        let right = self.descr(&b).clone();
-        let d = intersect_descr(self, &left, &right);
-        self.intern(d)
+        self.binary_type_operation(BinaryTypeOperation::Intersect(a, b), |types| {
+            if types.is_subtype(&a, &b) {
+                return a;
+            }
+            if types.is_subtype(&b, &a) {
+                return b;
+            }
+            let left = types.descr(&a).clone();
+            let right = types.descr(&b).clone();
+            let d = intersect_descr(types, &left, &right);
+            types.intern(d)
+        })
     }
 
     pub fn difference(&mut self, a: Ty, b: Ty) -> Ty {
-        let d = self.descr(&a).diff(self.descr(&b));
-        self.intern(d)
+        self.binary_type_operation(BinaryTypeOperation::Difference(a, b), |types| {
+            let d = types.descr(&a).diff(types.descr(&b));
+            types.intern(d)
+        })
     }
 
     pub(crate) fn projection_alternatives(&mut self, ty: Ty) -> Vec<Ty> {
@@ -1813,8 +1925,11 @@ impl Types {
     }
 
     pub fn is_value_disjoint(&self, a: &Ty, b: &Ty) -> bool {
-        let cx = self.ctx();
-        self.descr(a).value_disjoint(cx, self.descr(b))
+        let key = Self::symmetric_key(ComparisonKey::ValueDisjoint, *a, *b);
+        self.cached_comparison(key, |types| {
+            let cx = types.ctx();
+            types.descr(a).value_disjoint(cx, types.descr(b))
+        })
     }
 
     pub fn key_var_count(&self, key: &[Ty]) -> usize {
@@ -3915,10 +4030,7 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
 /// Returns an interned `Ty`: every result is canonically interned in `Types`,
 /// so a widened type is never an un-interned `Descr` that a caller might compare
 /// or store without canonicalization.
-fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
-    if a == b {
-        return t.unchanged(a);
-    }
+fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
     let lhs = t.descr(&a).clone();
     let rhs = t.descr(&b).clone();
     if let (Some(l), Some(r)) = (lhs.pure_tuple().cloned(), rhs.pure_tuple().cloned())
@@ -3928,14 +4040,14 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
             .elems
             .iter()
             .zip(r.elems.iter())
-            .map(|(l, r)| refine_widen(t, *l, *r))
+            .map(|(l, r)| t.refine_widen(l, r))
             .collect();
         return t.intern(Descr::tuple_of(elems));
     }
     let any = t.any();
     if let (Some(l), Some(r)) = (lhs.as_pure_list(any), rhs.as_pure_list(any)) {
         let elem = match (l.elem, r.elem) {
-            (Some(l), Some(r)) => Some(refine_widen(t, l, r)),
+            (Some(l), Some(r)) => Some(t.refine_widen(&l, &r)),
             (Some(l), None) => Some(l),
             (None, Some(r)) => Some(r),
             (None, None) => None,
@@ -3950,7 +4062,7 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
         return t.intern(d);
     }
     if let (Some(l), Some(r)) = (lhs.pure_resource(any), rhs.pure_resource(any)) {
-        let payload = refine_widen(t, l.payload, r.payload);
+        let payload = t.refine_widen(&l.payload, &r.payload);
         let d = Descr::resource_of(t.ctx(), payload);
         return t.intern(d);
     }
@@ -3973,7 +4085,7 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
                     .clone()
                     .into_iter()
                     .zip(rhs_lit.captures.clone())
-                    .map(|(lhs_capture, rhs_capture)| refine_widen(t, lhs_capture, rhs_capture))
+                    .map(|(lhs_capture, rhs_capture)| t.refine_widen(&lhs_capture, &rhs_capture))
                     .collect();
                 Some(Some(ClosureLit {
                     kind: lhs_lit.kind,
@@ -3985,7 +4097,7 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
         };
         if let Some(lit) = merged_lit {
             let args: Vec<Ty> = l.args.iter().zip(r.args.iter()).map(|(l, r)| t.union(*l, *r)).collect();
-            let ret = refine_widen(t, l.ret, r.ret);
+            let ret = t.refine_widen(&l.ret, &r.ret);
             return t.intern(Descr {
                 funcs: vec![Conj::pos_of(ArrowSig { args, ret, lit })],
                 ..Descr::unbranded()
@@ -3998,7 +4110,7 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
         let mut fields = l.fields;
         for (key, rv) in &r.fields {
             if let Some(lv) = fields.get_mut(key) {
-                *lv = refine_widen(t, *lv, *rv);
+                *lv = t.refine_widen(lv, rv);
             } else {
                 fields.insert(key.clone(), *rv);
             }
