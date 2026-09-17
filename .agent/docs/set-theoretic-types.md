@@ -167,17 +167,20 @@ to be sorted first: a clause compares by its stored factor lists, so the clause
 order is a function of the clause set only once each clause is a function of
 its own factors. Sorting also puts equal factors adjacent, which is where
 `A ∧ A = A` collapses. The order is lexicographic over the structure,
-compared in place rather than rendered as text: two `Ty`s compare by their
-descriptors, recursively, which terminates because a descriptor can only name
-`Ty`s interned before it. It is injective — ties happen only between identical
-clauses — because the interner is keyed by `Descr`, so distinct ids have
-distinct structure; a comparator that could tie two DIFFERENT clauses would hand
-the survivor back to arrival order. Structural address vars order by their
+compared in place rather than rendered as text. A comparison records each
+normalized pair while it is in flight; re-entering a pair breaks the back edge
+as no further structural difference, and a completed pair reuses its verdict.
+The walk therefore terminates for regular trees as well as acyclic ones. A
+distinct cyclic pair can have the same finite unfolding, so a completed
+structural tie also takes the root identity order. `Equal` still means exactly
+the same `Ty`; a comparator that could tie two DIFFERENT clauses would hand the
+survivor back to arrival order. Structural address vars order by their
 `AddrStep` path, never by the mint-order `TypeVarId` behind them.
 
-Storage order reads NOTHING outside the descriptor and the ids it names. That
-is a hard requirement, not a preference: the index lookup below is sound only
-while a descriptor's normal form cannot move under it. Closure literals are
+Storage order reads NOTHING mutable outside the descriptor, the ids it names,
+and its completed-tie identity order. That is a hard requirement, not a
+preference: the index lookup below is sound only while a descriptor's normal
+form cannot move under it. Closure literals are
 where it had to be won. A callable can be interned before its owner exists and
 `Types::define_callable_origin` registers the typed origin later, so ordering
 two literals by their registered origins would rewrite a stored clause order
@@ -338,14 +341,22 @@ The whole pass runs only when the descriptor is not already in the index
 (`TypeInterner::lookup`). The invariant that makes the shortcut sound is that
 an interned descriptor's normal form is a pure function of the descriptor:
 every pass above reads the descriptor's own bytes and the immutable descriptors
-of the ids it names, and storage clause order reads nothing outside them
-either. A descriptor the index holds was normalized once, so it is its own
-normal form and re-deriving it would rewrite it to itself. Asking first keeps
-the boundary's cost proportional to the types a compile mints rather than to
-how often it asks for them, and it is the common case by a wide margin: on
+of the ids it names, plus the stable identity that resolves a completed
+structural tie. A descriptor the index holds was normalized once, so it is its
+own normal form and re-deriving it would rewrite it to itself. Asking first
+keeps the boundary's cost proportional to the types a compile mints rather than
+to how often it asks for them, and it is the common case by a wide margin: on
 the target fixtures the overwhelming majority of intern calls are answered by
 the index, which is also what keeps the absorption's containment questions to a
 small constant per compile.
+
+The interner can also reserve one or more identities before their normalized
+bodies are available. A reserved slot is unreadable; filling it publishes the
+body in that slot and then keys the index by the completed descriptor. A body
+may name its reservation, which is how a finite regular tree closes a cycle.
+The ordinary debug hygiene sweep stays on the normalized one-phase path: it
+queries child descriptors and therefore cannot run while a reservation is
+unfinished.
 
 What clause order canNOT reconcile is a different CARVING of one type:
 `{[int], :false} | {[int], :true}` and `{[int], :false | :true}` are one
