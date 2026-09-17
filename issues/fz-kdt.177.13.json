@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.177.12"
+  ],
   "created": "2026-09-17T11:17:57Z",
   "description": "Discovered while implementing fz-kdt.177.12. Exact membership for general recursive runtime predicates needs a runtime-owned, compiled predicate-program artifact: serializable finite nodes/edges, a declared static-data/GC-root lifetime, and an evaluator with an explicit continuation/work stack (or equivalent recursion) for branching regular predicates such as μX. :leaf | {X, X}. Today RuntimeTypePredicate is compiler-only data embedded in Prim::RuntimeTypeTest and receive plans; both native doors rely on runtime_test.rs compile-time tree inlining, and the runtime exposes neither descriptor ABI nor evaluator. Establish one authority usable by primitive tests and receive, with direct runtime tests for arbitrary finite nested values, rejection cases, static-data lifetime and native/interpreter parity. It must be a reusable artifact, not a native-codegen-local workaround or a predicate identity authority.",
   "id": "fz-kdt.177.13",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Runtime predicate-program artifact and evaluator",
   "type": "task",
-  "updated_at": "2026-09-17T11:17:57Z"
+  "updated_at": "2026-09-17T11:17:58Z"
 }
