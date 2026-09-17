@@ -123,6 +123,12 @@ interned type is empty exactly when its handle is the retained `none` handle.
 descriptor traversal. Descriptor-level emptiness still belongs to normalization,
 before a `Ty` exists.
 
+The same identity decides operand-empty constructions at the public construction
+boundary: `resource(none)` and `non_empty_list(none)` return `none`, while
+`list(none)` returns the retained `empty_list`. Their descriptor builders only
+write an already-known non-empty operand; they do not re-inspect it or enter the
+interner to rediscover a retained result.
+
 - **`refine_widen(a, b)`** — finite-height least upper bound. Collapses literal axes
   to their base and merges list shapes (`[] ⊔ nonempty(t) = list(t)`), so a joined
   slot ascends a bounded chain and the fixpoint terminates. This is the join behind
