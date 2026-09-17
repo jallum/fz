@@ -133,7 +133,11 @@ pub(super) fn scope_code(
                 ..JobEffects::default()
             })
         }
-        ScopePublication::Blocked(effects) => Ok(effects),
+        ScopePublication::Blocked(mut effects) => {
+            effects.reads.splice(0..0, current_uses(reads.clone()));
+            effects.derivations = ground_derivations(effects.derivations, &reads);
+            Ok(effects)
+        }
     }
 }
 
