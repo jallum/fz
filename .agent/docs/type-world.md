@@ -109,10 +109,13 @@ fingerprints.
 
 The keying and join logic lean on a few `Types` methods, each with a distinct job:
 
-`Types` retains the two lattice constants, `any` and `none`, when its world is
-created. They are already-normal-form descriptors, so later requests return their
-known `Ty` directly instead of rebuilding and looking up a descriptor. This also
-makes the exact law `difference(t, t) = none` a direct handle return.
+`Types` retains its operand-free core inventory when its world is created:
+the lattice constants `any` and `none`, the fixed primitive and structural types,
+and the three built-in opaques. They are already-normal-form descriptors, so later
+requests return their known `Ty` directly instead of rebuilding and looking up a
+descriptor. This also makes the exact law `difference(t, t) = none` a direct handle
+return. A type with operands still goes through the sole interning boundary; the core
+inventory is not a second normalization or result-cache authority.
 
 - **`refine_widen(a, b)`** — finite-height least upper bound. Collapses literal axes
   to their base and merges list shapes (`[] ⊔ nonempty(t) = list(t)`), so a joined
