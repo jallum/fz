@@ -6,14 +6,15 @@
   "blocks": [
     "fz-kdt.177.7"
   ],
+  "closed_at": "2026-09-17T10:28:33Z",
   "created": "2026-09-15T20:29:57Z",
   "description": "Render finalized canonical regular components with finite recursive binder syntax. This ticket is a serializer, not a second type-equivalence engine: fz-kdt.177.11 first makes equivalent unrollings one Ty at the sole interner boundary.\n\n`format.rs` display and `types/canon.rs` TyCanon::body (whose bodies map is a completion memo, not an in-flight guard) gain binder syntax for self and mutually recursive components. Canon remains injective and id-free; display remains readable and deliberately non-injective.\n\nTests prove both renderers terminate on canonical self and mutual components, canon distinguishes distinct recursive denotations, and independently built equivalent components render identically because the interner returns their one identity. Tests do not ask test-only intern_two_phase fixtures to supply production canonicality.\n\nNo runtime predicate, recursive typedef, return solver, or type transformation changes here.",
   "id": "fz-kdt.177.6",
   "labels": [],
   "parent": "fz-kdt.177",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "μX. in both renderers; canon injective and identical across unrollings",
   "type": "task",
-  "updated_at": "2026-09-17T10:08:27Z"
+  "updated_at": "2026-09-17T10:28:33Z"
 }
