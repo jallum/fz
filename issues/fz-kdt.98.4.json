@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-17T22:59:32Z",
+  "description": "Diagnosis at PR #214 head 39ad6cd64aa2892226c0f429f90fffe76f2d67f8: cargo test --all-features --test fz2_cli the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation -- --exact --nocapture reproduces CI run 35279507141 at tests/fz2_cli.rs:2129 (DeriveExecutableFacts readiness 0 versus total 2). Immediate parent a5551f6b432f1e388fa24981daf8903712f73a6d passes the targeted test, isolating the trigger to #214 rather than earlier stacked PRs. Fixture 00181_enum_reduce_operator_ref references Kernel.+/2; the new construction edge subscribes StaticCallees(main) to its late FunctionDefined fact. Its definition grows StaticCallees(main), dirties InputDemand(main) and Recursive(main), and wakes SeedRoot. Repeated public trace replay: evaluations 399 -\u003e 410; content-caused 194 -\u003e 202; readiness-caused 0 -\u003e 2; uncaused 0 -\u003e 1; runtime-demand walks remain 39; product settlements remain 280. Both readiness runs and the uncaused run belong to SeedRoot(root 0). The uncaused run has explicit settled-fact wake evidence, but the replay classifies propagated dirty movements absent from changed as causing nothing. Thus uncaused classification alone does not prove unscheduled work. The PR updates the transport test total 399 -\u003e 410 but leaves CLI causal pins unchanged. Repair must reconcile actual scheduling/finality and replay attribution, preserve zero-uncaused coverage, update exact attributable pins and explanatory docs, and pass the full affected CLI target. Do not merely weaken the zero-uncaused assertion. Related general authority work: fz-kdt.46; existing readiness documentation finding: fz-kdt.180. Diagnosis only so far; no source changes.",
+  "id": "fz-kdt.98.4",
+  "labels": [],
+  "parent": "fz-kdt.98",
+  "priority": 1,
+  "status": "open",
+  "title": "Account for late function-reference edges in the SeedRoot causal contract (PR #214 CI)",
+  "type": "bug",
+  "updated_at": "2026-09-17T22:59:32Z"
+}
