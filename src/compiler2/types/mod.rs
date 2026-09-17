@@ -152,7 +152,7 @@ impl Default for Types {
 
 #[derive(Default)]
 struct TypeInterner {
-    arena: Vec<Descr>,
+    arena: Vec<Option<Descr>>,
     index: HashMap<Descr, Ty>,
     #[cfg(test)]
     work: InterningWork,
@@ -272,7 +272,7 @@ pub(crate) struct ComparisonCacheStats {
 
 #[derive(Clone, Copy)]
 pub(super) struct TyCtx<'a> {
-    arena: &'a [Descr],
+    arena: &'a [Option<Descr>],
     /// The address reverse table (path per address id), so display can render a
     /// structural address as `a1_0`/`r0`. Empty for the interner-internal ctx,
     /// which only resolves descriptors and never renders.
@@ -281,9 +281,11 @@ pub(super) struct TyCtx<'a> {
 
 impl<'a> TyCtx<'a> {
     fn descr(&self, t: &Ty) -> &'a Descr {
-        self.arena
-            .get(t.0 as usize)
-            .unwrap_or_else(|| panic!("unknown interned type id {}", t.0))
+        match self.arena.get(t.0 as usize) {
+            Some(Some(descr)) => descr,
+            Some(None) => panic!("unfinished interned type id {}", t.0),
+            None => panic!("unknown interned type id {}", t.0),
+        }
     }
 
     /// Render one type variable: a structural address (`a0`, `a1_0`, `r0`) when
@@ -315,27 +317,45 @@ impl TypeInterner {
         }
         #[cfg(debug_assertions)]
         self.debug_assert_dnf_axes_hygienic(&d);
+        let ty = self.reserve();
+        self.fill_normalized(ty, d);
+        ty
+    }
+
+    fn reserve(&mut self) -> Ty {
         let raw = self.arena.len();
         assert!(u32::try_from(raw).is_ok(), "type interner exhausted ids");
         let ty = Ty(raw as u32);
-        self.arena.push(d.clone());
+        self.arena.push(None);
+        ty
+    }
+
+    fn fill_normalized(&mut self, ty: Ty, d: Descr) {
+        let Some(slot) = self.arena.get_mut(ty.0 as usize) else {
+            panic!("unknown reserved type id {}", ty.0);
+        };
+        assert!(slot.is_none(), "type id {} is already filled", ty.0);
+        assert!(
+            !self.index.contains_key(&d),
+            "two-phase intern received an already-interned descriptor"
+        );
+        *slot = Some(d.clone());
         self.index.insert(d, ty);
         #[cfg(test)]
         {
             self.work.inserted += 1;
         }
-        ty
     }
 
     /// The id already given to this exact descriptor, if it has one.
     ///
     /// A descriptor the index holds was normalized on its way in, and
     /// normalization is a pure function of the descriptor — every step reads
-    /// the descriptor's own bytes and the immutable descriptors of the ids it
-    /// names, and nothing else (`super::order` states the one rule that makes
-    /// this true of clause order). So the normal form it was given then is the
-    /// normal form it would be given now, and the id can be returned without
-    /// re-deriving it.
+    /// the descriptor's own bytes, the immutable descriptors of the ids it
+    /// names, and the stable identity that resolves a completed structural tie
+    /// (`super::order` states the one rule that makes this true of clause
+    /// order). So the normal form it was given then is the normal form it would
+    /// be given now, and the id can be returned without re-deriving it.
     fn lookup(&mut self, d: &Descr) -> Option<Ty> {
         #[cfg(test)]
         {
@@ -593,9 +613,10 @@ impl Types {
     ///
     /// THE INDEX ANSWERS FIRST. An interned descriptor's normal form is a pure
     /// function of the descriptor: every pass below reads the descriptor's own
-    /// bytes and the immutable descriptors of the ids it names, and storage
-    /// clause order reads nothing outside them either (`order`'s module doc
-    /// carries that rule and why the callable axis is where it had to be won).
+    /// bytes, the immutable descriptors of the ids it names, and the stable
+    /// identity that resolves a completed structural tie. Storage clause order
+    /// reads nothing mutable outside them either (`order`'s module doc carries
+    /// that rule and why the callable axis is where it had to be won).
     /// A descriptor the index already holds is therefore its own normal form,
     /// and the id it was given is the id the whole pass below would arrive at,
     /// so the lookup returns it and the derivation is skipped. That is the
@@ -688,6 +709,18 @@ impl Types {
     fn unchanged(&mut self, ty: Ty) -> Ty {
         self.interner.identity_shortcut();
         ty
+    }
+
+    #[cfg(test)]
+    fn intern_two_phase(&mut self, count: usize, build: impl FnOnce(&[Ty]) -> Vec<Descr>) -> Vec<Ty> {
+        assert!(count > 0, "two-phase intern needs at least one reserved type");
+        let reserved = (0..count).map(|_| self.interner.reserve()).collect::<Vec<_>>();
+        let bodies = build(&reserved);
+        assert_eq!(bodies.len(), reserved.len(), "every reserved type needs one body");
+        for (ty, body) in reserved.iter().copied().zip(bodies) {
+            self.interner.fill_normalized(ty, body);
+        }
+        reserved
     }
 
     /// The list axis rewritten to the one normal form in [`axis`], clause by
@@ -1122,7 +1155,12 @@ impl Types {
     /// interned population, and needs the census rather than any particular id.
     #[cfg(test)]
     pub(crate) fn interned_tys(&self) -> Vec<Ty> {
-        (0..self.interner.arena.len() as u32).map(Ty).collect()
+        self.interner
+            .arena
+            .iter()
+            .enumerate()
+            .filter_map(|(index, descr)| descr.as_ref().map(|_| Ty(index as u32)))
+            .collect()
     }
 
     #[cfg(test)]
@@ -1150,7 +1188,7 @@ impl Types {
     /// untouched: interned type descriptors and interned structural addresses.
     #[cfg(test)]
     pub(crate) fn identity_inventory(&self) -> (usize, usize) {
-        (self.interner.arena.len(), self.address_paths.len())
+        (self.interner.arena.iter().flatten().count(), self.address_paths.len())
     }
 
     #[cfg(test)]
@@ -2839,6 +2877,7 @@ impl Types {
         self.interner
             .arena
             .iter()
+            .flatten()
             .flat_map(|d| d.funcs.iter())
             .flat_map(|c| c.pos.iter().chain(c.neg.iter()))
             .filter_map(|sig| sig.lit.as_ref())
