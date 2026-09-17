@@ -42,7 +42,7 @@ dispatch  ReifyGuardDispatch, PlanEntryDispatch
 macro     source expansion reads RootBackendProduct(hidden macro root)
             exact product waits drive the retained RootBackendProduct
 keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveInputDemand
-            one body -> StaticCallees, the call graph's out-edges for that function
+            one body -> StaticCallees, its direct-call and callable-construction edges
             stable per-function facts used to canonicalize activation keys:
             DeriveCallGraphComponent walks the StaticCallees facts ONCE and
             publishes two: CallGraphComponent(f), the smallest FunctionId

@@ -134,12 +134,10 @@ const TRANSPORT_POSITIONS: &[(&str, &str)] = &[
 ];
 
 const SEAM_FACTS: &[(&str, &str)] = &[];
-// The source-level arithmetic wrapper deliberately remains an ordinary Fz
-// call. Pin its whole causal cost exactly; fz-5xp.20's general direct-call
-// inliner, rather than an arithmetic exception, owns removing it later.
-// Publishing a function's source from the walk that scoped it removes one
-// job per reached function from the chain into every body.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 399;
+// Named operator references are construction edges, so their target keying
+// prerequisites are ordinary causal work. Pin the fixture's whole cost;
+// fz-5xp.20 owns any direct-call inlining improvement.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 410;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {
