@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-17T11:14:14Z",
+  "description": "Split from fz-kdt.177.7 after the 2026-09-17 runtime-boundary spike established two independently-verifiable changes. Project a canonical regular Ty into a finite component-local RuntimeTypePredicate graph keyed by Ty, with back-edges by node id and no new global type/equivalence authority. Relations use semantic node-pair fixed points: containment coinductive; overlap and erasing-overlap inductive. Replace the tree-only matcher with exact finite-value evaluation of that graph. Lower one shared evaluator through runtime_test for Prim and receive; branching recursive predicates such as μX. :leaf | {X, X} require an explicit work/continuation stack or a generated recursive helper, not a node-only CFG or active-node success cut. Preserve current acyclic semantics. Tests: self/mutual recursive tuple/list/capture projection; relation and matcher properties against finite unrollings; interpreter/JIT/AOT parity through both primitive and receive paths. This ticket does not change semantic return-ladder telemetry; .177.9/.10 own it.",
+  "id": "fz-kdt.177.12",
+  "labels": [],
+  "parent": "fz-kdt.177",
+  "priority": 1,
+  "status": "open",
+  "title": "Finite runtime predicate graph and all-door evaluator",
+  "type": "task",
+  "updated_at": "2026-09-17T11:14:14Z"
+}
