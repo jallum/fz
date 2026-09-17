@@ -9,9 +9,15 @@
   "id": "fz-kdt.98.1",
   "labels": [],
   "parent": "fz-kdt.98",
+  "comments": [
+    {
+      "text": "Scope correction: a byte-identical submit_code replay of the witness currently applies 38 jobs (106 → 144) despite equal settled answers. That is the explicit fz-tfn.57 source-replacement bug, not a FunctionRef-edge consequence. The false ticket-local zero-work requirement was removed; this ticket records semantic exactness and json_roundtrip’s unchanged causal counts without concealing the broader gap.",
+      "timestamp": "2026-09-17T21:51:34Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "A function reference is a construction edge of the call graph, as a lambda already is",
   "type": "task",
-  "updated_at": "2026-09-17T21:51:33Z"
+  "updated_at": "2026-09-17T21:51:34Z"
 }
