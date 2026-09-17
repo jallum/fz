@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-17T23:47:28Z",
+  "description": "Existing PR #215 head 6a352a867 fails CI run 35284034340: tests/fz2_cli.rs the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation line 2129 asserts all readiness-caused work comes from direct executable-fact boundary, actual 0 versus expected 2. Diagnose with telemetry and source, prove whether stale expectation or incorrect behavior, fix root cause without weakening causal invariants. Separate red/green ticket commit necessary to deliver verified scope-dependency fixes onto the PR.",
+  "id": "fz-kdt.233",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "Resolve PR 215 drain readiness attribution CI failure",
+  "type": "bug",
+  "updated_at": "2026-09-17T23:47:28Z"
+}
