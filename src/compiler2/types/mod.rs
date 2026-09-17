@@ -1649,6 +1649,17 @@ impl Types {
         self.descr(a).max_tuple_arity()
     }
 
+    pub(crate) fn exclusive_tuple_root_arity(&self, a: &Ty) -> Option<usize> {
+        let descr = self.descr(a);
+        if !has_only_tuple_runtime_roots(descr) {
+            return None;
+        }
+        let arities = tuple_root_arities(descr);
+        let mut arities = arities.finite_elems()?;
+        let arity = arities.next()?;
+        arities.next().is_none().then_some(arity)
+    }
+
     pub fn refine_map_field(&mut self, a: &Ty, key: &MapKey, v: &Ty) -> Ty {
         let Some(d) = self.descr(a).refine_map_field(key, *v) else {
             return self.unchanged(*a);
@@ -2599,7 +2610,7 @@ impl Types {
         let mut shapes = Vec::with_capacity(descr.tuples.len());
         for clause in &descr.tuples {
             if clause.pos.len() != 1 || !clause.neg.is_empty() {
-                return TupleShapes::arity_only(runtime_type_predicate_tuple_arities(descr));
+                return TupleShapes::arity_only(tuple_root_arities(descr));
             }
             shapes.push(
                 clause.pos[0]
@@ -3747,7 +3758,7 @@ fn negative_swallows_the_fragment(clause: &Conj<ListSig>, negative: &ListSig) ->
     matches!(clause.pos.as_slice(), [positive] if positive.elem.is_some() && positive.elem == negative.elem)
 }
 
-fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
+fn tuple_root_arities(descr: &Descr) -> FiniteSet<usize> {
     let mut out = FiniteSet::none();
     for clause in &descr.tuples {
         let mut allowed = if clause.pos.is_empty() {
@@ -3765,6 +3776,19 @@ fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
         out = out.union(&allowed);
     }
     out
+}
+
+fn has_only_tuple_runtime_roots(descr: &Descr) -> bool {
+    let (maps, named_structs) = runtime_type_predicate_map_tags(descr);
+    !runtime_type_predicate_widens_non_structs(descr)
+        && descr.basic.is_empty()
+        && descr.atoms.is_none()
+        && descr.opaques.is_none()
+        && runtime_type_predicate_list_shapes(descr).is_none()
+        && descr.resources.is_empty()
+        && descr.funcs.is_empty()
+        && !maps
+        && named_structs.is_none()
 }
 
 /// Every callable a function axis admits, named the way the runtime tells them
