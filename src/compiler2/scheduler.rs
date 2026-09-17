@@ -431,6 +431,10 @@ where
             .any(|publisher| self.rebased.contains(publisher))
     }
 
+    pub(crate) fn derivation_rebased(&self, publisher: &P) -> bool {
+        self.rebased.contains(publisher)
+    }
+
     pub fn pending_jobs(&self) -> usize {
         self.agenda.len()
     }

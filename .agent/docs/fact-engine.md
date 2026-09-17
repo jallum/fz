@@ -306,17 +306,19 @@ that actually derived it.
 
 A job run may conclude more than one derivation. A `Derivation` is
 `(Job, DerivationKey)`: the job that ran, and which answer of that run this
-is. `DerivationKey::Job` is the run's own answer — the one its standing waits
-leave unfinished. Other keys (`Function(FunctionId)`, and, reserved for future
-publishers of the same shape, `Activation`/`Executable`/`InputSlot`) name an
-answer the run reached on the way to its own conclusion. Reads, claims,
+is. `DerivationKey::Job` is ordinarily the run's own answer — the one its standing waits
+leave unfinished. `AnalyzeActivation(a)` instead has `Activation(a)` as its
+own publisher, so every claim it reaches — including `ReturnType(a)` — stays
+in its normal wait/extend lifecycle. Other keys (`Function(FunctionId)`, with
+`Executable`/`InputSlot` available for the same shape) name an answer the run
+reached on the way to its own conclusion. Reads, claims,
 dirtiness, rebase flag, and finality are all per derivation, not per job: two
 derivations of the same run can be clean and dirty at once. The agenda and
 standing waits stay per job — a job's run is one unit of scheduling even when
 it yields several answers.
 
-Today the scope walk (`source_publish.rs`) is the one publisher that reaches
-more than its own answer: `ScopeSession::define_source_function` records a
+The scope walk (`source_publish.rs`) publishes answers reached before its run
+concludes. `ScopeSession::define_source_function` records a
 `Function(f)` derivation as soon as it defines each function, carrying the
 reads accumulated up to that point (`ground_derivations` in `jobs/source.rs`
 splices in the reads the scope walk's own job had before the walk began, so an
@@ -324,11 +326,14 @@ answer that read nothing downstream still stands on real ground rather than
 looking quiet by omission). When the walk later blocks on something further
 down — an item-macro expansion, say — `blocked_effects` carries every
 derivation reached so far out with the job's wait.
-`World::complete_job_with_external` always
-appends the job's own `DerivationKey::Job` derivation last, carrying the
-ordinary `JobEffects::{reads,outputs,changed}` exactly as before; a job that
-answers one question per run only ever has this one derivation, so its shape
-is unchanged.
+`AnalyzeActivation(a)` publishes `ReturnType(a)` under its own `Activation(a)`
+derivation, so its waits, reads, claims, rebase state, and return payload have
+one identity. An inactive activation re-lists that same own derivation through
+the ordinary `JobEffects::{reads,outputs,changed}` fields.
+`World::complete_job_with_external` always appends the job's own derivation
+last, carrying the ordinary `JobEffects::{reads,outputs,changed}` exactly as
+before; a job that answers one question per run only ever has this one
+derivation, so its shape is unchanged.
 
 A run's conclusion replaces reads and claims for each derivation it concludes
 this time (`concluding` — every derivation except the job's own while the job

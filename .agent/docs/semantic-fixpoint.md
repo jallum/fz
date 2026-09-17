@@ -325,10 +325,11 @@ and joined — see fz-kdt.64 for the recorded asymmetry) (`World::preserved_anal
 path*). This keeps fixpoint evidence from descending just because an
 intermediate clause-reachability approximation changed. The row set is compared by per-column type equivalence, not raw `Ty`
 handle equality, so representative-only changes do not dirty the scheduler.
-`ReturnType(a)` is a CUMULATIVE claim: the store
-(`ActivationMap::define_return`) joins each round's evidence by union (which
+`ReturnType(a)` is a CUMULATIVE claim owned by
+`Derivation(AnalyzeActivation(a), Activation(a))`: the store
+(`ActivationMap::define_return`) joins that derivation's evidence by union (which
 preserves closure identities), reports `changed=false` for equal joins, and
-only a rebased publisher replaces — within an epoch the return can only
+only that derivation's rebased publisher replaces — within an epoch the return can only
 ascend, which is what makes the iteration converge on every schedule. Past a per-epoch
 budget of strict ascents (`RETURN_WIDENING_BUDGET`, a total since the last
 rebase — not a consecutive-ascent delay, which spurious quiet wakes could
@@ -338,6 +339,9 @@ coarsened the stored value; corpus programs converge in a few rungs and never
 meet it. `CallSiteSummary` snapshots carry
 `return_ty: Option<Ty>` — honest mid-ascent records whose `None` reads, behind
 the settled gate, as "provably never returns" (`settled_return`).
+When the final `ReturnType(a)` claim retracts, `ActivationMap` clears its value
+and ascent count before a later claim can mint bottom revision zero. A remaining
+claim leaves the shared payload intact.
 
 `CallSiteTargets(a, callsite)` is the membership signal: each edge carries only
 callee identity plus the selected activation key, so surface/return type ascents
