@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-kdt.177.12"
-  ],
+  "blocks": [],
   "created": "2026-09-17T13:44:27Z",
   "description": "Proof-first gate discovered by the full RuntimeTypePredicate inventory. Before graphifying the existing complete runtime predicate surface, define and test the founded truth semantics of contained_in, overlaps, and overlaps_on_an_erasing_axis on self- and mutually-recursive predicate components. Existing relations are structural-tree recursion and provide no cyclic precedent. Use the .177.11 test-only regular constructors; prove productive and unproductive cycles, directional containment, tuple/list/callable-capture edges, and agreement with finite unrollings where applicable. A visited-pair shortcut is not acceptable without the specific relation law it implements. No production representation change in this ticket.",
   "id": "fz-kdt.177.14",
@@ -13,5 +11,5 @@
   "status": "open",
   "title": "Specify cyclic runtime-predicate relation semantics",
   "type": "task",
-  "updated_at": "2026-09-17T14:52:27Z"
+  "updated_at": "2026-09-17T14:52:28Z"
 }
