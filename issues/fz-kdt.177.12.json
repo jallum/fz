@@ -7,13 +7,13 @@
     "fz-kdt.177.7"
   ],
   "created": "2026-09-17T11:14:14Z",
-  "description": "Split from fz-kdt.177.7 after the 2026-09-17 runtime-boundary spike established two independently-verifiable changes. Project a canonical regular Ty into a finite component-local RuntimeTypePredicate graph keyed by Ty, with back-edges by node id and no new global type/equivalence authority. Relations use semantic node-pair fixed points: containment coinductive; overlap and erasing-overlap inductive. Replace the tree-only matcher with exact finite-value evaluation of that graph. Lower one shared evaluator through runtime_test for Prim and receive; branching recursive predicates such as μX. :leaf | {X, X} require an explicit work/continuation stack or a generated recursive helper, not a node-only CFG or active-node success cut. Preserve current acyclic semantics. Tests: self/mutual recursive tuple/list/capture projection; relation and matcher properties against finite unrollings; interpreter/JIT/AOT parity through both primitive and receive paths. This ticket does not change semantic return-ladder telemetry; .177.9/.10 own it.",
+  "description": "After fz-kdt.177.13 supplies the runtime-owned predicate-program artifact and exact evaluator, project each canonical regular Ty into its finite component-local program graph. Builder memoization is keyed only by canonical Ty and reserves a node before descending; repeated Ty means a back-edge. The program is not a second global type interner or equivalence authority. Migrate list heads, tuple positions and callable captures to program-node references; relations use explicitly founded ordered node-pair calculations. Preserve acyclic predicate behavior, schema discovery and dispatch planning. Prove self/mutual tuple/list/capture components project finitely and agree with finite unrollings; hand the program to the shared primitive/receive lowering established by .177.13. Transport re-entry cuts remain .177.7.",
   "id": "fz-kdt.177.12",
   "labels": [],
   "parent": "fz-kdt.177",
   "priority": 1,
   "status": "open",
-  "title": "Finite runtime predicate graph and all-door evaluator",
+  "title": "Project canonical recursive types into runtime predicate programs",
   "type": "task",
-  "updated_at": "2026-09-17T11:17:58Z"
+  "updated_at": "2026-09-17T11:17:59Z"
 }
