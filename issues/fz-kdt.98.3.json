@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.98.1"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-kdt.98",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "One cumulative call-graph edge fact: body edges plus the value-call targets each analysis resolves",
   "type": "task",
-  "updated_at": "2026-09-17T21:46:50Z"
+  "updated_at": "2026-09-17T21:57:45Z"
 }
