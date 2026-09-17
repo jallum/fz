@@ -129,6 +129,11 @@ boundary: `resource(none)` and `non_empty_list(none)` return `none`, while
 write an already-known non-empty operand; they do not re-inspect it or enter the
 interner to rediscover a retained result.
 
+It also resolves binary lattice laws before their operand-pair operation table:
+`none ∪ t = t`, `none ∩ t = none`, `none \ t = none`, and `t \ none = t`.
+These results are direct handles, not cache entries whose hashes repeat a fact the
+world already established.
+
 - **`refine_widen(a, b)`** — finite-height least upper bound. Collapses literal axes
   to their base and merges list shapes (`[] ⊔ nonempty(t) = list(t)`), so a joined
   slot ascends a bounded chain and the fixpoint terminates. This is the join behind

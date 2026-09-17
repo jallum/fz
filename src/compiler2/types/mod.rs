@@ -1885,6 +1885,12 @@ impl Types {
         if a == b {
             return self.unchanged(a);
         }
+        if a == self.core.none {
+            return b;
+        }
+        if b == self.core.none {
+            return a;
+        }
         let key = if a <= b {
             BinaryTypeOperation::Union(a, b)
         } else {
@@ -1903,6 +1909,9 @@ impl Types {
         if a == b {
             return a;
         }
+        if a == self.core.none || b == self.core.none {
+            return self.core.none;
+        }
         self.binary_type_operation(BinaryTypeOperation::Intersect(a, b), |types| {
             if types.is_subtype(&a, &b) {
                 return a;
@@ -1920,6 +1929,12 @@ impl Types {
     pub fn difference(&mut self, a: Ty, b: Ty) -> Ty {
         if a == b {
             return self.none();
+        }
+        if a == self.core.none {
+            return self.core.none;
+        }
+        if b == self.core.none {
+            return a;
         }
         self.binary_type_operation(BinaryTypeOperation::Difference(a, b), |types| {
             let d = types.descr(&a).diff(types.descr(&b));

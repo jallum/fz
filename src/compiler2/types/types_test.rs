@@ -158,6 +158,32 @@ fn empty_operand_constructors_return_before_the_type_boundary() {
 }
 
 #[test]
+fn canonical_bottom_binary_laws_return_before_the_operation_boundary() {
+    let mut t = Types::new();
+    let none = t.none();
+    let int = t.int();
+    let before_interning = t.interning_work_stats();
+    let before_operations = t.binary_type_operation_stats();
+
+    assert_eq!(t.union(none, int), int, "none is union's left identity");
+    assert_eq!(t.union(int, none), int, "none is union's right identity");
+    assert_eq!(t.intersect(none, int), none, "none absorbs intersection on the left");
+    assert_eq!(t.intersect(int, none), none, "none absorbs intersection on the right");
+    assert_eq!(t.difference(none, int), none, "none minus a type remains none");
+    assert_eq!(t.difference(int, none), int, "subtracting none changes no type");
+    assert_eq!(
+        t.interning_work_stats(),
+        before_interning,
+        "canonical bottom already determines each result; no descriptor may reach the interner"
+    );
+    assert_eq!(
+        t.binary_type_operation_stats(),
+        before_operations,
+        "canonical bottom laws must not hash operands or occupy the binary-operation table"
+    );
+}
+
+#[test]
 fn repeating_binary_type_algebra_returns_before_it_rebuilds_a_descriptor() {
     let mut t = Types::new();
     let int = t.int();
