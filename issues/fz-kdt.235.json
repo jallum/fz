@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-17T23:57:54Z",
+  "description": "Descr factors brands from structural axes. Red: binary must NOT be subtype of utf8 | nil, while utf8 and nil each are. Current union drops correlated brand restriction. Repair correlated representation across union/intersection/difference/subtyping; test complement and mixed same-axis/different-axis brands. One fresh agent, docs, one commit onto PR215.",
+  "id": "fz-kdt.235",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "Preserve structural and brand correlation in unions",
+  "type": "bug",
+  "updated_at": "2026-09-17T23:57:54Z"
+}
