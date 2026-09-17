@@ -7,9 +7,15 @@
   "id": "fz-kdt.177.10",
   "labels": [],
   "parent": "fz-kdt.177",
+  "comments": [
+    {
+      "text": "Dependency update: fz-kdt.177.16 and fz-kdt.177.9 were consolidated before implementation into atomic fz-kdt.98.3 after the resolved-value SCC witness proved the former graph-only intermediate non-terminating. This ticket now follows fz-kdt.98.3 directly and still owns only μ closure plus budget deletion.",
+      "timestamp": "2026-09-17T22:31:14Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Fold a recursive group's equations to μ; delete the budgets",
   "type": "task",
-  "updated_at": "2026-09-17T22:31:10Z"
+  "updated_at": "2026-09-17T22:31:14Z"
 }
