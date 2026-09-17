@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.177.15",
+    "fz-kdt.177.16",
     "fz-kdt.177.3",
     "fz-kdt.98.3"
   ],
@@ -23,5 +24,5 @@
   "status": "open",
   "title": "A recursive group's returns are solved once; cyclic copies are never new ground",
   "type": "task",
-  "updated_at": "2026-09-17T18:50:06Z"
+  "updated_at": "2026-09-17T18:50:14Z"
 }
