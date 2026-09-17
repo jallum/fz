@@ -7,7 +7,7 @@
     "fz-kdt.177.6"
   ],
   "created": "2026-09-15T20:29:56Z",
-  "description": "",
+  "description": "Reader-only foundation for regular, already-published test fixtures. This ticket creates no recursive production Ty and adds no second type representation.\n\nThe existing #[cfg(test)] intern_two_phase fixture may construct a cycle solely to prove readers terminate; it remains test-only and deliberately does not establish production canonicality.\n\nGuard the read/accumulation traversals with their semantic keys:\n- has_vars and free_var_ids visit each Ty once;\n- collect_subst_into visits each (pattern, witness, binding-side, target-side) relation once;\n- collect_match_subst carries one in-flight matching relation per (pattern, witness, binding-side), treating a re-entered relation coinductively as already matched rather than marking a self-equal recursive pattern underconstrained;\n- preserve the existing emptiness Memo's descriptor-keyed coinductive hypothesis with one negation-bearing-cycle proof.\n\nAcceptance:\n- self- and mutually-recursive test fixtures terminate;\n- free-variable and substitution results are the finite fixed-point result, not a truncated tree walk;\n- matching a recursive type against itself retains its established outcome;\n- types_emptiness_discharges_a_negation_bearing_cycle proves the memo survives freshly composed descriptor arithmetic;\n- all existing acyclic behavior remains unchanged.\n\nExplicit non-goals: intersect, refine_widen, instantiation, closure erasure, runtime-envelope projection, addressed remapping, and convergence all construct new types. They must wait for the canonical regular-component commit ticket; a reserved or redirected Ty in any of them would violate the one-world identity law.",
   "id": "fz-kdt.177.5",
   "labels": [],
   "parent": "fz-kdt.177",
@@ -15,5 +15,5 @@
   "status": "in_progress",
   "title": "Cyclic type reader guards and emptiness proof",
   "type": "task",
-  "updated_at": "2026-09-17T01:31:15Z"
+  "updated_at": "2026-09-17T01:31:44Z"
 }
