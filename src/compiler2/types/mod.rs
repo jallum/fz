@@ -2609,7 +2609,8 @@ impl Types {
     }
 
     pub fn has_vars(&self, a: &Ty) -> bool {
-        has_vars(self.ctx(), self.descr(a))
+        let mut seen = HashSet::new();
+        has_vars_ty(self.ctx(), *a, &mut seen)
     }
 
     /// Every free type-var id reachable from `a`, structural children
@@ -2618,7 +2619,8 @@ impl Types {
     /// their denotations compare.
     pub fn free_var_ids(&self, a: &Ty) -> BTreeSet<TypeVarId> {
         let mut ids = BTreeSet::new();
-        collect_free_vars(self.ctx(), self.descr(a), &mut ids);
+        let mut seen = HashSet::new();
+        collect_free_vars(self.ctx(), *a, &mut seen, &mut ids);
         ids
     }
 
@@ -3774,36 +3776,40 @@ where
 /// Collect every type-var id `d` mentions, mirroring `has_vars`' recursion:
 /// the same axes, the same structural children, including a closure literal's
 /// captures.
-fn collect_free_vars(cx: TyCtx<'_>, d: &Descr, ids: &mut BTreeSet<TypeVarId>) {
+fn collect_free_vars(cx: TyCtx<'_>, ty: Ty, seen: &mut HashSet<Ty>, ids: &mut BTreeSet<TypeVarId>) {
+    if !seen.insert(ty) {
+        return;
+    }
+    let d = cx.descr(&ty);
     ids.extend(d.vars.values.iter().copied());
     for c in &d.tuples {
         for sig in c.pos.iter().chain(c.neg.iter()) {
             for t in &sig.elems {
-                collect_free_vars(cx, cx.descr(t), ids);
+                collect_free_vars(cx, *t, seen, ids);
             }
         }
     }
     for c in &d.lists {
         for sig in c.pos.iter().chain(c.neg.iter()) {
             if let Some(t) = sig.elem {
-                collect_free_vars(cx, cx.descr(&t), ids);
+                collect_free_vars(cx, t, seen, ids);
             }
         }
     }
     for c in &d.resources {
         for sig in c.pos.iter().chain(c.neg.iter()) {
-            collect_free_vars(cx, cx.descr(&sig.payload), ids);
+            collect_free_vars(cx, sig.payload, seen, ids);
         }
     }
     for c in &d.funcs {
         for sig in c.pos.iter().chain(c.neg.iter()) {
             for t in &sig.args {
-                collect_free_vars(cx, cx.descr(t), ids);
+                collect_free_vars(cx, *t, seen, ids);
             }
-            collect_free_vars(cx, cx.descr(&sig.ret), ids);
+            collect_free_vars(cx, sig.ret, seen, ids);
             if let Some(lit) = sig.lit.as_ref() {
                 for t in &lit.captures {
-                    collect_free_vars(cx, cx.descr(t), ids);
+                    collect_free_vars(cx, *t, seen, ids);
                 }
             }
         }
@@ -3811,7 +3817,7 @@ fn collect_free_vars(cx: TyCtx<'_>, d: &Descr, ids: &mut BTreeSet<TypeVarId>) {
     for c in &d.maps {
         for sig in c.pos.iter().chain(c.neg.iter()) {
             for t in sig.fields.values() {
-                collect_free_vars(cx, cx.descr(t), ids);
+                collect_free_vars(cx, *t, seen, ids);
             }
         }
     }
@@ -3872,6 +3878,15 @@ fn collect_lit_arrow_shapes(cx: TyCtx<'_>, t: &Ty, seen: &mut HashSet<Ty>, shape
 }
 
 fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {
+    let mut seen = HashSet::new();
+    has_vars_descr(cx, d, &mut seen)
+}
+
+fn has_vars_ty(cx: TyCtx<'_>, ty: Ty, seen: &mut HashSet<Ty>) -> bool {
+    seen.insert(ty) && has_vars_descr(cx, cx.descr(&ty), seen)
+}
+
+fn has_vars_descr(cx: TyCtx<'_>, d: &Descr, seen: &mut HashSet<Ty>) -> bool {
     if !d.vars.values.is_empty() {
         return true;
     }
@@ -3879,31 +3894,31 @@ fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {
         c.pos
             .iter()
             .chain(c.neg.iter())
-            .any(|sig| sig.elems.iter().any(|t| has_vars(cx, cx.descr(t))))
+            .any(|sig| sig.elems.iter().any(|t| has_vars_ty(cx, *t, seen)))
     }) || d.lists.iter().any(|c| {
         c.pos
             .iter()
             .chain(c.neg.iter())
-            .any(|sig| sig.elem.is_some_and(|t| has_vars(cx, cx.descr(&t))))
+            .any(|sig| sig.elem.is_some_and(|t| has_vars_ty(cx, t, seen)))
     }) || d.resources.iter().any(|c| {
         c.pos
             .iter()
             .chain(c.neg.iter())
-            .any(|sig| has_vars(cx, cx.descr(&sig.payload)))
+            .any(|sig| has_vars_ty(cx, sig.payload, seen))
     }) || d.funcs.iter().any(|c| {
         c.pos.iter().chain(c.neg.iter()).any(|sig| {
-            sig.args.iter().any(|t| has_vars(cx, cx.descr(t)))
-                || has_vars(cx, cx.descr(&sig.ret))
+            sig.args.iter().any(|t| has_vars_ty(cx, *t, seen))
+                || has_vars_ty(cx, sig.ret, seen)
                 || sig
                     .lit
                     .as_ref()
-                    .is_some_and(|lit| lit.captures.iter().any(|t| has_vars(cx, cx.descr(t))))
+                    .is_some_and(|lit| lit.captures.iter().any(|t| has_vars_ty(cx, *t, seen)))
         })
     }) || d.maps.iter().any(|c| {
         c.pos
             .iter()
             .chain(c.neg.iter())
-            .any(|sig| sig.fields.values().any(|t| has_vars(cx, cx.descr(t))))
+            .any(|sig| sig.fields.values().any(|t| has_vars_ty(cx, *t, seen)))
     })
 }
 
@@ -4427,6 +4442,22 @@ fn collect_subst_into(
     target: BindingSide,
     sigma: &mut Sigma<Ty>,
 ) {
+    let mut seen = HashSet::new();
+    collect_subst_into_with(t, pattern, witness, side, target, sigma, &mut seen);
+}
+
+fn collect_subst_into_with(
+    t: &mut Types,
+    pattern: Ty,
+    witness: Ty,
+    side: BindingSide,
+    target: BindingSide,
+    sigma: &mut Sigma<Ty>,
+    seen: &mut HashSet<(Ty, Ty, BindingSide, BindingSide)>,
+) {
+    if !seen.insert((pattern, witness, side, target)) {
+        return;
+    }
     let pat = t.descr(&pattern).clone();
     let wit = t.descr(&witness).clone();
     if let Some(ids) = pure_var_ids(&pat) {
@@ -4441,32 +4472,32 @@ fn collect_subst_into(
         && ps.elems.len() == ws.elems.len()
     {
         for (p, w) in ps.elems.iter().zip(ws.elems.iter()) {
-            collect_subst_into(t, *p, *w, side, target, sigma);
+            collect_subst_into_with(t, *p, *w, side, target, sigma, seen);
         }
     }
     let any = t.any();
     if let (Some(ps), Some(ws)) = (pat.as_pure_list(any), wit.as_pure_list(any))
         && let (Some(p), Some(w)) = (ps.elem, ws.elem)
     {
-        collect_subst_into(t, p, w, side, target, sigma);
+        collect_subst_into_with(t, p, w, side, target, sigma, seen);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_resource(any), wit.pure_resource(any)) {
-        collect_subst_into(t, ps.payload, ws.payload, side, target, sigma);
+        collect_subst_into_with(t, ps.payload, ws.payload, side, target, sigma, seen);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_arrow(), wit.pure_arrow())
         && ps.args.len() == ws.args.len()
     {
         for (p, w) in ps.args.iter().zip(ws.args.iter()) {
-            collect_subst_into(t, *p, *w, side.flipped(), target, sigma);
+            collect_subst_into_with(t, *p, *w, side.flipped(), target, sigma, seen);
         }
-        collect_subst_into(t, ps.ret, ws.ret, side, target, sigma);
+        collect_subst_into_with(t, ps.ret, ws.ret, side, target, sigma, seen);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_record(), wit.pure_record())
         && ps.tag == ws.tag
     {
         for (key, p) in &ps.fields {
             if let Some(w) = ws.fields.get(key) {
-                collect_subst_into(t, *p, *w, side, target, sigma);
+                collect_subst_into_with(t, *p, *w, side, target, sigma, seen);
             }
         }
     }
