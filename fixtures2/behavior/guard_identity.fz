@@ -1,0 +1,20 @@
+#---
+# purpose: "the identity operator in a guard is the same === an expression uses"
+# oracle: oracle.exs
+# defer: "=== is refused in a guard"
+#---
+#
+# # guard_identity
+#
+# `===` is strict: `1 === 1.0` is false, because the two values are not the
+# same term, even though `1 == 1.0` is true. A guard that spells `===` asks the
+# same question as an expression that spells it.
+defp identical?(a, b) when a === b, do: :identical
+defp identical?(_a, _b), do: :distinct
+
+def main() do
+  dbg(identical?(1, 1.0))
+  dbg(identical?(1, :atom))
+  dbg(identical?(2, 2))
+  dbg(1 === 1.0)
+end
