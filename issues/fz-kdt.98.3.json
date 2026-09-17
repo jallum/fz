@@ -4,8 +4,7 @@
     "fz-kdt.98.1"
   ],
   "blocks": [
-    "fz-kdt.177.16",
-    "fz-kdt.177.9"
+    "fz-kdt.177.16"
   ],
   "created": "2026-09-16T02:07:06Z",
   "description": "The recursive-return cut needs one complete call-edge authority. Today `StaticCallees` is derived from the lowered body alone, so a call through a value (`LoweredTail::ClosureCall`) contributes no edge even after `AnalyzeActivation` resolves its targets. Witness: `loop(f, n)` calling `f.(f, n - 1)`, entered as `loop(\u0026loop/2, 3)`, is recursion the graph never sees; `Recursive(loop)` is false and the transport cut cannot find the owner.\n\nExtend the existing edge authority: body edges (including fz-kdt.98.1 function references) plus each activation analysis's resolved value-call targets, with exact contribution replacement and withdrawal. `DeriveCallGraphComponent` and the retained transport reachability walk consume this same complete edge fact. Do not introduce the broader `Reaches(f)` formula or delete those walkers in this ticket.\n\nA resolved value edge can make `Recursive` flip false→true mid-compile. `Recursive` is replacing, so that is a ground shift: callers rebase through their `Recursive(callee)` reads and obsolete activation/input contributors withdraw exactly. TDD: the witness is recursive on both doors; artifacts are byte-identical under permuted submission; an activation-edge addition/removal moves only that owner contribution; no orphan activation keys survive the flip; corpus canon matches base; json_roundtrip causal job-start and ReturnType counts are compared before/after. Third commit of fz-kdt.98.",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "One cumulative call-graph edge fact: body edges plus the value-call targets each analysis resolves",
   "type": "task",
-  "updated_at": "2026-09-17T21:38:56Z"
+  "updated_at": "2026-09-17T21:46:50Z"
 }
