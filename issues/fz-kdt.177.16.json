@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-17T18:50:00Z",
-  "description": "CallGraphComponent currently names only a canonical FunctionId; strong_component computes members transiently. A canonical recursive-return group must enumerate precisely the ActivationKeys whose functions belong to its component without a World scan, and must retract membership exactly when either an activation or component edge moves. Retain one fact-owned, incremental component-to-activation membership authority after fz-kdt.98.3 makes CallGraphComponent complete. TDD: equal replay performs no work; an unrelated activation/component changes no other component inventory; relevant activation add/remove or component rebase moves only exact membership and readers; FIFO/LIFO/permuted admissions produce identical membership. Required before fz-kdt.177.9 can publish one exact return derivation per member.",
+  "description": "Superseded before implementation by fz-kdt.98.3, Complete the dynamic recursive return cut atomically. This ticket is closed so future agents do not mistake retained component membership for a safe standalone change.\n\nThe preserved obligation is: retain ComponentActivations(ActivationComponent), where ActivationComponent is {root, canonical component}; TrackActivationComponent(ActivationKey) owns an exact contribution and retracts it on either activation absence or component movement. No World scan, reverse cache, or second SCC walk. See fz-kdt.98.3 for the complete model, tests, and atomic acceptance gates.",
   "id": "fz-kdt.177.16",
   "labels": [],
   "parent": "fz-kdt.177",
   "priority": 1,
   "status": "open",
-  "title": "Retain exact component activation membership",
+  "title": "Superseded: exact component activation membership",
   "type": "task",
-  "updated_at": "2026-09-17T22:31:09Z"
+  "updated_at": "2026-09-17T22:31:11Z"
 }
