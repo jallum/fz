@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.177.11",
     "fz-kdt.177.7"
   ],
   "blocks": [
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "A recursive @type resolves to one μ identity",
   "type": "task",
-  "updated_at": "2026-09-17T01:31:47Z"
+  "updated_at": "2026-09-17T01:53:25Z"
 }
