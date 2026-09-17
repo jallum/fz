@@ -1,16 +1,15 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [],
   "blocks": [],
-  "closed_at": "2026-09-17T00:46:09Z",
   "created": "2026-09-17T00:42:59Z",
   "description": "Make the finite-recursive-denotations plan executable by encoding only proven prerequisites.\n\nReplace the stale broad links fz-tfn.62 -\u003e fz-kdt.48 and fz-kdt.48 -\u003e fz-kdt.177 with the already-recorded narrow leaf path fz-tfn.62.2 -\u003e fz-kdt.48.7 -\u003e fz-kdt.48.8 -\u003e fz-kdt.177.4. Add the missing fz-kdt.98.3 -\u003e fz-kdt.177.9 link: the recursive return-group solver consumes CallGraphComponent, which is unsound until cumulative function-reference and resolved value-call edges land.\n\nUpdate the handoff and proposal diagrams/status prose to match the corrected graph and live stack. Treat fz-qds as a delivery-reliability gate, not a semantic dependency: its documented serial-CI premise is stale while CI runs fixture trials at four threads and repeated json_roundtrip readiness failures remain observable.\n\nAcceptance: fz-kdt.177.5's direct dependency context is unblocked once fz-kdt.177.4 closes, even though bw ready summarizes parent-level work; fz-kdt.177.9 is blocked by fz-kdt.98.3; the documents name the exact dual critical paths and no longer claim whole fz-tfn.62 or fz-kdt.48 completion is required. No production code changes.",
   "id": "fz-kdt.230",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 1,
-  "status": "closed",
+  "status": "open",
   "title": "Correct the recursive-denotation dependency plan",
   "type": "task",
-  "updated_at": "2026-09-17T00:46:09Z"
+  "updated_at": "2026-09-17T00:46:27Z"
 }
