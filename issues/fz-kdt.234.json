@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.238"
+  ],
   "created": "2026-09-17T23:57:53Z",
   "description": "`MergeSig for ArrowSig` merges distinct domains and intersects returns, destroying overload correlation. Red: A=int-\u003eint, B=atom-\u003eatom, intersect(A,B) must be equivalent to difference(A,difference(any,B)); it currently collapses to (int|atom)-\u003enone. Preserve conjunctions unless a proved merge law applies; test disjoint/overlapping domains, arities and closure-literal consumers. One fresh agent, red/green, docs, one commit onto PR215.",
   "id": "fz-kdt.234",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Fix unsound positive arrow intersection",
   "type": "bug",
-  "updated_at": "2026-09-17T23:57:53Z"
+  "updated_at": "2026-09-17T23:58:29Z"
 }

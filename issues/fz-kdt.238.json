@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.234"
+  ],
   "blocks": [],
   "created": "2026-09-17T23:57:58Z",
   "description": "Equivalent arrow spellings retain different Ty IDs; intersect operand order chooses different equivalent survivor; semantic denotation mixed with callable metadata. Red overloaded int-\u003eint + atom-\u003eint vs (int|atom)-\u003eint must share semantic identity, meet commutative in ID; preserve distinct callable provenance/brands where meaningful. Coordinate arrow-conjunction agent; no O(store size) equivalence scan or equality-only shim. One fresh agent, one commit onto PR215.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Make type identity independent of equivalent construction and metadata",
   "type": "bug",
-  "updated_at": "2026-09-17T23:57:58Z"
+  "updated_at": "2026-09-17T23:58:29Z"
 }
