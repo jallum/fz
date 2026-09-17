@@ -188,11 +188,9 @@ impl Descr {
         d
     }
 
-    pub(super) fn tuple_of(elems: impl IntoIterator<Item = Ty>) -> Self {
+    pub(super) fn tuple_of(elems: Vec<Ty>) -> Self {
         let mut d = Self::unbranded();
-        d.tuples.push(Conj::pos_of(TupleSig {
-            elems: elems.into_iter().collect(),
-        }));
+        d.tuples.push(Conj::pos_of(TupleSig { elems }));
         d
     }
 
