@@ -1493,6 +1493,14 @@ impl Types {
         let Some(sig) = self.descr(&arrow).pure_arrow() else {
             return arrow;
         };
+        if !sig
+            .args
+            .iter()
+            .enumerate()
+            .any(|(slot, _)| matches!(mask.get(slot), Some(DispatchDemand::Ignore)))
+        {
+            return self.unchanged(arrow);
+        }
         let params = sig.args.clone();
         let ret = sig.ret;
         let erased = params

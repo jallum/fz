@@ -60,6 +60,11 @@ type, and a concrete type contains no substitution site, so both return their
 input `Ty` before traversing or cloning its descriptor. A type that may carry a
 replacement still takes the ordinary recursive instantiation path.
 
+Activation-key closure erasure follows it too. Its dispatch mask identifies the
+parameters whose closure construction identity is freight. If no parameter is
+marked `Ignore`, no identity can be erased, so the existing arrow `Ty` returns
+before its parameter vector is cloned or its descriptor reaches the interner.
+
 This is deliberately narrower than a cache. Constructors such as `tuple` and
 `arrow` receive interned children, but their *outer* clause sets are newly built;
 only the interner can decide whether that new descriptor names an existing type.

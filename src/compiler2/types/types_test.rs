@@ -121,6 +121,36 @@ fn unchanged_instantiation_returns_before_it_probes_or_normalizes() {
 }
 
 #[test]
+fn closure_erasure_with_no_ignored_parameter_returns_before_it_rebuilds_the_arrow() {
+    let mut t = Types::new();
+    let int = t.int();
+    let arrow = t.arrow(&[int], int);
+    let before = t.interning_work_stats();
+
+    assert_eq!(
+        t.erase_transported_closure_identities(arrow, &[DispatchDemand::Whole]),
+        arrow
+    );
+    let expected = InterningWorkStats {
+        identity_shortcuts: before.identity_shortcuts + 1,
+        ..before
+    };
+    assert_eq!(
+        t.interning_work_stats(),
+        expected,
+        "a closure-erasure mask without an ignored parameter cannot change the arrow"
+    );
+
+    let literal = t.closure_lit(ClosureTarget(7), vec![], 0);
+    let closure_arrow = t.arrow(&[literal], int);
+    let erased = t.erase_transported_closure_identities(closure_arrow, &[DispatchDemand::Ignore]);
+    assert_ne!(
+        erased, closure_arrow,
+        "an ignored closure parameter must still erase its construction identity"
+    );
+}
+
+#[test]
 fn structural_children_are_interned_handles() {
     let mut t = Types::new();
     let elem = t.int();
