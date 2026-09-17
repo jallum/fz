@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.177.5"
+    "fz-kdt.177.5",
+    "fz-kdt.177.7"
   ],
   "blocks": [],
   "created": "2026-09-17T01:31:16Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Canonical regular-component commit at the sole type interner boundary",
   "type": "task",
-  "updated_at": "2026-09-17T01:31:45Z"
+  "updated_at": "2026-09-17T01:31:46Z"
 }

@@ -4,6 +4,7 @@
     "fz-kdt.177.6"
   ],
   "blocks": [
+    "fz-kdt.177.11",
     "fz-kdt.177.8"
   ],
   "created": "2026-09-15T20:29:57Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "A recursive denotation at the runtime-dispatch boundary",
   "type": "task",
-  "updated_at": "2026-09-15T20:30:13Z"
+  "updated_at": "2026-09-17T01:31:46Z"
 }
