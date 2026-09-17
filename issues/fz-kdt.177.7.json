@@ -7,7 +7,7 @@
     "fz-kdt.177.8"
   ],
   "created": "2026-09-15T20:29:57Z",
-  "description": "After fz-kdt.177.12 makes recursive runtime predicates finite and evaluable on all doors, make runtime transport finite without truncating sibling structure. Boundary demand cuts only an active Ty to RuntimeDemand::whole; layout construction cuts only an active (Ty, RuntimeDemand) relation to a boxed ValueRef lane. The boundary retains each finite outer prefix and applies no depth budget. Reuse the canonical regular test constructors and prove mixed recursive tuple/list/callable shapes terminate with deterministic finite layouts. The direct predicate and three-door evaluator contract belongs to fz-kdt.177.12; this ticket consumes it and completes transport before recursive typedefs enter production.",
+  "description": "Minimal runtime boundary required by the first production recursive @type path. Materialized executable return transport currently calls Types::runtime_type_predicate solely to ask whether a type is exclusively one exact tuple arity, forcing recursive descent through μ children. Replace that broad projection with one exact non-descending root-shape query owned by Types. It answers false for μX. :start | {integer, X} at the atom alternative and does not inspect tuple fields. Preserve every acyclic transport result and prove recursive @type backend materialization reaches the next intended gate without runtime predicate construction. No predicate-component graph, callsite/receive relation work, native runtime-test change, or transport re-entry layout change belongs here; defer those unless a concrete μ path reaches them.",
   "id": "fz-kdt.177.7",
   "labels": [],
   "parent": "fz-kdt.177",
@@ -23,7 +23,7 @@
   ],
   "priority": 1,
   "status": "open",
-  "title": "Recursive transport boundary cuts cycles to boxed values",
+  "title": "Transport asks exact root tuple shape without descending",
   "type": "task",
-  "updated_at": "2026-09-17T14:58:06Z"
+  "updated_at": "2026-09-17T14:58:07Z"
 }
