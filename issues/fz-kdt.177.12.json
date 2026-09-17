@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.177.13"
+    "fz-kdt.177.13",
+    "fz-kdt.177.14"
   ],
   "blocks": [
     "fz-kdt.177.7"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Project canonical recursive types into runtime predicate programs",
   "type": "task",
-  "updated_at": "2026-09-17T11:17:59Z"
+  "updated_at": "2026-09-17T13:44:28Z"
 }
