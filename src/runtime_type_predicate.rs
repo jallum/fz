@@ -964,13 +964,10 @@ impl CallableShape {
 ///
 /// This is the callable axis' answer to [`TupleShapes`] and it follows the
 /// same discipline: `shapes` holds one entry per positive closure-literal
-/// CLAUSE of the descriptor it was projected from, and `exact` records whether
-/// every clause could be shaped. A clause that pins several literals at once
-/// is an intersection and is not one shape, so it degrades the whole axis to
-/// the target-only reading -- which is what this layer asked before fz-kdt.127
-/// and is a sound over-approximation of it. The target set is DERIVED from the
-/// shapes when the axis is exact, never stated twice, so the two readings
-/// cannot drift apart.
+/// clause of the descriptor it was projected from. An interned clause has one
+/// literal identity, so every non-top callable axis is exact. The target set
+/// is derived from the shapes when the axis is exact, never stated twice, so
+/// the two readings cannot drift apart.
 ///
 /// ADMISSION of a value is [`Self::admits`]: CONTAINMENT of the value's
 /// construction shape in a shape named here, never overlap. The two-test
@@ -993,7 +990,11 @@ impl CallableShapes {
 
     /// Every callable, of every construction.
     pub(crate) fn any() -> Self {
-        Self::target_only(FiniteSet::any())
+        Self {
+            targets: FiniteSet::any(),
+            shapes: Vec::new(),
+            exact: false,
+        }
     }
 
     /// One shape per clause, and the targets they name.
@@ -1002,15 +1003,6 @@ impl CallableShapes {
             targets: FiniteSet::finite(shapes.iter().map(|shape| shape.target)),
             shapes,
             exact: true,
-        }
-    }
-
-    /// The coarse reading: these targets, and nothing about their captures.
-    pub(crate) fn target_only(targets: FiniteSet<ClosureTarget>) -> Self {
-        Self {
-            targets,
-            shapes: Vec::new(),
-            exact: false,
         }
     }
 
@@ -2001,18 +1993,6 @@ mod tests {
         );
     }
 
-    /// The target-only reading is what a clause pinning several literals at
-    /// once degrades to, and it admits every capture layout of its targets --
-    /// which is what this layer asked before fz-kdt.127.
-    #[test]
-    fn a_target_only_axis_admits_every_capture_layout_of_its_targets() {
-        let coarse = CallableShapes::target_only(FiniteSet::lit(ClosureTarget(66)));
-        assert!(!coarse.is_exact(), "several literals at once are not one shape");
-        assert!(coarse.admits(&construction(66, vec![ints()])));
-        assert!(coarse.admits(&construction(66, vec![floats()])));
-        assert!(!coarse.admits(&construction(68, vec![ints()])));
-    }
-
     /// The callable axis is PER POSITION: it separates exactly as far as its
     /// capture questions do, and erases exactly where they erase.
     ///
@@ -2057,14 +2037,13 @@ mod tests {
              report the erasure through the capture rather than claim a separation",
         );
 
-        let coarse = {
-            let mut predicate = RuntimeTypePredicate::none();
-            predicate.callables = CallableShapes::target_only(FiniteSet::lit(ClosureTarget(66)));
-            predicate
+        let coarse = RuntimeTypePredicate {
+            callables: CallableShapes::any(),
+            ..RuntimeTypePredicate::none()
         };
         assert!(
             coarse.overlaps_on_an_erasing_axis(&both),
-            "and an axis that could not be shaped claims nothing at all",
+            "and an unconstrained callable axis claims no capture separation",
         );
     }
 
