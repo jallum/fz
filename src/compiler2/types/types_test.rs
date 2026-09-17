@@ -84,6 +84,43 @@ fn widening_the_same_type_returns_before_it_probes_or_normalizes() {
 }
 
 #[test]
+fn unchanged_instantiation_returns_before_it_probes_or_normalizes() {
+    let mut t = Types::new();
+    let int = t.int();
+    let list = t.list(int);
+    let concrete = t.tuple(&[list, int]);
+    let unrelated = Sigma::from([(TypeVarId(99), int)]);
+    let template = t.type_var(TypeVarId(0));
+    let empty = Sigma::new();
+    let before = t.interning_work_stats();
+
+    assert_eq!(t.instantiate(&concrete, &unrelated), concrete);
+    assert_eq!(t.instantiate(&template, &empty), template);
+
+    let expected = InterningWorkStats {
+        identity_shortcuts: before.identity_shortcuts + 2,
+        ..before
+    };
+    assert_eq!(
+        t.interning_work_stats(),
+        expected,
+        "an instantiation without a possible replacement must not probe or normalize a descriptor"
+    );
+
+    assert_eq!(
+        t.instantiate(&template, &unrelated),
+        template,
+        "an unrelated substitution leaves a template semantically unchanged"
+    );
+    let matching = Sigma::from([(TypeVarId(0), int)]);
+    assert_eq!(
+        t.instantiate(&template, &matching),
+        int,
+        "a matching substitution still returns the canonical specialized Ty"
+    );
+}
+
+#[test]
 fn structural_children_are_interned_handles() {
     let mut t = Types::new();
     let elem = t.int();
