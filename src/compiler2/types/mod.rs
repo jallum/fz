@@ -244,7 +244,6 @@ pub(crate) struct BinaryTypeOperationCount {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ComparisonKey {
-    Empty(Ty),
     Subtype(Ty, Ty),
     Disjoint(Ty, Ty),
     ValueDisjoint(Ty, Ty),
@@ -1930,10 +1929,7 @@ impl Types {
     }
 
     pub fn is_empty(&self, a: &Ty) -> bool {
-        self.cached_comparison(ComparisonKey::Empty(*a), |types| {
-            let cx = types.ctx();
-            types.descr(a).is_empty(cx)
-        })
+        *a == self.core.none
     }
 
     #[cfg(test)]

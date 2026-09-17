@@ -117,6 +117,12 @@ descriptor. This also makes the exact law `difference(t, t) = none` a direct han
 return. A type with operands still goes through the sole interning boundary; the core
 inventory is not a second normalization or result-cache authority.
 
+`Ty` is issued only after that same interning boundary's bottom collapse, so an
+interned type is empty exactly when its handle is the retained `none` handle.
+`Types::is_empty` is therefore a handle comparison, not a cached or recursive
+descriptor traversal. Descriptor-level emptiness still belongs to normalization,
+before a `Ty` exists.
+
 - **`refine_widen(a, b)`** — finite-height least upper bound. Collapses literal axes
   to their base and merges list shapes (`[] ⊔ nonempty(t) = list(t)`), so a joined
   slot ascends a bounded chain and the fixpoint terminates. This is the join behind
