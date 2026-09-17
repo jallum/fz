@@ -350,13 +350,13 @@ the target fixtures the overwhelming majority of intern calls are answered by
 the index, which is also what keeps the absorption's containment questions to a
 small constant per compile.
 
-The interner can also reserve one or more identities before their normalized
-bodies are available. A reserved slot is unreadable; filling it publishes the
-body in that slot and then keys the index by the completed descriptor. A body
-may name its reservation, which is how a finite regular tree closes a cycle.
-The ordinary debug hygiene sweep stays on the normalized one-phase path: it
-queries child descriptors and therefore cannot run while a reservation is
-unfinished.
+A regular component is prepared outside the arena with private local
+references. The interner refines equivalent local nodes, assigns a canonical
+rooted graph key, and checks that key in the same index that holds ordinary
+descriptors. A hit returns the component's existing complete `Ty`s. A miss
+maps local references to the final contiguous ids and appends only completed
+descriptors plus their direct and regular keys. No incomplete id, redirect, or
+second type graph can escape the transaction.
 
 What clause order canNOT reconcile is a different CARVING of one type:
 `{[int], :false} | {[int], :true}` and `{[int], :false | :true}` are one

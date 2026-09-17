@@ -97,7 +97,7 @@ use super::conj::Conj;
 use super::descr::Descr;
 use super::dnf::is_dnf_top;
 use super::emptiness::{self, ListDenotation, NonEmptyLists};
-use super::sigs::{ListSig, ResourceSig, TupleSig};
+use super::sigs::{ListSig, ListSigOf, ResourceSig, TupleSig, TupleSigOf};
 
 /// Install one axis's clauses into an otherwise contentless descriptor. The
 /// axis's containment questions are then asked of the shared type calculator
@@ -221,15 +221,7 @@ pub(super) const TUPLES: AxisView<TupleSig> = AxisView {
     // Products of non-empty sets compare coordinatewise: `∏Aᵢ ⊆ ∏Bᵢ` exactly
     // when every `Aᵢ ⊆ Bᵢ`, which is exact given an interned clause never
     // carries an empty coordinate.
-    clause_covers: |wider, narrower, sub| {
-        factors_are_superset(wider, narrower)
-            || match (plain_sig(narrower), plain_sig(wider)) {
-                (Some(a), Some(b)) => {
-                    a.elems.len() == b.elems.len() && a.elems.iter().zip(b.elems.iter()).all(|(x, y)| sub(x, y))
-                }
-                _ => false,
-            }
-    },
+    clause_covers: |wider, narrower, sub| tuple_clause_covers(wider, narrower, |a, b| sub(a, b)),
     coverage: |cx, clause, siblings, _subtype| {
         let Some(ours) = plain_sig(clause) else {
             return Coverage::Unproven;
@@ -246,6 +238,44 @@ pub(super) const TUPLES: AxisView<TupleSig> = AxisView {
     // clauses reaches finitely many arities, and arity is unbounded.
     plain_top: |_, _| Coverage::NotCovered,
 };
+
+pub(super) fn tuple_clause_covers<R: PartialEq>(
+    wider: &Conj<TupleSigOf<R>>,
+    narrower: &Conj<TupleSigOf<R>>,
+    mut is_subtype: impl FnMut(&R, &R) -> bool,
+) -> bool {
+    factors_are_superset(wider, narrower)
+        || match (plain_sig(narrower), plain_sig(wider)) {
+            (Some(narrower), Some(wider)) => {
+                narrower.elems.len() == wider.elems.len()
+                    && narrower
+                        .elems
+                        .iter()
+                        .zip(&wider.elems)
+                        .all(|(narrower, wider)| is_subtype(narrower, wider))
+            }
+            _ => false,
+        }
+}
+
+#[cfg(test)]
+pub(super) fn drop_directly_covered_clauses<T>(
+    clauses: &mut Vec<Conj<T>>,
+    clause_covers: impl Fn(&Conj<T>, &Conj<T>) -> bool,
+) {
+    if clauses.len() < 2 {
+        return;
+    }
+    let mut keep = vec![true; clauses.len()];
+    for index in 0..clauses.len() {
+        keep[index] = !clauses
+            .iter()
+            .enumerate()
+            .any(|(other, sibling)| other != index && keep[other] && clause_covers(sibling, &clauses[index]));
+    }
+    let mut verdicts = keep.into_iter();
+    clauses.retain(|_| verdicts.next().unwrap_or(true));
+}
 pub(super) const LISTS: AxisView<ListSig> = AxisView {
     install: |d, clauses| d.lists = clauses,
     // A plain list clause has two exact dimensions: whether it admits `[]`,
@@ -361,13 +391,13 @@ pub(super) fn list_clause_of(denotation: ListDenotation, intern: &mut dyn FnMut(
 /// so reading the flags is exact. A clause the boundary left alone (its
 /// elements carry type variables) may, and one is neither widened nor read as
 /// holding `[]`.
-pub(super) fn merge_empty_list_clause(clauses: &mut Vec<Conj<ListSig>>) {
-    fn just_empty(c: &Conj<ListSig>) -> bool {
-        plain_sig(c).is_some_and(ListSig::is_exact_empty)
+pub(super) fn merge_empty_list_clause<R>(clauses: &mut Vec<Conj<ListSigOf<R>>>) {
+    fn just_empty<R>(c: &Conj<ListSigOf<R>>) -> bool {
+        plain_sig(c).is_some_and(ListSigOf::is_exact_empty)
     }
     // Not `plain_sig`: a clause carrying a residual subtraction still keeps
     // only non-empty lists, and widening its positive is the same one step.
-    fn keeps_only_non_empty(c: &Conj<ListSig>) -> bool {
+    fn keeps_only_non_empty<R>(c: &Conj<ListSigOf<R>>) -> bool {
         matches!(c.pos.as_slice(), [sig] if !sig.empty && sig.elem.is_some()) && !c.neg.iter().any(|n| n.empty)
     }
     if !clauses.iter().any(emptiness::clause_holds_empty) {
@@ -699,6 +729,7 @@ fn axis_of<T>(clauses: Vec<Conj<T>>, install: InstallAxis<T>) -> Descr {
 /// a coordinate is either the id it arrived as or a descriptor still to be
 /// interned — and a coordinate carving never touched costs no interning at
 /// all.
+#[derive(Clone)]
 pub(super) enum Coord {
     Interned(Ty),
     Built(Box<Descr>),
@@ -724,6 +755,37 @@ impl Coord {
 /// coordinates.
 pub(super) type Rect = Vec<Coord>;
 
+pub(super) trait TupleRectOps<R> {
+    fn same(&self, left: &R, right: &R) -> bool;
+    fn union(&mut self, left: &R, right: &R) -> Option<R>;
+    fn covered_by(&self, candidate: &[R], rectangles: &[Vec<R>]) -> bool;
+}
+
+struct DirectTupleRectOps<'a> {
+    cx: TyCtx<'a>,
+}
+
+impl TupleRectOps<Coord> for DirectTupleRectOps<'_> {
+    fn same(&self, left: &Coord, right: &Coord) -> bool {
+        left.same_as(right, self.cx)
+    }
+
+    fn union(&mut self, left: &Coord, right: &Coord) -> Option<Coord> {
+        Some(Coord::Built(Box::new(
+            left.descr(self.cx).union(self.cx, &right.descr(self.cx)),
+        )))
+    }
+
+    fn covered_by(&self, candidate: &[Coord], rectangles: &[Vec<Coord>]) -> bool {
+        let candidate = candidate.iter().map(|coord| coord.descr(self.cx)).collect::<Vec<_>>();
+        let rectangles = rectangles
+            .iter()
+            .map(|rectangle| rectangle.iter().map(|coord| coord.descr(self.cx)).collect())
+            .collect::<Vec<_>>();
+        emptiness::phi_tuple(self.cx, &candidate, &rectangles, &mut emptiness::Memo::default())
+    }
+}
+
 /// One union of rectangles, carved the same way whichever decomposition
 /// arrived.
 ///
@@ -746,13 +808,18 @@ pub(super) type Rect = Vec<Coord>;
 /// count; widening then runs against a settled sibling set. The pair repeats
 /// only while something changed, so the walk is bounded by the rectangle count
 /// it started with.
-pub(super) fn fuse_tuple_rects(cx: TyCtx<'_>, mut rects: Vec<Rect>) -> Vec<Rect> {
-    if rects.len() < 2 {
-        return rects;
-    }
+pub(super) fn fuse_tuple_rects(cx: TyCtx<'_>, rects: Vec<Rect>) -> Vec<Rect> {
+    let mut ops = DirectTupleRectOps { cx };
+    normalize_tuple_rects_with(&mut ops, rects)
+}
+
+pub(super) fn normalize_tuple_rects_with<R: Clone>(
+    ops: &mut impl TupleRectOps<R>,
+    mut rects: Vec<Vec<R>>,
+) -> Vec<Vec<R>> {
     loop {
-        let fused = fuse_one_coordinate_unions(cx, &mut rects);
-        let widened = widen_to_axis_union(cx, &mut rects);
+        let fused = fuse_one_coordinate_unions_with(ops, &mut rects);
+        let widened = widen_to_axis_union_with(ops, &mut rects);
         if !fused && !widened {
             return rects;
         }
@@ -760,68 +827,75 @@ pub(super) fn fuse_tuple_rects(cx: TyCtx<'_>, mut rects: Vec<Rect>) -> Vec<Rect>
 }
 
 /// `{A,C} ∨ {B,C} = {A∨B, C}`, to fixpoint. Reports whether anything merged.
-fn fuse_one_coordinate_unions(cx: TyCtx<'_>, rects: &mut Vec<Rect>) -> bool {
+fn fuse_one_coordinate_unions_with<R>(ops: &mut impl TupleRectOps<R>, rects: &mut Vec<Vec<R>>) -> bool {
     let mut fused = false;
-    while let Some((left, right, coord)) = next_fusible_pair(cx, rects) {
-        let grown = rects[left][coord].descr(cx).union(cx, &rects[right][coord].descr(cx));
-        rects[left][coord] = Coord::Built(Box::new(grown));
+    loop {
+        let mut candidate = None;
+        'pairs: for left in 0..rects.len() {
+            for right in (left + 1)..rects.len() {
+                if rects[left].len() != rects[right].len() {
+                    continue;
+                }
+                let mut differing = (0..rects[left].len())
+                    .filter(|coordinate| !ops.same(&rects[left][*coordinate], &rects[right][*coordinate]));
+                let Some(coordinate) = differing.next() else {
+                    continue;
+                };
+                if differing.next().is_none()
+                    && let Some(grown) = ops.union(&rects[left][coordinate], &rects[right][coordinate])
+                {
+                    candidate = Some((left, right, coordinate, grown));
+                    break 'pairs;
+                }
+            }
+        }
+        let Some((left, right, coord, grown)) = candidate else {
+            return fused;
+        };
+        rects[left][coord] = grown;
         rects.remove(right);
         fused = true;
     }
-    fused
-}
-
-/// The first pair agreeing on every coordinate but one, with that coordinate.
-/// A pair agreeing on ALL coordinates is a duplicate, which the axis absorber
-/// owns, so it is not reported here.
-fn next_fusible_pair(cx: TyCtx<'_>, rects: &[Rect]) -> Option<(usize, usize, usize)> {
-    for left in 0..rects.len() {
-        for right in (left + 1)..rects.len() {
-            if rects[left].len() != rects[right].len() {
-                continue;
-            }
-            let mut differing = (0..rects[left].len()).filter(|k| !rects[left][*k].same_as(&rects[right][*k], cx));
-            let Some(coord) = differing.next() else {
-                continue;
-            };
-            if differing.next().is_none() {
-                return Some((left, right, coord));
-            }
-        }
-    }
-    None
 }
 
 /// Grow coordinates to the axis union while the rectangle stays inside it.
 /// Reports whether anything grew.
-fn widen_to_axis_union(cx: TyCtx<'_>, rects: &mut [Rect]) -> bool {
+fn widen_to_axis_union_with<R: Clone>(ops: &mut impl TupleRectOps<R>, rects: &mut [Vec<R>]) -> bool {
     let mut widened = false;
-    while let Some((index, coord, grown)) = next_widening(cx, rects) {
-        rects[index][coord] = Coord::Built(Box::new(grown));
+    while let Some((index, coord, grown)) = next_widening_with(ops, rects) {
+        rects[index][coord] = grown;
         widened = true;
     }
     widened
 }
 
-fn next_widening(cx: TyCtx<'_>, rects: &[Rect]) -> Option<(usize, usize, Descr)> {
-    let mats: Vec<Vec<Descr>> = rects
-        .iter()
-        .map(|rect| rect.iter().map(|coord| coord.descr(cx)).collect())
-        .collect();
-    for (index, rect) in mats.iter().enumerate() {
+fn next_widening_with<R: Clone>(ops: &mut impl TupleRectOps<R>, rects: &[Vec<R>]) -> Option<(usize, usize, R)> {
+    for (index, rect) in rects.iter().enumerate() {
         let arity = rect.len();
-        let siblings: Vec<&Vec<Descr>> = mats.iter().filter(|other| other.len() == arity).collect();
+        let siblings = rects
+            .iter()
+            .filter(|other| other.len() == arity)
+            .cloned()
+            .collect::<Vec<_>>();
         for coord in 0..arity {
-            let candidate = siblings
+            let candidate = siblings[1..]
                 .iter()
-                .fold(Descr::none(), |acc, sibling| acc.union(cx, &sibling[coord]));
-            if candidate == rect[coord] {
+                .try_fold(siblings[0][coord].clone(), |candidate, sibling| {
+                    if ops.same(&candidate, &sibling[coord]) {
+                        Some(candidate)
+                    } else {
+                        ops.union(&candidate, &sibling[coord])
+                    }
+                });
+            let Some(candidate) = candidate else {
+                continue;
+            };
+            if ops.same(&candidate, &rect[coord]) {
                 continue;
             }
             let mut trial = rect.clone();
             trial[coord] = candidate.clone();
-            let cover: Vec<Vec<Descr>> = siblings.iter().map(|sibling| (*sibling).clone()).collect();
-            if emptiness::phi_tuple(cx, &trial, &cover, &mut emptiness::Memo::default()) {
+            if ops.covered_by(&trial, &siblings) {
                 return Some((index, coord, candidate));
             }
         }

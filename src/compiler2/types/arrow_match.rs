@@ -832,6 +832,8 @@ impl Types {
 #[cfg(test)]
 mod tests {
     use super::super::MapKey;
+    use super::super::descr::DescrOf;
+    use super::super::regular::ComponentRef;
     use super::*;
     use std::collections::HashMap;
 
@@ -870,8 +872,12 @@ mod tests {
         let alpha = TypeVarId(97);
         let variable = t.type_var(alpha);
         let int = t.int();
-        let pattern = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of(vec![reserved[0], variable])])[0];
-        let witness = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of(vec![reserved[0], int])])[0];
+        let pattern = t.intern_regular_component(1, |nodes| {
+            vec![DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(variable)])]
+        })[0];
+        let witness = t.intern_regular_component(1, |nodes| {
+            vec![DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(int)])]
+        })[0];
         let mut bounds = MatchBounds::default();
 
         assert_eq!(
