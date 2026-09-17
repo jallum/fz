@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-17T23:45:19Z",
+  "description": "PR #215 review at 6a352a867: scope_code appends all scope_reads to its base reads before ground_derivations, so early FunctionSource publications inherit later imports. Repro: register an empty LaterReview module interface, scope def early(), do: 1 followed by import LaterReview with ProductSessions; early derivation incorrectly reads ModuleInterface(LaterReview). Add red production-path test, keep base ground separate from cumulative job reads, prove later movement does not dirty early answer, update documentation, and integrate one commit onto PR #215.",
+  "id": "fz-kdt.232",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "Keep completed scope derivations independent of later reads",
+  "type": "bug",
+  "updated_at": "2026-09-17T23:45:19Z"
+}
