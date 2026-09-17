@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-kdt.177.13"
   ],
-  "blocks": [
-    "fz-kdt.177.7"
-  ],
+  "blocks": [],
   "created": "2026-09-17T11:14:14Z",
   "description": "After fz-kdt.177.13 supplies the runtime-owned predicate-program artifact and exact evaluator, project each canonical regular Ty into its finite component-local program graph. Builder memoization is keyed only by canonical Ty and reserves a node before descending; repeated Ty means a back-edge. The program is not a second global type interner or equivalence authority. Migrate list heads, tuple positions and callable captures to program-node references; relations use explicitly founded ordered node-pair calculations. Preserve acyclic predicate behavior, schema discovery and dispatch planning. Prove self/mutual tuple/list/capture components project finitely and agree with finite unrollings; hand the program to the shared primitive/receive lowering established by .177.13. Transport re-entry cuts remain .177.7.",
   "id": "fz-kdt.177.12",
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "Project canonical recursive types into runtime predicate programs",
   "type": "task",
-  "updated_at": "2026-09-17T14:52:28Z"
+  "updated_at": "2026-09-17T14:58:06Z"
 }
