@@ -11,9 +11,15 @@
   "id": "fz-kdt.177.8",
   "labels": [],
   "parent": "fz-kdt.177",
+  "comments": [
+    {
+      "text": "Draft PR #212: https://github.com/jallum/fz/pull/212 (base: #211). One commit 3d2286151. Verified: fresh architecture audit; recursive fixture across interpreter/JIT/AOT; source replacement retracts declaration, type/struct refs, and old product; cargo test --lib (2261 passed, 0 failed, 5 ignored); cargo check --all; fmt; clippy warnings denied. CI started. Ticket remains open until integration.",
+      "timestamp": "2026-09-17T17:37:50Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A recursive @type resolves to one μ identity",
   "type": "task",
-  "updated_at": "2026-09-17T02:30:31Z"
+  "updated_at": "2026-09-17T17:37:50Z"
 }
