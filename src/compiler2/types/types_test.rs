@@ -45,6 +45,34 @@ fn union_of_the_same_type_returns_before_it_probes_or_normalizes() {
 }
 
 #[test]
+fn empty_constant_and_self_difference_return_before_the_type_boundary() {
+    let mut t = Types::new();
+
+    let before_none = t.interning_work_stats();
+    let none = t.none();
+    assert_eq!(
+        t.interning_work_stats(),
+        before_none,
+        "the empty lattice constant already has its canonical Ty; asking for it must not rebuild, hash, or probe a descriptor"
+    );
+
+    let int = t.int();
+    let before_difference = t.interning_work_stats();
+    let before_operations = t.binary_type_operation_stats();
+    assert_eq!(t.difference(int, int), none, "t \\ t is the empty type");
+    assert_eq!(
+        t.interning_work_stats(),
+        before_difference,
+        "the self-difference law already knows the empty Ty; it must not build or intern a descriptor"
+    );
+    assert_eq!(
+        t.binary_type_operation_stats(),
+        before_operations,
+        "a lattice law with a known constant result must not occupy an operand-pair result entry"
+    );
+}
+
+#[test]
 fn repeating_binary_type_algebra_returns_before_it_rebuilds_a_descriptor() {
     let mut t = Types::new();
     let int = t.int();
@@ -4087,19 +4115,22 @@ mod normal_form_is_a_function_of_the_descriptor {
         );
     }
 
-    /// `any` is a CONSTANT, not a derived fact. The store interns it when it is
-    /// built and hands the same id back forever, so asking for it builds no
-    /// descriptor — and joining it with itself lands on that id through the
-    /// index, minting nothing and asking the calculator nothing.
+    /// The lattice constants are not derived facts. The store interns them
+    /// when it is built and hands the same ids back forever, so asking for one
+    /// builds no descriptor — and their exact self-laws mint nothing and ask
+    /// the calculator nothing.
     #[test]
-    fn the_id_of_any_is_held_rather_than_re_derived() {
+    fn the_ids_of_lattice_constants_are_held_rather_than_re_derived() {
         let mut t = Types::new();
         let any = t.any();
+        let none = t.none();
         let inventory = t.identity_inventory();
         let comparisons = t.comparison_cache_stats();
 
         assert_eq!(t.any(), any, "the id of a constant does not move");
-        assert_eq!(t.union(any, any), any, "and its join with itself is itself");
+        assert_eq!(t.none(), none, "the id of a constant does not move");
+        assert_eq!(t.union(any, any), any, "top joined with itself is top");
+        assert_eq!(t.difference(any, any), none, "top minus itself is bottom");
         assert_eq!(t.identity_inventory(), inventory, "which minted no id");
         assert_eq!(t.comparison_cache_stats(), comparisons, "and re-derived no normal form");
     }
