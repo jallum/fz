@@ -1,0 +1,364 @@
+# Distill a public `fz2 --log-telemetry` JSONL trace into the shape of a
+# compilation. Run it with:
+#
+#     fz2 run tools/distill-telemetry.fz -- trace.jsonl [--top N]
+#
+# The tool deliberately reads the complete file before reporting. A trace is a
+# diagnostic artifact, and rejecting a malformed record loudly is more useful
+# than presenting a plausible report assembled from only part of one.
+@moduledoc """
+Human-readable analysis of Compiler2's public JSONL telemetry stream.
+
+The report attributes inclusive and self time to span names, compiler job
+kinds, and job subjects. It also calls out jobs that ran repeatedly and the
+facts that woke them. `--top N` limits the ranked sections; it defaults to
+twenty.
+"""
+
+@spec main() :: nil
+def main() do
+    {path, top} = arguments!(System.argv())
+    records = read_records!(path)
+    names = function_names(records)
+    spans = build_spans!(records, names)
+    report(records, spans, names, top)
+end
+
+  @spec arguments!([binary]) :: {binary, integer}
+  defp arguments!([path]), do: {path, 20}
+  defp arguments!([path, "--top", top]), do: {path, positive_integer!(top)}
+  defp arguments!(_args), do: panic("usage: fz2 run tools/distill-telemetry.fz -- <trace.jsonl> [--top N]")
+
+  @spec positive_integer!(binary) :: integer
+  defp positive_integer!(text), do: positive_integer_digits!(text, 0)
+  defp positive_integer_digits!("", 0), do: panic("--top must be a positive integer")
+  defp positive_integer_digits!("", value) when value > 0, do: value
+  defp positive_integer_digits!(<<digit, rest :: binary>>, value) when digit >= 48 and digit <= 57 do
+    positive_integer_digits!(rest, value * 10 + digit - 48)
+  end
+  defp positive_integer_digits!(_text, _value), do: panic("--top must be a positive integer")
+
+  @spec read_records!(binary) :: [map]
+  defp read_records!(path) do
+    contents = file_contents!(File.read(path), path)
+    lines = String.split(contents, "\n")
+    records_from_lines!(lines, 1, [])
+  end
+
+  @spec file_contents!({:ok, binary} | {:error, :io}, binary) :: binary
+  defp file_contents!({:ok, contents}, _path), do: contents
+  defp file_contents!({:error, :io}, path), do: panic("cannot read telemetry trace: " <> path)
+
+  @spec records_from_lines!([binary], integer, [map]) :: [map]
+  defp records_from_lines!([], _line, []), do: panic("telemetry trace contains no records")
+  defp records_from_lines!([], _line, records), do: Enum.reverse(records)
+  defp records_from_lines!([""], _line, []), do: panic("telemetry trace contains no records")
+  defp records_from_lines!([""], _line, records), do: Enum.reverse(records)
+  defp records_from_lines!(["" | _rest], line, _records), do: panic("blank telemetry record on line " <> Integer.to_string(line))
+  defp records_from_lines!([text | rest], line, records) do
+    record = decode_record!(Json.decode(text), line)
+    records_from_lines!(rest, line + 1, [record | records])
+  end
+
+  @spec decode_record!({:ok, any} | {:error, any}, integer) :: map
+  defp decode_record!({:ok, record}, line), do: decode_object_record!(record, line)
+  defp decode_record!({:error, _reason}, line), do: panic("invalid telemetry JSON on line " <> Integer.to_string(line))
+
+  defp decode_object_record!(record :: map, line), do: validate_record!(record, line)
+  defp decode_object_record!(_other, line), do: panic("telemetry record on line " <> Integer.to_string(line) <> " is not an object")
+
+  @spec validate_record!(map, integer) :: map
+  defp validate_record!(record, line) do
+    kind = Map.get(record, "kind")
+    time = Map.get(record, "time_ns")
+    validate_record_fields!(kind, time, record, line)
+  end
+
+  defp validate_record_fields!(kind :: binary, time :: integer, record, _line) when time >= 0 do
+    validate_kind!(kind, record)
+    record
+  end
+  defp validate_record_fields!(_kind, _time, _record, line), do: panic("telemetry record on line " <> Integer.to_string(line) <> " lacks kind or time_ns")
+
+  @spec validate_kind!(binary, map) :: map
+  defp validate_kind!("span_start", %{"span_id" => _id, "name" => _name, "metadata" => _metadata}), do: nil
+  defp validate_kind!("span_stop", %{"span_id" => _id, "elapsed_ns" => elapsed}) when elapsed >= 0, do: nil
+  defp validate_kind!("span_start", _record), do: panic("span_start record is malformed")
+  defp validate_kind!("span_stop", _record), do: panic("span_stop record is malformed")
+  defp validate_kind!(_kind, _record), do: nil
+
+  @spec function_names([map]) :: map
+  defp function_names(records) do
+    Enum.reduce(records, %{}, fn (record, names) -> collect_function_name(record, names) end)
+  end
+
+  @spec collect_function_name(map, map) :: map
+  defp collect_function_name(
+         %{"name" => ["fz", "compiler2", "canon", "function"], "metadata" => %{"function_id" => id, "canon" => canon}},
+         names
+       ), do: Map.put(names, id, canon)
+  defp collect_function_name(_record, names), do: names
+
+  @spec build_spans!([map], map) :: map
+  defp build_spans!(records, names) do
+    starts = Enum.reduce(records, %{}, fn (record, spans) -> collect_span_start!(record, spans, names) end)
+    stopped = Enum.reduce(records, starts, fn (record, spans) -> collect_span_stop!(record, spans) end)
+    subtract_child_time(stopped)
+  end
+
+  @spec collect_span_start!(map, map, map) :: map
+  defp collect_span_start!(%{"kind" => "span_start", "span_id" => id, "parent_span_id" => parent, "name" => name, "metadata" => metadata, "time_ns" => start}, spans, names) do
+    if Map.has_key?(spans, id) do
+      panic("duplicate span_start id " <> Integer.to_string(id))
+    else
+      Map.put(spans, id, %{id: id, parent: parent, name: String.join(name, "."), label: label(metadata, names), start: start, inclusive: 0, self: 0, stopped: false})
+    end
+  end
+  defp collect_span_start!(_record, spans, _names), do: spans
+
+  @spec collect_span_stop!(map, map) :: map
+  defp collect_span_stop!(%{"kind" => "span_stop", "span_id" => id, "elapsed_ns" => elapsed}, spans) do
+    update_span_stop!(Map.get(spans, id), spans, id, elapsed)
+  end
+  defp collect_span_stop!(_record, spans), do: spans
+
+  @spec update_span_stop!(map | nil, map, integer, integer) :: map
+  defp update_span_stop!(nil, _spans, id, _elapsed), do: panic("span_stop has no span_start for id " <> Integer.to_string(id))
+  defp update_span_stop!(%{stopped: true}, _spans, id, _elapsed), do: panic("duplicate span_stop id " <> Integer.to_string(id))
+  defp update_span_stop!(span, spans, id, elapsed), do: Map.put(spans, id, %{span | inclusive: elapsed, self: elapsed, stopped: true})
+
+  @spec subtract_child_time(map) :: map
+  defp subtract_child_time(spans) do
+    Enum.reduce(Map.values(spans), spans, fn (span, adjusted) -> subtract_from_parent(span, adjusted) end)
+  end
+
+  @spec subtract_from_parent(map, map) :: map
+  defp subtract_from_parent(%{parent: nil}, spans), do: spans
+  defp subtract_from_parent(%{parent: parent_id, inclusive: elapsed}, spans) do
+    case Map.get(spans, parent_id) do
+      nil -> spans
+      parent -> Map.put(spans, parent_id, %{parent | self: parent.self - elapsed})
+    end
+  end
+  defp subtract_from_parent(_span, _spans), do: panic("invalid span while computing self time")
+
+  @spec label(map, map) :: {binary | nil, binary}
+  defp label(%{"job" => job}, names), do: {Map.get(job, "kind", "unknown"), subject(job, names)}
+  defp label(_metadata, _names), do: {nil, ""}
+
+  @spec subject(map, map) :: binary
+  defp subject(job, names) do
+    job
+    |> Map.to_list()
+    |> Enum.reduce([], fn (entry, parts) -> subject_part(entry, names, parts) end)
+    |> Enum.reverse()
+    |> Enum.join(" ")
+  end
+
+  defp subject_part({"kind", _value}, _names, parts), do: parts
+  defp subject_part({"opaque_type", _value}, _names, parts), do: parts
+  defp subject_part({"function_id", id}, names, parts), do: [Map.get(names, id, "f" <> Integer.to_string(id)) | parts]
+  defp subject_part({key, value}, _names, parts), do: [key <> "=" <> value_text(value) | parts]
+  defp subject_part(_entry, _names, _parts), do: panic("invalid job metadata entry")
+
+  @spec value_text(any) :: binary
+  defp value_text(value :: binary), do: value
+  defp value_text(value :: integer), do: Integer.to_string(value)
+  defp value_text(value :: float), do: Float.to_string(value)
+  defp value_text(value :: atom), do: Atom.to_string(value)
+  defp value_text(nil), do: "nil"
+  defp value_text(_value), do: "<structured>"
+
+  @spec report([map], map, map, integer) :: nil
+  defp report(records, spans, names, top) do
+    wall = wall_time(records)
+    IO.puts(Integer.to_string(Enum.count(records)) <> " records, " <> Integer.to_string(Map.size(spans)) <> " spans, " <> fmt_ms(wall) <> " ms from first record to last")
+    IO.puts("")
+    timeline(records, spans)
+    by_name(spans, top)
+    jobs = Enum.filter(Map.values(spans), fn span -> span.name === "fz.compiler2.job" end)
+    by_kind(jobs, top)
+    by_subject(jobs, top)
+    reruns(jobs, top)
+    wakes(records, jobs, names, top)
+    nil
+  end
+
+  @spec wall_time([map]) :: integer
+  defp wall_time(records), do: maximum_time(records) - minimum_time(records)
+  defp minimum_time(records), do: Enum.min(Enum.map(records, fn record -> record["time_ns"] end))
+  defp maximum_time(records), do: Enum.max(Enum.map(records, fn record -> record["time_ns"] end))
+
+  @spec timeline([map], map) :: nil
+  defp timeline(records, spans) do
+    first = minimum_time(records)
+    last = maximum_time(records)
+    jobs = Enum.filter(Map.values(spans), fn span -> span.name === "fz.compiler2.job" end)
+    job_first = extreme_or(jobs, first, fn span -> span.start end, :min)
+    job_last = extreme_or(jobs, first, fn span -> span.start + span.inclusive end, :max)
+    job_sum = Enum.sum(Enum.map(jobs, fn span -> span.inclusive end))
+    codegen = Enum.filter(Map.values(spans), fn span -> span.name === "fz.compiler2.native_backend.compile" or span.name === "fz.codegen.compile" end)
+    codegen_max = extreme_or(codegen, 0, fn span -> span.inclusive end, :max)
+    IO.puts("timeline (span times include the stream's own rendering; read them as shape, take magnitudes from a sample of the plain binary)")
+    row("before the first job", job_first - first)
+    row("first job start to last job stop", job_last - job_first)
+    row("  sum of job inclusive time", job_sum)
+    row("native codegen span", codegen_max)
+    row("after the last span (program run)", last - last_stop(spans, last))
+    IO.puts("")
+  end
+
+  @spec extreme_or([map], integer, (map) -> integer, atom) :: integer
+  defp extreme_or([], default, _fun, _which), do: default
+  defp extreme_or(items, _default, fun, :min), do: Enum.min(Enum.map(items, fun))
+  defp extreme_or(items, _default, fun, :max), do: Enum.max(Enum.map(items, fun))
+  defp extreme_or(_items, _default, _fun, _which), do: panic("invalid span extremum")
+
+  @spec last_stop(map, integer) :: integer
+  defp last_stop(spans, default), do: extreme_or(Map.values(spans), default, fn span -> span.start + span.inclusive end, :max)
+
+  @spec by_name(map, integer) :: nil
+  defp by_name(spans, top) do
+    rows =
+      spans
+      |> Map.values()
+      |> Enum.group_by(fn span -> span.name end)
+      |> Map.to_list()
+      |> Enum.map(fn {name, items} -> {name, Enum.count(items), span_sum(items, :inclusive), span_sum(items, :self)} end)
+      |> ranked_by_inclusive()
+      |> Enum.take(top)
+      |> Enum.map(fn {name, count, inclusive, self} -> [name, Integer.to_string(count), fmt_ms(inclusive), fmt_ms(self)] end)
+    IO.puts("span names by inclusive time")
+    table(["name", "count", "inclusive ms", "self ms"], rows)
+  end
+
+  defp by_kind(jobs, top) do
+    rows =
+      jobs
+      |> Enum.group_by(fn span -> tuple_first(span.label) end)
+      |> Map.to_list()
+      |> Enum.map(fn {kind, items} -> {kind_text(kind), Enum.count(items), span_sum(items, :inclusive), span_sum(items, :self), maximum_inclusive(items)} end)
+      |> ranked_by_self()
+      |> Enum.take(top)
+      |> Enum.map(fn {kind, count, inclusive, self, maximum} -> [kind, Integer.to_string(count), fmt_ms(inclusive), fmt_ms(self), fmt_ms(maximum)] end)
+    IO.puts("compiler jobs by kind")
+    table(["kind", "count", "inclusive ms", "self ms", "max ms"], rows)
+  end
+
+  defp by_subject(jobs, top) do
+    rows =
+      jobs
+      |> Enum.group_by(fn span -> span.label end)
+      |> Map.to_list()
+      |> Enum.map(fn {label, items} -> {label_text(label), Enum.count(items), span_sum(items, :inclusive), span_sum(items, :self)} end)
+      |> ranked_by_self()
+      |> Enum.take(top)
+      |> Enum.map(fn {label, count, inclusive, self} -> [label, Integer.to_string(count), fmt_ms(inclusive), fmt_ms(self)] end)
+    IO.puts("compiler jobs by kind and subject")
+    table(["kind subject", "runs", "inclusive ms", "self ms"], rows)
+  end
+
+  defp reruns(jobs, top) do
+    rows =
+      jobs
+      |> Enum.group_by(fn span -> span.label end)
+      |> Map.to_list()
+      |> Enum.map(fn {label, items} -> {label_text(label), Enum.count(items), span_sum(items, :self)} end)
+      |> Enum.filter(fn {_label, count, _self} -> count > 1 end)
+      |> Enum.sort_by(fn {label, count, self} -> {0 - count, 0 - self, label} end)
+      |> Enum.take(top)
+      |> Enum.map(fn {label, count, self} -> [label, Integer.to_string(count), fmt_ms(self)] end)
+    IO.puts("most re-run jobs")
+    table(["kind subject", "runs", "self ms"], rows)
+  end
+
+  defp wakes(records, jobs, names, top) do
+    hot = hot_jobs(jobs, top)
+    causes = Enum.reduce(records, %{}, fn (record, grouped) -> collect_wakes(record, grouped, hot, names) end)
+    IO.puts("wake causes of the most re-run jobs")
+    Enum.each(Enum.sort_by(Map.to_list(causes), fn {{kind, subject}, _causes} -> {kind, subject} end), fn {{kind, subject}, causes} -> print_wake_group(kind, subject, causes, hot) end)
+    IO.puts("")
+  end
+
+  defp hot_jobs(jobs, top) do
+    jobs
+    |> Enum.group_by(fn span -> span.label end)
+    |> Map.to_list()
+    |> Enum.map(fn {label, items} -> {label, Enum.count(items)} end)
+    |> Enum.filter(fn {_label, count} -> count > 1 end)
+    |> Enum.sort_by(fn {{kind, subject}, count} -> {0 - count, kind, subject} end)
+    |> Enum.take(div(top, 3))
+    |> Enum.reduce(%{}, fn ({label, count}, hot) -> Map.put(hot, label, count) end)
+  end
+
+  @spec collect_wakes(map, map, map, map) :: map
+  defp collect_wakes(%{"name" => ["fz", "compiler2", "work_graph", "applied"], "metadata" => %{"completion" => completion}}, grouped, hot, names) do
+    Enum.reduce(Map.get(completion, "wakes", []), grouped, fn (wake, causes) -> collect_wake(wake, completion, causes, hot, names) end)
+  end
+  defp collect_wakes(_record, grouped, _hot, _names), do: grouped
+
+  @spec collect_wake(map, map, map, map, map) :: map
+  defp collect_wake(%{"job" => job, "cause" => cause}, completion, grouped, hot, names) do
+    key = {Map.get(job, "kind", "unknown"), subject(job, names)}
+    if Map.has_key?(hot, key) do
+      Map.put(grouped, key, [wake_cause(cause, completion, names) | Map.get(grouped, key, [])])
+    else
+      grouped
+    end
+  end
+  defp collect_wake(_wake, _completion, grouped, _hot, _names), do: grouped
+
+  @spec wake_cause(map, map, map) :: binary
+  defp wake_cause(cause, completion, names) do
+    fact = subject(Map.delete(Map.delete(cause, "use"), "opaque_type"), names)
+    completion_subject = subject(Map.take(completion, ["function_id", "arrow", "root_id", "executable"]), names)
+    Map.get(cause, "kind", "unknown") <> " " <> fact <> " (" <> value_text(Map.get(cause, "use", "unknown")) <> ") after " <> value_text(Map.get(completion, "kind", "unknown")) <> " " <> completion_subject
+  end
+
+  @spec print_wake_group(binary, binary, [binary], map) :: nil
+  defp print_wake_group(kind, subject, causes, hot) do
+    IO.puts("  " <> kind <> " " <> subject <> ": " <> Integer.to_string(Map.get(hot, {kind, subject})) <> " runs")
+    causes
+    |> Enum.frequencies()
+    |> Map.to_list()
+    |> Enum.sort_by(fn {cause, count} -> {0 - count, cause} end)
+    |> Enum.take(6)
+    |> Enum.each(fn {cause, count} -> IO.puts("    " <> String.duplicate(" ", padding(4, Integer.to_string(count))) <> Integer.to_string(count) <> "  " <> cause) end)
+    nil
+  end
+
+  @spec span_sum([map], atom) :: integer
+  defp span_sum(items, :inclusive), do: Enum.sum(Enum.map(items, fn span -> span.inclusive end))
+  defp span_sum(items, :self), do: Enum.sum(Enum.map(items, fn span -> span.self end))
+  defp span_sum(_items, _field), do: panic("invalid span duration field")
+  @spec maximum_inclusive([map]) :: integer
+  defp maximum_inclusive(items), do: Enum.max(Enum.map(items, fn span -> span.inclusive end))
+  defp ranked_by_inclusive(rows), do: Enum.sort_by(rows, fn {name, _count, inclusive, _self} -> {0 - inclusive, name} end)
+  defp ranked_by_self(rows), do: Enum.sort_by(rows, fn row -> self_sort_key(row) end)
+  defp self_sort_key({label, _count, _inclusive, self}), do: {0 - self, label}
+  defp self_sort_key({label, _count, _inclusive, self, _maximum}), do: {0 - self, label}
+  defp self_sort_key(_row), do: panic("invalid ranked row")
+  @spec tuple_first({any, any}) :: any
+  defp tuple_first({first, _second}), do: first
+  defp label_text({kind, subject}), do: label_text_parts(kind, subject)
+  defp label_text_parts(nil, subject :: binary), do: "- " <> subject
+  defp label_text_parts(kind :: binary, subject :: binary), do: kind <> " " <> subject
+  defp label_text_parts(_kind, _subject), do: "unknown <invalid subject>"
+  @spec kind_text(binary | nil) :: binary
+  defp kind_text(nil), do: "-"
+  defp kind_text(kind), do: kind
+  @spec fmt_ms(integer | float) :: binary
+  defp fmt_ms(ns), do: Float.to_string(ns / 1_000_000)
+  @spec row(binary, integer | float) :: nil
+  defp row(label, ns), do: IO.puts("  " <> String.duplicate(" ", padding(36, label)) <> label <> " " <> String.duplicate(" ", padding(10, fmt_ms(ns))) <> fmt_ms(ns) <> " ms")
+  @spec padding(integer, binary) :: integer
+  defp padding(width, text) do
+    if width > String.length(text), do: width - String.length(text), else: 0
+  end
+
+  defp table(headers, rows) do
+    IO.puts("  " <> String.join(headers, "  "))
+    Enum.each(rows, fn cells -> IO.puts("  " <> Enum.join(cells, "  ")) end)
+    IO.puts("")
+    nil
+  end

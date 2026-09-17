@@ -14,6 +14,7 @@ fn test_scheduler() -> AotScheduler {
         drain_dtor_entry: null(),
         resume_addr: null(),
         timers: TimerWheel::new(),
+        program_args: Vec::new(),
         ctx: ExecCtx::empty(),
     }
 }

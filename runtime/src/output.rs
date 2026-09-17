@@ -5,6 +5,12 @@ use crate::scheduler_hooks::OutputHook;
 
 pub trait OutputSink {
     fn emit(&self, bytes: &[u8]);
+
+    /// Emit bytes without adding a record boundary. `dbg` keeps using
+    /// `emit`; source-level `IO.write/1` uses this raw channel.
+    fn write(&self, bytes: &[u8]) {
+        self.emit(bytes);
+    }
 }
 
 pub struct NullOutput;
@@ -20,6 +26,11 @@ impl OutputSink for StdoutOutput {
         let mut stdout = std::io::stdout().lock();
         let _ = stdout.write_all(bytes);
         let _ = stdout.write_all(b"\n");
+    }
+
+    fn write(&self, bytes: &[u8]) {
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(bytes);
     }
 }
 
@@ -49,8 +60,22 @@ unsafe extern "C" fn stdout_output_hook(_context: *const (), bytes: *const u8, l
     STDOUT_OUTPUT.emit(unsafe { from_raw_parts(bytes, len) });
 }
 
+unsafe extern "C" fn output_write_hook(context: *const (), bytes: *const u8, len: usize) {
+    if context.is_null() {
+        return;
+    }
+    let context = unsafe { &*(context as *const OutputContext<'_>) };
+    context.0.write(unsafe { from_raw_parts(bytes, len) });
+}
+
+unsafe extern "C" fn stdout_write_hook(_context: *const (), bytes: *const u8, len: usize) {
+    STDOUT_OUTPUT.write(unsafe { from_raw_parts(bytes, len) });
+}
+
 pub const OUTPUT_HOOK: OutputHook = output_hook;
 pub const STDOUT_OUTPUT_HOOK: OutputHook = stdout_output_hook;
+pub const OUTPUT_WRITE_HOOK: OutputHook = output_write_hook;
+pub const STDOUT_WRITE_HOOK: OutputHook = stdout_write_hook;
 
 #[cfg(test)]
 mod tests {
