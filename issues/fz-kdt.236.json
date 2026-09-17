@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-17T23:57:55Z",
+  "description": "Emptiness asks whether one negative covers a positive instead of union coverage. Red: resource(:a|:b) subtype resource(:a)|resource(:b), and map k:(:a|:b) subtype map k::a | map k::b. Include crossed map fields to preserve correlations and absent/open-key semantics. Replace known-wrong resource test. One fresh agent, one commit onto PR215.",
+  "id": "fz-kdt.236",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "Decide collective negative coverage for maps and resources",
+  "type": "bug",
+  "updated_at": "2026-09-17T23:57:55Z"
+}
