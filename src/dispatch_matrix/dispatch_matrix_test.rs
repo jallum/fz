@@ -666,16 +666,19 @@ fn outcome_for_body(
     plan: &pattern::PatternDispatchPlan<Ty>,
     body_id: PatternBodyId,
 ) -> (&DispatchNode<Ty>, &pattern::PatternDispatchOutcome) {
-    let outcome = plan
+    let (outcome_index, outcome) = plan
         .outcomes
         .iter()
-        .find(|outcome| outcome.body_id == body_id)
+        .enumerate()
+        .find(|(_, outcome)| outcome.body_id == body_id)
         .expect("body outcome exists");
     let node = plan
         .graph
         .nodes
         .iter()
-        .find(|node| matches!(node, DispatchNode::Outcome { outcome: id, .. } if *id == outcome.outcome))
+        .find(
+            |node| matches!(node, DispatchNode::Outcome { outcome: id, .. } if *id == OutcomeId(outcome_index as u32)),
+        )
         .expect("compiled outcome node exists");
     (node, outcome)
 }

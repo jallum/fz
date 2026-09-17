@@ -5,6 +5,7 @@
 //! it stops above old-world CPS IR and planner concerns.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
@@ -629,14 +630,13 @@ impl<V> Default for DispatchBindings<V> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlDispatch {
-    pub(crate) plan: PatternDispatchPlan<Ty>,
+    pub(crate) plan: Rc<PatternDispatchPlan<Ty>>,
     pub(crate) outcomes: Vec<OutcomeEdge>,
     pub(crate) miss_entry: ControlEntryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OutcomeEdge {
-    pub(crate) outcome: crate::dispatch_matrix::OutcomeId,
     pub(crate) target: ControlEntryId,
     pub(crate) arguments: Box<[OutcomeArgument]>,
 }
@@ -661,18 +661,15 @@ pub(crate) enum SubjectOriginRoot {
 }
 
 impl ControlDispatch {
-    pub(crate) fn new(plan: PatternDispatchPlan<Ty>, outcomes: Vec<OutcomeEdge>, miss_entry: ControlEntryId) -> Self {
+    pub(crate) fn new(
+        plan: Rc<PatternDispatchPlan<Ty>>,
+        outcomes: Vec<OutcomeEdge>,
+        miss_entry: ControlEntryId,
+    ) -> Self {
         assert_eq!(
             outcomes.len(),
             plan.outcomes.len(),
             "an inline dispatch owns one target slot per plan outcome"
-        );
-        assert!(
-            outcomes
-                .iter()
-                .enumerate()
-                .all(|(index, edge)| edge.outcome.0 as usize == index),
-            "inline dispatch target slots stay indexed by OutcomeId"
         );
         Self {
             plan,
@@ -761,7 +758,7 @@ pub struct LoweredReceive {
     pub(crate) outcomes: Vec<OutcomeEdge>,
     pub after: Option<ReceiveAfter>,
     pub dest: ControlDestination,
-    pub(crate) dispatch: PatternDispatchPlan<Ty>,
+    pub(crate) dispatch: Rc<PatternDispatchPlan<Ty>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

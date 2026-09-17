@@ -783,8 +783,8 @@ pub struct ReceiveClause {
     /// reachability, and codegen use this instead of reconstructing a fresh
     /// ident from `span`.
     pub ident: CallsiteIdent,
-    /// Winning plan outcome and its exact subject-to-body-parameter edge.
-    pub outcome: crate::dispatch_matrix::OutcomeId,
+    /// Exact subject-to-body-parameter edge for this table slot. Its index is
+    /// the winning plan outcome.
     pub arguments: Vec<(crate::dispatch_matrix::SubjectId, Var)>,
     /// Optional guard fn. Params = outcome arguments ++ captures. Returns
     /// bool. Pure-codegen restricted (verified by ir_planner via F3).

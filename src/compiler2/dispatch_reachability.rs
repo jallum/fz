@@ -463,8 +463,9 @@ mod tests {
     fn reachable_body_ids(plan: &PatternDispatchPlan<Ty>, reachability: &DispatchReachability) -> Vec<u32> {
         plan.outcomes
             .iter()
-            .filter(|outcome| reachability.outcomes.binary_search(&outcome.outcome).is_ok())
-            .map(|outcome| outcome.body_id)
+            .enumerate()
+            .filter(|(index, _)| reachability.outcomes.binary_search(&OutcomeId(*index as u32)).is_ok())
+            .map(|(_, outcome)| outcome.body_id)
             .collect()
     }
 
@@ -529,7 +530,7 @@ mod tests {
         let matched_root = reach
             .outcome_inputs
             .iter()
-            .find(|(outcome, _)| *outcome == plan.outcomes[0].outcome)
+            .find(|(outcome, _)| *outcome == OutcomeId(0))
             .unwrap()
             .1[0];
         let expected = types.tuple(&[named_hit]);

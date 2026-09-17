@@ -134,7 +134,6 @@ pub(crate) enum PinnedKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternDispatchOutcome {
-    pub(crate) outcome: OutcomeId,
     pub(crate) body_id: PatternBodyId,
     pub(crate) bindings: Vec<PatternDispatchBinding>,
     pub(crate) span: Span,
@@ -645,7 +644,6 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             .add_arm_questions(questions, EdgeEvidence::empty(), outcome)
             .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?;
         self.outcomes.push(PatternDispatchOutcome {
-            outcome,
             body_id: row.body_id,
             bindings,
             span: row
@@ -675,9 +673,9 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             matrix
                 .outcomes
                 .iter()
-                .zip(&self.outcomes)
-                .all(|(matrix, payload)| matrix.id == payload.outcome),
-            "source pattern payloads stay indexed by the matrix-owned OutcomeId"
+                .enumerate()
+                .all(|(index, outcome)| outcome.id.0 as usize == index),
+            "the temporary matrix records outcomes in OutcomeId order"
         );
         let pinned_inputs = self.pinned.iter().map(|pin| pin.input).collect::<Vec<_>>();
         // A guard question rides a carrier subject, so only its leaves say

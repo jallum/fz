@@ -39,6 +39,14 @@ should consume `PatternDispatchPlan` or the underlying `DispatchGraph` directly.
 - `src/compiler2/native_codegen/receive.rs` emits the scheduler-facing receive
   probe function by walking the same plan.
 
+Once a typed plan leaves its producer, `Rc<PatternDispatchPlan<Ty>>` is its
+only retained representation. Inline control, receive control, call-edge
+dispatch, and callable-construction selection all carry that same immutable
+allocation through the artifact projections; cloning one retains identity, it
+does not copy the graph or payloads. Native receive is the deliberate type
+boundary: it maps that typed plan once to `RuntimeTypePredicate` and puts the
+result in the scheduler-facing `Arc` receive term.
+
 ## Test First, Project Second
 
 Constructor projections are valid only on a branch where the constructor test
@@ -253,7 +261,9 @@ readings of "did this input arrive" cannot disagree quietly.
 
 Each inline or receive target slot owns its `OutcomeEdge` target and explicit
 `{ subject, parameter: ValueId, role: Semantic | Physical }` arguments. Its
-index is the plan-owned `OutcomeId`; construction validates that alignment once.
+index is the plan-owned `OutcomeId`. The pattern payload and every target record
+derive that identity from their shared slot; none repeats it or validates a
+parallel copy.
 Target parameters are constructed from that relation. Semantic typing and the
 existing value-origin machinery borrow the owning body's plan and dispatch
 inputs; keying, tuple/callable transport, and execution do not reconstruct

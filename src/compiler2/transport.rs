@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::Range;
+use std::rc::Rc;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::identity::{ExecutableNeed, FunctionId};
@@ -251,7 +252,7 @@ pub struct CallableConstructionFact {
     pub producer: TransportPosition,
     pub captures: Box<[CallableConstructionCapture]>,
     pub members: Box<[CallableConstructionMember]>,
-    pub(crate) selection: Option<PatternDispatchPlan<Ty>>,
+    pub(crate) selection: Option<Rc<PatternDispatchPlan<Ty>>>,
 }
 
 #[cfg_attr(test, derive(Clone))]

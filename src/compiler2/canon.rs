@@ -1277,7 +1277,12 @@ impl ProgramCanon<'_> {
     }
 
     fn control_dispatch(&mut self, out: &mut Out, dispatch: &ControlDispatch) {
-        let arms: Vec<String> = dispatch.outcomes.iter().map(|edge| self.outcome_edge(edge)).collect();
+        let arms: Vec<String> = dispatch
+            .outcomes
+            .iter()
+            .enumerate()
+            .map(|(index, edge)| self.outcome_edge(index, edge))
+            .collect();
         out.put(&format!(
             "arms [{}] miss=e{}",
             arms.join(", "),
@@ -1287,7 +1292,7 @@ impl ProgramCanon<'_> {
         out.section("plan", plan);
     }
 
-    fn outcome_edge(&mut self, edge: &OutcomeEdge) -> String {
+    fn outcome_edge(&mut self, index: usize, edge: &OutcomeEdge) -> String {
         let arguments = edge
             .arguments
             .iter()
@@ -1301,13 +1306,18 @@ impl ProgramCanon<'_> {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        format!("o{} -> e{} [{arguments}]", edge.outcome.0, edge.target.as_u32())
+        format!("o{index} -> e{} [{arguments}]", edge.target.as_u32())
     }
 
     fn receive(&mut self, out: &mut Out, receive: &BackendReceive) {
         let bindings = self.bindings(&receive.bindings);
         out.put(&format!("bindings {bindings}"));
-        let clauses: Vec<String> = receive.outcomes.iter().map(|edge| self.outcome_edge(edge)).collect();
+        let clauses: Vec<String> = receive
+            .outcomes
+            .iter()
+            .enumerate()
+            .map(|(index, edge)| self.outcome_edge(index, edge))
+            .collect();
         out.section("clauses", clauses);
         if let Some(after) = &receive.after {
             let after = self.receive_after(after);
@@ -1471,7 +1481,12 @@ impl ProgramCanon<'_> {
         let subjects: Vec<String> = plan.graph.subjects.iter().map(subject).collect();
         out.section("subjects", subjects);
         self.graph(&mut out, &plan.graph);
-        let outcomes: Vec<String> = plan.outcomes.iter().map(|outcome| self.plan_outcome(outcome)).collect();
+        let outcomes: Vec<String> = plan
+            .outcomes
+            .iter()
+            .enumerate()
+            .map(|(index, outcome)| self.plan_outcome(index, outcome))
+            .collect();
         out.section("outcomes", outcomes);
         for (index, guard) in plan.guards.iter().enumerate() {
             let guard = self.guard(guard);
@@ -1558,7 +1573,7 @@ impl ProgramCanon<'_> {
         }
     }
 
-    fn plan_outcome(&mut self, outcome: &PatternDispatchOutcome) -> String {
+    fn plan_outcome(&mut self, index: usize, outcome: &PatternDispatchOutcome) -> String {
         let bindings: Vec<String> = outcome
             .bindings
             .iter()
@@ -1566,7 +1581,7 @@ impl ProgramCanon<'_> {
             .collect();
         format!(
             "o{} body={} {} bindings=[{}]",
-            outcome.outcome.0,
+            index,
             outcome.body_id,
             self.span(outcome.span),
             bindings.join(", ")

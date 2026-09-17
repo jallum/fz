@@ -30,6 +30,68 @@ use std::sync::Arc;
 type OutputFacts = Vec<(FactKey, bool)>;
 
 #[test]
+fn compiler2_inline_dispatch_plan_is_shared_from_lowering_to_backend() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("shared_inline_dispatch_plan.fz".to_string()),
+        text: "def main(), do: case 1 do\n  1 -> :one\n  _ -> :other\nend\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "the inline case reaches the backend product");
+
+    let main = function_id(&functions, "main", 0);
+    let lowered = lowered_body(&bodies, main);
+    let LoweredBody::Clauses {
+        entries: lowered_entries,
+        ..
+    } = &lowered
+    else {
+        panic!("main/0 should lower as clauses");
+    };
+    let lowered_dispatch = lowered_entries
+        .iter()
+        .find_map(|entry| match &entry.tail {
+            LoweredTail::Dispatch { dispatch, .. } => Some(dispatch),
+            _ => None,
+        })
+        .expect("main/0 should retain its inline case dispatch");
+    let program = backend.last(root).program;
+    let (_, backend_main) = backend_executable(&program, main);
+    let BackendBody::Clauses {
+        entries: backend_entries,
+        ..
+    } = &backend_main.body
+    else {
+        panic!("backend main/0 should retain clause entries");
+    };
+    let backend_dispatch = backend_entries
+        .iter()
+        .find_map(|entry| match &entry.tail {
+            BackendTail::Dispatch { dispatch, .. } => Some(dispatch),
+            _ => None,
+        })
+        .expect("backend main/0 should retain its inline case dispatch");
+
+    assert!(
+        Rc::ptr_eq(&lowered_dispatch.plan, &backend_dispatch.plan),
+        "backend lowering must retain the typed plan allocation built by body lowering"
+    );
+}
+
+#[test]
 fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
     use super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
     let tel = ConfiguredTelemetry::new();
@@ -841,11 +903,17 @@ fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
             let BackendTail::Dispatch { dispatch, .. } = &entry.tail else {
                 continue;
             };
-            for outcome in &dispatch.plan.outcomes {
-                let arm = &entries[dispatch.outcome(outcome.outcome).target.as_u32() as usize];
+            for (outcome_index, outcome) in dispatch.plan.outcomes.iter().enumerate() {
+                let arm = &entries[dispatch
+                    .outcome(crate::dispatch_matrix::OutcomeId(outcome_index as u32))
+                    .target
+                    .as_u32() as usize];
                 assert_eq!(arm.params.len(), outcome.bindings.len());
                 arm_arities.push(arm.params.len());
-                for argument in &dispatch.outcome(outcome.outcome).arguments {
+                for argument in &dispatch
+                    .outcome(crate::dispatch_matrix::OutcomeId(outcome_index as u32))
+                    .arguments
+                {
                     let binding = outcome
                         .bindings
                         .iter()
@@ -995,8 +1063,11 @@ fn compiler2_inline_map_binding_reuses_the_key_present_read() {
             let BackendTail::Dispatch { dispatch, .. } = &entry.tail else {
                 continue;
             };
-            for outcome in &dispatch.plan.outcomes {
-                let arm = &entries[dispatch.outcome(outcome.outcome).target.as_u32() as usize];
+            for (outcome_index, _) in dispatch.plan.outcomes.iter().enumerate() {
+                let arm = &entries[dispatch
+                    .outcome(crate::dispatch_matrix::OutcomeId(outcome_index as u32))
+                    .target
+                    .as_u32() as usize];
                 for param in &arm.params {
                     assert!(
                         compiler
@@ -11252,7 +11323,10 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
             .plan
             .outcomes
             .iter()
-            .filter_map(|outcome| outcome_match_questions(entry.plan, outcome.outcome))
+            .enumerate()
+            .filter_map(|(index, _)| {
+                outcome_match_questions(entry.plan, crate::dispatch_matrix::OutcomeId(index as u32))
+            })
             .map(|questions| {
                 questions
                     .into_iter()
@@ -11609,11 +11683,7 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
                         entry: entry_index,
                     },
                     plan: &dispatch.plan,
-                    bodies: dispatch
-                        .outcomes
-                        .iter()
-                        .map(|edge| dispatch.plan.outcome(edge.outcome).expect("outcome").body_id)
-                        .collect(),
+                    bodies: dispatch.plan.outcomes.iter().map(|outcome| outcome.body_id).collect(),
                 }),
                 BackendTail::Receive(receive) => plans.push(ArtifactPlan {
                     site: PlanSite::Receive {
@@ -11622,9 +11692,10 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
                     },
                     plan: &receive.dispatch,
                     bodies: receive
+                        .dispatch
                         .outcomes
                         .iter()
-                        .map(|edge| receive.dispatch.outcome(edge.outcome).expect("receive outcome").body_id)
+                        .map(|outcome| outcome.body_id)
                         .collect(),
                 }),
                 _ => {}
@@ -12204,14 +12275,19 @@ fn seating(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<Subje
 /// is -- is fz-kdt.187's.
 fn unreadable_reason(plan: &PatternDispatchPlan<Ty>, bodies: &[u32]) -> Option<&'static str> {
     for body_id in bodies {
-        let Some(outcome) = plan.outcomes.iter().find(|outcome| outcome.body_id == *body_id) else {
+        let Some((outcome_index, _)) = plan
+            .outcomes
+            .iter()
+            .enumerate()
+            .find(|(_, outcome)| outcome.body_id == *body_id)
+        else {
             return Some("a listed body has no outcome");
         };
         let Some(arm) = plan
             .source_matrix
             .arms
             .iter()
-            .find(|arm| arm.outcome == outcome.outcome)
+            .find(|arm| arm.outcome == crate::dispatch_matrix::OutcomeId(outcome_index as u32))
         else {
             return Some("a listed body has no source arm");
         };
@@ -12247,14 +12323,19 @@ fn unreadable_reason(plan: &PatternDispatchPlan<Ty>, bodies: &[u32]) -> Option<&
 fn seated_arm_surfaces(plan: &PatternDispatchPlan<Ty>, bodies: &[u32]) -> Vec<BTreeMap<SubjectId, Ty>> {
     let mut seated = Vec::new();
     for body_id in bodies {
-        let Some(outcome) = plan.outcomes.iter().find(|outcome| outcome.body_id == *body_id) else {
+        let Some((outcome_index, _)) = plan
+            .outcomes
+            .iter()
+            .enumerate()
+            .find(|(_, outcome)| outcome.body_id == *body_id)
+        else {
             return Vec::new();
         };
         let Some(arm) = plan
             .source_matrix
             .arms
             .iter()
-            .find(|arm| arm.outcome == outcome.outcome)
+            .find(|arm| arm.outcome == crate::dispatch_matrix::OutcomeId(outcome_index as u32))
         else {
             return Vec::new();
         };
@@ -19475,12 +19556,12 @@ fn plan_has_nested_guard_dispatch(plan: &PatternDispatchPlan<Ty>) -> bool {
 }
 
 fn plan_body_has_type_question(plan: &PatternDispatchPlan<Ty>, body_id: u32) -> bool {
-    let outcome = plan
+    let outcome_index = plan
         .outcomes
         .iter()
-        .find(|outcome| outcome.body_id == body_id)
+        .position(|outcome| outcome.body_id == body_id)
         .unwrap_or_else(|| panic!("entry-dispatch outcome for body {body_id}"));
-    outcome_match_questions(plan, outcome.outcome)
+    outcome_match_questions(plan, crate::dispatch_matrix::OutcomeId(outcome_index as u32))
         .unwrap_or_else(|| panic!("compiled dispatch path for body {body_id}"))
         .into_iter()
         .any(|question| matches!(question.region, Region::Type(_)))

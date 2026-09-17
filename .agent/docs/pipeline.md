@@ -422,6 +422,14 @@ selected call edges, and records symbolic callee edges for later product pulls.
 It cannot ask a new type question or discover a callee except through the
 settled callsite facts for the activation it is materializing.
 
+Typed dispatch plans are immutable retained inputs, not per-product payload
+copies. A body, materialized call edge, backend executable, and callable
+construction wrapper carry `Rc<PatternDispatchPlan<Ty>>`; the one allocation
+the producer made survives every artifact projection that needs it. The native
+receive boundary is the one intentional conversion: it maps the typed plan once
+to runtime predicates and retains that runtime plan in the cross-thread receive
+term.
+
 - If a local prerequisite is missing, it returns a `PullWait` for that exact fact
   or product.
 - If a settled callsite is genuinely unresolvable, it is a fatal
