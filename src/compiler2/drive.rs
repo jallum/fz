@@ -494,6 +494,14 @@ impl Derivation {
     pub(crate) fn of(job: Job, key: DerivationKey) -> Self {
         Self { job, key }
     }
+
+    pub(crate) fn own(job: &Job) -> Self {
+        let key = match job {
+            Job::AnalyzeActivation(activation) => DerivationKey::Activation(activation.clone()),
+            _ => DerivationKey::Job,
+        };
+        Self::of(job.clone(), key)
+    }
 }
 
 impl Publisher for Derivation {
@@ -504,10 +512,7 @@ impl Publisher for Derivation {
     }
 
     fn of_run(job: &Job) -> Self {
-        Self {
-            job: job.clone(),
-            key: DerivationKey::Job,
-        }
+        Self::own(job)
     }
 }
 
