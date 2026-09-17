@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.177.11"
+  ],
   "blocks": [
     "fz-kdt.177.7"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "μX. in both renderers; canon injective and identical across unrollings",
   "type": "task",
-  "updated_at": "2026-09-17T01:53:23Z"
+  "updated_at": "2026-09-17T01:53:26Z"
 }
