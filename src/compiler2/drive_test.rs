@@ -20540,6 +20540,10 @@ type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 /// coarsened, while an unwidened row arrived at its answer on its own evidence
 /// before the budget could fire.
 const RETURN_LADDERS: &[PinnedLadder] = &[
+    (
+        "fixtures2/behavior/mutual_tuple_states.fz",
+        &[("even/1", 17, true), ("odd/1", 17, true)],
+    ),
     ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
     (
         "fixtures2/behavior/json_roundtrip.fz",
@@ -20581,6 +20585,10 @@ const RETURN_LADDERS: &[PinnedLadder] = &[
 /// The other four `json_*` fixtures share this one's decode loop and measure the
 /// same climb, so pinning the goal program pins them too.
 ///
+/// `behavior/mutual_tuple_states.fz` is the two-state mutual recursion whose
+/// tuple-tagged returns climb the same ladder; it is here because its compile
+/// terminates only through the emptiness memo, so the row also pins that.
+///
 /// `behavior/nesting_accumulator.fz` is deliberately absent: it drives the
 /// same list-family return widen this table exercises, but
 /// `measure_return_ascents` drives to `DumpStage::Backend`, which that
@@ -20591,6 +20599,10 @@ const RETURN_LADDERS: &[PinnedLadder] = &[
 /// confirmed by hand: `--log-telemetry` shows `return_type.widened` firing
 /// once, at ascent nine, collapsing to `[any]`.
 const RETURN_LADDER_FIXTURES: &[(&str, &str)] = &[
+    (
+        "fixtures2/behavior/mutual_tuple_states.fz",
+        include_str!("../../fixtures2/behavior/mutual_tuple_states.fz"),
+    ),
     (
         "fixtures2/behavior/return_tuple_ladder.fz",
         include_str!("../../fixtures2/behavior/return_tuple_ladder.fz"),
