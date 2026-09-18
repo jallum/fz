@@ -15,11 +15,15 @@
     {
       "text": "Final diff reviewed by root: readiness-only movements propagate output finality and wake only standing Settled waiters on restoration, content wakes unchanged. CLI33/33,focused regressions,fmt,strictclippy passed. Agent handed off full-lib process but it disappeared without exit marker/final result; root restarted tracked cargo test --lib -q (session11575) for definitive full gate. No commit/push until explicit pass.",
       "timestamp": "2026-09-18T00:40:43Z"
+    },
+    {
+      "text": "Root explicit full gate FAILED2272pass1fail5ignored: telemetry::public_trace::public_trace_test::target_fixture_reports_exercise_all_five_request_scenarios reports enum_take_drop_split reached_leaf_edit actual1 vs expected53, full row[1117,0,0,1,6]. Earlier agent reported third row unchanged53; need reconcile measured source revision/routing/nondeterminism and repeat process tests. No commit/push. Width237 will push first; rebase233 afterward.",
+      "timestamp": "2026-09-18T00:43:01Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Resolve PR 215 drain readiness attribution CI failure",
   "type": "bug",
-  "updated_at": "2026-09-18T00:40:43Z"
+  "updated_at": "2026-09-18T00:43:01Z"
 }
