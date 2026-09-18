@@ -14,11 +14,15 @@
     {
       "text": "Second data point (run 34793899172, two CI runs executing concurrently): json_roundtrip run and build also exceeded 20s, plus tail_recursion interp. Locally json_roundtrip is 4.0s run / 4.1s build / 2.6s interp, identical before and after the on-demand runtime-call commit (measured both). The guard trips at roughly 5x local time under load.",
       "timestamp": "2026-09-14T01:09:00Z"
+    },
+    {
+      "text": "PR215 corrected stack head a4b892ebd CI run35290208660 reproduced the still-unresolved compile/setup guard canary: library2272 passed5ignored; fixture matrix820 passed5failed1ignored. Failure lanes execution_guard_covers_the_program_not_the_compile; enum_take_drop_split run/build; json_roundtrip run/build. All report setup readiness/build exceeded20s, not wrong output. Logs https://github.com/jallum/fz/actions/runs/35290208660 . Reopened existing issue instead of duplicating it. User approved integration of recursive inference after98.3 owner commits; verify these lanes again after inference/algebra fixes. Do not raise timeouts or waive the failures.",
+      "timestamp": "2026-09-18T00:38:38Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "The fixture matrix's 20s execution guard times the compiler, and the two slowest lanes sit at 60% of it on the CI runner",
   "type": "bug",
-  "updated_at": "2026-09-18T00:38:36Z"
+  "updated_at": "2026-09-18T00:38:38Z"
 }
