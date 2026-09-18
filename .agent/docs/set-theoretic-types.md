@@ -406,7 +406,20 @@ left to absorb, and callable idempotence; it runs on an index miss, so
 it costs one sweep per distinct descriptor. The tuple-emptiness
 recursion (`emptiness::phi_tuple`) returns early on an empty coordinate and drops
 negations disjoint from the product, so it explores only inhabited splits
-instead of fanning out `arity^|negs|` branches.
+instead of fanning out `arity^|negs|` branches on any ONE call; pruning alone
+does not stop the same `(coordinates, negations)` subproblem from being
+re-asked from every branch of an enclosing recursion (two mutually recursive
+tuple-tagged clauses, for instance), so `phi_tuple` and `Descr::is_empty_memo`
+both answer through `emptiness::Memo`, one result cache keyed on the interned
+operands (`MemoKey::Tuple`/`MemoKey::Descr`) and shared across every branch of
+one top-level emptiness question. `Memo` runs Tarjan's SCC algorithm on the
+fly over its own call graph: a witness (`false`) is cached the instant it is
+found, cyclic or not, because an over-optimistic coinductive guess can only
+ever make a computation look MORE empty, never manufacture a witness; an
+empty (`true`) result is cached only once the strongly-connected component
+that produced it closes with no witness anywhere inside it, so every member
+of a cycle becomes cacheable together, not just the subproblem that happened
+to close the recursion.
 
 Callable emptiness uses the same proof shape without giving a partition an
 integer identity. For a negative arrow `S -> V`, a positive-arrow partition
@@ -416,8 +429,8 @@ calculator walks that partition recursively, carrying those two residual
 descriptors. Selecting a positive shrinks only the input residual; leaving it
 unselected shrinks only the output residual. An empty residual can never become
 inhabited again, so that subtree is exact to prune. This makes the decision
-independent of the number of positive arrows while retaining the ordinary
-descriptor emptiness memo as the only child authority.
+independent of the number of positive arrows while retaining the same shared
+`Memo` as the only child authority.
 
 ## One implementation, shared trait
 

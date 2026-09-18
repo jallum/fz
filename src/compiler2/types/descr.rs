@@ -1088,16 +1088,11 @@ impl DescrOf<Ty> {
     }
 
     pub(super) fn is_empty_memo(&self, cx: TyCtx<'_>, memo: &mut Memo) -> bool {
-        if memo.in_flight.contains(self) {
-            return true;
-        }
-        memo.in_flight.insert(self.clone());
-        let result = self
-            .cases
-            .iter()
-            .all(|case| case.brands.is_none() || case.structure.axes_are_empty(cx, memo));
-        memo.in_flight.remove(self);
-        result
+        memo.query_descr(self, |memo| {
+            self.cases
+                .iter()
+                .all(|case| case.brands.is_none() || case.structure.axes_are_empty(cx, memo))
+        })
     }
 
     pub(super) fn is_subtype(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
