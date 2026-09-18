@@ -388,6 +388,23 @@ maps local references to the final contiguous ids and appends only completed
 descriptors plus their direct and regular keys. No incomplete id, redirect, or
 second type graph can escape the transaction.
 
+A component's nodes go through the same tuple-coordinate carving as ordinary
+descriptors while they are still local, unresolved references to each other's
+eventual `Ty`s. Widening there asks the same "is this wider rectangle already
+covered by its siblings" question, but a coordinate that is still a local
+reference has no `Descr` to ask it with. The calculator only trusts a
+coordinate's covering question when every sibling row is resolved the same
+way the trial rectangle is at that coordinate: where the trial names a local
+node, every sibling row must name that exact same node (it then cancels out
+of the comparison symbolically, whatever the node turns out to mean once
+published); where the trial holds a published type, no sibling row may hold
+an unresolved local reference at that coordinate instead. Either mismatch has
+no sound stand-in for "the type this cyclic reference will eventually have,"
+so the calculator declines to claim coverage rather than guess with `any`.
+Guessing wide there let two distinct tags from a mutual component's own arms
+fuse into one before either arm was published, corrupting the component's own
+canonical body.
+
 What clause order canNOT reconcile is a different CARVING of one type:
 `{[int], :false} | {[int], :true}` and `{[int], :false | :true}` are one
 denotation in two decompositions, and no clause-by-clause rule sees it because
