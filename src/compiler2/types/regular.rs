@@ -492,12 +492,24 @@ impl axis::TupleRectOps<RegularRef> for RegularTupleOps<'_> {
     }
 
     fn covered_by(&self, candidate: &[RegularRef], rectangles: &[Vec<RegularRef>]) -> bool {
-        let fixed_local_coordinates = candidate.iter().enumerate().all(|(coordinate, candidate)| {
-            matches!(candidate, RegularRef::Local(_))
-                .then(|| rectangles.iter().all(|rectangle| rectangle[coordinate] == *candidate))
-                .unwrap_or(true)
+        // A coordinate can only feed the emptiness check once every row agrees
+        // on what it names. A local (not-yet-published) coordinate is sound to
+        // compare only when the candidate names that SAME node at that
+        // position in every row -- the node then cancels out of the
+        // comparison symbolically, whatever it turns out to mean once
+        // published. Any row that disagrees -- a different local node, or a
+        // published type sitting where the candidate holds a local one, or a
+        // local node sitting where the candidate holds a published type --
+        // cannot be approximated (there is no sound stand-in for "the type
+        // this cyclic reference will eventually have"), so covering can't be
+        // claimed at all.
+        let coordinates_resolved = candidate.iter().enumerate().all(|(coordinate, candidate)| {
+            rectangles.iter().all(|rectangle| match candidate {
+                RegularRef::Local(_) => rectangle[coordinate] == *candidate,
+                RegularRef::Published(_) => !matches!(rectangle[coordinate], RegularRef::Local(_)),
+            })
         });
-        if !fixed_local_coordinates {
+        if !coordinates_resolved {
             return false;
         }
         let describe = |reference| match reference {

@@ -1001,6 +1001,107 @@ fn types_emptiness_discharges_a_negation_bearing_cycle() {
     assert!(t.descr(&recursive).is_empty(t.ctx()));
 }
 
+/// A two-arm regular-component node: `{fst_tag, payload} | {snd_tag, other}`,
+/// the shape both `even`/`odd` states below share.
+fn two_arm_regular_body(fst_tag: Ty, payload: ComponentRef, snd_tag: Ty, other: ComponentRef) -> DescrOf<ComponentRef> {
+    let mut descr = DescrOf::<ComponentRef>::unbranded();
+    descr.cases[0].structure.tuples = vec![
+        Conj::pos_of(TupleSigOf {
+            elems: vec![ComponentRef::Published(fst_tag), payload],
+        }),
+        Conj::pos_of(TupleSigOf {
+            elems: vec![ComponentRef::Published(snd_tag), other],
+        }),
+    ];
+    descr
+}
+
+/// `E = {:even, int} | {:e, O}`, `O = {:odd, int} | {:o, E}`: the smallest
+/// mutual regular component, one node's payload arm naming the other node.
+fn even_odd_component(t: &mut Types) -> (Ty, Ty, Ty, Ty, Ty, Ty) {
+    let int = t.int();
+    let even = t.atom_lit("even");
+    let odd = t.atom_lit("odd");
+    let e_tag = t.atom_lit("e");
+    let o_tag = t.atom_lit("o");
+    let roots = t.intern_regular_component(2, |nodes| {
+        vec![
+            two_arm_regular_body(even, ComponentRef::Published(int), e_tag, nodes[1]),
+            two_arm_regular_body(odd, ComponentRef::Published(int), o_tag, nodes[0]),
+        ]
+    });
+    (roots[0], roots[1], int, even, odd, e_tag)
+}
+
+/// Union of a mutual regular component against one of its own arms must
+/// terminate and answer the interned component identity, exactly as the
+/// self-recursive case already does. Before the fix, `union(e, {:even, int})`
+/// recursed without bound.
+#[test]
+fn union_of_a_mutual_regular_component_absorbs_its_own_arm() {
+    let mut t = Types::new();
+    let (e, o, int, even, odd, e_tag) = even_odd_component(&mut t);
+    let o_tag = t.atom_lit("o");
+
+    let even_arm = t.tuple(&[even, int]);
+    assert_eq!(t.union(e, even_arm), e, "E already holds its {{:even, int}} arm");
+
+    let e_arm = t.tuple(&[e_tag, o]);
+    assert_eq!(t.union(e, e_arm), e, "E already holds its {{:e, O}} arm");
+
+    let odd_arm = t.tuple(&[odd, int]);
+    assert_eq!(t.union(o, odd_arm), o, "O already holds its {{:odd, int}} arm");
+
+    let o_arm = t.tuple(&[o_tag, e]);
+    assert_eq!(t.union(o, o_arm), o, "O already holds its {{:o, E}} arm");
+}
+
+/// A one-step unfolding of a mutual component's own arm re-derives the same
+/// `Ty` by identity, and unioning it back in is a no-op, exactly as an
+/// already-interned arm is.
+#[test]
+fn union_of_a_mutual_regular_component_absorbs_its_own_unfolding() {
+    let mut t = Types::new();
+    let (e, o, int, even, odd, e_tag) = even_odd_component(&mut t);
+    let o_tag = t.atom_lit("o");
+
+    let odd_arm = t.tuple(&[odd, int]);
+    let o_arm = t.tuple(&[o_tag, e]);
+    let o_unfolded = t.union(odd_arm, o_arm);
+    assert_eq!(o_unfolded, o, "unfolding O one step re-derives O by identity");
+    let even_arm = t.tuple(&[even, int]);
+    let e_arm = t.tuple(&[e_tag, o_unfolded]);
+    let e_unfolded = t.union(even_arm, e_arm);
+    assert_eq!(e_unfolded, e, "unfolding E one step re-derives E by identity");
+
+    assert_eq!(t.union(e, e_unfolded), e, "E absorbs its own one-step unfolding");
+    assert_eq!(t.union(o, o_unfolded), o, "O absorbs its own one-step unfolding");
+}
+
+/// Self-recursive `X = int | list(X)` already absorbs union with its own arms
+/// and its own one-step unfolding by identity. These guard the mutual-case
+/// fix above against regressing the case that already worked.
+#[test]
+fn union_of_a_self_recursive_regular_component_absorbs_its_own_arm_and_unfolding() {
+    let mut t = Types::new();
+    let int = t.int();
+    let x = t.intern_regular_component(1, |nodes| {
+        vec![union_regular_bodies(
+            &DescrOf::<ComponentRef>::int(),
+            &DescrOf::list_of(nodes[0]),
+        )]
+    })[0];
+
+    assert_eq!(t.union(x, int), x, "X already holds its int arm");
+    let list_x = t.list(x);
+    assert_eq!(t.union(x, list_x), x, "X already holds its list(X) arm");
+
+    let list_x_again = t.list(x);
+    let unfolded = t.union(int, list_x_again);
+    assert_eq!(unfolded, x, "unfolding X one step re-derives X by identity");
+    assert_eq!(t.union(x, unfolded), x, "X absorbs its own one-step unfolding");
+}
+
 fn regular_test_tys(t: &mut Types) -> Vec<Ty> {
     let first_self = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
     let second_self = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
