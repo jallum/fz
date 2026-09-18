@@ -10,9 +10,15 @@
   "id": "fz-kdt.235",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Corrected-stack implementation in /Users/j5n/Workspace/fz-pr215-brand-correlation: approved single DescrOf\u003cR\u003e{cases:Vec\u003cBrandCase\u003cR\u003e\u003e}, each BrandCase owns finite/cofinite brands+StructureOf\u003cR\u003e nonbrand axes. Canonical partition into singleton mentioned brands plus residual, union normalized structural payload per partition and group equal payloads. No inert sidefields/compatibility view. Regular visitors/mapchildren traverse cases. Current partial migration intentionally noncompiling, no commit; fresh terra/high owner brand_correlation will resume when slot free. Pre-restack obsolete incomplete variant saved as stash252fc22d2b68095abab09a3a7ecb632eb681e7f0, dispose only after replacement verified.",
+      "timestamp": "2026-09-18T00:25:28Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Preserve structural and brand correlation in unions",
   "type": "bug",
-  "updated_at": "2026-09-18T00:02:26Z"
+  "updated_at": "2026-09-18T00:25:28Z"
 }
