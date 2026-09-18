@@ -314,6 +314,31 @@ same nesting in an argument instead, so each rung keys a new activation with a
 fresh budget and the drive does not terminate, which is why that fixture is
 deferred.
 
+`convergence_class` and `convergence_class_at` share one list-family predicate,
+`Descr::is_pure_list_family` (true whenever a structure is purely lists, no
+matter how many clauses or nesting depths — `axis_free()` plus at least one
+list clause). `convergence_class`'s list branch once asked
+`Descr::as_pure_list`, which additionally demands exactly one list
+clause, so a return that had grown into a union of list depths (one clause per
+depth) never matched and the widen was a no-op: the activation's return kept
+ascending past its budget instead of collapsing. `as_pure_list` still exists
+for its two remaining callers (`refine_widen_uncached`,
+`collect_subst_into_with`), which destructure the concrete `ListSig` and
+therefore genuinely need the single-clause guarantee; that is a different
+question from "is this purely a list family," so it keeps its own predicate.
+`behavior/nesting_accumulator.fz` is the list sibling of
+`return_tuple_accumulator.fz`: `def build(n, acc), do: build(n - 1, [acc])`
+nests inside a list argument instead of a tuple, so the input-side gate already
+folds every rung to one shared `build/2` activation key. That shared key's
+return widens: telemetry shows `return_type.widened` firing once, at ascent
+nine, collapsing to `[any]`. The fixture is still deferred because the compile
+does not finish after the widening: the callsite input merge
+(`merge_callsite_input_vec`) compares the raw argument-union ladder through
+`is_equivalent`, and DNF negation there (`list_denotation` -> `Descr::diff` ->
+`dnf_neg` -> `dnf_intersect_with`) is exponential in the number of list-axis
+clauses; in debug builds `debug_assert_dnf_axes_hygienic` adds a second
+exponential path on every intern miss.
+
 These counts are whole-compile totals on one cold compile, not the ladder's own
 round counter. `ActivationSlot::ascents` resets to zero when an activation is
 rebased and the climb starts again, while every revision in the new epoch still
