@@ -9,9 +9,15 @@
   "id": "fz-kdt.237",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "For public red, avoid a negative literally equal to a positive (DNF cancellation can bypass calculator). Build 32 same-result/distinct-arity positive constraints through repeated A \\\\ (any \\\\ B), then query subtype to unary int-\u003eatom; false at first semantic branch but current 1u32\u003c\u003c32 panics before branching. Direct private Conj with 32 positives and one nonidentical negative can pin calculator independently. Large TRUE cases need pruning so replacing u32 with an exponential iterator is not enough.",
+      "timestamp": "2026-09-18T00:03:21Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Remove fixed-width arrow subset enumeration limit",
   "type": "bug",
-  "updated_at": "2026-09-17T23:58:42Z"
+  "updated_at": "2026-09-18T00:03:21Z"
 }
