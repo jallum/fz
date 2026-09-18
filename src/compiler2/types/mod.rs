@@ -22,6 +22,7 @@ mod sigs;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::dispatch_matrix::demand::DispatchDemand;
@@ -39,6 +40,7 @@ use crate::types::{
     VisibilityTypes as SharedVisibilityTypes,
 };
 use bits::BasicBits;
+use emptiness::Operand;
 
 pub use crate::types::{
     BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError,
@@ -1211,7 +1213,7 @@ impl Types {
         for clause in clauses {
             let clause = self.normalize_tuple_coordinate_difference(clause);
             match (clause.pos.as_slice(), clause.neg.as_slice()) {
-                ([sig], []) => rects.push(sig.elems.iter().map(|ty| axis::Coord::Interned(*ty)).collect()),
+                ([sig], []) => rects.push(sig.elems.iter().map(|ty| Operand::Ty(*ty)).collect()),
                 _ => complex.push(clause),
             }
         }
@@ -1221,8 +1223,10 @@ impl Types {
             let elems = rect
                 .into_iter()
                 .map(|coord| match coord {
-                    axis::Coord::Interned(ty) => ty,
-                    axis::Coord::Built(descr) => self.intern(*descr),
+                    Operand::Ty(ty) => ty,
+                    Operand::Built(descr) => {
+                        self.intern(Rc::try_unwrap(descr).unwrap_or_else(|descr| (*descr).clone()))
+                    }
                 })
                 .collect();
             d.tuples.push(Conj::pos_of(TupleSig { elems }));
