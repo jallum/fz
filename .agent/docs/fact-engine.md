@@ -222,7 +222,9 @@ or not — announces a publisher and moves nothing. It is minted at revision
 **0**: present, at bottom, no content movement (`facts::appearance_revision`),
 and `None` <-> `Some(0)` is not a content change in either direction
 (`FactChange::content_changed`). `Current` readers stay asleep; a `Current`
-wait is now satisfiable, and `Settled` subscribers wake on the readiness edge.
+wait is now satisfiable. A concluded reader carries the new finality through
+its outputs without re-running; a standing `Settled` wait wakes only when the
+fact becomes final.
 The first claim that carries real evidence is an ordinary ascent, 0 -> 1.
 
 A REPLACING fact has no bottom to be at, so this never applies to one: whatever
@@ -276,9 +278,10 @@ an edge for EVERY callsite it reaches, unresolved and all
 (`CallSiteResolution`, [`semantic-fixpoint`](semantic-fixpoint.md)), so silence
 about one really is knowledge and nothing about those kinds is preserved. A
 preserved claim is RE-LISTED, never re-published: its revision does not move, its stored
-value is untouched, and no `Current` reader wakes (a readiness flip on a
-re-listed key is representable and reaches `Settled` subscribers only). One
-side effect is real: re-listed `Activation` keys pass
+value is untouched, and no reader wakes. A readiness flip on a re-listed key
+still propagates finality through concluded readers and can satisfy a standing
+`Settled` wait only when it becomes final. One side effect is real:
+re-listed `Activation` keys pass
 back through the completion's frontier harvest, so an unsettled callee is
 re-noted on every preserving conclusion — bounded, and retired by the drain
 pass's has-run guard.
@@ -460,10 +463,12 @@ claim from a publisher that is still deriving makes the fact unquiet, and that
 reader unfinalises through the same wave as any other reader.
 
 A readiness-only change (a fact losing or regaining finality with the same
-content) reaches `Settled` subscribers ONLY. Routing it
-to `Current` subscribers as well would recompute formulas whose input content
-never moved; `compiler2_scheduler_readiness_only_movement_evaluates_nobody`
-holds that line.
+content) changes the finality of every concluded reader's outputs, but
+evaluates no concluded reader. Only its false-to-true edge can satisfy a
+standing `Settled` wait. Routing it to subscribers, or to `Current` readers,
+would recompute formulas whose input content never moved;
+`compiler2_scheduler_readiness_only_movement_evaluates_nobody` holds that
+line.
 
 ### The drain arbiter
 
