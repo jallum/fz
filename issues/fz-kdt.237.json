@@ -4,6 +4,7 @@
   "blocks": [
     "fz-kdt.238"
   ],
+  "closed_at": "2026-09-18T00:43:15Z",
   "created": "2026-09-17T23:57:56Z",
   "description": "arrow_clause_empty enumerates 0u32..1u32\u003c\u003cn_pos and panics at 32 positives. Red construct 32 distinct-arity arrows via logical conjunction/difference and ask subtype to one member; must terminate true without panic. Need width-independent exact algorithm with pruning, not larger fixed integer or cap/approximation. Test 32/64+, small exhaustive oracle. One fresh agent, one commit onto PR215.",
   "id": "fz-kdt.237",
@@ -20,8 +21,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Remove fixed-width arrow subset enumeration limit",
   "type": "bug",
-  "updated_at": "2026-09-18T00:43:14Z"
+  "updated_at": "2026-09-18T00:43:15Z"
 }
