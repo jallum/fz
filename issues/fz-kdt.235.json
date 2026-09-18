@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-kdt.238",
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-kdt",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Preserve structural and brand correlation in unions",
   "type": "bug",
-  "updated_at": "2026-09-17T23:58:43Z"
+  "updated_at": "2026-09-18T00:02:26Z"
 }
