@@ -19,11 +19,15 @@
     {
       "text": "Fresh product-pull baseline at PR215 d12ec6c9, 2026-09-18: target/debug/fz2 --log-telemetry /tmp/fz-pr215-json-baseline.tfJQyP/trace.jsonl run fixtures2/behavior/json_roundtrip.fz, explicit exit0 and correct fixture output. Existing distiller+jq:4089 job spans;1476 AnalyzeActivation spans;380 distinct full analyzed ActivationKey identities (including macro roots);5 ReturnType.widened events, all return any at17ascents. Json.value/1,Json.val/1,Json.decode/1,Json.array/2,Json.array_element/2 each17returndefinitions and widening. Hottest analysis77runs Json.array_element,59main,55Json.decode,32Json.object_colon. Main retained session counts:2143changed_revision_wake,378activation_frontier,1536blocked_waiter_expansion,2ignition; unsanctioned/root_scans0. Thus correctness fixes have not eliminated recursive-return ladder. Preserve same run/product-pull door for after-comparison; do not compare to standalone Compiler2 drive or claim historical doc counts are paired baseline. Trace temporary, no source probe added.",
       "timestamp": "2026-09-18T01:02:13Z"
+    },
+    {
+      "text": "USER-REQUESTED PAIRED MAIN CENSUS: cheap independent Luna agent built main/origin/main a5551f6b432f1e388fa24981daf8903712f73a6d in isolated worktree, ran same CLIrun telemetry, exit0. Root independently checked trace. Main and215 d12ec6c9 are IDENTICAL:4089jobs,1476AnalyzeActivation runs,380distinct analyzed activations,5wideningstoany,max17ascents. Same fixture blob56d82fb350b7ff708f4120a76dab32f4798da1ff onboth. Main hottest analyses77Json.array_element,59main,55Json.decode. No demonstrated recursive-work reduction from landed review fixes. Maintrace /tmp/fz-main-json-census.qSWcvV/trace.jsonl; PRtrace /tmp/fz-pr215-json-baseline.tfJQyP/trace.jsonl. Both temporary and reproducible; no source probes.",
+      "timestamp": "2026-09-18T01:08:06Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Fold a recursive group's equations to μ; delete the budgets",
   "type": "task",
-  "updated_at": "2026-09-18T01:02:13Z"
+  "updated_at": "2026-09-18T01:08:06Z"
 }
