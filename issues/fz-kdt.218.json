@@ -17,11 +17,15 @@
     {
       "text": "P10 clarification: the proof is union satisfaction, not arrow-set disjointness. The unary witness is a subtype of the instantiated unary arm and of the full instantiated union; that arm already proves the match, so the unused alternative owes no lower-bound observation. Public FunctionContract::apply likewise publishes the known int result.",
       "timestamp": "2026-09-18T01:12:44Z"
+    },
+    {
+      "text": "Landed as c0086346836af0d53cdf1ed9924d2dcc6029146d on fz-kdt.177.15/returntype-derivation-98 after a clean rebase onto 7b2c4ef4. Gates: cargo fmt --check; matcher 98/98; contract 28/28; cargo test --lib: 2302 passed, 5 ignored; cargo clippy --workspace --all-targets -- -D warnings. Remote verified at c0086346836af0d53cdf1ed9924d2dcc6029146d.",
+      "timestamp": "2026-09-18T01:18:43Z"
     }
   ],
   "priority": 3,
   "status": "in_progress",
   "title": "A partial join is marked per NODE, so a collector that skips ONE covariant occurrence still answers Known: collect_map_match's absent key and collect_arrow_match's arity-incompatible clause",
   "type": "bug",
-  "updated_at": "2026-09-18T01:12:44Z"
+  "updated_at": "2026-09-18T01:18:43Z"
 }
