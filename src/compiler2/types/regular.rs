@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use super::axis;
 use super::conj::Conj;
 use super::descr::{DescrOf, StructureOf, canonical_brand_partition};
+use super::emptiness::Operand;
 use super::{
     CallableSurfaceOps, TupleCoordinateOps, Ty, Types, normalize_literal_callable_surfaces_with,
     normalize_tuple_coordinate_difference_with,
@@ -513,8 +514,8 @@ impl axis::TupleRectOps<RegularRef> for RegularTupleOps<'_> {
             return false;
         }
         let describe = |reference| match reference {
-            RegularRef::Published(ty) => self.types.descr(&ty).clone(),
-            RegularRef::Local(_) => DescrOf::any(),
+            RegularRef::Published(ty) => Operand::Ty(ty),
+            RegularRef::Local(_) => Operand::built(DescrOf::any()),
         };
         let candidate = candidate.iter().copied().map(describe).collect::<Vec<_>>();
         let rectangles = rectangles

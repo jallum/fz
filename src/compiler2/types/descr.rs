@@ -1088,11 +1088,7 @@ impl DescrOf<Ty> {
     }
 
     pub(super) fn is_empty_memo(&self, cx: TyCtx<'_>, memo: &mut Memo) -> bool {
-        memo.query_descr(self, |memo| {
-            self.cases
-                .iter()
-                .all(|case| case.brands.is_none() || case.structure.axes_are_empty(cx, memo))
-        })
+        memo.query_descr(self, |memo| cases_are_empty(self, cx, memo))
     }
 
     pub(super) fn is_subtype(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
@@ -1111,6 +1107,23 @@ impl DescrOf<Ty> {
                 .all(|right| left.structure.value_disjoint(cx, &right.structure))
         })
     }
+}
+
+/// Every admitted brand case's non-brand axes, read off one already-resolved
+/// descriptor. The one place `is_empty_memo`'s two entry points (a `Descr`
+/// already in hand, or a bare `Ty` still to resolve) agree on what "empty"
+/// means, so neither can drift from the other.
+fn cases_are_empty(d: &Descr, cx: TyCtx<'_>, memo: &mut Memo) -> bool {
+    d.cases
+        .iter()
+        .all(|case| case.brands.is_none() || case.structure.axes_are_empty(cx, memo))
+}
+
+/// [`DescrOf::is_empty_memo`] for a `Ty` nothing has touched yet: the memo
+/// keys this on the id itself (see [`Memo::query_ty`]) instead of cloning
+/// the descriptor it resolves to just to ask a question about it.
+pub(super) fn is_empty_memo_ty(ty: Ty, cx: TyCtx<'_>, memo: &mut Memo) -> bool {
+    memo.query_ty(ty, |memo| cases_are_empty(cx.descr(&ty), cx, memo))
 }
 
 fn single_positive<T>(clauses: &[Conj<T>]) -> Option<&T> {

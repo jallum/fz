@@ -11,7 +11,8 @@
 //! produces. This test drives the actual two-state mutual recursion fixture
 //! through the compiler.
 
-use super::{Memo, MemoKey};
+use super::{Conj, Memo, MemoKey, Operand, TupleSig, tuple_clause_empty};
+use crate::compiler2::types::Types;
 use crate::compiler2::types::descr::Descr;
 use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::exec::runtime::DbgCapture;
@@ -73,7 +74,7 @@ fn mutual_recursive_tuple_states_do_not_blow_up_emptiness() {
 #[test]
 fn memo_answers_a_repeated_witness_from_the_cache() {
     let mut memo = Memo::default();
-    let key = MemoKey::Descr(Descr::none());
+    let key = MemoKey::Descr(Operand::built(Descr::none()));
     let mut compute_calls = 0;
 
     let first = memo.query(key.clone(), |_memo| {
@@ -98,7 +99,7 @@ fn memo_answers_a_repeated_witness_from_the_cache() {
 #[test]
 fn memo_closes_a_self_referential_component_as_empty() {
     let mut memo = Memo::default();
-    let key = MemoKey::Descr(Descr::none());
+    let key = MemoKey::Descr(Operand::built(Descr::none()));
 
     let result = memo.query(key.clone(), |memo| {
         // Re-entering `key` while it is still open on the DFS stack is the
@@ -123,5 +124,45 @@ fn memo_closes_a_self_referential_component_as_empty() {
     assert_eq!(
         memo.misses, 2,
         "both the outer call and the in-flight back-edge miss the results cache"
+    );
+}
+
+/// `Operand` is the memo key's payload: a `Ty` this call was already handed,
+/// or a descriptor an algebra step just built. Its size proves the second
+/// case cannot inline a whole `Descr` (a `Vec<BrandCase<Ty>>`, at least three
+/// words before a single case) — a built descriptor must sit behind a shared
+/// pointer, so cloning an `Operand` can never re-walk one.
+#[test]
+fn operand_cannot_inline_a_descriptor() {
+    assert!(
+        std::mem::size_of::<Operand>() <= 2 * std::mem::size_of::<usize>(),
+        "an Operand must be at most a discriminant plus one pointer-sized field, \
+         proving Operand::Built cannot hold a Descr inline"
+    );
+}
+
+/// White-box proof that an untouched coordinate is keyed on the `Ty` it
+/// already is, not on a rebuilt copy of its descriptor: a plain
+/// single-positive tuple clause over two already-interned types must leave
+/// exactly one `Operand::Ty`-only key in the memo, never an `Operand::Built`
+/// one, because nothing here ever needed to intersect, diff, or otherwise
+/// rebuild either coordinate.
+#[test]
+fn tuple_clause_empty_keys_untouched_coordinates_by_ty() {
+    let mut types = Types::new();
+    let int = types.int();
+    let atom = types.atom();
+    let cx = types.ctx();
+    let mut memo = Memo::default();
+
+    let clause = Conj::pos_of(TupleSig { elems: vec![int, atom] });
+    let empty = tuple_clause_empty(cx, &clause, &mut memo);
+
+    assert!(!empty, "int × atom is a nonempty product");
+    let expected_key = MemoKey::Tuple(vec![Operand::Ty(int), Operand::Ty(atom)], Vec::new());
+    assert_eq!(
+        memo.results.get(&expected_key),
+        Some(&false),
+        "the cached key must be the two coordinates' own Ty identity, not a rebuilt descriptor"
     );
 }

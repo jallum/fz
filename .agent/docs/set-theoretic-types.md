@@ -427,9 +427,14 @@ instead of fanning out `arity^|negs|` branches on any ONE call; pruning alone
 does not stop the same `(coordinates, negations)` subproblem from being
 re-asked from every branch of an enclosing recursion (two mutually recursive
 tuple-tagged clauses, for instance), so `phi_tuple` and `Descr::is_empty_memo`
-both answer through `emptiness::Memo`, one result cache keyed on the interned
-operands (`MemoKey::Tuple`/`MemoKey::Descr`) and shared across every branch of
-one top-level emptiness question. `Memo` runs Tarjan's SCC algorithm on the
+both answer through `emptiness::Memo`, one result cache keyed on
+`emptiness::Operand` (`MemoKey::Tuple`/`MemoKey::Descr`) and shared across
+every branch of one top-level emptiness question. Each coordinate an
+`Operand` carries is either the interned `Ty` itself, compared and hashed by
+id, or, for a descriptor that algebra (intersect/diff/union) has just built
+and not yet interned, a reference-counted `Descr` compared and hashed by
+content; touching an already-interned coordinate never allocates or clones
+one. `Memo` runs Tarjan's SCC algorithm on the
 fly over its own call graph: a witness (`false`) is cached the instant it is
 found, cyclic or not, because an over-optimistic coinductive guess can only
 ever make a computation look MORE empty, never manufacture a witness; an
