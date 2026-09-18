@@ -25,8 +25,8 @@ use super::super::identity::{
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, ActivationInput, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets,
-    CallTargetSummary, SelectedCallee,
+    ActivationAnalysis, ActivationInput, ActivationInputAlternatives, CallSiteKey, CallSiteResolution, CallSiteSummary,
+    CallSiteTargets, CallTargetSummary, SelectedCallee,
 };
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
@@ -166,6 +166,23 @@ struct ActivationContribution {
     inputs: Vec<ActivationInput>,
 }
 
+/// What a walk over one activation's dispatch-reachable clauses determines,
+/// before any of it reaches `World`. Producing this value never writes a
+/// fact -- every read that shapes it is an ordinary `Current` read, and every
+/// unresolved question it meets becomes a wait rather than a block. Only
+/// `commit_activation_evaluation` turns it into published facts.
+struct ActivationEvaluation {
+    activation: ActivationKey,
+    input_rows: Vec<Vec<Ty>>,
+    entry_reachability: super::super::semantic::EntryReachability,
+    reachable_entries: Vec<super::super::body::ControlEntryId>,
+    value_types: ValueTypes,
+    return_evidence: Option<Ty>,
+    analysis_calls: Vec<CallEmission>,
+    reads: Vec<FactKey>,
+    waits: HashSet<FactKey>,
+}
+
 /// Analyzes one rooted function activation against its lowered body.
 ///
 /// The job waits until the activation, lowered body, and entry dispatch all
@@ -208,7 +225,6 @@ pub(super) fn analyze_activation(
     let alternatives = alternatives.clone();
 
     let function = activation.function;
-    let function_fact = FactKey::FunctionDefined(function);
     let Some(_) = world.function_defined_revision(function) else {
         return Ok(world.wait_for_function_definition(function));
     };
@@ -227,16 +243,29 @@ pub(super) fn analyze_activation(
         return Ok(JobEffects::wait_on_current(dispatch_fact));
     }
 
+    let evaluation = evaluate_activation(world, tel, activation, &alternatives)?;
+    Ok(commit_activation_evaluation(world, tel, evaluation))
+}
+
+/// Walks `activation`'s dispatch-reachable clauses and produces the
+/// evaluation `commit_activation_evaluation` installs. Every gate that can
+/// still turn this analysis into a wait instead of an answer already ran in
+/// `analyze_activation`; from here on the walk always reaches a conclusion.
+fn evaluate_activation(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    activation: &ActivationKey,
+    alternatives: &ActivationInputAlternatives,
+) -> Result<ActivationEvaluation, FatalError> {
+    let function = activation.function;
     let mut reads = vec![
         FactKey::Activation(activation.clone()),
         FactKey::ActivationInputs(activation.clone()),
-        function_fact,
-        lowered_fact,
-        dispatch_fact,
+        FactKey::FunctionDefined(function),
+        FactKey::LoweredBody(function),
+        FactKey::EntryDispatch(function),
     ];
     let mut waits = HashSet::new();
-    let mut outputs = Vec::new();
-    let mut changed = Vec::new();
 
     let entry_dispatch = world.entry_dispatch(function);
     let lowered_body = world.lowered_body(function);
@@ -343,6 +372,49 @@ pub(super) fn analyze_activation(
     // the waits simply ride the final effects.
     analysis_calls = coalesce_call_emissions(world, analysis_calls)?;
 
+    Ok(ActivationEvaluation {
+        activation: activation.clone(),
+        input_rows: alternatives.rows().iter().map(|row| row.tys()).collect(),
+        entry_reachability,
+        reachable_entries: {
+            let mut entries = reachable_entries.into_iter().collect::<Vec<_>>();
+            entries.sort_by_key(|entry| entry.as_u32());
+            entries
+        },
+        value_types,
+        return_evidence,
+        analysis_calls,
+        reads,
+        waits,
+    })
+}
+
+/// Installs one activation's evaluation into `World`. This is the only place
+/// `analyze_activation`'s walk writes a fact; everything that shaped
+/// `evaluation` was an ordinary read. The early gates in `analyze_activation`
+/// -- the absent activation, and the waits on input alternatives, the
+/// function definition, the lowered body, and the entry dispatch -- return
+/// before a walk ever reaches here, so none of them touch this function.
+fn commit_activation_evaluation(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    evaluation: ActivationEvaluation,
+) -> JobEffects {
+    let ActivationEvaluation {
+        activation,
+        input_rows,
+        entry_reachability,
+        reachable_entries,
+        value_types,
+        return_evidence,
+        analysis_calls,
+        reads,
+        waits,
+    } = evaluation;
+
+    let mut outputs = Vec::new();
+    let mut changed = Vec::new();
+
     let mut emitted_activations = HashSet::new();
     let mut emitted_activation_inputs = HashSet::new();
     let mut activation_input_contributions = Vec::new();
@@ -392,7 +464,7 @@ pub(super) fn analyze_activation(
     // fz-kdt.69 decommission must clear the ActivationSlot to keep it.
     debug_assert!(
         world.has_fact(&FactKey::ReturnType(activation.clone()))
-            || world.activation_return_evidence(activation).is_none(),
+            || world.activation_return_evidence(&activation).is_none(),
         "a ReturnType claim is absent while its store holds content -- revision-0 minting would lie"
     );
     let return_derivation = Derivation::own(&Job::AnalyzeActivation(activation.clone()));
@@ -405,15 +477,11 @@ pub(super) fn analyze_activation(
     }
 
     let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
-        activation,
+        &activation,
         ActivationAnalysis {
-            input_rows: alternatives.rows().iter().map(|row| row.tys()).collect(),
+            input_rows,
             entry_reachability,
-            reachable_entries: {
-                let mut entries = reachable_entries.into_iter().collect::<Vec<_>>();
-                entries.sort_by_key(|entry| entry.as_u32());
-                entries
-            },
+            reachable_entries,
             // The callsites this analysis RESOLVED. An unresolved edge names
             // no targets, so the products keyed off this list -- materialized
             // call edges, runtime demand, the canonical call-edge snapshot --
@@ -425,20 +493,20 @@ pub(super) fn analyze_activation(
             value_types,
         },
     );
-    let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
+    let analyzed_fact = FactKey::ActivationAnalyzed(activation);
     outputs.push(analyzed_fact.clone());
     if analysis_changed {
         changed.push(analyzed_fact);
     }
 
-    Ok(JobEffects {
+    JobEffects {
         reads: current_uses(reads),
         waits: current_uses(waits),
         outputs: dedupe_facts(outputs),
         changed: dedupe_facts(changed),
         activation_input_contributions,
         ..JobEffects::default()
-    })
+    }
 }
 
 fn analyze_entry(
