@@ -217,12 +217,12 @@ pub(crate) fn resource_clause_empty(cx: TyCtx<'_>, c: &Conj<ResourceSig>, memo: 
         }
         payload
     };
-    if c.neg.is_empty() {
-        return false;
-    }
-    c.neg
+    let negatives: Vec<Vec<Descr>> = c
+        .neg
         .iter()
-        .any(|n| payload.diff(cx.descr(&n.payload)).is_empty_memo(cx, memo))
+        .map(|negative| vec![cx.descr(&negative.payload).clone()])
+        .collect();
+    phi_tuple(cx, &[payload], &negatives, memo)
 }
 
 fn arrow_input(sig: &ArrowSig) -> Descr {
@@ -385,25 +385,26 @@ pub(crate) fn map_clause_empty(cx: TyCtx<'_>, c: &Conj<MapSig>, memo: &mut Memo)
     if merged.values().any(|v| v.is_empty_memo(cx, memo)) {
         return true;
     }
-    for n in &c.neg {
-        if n.tag != c.pos[0].tag {
-            continue;
-        }
-        let n_keys_subset = n.fields.keys().all(|k| merged.contains_key(k));
-        if !n_keys_subset {
-            continue;
-        }
-        let value_refines = n.fields.iter().all(|(k, nv)| {
+    // A positive map is open, so its smallest witnesses have exactly its
+    // required keys. A negative that requires another key cannot cover one of
+    // those witnesses. The remaining negatives are rectangles over the
+    // positive keys; absent negative fields admit every value on that axis.
+    let negatives: Vec<Vec<Descr>> = c
+        .neg
+        .iter()
+        .filter(|negative| negative.tag == c.pos[0].tag)
+        .filter(|negative| negative.fields.keys().all(|key| merged.contains_key(key)))
+        .map(|negative| {
             merged
-                .get(k)
-                .map(|pv| pv.diff(cx.descr(nv)).is_empty_memo(cx, memo))
-                .unwrap_or(false)
-        });
-        if value_refines {
-            return true;
-        }
-    }
-    false
+                .keys()
+                .map(|key| match negative.fields.get(key) {
+                    Some(value) => cx.descr(value).clone(),
+                    None => Descr::any(),
+                })
+                .collect()
+        })
+        .collect();
+    phi_tuple(cx, &merged.into_values().collect::<Vec<_>>(), &negatives, memo)
 }
 
 #[cfg(test)]

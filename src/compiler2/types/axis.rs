@@ -18,10 +18,8 @@
 //! Each rewrites a descriptor to a semantically EQUAL one, so emptiness and
 //! subtyping answers are unchanged; only the clause list shrinks. Equal under
 //! the relation the CALCULATOR answers with, which is the only relation there
-//! is. An axis rule that reasons about a clause as a plain set of values can
-//! outrun the kernel's own containment — see the resource rule below for the
-//! case where it does — and a rule that outruns it drops clauses the union
-//! they are folded into does not contain.
+//! is. Structural filters may reject only a containment that cannot hold; the
+//! shared calculator decides every collective coverage question they cannot.
 //!
 //! The tuple axis has a fourth, because a union of products can be CARVED
 //! into products more than one way and neither carving's clauses contain the
@@ -60,10 +58,9 @@
 //! and arity is unbounded — and a finite union of positive-only map clauses is
 //! never every map, for the same reason about struct tags. But `{any, any} ∨
 //! ¬{any, any}` IS every tuple, and `%{k: any} ∨ ¬%{k: any}` is every map, so
-//! "this axis has no top to reach" would be false. Lists and resources answer
-//! their positive-only case exactly, reading the verdict off the kernel's own
-//! clause-emptiness rule rather than off set reasoning, and go to the
-//! calculator for the rest.
+//! "this axis has no top to reach" would be false. Lists answer their
+//! positive-only case directly, while resources go to the calculator so a
+//! union of payload alternatives can cover their payload space.
 //!
 //! What those two rules ask of a child — "is this every value" — is a question
 //! about the DENOTATION, and `Descr::is_full` is its one implementation. A
@@ -426,34 +423,17 @@ pub(super) const RESOURCES: AxisView<ResourceSig> = AxisView {
                 _ => false,
             }
     },
-    // EXACT, and no descriptor arithmetic — but exact under the KERNEL's
-    // relation, which is narrower than reading a resource as a set of
-    // payloads. `emptiness::resource_clause_empty` decides a resource clause
-    // carrying negatives by asking whether a SINGLE negative swallows the
-    // payload, never whether their union does, so under the calculator's own
-    // containment `resource(C)` is inside a union of plain resource clauses
-    // exactly when ONE of them contains it — the same reasoning the list rule
-    // uses for its non-empty shape. `clause_covers` has already asked that and
-    // answered no, so there is nothing left for the union to add.
-    coverage: |_, clause, siblings, _| {
-        if plain_sig(clause).is_none() || plain_sigs(siblings.iter().copied()).is_none() {
-            return Coverage::Unproven;
-        }
-        Coverage::NotCovered
-    },
-    // EXACT, by the same reading of the kernel as the list rule. `top` minus a
-    // union of plain resource clauses is the one clause negating them all, and
-    // `emptiness::resource_clause_empty` calls that empty exactly when a
-    // SINGLE negated payload swallows `any` — so the axis is its top exactly
-    // when ONE clause's payload is every value, and two clauses partitioning
-    // the payloads between them are not every resource.
-    //
-    // "Every value" is `Descr::is_full`, for the reason the list rule states.
+    // Resource payload alternatives form a one-coordinate product. More than
+    // one sibling can cover that coordinate, so let the shared calculator
+    // apply `phi_tuple` rather than rejecting collective coverage here.
+    coverage: |_, _, _, _| Coverage::Unproven,
+    // One full payload proves top immediately. Other collective payload
+    // covers, such as `int | not int`, go to the same calculator.
     plain_top: |cx, sigs| {
         if sigs.iter().any(|sig| is_full(cx, sig.payload)) {
             Coverage::Covered
         } else {
-            Coverage::NotCovered
+            Coverage::Unproven
         }
     },
 };
