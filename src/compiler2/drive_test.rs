@@ -20610,16 +20610,17 @@ const RETURN_LADDERS: &[PinnedLadder] = &[
 /// `behavior/nesting_accumulator.fz` is deliberately absent: it drives the
 /// same list-family return widen this table exercises, but
 /// `measure_return_ascents` drives to `DumpStage::Backend`, which that
-/// fixture's compile never reaches -- after the widening the callsite input
-/// merge compares the raw argument-union ladder through `is_equivalent`, whose
-/// DNF negation is exponential in list-axis clauses, so adding it here would
+/// fixture's compile never reaches -- after the widening every round
+/// contributes a strictly deeper ground input row to the shared `build/2`
+/// activation, and `ActivationInputAlternatives::insert_row` compares it
+/// against every standing row through DNF, so adding it here would
 /// hang this test rather than pin it. It carries its own `defer:` and is
 /// confirmed by hand: `--log-telemetry` shows `return_type.widened` firing
 /// once, at ascent nine, collapsing to `[any]`.
 ///
 /// `behavior/self_guarded_nest.fz` nests a list the same way, but on one
 /// argument rather than an accumulator's two, so its shared activation key
-/// never mints the growing argument-union its sibling's callsite merge chokes
+/// never receives the growing input rows its sibling's evidence join chokes
 /// on; it reaches `DumpStage::Backend` and pins cleanly. `behavior/false_embedding.fz`
 /// and `behavior/alias_cycle_with_entry.fz` are the tuple-return and
 /// alias-cycle counterparts to the mutual and bare ladders above, and

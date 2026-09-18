@@ -332,12 +332,16 @@ nests inside a list argument instead of a tuple, so the input-side gate already
 folds every rung to one shared `build/2` activation key. That shared key's
 return widens: telemetry shows `return_type.widened` firing once, at ascent
 nine, collapsing to `[any]`. The fixture is still deferred because the compile
-does not finish after the widening: the callsite input merge
-(`merge_callsite_input_vec`) compares the raw argument-union ladder through
-`is_equivalent`, and DNF negation there (`list_denotation` -> `Descr::diff` ->
-`dnf_neg` -> `dnf_intersect_with`) is exponential in the number of list-axis
-clauses; in debug builds `debug_assert_dnf_axes_hygienic` adds a second
-exponential path on every intern miss.
+does not finish after the widening: every round contributes a strictly deeper
+ground input row for `acc` to the shared `build/2` activation, and
+`Types::convergence_collapse_evidence_inputs` widens an ignored slot only when
+the type carries variables, so no standing row is equivalent to or dominates
+the new one. `ActivationInputAlternatives::insert_row` pays one DNF comparison
+(`is_equivalent` / `row_column_dominates`) per standing row over an ever deeper
+type, the row-budget join is a union of depths the next row is not a subtype
+of, and the loop input evidence -> body -> self-call argument -> contribution
+never closes. This is the input-side twin of the return ladder,
+`acc(n + 1) = base | list(acc(n))`.
 
 These counts are whole-compile totals on one cold compile, not the ladder's own
 round counter. `ActivationSlot::ascents` resets to zero when an activation is
