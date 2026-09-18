@@ -18,11 +18,15 @@
     {
       "text": "Existing implementation to reuse, not reinvent: separate stack has 8837b29b6 (fz-kdt.48.11 separate callable surfaces from values) then 832e46e44 (fz-kdt.48.8 canonicalize callable value identity). Both based on a5551f6b4, missing from PR215. Agent should inspect authoritative existing commits and ports, first reproduce supplied red on current PR, adapt/cherry-pick preserving algebra fixes, no mutations to original worktrees. Canonical zero census may have covered runtime corpus but still verify review explicit overload equality.",
       "timestamp": "2026-09-18T00:04:10Z"
+    },
+    {
+      "text": "User corrected stack:215 now rebased transitively via214onto213, includes existing canonical implementation; no cherry-pick/port needed. Fresh agent must REASSESS explicit identity repro on a4b892ebd before changing anything; this ticket may be verification-only if existing stack fixes it.",
+      "timestamp": "2026-09-18T00:14:37Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Make type identity independent of equivalent construction and metadata",
   "type": "bug",
-  "updated_at": "2026-09-18T00:04:10Z"
+  "updated_at": "2026-09-18T00:14:37Z"
 }
