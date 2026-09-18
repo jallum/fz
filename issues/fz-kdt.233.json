@@ -19,11 +19,15 @@
     {
       "text": "Root explicit full gate FAILED2272pass1fail5ignored: telemetry::public_trace::public_trace_test::target_fixture_reports_exercise_all_five_request_scenarios reports enum_take_drop_split reached_leaf_edit actual1 vs expected53, full row[1117,0,0,1,6]. Earlier agent reported third row unchanged53; need reconcile measured source revision/routing/nondeterminism and repeat process tests. No commit/push. Width237 will push first; rebase233 afterward.",
       "timestamp": "2026-09-18T00:43:01Z"
+    },
+    {
+      "text": "RED on corrected-stack baseline: formula totals 410 evaluations, 2 readiness-caused, 1 uncaused; public-trace reached-leaf RuntimeDemand rows 5/49/53. GREEN at d12ec6c9ec41c5544b189e62ae26c3df3dc80d7e: only standing Settled waiters wake on false-to-true finality; concluded readers propagate finality without re-running. Explicit gates: cargo test --lib --quiet 2291 passed/5 ignored; cargo test --test fz2_cli --quiet 33 passed; cargo fmt --check; cargo clippy --all-targets --all-features -- -D warnings. Corrected reached-leaf rows are 1/1/1.",
+      "timestamp": "2026-09-18T00:55:09Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Resolve PR 215 drain readiness attribution CI failure",
   "type": "bug",
-  "updated_at": "2026-09-18T00:43:01Z"
+  "updated_at": "2026-09-18T00:55:09Z"
 }
