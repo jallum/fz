@@ -40,16 +40,12 @@
 //! BECOMES — and only the seed is readable, so `{:done, []}` would claim the
 //! fold returns what it started with.
 //!
-//! The rule reads the merged outcome of a NODE, and that is precisely what it
-//! delivers: a `Known` verdict means no node the walk visited was wholly
-//! unreadable — NOT that every covariant occurrence was individually read. Two
-//! collectors skip a single unread occurrence while a sibling keeps the node's
-//! merged outcome `Known`, so the marking site never fires: `collect_map_match`
-//! skips a pattern key the witness does not name, and `collect_arrow_match`
-//! skips a pattern clause no witness clause matches on arity. Both are pinned
-//! KNOWN-WRONG below (`p5_*`, `p10_*`) and neither is reachable from the
-//! shipped library, which declares no map-typed and no multi-clause `@spec`;
-//! fz-kdt.218 owns closing them.
+//! A collector must mark a lower-bound occurrence at the boundary where it
+//! declines to read a live subtree. In particular, `collect_map_match` marks a
+//! pattern field whose key a variable-carrying witness might still contain.
+//! A ground witness missing that key is instead `Invalid`. A unary arm that
+//! already satisfies a callable UNION establishes the match; the unused
+//! alternative contributes no lower-bound observation obligation.
 //!
 //! The coarseness runs the other way too: an unreadable node marks every
 //! covariant variable beneath it, including one another position already
@@ -452,10 +448,10 @@ impl Types {
             // get one, so its lower bound is partial from here on
             // (fz-kdt.210).
             //
-            // This is the ONE marking site, and it reads the node's MERGED
-            // outcome. A collector that skips a single occurrence while a
-            // sibling reads another leaves the node `Known` and marks nothing
-            // -- see the `p5_`/`p10_` known-wrong pins for the two that do.
+            // This is the node-wide marking site. Collectors that decline a
+            // live subtree mark that subtree at their own boundary, because a
+            // sibling's evidence must not turn its omitted lower term into a
+            // completed join.
             let mut seen = HashSet::new();
             self.collect_lower_occurrences(pattern, side, &mut seen, &mut bounds.undetermined);
         }
@@ -782,6 +778,13 @@ impl Types {
             if !witness_keys.contains(&key) {
                 if !self.has_vars(witness) && !self.witness_escapes_kind(pattern, witness, |d| d.maps.clear()) {
                     outcome = outcome.merge(MatchWitness::Invalid);
+                } else {
+                    // The witness can still contain this key through its
+                    // unresolved remainder. This field is a live covariant
+                    // occurrence whose lower-bound term was not observed;
+                    // mark only the subtree we declined to descend into.
+                    let mut seen = HashSet::new();
+                    self.collect_lower_occurrences(&pattern_field, side, &mut seen, &mut bounds.undetermined);
                 }
                 continue;
             }
@@ -2486,13 +2489,12 @@ mod pinned_verdicts {
     /// MERGED outcome, so an unreadable node names every covariant variable
     /// beneath it -- including one another position already determined.
     /// `f(a, ((any) -> int) | ((any, any) -> a)) :: a` at `(int, (any) -> int)`
-    /// has `a` fully determined at position 0, and the arity-2 clause is a
-    /// branch the unary witness can never select, yet the node reads as
+    /// has `a` fully determined at position 0, but the node reads as
     /// unreadable and the result stops being a fact. Precision, never
     /// soundness; see [`Types::result_variables_are_determined`] for what the
     /// whole class costs.
     #[test]
-    fn an_uninhabited_arrow_clause_still_marks() {
+    fn an_unreadable_arrow_node_still_marks() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let int = t.int();
@@ -2507,19 +2509,15 @@ mod pinned_verdicts {
         }
     }
 
-    /// fz-kdt.210, KNOWN-WRONG. `collect_map_match` skips a pattern key the
-    /// witness does not name -- and raises no `Invalid` when the witness
-    /// carries variables, precisely the case where the key might yet appear --
-    /// WITHOUT recursing. A sibling key that IS read leaves the node's merged
-    /// outcome `Known`, so the one marking site never fires and `a` reaches a
-    /// `Known` result on a join that is missing its `:missing` term.
+    /// A variable-carrying map witness may still contain an omitted pattern
+    /// key. Its unread field is a live term in `a`'s lower-bound join, even
+    /// though the sibling `:k` field is fully observed.
     ///
     /// `f(a, %{:k => c, :missing => a}) :: a` at `(int, α | %{:k => int})`
-    /// answers `Known int`. It SHOULD withhold the result. The hole is latent:
-    /// no `@spec` in the shipped runtime library declares a map-typed
-    /// parameter, so nothing on the corpus reaches it. fz-kdt.218 owns it.
+    /// must withhold the result: the first argument alone cannot publish
+    /// `int` for `a`.
     #[test]
-    fn p5_a_skipped_map_key_is_a_partial_join_the_node_rule_misses() {
+    fn a_live_skipped_map_key_withholds_a_partial_join_result() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let c = t.param_alpha(2);
@@ -2532,32 +2530,22 @@ mod pinned_verdicts {
         let free = t.type_var(TypeVarId(901));
         let witness = t.union(witness_map, free);
         match t.match_arrow(&[a, pattern_map], &a, &no_bounds(), &[int, witness]) {
-            ArrowMatch::Known { result, .. } => {
-                assert!(
-                    t.is_equivalent(&result, &int),
-                    "known-wrong: the `:missing` term was never read"
-                );
-            }
+            ArrowMatch::Underconstrained { result, .. } => assert!(
+                t.is_equivalent(&result, &int),
+                "the observed lower bound remains useful, but is not publishable"
+            ),
             other => panic!(
-                "the known-wrong hole has closed -- re-cut this pin, got {}",
+                "a live unread map field must withhold the result, got {}",
                 render(&t, &other)
             ),
         }
     }
 
-    /// fz-kdt.210, KNOWN-WRONG, the same hole in a second collector.
-    /// `collect_arrow_match` skips a pattern clause no witness clause matches
-    /// on arity without recursing, so that clause's covariant result variable
-    /// gets no term and no mark; a sibling clause that DID match keeps the
-    /// node `Known`.
-    ///
-    /// `f(c, ((any) -> b) | ((any, any) -> c)) :: c` at `(int, (any) -> int)`
-    /// answers `Known int`. Weaker than the map case -- the skipped clause is
-    /// uninhabited by this witness, so the skip is arguably principled -- and
-    /// latent for the same reason: the shipped library declares no
-    /// multi-clause `@spec`. fz-kdt.218 owns it.
+    /// The unary arm already satisfies this UNION pattern. Its unused
+    /// alternative therefore owes no observation, and `c`, grounded by the
+    /// first argument, remains known.
     #[test]
-    fn p10_a_skipped_arrow_clause_is_a_partial_join_the_node_rule_misses() {
+    fn a_satisfied_callable_union_arm_keeps_a_grounded_result_known() {
         let mut t = Types::new();
         let b = t.param_alpha(1);
         let c = t.param_alpha(2);
@@ -2567,15 +2555,133 @@ mod pinned_verdicts {
         let binary_clause = t.arrow(&[any, any], c);
         let pattern = t.union(unary, binary_clause);
         let witness = t.arrow(&[any], int);
+        let instantiated_unary = t.arrow(&[any], int);
+        let instantiated_binary = t.arrow(&[any, any], int);
+        let instantiated_union = t.union(instantiated_unary, instantiated_binary);
+        assert!(
+            t.is_subtype(&witness, &instantiated_unary),
+            "the witness satisfies the unary arm after b = int"
+        );
+        assert!(
+            t.is_subtype(&witness, &instantiated_union),
+            "the unary arm establishes membership in the instantiated union"
+        );
         match t.match_arrow(&[c, pattern], &c, &no_bounds(), &[int, witness]) {
             ArrowMatch::Known { result, .. } => {
                 assert!(
                     t.is_equivalent(&result, &int),
-                    "known-wrong: the arity-2 clause was never read"
+                    "the unary arm fully satisfies this callable witness"
                 );
             }
             other => panic!(
-                "the known-wrong hole has closed -- re-cut this pin, got {}",
+                "an already-satisfied union arm must not withhold the known result, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    #[test]
+    fn a_skipped_map_key_with_the_ground_argument_after_the_map_is_underconstrained() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let c = t.param_alpha(2);
+        let int = t.int();
+        let pattern_map = t.map(&[
+            (MapKey::Atom("k".to_string()), c),
+            (MapKey::Atom("missing".to_string()), a),
+        ]);
+        let witness_map = t.map(&[(MapKey::Atom("k".to_string()), int)]);
+        let free = t.type_var(TypeVarId(901));
+        let witness = t.union(witness_map, free);
+
+        match t.match_arrow(&[pattern_map, a], &a, &no_bounds(), &[witness, int]) {
+            ArrowMatch::Underconstrained { result, .. } => assert!(t.is_equivalent(&result, &int)),
+            other => panic!(
+                "argument order cannot complete an unread map-field join, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    #[test]
+    fn a_skipped_nested_map_key_is_underconstrained() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let c = t.param_alpha(2);
+        let int = t.int();
+        let pattern_map = t.map(&[
+            (MapKey::Atom("k".to_string()), c),
+            (MapKey::Atom("missing".to_string()), a),
+        ]);
+        let witness_map = t.map(&[(MapKey::Atom("k".to_string()), int)]);
+        let nested_pattern = t.tuple(&[pattern_map]);
+        let free = t.type_var(TypeVarId(901));
+        let nested_map_witness = t.union(witness_map, free);
+        let nested_witness = t.tuple(&[nested_map_witness]);
+
+        match t.match_arrow(&[a, nested_pattern], &a, &no_bounds(), &[int, nested_witness]) {
+            ArrowMatch::Underconstrained { result, .. } => assert!(t.is_equivalent(&result, &int)),
+            other => panic!(
+                "a nested live unread map field must withhold the result, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    #[test]
+    fn a_missing_map_key_on_a_ground_witness_is_invalid() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let int = t.int();
+        let pattern = t.map(&[(MapKey::Atom("missing".to_string()), a)]);
+        let witness = t.map(&[(MapKey::Atom("k".to_string()), int)]);
+
+        assert_eq!(
+            t.match_arrow(&[pattern], &a, &no_bounds(), &[witness]),
+            ArrowMatch::Invalid
+        );
+    }
+
+    #[test]
+    fn completed_map_keys_leave_a_result_known() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let c = t.param_alpha(2);
+        let int = t.int();
+        let pattern = t.map(&[
+            (MapKey::Atom("k".to_string()), c),
+            (MapKey::Atom("missing".to_string()), a),
+        ]);
+        let witness = t.map(&[
+            (MapKey::Atom("k".to_string()), int),
+            (MapKey::Atom("missing".to_string()), int),
+        ]);
+
+        match t.match_arrow(&[pattern], &a, &no_bounds(), &[witness]) {
+            ArrowMatch::Known { result, .. } => assert!(t.is_equivalent(&result, &int)),
+            other => panic!(
+                "fully observed map fields must ground their result, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    #[test]
+    fn a_skipped_map_key_marks_no_purely_contravariant_variable() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let int = t.int();
+        let any = t.any();
+        let callback = t.arrow(&[a], any);
+        let pattern = t.map(&[(MapKey::Atom("missing".to_string()), callback)]);
+        let witness_map = t.map(&[(MapKey::Atom("k".to_string()), int)]);
+        let free = t.type_var(TypeVarId(901));
+        let witness = t.union(witness_map, free);
+
+        match t.match_arrow(&[a, pattern], &a, &no_bounds(), &[int, witness]) {
+            ArrowMatch::Known { result, .. } => assert!(t.is_equivalent(&result, &int)),
+            other => panic!(
+                "an unread upper-bound occurrence cannot withhold a lower-bound fact, got {}",
                 render(&t, &other)
             ),
         }
