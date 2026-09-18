@@ -9,9 +9,15 @@
   "id": "fz-kdt.231",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Corrected stack per user: old duplicate215 ownership commit removed in favor of fuller213 implementation; fix rebased to6225e7ab7 on214 df7c49614 /213 75d0b1c27. Combined head a4b892ebd pushed with exact leases;2272lib tests,3 recursive typedef execution modes,fmt,strictworkspaceclippy passed. GitHub stack207 now contains214/215.",
+      "timestamp": "2026-09-18T00:14:35Z"
+    }
+  ],
   "priority": 1,
   "status": "closed",
   "title": "Preserve prelude ground on blocked scope derivations",
   "type": "bug",
-  "updated_at": "2026-09-18T00:00:28Z"
+  "updated_at": "2026-09-18T00:14:35Z"
 }
