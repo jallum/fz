@@ -30,7 +30,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::super::identity::ActivationSignature;
-use super::descr::Descr;
+use super::descr::Structure;
 use super::{Ty, TypeVarId, Types};
 use crate::finite_set::FiniteSet;
 
@@ -322,10 +322,17 @@ impl Types {
             return ty;
         }
         let mut d = self.descr(&ty).clone();
-        if !d.vars.cofinite && !d.vars.values.is_empty() {
-            d.vars = self.address_vars_at(&d.vars, path, correlations, owner);
+        let multiple_cases = d.cases.len() > 1;
+        for (case_index, case) in d.cases.iter_mut().enumerate() {
+            let mut case_path = path.to_vec();
+            if multiple_cases {
+                case_path.push(AddrStep::Variant(case_index as u16));
+            }
+            if !case.structure.vars.cofinite && !case.structure.vars.values.is_empty() {
+                case.structure.vars = self.address_vars_at(&case.structure.vars, &case_path, correlations, owner);
+            }
+            self.address_remap_structure_children(&mut case.structure, &case_path, correlations, owner);
         }
-        self.address_remap_children(&mut d, path, correlations, owner);
         self.intern(d)
     }
 
@@ -417,9 +424,9 @@ impl Types {
     /// Recurse into every nested shape of `d`, including a closure literal's
     /// environment captures, extending the address path by the structural step
     /// at each child (mirrors `map_recursive_inputs_with`, but path-aware).
-    fn address_remap_children(
+    fn address_remap_structure_children(
         &mut self,
-        d: &mut Descr,
+        d: &mut Structure,
         path: &[AddrStep],
         correlations: &mut AddressCorrelations,
         owner: AddressOwner,
@@ -499,6 +506,7 @@ impl Types {
 #[cfg(test)]
 mod tests {
     use super::super::conj::Conj;
+    use super::super::descr::Descr;
     use super::super::sigs::{ArrowSig, ClosureLit};
     use super::super::{CallableValueKind, ClosureTarget};
     use super::AddrStep::{Capture, Elem, Field, Param, VarSlot, Variant};
@@ -782,8 +790,9 @@ mod tests {
             let fn_id = target.into();
             types
                 .descr(&ty)
-                .funcs
+                .cases
                 .iter()
+                .flat_map(|case| case.structure.funcs.iter())
                 .flat_map(|conj| conj.pos.iter().chain(&conj.neg))
                 .find(|sig| sig.lit.as_ref().is_some_and(|lit| lit.fn_id == Some(fn_id)))
                 .cloned()
@@ -797,42 +806,40 @@ mod tests {
         let nested_target = ClosureTarget(30);
         let first_target = ClosureTarget(31);
         let second_target = ClosureTarget(32);
-        let nested = t.intern(Descr {
-            funcs: vec![Conj::pos_of(ArrowSig {
-                args: vec![nested_address],
-                ret: nested_address,
+        let mut nested_d = Descr::unbranded();
+        nested_d.cases[0].structure.funcs = vec![Conj::pos_of(ArrowSig {
+            args: vec![nested_address],
+            ret: nested_address,
+            lit: Some(ClosureLit {
+                kind: CallableValueKind::Closure,
+                fn_id: Some(nested_target.into()),
+                captures: vec![nested_address],
+            }),
+        })];
+        let nested = t.intern(nested_d);
+        let concrete = t.int();
+        let mut siblings_d = Descr::unbranded();
+        siblings_d.cases[0].structure.funcs = vec![
+            Conj::pos_of(ArrowSig {
+                args: vec![shared],
+                ret: shared,
                 lit: Some(ClosureLit {
                     kind: CallableValueKind::Closure,
-                    fn_id: Some(nested_target.into()),
-                    captures: vec![nested_address],
+                    fn_id: Some(first_target.into()),
+                    captures: vec![captured, shared, nested],
                 }),
-            })],
-            ..Descr::unbranded()
-        });
-        let concrete = t.int();
-        let siblings = t.intern(Descr {
-            funcs: vec![
-                Conj::pos_of(ArrowSig {
-                    args: vec![shared],
-                    ret: shared,
-                    lit: Some(ClosureLit {
-                        kind: CallableValueKind::Closure,
-                        fn_id: Some(first_target.into()),
-                        captures: vec![captured, shared, nested],
-                    }),
+            }),
+            Conj::pos_of(ArrowSig {
+                args: vec![concrete, shared],
+                ret: shared,
+                lit: Some(ClosureLit {
+                    kind: CallableValueKind::Closure,
+                    fn_id: Some(second_target.into()),
+                    captures: vec![concrete, shared, captured],
                 }),
-                Conj::pos_of(ArrowSig {
-                    args: vec![concrete, shared],
-                    ret: shared,
-                    lit: Some(ClosureLit {
-                        kind: CallableValueKind::Closure,
-                        fn_id: Some(second_target.into()),
-                        captures: vec![concrete, shared, captured],
-                    }),
-                }),
-            ],
-            ..Descr::unbranded()
-        });
+            }),
+        ];
+        let siblings = t.intern(siblings_d);
 
         let addressed = t.address_inputs(&[siblings])[0];
         let first = literal_sig(&t, addressed, first_target);

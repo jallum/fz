@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use super::axis;
 use super::conj::Conj;
-use super::descr::DescrOf;
+use super::descr::{DescrOf, StructureOf, canonical_brand_partition};
 use super::{
     CallableSurfaceOps, TupleCoordinateOps, Ty, Types, normalize_literal_callable_surfaces_with,
     normalize_tuple_coordinate_difference_with,
@@ -369,7 +369,11 @@ fn rooted_key(root: usize, bodies: &[DescrOf<RegularRef>]) -> RegularKey {
     RegularKey { nodes }
 }
 
-fn normalize_shape(types: &mut Types, mut body: DescrOf<RegularRef>) -> DescrOf<RegularRef> {
+fn normalize_shape(types: &mut Types, body: DescrOf<RegularRef>) -> DescrOf<RegularRef> {
+    canonical_brand_partition(body, |structure| normalize_structure(types, structure))
+}
+
+fn normalize_structure(types: &mut Types, body: &mut StructureOf<RegularRef>) {
     let mut tuple_ops = RegularTupleOps { types };
     body.tuples = std::mem::take(&mut body.tuples)
         .into_iter()
@@ -381,11 +385,10 @@ fn normalize_shape(types: &mut Types, mut body: DescrOf<RegularRef>) -> DescrOf<
     axis::merge_empty_list_clause(&mut body.lists);
     normalize_axis(&mut body.lists);
     let mut callable_ops = RegularCallableSurfaceOps { types };
-    normalize_literal_callable_surfaces_with(&mut callable_ops, &mut body);
+    normalize_literal_callable_surfaces_with(&mut callable_ops, body);
     normalize_axis(&mut body.resources);
     normalize_axis(&mut body.funcs);
     normalize_axis(&mut body.maps);
-    body
 }
 
 fn normalize_regular_tuple_axis(
@@ -522,14 +525,20 @@ fn has_local_child(body: &DescrOf<RegularRef>) -> bool {
 }
 
 fn visit_children<R: Copy>(body: &DescrOf<R>, mut visit: impl FnMut(R)) {
+    for case in &body.cases {
+        visit_structure_children(&case.structure, &mut visit);
+    }
+}
+
+fn visit_structure_children<R: Copy>(body: &StructureOf<R>, visit: &mut impl FnMut(R)) {
     for clause in &body.tuples {
         for sig in clause.pos.iter().chain(&clause.neg) {
-            sig.elems.iter().copied().for_each(&mut visit);
+            sig.elems.iter().copied().for_each(&mut *visit);
         }
     }
     for clause in &body.lists {
         for sig in clause.pos.iter().chain(&clause.neg) {
-            sig.elem.into_iter().for_each(&mut visit);
+            sig.elem.into_iter().for_each(&mut *visit);
         }
     }
     for clause in &body.resources {
@@ -539,16 +548,16 @@ fn visit_children<R: Copy>(body: &DescrOf<R>, mut visit: impl FnMut(R)) {
     }
     for clause in &body.funcs {
         for sig in clause.pos.iter().chain(&clause.neg) {
-            sig.args.iter().copied().for_each(&mut visit);
+            sig.args.iter().copied().for_each(&mut *visit);
             visit(sig.ret);
             if let Some(lit) = &sig.lit {
-                lit.captures.iter().copied().for_each(&mut visit);
+                lit.captures.iter().copied().for_each(&mut *visit);
             }
         }
     }
     for clause in &body.maps {
         for sig in clause.pos.iter().chain(&clause.neg) {
-            sig.fields.values().copied().for_each(&mut visit);
+            sig.fields.values().copied().for_each(&mut *visit);
         }
     }
 }

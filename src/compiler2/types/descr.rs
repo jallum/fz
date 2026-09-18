@@ -50,10 +50,25 @@ type VarSet = FiniteSet<TypeVarId>;
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct DescrOf<R> {
+    pub(super) cases: Vec<BrandCase<R>>,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(test, derive(Debug))]
+pub(super) struct BrandCase<R> {
+    pub(super) brands: FiniteSet<String>,
+    pub(super) structure: StructureOf<R>,
+}
+
+/// The non-brand axes of one correlated brand case. A `DescrOf` owns only a
+/// finite/cofinite partition of these payloads; no valid descriptor carries a
+/// global brand factor beside independently-unioned structural axes.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(test, derive(Debug))]
+pub(super) struct StructureOf<R> {
     pub(super) basic: BasicBits,
     pub(super) atoms: AtomSet,
     pub(super) opaques: FiniteSet<OpaqueTag>,
-    pub(super) brands: FiniteSet<String>,
     pub(super) vars: VarSet,
     pub(super) tuples: Vec<Conj<TupleSigOf<R>>>,
     pub(super) lists: Vec<Conj<ListSigOf<R>>>,
@@ -63,52 +78,160 @@ pub(crate) struct DescrOf<R> {
 }
 
 pub(super) type Descr = DescrOf<Ty>;
+pub(super) type Structure = StructureOf<Ty>;
 
 pub(crate) fn union_of<R: Clone + PartialEq>(left: &DescrOf<R>, right: &DescrOf<R>) -> DescrOf<R> {
-    if looks_empty(left) {
-        return if looks_empty(right) {
-            DescrOf::none()
-        } else {
-            right.clone()
+    // The unrefined subset has exactly one brand cell. Preserve its old raw
+    // structural union before the interner's cheap lookup: concatenating two
+    // `any` cells would force a normalization miss even when that structural
+    // union is already interned. Correlated inputs deliberately take the
+    // general case below and are canonicalized only by
+    // `canonical_brand_partition` at the persistence boundary.
+    if !left.cases.is_empty()
+        && !right.cases.is_empty()
+        && left.cases.iter().chain(&right.cases).all(|case| case.brands.is_any())
+    {
+        let structure = left
+            .cases
+            .iter()
+            .chain(&right.cases)
+            .fold(StructureOf::none(), |structure, case| {
+                structure.union_raw(&case.structure)
+            });
+        return DescrOf {
+            cases: vec![BrandCase {
+                brands: FiniteSet::any(),
+                structure,
+            }],
         };
     }
-    if looks_empty(right) {
-        return left.clone();
-    }
-    DescrOf {
-        basic: left.basic.union(right.basic),
-        atoms: left.atoms.union(&right.atoms),
-        opaques: left.opaques.union(&right.opaques),
-        brands: left.brands.union(&right.brands),
-        vars: left.vars.union(&right.vars),
-        tuples: dnf_union(&left.tuples, &right.tuples),
-        lists: dnf_union(&left.lists, &right.lists),
-        resources: dnf_union(&left.resources, &right.resources),
-        funcs: dnf_union(&left.funcs, &right.funcs),
-        maps: dnf_union(&left.maps, &right.maps),
-    }
+    let mut cases = left.cases.clone();
+    cases.extend(right.cases.clone());
+    DescrOf { cases }
 }
 
-fn looks_empty<R>(body: &DescrOf<R>) -> bool {
-    body.brands.is_none()
-        || (body.basic.is_empty()
-            && body.atoms.is_none()
-            && body.opaques.is_none()
-            && body.vars.is_none()
-            && body.tuples.is_empty()
-            && body.lists.is_empty()
-            && body.resources.is_empty()
-            && body.funcs.is_empty()
-            && body.maps.is_empty())
+/// The sole brand-partition construction used by both ground and regular
+/// descriptors.  Callers supply their child-domain normalization; this helper
+/// never asks semantic emptiness, so unresolved component references stay
+/// cycle-safe.
+pub(super) fn canonical_brand_partition<R: Clone + PartialEq + Ord>(
+    d: DescrOf<R>,
+    mut normalize: impl FnMut(&mut StructureOf<R>),
+) -> DescrOf<R> {
+    // The common unrefined path is one residual cell. It is still normalized
+    // through this authority, but needs neither named-cell carving nor payload
+    // grouping to prove its canonical spelling.
+    if d.cases.iter().all(|case| case.brands.is_any()) {
+        let mut structure = StructureOf::none();
+        for case in d.cases {
+            structure = structure.union_raw(&case.structure);
+        }
+        normalize(&mut structure);
+        return if structure_looks_empty(&structure) {
+            DescrOf { cases: Vec::new() }
+        } else {
+            DescrOf {
+                cases: vec![BrandCase {
+                    brands: FiniteSet::any(),
+                    structure,
+                }],
+            }
+        };
+    }
+    let names = d
+        .cases
+        .iter()
+        .flat_map(|case| case.brands.values.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut cells = Vec::new();
+    for name in &names {
+        let mut payload = StructureOf::none();
+        for case in &d.cases {
+            if case.brands.contains(name) {
+                payload = payload.union_raw(&case.structure);
+            }
+        }
+        normalize(&mut payload);
+        if !structure_looks_empty(&payload) {
+            cells.push((name.clone(), payload));
+        }
+    }
+    let mut residual = StructureOf::none();
+    for case in &d.cases {
+        if case.brands.cofinite {
+            residual = residual.union_raw(&case.structure);
+        }
+    }
+    normalize(&mut residual);
+    let residual = (!structure_looks_empty(&residual)).then_some(residual);
+    let mut grouped = std::collections::BTreeMap::<StructureOf<R>, std::collections::BTreeSet<String>>::new();
+    for (name, payload) in cells {
+        grouped.entry(payload).or_default().insert(name);
+    }
+    let mut cases = Vec::new();
+    for (payload, included) in grouped {
+        let brands = if residual.as_ref() == Some(&payload) {
+            FiniteSet::cofinite(names.iter().filter(|name| !included.contains(*name)).cloned())
+        } else {
+            FiniteSet::finite(included)
+        };
+        cases.push(BrandCase {
+            brands,
+            structure: payload,
+        });
+    }
+    if let Some(payload) = residual
+        && !cases.iter().any(|case| case.structure == payload)
+    {
+        cases.push(BrandCase {
+            brands: FiniteSet::cofinite(names),
+            structure: payload,
+        });
+    }
+    cases.sort();
+    DescrOf { cases }
+}
+
+fn structure_looks_empty<R>(body: &StructureOf<R>) -> bool {
+    body.basic.is_empty()
+        && body.atoms.is_none()
+        && body.opaques.is_none()
+        && body.vars.is_none()
+        && body.tuples.is_empty()
+        && body.lists.is_empty()
+        && body.resources.is_empty()
+        && body.funcs.is_empty()
+        && body.maps.is_empty()
 }
 
 impl<R: Clone> DescrOf<R> {
+    fn leaf(structure: StructureOf<R>) -> Self {
+        Self {
+            cases: vec![BrandCase {
+                brands: FiniteSet::any(),
+                structure,
+            }],
+        }
+    }
+
+    fn leaf_mut(&mut self) -> &mut StructureOf<R> {
+        match self.cases.as_mut_slice() {
+            [BrandCase { brands, structure }] if brands.is_any() => structure,
+            _ => panic!("a value constructor must begin from one unconstrained brand case"),
+        }
+    }
+
     pub(crate) fn any() -> Self {
+        Self::leaf(StructureOf::any())
+    }
+}
+
+impl<R> StructureOf<R> {
+    pub(super) fn any() -> Self {
         Self {
             basic: BasicBits::ALL,
             atoms: AtomSet::any(),
             opaques: FiniteSet::any(),
-            brands: FiniteSet::any(),
             vars: VarSet::any(),
             tuples: vec![Conj::top()],
             lists: vec![Conj::top()],
@@ -118,24 +241,11 @@ impl<R: Clone> DescrOf<R> {
         }
     }
 
-    /// The builder base for a VALUE constructor: no structural content yet,
-    /// and the brand slot unconstrained. `brands` is a conjunctive REFINEMENT
-    /// factor, not a kind of value — an unbranded `int` admits a branded int
-    /// (`Meters <: int`), so its slot is top, and `Descr::none()`'s bottom slot
-    /// is what makes `none` the union identity on that axis.
-    pub(crate) fn unbranded() -> Self {
-        Self {
-            brands: FiniteSet::any(),
-            ..Self::none()
-        }
-    }
-
-    pub(crate) fn none() -> Self {
+    pub(super) fn none() -> Self {
         Self {
             basic: BasicBits::NONE,
             atoms: AtomSet::none(),
             opaques: FiniteSet::none(),
-            brands: FiniteSet::none(),
             vars: VarSet::none(),
             tuples: Vec::new(),
             lists: Vec::new(),
@@ -144,22 +254,55 @@ impl<R: Clone> DescrOf<R> {
             maps: Vec::new(),
         }
     }
+}
+
+impl<R: Clone + PartialEq> StructureOf<R> {
+    /// Structural union before a caller's child-domain-specific normalization.
+    /// It is shared by ground interning and regular-component construction;
+    /// neither path may manufacture a second brand-partition meaning.
+    pub(super) fn union_raw(&self, other: &Self) -> Self {
+        Self {
+            basic: self.basic.union(other.basic),
+            atoms: self.atoms.union(&other.atoms),
+            opaques: self.opaques.union(&other.opaques),
+            vars: self.vars.union(&other.vars),
+            tuples: dnf_union(&self.tuples, &other.tuples),
+            lists: dnf_union(&self.lists, &other.lists),
+            resources: dnf_union(&self.resources, &other.resources),
+            funcs: dnf_union(&self.funcs, &other.funcs),
+            maps: dnf_union(&self.maps, &other.maps),
+        }
+    }
+}
+
+impl<R: Clone> DescrOf<R> {
+    /// The builder base for a VALUE constructor: one unconstrained brand case
+    /// with no structural content yet. `brands` is a conjunctive REFINEMENT
+    /// factor, not a kind of value — an unbranded `int` admits a branded int
+    /// (`Meters <: int`), while `Descr::none()` has no cases at all.
+    pub(crate) fn unbranded() -> Self {
+        Self::leaf(StructureOf::none())
+    }
+
+    pub(crate) fn none() -> Self {
+        Self { cases: Vec::new() }
+    }
 
     pub(crate) fn opaque_of(name: impl Into<String>) -> Self {
         let mut d = Self::unbranded();
-        d.opaques = FiniteSet::lit(OpaqueTag::Named(name.into()));
+        d.leaf_mut().opaques = FiniteSet::lit(OpaqueTag::Named(name.into()));
         d
     }
 
     pub(crate) fn builtin_opaque(builtin: BuiltinOpaque) -> Self {
         let mut d = Self::unbranded();
-        d.opaques = FiniteSet::lit(OpaqueTag::Builtin(builtin));
+        d.leaf_mut().opaques = FiniteSet::lit(OpaqueTag::Builtin(builtin));
         d
     }
 
     pub(super) fn struct_map(tag: StructTag, fields: BTreeMap<MapKey, R>) -> Self {
         let mut d = Self::unbranded();
-        d.maps.push(Conj::pos_of(MapSigOf {
+        d.leaf_mut().maps.push(Conj::pos_of(MapSigOf {
             tag: MapTag::Struct(tag),
             fields,
         }));
@@ -168,7 +311,7 @@ impl<R: Clone> DescrOf<R> {
 
     pub(super) fn record(tag: MapTag, fields: impl IntoIterator<Item = (MapKey, R)>) -> Self {
         let mut d = Self::unbranded();
-        d.maps.push(Conj::pos_of(MapSigOf {
+        d.leaf_mut().maps.push(Conj::pos_of(MapSigOf {
             tag,
             fields: fields.into_iter().collect(),
         }));
@@ -177,7 +320,7 @@ impl<R: Clone> DescrOf<R> {
 
     pub(crate) fn var(id: TypeVarId) -> Self {
         let mut d = Self::unbranded();
-        d.vars = VarSet::lit(id);
+        d.leaf_mut().vars = VarSet::lit(id);
         d
     }
 
@@ -187,13 +330,13 @@ impl<R: Clone> DescrOf<R> {
 
     pub(crate) fn bool_t() -> Self {
         let mut d = Self::unbranded();
-        d.atoms = AtomSet::lit("true".to_string()).union(&AtomSet::lit("false".to_string()));
+        d.leaf_mut().atoms = AtomSet::lit("true".to_string()).union(&AtomSet::lit("false".to_string()));
         d
     }
 
     pub(crate) fn atom_top() -> Self {
         let mut d = Self::unbranded();
-        d.atoms = AtomSet::any();
+        d.leaf_mut().atoms = AtomSet::any();
         d
     }
 
@@ -203,13 +346,13 @@ impl<R: Clone> DescrOf<R> {
     /// signature or identity, so every callable shares this one lane.
     pub(crate) fn fun_top() -> Self {
         let mut d = Self::unbranded();
-        d.funcs = vec![Conj::top()];
+        d.leaf_mut().funcs = vec![Conj::top()];
         d
     }
 
     pub(crate) fn atom_lit(name: impl Into<String>) -> Self {
         let mut d = Self::unbranded();
-        d.atoms = AtomSet::lit(name.into());
+        d.leaf_mut().atoms = AtomSet::lit(name.into());
         d
     }
 
@@ -227,25 +370,25 @@ impl<R: Clone> DescrOf<R> {
 
     fn from_basic(basic: BasicBits) -> Self {
         let mut d = Self::unbranded();
-        d.basic = basic;
+        d.leaf_mut().basic = basic;
         d
     }
 
     pub(crate) fn resource_of(payload: R) -> Self {
         let mut d = Self::unbranded();
-        d.resources = vec![Conj::pos_of(ResourceSigOf { payload })];
+        d.leaf_mut().resources = vec![Conj::pos_of(ResourceSigOf { payload })];
         d
     }
 
     pub(crate) fn tuple_of(elems: Vec<R>) -> Self {
         let mut d = Self::unbranded();
-        d.tuples.push(Conj::pos_of(TupleSigOf { elems }));
+        d.leaf_mut().tuples.push(Conj::pos_of(TupleSigOf { elems }));
         d
     }
 
     pub(crate) fn list_sig(sig: ListSigOf<R>) -> Self {
         let mut d = Self::unbranded();
-        d.lists.push(Conj::pos_of(sig));
+        d.leaf_mut().lists.push(Conj::pos_of(sig));
         d
     }
 
@@ -263,7 +406,7 @@ impl<R: Clone> DescrOf<R> {
 
     pub(crate) fn arrow(args: impl IntoIterator<Item = R>, ret: R) -> Self {
         let mut d = Self::unbranded();
-        d.funcs.push(Conj::pos_of(ArrowSigOf {
+        d.leaf_mut().funcs.push(Conj::pos_of(ArrowSigOf {
             args: args.into_iter().collect(),
             ret,
             lit: None,
@@ -277,7 +420,7 @@ impl<R: Clone> DescrOf<R> {
 
     pub(crate) fn map_of(fields: BTreeMap<MapKey, R>) -> Self {
         let mut d = Self::unbranded();
-        d.maps.push(Conj::pos_of(MapSigOf {
+        d.leaf_mut().maps.push(Conj::pos_of(MapSigOf {
             tag: MapTag::Plain,
             fields,
         }));
@@ -290,34 +433,42 @@ impl<R: Clone> DescrOf<R> {
     /// environment in another reference world.
     pub(crate) fn map_children<S: Clone>(self, mut map: impl FnMut(R) -> S) -> DescrOf<S> {
         DescrOf {
-            basic: self.basic,
-            atoms: self.atoms,
-            opaques: self.opaques,
-            brands: self.brands,
-            vars: self.vars,
-            tuples: map_clauses(self.tuples, |sig| TupleSigOf {
-                elems: sig.elems.into_iter().map(&mut map).collect(),
-            }),
-            lists: map_clauses(self.lists, |sig| ListSigOf {
-                empty: sig.empty,
-                elem: sig.elem.map(&mut map),
-            }),
-            resources: map_clauses(self.resources, |sig| ResourceSigOf {
-                payload: map(sig.payload),
-            }),
-            funcs: map_clauses(self.funcs, |sig| ArrowSigOf {
-                args: sig.args.into_iter().map(&mut map).collect(),
-                ret: map(sig.ret),
-                lit: sig.lit.map(|lit| ClosureLitOf {
-                    kind: lit.kind,
-                    fn_id: lit.fn_id,
-                    captures: lit.captures.into_iter().map(&mut map).collect(),
-                }),
-            }),
-            maps: map_clauses(self.maps, |sig| MapSigOf {
-                tag: sig.tag,
-                fields: sig.fields.into_iter().map(|(key, value)| (key, map(value))).collect(),
-            }),
+            cases: self
+                .cases
+                .into_iter()
+                .map(|BrandCase { brands, structure }| BrandCase {
+                    brands,
+                    structure: StructureOf {
+                        basic: structure.basic,
+                        atoms: structure.atoms,
+                        opaques: structure.opaques,
+                        vars: structure.vars,
+                        tuples: map_clauses(structure.tuples, |sig| TupleSigOf {
+                            elems: sig.elems.into_iter().map(&mut map).collect(),
+                        }),
+                        lists: map_clauses(structure.lists, |sig| ListSigOf {
+                            empty: sig.empty,
+                            elem: sig.elem.map(&mut map),
+                        }),
+                        resources: map_clauses(structure.resources, |sig| ResourceSigOf {
+                            payload: map(sig.payload),
+                        }),
+                        funcs: map_clauses(structure.funcs, |sig| ArrowSigOf {
+                            args: sig.args.into_iter().map(&mut map).collect(),
+                            ret: map(sig.ret),
+                            lit: sig.lit.map(|lit| ClosureLitOf {
+                                kind: lit.kind,
+                                fn_id: lit.fn_id,
+                                captures: lit.captures.into_iter().map(&mut map).collect(),
+                            }),
+                        }),
+                        maps: map_clauses(structure.maps, |sig| MapSigOf {
+                            tag: sig.tag,
+                            fields: sig.fields.into_iter().map(|(key, value)| (key, map(value))).collect(),
+                        }),
+                    },
+                })
+                .collect(),
         }
     }
 }
@@ -332,7 +483,7 @@ fn map_clauses<T, U>(clauses: Vec<Conj<T>>, mut map: impl FnMut(T) -> U) -> Vec<
         .collect()
 }
 
-impl DescrOf<Ty> {
+impl StructureOf<Ty> {
     pub(super) fn as_atom_singleton(&self) -> Option<&str> {
         (!self.atoms.cofinite && self.atoms.values.len() == 1)
             .then(|| self.atoms.values.iter().next().map(String::as_str))
@@ -364,18 +515,10 @@ impl DescrOf<Ty> {
     }
 
     #[cfg(test)]
-    pub(super) fn as_brand_singleton(&self) -> Option<&str> {
-        (!self.brands.cofinite && self.brands.values.len() == 1)
-            .then(|| self.brands.values.iter().next().map(String::as_str))
-            .flatten()
-    }
-
-    #[cfg(test)]
     pub(super) fn as_tuple_singleton(&self) -> Option<&[Ty]> {
         if self.basic.is_empty()
             && self.atoms.is_none()
             && self.opaques.is_none()
-            && self.brands.is_any()
             && self.vars.is_none()
             && self.lists.is_empty()
             && self.resources.is_empty()
@@ -397,11 +540,6 @@ impl DescrOf<Ty> {
             .flatten()
     }
 
-    pub(super) fn is_singleton_literal(&self) -> bool {
-        // Only atoms have singleton types; numeric constants are values.
-        self.as_atom_singleton().is_some()
-    }
-
     pub(super) fn max_tuple_arity(&self) -> usize {
         self.tuples
             .iter()
@@ -414,7 +552,7 @@ impl DescrOf<Ty> {
     /// descriptor. Returning `None` keeps that proof at the structural owner,
     /// so callers can retain their existing `Ty` without rebuilding and
     /// re-interning this descriptor.
-    pub(super) fn refine_map_field(&self, key: &MapKey, vt: Ty) -> Option<Descr> {
+    pub(super) fn refine_map_field(&self, key: &MapKey, vt: Ty) -> Option<Structure> {
         let changed = self
             .maps
             .iter()
@@ -465,7 +603,11 @@ impl DescrOf<Ty> {
             && self.maps.is_empty()
     }
 
-    pub(super) fn projection_alternatives(&self) -> Option<Vec<Descr>> {
+    /// The structural alternatives of one already-correlated case.  The outer
+    /// descriptor reinstates this case's brand cell around every result; a
+    /// structural projection must never turn a branded shape into its
+    /// unbranded hull.
+    fn projection_alternatives(&self) -> Option<Vec<Structure>> {
         if !self.axis_free() {
             return None;
         }
@@ -487,10 +629,9 @@ impl DescrOf<Ty> {
                 self.tuples
                     .iter()
                     .cloned()
-                    .map(|clause| {
-                        let mut alternative = Descr::unbranded();
-                        alternative.tuples.push(clause);
-                        alternative
+                    .map(|clause| Structure {
+                        tuples: vec![clause],
+                        ..Structure::none()
                     })
                     .collect(),
             );
@@ -500,10 +641,9 @@ impl DescrOf<Ty> {
                 self.lists
                     .iter()
                     .cloned()
-                    .map(|clause| {
-                        let mut alternative = Descr::unbranded();
-                        alternative.lists.push(clause);
-                        alternative
+                    .map(|clause| Structure {
+                        lists: vec![clause],
+                        ..Structure::none()
                     })
                     .collect(),
             );
@@ -580,24 +720,14 @@ impl DescrOf<Ty> {
     }
 
     fn axis_free(&self) -> bool {
-        self.basic.is_empty()
-            && self.atoms.is_none()
-            && self.opaques.is_none()
-            && self.brands.is_any()
-            && self.vars.is_none()
+        self.basic.is_empty() && self.atoms.is_none() && self.opaques.is_none() && self.vars.is_none()
     }
 
-    /// A refinement of nothing is nothing, and a value carries at most one
-    /// brand, so an empty brand slot (`Meters and Feet`) is empty too.
-    ///
-    /// Several DESCRIPTOR shapes reach the bottom — an empty slot over
-    /// inhabited kind axes, empty kind axes under a slot still at top — and
-    /// this is the test that recognizes all of them, so descriptor arithmetic
-    /// can treat the bottom as the union identity before any id exists. After
-    /// `Types::intern` those shapes are one interned identity, and
-    /// `Types::is_empty(t)` holds exactly when `t` is `none()`.
+    /// Structural bottom: no axis admits any value. The outer descriptor also
+    /// treats a case with an empty brand set as empty; that question belongs to
+    /// `DescrOf::looks_empty`, not to its non-brand payload.
     pub(super) fn looks_empty(&self) -> bool {
-        looks_empty(self)
+        structure_looks_empty(self)
     }
 
     /// Whether this descriptor denotes EVERY value.
@@ -624,14 +754,13 @@ impl DescrOf<Ty> {
         let saturated = self.basic == BasicBits::ALL
             && self.atoms.is_any()
             && self.opaques.is_any()
-            && self.brands.is_any()
             && self.vars.is_any()
             && !self.tuples.is_empty()
             && !self.lists.is_empty()
             && !self.resources.is_empty()
             && !self.funcs.is_empty()
             && !self.maps.is_empty();
-        saturated && Descr::any().is_subtype(cx, self)
+        saturated && Structure::any().is_subtype(cx, self)
     }
 
     /// The structural half of [`is_full`](Self::is_full): every axis written as
@@ -641,7 +770,6 @@ impl DescrOf<Ty> {
         self.basic == BasicBits::ALL
             && self.atoms.is_any()
             && self.opaques.is_any()
-            && self.brands.is_any()
             && self.vars.is_any()
             && is_dnf_top(&self.tuples)
             && is_dnf_top(&self.lists)
@@ -650,34 +778,20 @@ impl DescrOf<Ty> {
             && is_dnf_top(&self.maps)
     }
 
-    /// The brand slot joins pointwise, which is exact whenever the operands
-    /// agree on one factor (`Meters | int = int`, `Meters | Feet` = the two
-    /// brands over one inner) and a hull when they differ on both
-    /// (`Meters | utf8` widens to "int or binary, any brand").
-    ///
-    /// A BOTTOM is the identity first, before any of that. This runs on
-    /// descriptors, BEFORE interning, and there the bottom has several shapes
-    /// — a structural meet (`int and binary`) empties the kind axes and leaves
-    /// the slot at top, a brand meet (`Meters and Feet`) empties the slot and
-    /// leaves the kind axes inhabited. A pointwise hull would read an EMPTY
-    /// operand's factors as constraints and widen the other side by them:
-    /// `nothing | Meters(int)` would answer `int`.
-    /// [`looks_empty`](Self::looks_empty) recognizes every shape, and asking
-    /// it here is what keeps `∅ ∪ x = x` a law of the arithmetic rather than a
-    /// property of the one identity interning later assigns.
-    pub(super) fn union(&self, _cx: TyCtx<'_>, other: &Descr) -> Descr {
-        union_of(self, other)
+    /// Union of structural payloads from already-selected brand cells. The
+    /// outer descriptor owns correlation: it appends cases and the interning
+    /// partitioner merges payloads only for the same admitted brand cell.
+    pub(super) fn union(&self, _cx: TyCtx<'_>, other: &Structure) -> Structure {
+        self.union_raw(other)
     }
 
-    /// Exact on every axis: a rectangle meets a rectangle. Two brands over one
-    /// inner meet at an EMPTY slot, which is what makes `Meters and Feet`
-    /// empty — a value carries at most one brand.
-    pub(super) fn intersect(&self, other: &Descr) -> Descr {
-        Descr {
+    /// Exact meet of two structural payloads. The outer descriptor meets their
+    /// brand sets separately, preserving the one-brand-per-value rule.
+    pub(super) fn intersect(&self, other: &Structure) -> Structure {
+        Structure {
             basic: self.basic.intersect(other.basic),
             atoms: self.atoms.intersect(&other.atoms),
             opaques: self.opaques.intersect(&other.opaques),
-            brands: self.brands.intersect(&other.brands),
             vars: self.vars.intersect(&other.vars),
             tuples: dnf_intersect(&self.tuples, &other.tuples),
             lists: dnf_intersect(&self.lists, &other.lists),
@@ -687,18 +801,11 @@ impl DescrOf<Ty> {
         }
     }
 
-    /// The complement of the STRUCTURAL union alone, with the brand slot left
-    /// unconstrained — the factor [`diff`](Self::diff) subtracts on its own.
-    ///
-    /// There is deliberately no whole-descriptor `neg`: the complement of a
-    /// refinement is `¬structure` OR `structure with another brand`, two
-    /// rectangles this representation cannot hold at once, so it could only
-    /// widen to `any` — a "negation" that forgets the brand entirely. `diff`
-    /// subtracts the two factors separately instead and stays exact, so
-    /// difference, not complement, is the primitive callers get.
-    fn neg_structure(&self) -> Descr {
-        Descr {
-            brands: FiniteSet::any(),
+    /// The complement of one case's structural union. Outer descriptor
+    /// difference composes this with the brand partition, retaining both the
+    /// structural outside and the overlapping structure under remaining brands.
+    fn neg_structure(&self) -> Structure {
+        Structure {
             basic: self.basic.neg(),
             atoms: self.atoms.neg(),
             opaques: self.opaques.neg(),
@@ -711,62 +818,268 @@ impl DescrOf<Ty> {
         }
     }
 
-    /// `(S, B) \ (S', B') = (S \ S', B) union (S and S', B \ B')` — a union of
-    /// two rectangles, of which this representation holds one. Three cases
-    /// collapse it to one and are EXACT, and they are the cases a brand model
-    /// actually produces:
-    ///
-    /// - the subtrahend's slot covers ours: the second rectangle is empty, so
-    ///   the structural subtraction alone answers. `Meters \ int` is empty (a
-    ///   brand is inside its inner);
-    /// - the slots are disjoint: the subtrahend removes nothing, so `Meters \
-    ///   Feet` is `Meters`;
-    /// - the structures are equal — a brand beside its own inner, which is how
-    ///   `mint_brand` builds one: the first rectangle is empty, so the slot
-    ///   subtraction alone answers. `int \ Meters` is "an int not branded
-    ///   Meters", which keeps `int` inhabited without swallowing `Meters`.
-    ///
-    /// What is left over-approximates: partial slot overlap across DIFFERENT
-    /// structures (`(Meters | utf8) \ Meters`) is two rectangles that no
-    /// single descriptor holds, so the whole minuend is returned. Every
-    /// consumer asks `diff(..).is_empty()`, where a too-big difference can only
-    /// answer `is_subtype = false`.
-    pub(super) fn diff(&self, other: &Descr) -> Descr {
-        if other.brands.contains_all(&self.brands) {
-            let mut d = self.intersect(&other.neg_structure());
-            d.brands = self.brands.clone();
-            return d;
-        }
-        if !self.brands.overlaps(&other.brands) {
-            return self.clone();
-        }
-        if self.same_structure_by_construction(other) {
-            let mut d = self.clone();
-            d.brands = self.brands.intersect(&other.brands.neg());
-            return d;
-        }
-        self.clone()
+    /// Structural subtraction for one rectangle.  Outer descriptor difference
+    /// keeps both rectangles in `(S, B) \ (S', B') = (S \ S', B) ∪
+    /// (S ∩ S', B \ B')`; this helper deliberately handles only the first.
+    pub(super) fn diff(&self, other: &Structure) -> Structure {
+        self.intersect(&other.neg_structure())
     }
 
-    /// SYNTACTICALLY equal on every kind axis — the two descriptors differ, if
-    /// at all, only in their brand slot. It is exact where it matters BY
-    /// CONSTRUCTION: `mint_brand` builds a refinement by cloning its inner's
-    /// structure, so a brand and its inner are literally equal here. It stays
-    /// syntactic on purpose — asking whether the two structures are
-    /// EQUIVALENT would call `is_equiv` -> `is_subtype` -> `diff` -> here, a
-    /// recursion the emptiness `Memo` does not guard. Interned children
-    /// compare by id, so two ids denoting one type answer `false` and cost
-    /// precision, never soundness.
-    fn same_structure_by_construction(&self, other: &Descr) -> bool {
-        self.basic == other.basic
-            && self.atoms == other.atoms
-            && self.opaques == other.opaques
-            && self.vars == other.vars
-            && self.tuples == other.tuples
-            && self.lists == other.lists
-            && self.resources == other.resources
-            && self.funcs == other.funcs
-            && self.maps == other.maps
+    fn as_all_brands(&self) -> Descr {
+        Descr {
+            cases: vec![BrandCase {
+                brands: FiniteSet::any(),
+                structure: self.clone(),
+            }],
+        }
+    }
+
+    pub(super) fn is_empty(&self, cx: TyCtx<'_>) -> bool {
+        self.as_all_brands().is_empty(cx)
+    }
+
+    /// The one structural emptiness reader.  `DescrOf::is_empty_memo` owns the
+    /// recursion guard because recursive child references are descriptors;
+    /// each admitted brand cell only delegates its non-brand axes here.
+    fn axes_are_empty(&self, cx: TyCtx<'_>, memo: &mut Memo) -> bool {
+        self.basic.is_empty()
+            && self.atoms.is_none()
+            && self.opaques.is_none()
+            && self.vars.is_none()
+            && self.tuples.iter().all(|c| tuple_clause_empty(cx, c, memo))
+            && self.lists.iter().all(|c| list_clause_empty(cx, c, memo))
+            && self.resources.iter().all(|c| resource_clause_empty(cx, c, memo))
+            && self.funcs.iter().all(|c| func_clause_empty(cx, c, memo))
+            && self.maps.iter().all(|c| map_clause_empty(cx, c, memo))
+    }
+
+    pub(super) fn is_subtype(&self, cx: TyCtx<'_>, other: &Structure) -> bool {
+        self.diff(other).is_empty(cx)
+    }
+
+    pub(super) fn value_disjoint(&self, cx: TyCtx<'_>, other: &Structure) -> bool {
+        self.erase_nominal(cx).intersect(&other.erase_nominal(cx)).is_empty(cx)
+    }
+
+    fn erase_nominal(&self, cx: TyCtx<'_>) -> Structure {
+        // This helper owns only structural axes. Brand erasure is expressed by
+        // `DescrOf::value_disjoint` selecting structures without consulting
+        // their enclosing case's brand set.
+        if self.looks_empty() {
+            return Structure::none();
+        }
+        let mut d = self.clone();
+        // Opaques have no structural inner, so their erasure is conservative.
+        let opaques = std::mem::replace(&mut d.opaques, FiniteSet::none());
+        // Nominals carry no embedded inner; erase conservatively.
+        if !opaques.is_none() {
+            d = d.union(cx, &Structure::any());
+        }
+        d
+    }
+}
+
+impl DescrOf<Ty> {
+    fn common_ref<'a, T: PartialEq + ?Sized>(&'a self, read: impl Fn(&'a Structure) -> Option<&'a T>) -> Option<&'a T> {
+        let (first, rest) = self.cases.split_first()?;
+        let value = read(&first.structure)?;
+        rest.iter()
+            .all(|case| read(&case.structure) == Some(value))
+            .then_some(value)
+    }
+
+    fn common_owned<T: Clone + PartialEq>(&self, read: impl Fn(&Structure) -> Option<T>) -> Option<T> {
+        let (first, rest) = self.cases.split_first()?;
+        let value = read(&first.structure)?;
+        rest.iter()
+            .all(|case| read(&case.structure).as_ref() == Some(&value))
+            .then_some(value)
+    }
+
+    pub(super) fn as_atom_singleton(&self) -> Option<&str> {
+        self.common_ref(Structure::as_atom_singleton)
+    }
+
+    pub(super) fn atom_literals(&self) -> Option<Vec<String>> {
+        let mut literals = AtomSet::none();
+        for case in &self.cases {
+            let atoms = case.structure.atom_literals()?;
+            literals = literals.union(&AtomSet::finite(atoms));
+        }
+        (!literals.cofinite).then(|| literals.values.into_iter().collect())
+    }
+
+    pub(super) fn as_opaque_singleton(&self) -> Option<&str> {
+        self.common_ref(Structure::as_opaque_singleton)
+    }
+
+    pub(super) fn as_builtin_opaque_singleton(&self) -> Option<BuiltinOpaque> {
+        self.common_owned(Structure::as_builtin_opaque_singleton)
+    }
+
+    #[cfg(test)]
+    pub(super) fn as_brand_singleton(&self) -> Option<&str> {
+        let [case] = self.cases.as_slice() else {
+            return None;
+        };
+        (!case.brands.cofinite && case.brands.values.len() == 1)
+            .then(|| case.brands.values.iter().next().map(String::as_str))
+            .flatten()
+    }
+
+    #[cfg(test)]
+    pub(super) fn as_tuple_singleton(&self) -> Option<&[Ty]> {
+        self.common_ref(Structure::as_tuple_singleton)
+    }
+
+    pub(super) fn as_closure_lit(&self) -> Option<&ClosureLit> {
+        self.common_ref(Structure::as_closure_lit)
+    }
+
+    pub(super) fn is_singleton_literal(&self) -> bool {
+        self.as_atom_singleton().is_some()
+    }
+
+    pub(super) fn max_tuple_arity(&self) -> usize {
+        self.cases
+            .iter()
+            .map(|case| case.structure.max_tuple_arity())
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub(super) fn refine_map_field(&self, key: &MapKey, vt: Ty) -> Option<Descr> {
+        let mut changed = false;
+        let cases = self
+            .cases
+            .iter()
+            .map(|case| {
+                let structure = match case.structure.refine_map_field(key, vt) {
+                    Some(structure) => {
+                        changed = true;
+                        structure
+                    }
+                    None => case.structure.clone(),
+                };
+                BrandCase {
+                    brands: case.brands.clone(),
+                    structure,
+                }
+            })
+            .collect();
+        changed.then_some(Descr { cases })
+    }
+
+    pub(super) fn as_pure_list(&self, any_ty: Ty) -> Option<ListSig> {
+        self.common_owned(|structure| structure.as_pure_list(any_ty))
+    }
+
+    pub(super) fn is_pure_list_family(&self) -> bool {
+        !self.cases.is_empty() && self.cases.iter().all(|case| case.structure.is_pure_list_family())
+    }
+
+    pub(super) fn projection_alternatives(&self) -> Option<Vec<Descr>> {
+        let mut alternatives = Vec::new();
+        for case in &self.cases {
+            let structures = case.structure.projection_alternatives()?;
+            alternatives.extend(structures.into_iter().map(|structure| Descr {
+                cases: vec![BrandCase {
+                    brands: case.brands.clone(),
+                    structure,
+                }],
+            }));
+        }
+        Some(alternatives)
+    }
+
+    pub(super) fn pure_tuple(&self) -> Option<&TupleSig> {
+        self.common_ref(Structure::pure_tuple)
+    }
+
+    pub(super) fn pure_resource(&self, any_ty: Ty) -> Option<ResourceSig> {
+        self.common_owned(|structure| structure.pure_resource(any_ty))
+    }
+
+    pub(super) fn pure_arrow(&self) -> Option<&ArrowSig> {
+        self.common_ref(Structure::pure_arrow)
+    }
+
+    pub(super) fn pure_record(&self) -> Option<&MapSig> {
+        self.common_ref(Structure::pure_record)
+    }
+
+    pub(super) fn is_pure_callable(&self) -> bool {
+        !self.cases.is_empty() && self.cases.iter().all(|case| case.structure.is_pure_callable())
+    }
+
+    pub(super) fn looks_empty(&self) -> bool {
+        self.cases.is_empty()
+            || self
+                .cases
+                .iter()
+                .all(|case| case.brands.is_none() || case.structure.looks_empty())
+    }
+
+    pub(super) fn looks_full(&self) -> bool {
+        self.cases
+            .iter()
+            .filter(|case| case.structure.looks_full())
+            .fold(FiniteSet::none(), |covered, case| covered.union(&case.brands))
+            .is_any()
+    }
+
+    pub(super) fn is_full(&self, cx: TyCtx<'_>) -> bool {
+        self.cases
+            .iter()
+            .filter(|case| case.structure.is_full(cx))
+            .fold(FiniteSet::none(), |covered, case| covered.union(&case.brands))
+            .is_any()
+    }
+
+    pub(super) fn union(&self, _cx: TyCtx<'_>, other: &Descr) -> Descr {
+        union_of(self, other)
+    }
+
+    pub(super) fn intersect(&self, other: &Descr) -> Descr {
+        let mut cases = Vec::new();
+        for left in &self.cases {
+            for right in &other.cases {
+                let brands = left.brands.intersect(&right.brands);
+                if !brands.is_none() {
+                    cases.push(BrandCase {
+                        brands,
+                        structure: left.structure.intersect(&right.structure),
+                    });
+                }
+            }
+        }
+        Descr { cases }
+    }
+
+    pub(super) fn diff(&self, other: &Descr) -> Descr {
+        let mut cases = self.cases.clone();
+        for subtrahend in &other.cases {
+            let mut next = Vec::new();
+            for minuend in cases {
+                let outside = minuend.structure.diff(&subtrahend.structure);
+                if !outside.looks_empty() {
+                    next.push(BrandCase {
+                        brands: minuend.brands.clone(),
+                        structure: outside,
+                    });
+                }
+                let brands = minuend.brands.intersect(&subtrahend.brands.neg());
+                let overlap = minuend.structure.intersect(&subtrahend.structure);
+                if !brands.is_none() && !overlap.looks_empty() {
+                    next.push(BrandCase {
+                        brands,
+                        structure: overlap,
+                    });
+                }
+            }
+            cases = next;
+        }
+        Descr { cases }
     }
 
     pub(super) fn is_empty(&self, cx: TyCtx<'_>) -> bool {
@@ -779,16 +1092,10 @@ impl DescrOf<Ty> {
             return true;
         }
         memo.in_flight.insert(self.clone());
-        let result = self.brands.is_none()
-            || self.basic.is_empty()
-                && self.atoms.is_none()
-                && self.opaques.is_none()
-                && self.vars.is_none()
-                && self.tuples.iter().all(|c| tuple_clause_empty(cx, c, memo))
-                && self.lists.iter().all(|c| list_clause_empty(cx, c, memo))
-                && self.resources.iter().all(|c| resource_clause_empty(cx, c, memo))
-                && self.funcs.iter().all(|c| func_clause_empty(cx, c, memo))
-                && self.maps.iter().all(|c| map_clause_empty(cx, c, memo));
+        let result = self
+            .cases
+            .iter()
+            .all(|case| case.brands.is_none() || case.structure.axes_are_empty(cx, memo));
         memo.in_flight.remove(self);
         result
     }
@@ -802,31 +1109,12 @@ impl DescrOf<Ty> {
     }
 
     pub(super) fn value_disjoint(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
-        self.erase_nominal(cx).intersect(&other.erase_nominal(cx)).is_empty(cx)
-    }
-
-    fn erase_nominal(&self, cx: TyCtx<'_>) -> Descr {
-        // Erasure drops a REFINEMENT, so it can only ever keep or widen the
-        // set — except at a bottom whose emptiness IS the empty slot
-        // (`Meters and Feet` before interning), where releasing the slot would
-        // resurrect the inner as a live `int` and tell the brand-blind runtime
-        // question (`is_value_disjoint`) that an uninhabited type shares
-        // values.
-        if self.looks_empty() {
-            return Descr::none();
-        }
-        let mut d = self.clone();
-        // A brand refines the structure held in this same descriptor, so
-        // dropping the refinement — releasing the slot to top — is the whole
-        // erasure: the inner is already the structural axes, whatever the slot
-        // said. `utf8` erases to `binary`, and `binary` erases to itself.
-        d.brands = FiniteSet::any();
-        let opaques = std::mem::replace(&mut d.opaques, FiniteSet::none());
-        // Nominals carry no embedded inner; erase conservatively.
-        if !opaques.is_none() {
-            d = d.union(cx, &Descr::any());
-        }
-        d
+        self.cases.iter().all(|left| {
+            other
+                .cases
+                .iter()
+                .all(|right| left.structure.value_disjoint(cx, &right.structure))
+        })
     }
 }
 

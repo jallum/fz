@@ -27,7 +27,8 @@ diagnostics, never as type identity. The owner/version split is defined in
 The payoff of keeping the kernel name-blind: a `Ty` is **self-contained**. Every
 question about it is answered from its own structure, with no external map threaded
 in. A brand minted `mint_brand(integer, "Meters")` carries the integer kind axes
-inside the symbol and narrows the same symbol's brand slot to `{Meters}`, so
+inside one correlated case of the symbol and narrows that case's brand set to
+`{Meters}`, so
 `is_subtype(Meters, integer)` reads the answer off the symbol; the kernel never
 has to look up what `Meters` refines (see
 [`set-theoretic-types`](set-theoretic-types.md)).
