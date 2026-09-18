@@ -10,9 +10,15 @@
   "id": "fz-kdt.236",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Landed 7b2c4ef4a4bda2b3b694ff330da9702ef72de50c on fz-kdt.177.15/returntype-derivation-98. RED: resource(:a|:b) coverage and map k:(:a|:b) coverage both failed public is_subtype assertions before the fix. GREEN: clause_absorption 13/13; cargo test --lib -q: 2295 passed, 5 ignored, 0 failed; cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings.",
+      "timestamp": "2026-09-18T01:09:35Z"
+    }
+  ],
   "priority": 1,
   "status": "closed",
   "title": "Decide collective negative coverage for maps and resources",
   "type": "bug",
-  "updated_at": "2026-09-18T01:09:26Z"
+  "updated_at": "2026-09-18T01:09:35Z"
 }
