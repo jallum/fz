@@ -22,11 +22,15 @@
     {
       "text": "User corrected stack:215 now rebased via214onto213/212; full recursive typedef implementation present. Root ran lib2272pass5ignored and cargo test --test fixture_matrix -- recursive_typedef:interp/run/build3pass. Fresh per-defect agent should verify recursive representation/canonical cases, no duplicate implementation. Dynamic inference widening remains separately tracked177.10/98.3; inspect exact original finding scope before claiming all recursion fixed.",
       "timestamp": "2026-09-18T00:14:38Z"
+    },
+    {
+      "text": "User approved integrating inferred recursive returns after the owner of fz-kdt.98.3 commits. Keep the dirty worktree untouched. Wait for committed prerequisite, integrate onto corrected PR stack, then verify recursive inference; do not treat recursive typedef coverage as completing inferred returns.",
+      "timestamp": "2026-09-18T00:35:54Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Resolve recursive type definitions without stalled self-dependencies",
   "type": "bug",
-  "updated_at": "2026-09-18T00:14:38Z"
+  "updated_at": "2026-09-18T00:35:54Z"
 }
