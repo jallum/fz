@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-18T00:00:28Z",
+  "close_reason": "Red regression reproduced; fixed blocked scope base grounding, 2235 library tests passed and lint passed; reviewed and fast-forward pushed de2372465 onto PR215.",
   "created": "2026-09-17T23:45:19Z",
   "description": "PR #215 review at 6a352a867: scope_code reads CodeScoped(prelude) before publish_scope, but its Blocked arm returns inner effects unchanged. Repro: def early(), do: 1 followed by import MissingReviewModule; drive with ProductSessions, then inspect early FunctionSource derivation. Its reads omit the prelude namespace dependency. Add red production-path test, preserve base reads on both job and reached derivations in blocked results, prove revalidation, update documentation, and integrate one commit onto PR #215.",
   "id": "fz-kdt.231",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Preserve prelude ground on blocked scope derivations",
   "type": "bug",
-  "updated_at": "2026-09-17T23:46:45Z"
+  "updated_at": "2026-09-18T00:00:28Z"
 }
