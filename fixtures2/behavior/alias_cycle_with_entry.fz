@@ -1,0 +1,13 @@
+#---
+# purpose: "a two-node alias-only cycle (cont <-> step) with an entry activation outside it; the Enum.reverse shape without the stdlib"
+#---
+def enter(xs), do: cont(xs, [])
+
+def cont([], acc), do: {:done, acc}
+def cont([h | t], acc), do: step(t, {:cont, [h | acc]})
+
+def step(t, {:cont, acc}), do: cont(t, acc)
+
+def main() do
+  dbg(enter([1, 2]))
+end
