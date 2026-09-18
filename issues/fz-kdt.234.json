@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
+    "fz-kdt.218",
     "fz-kdt.238"
   ],
   "created": "2026-09-17T23:57:53Z",
@@ -13,5 +14,5 @@
   "status": "in_progress",
   "title": "Fix unsound positive arrow intersection",
   "type": "bug",
-  "updated_at": "2026-09-18T00:01:00Z"
+  "updated_at": "2026-09-18T00:25:27Z"
 }
