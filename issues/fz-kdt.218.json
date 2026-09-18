@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.234"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "A partial join is marked per NODE, so a collector that skips ONE covariant occurrence still answers Known: collect_map_match's absent key and collect_arrow_match's arity-incompatible clause",
   "type": "bug",
-  "updated_at": "2026-09-18T00:25:27Z"
+  "updated_at": "2026-09-18T00:57:51Z"
 }
