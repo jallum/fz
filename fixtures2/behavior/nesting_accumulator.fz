@@ -1,6 +1,6 @@
 #---
 # purpose: "a list accumulator that nests one level per call: the shared-key return ladder"
-# defer: "the shared key's return widens once (ascent 9, collapses to [any]), but the compile never finishes: the callsite input merge compares the raw argument-union ladder through is_equivalent, whose DNF negation (list_denotation -> Descr::diff -> dnf_neg -> dnf_intersect_with) is exponential in list-axis clauses; debug builds add debug_assert_dnf_axes_hygienic on the same union"
+# defer: "the shared key's return widens once (ascent 9, collapses to [any]), but the compile never finishes: every round contributes a strictly deeper ground input row ([acc] wrapped once more) to the shared build/2 activation, the evidence-side collapse for a recursive activation widens only types that carry variables, so no standing row is equivalent to or dominates the new one and ActivationInputAlternatives::insert_row pays one DNF comparison per standing row over an ever deeper type; the row-budget join is a union of depths the next row is not a subtype of, so the loop input -> body -> self-call argument -> contribution never closes"
 #---
 #
 # The list sibling of `return_tuple_accumulator`. There the accumulator's
