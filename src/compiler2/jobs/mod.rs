@@ -19,6 +19,7 @@ mod executable_facts;
 mod keying;
 mod native;
 pub(super) use native::produce_native_program;
+mod return_flow;
 mod root;
 pub(crate) mod runtime_demand;
 #[cfg(test)]

@@ -30,6 +30,7 @@ use super::super::semantic::{
 };
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
+use super::return_flow::ReturnFlow;
 
 #[derive(Clone, Copy)]
 struct TupleFieldProjection {
@@ -312,10 +313,10 @@ fn evaluate_activation(
     // a provable fact (a body all of whose paths halt). At the fixpoint the
     // two coincide; mid-climb only readers of settled facts may conflate
     // them, and the settled gate keeps everyone else out.
-    let mut return_evidence: Option<Ty> = None;
+    let mut return_flow = ReturnFlow::bottom();
     match &*lowered_body {
         LoweredBody::Extern { signature } => {
-            return_evidence = Some(signature.return_ty);
+            return_flow = ReturnFlow::published(signature.return_ty);
         }
         LoweredBody::Clauses { clauses, entries, .. } => {
             for (clause_id, clause_inputs) in row_clause_inputs.iter().flatten() {
@@ -354,11 +355,28 @@ fn evaluate_activation(
                     &mut reads,
                     &mut waits,
                 )?;
-                return_evidence = join_evidence(world, return_evidence, clause_return);
+                return_flow = ReturnFlow::join(world.types_mut(), return_flow, clause_return);
             }
         }
     }
 
+    // The join is complete: every clause (or the extern signature) has
+    // contributed, so the symbolic expression now describes exactly the
+    // shape that produced `return_flow.observed`. This step only ever
+    // builds `Published`/`Bottom` companions, so the two views must lower
+    // to the same type; a divergence here means the companion drifted from
+    // the ordinary walk it is meant to mirror.
+    let lowered_expression = return_flow.expression.to_ty(world.types_mut(), &HashMap::new());
+    debug_assert!(
+        match (return_flow.observed, lowered_expression) {
+            (None, None) => true,
+            (Some(observed), Some(lowered)) => world.types().is_equivalent(&observed, &lowered),
+            _ => false,
+        },
+        "return-flow companion for {activation:?} diverged from the return evidence it mirrors"
+    );
+
+    let mut return_evidence = return_flow.observed;
     for row in alternatives.rows() {
         if let Some(contract_return_ty) =
             activation_contract_return(world, tel, function, &row.tys(), &mut reads, &mut waits)?
@@ -521,7 +539,7 @@ fn analyze_entry(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Result<Option<Ty>, FatalError> {
+) -> Result<ReturnFlow, FatalError> {
     reachable_entries.insert(entry_id);
     let entry = &entries[entry_id.as_u32() as usize];
     let mut local = values.clone();
@@ -875,7 +893,7 @@ fn analyze_branch(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Result<Option<Ty>, FatalError> {
+) -> Result<ReturnFlow, FatalError> {
     let scope = entry_scope(entries, entry_id, values, None, params);
     analyze_entry(
         world,
@@ -905,7 +923,7 @@ fn analyze_tail(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Result<Option<Ty>, FatalError> {
+) -> Result<ReturnFlow, FatalError> {
     match tail {
         LoweredTail::Value { value, dest } => deliver_tail_value(
             world,
@@ -934,7 +952,7 @@ fn analyze_tail(
                 .collect::<Option<Vec<_>>>()
             else {
                 calls.push(reached_but_unresolved(activation, *callsite));
-                return Ok(None);
+                return Ok(ReturnFlow::bottom());
             };
             let arg_inputs = arg_values.iter().map(SemanticValue::as_activation_input).collect();
             let (emission, return_ty) =
@@ -943,7 +961,7 @@ fn analyze_tail(
                 calls.push(emission);
             }
             let Some(return_ty) = return_ty else {
-                return Ok(None);
+                return Ok(ReturnFlow::bottom());
             };
             let mut delivered = values.clone();
             delivered.insert_value(*value, semantic_value_from_ty(world, return_ty));
@@ -977,7 +995,7 @@ fn analyze_tail(
                     .collect::<Option<Vec<_>>>(),
             ) else {
                 calls.push(reached_but_unresolved(activation, *callsite));
-                return Ok(None);
+                return Ok(ReturnFlow::bottom());
             };
             let (emission, return_ty) =
                 resolve_closure_call(world, tel, activation, *callsite, callee, arg_values, reads, waits)?;
@@ -985,7 +1003,7 @@ fn analyze_tail(
                 calls.push(emission);
             }
             let Some(return_ty) = return_ty else {
-                return Ok(None);
+                return Ok(ReturnFlow::bottom());
             };
             let mut delivered = values.clone();
             delivered.insert_value(*value, semantic_value_from_ty(world, return_ty));
@@ -1036,7 +1054,7 @@ fn analyze_tail(
                 reads,
                 waits,
             )?;
-            Ok(join_evidence(world, then_ty, else_ty))
+            Ok(ReturnFlow::join(world.types_mut(), then_ty, else_ty))
         }
         LoweredTail::Dispatch { inputs, dispatch, .. } => {
             let Some(input_tys) = inputs
@@ -1044,10 +1062,10 @@ fn analyze_tail(
                 .map(|input| value_ty(values, *input))
                 .collect::<Option<Vec<_>>>()
             else {
-                return Ok(None);
+                return Ok(ReturnFlow::bottom());
             };
             let reachability = calculate_dispatch_reachability(world.types_mut(), &dispatch.plan, &input_tys);
-            let mut merged = None;
+            let mut merged = ReturnFlow::bottom();
             for (outcome, refined_inputs) in reachability.outcome_inputs {
                 let edge = dispatch.outcome(outcome);
                 let arm_entry = edge.target;
@@ -1084,7 +1102,7 @@ fn analyze_tail(
                     reads,
                     waits,
                 )?;
-                merged = join_evidence(world, merged, arm_ty);
+                merged = ReturnFlow::join(world.types_mut(), merged, arm_ty);
             }
             let miss_ty = analyze_branch(
                 world,
@@ -1100,12 +1118,12 @@ fn analyze_tail(
                 reads,
                 waits,
             )?;
-            Ok(join_evidence(world, merged, miss_ty))
+            Ok(ReturnFlow::join(world.types_mut(), merged, miss_ty))
         }
         LoweredTail::Receive(receive) => {
             // Mailbox messages are a runtime boundary: `any` is earned here.
             let any = world.types_mut().any();
-            let mut merged = None;
+            let mut merged = ReturnFlow::bottom();
             let reachability = calculate_dispatch_reachability(world.types_mut(), &receive.dispatch, &[any]);
             for (outcome, refined_inputs) in reachability.outcome_inputs {
                 let edge = receive.outcomes.get(outcome.0 as usize).expect("winning receive edge");
@@ -1138,7 +1156,7 @@ fn analyze_tail(
                     reads,
                     waits,
                 )?;
-                merged = join_evidence(world, merged, clause_ty);
+                merged = ReturnFlow::join(world.types_mut(), merged, clause_ty);
             }
             if let Some(after) = &receive.after {
                 let after_ty = analyze_branch(
@@ -1155,12 +1173,12 @@ fn analyze_tail(
                     reads,
                     waits,
                 )?;
-                merged = join_evidence(world, merged, after_ty);
+                merged = ReturnFlow::join(world.types_mut(), merged, after_ty);
             }
             Ok(merged)
         }
         // A halt path contributes no value: the join identity, not a type.
-        LoweredTail::Halt { .. } => Ok(None),
+        LoweredTail::Halt { .. } => Ok(ReturnFlow::bottom()),
     }
 }
 
@@ -1178,18 +1196,18 @@ fn deliver_tail_value(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Result<Option<Ty>, FatalError> {
+) -> Result<ReturnFlow, FatalError> {
     // No evidence for the delivered value means no evidence for the path.
     let Some(delivered) = values.get(&value).cloned() else {
-        return Ok(None);
+        return Ok(ReturnFlow::bottom());
     };
     // A proven-empty value is evidence: nothing flows past this point, the
     // path is dead.
     if world.types().is_empty(&delivered.ty()) {
-        return Ok(Some(delivered.ty()));
+        return Ok(ReturnFlow::published(delivered.ty()));
     }
     match dest {
-        ControlDestination::Return => Ok(Some(delivered.ty())),
+        ControlDestination::Return => Ok(ReturnFlow::published(delivered.ty())),
         ControlDestination::Deliver(entry_id) => {
             let scope = entry_scope(entries, *entry_id, values, Some((value, delivered)), &[]);
             analyze_entry(
