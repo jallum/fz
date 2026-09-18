@@ -75,6 +75,16 @@ pub(crate) struct InputDemand {
     /// a measured divergence. Joining the two axes into one mask would have to
     /// raise a returned position to `Whole`, which has no collapse at all
     /// (fz-kdt.200) -- so they stay two.
+    ///
+    /// `Types::convergence_class` -- the un-addressed widen `ActivationMap::
+    /// define_return` applies past `RETURN_WIDENING_BUDGET` ascents of a
+    /// published return, as opposed to this keyed-at-input-time collapse --
+    /// asks the same `is_pure_list_family` question over the same axis, so a
+    /// list family widens the same way whether it is being keyed here or
+    /// folded there. The two sites used to disagree: the
+    /// return widen asked the strictly narrower `as_pure_list` (exactly one
+    /// list clause), so a return that had grown into a union of list depths
+    /// never matched and climbed past its budget instead of collapsing.
     pub(crate) returned: Vec<DispatchDemand>,
 }
 

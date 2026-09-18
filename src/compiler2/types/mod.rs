@@ -1770,7 +1770,7 @@ impl Types {
     pub fn convergence_class(&mut self, a: &Ty) -> Ty {
         let descr = self.descr(a).clone();
         let any = self.any();
-        if descr.as_pure_list(any).is_some() {
+        if descr.is_pure_list_family() {
             let rebuilt = Descr::list_of(any);
             self.intern(reapply_common_brand_partition(&descr, &descr, rebuilt))
         } else if let Some(tuple) = descr.pure_tuple() {

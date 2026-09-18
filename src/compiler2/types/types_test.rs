@@ -2569,6 +2569,57 @@ macro_rules! semantic_helper_conformance_tests {
             }
 
             #[test]
+            fn convergence_class_collapses_a_list_family_across_nesting_depths() {
+                // `build(n, acc)` (each recursive round wraps
+                // `acc` in one more list, `build(n - 1, [acc])`) mints ONE
+                // shared activation key, because the INPUT-side gate
+                // (`convergence_class_at`, reached below through the public
+                // `Ignore`-demand key path) already folds a list family
+                // regardless of nesting depth. That shared key's RETURN
+                // evidence is a union of lists at different depths
+                // (`[int] | [[int]] | [[[int]]]`, one clause per depth), and
+                // it must fold the very same way. Before this fix,
+                // `convergence_class`'s list branch asked `as_pure_list`,
+                // which demands exactly ONE list clause, so a multi-depth
+                // union never matched it and the fold was a no-op — the
+                // return climbed one depth per round instead of converging.
+                let mut t = $ctor;
+                let int = t.int();
+                let list_int = t.list(int.clone());
+                let list_list_int = t.list(list_int.clone());
+                let list_list_list_int = t.list(list_list_int.clone());
+                let family = t.union(list_int.clone(), list_list_int.clone());
+                let family = t.union(family, list_list_list_int.clone());
+
+                assert_eq!(
+                    t.descr(&family).cases[0].structure.lists.len(),
+                    3,
+                    "the union must genuinely carry one clause per nesting depth before either gate runs"
+                );
+
+                let keyed = t.convergence_collapse_inputs(&[family], &[DispatchDemand::Ignore], &[]);
+                assert_eq!(
+                    t.descr(&keyed[0]).cases[0].structure.lists.len(),
+                    1,
+                    "the input-side gate already folds a list family across nesting depths to one clause"
+                );
+
+                let widened = t.convergence_class(&family);
+                assert_eq!(
+                    t.descr(&widened).cases[0].structure.lists.len(),
+                    1,
+                    "convergence_class must fold a list family across nesting depths the same way \
+                     convergence_class_at does, not leave every depth as its own clause: {}",
+                    t.display(&widened)
+                );
+                assert!(
+                    !t.is_equivalent(&widened, &family),
+                    "a no-op convergence_class leaves the return climbing one nesting depth per round \
+                     instead of converging to one list family"
+                );
+            }
+
+            #[test]
             fn convergence_collapse_widens_only_non_dispatch_slots_of_the_arrow() {
                 // The dispatch KEY of a recursive activation is a whole-arrow
                 // collapse of its precise evidence arrow (fz-hwn.27.7): a

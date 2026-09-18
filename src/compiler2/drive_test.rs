@@ -20538,6 +20538,16 @@ const RETURN_LADDERS: &[PinnedLadder] = &[
 
 /// The other four `json_*` fixtures share this one's decode loop and measure the
 /// same climb, so pinning the goal program pins them too.
+///
+/// `behavior/nesting_accumulator.fz` is deliberately absent: it drives the
+/// same list-family return widen this table exercises, but
+/// `measure_return_ascents` drives to `DumpStage::Backend`, which that
+/// fixture's compile never reaches -- after the widening the callsite input
+/// merge compares the raw argument-union ladder through `is_equivalent`, whose
+/// DNF negation is exponential in list-axis clauses, so adding it here would
+/// hang this test rather than pin it. It carries its own `defer:` and is
+/// confirmed by hand: `--log-telemetry` shows `return_type.widened` firing
+/// once, at ascent nine, collapsing to `[any]`.
 const RETURN_LADDER_FIXTURES: &[(&str, &str)] = &[
     (
         "fixtures2/behavior/return_tuple_ladder.fz",
