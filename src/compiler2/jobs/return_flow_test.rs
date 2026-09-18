@@ -93,6 +93,16 @@ fn list_lowers_to_the_same_ty_the_calculator_builds_directly() {
 }
 
 #[test]
+fn non_empty_list_lowers_to_the_same_ty_the_calculator_builds_directly() {
+    let mut types = Types::new();
+    let int = types.int_lit(1);
+    let expected = types.non_empty_list(int);
+    let expression = ReturnExpression::NonEmptyList(Box::new(ReturnExpression::Published(int)));
+    let lowered = expression.to_ty(&mut types, &HashMap::new()).expect("some evidence");
+    assert!(types.is_equivalent(&lowered, &expected));
+}
+
+#[test]
 fn map_lowers_to_the_same_ty_the_calculator_builds_directly() {
     let mut types = Types::new();
     let int = types.int_lit(1);

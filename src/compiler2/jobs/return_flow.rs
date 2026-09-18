@@ -4,11 +4,25 @@
 //! `evaluate_activation` (in `semantic.rs`) already computes `return_evidence:
 //! Option<Ty>` by joining every clause's tail evidence. Alongside that join,
 //! it builds a `ReturnFlow` that describes symbolically how the same value
-//! was produced. Today every companion built by the walk is `Published` or
-//! `Bottom`, so the two views carry the same information in two shapes; a
-//! debug assertion at the join proves they agree. The remaining
-//! `ReturnExpression` constructors exist for the recursive-return solver
-//! that will construct them from a still-unsolved sibling activation.
+//! was produced: a call resolved to a compiler activation is addressed by
+//! `Local(callee key)`, never guessed at as `Bottom` or `Published` merely
+//! because that callee's evidence has not arrived yet, and every structural
+//! step (tuple/list/map/struct construction, projection, a `Deliver` entry,
+//! a capture, a branch/dispatch/receive join) carries its operands'
+//! companions through in step with the `Ty` it also builds -- one
+//! `ReturnExpression` form per `Types` constructor the walk calls, so a
+//! twin function can never build a companion shaped differently from the
+//! real value beside it. An operation with no structural rule of its own
+//! (arithmetic, a map update) never had one to begin with: its result is
+//! `Published` outright, exactly as it always was, independent of whether
+//! its operands are still open. A debug assertion at each activation's join
+//! proves the two views still agree. The recursive-return solver that will
+//! later substitute a settled sibling's expression into a still-open
+//! `Local` does not exist yet; until it does, an ordinary (non-component)
+//! activation lowers its own `Local` references from `walk_member_map`
+//! (in `semantic.rs`) -- the exact value this walk's own calls observed,
+//! not `World`'s published `ReturnType`, which only widens round over
+//! round and is strictly wider than what one walk ever consumed.
 
 use std::collections::HashMap;
 
@@ -55,46 +69,74 @@ impl ReturnFlow {
             (Some(x), Some(y)) if x == y => Some(x),
             (Some(x), Some(y)) => Some(types.union(x, y)),
         };
-        let expression = match (a.expression, b.expression) {
-            (ReturnExpression::Bottom, x) | (x, ReturnExpression::Bottom) => x,
-            (x, y) => ReturnExpression::Union(vec![x, y]),
-        };
+        let expression = ReturnExpression::union(a.expression, b.expression);
         ReturnFlow { observed, expression }
     }
 }
 
 /// A symbolic description of how a return value's type was produced.
 /// `Bottom` and `Published` mirror the two states `Option<Ty>` evidence can
-/// hold; the rest describe a value's shape one layer at a time, addressing a
-/// still-unsolved sibling by `Local`, for a solver that does not run yet.
-///
-/// `Local`, `Tuple`, `List`, `Map` and `Struct` are exercised by `to_ty`'s
-/// tests but not yet built by the walk: the recursive-return solver that
-/// constructs them is not wired in, so a plain library build never
-/// constructs one. Each carries `#[allow(dead_code)]` for exactly that
-/// reason.
+/// hold; `Local` addresses a still-unsolved sibling activation by its key,
+/// and the rest describe a value's shape one layer at a time, over children
+/// that are themselves any of these constructors.
 #[derive(Debug, Clone)]
 pub(super) enum ReturnExpression {
     /// No path has produced a value yet -- the join identity.
     Bottom,
     /// A concrete observed return type.
     Published(Ty),
-    /// Another activation's still-unsolved return, addressed by its key.
-    #[allow(dead_code)]
+    /// Another activation's return, addressed by its key. An ordinary
+    /// activation lowers it to the value its own walk observed for that
+    /// call (`walk_member_map`); the recursive-return solver will instead
+    /// substitute the sibling's settled expression.
     Local(ActivationKey),
     /// The join of several return paths (an `if`, a dispatch, a receive).
     Union(Vec<ReturnExpression>),
-    #[allow(dead_code)]
     Tuple(Vec<ReturnExpression>),
-    #[allow(dead_code)]
+    /// A possibly-empty list: `Types::list`. Built for a cons onto a tail
+    /// that is itself list-shaped, where the result is never provably
+    /// non-empty on its own (the tail might be).
     List(Box<ReturnExpression>),
-    #[allow(dead_code)]
+    /// A provably non-empty list: `Types::non_empty_list`. Built for a flat
+    /// literal (`[a, b, c]`) or a cons onto a tail with no known list shape
+    /// -- in both cases the head alone already proves at least one element.
+    NonEmptyList(Box<ReturnExpression>),
     Map(Vec<(MapKey, ReturnExpression)>),
-    #[allow(dead_code)]
     Struct(ModuleId, ModuleName, Vec<(MapKey, ReturnExpression)>),
 }
 
 impl ReturnExpression {
+    /// Combine two expressions the way `ReturnFlow::join` combines its two
+    /// paths' companions, and the way a structural construction step folds
+    /// its children into one uniform-element companion (a list's elements,
+    /// several matched protocol targets for one call). `Bottom` is the
+    /// identity, so a single real contribution never gets wrapped in a
+    /// `Union` of one. A repeated fold over more than two paths (three or
+    /// more clauses, three or more dispatch outcomes) calls this pairwise,
+    /// left to right; an existing `Union` on either side is the same join
+    /// still in progress; flattening into it keeps that fold's result one
+    /// flat, stably ordered list instead of a binary tree of one-off pairs.
+    /// Type union is associative, so this never changes what `to_ty` lowers
+    /// the result to -- only how many `Union` layers wrap it.
+    pub(super) fn union(a: ReturnExpression, b: ReturnExpression) -> ReturnExpression {
+        match (a, b) {
+            (ReturnExpression::Bottom, x) | (x, ReturnExpression::Bottom) => x,
+            (ReturnExpression::Union(mut members), ReturnExpression::Union(more)) => {
+                members.extend(more);
+                ReturnExpression::Union(members)
+            }
+            (ReturnExpression::Union(mut members), x) => {
+                members.push(x);
+                ReturnExpression::Union(members)
+            }
+            (x, ReturnExpression::Union(mut members)) => {
+                members.insert(0, x);
+                ReturnExpression::Union(members)
+            }
+            (x, y) => ReturnExpression::Union(vec![x, y]),
+        }
+    }
+
     /// Lower this expression to the `Ty` it denotes, using the same
     /// calculator methods the ordinary walk uses to build a `Ty` directly.
     /// `member_map` resolves a `Local` reference to another activation's
@@ -136,6 +178,10 @@ impl ReturnExpression {
             ReturnExpression::List(elem) => {
                 let elem_ty = elem.to_ty(types, member_map)?;
                 Some(types.list(elem_ty))
+            }
+            ReturnExpression::NonEmptyList(elem) => {
+                let elem_ty = elem.to_ty(types, member_map)?;
+                Some(types.non_empty_list(elem_ty))
             }
             ReturnExpression::Map(fields) => {
                 let fields = fields
