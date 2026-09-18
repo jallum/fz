@@ -13,11 +13,15 @@
     {
       "text": "For public red, avoid a negative literally equal to a positive (DNF cancellation can bypass calculator). Build 32 same-result/distinct-arity positive constraints through repeated A \\\\ (any \\\\ B), then query subtype to unary int-\u003eatom; false at first semantic branch but current 1u32\u003c\u003c32 panics before branching. Direct private Conj with 32 positives and one nonidentical negative can pin calculator independently. Large TRUE cases need pruning so replacing u32 with an exponential iterator is not enough.",
       "timestamp": "2026-09-18T00:03:21Z"
+    },
+    {
+      "text": "RED: direct 32-positive calculator test failed on prior code with debug panic at emptiness.rs: attempt to shift left with overflow. GREEN: commit 2296d7452 replaces masks with exact pruned descriptor-residual traversal; direct 32 false, 32/64 true, public subtype, deterministic multi-negative, and 256 seeded old-algorithm oracle cases pass. Gates: fmt, focused types 318/318, full lib 2277 passed/5 ignored/0 failed, strict clippy.",
+      "timestamp": "2026-09-18T00:43:14Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Remove fixed-width arrow subset enumeration limit",
   "type": "bug",
-  "updated_at": "2026-09-18T00:24:56Z"
+  "updated_at": "2026-09-18T00:43:14Z"
 }
