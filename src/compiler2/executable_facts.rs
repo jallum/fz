@@ -221,7 +221,7 @@ pub(crate) fn project_executable_facts(
     mut analysis: ActivationAnalysis,
 ) -> Rc<ExecutableFacts> {
     let activation = &executable.activation;
-    let body = world.lowered_body(activation.function);
+    let body = (*world.lowered_body(activation.function)).clone();
     let callsites: HashMap<_, _> = analysis
         .callsites
         .iter()
@@ -492,7 +492,7 @@ fn executable_dispatch(
     if reachability.is_direct_clause() {
         return None;
     }
-    match world.lowered_body(function) {
+    match &*world.lowered_body(function) {
         LoweredBody::Extern { .. } => None,
         LoweredBody::Clauses { .. } => Some(ExecutableDispatch::new(
             world.entry_dispatch(function),
