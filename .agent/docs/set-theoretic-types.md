@@ -378,6 +378,17 @@ recursion (`emptiness::phi_tuple`) returns early on an empty coordinate and drop
 negations disjoint from the product, so it explores only inhabited splits
 instead of fanning out `arity^|negs|` branches.
 
+Callable emptiness uses the same proof shape without giving a partition an
+integer identity. For a negative arrow `S -> V`, a positive-arrow partition
+can witness an escaping callable precisely when both `S \ union(selected
+inputs)` and `intersection(unselected returns) \ V` are inhabited. The
+calculator walks that partition recursively, carrying those two residual
+descriptors. Selecting a positive shrinks only the input residual; leaving it
+unselected shrinks only the output residual. An empty residual can never become
+inhabited again, so that subtree is exact to prune. This makes the decision
+independent of the number of positive arrows while retaining the ordinary
+descriptor emptiness memo as the only child authority.
+
 ## One implementation, shared trait
 
 Consumers ask type questions through the `Types` trait (`src/types/mod.rs`), not by

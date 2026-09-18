@@ -46,6 +46,33 @@ fn factory_interns_equal_descriptors() {
 }
 
 #[test]
+fn arrow_subtyping_handles_a_wide_conjunction_without_a_partition_word_limit() {
+    let mut t = Types::new();
+    let any = t.any();
+    let int = t.int();
+    let atom = t.atom();
+    let mut constrained = any;
+    for arity in 1..=32 {
+        let positive = t.arrow(&vec![int; arity], int);
+        let not_positive = t.difference(any, positive);
+        constrained = t.difference(constrained, not_positive);
+    }
+
+    let unary_int_to_atom = t.arrow(&[int], atom);
+    assert!(
+        !t.is_subtype(&constrained, &unary_int_to_atom),
+        "a nonidentical unary negation must reach the arrow emptiness calculator without overflowing at 32 positives"
+    );
+
+    let int_or_atom = t.union(int, atom);
+    let unary_int_to_int_or_atom = t.arrow(&[int], int_or_atom);
+    assert!(
+        t.is_subtype(&constrained, &unary_int_to_int_or_atom),
+        "the unary positive constraint proves the wider return contract"
+    );
+}
+
+#[test]
 fn union_of_the_same_type_returns_before_it_probes_or_normalizes() {
     let mut t = Types::new();
     let int = t.int();
