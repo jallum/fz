@@ -14,11 +14,15 @@
     {
       "text": "Existing exact red lives in src/compiler2/drive_test.rs compiler2_recursive_typedef_deadlocks_on_its_own_definition and fixtures2/behavior/recursive_typedef.fz: @type t :: :start | {integer,t}, @spec build(integer)::t, base :start, recursive {n,build(n-1)}. Test currently endorses stalled self-wait; reverse to resolved backend and correct inferred type, replace diagnostic fixture/golden with value output. Nearby productive-deepening and return-tuple-ladder tests pin widening precision loss; recursive denotations must address legal alias cycle, not just diagnostic it.",
       "timestamp": "2026-09-18T00:03:22Z"
+    },
+    {
+      "text": "Critical existing implementation: PR212 OPEN head c0d856c8a720e4f489a92f70faeb4f5dde303580. Existing prerequisite chain after canonical callable 832e46e44: e650e39ab regular type trees, 1b83f056d cyclic readers, f364a933e canonical components, 090d79bff mu rendering, 2e99895eb exact root tuple shape, c0d856c8a recursive typedefs. Reuse/adapt this work; DO NOT reinvent subsystem or mutate the original user worktrees. Assigned fresh agent must prove red at PR215, port/rebase existing work on corrected algebra and new identity, preserve one commit per existing ticket plus one adaptation commit if needed; do not squash independent prior tickets. Existing dynamic return equations fz-kdt.98.3 in progress separately; inspect boundaries before touching.",
+      "timestamp": "2026-09-18T00:04:10Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Resolve recursive type definitions without stalled self-dependencies",
   "type": "bug",
-  "updated_at": "2026-09-18T00:03:22Z"
+  "updated_at": "2026-09-18T00:04:10Z"
 }
