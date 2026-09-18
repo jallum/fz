@@ -22,11 +22,15 @@
     {
       "text": "Narrow local verification on PR215 d12ec6c9 after readiness/arrow/width fixes: CARGO_INCREMENTAL=0 cargo test --test fixture_matrix -- json_roundtrip --test-threads=1 explicit exit0, all interp/JIT/AOT3passed. This does not waive CI slow-runner setup failures; enum_take_drop_split and execution-boundary probe also being checked, latest CI pending.",
       "timestamp": "2026-09-18T00:58:33Z"
+    },
+    {
+      "text": "Remaining narrow local gates on d12ec6c9 explicit exit0: enum_take_drop_split interp/JIT/AOT3passed; execution_guard_covers_the_program_not_the_compile1passed. All five failing CI lanes therefore pass locally; leave setup-timeout canary open pending CI and genuine recursive-work reduction.",
+      "timestamp": "2026-09-18T01:02:15Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "The fixture matrix's 20s execution guard times the compiler, and the two slowest lanes sit at 60% of it on the CI runner",
   "type": "bug",
-  "updated_at": "2026-09-18T00:58:33Z"
+  "updated_at": "2026-09-18T01:02:15Z"
 }
