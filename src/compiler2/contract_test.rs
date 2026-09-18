@@ -456,6 +456,68 @@ fn function_contract_application_does_not_publish_underconstrained_result_eviden
     );
 }
 
+/// A contract may refine its input from the field it read, but it must not
+/// publish a result whose other covariant map-field occurrence remains live
+/// behind a free witness remainder.
+#[test]
+fn function_contract_application_withholds_a_result_for_a_live_unread_map_field() {
+    let mut types = Types::new();
+    let a = types.type_var(TypeVarId(0));
+    let c = types.type_var(TypeVarId(1));
+    let pattern_map = types.map(&[
+        (MapKey::Atom("k".to_string()), c),
+        (MapKey::Atom("missing".to_string()), a),
+    ]);
+    let resolved = ResolvedSpecDecl {
+        params: vec![a, pattern_map],
+        result: a,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let int = types.int();
+    let witness_map = types.map(&[(MapKey::Atom("k".to_string()), int)]);
+    let free_remainder = types.type_var(TypeVarId(901));
+    let witness = types.union(witness_map, free_remainder);
+    let applied = contract.apply(&mut types, &[int, witness]);
+
+    assert_eq!(
+        applied.matched_arrows.len(),
+        1,
+        "the partial lower bound still refines the matching contract input"
+    );
+    assert!(
+        applied.result.is_none(),
+        "a live unread covariant map field must not be published as a complete result"
+    );
+}
+
+#[test]
+fn function_contract_application_publishes_the_result_of_an_already_satisfied_callable_union_arm() {
+    let mut types = Types::new();
+    let b = types.type_var(TypeVarId(1));
+    let c = types.type_var(TypeVarId(2));
+    let any = types.any();
+    let unary = types.arrow(&[any], b);
+    let binary = types.arrow(&[any, any], c);
+    let callable_union = types.union(unary, binary);
+    let resolved = ResolvedSpecDecl {
+        params: vec![c, callable_union],
+        result: c,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let int = types.int();
+    let witness = types.arrow(&[any], int);
+    let applied = contract.apply(&mut types, &[int, witness]);
+
+    assert!(
+        types.is_equivalent(&applied.result.expect("the unary arm proves the return"), &int),
+        "the satisfied unary arm publishes c from the first argument"
+    );
+}
+
 #[test]
 fn function_contract_application_does_not_recurse_through_concrete_any_inputs() {
     let mut types = Types::new();

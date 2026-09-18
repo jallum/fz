@@ -289,16 +289,14 @@ partially-joined variable answers `Underconstrained` instead, and
 `FunctionContract::apply` drops an `Underconstrained` clause's result while
 keeping its parameters.
 
-The unit is the NODE, and that is what a `Known` verdict delivers: no node the
-walk visited was wholly unreadable. It is not the stronger claim that every
-covariant occurrence was individually read. Two collectors skip a single unread
-occurrence while a sibling keeps the node's merged outcome `Known`, so the one
-marking site never fires: `collect_map_match` skips a pattern key the witness
-does not name, and `collect_arrow_match` skips a pattern clause no witness clause
-matches on arity. Both are pinned KNOWN-WRONG in `arrow_match.rs`
-(`p5_a_skipped_map_key_…`, `p10_a_skipped_arrow_clause_…`); neither is reachable
-from the shipped runtime library, which declares no map-typed and no
-multi-clause `@spec`, and fz-kdt.218 owns closing them.
+The node-wide mark handles a node whose whole witness is unreadable. A
+collector that declines one LIVE subtree marks that subtree directly, so a
+sibling cannot complete its missing lower-bound term. `collect_map_match` does
+this when a variable-carrying witness omits a pattern key: the key may still be
+present through the unresolved remainder. A ground witness missing that key is
+`Invalid`. A callable UNION is satisfied as soon as the witness fits one of its
+arms. When that arm supplies the evidence, an unused alternative adds no
+lower-bound obligation.
 
 The node unit is coarse in the other direction too: an unreadable node names
 every covariant variable beneath it, including one another position already
