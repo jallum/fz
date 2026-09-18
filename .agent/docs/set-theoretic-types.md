@@ -303,6 +303,33 @@ The value and observation therefore have one owner each: observations cannot
 mint a second closure value identity, and normalizing a value cannot erase an
 observed call surface.
 
+## Arrow meets and callable application
+
+One positive arrow is a constraint on a callable's behavior over its whole
+argument tuple. Therefore two arrows with the same argument vector merge their
+return constraints: `(D -> R₁) and (D -> R₂) = D -> (R₁ and R₂)`. Different
+argument vectors are an overload and stay as separate positive factors. In
+particular, `(A -> R₁) and (B -> R₂)` is not `(A | B) -> (R₁ and R₂)`; that
+would both lose result-to-domain correlation and, for more than one argument,
+admit the pointwise hull rather than the union of the two input tuples.
+
+The callable module is the one ground positive-arrow application authority. A
+callable DNF clause is one possible callable value, so every DNF clause must
+cover the input row. Positive arrows inside one clause are instead overload
+arms: their domains cover a row collectively. The result partitions the row by
+its arm membership, intersects the returns on each overlapping region, and
+unions the non-empty regions' answers. Thus `(int -> int) and (binary ->
+binary)` accepts `int | binary`, while a union of those two callable values
+does not guarantee either domain; and `(any -> int) and (int -> atom)` answers
+`none` on `int` but `int` on `binary`.
+
+This evaluator reports a known result, proven uncovered/non-callable input, or
+opaque evidence. Negative factors, literal arrows, and free variables are
+opaque: projecting them to positive arms would pretend to know a return or
+coverage fact they do not provide. The relational matcher may still consume
+positive structure with variables; it must not turn an opaque constraint into a
+spurious mismatch.
+
 The coverage walk and the dedupe only ever remove, and both visit in index
 order, so what they leave is still sorted; a saturated axis is REPLACED by the
 one clause that spells its top, and one clause is sorted whatever it is. One pass therefore

@@ -4302,6 +4302,77 @@ mod clause_absorption {
 mod clause_factor_order {
     use super::*;
 
+    #[test]
+    fn distinct_arrow_domains_keep_their_overload_correlation() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let any = t.any();
+        let f = t.arrow(&[int], int);
+        let g = t.arrow(&[atom], atom);
+
+        let direct = t.intersect(f, g);
+        let not_g = t.difference(any, g);
+        let demorgan = t.difference(f, not_g);
+
+        assert!(
+            t.is_equivalent(&direct, &demorgan),
+            "the direct arrow meet must preserve the same overload as difference"
+        );
+        assert!(t.is_subtype(&direct, &f));
+        assert!(t.is_subtype(&direct, &g));
+    }
+
+    #[test]
+    fn equal_arrow_domains_merge_only_their_return_constraint() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let f = t.arrow(&[int], int);
+        let g = t.arrow(&[int], atom);
+
+        let direct = t.intersect(f, g);
+
+        assert_eq!(t.callable_clauses(&direct).map(|clauses| clauses.len()), Some(1));
+        assert_eq!(t.arrow_params(&direct), vec![int]);
+        assert_eq!(t.arrow_result(&direct), Some(t.none()));
+    }
+
+    #[test]
+    fn overlapping_arrow_domains_keep_both_constraints() {
+        let mut t = Types::new();
+        let any = t.any();
+        let int = t.int();
+        let atom = t.atom();
+        let f = t.arrow(&[any], int);
+        let g = t.arrow(&[int], atom);
+
+        let direct = t.intersect(f, g);
+        let not_g = t.difference(any, g);
+        let demorgan = t.difference(f, not_g);
+
+        assert!(t.is_equivalent(&direct, &demorgan));
+        assert_eq!(t.callable_clauses(&direct).map(|clauses| clauses.len()), Some(2));
+    }
+
+    #[test]
+    fn multi_argument_domains_do_not_expand_to_their_pointwise_hull() {
+        let mut t = Types::new();
+        let int = t.int();
+        let binary = t.str_t();
+        let atom = t.atom();
+        let any = t.any();
+        let f = t.arrow(&[int, binary], int);
+        let g = t.arrow(&[binary, int], atom);
+
+        let direct = t.intersect(f, g);
+        let not_g = t.difference(any, g);
+        let demorgan = t.difference(f, not_g);
+
+        assert!(t.is_equivalent(&direct, &demorgan));
+        assert_eq!(t.callable_clauses(&direct).map(|clauses| clauses.len()), Some(2));
+    }
+
     /// Two arrows of different arity cannot merge into one signature, so their
     /// meet keeps both as factors of one clause — an overload, and inhabited.
     #[test]

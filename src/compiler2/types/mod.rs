@@ -7,6 +7,7 @@ mod addressed;
 mod arrow_match;
 mod axis;
 mod bits;
+mod callable;
 mod canon;
 mod closure_surface_var;
 mod conj;
@@ -2704,6 +2705,12 @@ impl Types {
             arrow_join_return(cx, cx.descr(a))
         };
         self.intern(d)
+    }
+
+    /// Apply a literal-free callable type at one ground input row. The
+    /// callable module owns the DNF/overload distinction and its trichotomy.
+    pub(super) fn callable_application(&mut self, callable: Ty, args: &[Ty]) -> callable::CallableApplication {
+        callable::return_on_inputs(self, callable, args)
     }
 
     #[cfg(test)]
