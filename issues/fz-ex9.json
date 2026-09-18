@@ -18,11 +18,15 @@
     {
       "text": "PR215 corrected stack head a4b892ebd CI run35290208660 reproduced the still-unresolved compile/setup guard canary: library2272 passed5ignored; fixture matrix820 passed5failed1ignored. Failure lanes execution_guard_covers_the_program_not_the_compile; enum_take_drop_split run/build; json_roundtrip run/build. All report setup readiness/build exceeded20s, not wrong output. Logs https://github.com/jallum/fz/actions/runs/35290208660 . Reopened existing issue instead of duplicating it. User approved integration of recursive inference after98.3 owner commits; verify these lanes again after inference/algebra fixes. Do not raise timeouts or waive the failures.",
       "timestamp": "2026-09-18T00:38:38Z"
+    },
+    {
+      "text": "Narrow local verification on PR215 d12ec6c9 after readiness/arrow/width fixes: CARGO_INCREMENTAL=0 cargo test --test fixture_matrix -- json_roundtrip --test-threads=1 explicit exit0, all interp/JIT/AOT3passed. This does not waive CI slow-runner setup failures; enum_take_drop_split and execution-boundary probe also being checked, latest CI pending.",
+      "timestamp": "2026-09-18T00:58:33Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "The fixture matrix's 20s execution guard times the compiler, and the two slowest lanes sit at 60% of it on the CI runner",
   "type": "bug",
-  "updated_at": "2026-09-18T00:38:38Z"
+  "updated_at": "2026-09-18T00:58:33Z"
 }
