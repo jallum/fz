@@ -10,9 +10,15 @@
   "id": "fz-kdt.239",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Existing exact red lives in src/compiler2/drive_test.rs compiler2_recursive_typedef_deadlocks_on_its_own_definition and fixtures2/behavior/recursive_typedef.fz: @type t :: :start | {integer,t}, @spec build(integer)::t, base :start, recursive {n,build(n-1)}. Test currently endorses stalled self-wait; reverse to resolved backend and correct inferred type, replace diagnostic fixture/golden with value output. Nearby productive-deepening and return-tuple-ladder tests pin widening precision loss; recursive denotations must address legal alias cycle, not just diagnostic it.",
+      "timestamp": "2026-09-18T00:03:22Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Resolve recursive type definitions without stalled self-dependencies",
   "type": "bug",
-  "updated_at": "2026-09-17T23:58:31Z"
+  "updated_at": "2026-09-18T00:03:22Z"
 }
