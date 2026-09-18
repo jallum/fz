@@ -9,9 +9,15 @@
   "id": "fz-kdt.232",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Fix rebased to a4b892ebd on corrected215-\u003e214-\u003e213-\u003e212 chain. Ownership duplication removed, docs coherently reconciled; code patch unchanged.2272lib tests,3recursive typedef modes,fmt,strictworkspaceclippy passed.",
+      "timestamp": "2026-09-18T00:14:36Z"
+    }
+  ],
   "priority": 1,
   "status": "closed",
   "title": "Keep completed scope derivations independent of later reads",
   "type": "bug",
-  "updated_at": "2026-09-18T00:01:51Z"
+  "updated_at": "2026-09-18T00:14:36Z"
 }
