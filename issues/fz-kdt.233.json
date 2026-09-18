@@ -7,9 +7,15 @@
   "id": "fz-kdt.233",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Existing diagnosis fz-kdt.98.4 already covers identical red CLI test. Read it: trigger is #214 function-reference construction edge, not #215 ownership, with RootSeed dirty-ground movements missing from replay changed list. Implementation will reconcile subscriber/waiter finality and zero-uncaused contract, not simply numerical pin changes.",
+      "timestamp": "2026-09-18T00:04:11Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Resolve PR 215 drain readiness attribution CI failure",
   "type": "bug",
-  "updated_at": "2026-09-17T23:48:48Z"
+  "updated_at": "2026-09-18T00:04:11Z"
 }
