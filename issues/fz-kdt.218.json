@@ -9,9 +9,15 @@
   "id": "fz-kdt.218",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "P10 disposition: `(int, (any) -\u003e int)` satisfies the unary member of `((any) -\u003e b) | ((any, any) -\u003e c)`. The arity-two member cannot inhabit that witness, while `c` is grounded by the first argument, so `Known int` is sound. The regression now asserts that result; only the live unread map-field case marks an unfinished lower join.",
+      "timestamp": "2026-09-18T01:05:28Z"
+    }
+  ],
   "priority": 3,
   "status": "in_progress",
   "title": "A partial join is marked per NODE, so a collector that skips ONE covariant occurrence still answers Known: collect_map_match's absent key and collect_arrow_match's arity-incompatible clause",
   "type": "bug",
-  "updated_at": "2026-09-18T00:57:51Z"
+  "updated_at": "2026-09-18T01:05:28Z"
 }
