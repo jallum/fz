@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-kdt.177.10",
     "fz-kdt.235",
     "fz-kdt.238",
     "fz-kdt.98.3"
@@ -33,5 +34,5 @@
   "status": "open",
   "title": "Resolve recursive type definitions without stalled self-dependencies",
   "type": "bug",
-  "updated_at": "2026-09-18T00:36:23Z"
+  "updated_at": "2026-09-18T00:36:26Z"
 }
