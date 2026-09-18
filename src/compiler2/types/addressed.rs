@@ -358,9 +358,7 @@ impl Types {
                 if let Some(&id) = binder.surface.get(&original) {
                     id
                 } else {
-                    let id = if address_path(&self.address_paths, original).is_some() {
-                        original
-                    } else if let Some(&id) = correlations.values.get(&original) {
+                    let id = if let Some(&id) = correlations.values.get(&original) {
                         id
                     } else {
                         let id = if single {

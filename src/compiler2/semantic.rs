@@ -987,11 +987,21 @@ impl ActivationInput {
         self
     }
 
-    pub(crate) fn addressed_callable_surfaces(mut self, types: &mut Types) -> Self {
+    /// Address this input's callable surfaces at its own slot (`input`) in the
+    /// enclosing activation's row -- the SAME nested frame
+    /// `ActivationKey::from_inputs_with_callable_surfaces` uses to mint a key
+    /// from this same evidence (`Types::address_signature_at_input`). A row's
+    /// evidence for input `i` and a key's `callable_surfaces[i]` describe the
+    /// one observation, so they must be built by the one function: a self-call
+    /// that reads this settled row back (`SemanticValue::from_activation_input`)
+    /// and an entry call that addresses the surface fresh at key-mint time must
+    /// land on the identical coordinate, or the two producers fork the same
+    /// activation into two keys.
+    pub(crate) fn addressed_callable_surfaces(mut self, input: usize, types: &mut Types) -> Self {
         self.callable_surfaces = self
             .callable_surfaces
             .iter()
-            .map(|surface| types.address_signature_with_env(&surface.inputs, surface.result).0)
+            .map(|surface| types.address_signature_at_input(input, surface))
             .collect();
         self
     }
