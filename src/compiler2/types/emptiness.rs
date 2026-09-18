@@ -556,9 +556,12 @@ mod tests {
         })[0];
         let productive_recursive = types.intern_regular_component(1, |nodes| {
             let mut body = DescrOf::atom_lit("leaf");
-            body.tuples.push(Conj::pos_of(super::super::TupleSigOf {
-                elems: vec![ComponentRef::Published(int), nodes[0]],
-            }));
+            body.cases[0]
+                .structure
+                .tuples
+                .push(Conj::pos_of(super::super::TupleSigOf {
+                    elems: vec![ComponentRef::Published(int), nodes[0]],
+                }));
             vec![body]
         })[0];
         let shapes = [

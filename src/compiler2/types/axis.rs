@@ -91,7 +91,7 @@
 use super::Ty;
 use super::TyCtx;
 use super::conj::Conj;
-use super::descr::Descr;
+use super::descr::{Descr, Structure};
 use super::dnf::is_dnf_top;
 use super::emptiness::{self, ListDenotation, NonEmptyLists};
 use super::sigs::{ListSig, ListSigOf, ResourceSig, TupleSig, TupleSigOf};
@@ -99,7 +99,7 @@ use super::sigs::{ListSig, ListSigOf, ResourceSig, TupleSig, TupleSigOf};
 /// Install one axis's clauses into an otherwise contentless descriptor. The
 /// axis's containment questions are then asked of the shared type calculator
 /// rather than of a per-axis rule.
-pub(super) type InstallAxis<T> = fn(&mut Descr, Vec<Conj<T>>);
+pub(super) type InstallAxis<T> = fn(&mut Structure, Vec<Conj<T>>);
 
 /// One axis, named once: how to put a clause list into a descriptor and how to
 /// read it back out. Every caller here works through a view rather than
@@ -518,7 +518,7 @@ pub(super) const FUNCS: AxisView<super::sigs::ArrowSig> = AxisView {
 /// consulted only on the plain single-positive tuple product — overwhelmingly
 /// the common shape, and the one where a coordinate decides the clause on its
 /// own.
-pub(super) fn drop_empty_clauses(cx: TyCtx<'_>, d: &mut Descr, is_empty_ty: &dyn Fn(&Ty) -> bool) {
+pub(super) fn drop_empty_clauses(cx: TyCtx<'_>, d: &mut Structure, is_empty_ty: &dyn Fn(&Ty) -> bool) {
     d.tuples.retain(|clause| !tuple_clause_empty(cx, clause, is_empty_ty));
     retain_inhabited(cx, &mut d.lists, emptiness::list_clause_empty);
     retain_inhabited(cx, &mut d.resources, emptiness::resource_clause_empty);
@@ -602,7 +602,7 @@ pub(super) fn axis_is_top<T: Clone + 'static>(
 
 /// `wider ⊇ narrower` for two one-axis descriptors. Injected so the caller
 /// answers through its memo; the relation itself is `Descr::is_subtype`.
-pub(super) type Covers<'a> = &'a dyn Fn(&Descr, &Descr) -> bool;
+pub(super) type Covers<'a> = &'a dyn Fn(&Structure, &Structure) -> bool;
 
 /// Survivorship is threaded through the walk rather than decided pairwise
 /// afterwards, which is what leaves exact duplicates with one survivor: the
@@ -694,8 +694,8 @@ fn axis_covers_its_top<T: Clone>(covers: Covers<'_>, clauses: &[Conj<T>], instal
     )
 }
 
-fn axis_of<T>(clauses: Vec<Conj<T>>, install: InstallAxis<T>) -> Descr {
-    let mut d = Descr::unbranded();
+fn axis_of<T>(clauses: Vec<Conj<T>>, install: InstallAxis<T>) -> Structure {
+    let mut d = Structure::none();
     install(&mut d, clauses);
     d
 }

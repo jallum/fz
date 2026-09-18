@@ -6,7 +6,7 @@ use crate::compiler2::types::Types;
 fn absorbed<T: Clone + 'static>(t: &Types, mut clauses: Vec<Conj<T>>, view: &AxisView<T>) -> Vec<Conj<T>> {
     let cx = t.ctx();
     let subtype = &|narrower: &Ty, wider: &Ty| cx.descr(narrower).is_subtype(cx, cx.descr(wider));
-    let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
+    let covers = &|wider: &Structure, narrower: &Structure| narrower.is_subtype(cx, wider);
     absorb_axis(cx, &mut clauses, subtype, covers, view);
     clauses
 }
@@ -89,7 +89,7 @@ fn a_callable_axis_top_is_not_an_activation_coordinate_carrier() {
         t.is_subtype(&key_shaped, &fun_top) && t.is_subtype(&fun_top, &key_shaped),
         "the hazard this test guards must exist: the kernel already calls this arrow every callable",
     );
-    let clauses = t.descr(&key_shaped).funcs.clone();
+    let clauses = t.descr(&key_shaped).cases[0].structure.funcs.clone();
     assert_eq!(
         vec![Conj::top()],
         absorbed(&t, clauses, &FUNCS),

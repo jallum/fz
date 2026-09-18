@@ -141,7 +141,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::callable::CallableApplication;
-use super::descr::Descr;
+use super::descr::Structure;
 use super::{BindingSide, Sigma, Ty, TypeVarId, Types};
 
 /// The three-way verdict of matching a signature against an argument list.
@@ -480,7 +480,12 @@ impl Types {
             return;
         }
         if side == BindingSide::Lower || side == BindingSide::Unify {
-            out.extend(self.descr(pattern).clone().vars.values.iter().copied());
+            out.extend(
+                self.descr(pattern)
+                    .cases
+                    .iter()
+                    .flat_map(|case| case.structure.vars.values.iter().copied()),
+            );
         }
         let arity = self.max_tuple_arity(pattern);
         for field in self.tuple_projections(pattern, arity) {
@@ -638,9 +643,11 @@ impl Types {
     /// the tuple component is cleared, so the veto stands. Whether the
     /// pattern merely HAS other-kind content is not the question; the witness
     /// must land in it.
-    fn witness_escapes_kind(&mut self, pattern: &Ty, witness: &Ty, clear: fn(&mut Descr)) -> bool {
+    fn witness_escapes_kind(&mut self, pattern: &Ty, witness: &Ty, clear: fn(&mut Structure)) -> bool {
         let mut residual = self.descr(pattern).clone();
-        clear(&mut residual);
+        for case in &mut residual.cases {
+            clear(&mut case.structure);
+        }
         if residual.looks_empty() {
             return false;
         }
@@ -657,7 +664,12 @@ impl Types {
     /// product (negations or mixed arities inside one conjunction fall back
     /// to the caller's projection path).
     fn tuple_positive_alternatives(&mut self, ty: &Ty) -> Option<Vec<Vec<Ty>>> {
-        let conjs = self.descr(ty).tuples.clone();
+        let conjs = self
+            .descr(ty)
+            .cases
+            .iter()
+            .flat_map(|case| case.structure.tuples.iter().cloned())
+            .collect::<Vec<_>>();
         if conjs.is_empty() {
             return None;
         }

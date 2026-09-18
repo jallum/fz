@@ -32,7 +32,11 @@ pub(super) fn return_on_inputs(types: &mut Types, callable: Ty, args: &[Ty]) -> 
     if !descr.is_pure_callable() {
         return CallableApplication::NotCallable;
     }
-    let clauses = descr.funcs.clone();
+    let clauses = descr
+        .cases
+        .iter()
+        .flat_map(|case| case.structure.funcs.iter().cloned())
+        .collect::<Vec<_>>();
     if clauses.iter().any(|clause| {
         !clause.neg.is_empty() || clause.pos.is_empty() || clause.pos.iter().any(|arrow| arrow.lit.is_some())
     }) {

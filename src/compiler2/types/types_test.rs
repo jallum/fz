@@ -91,6 +91,25 @@ fn union_of_the_same_type_returns_before_it_probes_or_normalizes() {
 }
 
 #[test]
+fn unbranded_union_reuses_a_raw_canonical_merge_before_normalization() {
+    let mut t = Types::new();
+    let a = t.atom_lit("a");
+    let b = t.atom_lit("b");
+    let ab = t.union(a, b);
+    let before = t.interning_work_stats();
+
+    assert_eq!(t.union(a, ab), ab);
+    assert_eq!(
+        t.interning_work_stats(),
+        InterningWorkStats {
+            raw_index_probes: before.raw_index_probes + 1,
+            ..before
+        },
+        "a union whose unconstrained structural merge is already interned must hit before normalization"
+    );
+}
+
+#[test]
 fn empty_constant_and_self_difference_return_before_the_type_boundary() {
     let mut t = Types::new();
 
@@ -499,7 +518,7 @@ fn exclusive_tuple_root_arity_does_not_descend_into_a_recursive_tuple_child() {
     let int = t.int();
     let recursive = t.intern_regular_component(1, |nodes| {
         let mut body = DescrOf::atom_lit("start");
-        body.tuples.push(Conj::pos_of(TupleSigOf {
+        body.cases[0].structure.tuples.push(Conj::pos_of(TupleSigOf {
             elems: vec![ComponentRef::Published(int), nodes[0]],
         }));
         vec![body]
@@ -574,7 +593,10 @@ fn renderers_bind_a_recursive_self_type() {
     let mut t = Types::new();
     let recursive = t.intern_regular_component(1, |nodes| {
         let mut body = DescrOf::atom_lit("start");
-        body.tuples.push(Conj::pos_of(TupleSigOf { elems: vec![nodes[0]] }));
+        body.cases[0]
+            .structure
+            .tuples
+            .push(Conj::pos_of(TupleSigOf { elems: vec![nodes[0]] }));
         vec![body]
     })[0];
     let labels = |_: FnId| String::new();
@@ -609,19 +631,28 @@ fn recursive_tuple_body(reference: ComponentRef) -> DescrOf<ComponentRef> {
 
 fn recursive_list_body(reference: ComponentRef) -> DescrOf<ComponentRef> {
     let mut descr = DescrOf::atom_lit("start");
-    descr.lists.push(Conj::pos_of(ListSigOf::possibly_empty(reference)));
+    descr.cases[0]
+        .structure
+        .lists
+        .push(Conj::pos_of(ListSigOf::possibly_empty(reference)));
     descr
 }
 
 fn recursive_tuple_body_named(name: &str, reference: ComponentRef) -> DescrOf<ComponentRef> {
     let mut descr = DescrOf::<ComponentRef>::atom_lit(name);
-    descr.tuples.push(Conj::pos_of(TupleSigOf { elems: vec![reference] }));
+    descr.cases[0]
+        .structure
+        .tuples
+        .push(Conj::pos_of(TupleSigOf { elems: vec![reference] }));
     descr
 }
 
 fn recursive_tuple_descr(reference: Ty) -> Descr {
     let mut descr = Descr::atom_lit("start");
-    descr.tuples.push(Conj::pos_of(TupleSig { elems: vec![reference] }));
+    descr.cases[0]
+        .structure
+        .tuples
+        .push(Conj::pos_of(TupleSig { elems: vec![reference] }));
     descr
 }
 
@@ -660,7 +691,7 @@ fn canon_distinguishes_recursive_denotations_without_ids() {
 
 fn recursive_capture_body(capture: ComponentRef, result: Ty) -> DescrOf<ComponentRef> {
     let mut descr = DescrOf::unbranded();
-    descr.funcs.push(Conj::pos_of(ArrowSigOf {
+    descr.cases[0].structure.funcs.push(Conj::pos_of(ArrowSigOf {
         args: Vec::new(),
         ret: ComponentRef::Published(result),
         lit: Some(ClosureLitOf {
@@ -732,7 +763,7 @@ fn regular_components_absorb_a_recursive_tuple_clause() {
 
     let component = t.intern_regular_component(1, |nodes| {
         let mut body = DescrOf::unbranded();
-        body.tuples = vec![
+        body.cases[0].structure.tuples = vec![
             Conj::pos_of(TupleSigOf { elems: vec![nodes[0]] }),
             Conj::pos_of(TupleSigOf {
                 elems: vec![ComponentRef::Published(any)],
@@ -753,7 +784,7 @@ fn regular_components_fuse_tuple_carvings_through_a_recursive_coordinate() {
     let numeric = t.union(int, float);
     let fused = t.intern_regular_component(1, |nodes| {
         let mut body = DescrOf::atom_lit("start");
-        body.tuples = vec![Conj::pos_of(TupleSigOf {
+        body.cases[0].structure.tuples = vec![Conj::pos_of(TupleSigOf {
             elems: vec![nodes[0], ComponentRef::Published(numeric)],
         })];
         vec![body]
@@ -762,7 +793,7 @@ fn regular_components_fuse_tuple_carvings_through_a_recursive_coordinate() {
 
     let carved = t.intern_regular_component(1, |nodes| {
         let mut body = DescrOf::atom_lit("start");
-        body.tuples = vec![
+        body.cases[0].structure.tuples = vec![
             Conj::pos_of(TupleSigOf {
                 elems: vec![nodes[0], ComponentRef::Published(int)],
             }),
@@ -786,7 +817,7 @@ fn regular_components_widen_tuple_carvings_through_a_recursive_coordinate() {
     let non_empty = t.non_empty_list(int);
     let wide = t.intern_regular_component(1, |nodes| {
         let mut body = DescrOf::atom_lit("start");
-        body.tuples = vec![
+        body.cases[0].structure.tuples = vec![
             Conj::pos_of(TupleSigOf {
                 elems: vec![nodes[0], ComponentRef::Published(ints), ComponentRef::Published(empty)],
             }),
@@ -800,7 +831,7 @@ fn regular_components_widen_tuple_carvings_through_a_recursive_coordinate() {
 
     let narrow = t.intern_regular_component(1, |nodes| {
         let mut body = DescrOf::atom_lit("start");
-        body.tuples = vec![
+        body.cases[0].structure.tuples = vec![
             Conj::pos_of(TupleSigOf {
                 elems: vec![nodes[0], ComponentRef::Published(ints), ComponentRef::Published(empty)],
             }),
@@ -840,7 +871,7 @@ fn regular_components_normalize_empty_list_alternatives() {
 
     let split = t.intern_regular_component(1, |nodes| {
         let mut body = DescrOf::unbranded();
-        body.lists = vec![
+        body.cases[0].structure.lists = vec![
             Conj::pos_of(ListSigOf::empty()),
             Conj::pos_of(ListSigOf::non_empty(nodes[0])),
         ];
@@ -914,7 +945,7 @@ fn regular_components_normalize_one_coordinate_tuple_difference() {
             elems: vec![nodes[0], ComponentRef::Published(float)],
         };
         let mut body = DescrOf::unbranded();
-        body.tuples = vec![Conj {
+        body.cases[0].structure.tuples = vec![Conj {
             pos: vec![positive],
             neg: vec![negative],
         }];
@@ -960,7 +991,7 @@ fn types_emptiness_discharges_a_negation_bearing_cycle() {
     let recursive = t.intern_regular_component(1, |nodes| {
         let sig = TupleSigOf { elems: vec![nodes[0]] };
         let mut descr = DescrOf::<ComponentRef>::unbranded();
-        descr.tuples.push(Conj {
+        descr.cases[0].structure.tuples.push(Conj {
             pos: vec![sig.clone()],
             neg: vec![sig],
         });
@@ -1095,7 +1126,7 @@ fn structural_children_are_interned_handles() {
     let elem = t.int();
     let tuple = t.tuple(&[elem]);
     let d = t.descr(&tuple);
-    assert_eq!(d.tuples[0].pos[0].elems, vec![elem]);
+    assert_eq!(d.cases[0].structure.tuples[0].pos[0].elems, vec![elem]);
 }
 
 // fz-hwn.27.5 — the backend-boundary value-template predicate.
@@ -1363,10 +1394,10 @@ fn runtime_type_predicate_preserves_typed_struct_exclusions_without_narrowing_ge
         "schema extraction must retain the named exclusion as an exact dependency"
     );
 
-    let generic_opaque_complement = t.intern(Descr {
-        opaques: FiniteSet::cofinite([OpaqueTag::Named("known".to_string())]),
-        ..Descr::unbranded()
-    });
+    let mut generic_opaque_complement_d = Descr::unbranded();
+    generic_opaque_complement_d.cases[0].structure.opaques =
+        FiniteSet::cofinite([OpaqueTag::Named("known".to_string())]);
+    let generic_opaque_complement = t.intern(generic_opaque_complement_d);
     let generic = t.runtime_type_predicate(&generic_opaque_complement);
     let mut every_non_struct = RuntimeTypePredicate::any();
     every_non_struct.named_structs = FiniteSet::none();
@@ -1689,7 +1720,7 @@ fn a_clause_pinning_two_closure_brands_is_the_bottom() {
     let any = t.any();
     let wider = t.closure_lit(ClosureTarget(66), vec![any], 1);
     let merged = t.intersect(over_int, wider);
-    let clauses = t.descr(&merged).funcs.clone();
+    let clauses = t.descr(&merged).cases[0].structure.funcs.clone();
     assert_eq!(clauses.len(), 1);
     assert_eq!(
         clauses[0].pos.iter().filter(|sig| sig.lit.is_some()).count(),
@@ -3266,7 +3297,7 @@ mod tuple_dnf_hygiene {
         // involving {str,str} or {float,float} has an empty coordinate.
         let d = t.descr(&meet);
         assert_eq!(
-            d.tuples.len(),
+            d.cases[0].structure.tuples.len(),
             2,
             "expected exactly the two live clauses {{int,any}} and {{any,int}}, got {}",
             t.display(&meet)
@@ -3284,7 +3315,7 @@ mod tuple_dnf_hygiene {
         let one = t.tuple(&[int]);
         let two = t.tuple(&[int, int]);
         let meet = t.intersect(one, two);
-        assert!(t.descr(&meet).tuples.is_empty(), "∅ must persist no tuple clause");
+        assert!(t.descr(&meet).cases.is_empty(), "∅ must persist no tuple clause");
         assert!(t.is_empty(&meet));
 
         // A mixed-arity union intersect keeps exactly the matching arity.
@@ -3292,7 +3323,7 @@ mod tuple_dnf_hygiene {
         let a = t.union(one, two);
         let b = t.union(two, three);
         let meet = t.intersect(a, b);
-        assert_eq!(t.descr(&meet).tuples.len(), 1);
+        assert_eq!(t.descr(&meet).cases[0].structure.tuples.len(), 1);
         assert!(t.is_equivalent(&meet, &two));
     }
 
@@ -3306,7 +3337,7 @@ mod tuple_dnf_hygiene {
         let a = t.tuple(&[int, int]);
         let b = t.tuple(&[str_t, int]);
         let meet = t.intersect(a, b);
-        assert!(t.descr(&meet).tuples.is_empty(), "∅ must persist no tuple clause");
+        assert!(t.descr(&meet).cases.is_empty(), "∅ must persist no tuple clause");
         assert!(t.is_empty(&meet));
     }
 
@@ -3323,12 +3354,16 @@ mod tuple_dnf_hygiene {
         let wide = t.tuple(&[wide_elem, any]);
 
         let joined = t.union(narrow, wide);
-        assert_eq!(t.descr(&joined).tuples.len(), 1, "narrow ⊆ wide ⇒ narrow ∨ wide = wide");
+        assert_eq!(
+            t.descr(&joined).cases[0].structure.tuples.len(),
+            1,
+            "narrow ⊆ wide ⇒ narrow ∨ wide = wide"
+        );
         assert!(t.is_equivalent(&joined, &wide));
 
         // Symmetric order: the wider clause survives regardless of position.
         let joined = t.union(wide, narrow);
-        assert_eq!(t.descr(&joined).tuples.len(), 1);
+        assert_eq!(t.descr(&joined).cases[0].structure.tuples.len(), 1);
         assert!(t.is_equivalent(&joined, &wide));
     }
 }
@@ -3368,35 +3403,35 @@ mod empty_clause_hygiene {
                 covered: t.tuple(&[int]),
                 survivor: t.tuple(&[float]),
                 cover: t.tuple(&[wide]),
-                clause_count: |d| d.tuples.len(),
+                clause_count: |d| d.cases.iter().map(|case| case.structure.tuples.len()).sum(),
             },
             AxisCase {
                 axis: "lists",
                 covered: t.non_empty_list(int),
                 survivor: t.non_empty_list(float),
                 cover: t.non_empty_list(wide),
-                clause_count: |d| d.lists.len(),
+                clause_count: |d| d.cases.iter().map(|case| case.structure.lists.len()).sum(),
             },
             AxisCase {
                 axis: "resources",
                 covered: t.resource(int),
                 survivor: t.resource(float),
                 cover: t.resource(wide),
-                clause_count: |d| d.resources.len(),
+                clause_count: |d| d.cases.iter().map(|case| case.structure.resources.len()).sum(),
             },
             AxisCase {
                 axis: "funcs",
                 covered: t.closure_lit(ClosureTarget(66), vec![int], 1),
                 survivor: t.closure_lit(ClosureTarget(68), vec![float], 1),
                 cover: t.closure_lit(ClosureTarget(66), vec![wide], 1),
-                clause_count: |d| d.funcs.len(),
+                clause_count: |d| d.cases.iter().map(|case| case.structure.funcs.len()).sum(),
             },
             AxisCase {
                 axis: "maps",
                 covered: t.map(&[(key.clone(), int)]),
                 survivor: t.map(&[(key.clone(), float)]),
                 cover: t.map(&[(key, wide)]),
-                clause_count: |d| d.maps.len(),
+                clause_count: |d| d.cases.iter().map(|case| case.structure.maps.len()).sum(),
             },
         ];
 
@@ -3800,14 +3835,22 @@ mod erased_closure_dnf_hygiene {
         let (left, right) = branded_pair(&mut t);
         let joined = t.union(left, right);
         assert_eq!(
-            t.descr(&joined).funcs.len(),
+            t.descr(&joined)
+                .cases
+                .iter()
+                .map(|case| case.structure.funcs.len())
+                .sum::<usize>(),
             2,
             "the brands are distinguishable before erasure, so the union keeps both clauses"
         );
 
         let erased = t.erase_closure_identity(&joined);
         assert_eq!(
-            t.descr(&erased).funcs.len(),
+            t.descr(&erased)
+                .cases
+                .iter()
+                .map(|case| case.structure.funcs.len())
+                .sum::<usize>(),
             1,
             "A ∨ A = A: erasing the only distinguishing field must not leave two copies, got {}",
             t.display(&erased)
@@ -3941,7 +3984,11 @@ mod tuple_carving_fusion {
             t.display(&carved),
             t.display(&fused)
         );
-        assert_eq!(t.descr(&carved).tuples.len(), 1, "and it is one rectangle");
+        assert_eq!(
+            t.descr(&carved).cases[0].structure.tuples.len(),
+            1,
+            "and it is one rectangle"
+        );
     }
 
     /// Two carvings that differ in BOTH coordinates meet only by widening a
@@ -4074,7 +4121,7 @@ mod clause_absorption {
         let siblings = t.union(left, right);
         let joined = t.union(siblings, covered);
         assert_eq!(
-            t.descr(&joined).tuples.len(),
+            t.descr(&joined).cases[0].structure.tuples.len(),
             1,
             "the two siblings fuse and swallow the clause: {}",
             t.display(&joined)
@@ -4106,9 +4153,9 @@ mod clause_absorption {
         };
         assert_eq!(every_list, t.list(any), "one set of lists, one id");
         assert!(
-            t.descr(&every_list).lists.iter().all(Conj::is_top),
+            t.descr(&every_list).cases[0].structure.lists.iter().all(Conj::is_top),
             "the top is the contentless clause: {:?}",
-            t.descr(&every_list).lists
+            t.descr(&every_list).cases[0].structure.lists
         );
         assert_eq!(t.display(&every_list), "[any]", "and a type a user could write");
         assert_eq!(
@@ -4118,7 +4165,13 @@ mod clause_absorption {
         );
 
         let every_resource = t.resource(any);
-        assert!(t.descr(&every_resource).resources.iter().all(Conj::is_top));
+        assert!(
+            t.descr(&every_resource).cases[0]
+                .structure
+                .resources
+                .iter()
+                .all(Conj::is_top)
+        );
         assert_eq!(t.display(&every_resource), "resource(any)");
         assert_eq!(t.resource_payload_type(&every_resource), Some(any));
 
@@ -4126,11 +4179,17 @@ mod clause_absorption {
         // a positive tuple sig fixes an arity and a positive map sig fixes a
         // tag, and both are unbounded.
         let pair = t.tuple(&[any, any]);
-        assert_eq!(t.descr(&pair).tuples.len(), 1);
-        assert!(!t.descr(&pair).tuples[0].pos.is_empty(), "a tuple axis keeps its sig");
+        assert_eq!(t.descr(&pair).cases[0].structure.tuples.len(), 1);
+        assert!(
+            !t.descr(&pair).cases[0].structure.tuples[0].pos.is_empty(),
+            "a tuple axis keeps its sig"
+        );
         let key = MapKey::Atom("k".to_string());
         let open = t.map(&[(key, any)]);
-        assert!(!t.descr(&open).maps[0].pos.is_empty(), "a map axis keeps its sig");
+        assert!(
+            !t.descr(&open).cases[0].structure.maps[0].pos.is_empty(),
+            "a map axis keeps its sig"
+        );
     }
 
     /// One spelling means `any` stays `any`: unioning it with a type it already
@@ -4176,18 +4235,16 @@ mod clause_absorption {
             let non_empty = t.non_empty_list(any);
             t.union(empty, non_empty)
         };
-        let by_clause = t.intern(Descr {
-            lists: vec![Conj::top()],
-            ..Descr::unbranded()
-        });
+        let mut by_clause_d = Descr::unbranded();
+        by_clause_d.cases[0].structure.lists = vec![Conj::top()];
+        let by_clause = t.intern(by_clause_d);
         assert_eq!(by_sig, by_shapes);
         assert_eq!(by_sig, by_clause, "the widest sig IS the contentless clause");
 
         let resource_by_sig = t.resource(any);
-        let resource_by_clause = t.intern(Descr {
-            resources: vec![Conj::top()],
-            ..Descr::unbranded()
-        });
+        let mut resource_by_clause_d = Descr::unbranded();
+        resource_by_clause_d.cases[0].structure.resources = vec![Conj::top()];
+        let resource_by_clause = t.intern(resource_by_clause_d);
         assert_eq!(resource_by_sig, resource_by_clause);
     }
 
@@ -4212,7 +4269,7 @@ mod clause_absorption {
             t.union(rest, literal)
         };
         assert_ne!(
-            t.descr(&every_value).funcs.len(),
+            t.descr(&every_value).cases[0].structure.funcs.len(),
             1,
             "the reproducer needs a retained literal callable axis; got {}",
             t.display(&every_value)
@@ -4249,10 +4306,9 @@ mod clause_absorption {
         let any = t.any();
         let int = t.int();
 
-        let every_tuple = t.intern(Descr {
-            tuples: vec![Conj::top()],
-            ..Descr::unbranded()
-        });
+        let mut every_tuple_d = Descr::unbranded();
+        every_tuple_d.cases[0].structure.tuples = vec![Conj::top()];
+        let every_tuple = t.intern(every_tuple_d);
         let pair = t.tuple(&[any, any]);
         let carved = t.difference(every_tuple, pair);
         let joined = t.union(carved, pair);
@@ -4263,10 +4319,9 @@ mod clause_absorption {
             t.display(&joined)
         );
 
-        let every_map = t.intern(Descr {
-            maps: vec![Conj::top()],
-            ..Descr::unbranded()
-        });
+        let mut every_map_d = Descr::unbranded();
+        every_map_d.cases[0].structure.maps = vec![Conj::top()];
+        let every_map = t.intern(every_map_d);
         let open = t.map(&[(MapKey::Atom("k".to_string()), any)]);
         let carved = t.difference(every_map, open);
         let joined = t.union(carved, open);
@@ -4351,7 +4406,6 @@ mod clause_absorption {
             let rhs = t.resource(not_int);
             t.union(lhs, rhs)
         };
-
         let every_resource = t.resource(any);
         assert_eq!(split, every_resource, "got {}", t.display(&split));
     }
@@ -4363,7 +4417,7 @@ mod clause_absorption {
         let int = t.int();
         let recursive = t.intern_regular_component(1, |nodes| {
             let mut body = DescrOf::atom_lit("leaf");
-            body.tuples.push(Conj::pos_of(TupleSigOf {
+            body.cases[0].structure.tuples.push(Conj::pos_of(TupleSigOf {
                 elems: vec![ComponentRef::Published(int), nodes[0]],
             }));
             vec![body]
@@ -4651,7 +4705,7 @@ mod clause_factor_order {
         let forward = t.intersect(unary, binary);
         let backward = t.intersect(binary, unary);
 
-        let clauses = &t.descr(&forward).funcs;
+        let clauses = &t.descr(&forward).cases[0].structure.funcs;
         assert_eq!(clauses.len(), 1, "one clause");
         assert_eq!(clauses[0].pos.len(), 2, "holding both arrows as factors");
         assert_eq!(
@@ -4858,56 +4912,207 @@ mod brand_lattice_law {
         assert_eq!(result, int, "a := int; got {}", t.display(&result));
     }
 
-    /// KNOWN-WRONG PIN — the one place this encoding is not exact, owned by
-    /// fz-kdt.203.
-    ///
-    /// A descriptor holds ONE (structure, brand-slot) rectangle and `union` is
-    /// the pointwise hull of both factors. That is exact whenever the operands
-    /// agree on one factor (`Meters | int = int`, `Meters | Feet`), but ANY
-    /// union whose operands disagree on BOTH factors releases the slot to top
-    /// and loses the brand entirely. It takes only ONE brand to reach:
-    /// `utf8 | nil` is the shape every optional `@spec` is written in, and it
-    /// admits a bare binary. HEAD admits the same program, so this is strictly
-    /// smaller than the inverted order it replaces, and it is a missed
-    /// diagnostic rather than a miscompile (brands are erased before the
-    /// backend). The cure is a descriptor holding a union of rectangles — the
-    /// slot pushed down onto the per-axis DNF clauses — which is a data-model
-    /// change, not a patch: see fz-kdt.203, where these two `is_subtype`
-    /// answers flipping to `false` is the red-first signal.
+    /// A union preserves each arm's structural/brand correlation. In
+    /// particular, an optional utf8 binary is not an optional arbitrary
+    /// binary: the `nil` arm must not release the utf8 restriction from the
+    /// binary arm.
     #[test]
-    fn a_union_that_disagrees_on_both_factors_releases_the_brand_slot() {
+    fn union_preserves_structural_brand_correlation() {
         let mut t = Types::new();
         let int = t.int();
         let bin = t.str_t();
         let meters = t.mint_brand(int, "Meters");
         let utf8 = t.mint_brand(bin, "utf8");
 
-        // ONE brand is enough: `@spec take(utf8 | nil)` accepts a bare binary.
         let nil = t.nil();
         let optional = t.union(utf8, nil);
-        assert_eq!(t.display(&optional), "binary | :nil", "the slot is released to top");
         assert!(
-            t.is_subtype(&bin, &optional),
-            "KNOWN-WRONG (fz-kdt.203): a bare binary is inside {}",
-            t.display(&optional)
+            !t.is_subtype(&bin, &optional),
+            "unbranded binary must not enter utf8 | nil"
         );
+        assert!(t.is_subtype(&utf8, &optional));
+        assert!(t.is_subtype(&nil, &optional));
+        let remaining = t.difference(bin, optional);
+        assert!(!t.is_empty(&remaining));
 
-        // Two brands widen the same way, pairing each slot with each structure.
         let joined = t.union(meters, utf8);
-        assert_eq!(
-            t.display(&joined),
-            "(Meters | utf8)(int | binary)",
-            "the hull pairs both slots with both structures"
-        );
         assert!(t.is_subtype(&meters, &joined));
         assert!(t.is_subtype(&utf8, &joined));
         assert!(!t.is_subtype(&int, &joined));
         assert!(!t.is_subtype(&bin, &joined));
         let branded_binary = t.mint_brand(bin, "Meters");
-        assert!(
-            t.is_subtype(&branded_binary, &joined),
-            "KNOWN-WRONG (fz-kdt.203): Meters(binary) is admitted by Meters(int) | utf8(binary)"
+        let branded_int = t.mint_brand(int, "utf8");
+        assert!(!t.is_subtype(&branded_binary, &joined));
+        assert!(!t.is_subtype(&branded_int, &joined));
+    }
+
+    #[test]
+    fn brand_partitions_preserve_common_singleton_projections() {
+        let mut t = Types::new();
+        let ok = t.atom_lit("ok");
+        let meters_ok = t.mint_brand(ok, "Meters");
+        let feet_ok = t.mint_brand(ok, "Feet");
+        let same_value = t.union(meters_ok, feet_ok);
+        assert_eq!(t.as_atom_singleton(&meters_ok).as_deref(), Some("ok"));
+        assert_eq!(t.as_atom_singleton(&same_value).as_deref(), Some("ok"));
+
+        let error = t.atom_lit("error");
+        let distinct = t.union(meters_ok, error);
+        assert_eq!(t.as_atom_singleton(&distinct), None);
+    }
+
+    #[test]
+    fn brand_list_projection_ignores_atom_only_cases() {
+        let mut t = Types::new();
+        let int = t.int();
+        let list = t.list(int);
+        let atom = t.atom_lit("ok");
+        let a = t.mint_brand(list, "A");
+        let b = t.mint_brand(atom, "B");
+        let joined = t.union(a, b);
+        assert_eq!(t.list_element_type(&joined), int);
+    }
+
+    #[test]
+    fn brand_atom_literals_union_across_cases() {
+        let mut t = Types::new();
+        let a = t.atom_lit("a");
+        let b = t.atom_lit("b");
+        let a = t.mint_brand(a, "A");
+        let b = t.mint_brand(b, "B");
+        let joined = t.union(a, b);
+        assert_eq!(t.atom_literals(&joined), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn branded_variable_instantiation_preserves_brand() {
+        let mut t = Types::new();
+        let alpha = t.type_var(TypeVarId(77));
+        let branded = t.mint_brand(alpha, "Meters");
+        let int = t.int();
+        let result = t.instantiate(&branded, &Sigma::from([(TypeVarId(77), int)]));
+        assert_eq!(result, t.mint_brand(int, "Meters"));
+    }
+
+    #[test]
+    fn convergence_preserves_brand_constraints() {
+        let mut t = Types::new();
+        let int = t.int();
+        let list_int = t.list(int);
+        let branded_list = t.mint_brand(list_int, "A");
+        let collapsed = t.convergence_class(&branded_list);
+        let any = t.any();
+        let list_any = t.list(any);
+        let branded_family = t.mint_brand(list_any, "A");
+        assert!(t.is_subtype(&collapsed, &branded_family));
+        assert!(!t.is_equivalent(&collapsed, &list_any));
+
+        let tuple = t.tuple(&[list_int]);
+        let branded_tuple = t.mint_brand(tuple, "A");
+        let tuple_class = t.convergence_class(&branded_tuple);
+        let tuple_family = t.tuple(&[list_any]);
+        let branded_tuple_family = t.mint_brand(tuple_family, "A");
+        assert!(t.is_subtype(&tuple_class, &branded_tuple_family));
+        assert!(!t.is_equivalent(&tuple_class, &tuple_family));
+
+        let resource = t.resource(list_int);
+        let branded_resource = t.mint_brand(resource, "A");
+        let resource_class = t.convergence_class(&branded_resource);
+        let resource_family = t.resource(list_any);
+        let branded_resource_family = t.mint_brand(resource_family, "A");
+        assert!(t.is_subtype(&resource_class, &branded_resource_family));
+        assert!(!t.is_equivalent(&resource_class, &resource_family));
+
+        let addressed = t.convergence_collapse_inputs(&[branded_list], &[DispatchDemand::Ignore], &[]);
+        assert!(t.is_subtype(&addressed[0], &branded_family));
+        assert!(!t.is_equivalent(&addressed[0], &list_any));
+    }
+
+    #[test]
+    fn demanded_mixed_brand_lists_do_not_cross_elements() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let list_int = t.list(int);
+        let list_atom = t.list(atom);
+        let a_int = t.mint_brand(list_int, "A");
+        let b_atom = t.mint_brand(list_atom, "B");
+        let joined = t.union(a_int, b_atom);
+
+        let collapsed = t.convergence_collapse_inputs(
+            &[joined],
+            &[DispatchDemand::ListShape(Box::new(DispatchDemand::Whole))],
+            &[],
         );
+        let a_atom = t.mint_brand(list_atom, "A");
+        let b_int = t.mint_brand(list_int, "B");
+        assert!(t.is_subtype(&a_int, &collapsed[0]));
+        assert!(t.is_subtype(&b_atom, &collapsed[0]));
+        assert!(!t.is_subtype(&a_atom, &collapsed[0]));
+        assert!(!t.is_subtype(&b_int, &collapsed[0]));
+    }
+
+    #[test]
+    fn addressed_returned_list_convergence_keeps_brand_element_correlation() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let list_int = t.list(int);
+        let list_atom = t.list(atom);
+        let red_int = t.mint_brand(list_int, "red");
+        let blue_atom = t.mint_brand(list_atom, "blue");
+        let joined = t.union(red_int, blue_atom);
+
+        // `returned = Whole` reaches `convergence_class_at(..., true)`, rather
+        // than the casewise `convergence_collapse_list_shape` path above.
+        let collapsed = t.convergence_collapse_inputs(&[joined], &[DispatchDemand::Ignore], &[DispatchDemand::Whole]);
+        let red_atom = t.mint_brand(list_atom, "red");
+        let blue_int = t.mint_brand(list_int, "blue");
+        assert!(t.is_subtype(&red_int, &collapsed[0]));
+        assert!(t.is_subtype(&blue_atom, &collapsed[0]));
+        assert!(!t.is_subtype(&red_atom, &collapsed[0]));
+        assert!(!t.is_subtype(&blue_int, &collapsed[0]));
+    }
+
+    #[test]
+    fn refine_widen_different_brand_partitions_keeps_correlated_union() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let list_int = t.list(int);
+        let list_atom = t.list(atom);
+        let red_int = t.mint_brand(list_int, "red");
+        let blue_atom = t.mint_brand(list_atom, "blue");
+
+        let widened = t.refine_widen(&red_int, &blue_atom);
+        assert_eq!(widened, t.union(red_int, blue_atom));
+        let red_atom = t.mint_brand(list_atom, "red");
+        let blue_int = t.mint_brand(list_int, "blue");
+        assert!(!t.is_subtype(&red_atom, &widened));
+        assert!(!t.is_subtype(&blue_int, &widened));
+    }
+
+    #[test]
+    fn regular_equivalent_brand_partitions_share_identity() {
+        let mut t = Types::new();
+        let direct = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
+        let split = t.intern_regular_component(1, |nodes| {
+            let mut body = DescrOf::tuple_of(vec![nodes[0]]);
+            let structure = body.cases.remove(0).structure;
+            body.cases = vec![
+                BrandCase {
+                    brands: FiniteSet::lit("A".to_owned()),
+                    structure: structure.clone(),
+                },
+                BrandCase {
+                    brands: FiniteSet::cofinite(["A".to_owned()]),
+                    structure,
+                },
+            ];
+            vec![body]
+        })[0];
+
+        assert_eq!(split, direct);
     }
 }
 
@@ -5180,11 +5385,9 @@ mod brand_lattice_algebra {
         assert!(t.is_value_disjoint(&bottom, &bottom));
     }
 
-    /// `diff`'s equal-structures case is SYNTACTIC. It is exact for every
-    /// shape `mint_brand` builds — the constructor clones its inner — and
-    /// falls back to returning the whole minuend otherwise, which is the
-    /// over-approximating side. Sound, deliberately imprecise, and the reason
-    /// there is no `is_equiv` call inside `diff`.
+    /// Outer case subtraction preserves both parts of a partial structural
+    /// overlap: the non-overlapping structure stays under its original brand
+    /// cell and the overlap remains under the brands not subtracted.
     #[test]
     fn the_equal_structures_case_is_syntactic() {
         let mut t = Types::new();
@@ -5203,8 +5406,8 @@ mod brand_lattice_algebra {
         let widened = t.difference(wider, branded);
         assert_eq!(
             t.display(&widened),
-            t.display(&wider),
-            "a structurally different minuend gets no slot subtraction at all"
+            "X(float) | not(X)(int | float | binary)",
+            "a partial overlap must retain its brand/structure correlation"
         );
     }
 }
@@ -5276,10 +5479,9 @@ mod normal_form_is_a_function_of_the_descriptor {
                     ret: nil,
                     lit: t.descr(&lit).as_closure_lit().cloned(),
                 };
-                t.intern(Descr {
-                    funcs: vec![Conj::pos_of(sig)],
-                    ..Descr::unbranded()
-                })
+                let mut d = Descr::unbranded();
+                d.cases[0].structure.funcs = vec![Conj::pos_of(sig)];
+                t.intern(d)
             };
             let two = arrow(&mut t, ordered_first);
             let ten = arrow(&mut t, ordered_second);
@@ -5507,7 +5709,7 @@ mod list_normal_form {
             cx.descr(&empty).union(cx, cx.descr(&non_empty))
         };
         assert_eq!(
-            joined.lists,
+            joined.cases[0].structure.lists,
             vec![
                 Conj::pos_of(ListSig::empty()),
                 Conj::pos_of(ListSig {
