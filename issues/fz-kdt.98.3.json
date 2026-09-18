@@ -27,11 +27,15 @@
     {
       "text": "USER-DIRECTED STACK CORRECTION 2026-09-18: root review thread restacked #214 onto #213 and #215 onto #214; remote #214 is df7c496144a8eca814b4bf34c8d09b741cfc890e, remote #215 a4b892ebdebdd95e357f22c6b740e52aa40d8336. GitHub native stack207 now has both. #215 duplicate return-ownership commit was dropped in favor of fuller #213 ownership code; two scope-dependency fixes231/232 remain atop214. Full library2272pass5ignored,recursive typedef interp/JIT/AOT3pass,fmt,strictworkspaceclippy green. Original .98.3 worktree has uncommitted changes and was NOT touched. Its implementer must account for changed upstream rather than push old-history ancestry.",
       "timestamp": "2026-09-18T00:17:58Z"
+    },
+    {
+      "text": "User explicitly approved integrating recursive inference into PR #215 after this worktree owner commits. Root will not modify the dirty worktree. Please provide committed prerequisite/head when ready; integration must preserve corrected #215 -\u003e #214 -\u003e #213 -\u003e #212 ancestry.",
+      "timestamp": "2026-09-18T00:35:57Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Complete the dynamic recursive return cut atomically",
   "type": "task",
-  "updated_at": "2026-09-18T00:17:58Z"
+  "updated_at": "2026-09-18T00:35:57Z"
 }
