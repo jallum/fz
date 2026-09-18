@@ -14876,6 +14876,48 @@ fn compiler2_recursive_keying_sees_recursion_through_function_references() {
 }
 
 #[test]
+fn compiler2_value_call_self_cycle_mints_one_activation_key() {
+    // def loop(_f, 0), do: :done
+    // def loop(f, n), do: f.(f, n - 1)
+    // def main(), do: dbg(loop(&loop/2, 2))
+    //
+    // main's call to `loop(&loop/2, 2)` addresses `f`'s callable surface
+    // fresh, nested under input slot 0 (`Types::address_signature_at_input`
+    // via `ActivationKey::from_inputs_with_callable_surfaces`). loop/2's own
+    // self call `f.(f, n - 1)` binds `f` by reading loop's own settled
+    // `ActivationInputs` row instead, so the very same activation must
+    // address that row's callable surface identically -- one function, one
+    // address, one key -- or the two producers fork the activation in two.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let analyses = ActivationAnalysisCapture::new();
+    analyses.install(&tel);
+
+    let (mut compiler, root) = submit_main_root(
+        tel,
+        "value_call_self_cycle.fz",
+        include_str!("../../fixtures2/behavior/value_call_self_cycle.fz"),
+    );
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("the self-cycle program reaches a backend program");
+
+    let loop_id = function_id(&functions, "loop", 2);
+    let loop_keys: HashSet<ActivationKey> = analyses
+        .keys_for_root(root)
+        .into_iter()
+        .filter(|key| key.function == loop_id)
+        .collect();
+    assert_eq!(
+        loop_keys.len(),
+        1,
+        "loop/2's entry surface and its own settled-input-row surface must address to the \
+         same activation key, not fork into two: {loop_keys:#?}",
+    );
+}
+
+#[test]
 fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
