@@ -3983,6 +3983,76 @@ mod tuple_carving_fusion {
 mod clause_absorption {
     use super::*;
 
+    const ORACLE_A: u8 = 0b01;
+    const ORACLE_B: u8 = 0b10;
+    const ORACLE_OTHER: u8 = 0b100;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum MapOracleTag {
+        Plain,
+        Foo,
+        Bar,
+    }
+
+    #[derive(Clone, Copy)]
+    struct MapOracleShape {
+        tag: MapOracleTag,
+        k: Option<u8>,
+        l: Option<u8>,
+        extra: Option<u8>,
+    }
+
+    fn map_oracle_accepts(shape: MapOracleShape, tag: MapOracleTag, fields: [Option<u8>; 3]) -> bool {
+        shape.tag == tag
+            && [shape.k, shape.l, shape.extra]
+                .into_iter()
+                .zip(fields)
+                .all(|(required, present)| {
+                    required.is_none_or(|allowed| present.is_some_and(|value| value & allowed != 0))
+                })
+    }
+
+    /// A deliberately finite, concrete map model. It knows nothing about the
+    /// descriptor calculator: a shape requires its listed keys, leaves every
+    /// other key optional, and compares tags before fields.
+    fn finite_map_union_covers(candidate: MapOracleShape, alternatives: &[MapOracleShape]) -> bool {
+        let values = [None, Some(ORACLE_A), Some(ORACLE_B), Some(ORACLE_OTHER)];
+        for tag in [MapOracleTag::Plain, MapOracleTag::Foo, MapOracleTag::Bar] {
+            for k in values {
+                for l in values {
+                    for extra in values {
+                        let fields = [k, l, extra];
+                        if map_oracle_accepts(candidate, tag, fields)
+                            && !alternatives.iter().any(|shape| map_oracle_accepts(*shape, tag, fields))
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn map_oracle_ty(t: &mut Types, shape: MapOracleShape, a: Ty, b: Ty, other: Ty) -> Ty {
+        let mut fields = Vec::new();
+        for (key, allowed) in [("k", shape.k), ("l", shape.l), ("extra", shape.extra)] {
+            let Some(allowed) = allowed else { continue };
+            let mut value = t.none();
+            for (class, atom) in [(ORACLE_A, a), (ORACLE_B, b), (ORACLE_OTHER, other)] {
+                if allowed & class != 0 {
+                    value = t.union(value, atom);
+                }
+            }
+            fields.push((MapKey::Atom(key.to_string()), value));
+        }
+        match shape.tag {
+            MapOracleTag::Plain => t.map(&fields),
+            MapOracleTag::Foo => t.struct_map(ModuleId::for_test(1), module_name("Pkg.Foo"), &fields),
+            MapOracleTag::Bar => t.struct_map(ModuleId::for_test(2), module_name("Pkg.Bar"), &fields),
+        }
+    }
+
     /// A clause no SINGLE sibling contains, but the two of them together do.
     /// This is what union coverage buys over pairwise containment, and it is
     /// the case a per-axis subsumption rule cannot see.
@@ -4215,18 +4285,8 @@ mod clause_absorption {
         assert_eq!(joined, every_resource, "got {}", t.display(&joined));
     }
 
-    /// Absorption rewrites a descriptor to a semantically equal one, and
-    /// "equal" means equal under the relation the calculator answers with. On
-    /// the resource axis that relation is narrower than reading a resource as
-    /// a set of payloads: the kernel decides a resource clause carrying
-    /// negatives by asking whether a SINGLE negative swallows the payload
-    /// (`emptiness::resource_clause_empty`), never whether their union does.
-    /// So `resource(:a|:b)` is NOT inside
-    /// `resource(:a|:c) ∨ resource(:b|:c)`, and an axis rule that folded the
-    /// payloads would drop it and leave a union that does not contain its own
-    /// operand.
     #[test]
-    fn a_resource_union_keeps_a_clause_no_single_sibling_contains() {
+    fn resource_payload_union_is_collectively_covered_and_absorbed() {
         let mut t = Types::new();
         let a = t.atom_lit("a");
         let b = t.atom_lit("b");
@@ -4234,19 +4294,33 @@ mod clause_absorption {
         let (ab, ac, bc) = (t.union(a, b), t.union(a, c), t.union(b, c));
         let (rab, rac, rbc) = (t.resource(ab), t.resource(ac), t.resource(bc));
 
+        let ra = t.resource(a);
+        let rb = t.resource(b);
+        let disjoint_cover = t.union(ra, rb);
+        assert!(t.is_subtype(&rab, &disjoint_cover));
+        let disjoint_remainder = t.difference(rab, disjoint_cover);
+        assert!(
+            t.is_empty(&disjoint_remainder),
+            "got {}",
+            t.display(&disjoint_remainder)
+        );
+
         let siblings = t.union(rac, rbc);
         assert!(
-            !t.is_subtype(&rab, &siblings),
-            "the calculator's own relation: {} is not inside {}",
+            t.is_subtype(&rab, &siblings),
+            "the two negative payload alternatives cover {} inside {}",
             t.display(&rab),
             t.display(&siblings)
         );
+        let remainder = t.difference(rab, siblings);
+        assert!(t.is_empty(&remainder), "got {}", t.display(&remainder));
 
         let joined = t.union(siblings, rab);
-        assert_eq!(t.descr(&joined).resources.len(), 3, "got {}", t.display(&joined));
-        assert!(
-            t.is_subtype(&rab, &joined),
-            "a union must contain the operand it was built from"
+        assert_eq!(
+            joined,
+            siblings,
+            "the covered resource clause is absorbed: {}",
+            t.display(&joined)
         );
     }
 
@@ -4266,12 +4340,8 @@ mod clause_absorption {
         assert_eq!(joined, rabc, "got {}", t.display(&joined));
     }
 
-    /// And the axis top follows the same relation. `resource(int)` and
-    /// `resource(not int)` partition the payloads between them, but under the
-    /// kernel's containment their union is not every resource, so the axis
-    /// does not saturate and keeps both clauses.
     #[test]
-    fn two_resource_clauses_that_partition_the_payload_are_not_every_resource() {
+    fn resource_payload_partition_reaches_resource_top() {
         let mut t = Types::new();
         let any = t.any();
         let int = t.int();
@@ -4281,12 +4351,208 @@ mod clause_absorption {
             let rhs = t.resource(not_int);
             t.union(lhs, rhs)
         };
-        assert_eq!(t.descr(&split).resources.len(), 2, "got {}", t.display(&split));
 
         let every_resource = t.resource(any);
+        assert_eq!(split, every_resource, "got {}", t.display(&split));
+    }
+
+    #[test]
+    fn resource_collective_coverage_handles_a_productive_recursive_payload() {
+        let mut t = Types::new();
+        let a = t.atom_lit("a");
+        let int = t.int();
+        let recursive = t.intern_regular_component(1, |nodes| {
+            let mut body = DescrOf::atom_lit("leaf");
+            body.tuples.push(Conj::pos_of(TupleSigOf {
+                elems: vec![ComponentRef::Published(int), nodes[0]],
+            }));
+            vec![body]
+        })[0];
+        let payload = t.union(a, recursive);
+        let resource_payload = t.resource(payload);
+        let resource_a = t.resource(a);
+        let resource_recursive = t.resource(recursive);
+        let cover = t.union(resource_a, resource_recursive);
+
+        assert!(t.is_subtype(&resource_payload, &cover));
+        let remainder = t.difference(resource_payload, cover);
+        assert!(t.is_empty(&remainder), "got {}", t.display(&remainder));
+    }
+
+    #[test]
+    fn open_map_field_union_is_collectively_covered_without_erasing_correlations() {
+        let mut t = Types::new();
+        let a = t.atom_lit("a");
+        let b = t.atom_lit("b");
+        let ab = t.union(a, b);
+        let k = MapKey::Atom("k".to_string());
+        let l = MapKey::Atom("l".to_string());
+
+        let one_key = t.map(&[(k.clone(), ab)]);
+        let key_a = t.map(&[(k.clone(), a)]);
+        let key_b = t.map(&[(k.clone(), b)]);
+        let key_cover = t.union(key_a, key_b);
+        assert!(t.is_subtype(&one_key, &key_cover));
+        let remainder = t.difference(one_key, key_cover);
+        assert!(t.is_empty(&remainder), "got {}", t.display(&remainder));
+
+        let k_ab = t.map(&[(k.clone(), ab)]);
+        let l_ab = t.map(&[(l.clone(), ab)]);
+        let rectangle = t.intersect(k_ab, l_ab);
+        let diagonal_aa = t.map(&[(k.clone(), a), (l.clone(), a)]);
+        let diagonal_bb = t.map(&[(k, b), (l, b)]);
+        let diagonal = t.union(diagonal_aa, diagonal_bb);
+        assert!(t.is_subtype(&diagonal, &rectangle));
         assert!(
-            !t.is_subtype(&every_resource, &split),
-            "the calculator says the split is not every resource, so the axis must not say it is"
+            !t.is_subtype(&rectangle, &diagonal),
+            "the diagonal must not cover the full rectangular product"
+        );
+        let remainder = t.difference(rectangle, diagonal);
+        assert!(!t.is_empty(&remainder), "the off-diagonal witness was lost");
+    }
+
+    #[test]
+    fn finite_open_map_oracle_agrees_on_collective_and_absent_key_coverage() {
+        let plain_k_ab = MapOracleShape {
+            tag: MapOracleTag::Plain,
+            k: Some(ORACLE_A | ORACLE_B),
+            l: None,
+            extra: None,
+        };
+        let plain_k_a = MapOracleShape {
+            tag: MapOracleTag::Plain,
+            k: Some(ORACLE_A),
+            l: None,
+            extra: None,
+        };
+        let plain_k_b = MapOracleShape {
+            k: Some(ORACLE_B),
+            ..plain_k_a
+        };
+        let plain_k_ab_l_ab = MapOracleShape {
+            l: Some(ORACLE_A | ORACLE_B),
+            ..plain_k_ab
+        };
+        let plain_k_a_l_ab = MapOracleShape {
+            k: Some(ORACLE_A),
+            ..plain_k_ab_l_ab
+        };
+        let diagonal_a = MapOracleShape {
+            k: Some(ORACLE_A),
+            l: Some(ORACLE_A),
+            ..plain_k_ab
+        };
+        let diagonal_b = MapOracleShape {
+            k: Some(ORACLE_B),
+            l: Some(ORACLE_B),
+            ..plain_k_ab
+        };
+        let requires_extra_a = MapOracleShape {
+            k: Some(ORACLE_A),
+            extra: Some(ORACLE_A | ORACLE_B),
+            ..plain_k_ab
+        };
+        let requires_extra_b = MapOracleShape {
+            k: Some(ORACLE_B),
+            ..requires_extra_a
+        };
+        let zero_required = MapOracleShape { k: None, ..plain_k_ab };
+        let foo_k_ab = MapOracleShape {
+            tag: MapOracleTag::Foo,
+            ..plain_k_ab
+        };
+
+        let split = [plain_k_a, plain_k_b];
+        let diagonal = [diagonal_a, diagonal_b];
+        let requires_extra = [requires_extra_a, requires_extra_b];
+        let missing_l = [plain_k_a];
+        let zero = [zero_required];
+        let cases: &[(MapOracleShape, &[MapOracleShape])] = &[
+            (plain_k_ab, &split),
+            (plain_k_ab_l_ab, &diagonal),
+            (plain_k_ab, &requires_extra),
+            (plain_k_a_l_ab, &missing_l),
+            (plain_k_ab, &zero),
+            (foo_k_ab, &split),
+        ];
+
+        let mut t = Types::new();
+        let a = t.atom_lit("a");
+        let b = t.atom_lit("b");
+        let other = t.atom_lit("other");
+        for (candidate, alternatives) in cases {
+            let expected = finite_map_union_covers(*candidate, alternatives);
+            let candidate_ty = map_oracle_ty(&mut t, *candidate, a, b, other);
+            let mut alternatives = alternatives.iter().copied();
+            let first = alternatives.next().expect("the oracle table has a cover");
+            let mut cover_ty = map_oracle_ty(&mut t, first, a, b, other);
+            for alternative in alternatives {
+                let alternative_ty = map_oracle_ty(&mut t, alternative, a, b, other);
+                cover_ty = t.union(cover_ty, alternative_ty);
+            }
+            assert_eq!(
+                t.is_subtype(&candidate_ty, &cover_ty),
+                expected,
+                "the public map relation must match the finite witness oracle"
+            );
+        }
+    }
+
+    #[test]
+    fn open_map_collective_coverage_respects_required_keys_and_tags() {
+        let mut t = Types::new();
+        let a = t.atom_lit("a");
+        let b = t.atom_lit("b");
+        let ab = t.union(a, b);
+        let any = t.any();
+        let none = t.none();
+        let k = MapKey::Atom("k".to_string());
+        let extra = MapKey::Atom("extra".to_string());
+
+        let open = t.map(&[(k.clone(), ab)]);
+        let only_with_extra_a = t.map(&[(k.clone(), a), (extra.clone(), any)]);
+        let only_with_extra_b = t.map(&[(k.clone(), b), (extra, any)]);
+        let requires_extra_key = t.union(only_with_extra_a, only_with_extra_b);
+        assert!(
+            !t.is_subtype(&open, &requires_extra_key),
+            "an open map witness need not carry a key required by either negative"
+        );
+
+        let foo_module = ModuleId::for_test(1);
+        let foo_name = module_name("Pkg.Foo");
+        let foo_ab = t.struct_map(foo_module, foo_name.clone(), &[(k.clone(), ab)]);
+        let foo_a = t.struct_map(foo_module, foo_name.clone(), &[(k.clone(), a)]);
+        let foo_b = t.struct_map(foo_module, foo_name, &[(k.clone(), b)]);
+        let foo_cover = t.union(foo_a, foo_b);
+        assert!(t.is_subtype(&foo_ab, &foo_cover));
+
+        let plain_a = t.map(&[(k.clone(), a)]);
+        let plain_b = t.map(&[(k.clone(), b)]);
+        let plain_cover = t.union(plain_a, plain_b);
+        assert!(
+            !t.is_subtype(&foo_ab, &plain_cover),
+            "a plain map cannot cover a tagged struct"
+        );
+
+        let bar_module = ModuleId::for_test(2);
+        let bar_name = module_name("Pkg.Bar");
+        let bar_a = t.struct_map(bar_module, bar_name.clone(), &[(k.clone(), a)]);
+        let bar_b = t.struct_map(bar_module, bar_name, &[(k.clone(), b)]);
+        let bar_cover = t.union(bar_a, bar_b);
+        assert!(
+            !t.is_subtype(&foo_ab, &bar_cover),
+            "a different struct tag cannot contribute coverage"
+        );
+
+        assert_eq!(
+            t.map(&[(k, none)]),
+            none,
+            "an empty required field empties its open map"
+        );
+        let plain_map_top = t.map_top();
+        assert!(
+            !t.is_subtype(&foo_ab, &plain_map_top),
+            "plain-map top excludes every tagged struct family"
         );
     }
 }

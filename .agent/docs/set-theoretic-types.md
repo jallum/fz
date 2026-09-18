@@ -224,15 +224,16 @@ subsumption rule left. Absorption has to run AFTER the sort: it visits in index
 order and drops the FIRST of a mutually-covering pair, so without a canonical
 order the schedule would still choose which clause lives.
 
-"Semantically equal" here means equal under the relation the CALCULATOR
-answers with, and on the resource axis that is narrower than reading a
-resource as a set of payloads. `emptiness::resource_clause_empty` decides a
-clause carrying negatives by asking whether a SINGLE negative swallows the
-payload, never whether their union does, so `resource(:a|:b)` is NOT inside
-`resource(:a|:c) ∨ resource(:b|:c)`. A resource clause is absorbed exactly when
-one sibling contains it alone — the same shape the list rule uses for its
-non-empty fragment — and two resource clauses that partition the payloads
-between them are not every resource.
+"Semantically equal" means equal under the relation the CALCULATOR answers
+with. Resources use the same collective product coverage as tuples: a resource
+clause intersects its positive payloads, then `resource_clause_empty` asks
+whether the UNION of its negative payloads covers that one-coordinate product.
+So `resource(:a|:b)` is inside `resource(:a) ∨ resource(:b)`, and
+`resource(int) ∨ resource(not int)` is every resource. Maps use that calculator
+over their required fields too. A positive map is open and fixes its tag; a
+negative with another required key cannot cover its smallest witness, while a
+negative that omits one of the positive keys contributes `any` at that product
+coordinate. Different tags never contribute coverage.
 
 Every axis has ONE spelling of its top: the clause with NO factors, which is
 what `Descr::any()` already writes on all five axes. That is the whole point of
@@ -271,12 +272,11 @@ set reasoning; both are read off the kernel's own clause-emptiness rule. `top`
 minus a union of plain clauses is the single clause negating them all, and
 `emptiness::list_clause_empty` calls that empty exactly when one negated
 signature admits `[]` and one negated signature's element swallows the
-fragment, while `emptiness::resource_clause_empty` calls it empty exactly when
-a SINGLE negated payload swallows `any` — which is why two resource clauses
-that partition the payloads between them are still not every resource. Both go
-to the calculator for the rest. A literal-free callable axis does the same; a
-clause naming a closure literal instead names a construction layout and does
-not participate in callable absorption.
+fragment. Resource payload alternatives and map-field rectangles instead go to
+the shared product calculator, which decides whether their union covers the
+candidate. A literal-free callable axis does the same; a clause naming a
+closure literal instead names a construction layout and does not participate in
+callable absorption.
 
 What those two rules ask of a child — "is this every value" — is a question
 about the DENOTATION, and `Descr::is_full` is its one implementation:
