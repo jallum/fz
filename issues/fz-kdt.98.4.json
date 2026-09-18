@@ -7,9 +7,15 @@
   "id": "fz-kdt.98.4",
   "labels": [],
   "parent": "fz-kdt.98",
+  "comments": [
+    {
+      "text": "Resolved by duplicate implementation ticket fz-kdt.233, commit d12ec6c9ec41c5544b189e62ae26c3df3dc80d7e. The fix routes only false-to-true readiness edges to registered Settled waiters; concluded readers receive transitive finality without re-evaluation. Baseline 410 eval/2 readiness/1 uncaused; green 407/0/0 on 00181. Full lib and fz2_cli gates passed.",
+      "timestamp": "2026-09-18T00:55:10Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Account for late function-reference edges in the SeedRoot causal contract (PR #214 CI)",
   "type": "bug",
-  "updated_at": "2026-09-17T22:59:32Z"
+  "updated_at": "2026-09-18T00:55:10Z"
 }
