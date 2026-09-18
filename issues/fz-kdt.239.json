@@ -18,11 +18,15 @@
     {
       "text": "Critical existing implementation: PR212 OPEN head c0d856c8a720e4f489a92f70faeb4f5dde303580. Existing prerequisite chain after canonical callable 832e46e44: e650e39ab regular type trees, 1b83f056d cyclic readers, f364a933e canonical components, 090d79bff mu rendering, 2e99895eb exact root tuple shape, c0d856c8a recursive typedefs. Reuse/adapt this work; DO NOT reinvent subsystem or mutate the original user worktrees. Assigned fresh agent must prove red at PR215, port/rebase existing work on corrected algebra and new identity, preserve one commit per existing ticket plus one adaptation commit if needed; do not squash independent prior tickets. Existing dynamic return equations fz-kdt.98.3 in progress separately; inspect boundaries before touching.",
       "timestamp": "2026-09-18T00:04:10Z"
+    },
+    {
+      "text": "User corrected stack:215 now rebased via214onto213/212; full recursive typedef implementation present. Root ran lib2272pass5ignored and cargo test --test fixture_matrix -- recursive_typedef:interp/run/build3pass. Fresh per-defect agent should verify recursive representation/canonical cases, no duplicate implementation. Dynamic inference widening remains separately tracked177.10/98.3; inspect exact original finding scope before claiming all recursion fixed.",
+      "timestamp": "2026-09-18T00:14:38Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Resolve recursive type definitions without stalled self-dependencies",
   "type": "bug",
-  "updated_at": "2026-09-18T00:04:10Z"
+  "updated_at": "2026-09-18T00:14:38Z"
 }
