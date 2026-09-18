@@ -40,11 +40,15 @@
     {
       "text": "Paired main census requested by user is complete: maina5551f6b and corrected215d12ec6c9 have identical json_roundtrip counts380activations,1476analyses,4089jobs,5wideningstoanyat17ascents. Same fixture blob and CLIrun/product-pull door, independently verified by root. Full proof in177.10. No recursive-work improvement claimed before your committed solver integration and177.10.",
       "timestamp": "2026-09-18T01:08:07Z"
+    },
+    {
+      "text": "PRIORITY HANDOFF REQUEST: user now says land the json_roundtrip reductions ASAP. Please prioritize the complete atomic solver commit and provide its SHA plus explicit verification results. Do not land the unsafe graph-only intermediate. Root is preparing integration/red tests in parallel and will not modify your dirty worktree. Current corrected PR #215 head is 7b2c4ef4a4bda2b3b694ff330da9702ef72de50c; preserve the #215 -\u003e #214 -\u003e #213 -\u003e #212 chain and use the fuller #213 return ownership. Please report any concrete blocker needing a decision.",
+      "timestamp": "2026-09-18T01:13:40Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Complete the dynamic recursive return cut atomically",
   "type": "task",
-  "updated_at": "2026-09-18T01:08:07Z"
+  "updated_at": "2026-09-18T01:13:40Z"
 }
