@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-kdt.238"
@@ -16,8 +16,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Remove fixed-width arrow subset enumeration limit",
   "type": "bug",
-  "updated_at": "2026-09-18T00:03:21Z"
+  "updated_at": "2026-09-18T00:24:56Z"
 }
