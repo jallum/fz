@@ -19119,7 +19119,7 @@ impl LoweredBodyCapture {
                     .borrow_mut()
                     .entry(*function)
                     .or_default()
-                    .push(world.lowered_body(*function));
+                    .push((*world.lowered_body(*function)).clone());
             },
         );
     }

@@ -1223,7 +1223,7 @@ fn lower_materialized_call_target(
                 )
             })?;
             let callee = ExecutableKey { activation, need };
-            let extern_marshals = if let LoweredBody::Extern { signature } = world.lowered_body(function) {
+            let extern_marshals = if let LoweredBody::Extern { signature } = &*world.lowered_body(function) {
                 let Some(args) = callsite_args.get(&callsite) else {
                     return Err(incomplete_semantic_plan(
                         tel,

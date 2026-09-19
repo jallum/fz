@@ -318,7 +318,7 @@ fn generated_function_labels_follow_typed_origin_not_function_allocation() {
         assert_eq!(compiler.run_root_interp(root), Ok(42));
 
         let main = compiler.root_function(root);
-        let super::LoweredBody::Clauses { generated, .. } = compiler.world().lowered_body(main) else {
+        let super::LoweredBody::Clauses { generated, .. } = &*compiler.world().lowered_body(main) else {
             panic!("source function must lower to clauses");
         };
         let generated = generated.first().copied().expect("source lambda identity");

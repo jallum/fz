@@ -266,7 +266,7 @@ fn body_consumes_callable_identity(world: &World, function: FunctionId) -> bool 
     {
         return true;
     }
-    match world.lowered_body(function) {
+    match &*world.lowered_body(function) {
         LoweredBody::Extern { .. } => false,
         LoweredBody::Clauses { clauses, entries, .. } => {
             let step_constructs = |step: &LoweredStep| matches!(step, LoweredStep::Lambda { .. });
@@ -514,7 +514,7 @@ fn collect_protocol_callback_node(
 /// which is why the callee slot is the argument index.
 fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> Vec<ForwardEdge> {
     let body = world.lowered_body(function);
-    let LoweredBody::Clauses { entries, .. } = &body else {
+    let LoweredBody::Clauses { entries, .. } = &*body else {
         return Vec::new();
     };
     let slots_of = input_positions(&body, input_count)
@@ -598,7 +598,7 @@ fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> 
 fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> Vec<DispatchDemand> {
     let mut mask = vec![DispatchDemand::Ignore; input_count];
     let body = world.lowered_body(function);
-    let LoweredBody::Clauses { clauses, entries, .. } = &body else {
+    let LoweredBody::Clauses { clauses, entries, .. } = &*body else {
         return mask;
     };
     let origins = input_positions(&body, input_count);

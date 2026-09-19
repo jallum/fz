@@ -1553,7 +1553,9 @@ impl World {
             .expect("entry dispatch should only be read after its fact is defined")
     }
 
-    pub(crate) fn lowered_body(&self, function: FunctionId) -> LoweredBody {
+    /// The function's lowered body. Readers share the one the producer built:
+    /// a body is immutable once defined, so every reader sees the same value.
+    pub(crate) fn lowered_body(&self, function: FunctionId) -> Rc<LoweredBody> {
         match self
             .bodies
             .get(function)

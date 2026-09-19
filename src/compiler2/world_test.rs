@@ -2084,3 +2084,29 @@ fn resolving_a_published_unresolved_edge_wakes_its_readers() {
         wake.step.wakes,
     );
 }
+
+#[test]
+fn lowered_body_reads_share_one_allocation_not_a_fresh_clone() {
+    use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("lowered_body_sharing.fz".into()),
+        text: "def main(), do: 42\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+
+    let main = compiler.root_function(root);
+    let first = compiler.world().lowered_body(main);
+    let second = compiler.world().lowered_body(main);
+    assert!(
+        Rc::ptr_eq(&first, &second),
+        "two reads of one function's lowered body must share the producer's allocation, not each deep-clone it",
+    );
+}
