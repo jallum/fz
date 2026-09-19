@@ -132,6 +132,13 @@ miss as complete descriptors in one append. A local reference is never a `Ty`,
 so there is no unfinished arena slot or later redirection for a reader to
 observe.
 
+Transport's `exclusive_tuple_root_arity` is a root-shape question owned by
+`Types`. It reads only the root descriptor's runtime-observable axes and tuple
+clauses; it never projects tuple children. A mixed root such as
+`μX. :start | {integer, X}` therefore rejects tuple decomposition immediately,
+while an exclusive tuple root still supplies its arity and ordinary field
+projection remains the separate, demanded operation.
+
 ## The lattice operations
 
 The keying and join logic lean on a few `Types` methods, each with a distinct job:

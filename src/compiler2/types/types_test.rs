@@ -12,6 +12,24 @@ fn module_name(text: &str) -> ModuleName {
     ModuleName::parse_dotted(text).expect("test source module path")
 }
 
+fn predicate_exclusive_tuple_root_arity(t: &Types, ty: Ty) -> Option<usize> {
+    let predicate = t.runtime_type_predicate(&ty);
+    let mut arities = predicate.tuples.arities().finite_elems()?;
+    let arity = arities.next()?;
+    (arities.next().is_none()
+        && predicate.ints.is_none()
+        && predicate.floats.is_none()
+        && predicate.atoms.is_none()
+        && predicate.lists.shapes().is_none()
+        && predicate.named_structs.is_none()
+        && !predicate.allow_other_structs
+        && !predicate.maps
+        && !predicate.binaries
+        && predicate.callables.is_none()
+        && !predicate.resources)
+        .then_some(arity)
+}
+
 #[test]
 fn ty_is_an_integer_handle() {
     assert_eq!(mem::size_of::<Ty>(), mem::size_of::<u32>());
@@ -446,6 +464,82 @@ fn regular_component_replays_its_completed_descriptor() {
 
     assert_eq!(t.intern(Descr::tuple_of(vec![recursive])), recursive);
     assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn exclusive_tuple_root_arity_does_not_descend_into_a_recursive_tuple_child() {
+    let mut t = Types::new();
+    let int = t.int();
+    let recursive = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.tuples.push(Conj::pos_of(TupleSigOf {
+            elems: vec![ComponentRef::Published(int), nodes[0]],
+        }));
+        vec![body]
+    })[0];
+
+    assert_eq!(
+        t.exclusive_tuple_root_arity(&recursive),
+        None,
+        "the root atom alternative rejects tuple decomposition without reading the recursive child"
+    );
+}
+
+#[test]
+fn exclusive_tuple_root_arity_preserves_exact_tuple_roots() {
+    let mut t = Types::new();
+    let int = t.int();
+    let exact = t.tuple(&[int, int]);
+    let branded = t.mint_brand(exact, "Pair");
+    let start = t.atom_lit("start");
+    let mixed = t.union(exact, start);
+
+    assert_eq!(t.exclusive_tuple_root_arity(&exact), Some(2));
+    assert_eq!(t.exclusive_tuple_root_arity(&branded), Some(2));
+    assert_eq!(t.exclusive_tuple_root_arity(&mixed), None);
+}
+
+#[test]
+fn exclusive_tuple_root_arity_matches_the_acyclic_runtime_projection() {
+    let mut t = Types::new();
+    let int = t.int();
+    let atom = t.atom_lit("start");
+    let tuple = t.tuple(&[int, int]);
+    let other_tuple = t.tuple(&[int]);
+    let branded_tuple = t.mint_brand(tuple, "Pair");
+    let mixed_tuple_arities = t.union(tuple, other_tuple);
+    let tuple_or_atom = t.union(tuple, atom);
+    let list = t.list(int);
+    let map = t.map(&[]);
+    let resource = t.resource(int);
+    let callable = t.arrow(&[int], int);
+    let opaque = t.opaque_of("opaque");
+    let tuple_or_opaque = t.union(tuple, opaque);
+    let tuple_with_opaque_child = t.tuple(&[opaque]);
+
+    for ty in [
+        int,
+        atom,
+        tuple,
+        other_tuple,
+        branded_tuple,
+        mixed_tuple_arities,
+        tuple_or_atom,
+        list,
+        map,
+        resource,
+        callable,
+        opaque,
+        tuple_or_opaque,
+        tuple_with_opaque_child,
+    ] {
+        assert_eq!(
+            t.exclusive_tuple_root_arity(&ty),
+            predicate_exclusive_tuple_root_arity(&t, ty),
+            "the root query keeps the existing transport answer for {}",
+            t.display(&ty)
+        );
+    }
 }
 
 #[test]
