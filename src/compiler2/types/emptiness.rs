@@ -217,12 +217,12 @@ pub(crate) fn resource_clause_empty(cx: TyCtx<'_>, c: &Conj<ResourceSig>, memo: 
         }
         payload
     };
-    if c.neg.is_empty() {
-        return false;
-    }
-    c.neg
+    let negatives: Vec<Vec<Descr>> = c
+        .neg
         .iter()
-        .any(|n| payload.diff(cx.descr(&n.payload)).is_empty_memo(cx, memo))
+        .map(|negative| vec![cx.descr(&negative.payload).clone()])
+        .collect();
+    phi_tuple(cx, &[payload], &negatives, memo)
 }
 
 fn arrow_input(sig: &ArrowSig) -> Descr {
@@ -247,6 +247,38 @@ fn closure_brand_inside(pos: Option<FnId>, neg: Option<FnId>) -> bool {
         (Some(pos), Some(neg)) => pos == neg,
         (None, Some(_)) => false,
     }
+}
+
+/// Whether one partition of `positives` witnesses a function outside
+/// `input -> output`.
+///
+/// A positive is either selected, which removes its input region from the
+/// remaining witness input, or unselected, which intersects its return into
+/// the remaining witness output. Both fragments only shrink, so an empty
+/// fragment rules out every descendant partition. This is the exact
+/// partition law without encoding a partition in a fixed-width integer.
+fn arrow_partition_witness(
+    cx: TyCtx<'_>,
+    positives: &[ArrowSig],
+    next: usize,
+    remaining_input: Descr,
+    remaining_output: Descr,
+    memo: &mut Memo,
+) -> bool {
+    if remaining_input.is_empty_memo(cx, memo) || remaining_output.is_empty_memo(cx, memo) {
+        return false;
+    }
+    let Some(positive) = positives.get(next) else {
+        return true;
+    };
+
+    let selected_input = remaining_input.diff(&arrow_input(positive));
+    if arrow_partition_witness(cx, positives, next + 1, selected_input, remaining_output.clone(), memo) {
+        return true;
+    }
+
+    let unselected_output = remaining_output.intersect(cx.descr(&positive.ret));
+    arrow_partition_witness(cx, positives, next + 1, remaining_input, unselected_output, memo)
 }
 
 pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
@@ -318,26 +350,11 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Me
     if n.is_empty() {
         return false;
     }
-    let n_pos = p.len();
     'next_neg: for negj in n {
         let s = arrow_input(negj);
         let v = cx.descr(&negj.ret).clone();
-        for mask in 0u32..(1u32 << n_pos) {
-            let mut union_in = Descr::none();
-            let mut inter_out = Descr::any();
-            for (i, pi) in p.iter().enumerate().take(n_pos) {
-                if (mask >> i) & 1 == 1 {
-                    union_in = union_in.union(cx, &arrow_input(pi));
-                } else {
-                    inter_out = inter_out.intersect(cx.descr(&pi.ret));
-                }
-            }
-            if s.diff(&union_in).is_empty_memo(cx, memo) {
-                continue;
-            }
-            if inter_out.diff(&v).is_empty_memo(cx, memo) {
-                continue;
-            }
+        let output_outside_v = Descr::any().diff(&v);
+        if arrow_partition_witness(cx, p, 0, s, output_outside_v, memo) {
             continue 'next_neg;
         }
         return true;
@@ -368,23 +385,232 @@ pub(crate) fn map_clause_empty(cx: TyCtx<'_>, c: &Conj<MapSig>, memo: &mut Memo)
     if merged.values().any(|v| v.is_empty_memo(cx, memo)) {
         return true;
     }
-    for n in &c.neg {
-        if n.tag != c.pos[0].tag {
-            continue;
-        }
-        let n_keys_subset = n.fields.keys().all(|k| merged.contains_key(k));
-        if !n_keys_subset {
-            continue;
-        }
-        let value_refines = n.fields.iter().all(|(k, nv)| {
+    // A positive map is open, so its smallest witnesses have exactly its
+    // required keys. A negative that requires another key cannot cover one of
+    // those witnesses. The remaining negatives are rectangles over the
+    // positive keys; absent negative fields admit every value on that axis.
+    let negatives: Vec<Vec<Descr>> = c
+        .neg
+        .iter()
+        .filter(|negative| negative.tag == c.pos[0].tag)
+        .filter(|negative| negative.fields.keys().all(|key| merged.contains_key(key)))
+        .map(|negative| {
             merged
-                .get(k)
-                .map(|pv| pv.diff(cx.descr(nv)).is_empty_memo(cx, memo))
-                .unwrap_or(false)
-        });
-        if value_refines {
-            return true;
+                .keys()
+                .map(|key| match negative.fields.get(key) {
+                    Some(value) => cx.descr(value).clone(),
+                    None => Descr::any(),
+                })
+                .collect()
+        })
+        .collect();
+    phi_tuple(cx, &merged.into_values().collect::<Vec<_>>(), &negatives, memo)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler2::types::{ComponentRef, DescrOf, Types};
+
+    fn exhaustive_arrow_partition_witness(
+        cx: TyCtx<'_>,
+        positives: &[ArrowSig],
+        input: Descr,
+        output: Descr,
+        memo: &mut Memo,
+    ) -> bool {
+        assert!(positives.len() <= 8, "the test oracle is deliberately bounded");
+        for mask in 0usize..(1usize << positives.len()) {
+            let mut selected_inputs = Descr::none();
+            let mut unselected_outputs = Descr::any();
+            for (index, positive) in positives.iter().enumerate() {
+                if (mask >> index) & 1 == 1 {
+                    selected_inputs = selected_inputs.union(cx, &arrow_input(positive));
+                } else {
+                    unselected_outputs = unselected_outputs.intersect(cx.descr(&positive.ret));
+                }
+            }
+            let remaining_input = input.diff(&selected_inputs);
+            let remaining_output = unselected_outputs.diff(&output);
+            if !remaining_input.is_empty_memo(cx, memo) && !remaining_output.is_empty_memo(cx, memo) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn literal_free_clause_empty_oracle(cx: TyCtx<'_>, clause: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
+        if clause.neg.is_empty() {
+            return false;
+        }
+        clause.neg.iter().any(|negative| {
+            !exhaustive_arrow_partition_witness(
+                cx,
+                &clause.pos,
+                arrow_input(negative),
+                cx.descr(&negative.ret).clone(),
+                memo,
+            )
+        })
+    }
+
+    #[test]
+    fn arrow_partition_calculator_handles_thirty_two_positives() {
+        let mut types = Types::new();
+        let int = types.int();
+        let atom = types.atom();
+        let clause = Conj {
+            pos: (1..=32)
+                .map(|arity| ArrowSig {
+                    args: vec![int; arity],
+                    ret: int,
+                    lit: None,
+                })
+                .collect(),
+            neg: vec![ArrowSig {
+                args: vec![int],
+                ret: atom,
+                lit: None,
+            }],
+        };
+
+        assert!(
+            !func_clause_empty(types.ctx(), &clause, &mut Memo::default()),
+            "the unary int→atom negation leaves an int→int witness"
+        );
+    }
+
+    #[test]
+    fn arrow_partition_calculator_prunes_thirty_two_and_sixty_four_proven_constraints() {
+        let mut types = Types::new();
+        let int = types.int();
+        let atom = types.atom();
+        let int_or_atom = types.union(int, atom);
+        for positive_count in [32, 64] {
+            let clause = Conj {
+                pos: (1..=positive_count)
+                    .map(|arity| ArrowSig {
+                        args: vec![int; arity],
+                        ret: int,
+                        lit: None,
+                    })
+                    .collect(),
+                neg: vec![ArrowSig {
+                    args: vec![int],
+                    ret: int_or_atom,
+                    lit: None,
+                }],
+            };
+
+            assert!(
+                func_clause_empty(types.ctx(), &clause, &mut Memo::default()),
+                "the unary positive proves int→int|atom at {positive_count} positives"
+            );
         }
     }
-    false
+
+    #[test]
+    fn one_implied_negative_empties_a_clause_with_other_escaping_negatives() {
+        let mut types = Types::new();
+        let int = types.int();
+        let float = types.float();
+        let atom = types.atom();
+        let int_or_atom = types.union(int, atom);
+        let clause = Conj {
+            pos: vec![ArrowSig {
+                args: vec![int],
+                ret: int,
+                lit: None,
+            }],
+            neg: vec![
+                ArrowSig {
+                    args: vec![float],
+                    ret: atom,
+                    lit: None,
+                },
+                ArrowSig {
+                    args: vec![int],
+                    ret: int_or_atom,
+                    lit: None,
+                },
+            ],
+        };
+
+        assert!(
+            func_clause_empty(types.ctx(), &clause, &mut Memo::default()),
+            "one covered negative is enough to empty a conjunction even when another negative has a witness"
+        );
+    }
+
+    #[test]
+    fn arrow_partition_calculator_matches_bounded_exhaustive_oracle() {
+        let mut types = Types::new();
+        let none = types.none();
+        let int = types.int();
+        let float = types.float();
+        let atom = types.atom();
+        let int_or_atom = types.union(int, atom);
+        let list_int = types.list(int);
+        let empty_recursive_tuple = types.intern_regular_component(1, |nodes| {
+            vec![DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(int)])]
+        })[0];
+        let productive_recursive = types.intern_regular_component(1, |nodes| {
+            let mut body = DescrOf::atom_lit("leaf");
+            body.cases[0]
+                .structure
+                .tuples
+                .push(Conj::pos_of(super::super::TupleSigOf {
+                    elems: vec![ComponentRef::Published(int), nodes[0]],
+                }));
+            vec![body]
+        })[0];
+        let shapes = [
+            none,
+            int,
+            float,
+            atom,
+            int_or_atom,
+            list_int,
+            empty_recursive_tuple,
+            productive_recursive,
+        ];
+        let mut state = 0x6d5a_56a9_u64;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (state >> 32) as usize
+        };
+
+        for case_index in 0..256 {
+            let positives = (0..next() % 9)
+                .map(|_| {
+                    let arity = next() % 4;
+                    ArrowSig {
+                        args: (0..arity).map(|_| shapes[next() % shapes.len()]).collect(),
+                        ret: shapes[next() % shapes.len()],
+                        lit: None,
+                    }
+                })
+                .collect();
+            let negatives = (0..next() % 4)
+                .map(|_| {
+                    let arity = next() % 4;
+                    ArrowSig {
+                        args: (0..arity).map(|_| shapes[next() % shapes.len()]).collect(),
+                        ret: shapes[next() % shapes.len()],
+                        lit: None,
+                    }
+                })
+                .collect();
+            let clause = Conj {
+                pos: positives,
+                neg: negatives,
+            };
+            let actual = func_clause_empty(types.ctx(), &clause, &mut Memo::default());
+            let expected = literal_free_clause_empty_oracle(types.ctx(), &clause, &mut Memo::default());
+            assert_eq!(
+                actual, expected,
+                "seed=0x6d5a56a9 case={case_index}: pruned traversal must match exhaustive partitions"
+            );
+        }
+    }
 }

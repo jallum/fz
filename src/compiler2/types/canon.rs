@@ -36,7 +36,7 @@ use crate::fz_ir::FnId;
 use super::axis;
 use super::bits::{BASIC_NAMES, BasicBits};
 use super::conj::Conj;
-use super::descr::Descr;
+use super::descr::{Descr, Structure};
 use super::emptiness::{self, Memo, NonEmptyLists};
 use super::format::brand_refinement;
 use super::render_bindings::{BindingVisit, RenderBindings};
@@ -183,16 +183,25 @@ impl<'a> TyCanon<'a> {
         if d.is_full(cx) {
             return "any".to_string();
         }
-        let normalized;
-        let d = match provenance {
-            Provenance::Interned => d,
-            Provenance::Synthesized => {
-                let mut swept = d.clone();
-                axis::drop_empty_clauses(cx, &mut swept, &|ty| cx.descr(ty).is_empty(cx));
-                normalized = swept;
-                &normalized
-            }
-        };
+        let mut cases = d
+            .cases
+            .iter()
+            .map(|case| {
+                let mut structure = case.structure.clone();
+                if matches!(provenance, Provenance::Synthesized) {
+                    axis::drop_empty_clauses(cx, &mut structure, &|ty| cx.descr(ty).is_empty(cx));
+                }
+                brand_refinement(&case.brands, self.structure_body(cx, &structure, provenance))
+            })
+            .collect::<Vec<_>>();
+        cases.sort();
+        cases.join(" | ")
+    }
+
+    /// Render one payload in the correlated outer partition.  The payload has
+    /// no brand field by construction, so every branch here is forced to be a
+    /// structural axis reader.
+    fn structure_body(&mut self, cx: TyCtx<'_>, d: &Structure, provenance: Provenance) -> String {
         let axes = self.axes(cx, d, provenance);
         let mut parts: Vec<String> = basic_names(d.basic);
         push_set(&mut parts, &d.atoms, "atom", |name| format!(":{name}"));
@@ -212,7 +221,7 @@ impl<'a> TyCanon<'a> {
             self.clause_texts(cx, &axes.funcs, Self::func_clause).into_iter(),
         ));
         parts.extend(sorted(self.clause_texts(cx, &axes.maps, Self::map_clause).into_iter()));
-        brand_refinement(&d.brands, parts.join(" | "))
+        parts.join(" | ")
     }
 
     /// One clause rendered with its factors sorted. `top` names the clause with
@@ -365,9 +374,9 @@ impl<'a> TyCanon<'a> {
     /// normalize. Only a list fragment synthesized by this renderer needs the
     /// shared rules again: descriptor arithmetic concatenates clauses after
     /// their children were interned.
-    fn axes(&mut self, cx: TyCtx<'_>, d: &Descr, provenance: Provenance) -> Axes {
+    fn axes(&mut self, cx: TyCtx<'_>, d: &Structure, provenance: Provenance) -> Axes {
         let subtype = &|narrower: &Ty, wider: &Ty| cx.descr(narrower).is_subtype(cx, cx.descr(wider));
-        let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
+        let covers = &|wider: &Structure, narrower: &Structure| narrower.is_subtype(cx, wider);
         let mut tuples = d.tuples.clone();
         let mut lists = d.lists.clone();
         let mut resources = d.resources.clone();
@@ -434,9 +443,9 @@ struct Axes {
 /// when every kind axis is). So `a ≡ b` forces `a \ b = ∅` on each axis
 /// separately, which for the scalar axes means equal `BasicBits` and equal
 /// finite/cofinite sets — their universes are infinite, so a finite set never
-/// denotes what a cofinite one does. `brands` is not a kind but a REFINEMENT
-/// factor over all of them, so it is recorded the same way and read the same
-/// way, with the unconstrained slot (the unbranded case) omitted.
+/// denotes what a cofinite one does. `brands` is not a kind: each correlated
+/// outer case pairs one brand cell with one structural payload, and the
+/// fingerprint records those canonical cases rather than a global factor.
 ///
 /// For the structural axes only INHABITED-ness survives: clause counts do not,
 /// since the whole point of the normalization elsewhere in this module is that
@@ -456,12 +465,34 @@ fn descr_fingerprint(cx: TyCtx<'_>, d: &Descr, mut render_var: impl FnMut(TypeVa
     if d.is_full(cx) {
         return "fp[any]".to_string();
     }
+    if let [case] = d.cases.as_slice()
+        && case.brands.is_any()
+    {
+        return structure_fingerprint(cx, &case.structure, render_var);
+    }
+    let mut cases = d
+        .cases
+        .iter()
+        .map(|case| {
+            let mut brand = Vec::new();
+            if !case.brands.is_any() {
+                push_key(&mut brand, "n", &case.brands, Clone::clone);
+            }
+            format!(
+                "{}{{{}}}",
+                brand.join(";"),
+                structure_fingerprint(cx, &case.structure, &mut render_var)
+            )
+        })
+        .collect::<Vec<_>>();
+    cases.sort();
+    format!("fp[U:{}]", cases.join("|"))
+}
+
+fn structure_fingerprint(cx: TyCtx<'_>, d: &Structure, mut render_var: impl FnMut(TypeVarId) -> String) -> String {
     let mut parts = basic_names(d.basic);
     push_key(&mut parts, "a", &d.atoms, |name| format!(":{name}"));
     push_key(&mut parts, "o", &d.opaques, ToString::to_string);
-    if !d.brands.is_any() {
-        push_key(&mut parts, "n", &d.brands, Clone::clone);
-    }
     push_key(&mut parts, "v", &d.vars, |id| render_var(*id));
     let structural: String = [
         (inhabited(cx, &d.tuples, emptiness::tuple_clause_empty), "T"),

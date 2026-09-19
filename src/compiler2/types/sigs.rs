@@ -175,8 +175,11 @@ pub(crate) type ArrowSig = ArrowSigOf<Ty>;
 /// values of the corresponding types." Keys are concrete singleton values
 /// (atoms, ints, strs); arbitrary-keyed maps fall back to `map_top`.
 ///
-/// Subtyping (open record): `s <: t` iff every field in `t` is in `s` with
-/// subtype value. More required keys = smaller set.
+/// Subtyping (open record): `s <: t` iff both signatures have the same tag and
+/// every field in `t` is in `s` with subtype value. More required keys make a
+/// smaller set. The full map axis also contains unbounded struct tags, so a
+/// finite collection of tagged or plain positive signatures cannot be every
+/// map.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct MapSigOf<R> {
@@ -280,13 +283,15 @@ impl MergeSig for ArrowSig {
                 if la.kind != lb.kind || la.captures.len() != lb.captures.len() {
                     return PosMeet::Distinct;
                 }
+                // A shared closure identity does not make two observed
+                // callable domains interchangeable. Keep distinct surfaces as
+                // overload factors; only an equal domain can share one
+                // result/capture refinement without erasing provenance.
+                if a.args != b.args {
+                    return PosMeet::Distinct;
+                }
                 PosMeet::Merged(ArrowSig {
-                    args: a
-                        .args
-                        .iter()
-                        .zip(b.args.iter())
-                        .map(|(x, y)| types.union(*x, *y))
-                        .collect(),
+                    args: a.args.clone(),
                     ret: types.intersect(a.ret, b.ret),
                     lit: Some(ClosureLit {
                         kind: la.kind,
@@ -308,16 +313,18 @@ impl MergeSig for ArrowSig {
                 // denotation unchanged.
                 PosMeet::Merged(if a.lit.is_some() { a.clone() } else { b.clone() })
             }
-            (None, None) => PosMeet::Merged(ArrowSig {
-                args: a
-                    .args
-                    .iter()
-                    .zip(b.args.iter())
-                    .map(|(x, y)| types.union(*x, *y))
-                    .collect(),
+            (None, None) if a.args == b.args => PosMeet::Merged(ArrowSig {
+                args: a.args.clone(),
                 ret: types.intersect(a.ret, b.ret),
                 lit: None,
             }),
+            (None, None) => {
+                // `(D -> R₁) ∩ (D -> R₂) = D -> (R₁ ∩ R₂)`. Different
+                // domains instead describe an overload. Pointwise unioning
+                // their coordinates invents tuple rows and intersecting their
+                // results loses which result belongs to each input region.
+                PosMeet::Distinct
+            }
         }
     }
 }

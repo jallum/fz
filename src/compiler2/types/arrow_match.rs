@@ -40,16 +40,12 @@
 //! BECOMES — and only the seed is readable, so `{:done, []}` would claim the
 //! fold returns what it started with.
 //!
-//! The rule reads the merged outcome of a NODE, and that is precisely what it
-//! delivers: a `Known` verdict means no node the walk visited was wholly
-//! unreadable — NOT that every covariant occurrence was individually read. Two
-//! collectors skip a single unread occurrence while a sibling keeps the node's
-//! merged outcome `Known`, so the marking site never fires: `collect_map_match`
-//! skips a pattern key the witness does not name, and `collect_arrow_match`
-//! skips a pattern clause no witness clause matches on arity. Both are pinned
-//! KNOWN-WRONG below (`p5_*`, `p10_*`) and neither is reachable from the
-//! shipped library, which declares no map-typed and no multi-clause `@spec`;
-//! fz-kdt.218 owns closing them.
+//! A collector must mark a lower-bound occurrence at the boundary where it
+//! declines to read a live subtree. In particular, `collect_map_match` marks a
+//! pattern field whose key a variable-carrying witness might still contain.
+//! A ground witness missing that key is instead `Invalid`. A unary arm that
+//! already satisfies a callable UNION establishes the match; the unused
+//! alternative contributes no lower-bound observation obligation.
 //!
 //! The coarseness runs the other way too: an unreadable node marks every
 //! covariant variable beneath it, including one another position already
@@ -144,7 +140,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::descr::Descr;
+use super::callable::CallableApplication;
+use super::descr::Structure;
 use super::{BindingSide, Sigma, Ty, TypeVarId, Types};
 
 /// The three-way verdict of matching a signature against an argument list.
@@ -196,6 +193,15 @@ enum MatchWitness {
     Invalid,
 }
 
+/// The first matcher phase may collect evidence from data structure positions,
+/// but it must not select a callable arm before all sibling input evidence is
+/// available. The full phase performs the ordinary recursive arrow match.
+#[derive(Clone, Copy)]
+enum MatchCollection {
+    DirectEvidence,
+    Full,
+}
+
 impl MatchWitness {
     fn merge(self, other: Self) -> Self {
         match (self, other) {
@@ -234,6 +240,21 @@ impl Types {
         args: &[Ty],
     ) -> ArrowMatch {
         let mut solution = MatchBounds::default();
+
+        // Gather direct input evidence before observing callbacks. This is a
+        // relation over the whole argument row, not source order: a callback
+        // may precede the list, tuple, map, or resource argument that grounds
+        // its input variable.
+        for (pattern, witness) in params.iter().zip(args.iter()) {
+            let mut position = MatchBounds::default();
+            if self.collect_direct_evidence(pattern, witness, BindingSide::Lower, &mut position)
+                == MatchWitness::Invalid
+            {
+                return ArrowMatch::Invalid;
+            }
+            self.merge_subst_union(&mut solution.lower, position.lower);
+        }
+
         for (pattern, witness) in params.iter().zip(args.iter()) {
             // An uninhabited argument is a position no call can supply, so the
             // signature does not apply to this row. Ground disjointness is the
@@ -241,7 +262,14 @@ impl Types {
             if self.is_empty(witness) {
                 return ArrowMatch::Invalid;
             }
-            let mut position = MatchBounds::default();
+            // Whole-row direct evidence may ground a callback's input
+            // variables before the full pass reaches this position. Keep it
+            // available so overloaded arms apply to the actual input row,
+            // independently of formal-parameter order.
+            let mut position = MatchBounds {
+                lower: solution.lower.clone(),
+                ..MatchBounds::default()
+            };
             if self.collect_match_subst(pattern, witness, BindingSide::Lower, &mut position) == MatchWitness::Invalid {
                 return ArrowMatch::Invalid;
             }
@@ -367,7 +395,28 @@ impl Types {
         bounds: &mut MatchBounds,
     ) -> MatchWitness {
         let mut in_flight = HashSet::new();
-        self.collect_match_subst_with(pattern, witness, side, bounds, &mut in_flight)
+        self.collect_match_subst_with(pattern, witness, side, bounds, MatchCollection::Full, &mut in_flight)
+    }
+
+    /// Collect only non-callable structural evidence. This phase never enters
+    /// an arrow subtree, so tuple/map/list siblings cannot make callback arm
+    /// selection depend on their traversal order.
+    fn collect_direct_evidence(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        side: BindingSide,
+        bounds: &mut MatchBounds,
+    ) -> MatchWitness {
+        let mut in_flight = HashSet::new();
+        self.collect_match_subst_with(
+            pattern,
+            witness,
+            side,
+            bounds,
+            MatchCollection::DirectEvidence,
+            &mut in_flight,
+        )
     }
 
     fn collect_match_subst_with(
@@ -376,6 +425,7 @@ impl Types {
         witness: &Ty,
         side: BindingSide,
         bounds: &mut MatchBounds,
+        phase: MatchCollection,
         in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
     ) -> MatchWitness {
         let relation = (*pattern, *witness, side);
@@ -384,21 +434,24 @@ impl Types {
         }
         let outcome = MatchWitness::Unknown
             .merge(self.collect_var_match(pattern, witness, side, bounds))
-            .merge(self.collect_tuple_match(pattern, witness, side, bounds, in_flight))
-            .merge(self.collect_list_match(pattern, witness, side, bounds, in_flight))
-            .merge(self.collect_resource_match(pattern, witness, side, bounds, in_flight))
-            .merge(self.collect_map_match(pattern, witness, side, bounds, in_flight))
-            .merge(self.collect_arrow_match(pattern, witness, side, bounds, in_flight));
+            .merge(self.collect_tuple_match(pattern, witness, side, bounds, phase, in_flight))
+            .merge(self.collect_list_match(pattern, witness, side, bounds, phase, in_flight))
+            .merge(self.collect_resource_match(pattern, witness, side, bounds, phase, in_flight))
+            .merge(self.collect_map_match(pattern, witness, side, bounds, phase, in_flight))
+            .merge(match phase {
+                MatchCollection::DirectEvidence => MatchWitness::Unknown,
+                MatchCollection::Full => self.collect_arrow_match(pattern, witness, side, bounds, in_flight),
+            });
         if outcome == MatchWitness::Unknown && self.has_vars(pattern) {
             // No collector read this node. Every variable that occurs
             // covariantly beneath it was owed a term of its join and did not
             // get one, so its lower bound is partial from here on
             // (fz-kdt.210).
             //
-            // This is the ONE marking site, and it reads the node's MERGED
-            // outcome. A collector that skips a single occurrence while a
-            // sibling reads another leaves the node `Known` and marks nothing
-            // -- see the `p5_`/`p10_` known-wrong pins for the two that do.
+            // This is the node-wide marking site. Collectors that decline a
+            // live subtree mark that subtree at their own boundary, because a
+            // sibling's evidence must not turn its omitted lower term into a
+            // completed join.
             let mut seen = HashSet::new();
             self.collect_lower_occurrences(pattern, side, &mut seen, &mut bounds.undetermined);
         }
@@ -427,7 +480,12 @@ impl Types {
             return;
         }
         if side == BindingSide::Lower || side == BindingSide::Unify {
-            out.extend(self.descr(pattern).clone().vars.values.iter().copied());
+            out.extend(
+                self.descr(pattern)
+                    .cases
+                    .iter()
+                    .flat_map(|case| case.structure.vars.values.iter().copied()),
+            );
         }
         let arity = self.max_tuple_arity(pattern);
         for field in self.tuple_projections(pattern, arity) {
@@ -482,6 +540,7 @@ impl Types {
         witness: &Ty,
         side: BindingSide,
         bounds: &mut MatchBounds,
+        phase: MatchCollection,
         in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
     ) -> MatchWitness {
         let arity = self.max_tuple_arity(pattern);
@@ -495,7 +554,7 @@ impl Types {
         {
             return MatchWitness::Unknown;
         }
-        if let Some(outcome) = self.collect_correlated_tuple_match(pattern, witness, side, bounds, in_flight) {
+        if let Some(outcome) = self.collect_correlated_tuple_match(pattern, witness, side, bounds, phase, in_flight) {
             return outcome;
         }
         if self.max_tuple_arity(witness) < arity {
@@ -509,8 +568,14 @@ impl Types {
         let witness_fields = self.tuple_projections(witness, arity);
         let mut outcome = MatchWitness::Unknown;
         for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
-            outcome =
-                outcome.merge(self.collect_match_subst_with(pattern_field, witness_field, side, bounds, in_flight));
+            outcome = outcome.merge(self.collect_match_subst_with(
+                pattern_field,
+                witness_field,
+                side,
+                bounds,
+                phase,
+                in_flight,
+            ));
         }
         outcome
     }
@@ -521,6 +586,7 @@ impl Types {
         witness: &Ty,
         side: BindingSide,
         bounds: &mut MatchBounds,
+        phase: MatchCollection,
         in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
     ) -> Option<MatchWitness> {
         let pattern_alternatives = self.tuple_positive_alternatives(pattern)?;
@@ -536,7 +602,10 @@ impl Types {
                     continue;
                 }
                 matched_any = true;
-                let mut pair_bounds = MatchBounds::default();
+                let mut pair_bounds = MatchBounds {
+                    lower: bounds.lower.clone(),
+                    ..MatchBounds::default()
+                };
                 let mut pair_outcome = MatchWitness::Unknown;
                 for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
                     pair_outcome = pair_outcome.merge(self.collect_match_subst_with(
@@ -544,6 +613,7 @@ impl Types {
                         witness_field,
                         side,
                         &mut pair_bounds,
+                        phase,
                         in_flight,
                     ));
                 }
@@ -573,9 +643,11 @@ impl Types {
     /// the tuple component is cleared, so the veto stands. Whether the
     /// pattern merely HAS other-kind content is not the question; the witness
     /// must land in it.
-    fn witness_escapes_kind(&mut self, pattern: &Ty, witness: &Ty, clear: fn(&mut Descr)) -> bool {
+    fn witness_escapes_kind(&mut self, pattern: &Ty, witness: &Ty, clear: fn(&mut Structure)) -> bool {
         let mut residual = self.descr(pattern).clone();
-        clear(&mut residual);
+        for case in &mut residual.cases {
+            clear(&mut case.structure);
+        }
         if residual.looks_empty() {
             return false;
         }
@@ -592,7 +664,12 @@ impl Types {
     /// product (negations or mixed arities inside one conjunction fall back
     /// to the caller's projection path).
     fn tuple_positive_alternatives(&mut self, ty: &Ty) -> Option<Vec<Vec<Ty>>> {
-        let conjs = self.descr(ty).tuples.clone();
+        let conjs = self
+            .descr(ty)
+            .cases
+            .iter()
+            .flat_map(|case| case.structure.tuples.iter().cloned())
+            .collect::<Vec<_>>();
         if conjs.is_empty() {
             return None;
         }
@@ -646,6 +723,7 @@ impl Types {
         witness: &Ty,
         side: BindingSide,
         bounds: &mut MatchBounds,
+        phase: MatchCollection,
         in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
     ) -> MatchWitness {
         if !self.has_list_shape(pattern) {
@@ -663,7 +741,7 @@ impl Types {
             };
         }
         let witness_elem = self.list_element_type(witness);
-        self.collect_match_subst_with(&pattern_elem, &witness_elem, side, bounds, in_flight)
+        self.collect_match_subst_with(&pattern_elem, &witness_elem, side, bounds, phase, in_flight)
     }
 
     fn collect_resource_match(
@@ -672,6 +750,7 @@ impl Types {
         witness: &Ty,
         side: BindingSide,
         bounds: &mut MatchBounds,
+        phase: MatchCollection,
         in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
     ) -> MatchWitness {
         let Some(pattern_payload) = self.resource_payload_type(pattern) else {
@@ -687,7 +766,7 @@ impl Types {
                 MatchWitness::Invalid
             };
         };
-        self.collect_match_subst_with(&pattern_payload, &witness_payload, side, bounds, in_flight)
+        self.collect_match_subst_with(&pattern_payload, &witness_payload, side, bounds, phase, in_flight)
     }
 
     fn collect_map_match(
@@ -696,6 +775,7 @@ impl Types {
         witness: &Ty,
         side: BindingSide,
         bounds: &mut MatchBounds,
+        phase: MatchCollection,
         in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
     ) -> MatchWitness {
         let witness_keys = self.map_known_keys(witness);
@@ -710,6 +790,13 @@ impl Types {
             if !witness_keys.contains(&key) {
                 if !self.has_vars(witness) && !self.witness_escapes_kind(pattern, witness, |d| d.maps.clear()) {
                     outcome = outcome.merge(MatchWitness::Invalid);
+                } else {
+                    // The witness can still contain this key through its
+                    // unresolved remainder. This field is a live covariant
+                    // occurrence whose lower-bound term was not observed;
+                    // mark only the subtree we declined to descend into.
+                    let mut seen = HashSet::new();
+                    self.collect_lower_occurrences(&pattern_field, side, &mut seen, &mut bounds.undetermined);
                 }
                 continue;
             }
@@ -719,6 +806,7 @@ impl Types {
                     &witness_field,
                     side,
                     bounds,
+                    phase,
                     in_flight,
                 ));
             }
@@ -750,6 +838,52 @@ impl Types {
         {
             return MatchWitness::Unknown;
         }
+        // A known callback input has one application answer. Ask the callable
+        // application authority rather than flattening DNF alternatives and
+        // overload factors into one cross-product: an overload covers the
+        // input with the UNION of its arms, while a union of callable values
+        // must be covered by every alternative.
+        if let [pattern_clause] = pattern_clauses.as_slice() {
+            let input: Vec<Ty> = pattern_clause
+                .args
+                .iter()
+                .map(|arg| self.instantiate(arg, &bounds.lower))
+                .collect();
+            if input.iter().all(|arg| !self.has_vars(arg) && !self.is_empty(arg)) {
+                match self.callable_application(*witness, &input) {
+                    CallableApplication::Known(returned) => {
+                        let mut outcome = MatchWitness::Unknown;
+                        for (pattern_arg, input_arg) in pattern_clause.args.iter().zip(&input) {
+                            outcome = outcome.merge(self.collect_match_subst_with(
+                                pattern_arg,
+                                input_arg,
+                                side.flipped(),
+                                bounds,
+                                MatchCollection::Full,
+                                in_flight,
+                            ));
+                        }
+                        return outcome.merge(self.collect_match_subst_with(
+                            &pattern_clause.ret,
+                            &returned,
+                            side,
+                            bounds,
+                            MatchCollection::Full,
+                            in_flight,
+                        ));
+                    }
+                    CallableApplication::Uncovered | CallableApplication::NotCallable => {
+                        return MatchWitness::Invalid;
+                    }
+                    // No ground application fact is available. A free
+                    // alternative must not be projected away by the legacy
+                    // positive-clause matcher below: doing so would turn an
+                    // unresolved `α | (int -> int)` into a known callback.
+                    CallableApplication::Opaque => return MatchWitness::Unknown,
+                }
+            }
+        }
+
         let Some(witness_clauses) = self.callable_clauses(witness) else {
             return if self.has_vars(witness) || self.witness_escapes_kind(pattern, witness, |d| d.funcs.clear()) {
                 MatchWitness::Unknown
@@ -772,6 +906,7 @@ impl Types {
                         witness_arg,
                         side.flipped(),
                         bounds,
+                        MatchCollection::Full,
                         in_flight,
                     ));
                 }
@@ -780,6 +915,7 @@ impl Types {
                     &witness_clause.ret,
                     side,
                     bounds,
+                    MatchCollection::Full,
                     in_flight,
                 ));
             }
@@ -1291,8 +1427,9 @@ mod pinned_verdicts {
         }
     }
 
-    // R0. Is an INTERSECTION of arrows (an overloaded callable) even
-    // representable, and does `callable_clauses` hand the matcher two clauses?
+    // R0. Is an INTERSECTION of distinct arrow domains (an overloaded
+    // callable) representable, and does `callable_clauses` hand the matcher
+    // the two correlated clauses?
     #[test]
     fn r0_overload_representation() {
         let mut t = Types::new();
@@ -1304,10 +1441,10 @@ mod pinned_verdicts {
         let or = t.union(f1, f2);
         assert_eq!(
             t.display(&and),
-            "(int | binary) -> none",
-            "an intersection of arrows collapses to one clause"
+            "(binary) -> binary & (int) -> int",
+            "an intersection of distinct domains keeps one clause per overload arm"
         );
-        assert_eq!(t.callable_clauses(&and).map(|c| c.len()), Some(1));
+        assert_eq!(t.callable_clauses(&and).map(|c| c.len()), Some(2));
         assert_eq!(t.display(&or), "(binary) -> binary | (int) -> int");
         assert_eq!(t.callable_clauses(&or).map(|c| c.len()), Some(2));
         assert!(!t.is_empty(&and));
@@ -1319,8 +1456,8 @@ mod pinned_verdicts {
     // are MET, `a`'s upper is `int ∩ binary = none` and the lower `int` escapes
     // it — a FALSE Invalid.
     //
-    // `b = none` makes the result `[none]`, which is the empty list and is
-    // stored and rendered as one.
+    // The concrete list input binds `a = int`, so only the `int -> int` arm
+    // contributes to `b`; the result remains `[int]`.
     #[test]
     fn r1_overloaded_callable_argument() {
         let mut t = Types::new();
@@ -1338,8 +1475,204 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, mapper], &list_b, &no_bounds(), &[list_int, overloaded]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[int], (int) -> none] result=[]",
+            "Known params=[[int], (int) -> int] result=[int]",
             "R1 overloaded"
+        );
+    }
+
+    #[test]
+    fn r1_callback_before_its_input_keeps_the_same_overload_answer() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let b = t.param_alpha(1);
+        let int = t.int();
+        let binary = t.str_t();
+        let int_arm = t.arrow(&[int], int);
+        let binary_arm = t.arrow(&[binary], binary);
+        let overloaded = t.intersect(int_arm, binary_arm);
+        let list_a = t.list(a);
+        let mapper = t.arrow(&[a], b);
+        let list_b = t.list(b);
+        let list_int = t.list(int);
+
+        let v = t.match_arrow(&[mapper, list_a], &list_b, &no_bounds(), &[overloaded, list_int]);
+        assert_eq!(
+            render(&t, &v),
+            "Known params=[(int) -> int, [int]] result=[int]",
+            "callback placement must not change the overload arm selected by its input"
+        );
+    }
+
+    #[test]
+    fn r1d_nested_tuple_callback_before_its_input_uses_direct_evidence() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let b = t.param_alpha(1);
+        let int = t.int();
+        let binary = t.str_t();
+        let int_arm = t.arrow(&[int], int);
+        let binary_arm = t.arrow(&[binary], binary);
+        let overloaded = t.intersect(int_arm, binary_arm);
+        let list_a = t.list(a);
+        let mapper = t.arrow(&[a], b);
+        let list_b = t.list(b);
+        let list_int = t.list(int);
+        let pattern = t.tuple(&[mapper, list_a]);
+        let witness = t.tuple(&[overloaded, list_int]);
+
+        match t.match_arrow(&[pattern], &list_b, &no_bounds(), &[witness]) {
+            ArrowMatch::Known { result, .. } => assert_eq!(result, list_int),
+            other => panic!(
+                "nested tuple callback should use its list evidence, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    #[test]
+    fn r1e_nested_map_callback_before_its_input_uses_direct_evidence() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let b = t.param_alpha(1);
+        let int = t.int();
+        let binary = t.str_t();
+        let int_arm = t.arrow(&[int], int);
+        let binary_arm = t.arrow(&[binary], binary);
+        let overloaded = t.intersect(int_arm, binary_arm);
+        let list_a = t.list(a);
+        let mapper = t.arrow(&[a], b);
+        let list_b = t.list(b);
+        let list_int = t.list(int);
+        let function = MapKey::Atom("function".to_string());
+        let values = MapKey::Atom("values".to_string());
+        let pattern = t.map(&[(function.clone(), mapper), (values.clone(), list_a)]);
+        let witness = t.map(&[(function, overloaded), (values, list_int)]);
+
+        match t.match_arrow(&[pattern], &list_b, &no_bounds(), &[witness]) {
+            ArrowMatch::Known { result, .. } => assert_eq!(result, list_int),
+            other => panic!(
+                "nested map callback should use its list evidence, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    #[test]
+    fn r1f_a_noncallable_union_is_not_a_callback() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let b = t.param_alpha(1);
+        let int = t.int();
+        let callable = t.arrow(&[int], int);
+        let mixed = t.union(int, callable);
+        let mapper = t.arrow(&[a], b);
+
+        assert_eq!(
+            t.match_arrow(&[a, mapper], &b, &no_bounds(), &[int, mixed]),
+            ArrowMatch::Invalid
+        );
+    }
+
+    #[test]
+    fn r1h_a_free_union_alternative_does_not_prove_noncallability() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let b = t.param_alpha(1);
+        let int = t.int();
+        let free = t.type_var(TypeVarId(4_242));
+        let callable = t.arrow(&[int], int);
+        let unresolved = t.union(free, callable);
+        let mapper = t.arrow(&[a], b);
+
+        let v = t.match_arrow(&[a, mapper], &b, &no_bounds(), &[int, unresolved]);
+        assert!(
+            matches!(v, ArrowMatch::Underconstrained { .. }),
+            "a free union alternative cannot prove a non-callable mismatch, got {}",
+            render(&t, &v)
+        );
+    }
+
+    #[test]
+    fn r1g_negative_callable_constraints_remain_underconstrained() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let b = t.param_alpha(1);
+        let int = t.int();
+        let binary = t.str_t();
+        let int_arrow = t.arrow(&[int], int);
+        let binary_arrow = t.arrow(&[binary], binary);
+        let carved = t.difference(int_arrow, binary_arrow);
+        let mapper = t.arrow(&[a], b);
+
+        let v = t.match_arrow(&[a, mapper], &b, &no_bounds(), &[int, carved]);
+        assert!(
+            matches!(v, ArrowMatch::Underconstrained { .. }),
+            "got {}",
+            render(&t, &v)
+        );
+    }
+
+    #[test]
+    fn r1a_overload_arms_collectively_cover_a_union_input() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let b = t.param_alpha(1);
+        let int = t.int();
+        let binary = t.str_t();
+        let input = t.union(int, binary);
+        let int_arm = t.arrow(&[int], int);
+        let binary_arm = t.arrow(&[binary], binary);
+        let overloaded = t.intersect(int_arm, binary_arm);
+        let mapper = t.arrow(&[a], b);
+
+        let v = t.match_arrow(&[a, mapper], &b, &no_bounds(), &[input, overloaded]);
+        assert_eq!(
+            render(&t, &v),
+            "Known params=[int | binary, (int | binary) -> int | binary] result=int | binary",
+            "one overload's domains cover a union input collectively"
+        );
+    }
+
+    #[test]
+    fn r1b_overlapping_overload_arms_meet_returns_on_their_overlap() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let b = t.param_alpha(1);
+        let int = t.int();
+        let atom = t.atom();
+        let any = t.any();
+        let broad = t.arrow(&[any], int);
+        let narrow = t.arrow(&[int], atom);
+        let overloaded = t.intersect(broad, narrow);
+        let mapper = t.arrow(&[a], b);
+
+        let v = t.match_arrow(&[a, mapper], &b, &no_bounds(), &[int, overloaded]);
+        assert_eq!(
+            render(&t, &v),
+            "Known params=[int, (int) -> none] result=none",
+            "the shared int region must satisfy both overload returns"
+        );
+    }
+
+    #[test]
+    fn r1c_an_empty_overload_region_contributes_no_return_constraint() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let b = t.param_alpha(1);
+        let int = t.int();
+        let binary = t.str_t();
+        let atom = t.atom();
+        let any = t.any();
+        let broad = t.arrow(&[any], int);
+        let narrow = t.arrow(&[int], atom);
+        let overloaded = t.intersect(broad, narrow);
+        let mapper = t.arrow(&[a], b);
+
+        let v = t.match_arrow(&[a, mapper], &b, &no_bounds(), &[binary, overloaded]);
+        assert_eq!(
+            render(&t, &v),
+            "Known params=[binary, (binary) -> int] result=int",
+            "an arm disjoint from the input region must not narrow the return"
         );
     }
 
@@ -2168,13 +2501,12 @@ mod pinned_verdicts {
     /// MERGED outcome, so an unreadable node names every covariant variable
     /// beneath it -- including one another position already determined.
     /// `f(a, ((any) -> int) | ((any, any) -> a)) :: a` at `(int, (any) -> int)`
-    /// has `a` fully determined at position 0, and the arity-2 clause is a
-    /// branch the unary witness can never select, yet the node reads as
+    /// has `a` fully determined at position 0, but the node reads as
     /// unreadable and the result stops being a fact. Precision, never
     /// soundness; see [`Types::result_variables_are_determined`] for what the
     /// whole class costs.
     #[test]
-    fn an_uninhabited_arrow_clause_still_marks() {
+    fn an_unreadable_arrow_node_still_marks() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let int = t.int();
@@ -2189,19 +2521,15 @@ mod pinned_verdicts {
         }
     }
 
-    /// fz-kdt.210, KNOWN-WRONG. `collect_map_match` skips a pattern key the
-    /// witness does not name -- and raises no `Invalid` when the witness
-    /// carries variables, precisely the case where the key might yet appear --
-    /// WITHOUT recursing. A sibling key that IS read leaves the node's merged
-    /// outcome `Known`, so the one marking site never fires and `a` reaches a
-    /// `Known` result on a join that is missing its `:missing` term.
+    /// A variable-carrying map witness may still contain an omitted pattern
+    /// key. Its unread field is a live term in `a`'s lower-bound join, even
+    /// though the sibling `:k` field is fully observed.
     ///
     /// `f(a, %{:k => c, :missing => a}) :: a` at `(int, α | %{:k => int})`
-    /// answers `Known int`. It SHOULD withhold the result. The hole is latent:
-    /// no `@spec` in the shipped runtime library declares a map-typed
-    /// parameter, so nothing on the corpus reaches it. fz-kdt.218 owns it.
+    /// must withhold the result: the first argument alone cannot publish
+    /// `int` for `a`.
     #[test]
-    fn p5_a_skipped_map_key_is_a_partial_join_the_node_rule_misses() {
+    fn a_live_skipped_map_key_withholds_a_partial_join_result() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let c = t.param_alpha(2);
@@ -2214,32 +2542,22 @@ mod pinned_verdicts {
         let free = t.type_var(TypeVarId(901));
         let witness = t.union(witness_map, free);
         match t.match_arrow(&[a, pattern_map], &a, &no_bounds(), &[int, witness]) {
-            ArrowMatch::Known { result, .. } => {
-                assert!(
-                    t.is_equivalent(&result, &int),
-                    "known-wrong: the `:missing` term was never read"
-                );
-            }
+            ArrowMatch::Underconstrained { result, .. } => assert!(
+                t.is_equivalent(&result, &int),
+                "the observed lower bound remains useful, but is not publishable"
+            ),
             other => panic!(
-                "the known-wrong hole has closed -- re-cut this pin, got {}",
+                "a live unread map field must withhold the result, got {}",
                 render(&t, &other)
             ),
         }
     }
 
-    /// fz-kdt.210, KNOWN-WRONG, the same hole in a second collector.
-    /// `collect_arrow_match` skips a pattern clause no witness clause matches
-    /// on arity without recursing, so that clause's covariant result variable
-    /// gets no term and no mark; a sibling clause that DID match keeps the
-    /// node `Known`.
-    ///
-    /// `f(c, ((any) -> b) | ((any, any) -> c)) :: c` at `(int, (any) -> int)`
-    /// answers `Known int`. Weaker than the map case -- the skipped clause is
-    /// uninhabited by this witness, so the skip is arguably principled -- and
-    /// latent for the same reason: the shipped library declares no
-    /// multi-clause `@spec`. fz-kdt.218 owns it.
+    /// The unary arm already satisfies this UNION pattern. Its unused
+    /// alternative therefore owes no observation, and `c`, grounded by the
+    /// first argument, remains known.
     #[test]
-    fn p10_a_skipped_arrow_clause_is_a_partial_join_the_node_rule_misses() {
+    fn a_satisfied_callable_union_arm_keeps_a_grounded_result_known() {
         let mut t = Types::new();
         let b = t.param_alpha(1);
         let c = t.param_alpha(2);
@@ -2249,15 +2567,133 @@ mod pinned_verdicts {
         let binary_clause = t.arrow(&[any, any], c);
         let pattern = t.union(unary, binary_clause);
         let witness = t.arrow(&[any], int);
+        let instantiated_unary = t.arrow(&[any], int);
+        let instantiated_binary = t.arrow(&[any, any], int);
+        let instantiated_union = t.union(instantiated_unary, instantiated_binary);
+        assert!(
+            t.is_subtype(&witness, &instantiated_unary),
+            "the witness satisfies the unary arm after b = int"
+        );
+        assert!(
+            t.is_subtype(&witness, &instantiated_union),
+            "the unary arm establishes membership in the instantiated union"
+        );
         match t.match_arrow(&[c, pattern], &c, &no_bounds(), &[int, witness]) {
             ArrowMatch::Known { result, .. } => {
                 assert!(
                     t.is_equivalent(&result, &int),
-                    "known-wrong: the arity-2 clause was never read"
+                    "the unary arm fully satisfies this callable witness"
                 );
             }
             other => panic!(
-                "the known-wrong hole has closed -- re-cut this pin, got {}",
+                "an already-satisfied union arm must not withhold the known result, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    #[test]
+    fn a_skipped_map_key_with_the_ground_argument_after_the_map_is_underconstrained() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let c = t.param_alpha(2);
+        let int = t.int();
+        let pattern_map = t.map(&[
+            (MapKey::Atom("k".to_string()), c),
+            (MapKey::Atom("missing".to_string()), a),
+        ]);
+        let witness_map = t.map(&[(MapKey::Atom("k".to_string()), int)]);
+        let free = t.type_var(TypeVarId(901));
+        let witness = t.union(witness_map, free);
+
+        match t.match_arrow(&[pattern_map, a], &a, &no_bounds(), &[witness, int]) {
+            ArrowMatch::Underconstrained { result, .. } => assert!(t.is_equivalent(&result, &int)),
+            other => panic!(
+                "argument order cannot complete an unread map-field join, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    #[test]
+    fn a_skipped_nested_map_key_is_underconstrained() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let c = t.param_alpha(2);
+        let int = t.int();
+        let pattern_map = t.map(&[
+            (MapKey::Atom("k".to_string()), c),
+            (MapKey::Atom("missing".to_string()), a),
+        ]);
+        let witness_map = t.map(&[(MapKey::Atom("k".to_string()), int)]);
+        let nested_pattern = t.tuple(&[pattern_map]);
+        let free = t.type_var(TypeVarId(901));
+        let nested_map_witness = t.union(witness_map, free);
+        let nested_witness = t.tuple(&[nested_map_witness]);
+
+        match t.match_arrow(&[a, nested_pattern], &a, &no_bounds(), &[int, nested_witness]) {
+            ArrowMatch::Underconstrained { result, .. } => assert!(t.is_equivalent(&result, &int)),
+            other => panic!(
+                "a nested live unread map field must withhold the result, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    #[test]
+    fn a_missing_map_key_on_a_ground_witness_is_invalid() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let int = t.int();
+        let pattern = t.map(&[(MapKey::Atom("missing".to_string()), a)]);
+        let witness = t.map(&[(MapKey::Atom("k".to_string()), int)]);
+
+        assert_eq!(
+            t.match_arrow(&[pattern], &a, &no_bounds(), &[witness]),
+            ArrowMatch::Invalid
+        );
+    }
+
+    #[test]
+    fn completed_map_keys_leave_a_result_known() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let c = t.param_alpha(2);
+        let int = t.int();
+        let pattern = t.map(&[
+            (MapKey::Atom("k".to_string()), c),
+            (MapKey::Atom("missing".to_string()), a),
+        ]);
+        let witness = t.map(&[
+            (MapKey::Atom("k".to_string()), int),
+            (MapKey::Atom("missing".to_string()), int),
+        ]);
+
+        match t.match_arrow(&[pattern], &a, &no_bounds(), &[witness]) {
+            ArrowMatch::Known { result, .. } => assert!(t.is_equivalent(&result, &int)),
+            other => panic!(
+                "fully observed map fields must ground their result, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    #[test]
+    fn a_skipped_map_key_marks_no_purely_contravariant_variable() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let int = t.int();
+        let any = t.any();
+        let callback = t.arrow(&[a], any);
+        let pattern = t.map(&[(MapKey::Atom("missing".to_string()), callback)]);
+        let witness_map = t.map(&[(MapKey::Atom("k".to_string()), int)]);
+        let free = t.type_var(TypeVarId(901));
+        let witness = t.union(witness_map, free);
+
+        match t.match_arrow(&[a, pattern], &a, &no_bounds(), &[int, witness]) {
+            ArrowMatch::Known { result, .. } => assert!(t.is_equivalent(&result, &int)),
+            other => panic!(
+                "an unread upper-bound occurrence cannot withhold a lower-bound fact, got {}",
                 render(&t, &other)
             ),
         }

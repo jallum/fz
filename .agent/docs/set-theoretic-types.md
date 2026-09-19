@@ -16,9 +16,10 @@ A, B disjoint <=>  ⟦A⟧ ∩ ⟦B⟧ = ∅
 
 Everything reduces to deciding emptiness: `is_subtype(a, b)` asks whether
 `(a \ b)` is empty; `is_disjoint(a, b)` asks whether `(a and b)` is empty.
-Difference, not complement, is the primitive: a descriptor cannot hold the
-complement of a branded type (see "Brands carry their inner" below), so
-`Descr::diff` subtracts factor by factor rather than meeting with a negation.
+Difference is the public subtraction operation. Its descriptor implementation
+is exact: it carves each correlated brand/structure case into the structural
+outside and the still-structural overlap under the remaining brands (see
+"Brands carry their inner" below).
 
 `is_subtype` is NOT a safe "covers everything the other says" test for a
 closure-literal column. `emptiness.rs::func_clause_empty` decides `P \ N` for a
@@ -47,7 +48,7 @@ discards, collected by the same structural walk `free_var_ids` uses — on top o
 whose two positions are interchangeable, and this one's are not.
 
 A type is a union across independent **axes**, one per runtime kind, held in
-disjunctive normal form (DNF). A `Descr` is that union:
+disjunctive normal form (DNF). A `StructureOf` is one such structural union:
 
 ```text
 basic      presence bits: int, float, binary (str is the binary bit)
@@ -61,14 +62,18 @@ funcs      DNF of arrow shapes (arg types + ret type, optional closure lit)
 maps       DNF of map shapes   (nested value types)
 ```
 
-One slot is NOT a kind. `brands` is a finite-or-cofinite set of brand names
-that REFINES every kind above it at once — a conjunctive factor, not another
-member of the union:
+`DescrOf` is an outer finite partition of correlated cases:
 
 ```text
-brands     which brand a value carries: top = "no constraint" (the unbranded
-           case and every brand), a finite set = a nominal refinement
+DescrOf = BrandCase[]
+BrandCase = { brands: finite-or-cofinite names, structure: StructureOf }
 ```
+
+`brands` is NOT a runtime kind. Within one `BrandCase` it is a conjunctive
+refinement over that case's structural axes: top means no brand constraint (the
+unbranded case and every brand), while a finite set names nominal refinements.
+The outer union is what preserves correlations such as `utf8(binary) | nil`;
+there is no global brand factor beside independently-unioned axes.
 
 `nil`, `true`, and `false` live on the `atoms` axis, not on `basic` (`bool_lit` is
 `atom_lit("true")` / `atom_lit("false")`). `str` is exactly the `binary` basic bit.
@@ -84,16 +89,14 @@ means its kind and emits the `type/numeric-literal-widened` warning
 unions are the language's backbone. Compiler2's `int_lit` and
 `as_int_singleton` trait methods are documented degenerates for the shared
 trait surface.
-A value belongs to a type if it belongs to the axis for its kind AND its brand is
-one the slot admits. `any()` is every axis at top, `none()` every axis at bottom,
-and a descriptor is empty when its brand slot is empty (`Meters and Feet`) or every
-kind axis is (structural clauses checked recursively, with a coinductive memo for
-recursive shapes). `Descr::none()` alone carries the empty slot; every value
-constructor starts from `Descr::unbranded()`, whose slot is top. Because a bottom
-therefore has more than one shape, `union` asks `looks_empty()` before it joins
-anything, so a bottom is the identity however it was reached — a pointwise hull
-would read an empty operand's top slot as "any brand" and widen the other side by
-it.
+A value belongs to a descriptor when it belongs to at least one case's structure
+AND that case's brand set admits its brand. `any()` is one unconstrained case with
+every structural axis at top; `none()` has no cases. A case is empty when its
+brand set is empty or all structural axes are empty (structural clauses are
+checked recursively with a coinductive memo for recursive shapes). Every value
+constructor starts from `Descr::unbranded()`, one case whose brands are top.
+`union` appends cases and interning partitions and normalizes them, so bottom is
+the identity without letting an empty case widen another case.
 
 DNF construction keeps clause lists hygienic by boolean identity. One clause-
 product skeleton (`dnf.rs::dnf_intersect_with`) serves both intersections —
@@ -224,15 +227,16 @@ subsumption rule left. Absorption has to run AFTER the sort: it visits in index
 order and drops the FIRST of a mutually-covering pair, so without a canonical
 order the schedule would still choose which clause lives.
 
-"Semantically equal" here means equal under the relation the CALCULATOR
-answers with, and on the resource axis that is narrower than reading a
-resource as a set of payloads. `emptiness::resource_clause_empty` decides a
-clause carrying negatives by asking whether a SINGLE negative swallows the
-payload, never whether their union does, so `resource(:a|:b)` is NOT inside
-`resource(:a|:c) ∨ resource(:b|:c)`. A resource clause is absorbed exactly when
-one sibling contains it alone — the same shape the list rule uses for its
-non-empty fragment — and two resource clauses that partition the payloads
-between them are not every resource.
+"Semantically equal" means equal under the relation the CALCULATOR answers
+with. Resources use the same collective product coverage as tuples: a resource
+clause intersects its positive payloads, then `resource_clause_empty` asks
+whether the UNION of its negative payloads covers that one-coordinate product.
+So `resource(:a|:b)` is inside `resource(:a) ∨ resource(:b)`, and
+`resource(int) ∨ resource(not int)` is every resource. Maps use that calculator
+over their required fields too. A positive map is open and fixes its tag; a
+negative with another required key cannot cover its smallest witness, while a
+negative that omits one of the positive keys contributes `any` at that product
+coordinate. Different tags never contribute coverage.
 
 Every axis has ONE spelling of its top: the clause with NO factors, which is
 what `Descr::any()` already writes on all five axes. That is the whole point of
@@ -271,12 +275,11 @@ set reasoning; both are read off the kernel's own clause-emptiness rule. `top`
 minus a union of plain clauses is the single clause negating them all, and
 `emptiness::list_clause_empty` calls that empty exactly when one negated
 signature admits `[]` and one negated signature's element swallows the
-fragment, while `emptiness::resource_clause_empty` calls it empty exactly when
-a SINGLE negated payload swallows `any` — which is why two resource clauses
-that partition the payloads between them are still not every resource. Both go
-to the calculator for the rest. A literal-free callable axis does the same; a
-clause naming a closure literal instead names a construction layout and does
-not participate in callable absorption.
+fragment. Resource payload alternatives and map-field rectangles instead go to
+the shared product calculator, which decides whether their union covers the
+candidate. A literal-free callable axis does the same; a clause naming a
+closure literal instead names a construction layout and does not participate in
+callable absorption.
 
 What those two rules ask of a child — "is this every value" — is a question
 about the DENOTATION, and `Descr::is_full` is its one implementation:
@@ -302,6 +305,33 @@ separate addressed `ActivationSignature`s a contract or call analysis observed.
 The value and observation therefore have one owner each: observations cannot
 mint a second closure value identity, and normalizing a value cannot erase an
 observed call surface.
+
+## Arrow meets and callable application
+
+One positive arrow is a constraint on a callable's behavior over its whole
+argument tuple. Therefore two arrows with the same argument vector merge their
+return constraints: `(D -> R₁) and (D -> R₂) = D -> (R₁ and R₂)`. Different
+argument vectors are an overload and stay as separate positive factors. In
+particular, `(A -> R₁) and (B -> R₂)` is not `(A | B) -> (R₁ and R₂)`; that
+would both lose result-to-domain correlation and, for more than one argument,
+admit the pointwise hull rather than the union of the two input tuples.
+
+The callable module is the one ground positive-arrow application authority. A
+callable DNF clause is one possible callable value, so every DNF clause must
+cover the input row. Positive arrows inside one clause are instead overload
+arms: their domains cover a row collectively. The result partitions the row by
+its arm membership, intersects the returns on each overlapping region, and
+unions the non-empty regions' answers. Thus `(int -> int) and (binary ->
+binary)` accepts `int | binary`, while a union of those two callable values
+does not guarantee either domain; and `(any -> int) and (int -> atom)` answers
+`none` on `int` but `int` on `binary`.
+
+This evaluator reports a known result, proven uncovered/non-callable input, or
+opaque evidence. Negative factors, literal arrows, and free variables are
+opaque: projecting them to positive arms would pretend to know a return or
+coverage fact they do not provide. The relational matcher may still consume
+positive structure with variables; it must not turn an opaque constraint into a
+spurious mismatch.
 
 The coverage walk and the dedupe only ever remove, and both visit in index
 order, so what they leave is still sorted; a saturated axis is REPLACED by the
@@ -377,6 +407,17 @@ it costs one sweep per distinct descriptor. The tuple-emptiness
 recursion (`emptiness::phi_tuple`) returns early on an empty coordinate and drops
 negations disjoint from the product, so it explores only inhabited splits
 instead of fanning out `arity^|negs|` branches.
+
+Callable emptiness uses the same proof shape without giving a partition an
+integer identity. For a negative arrow `S -> V`, a positive-arrow partition
+can witness an escaping callable precisely when both `S \ union(selected
+inputs)` and `intersection(unselected returns) \ V` are inhabited. The
+calculator walks that partition recursively, carrying those two residual
+descriptors. Selecting a positive shrinks only the input residual; leaving it
+unselected shrinks only the output residual. An empty residual can never become
+inhabited again, so that subtree is exact to prune. This makes the decision
+independent of the number of positive arrows while retaining the ordinary
+descriptor emptiness memo as the only child authority.
 
 ## One implementation, shared trait
 
@@ -457,20 +498,21 @@ model described in [`specs`](specs.md).
 
 `brands` and `opaques` are **nominal refinements** over structural representations.
 They are carried differently because they mean different things. A brand `B`
-declared `@type B :: refines U` is the structural type `U` with the `brands` slot
-ALSO narrowed to `{B}` — the same values, fewer of them. An opaque is a pure
-nominal tag on its own kind axis: `opaque_of("T")` sets only the `opaques` axis, so
-the tag is not a subtype of the plain representation it hides.
+declared `@type B :: refines U` creates one correlated case whose structural
+payload is `U` and whose brands are `{B}` — the same values, fewer of them. An
+opaque is a pure nominal tag on its own kind axis: `opaque_of("T")` sets only the
+`opaques` axis, so the tag is not a subtype of the plain representation it hides.
 
 ```text
-mint_brand(binary, "utf8")  : { basic = binary, brands = {utf8} }
-plain binary                : { basic = binary, brands = any     }
-opaque_of("T")              : { opaques = {T},  brands = any     }
+mint_brand(binary, "utf8")  : [{ brands = {utf8}, structure = { basic = binary } }]
+plain binary                : [{ brands = any,    structure = { basic = binary } }]
+opaque_of("T")              : [{ brands = any,    structure = { opaques = {T} } }]
 ```
 
-An unbranded type's slot is TOP, not empty: `binary` constrains nothing about
-brands, so `utf8 <: binary` — dropping the refinement leaves a structural
-`binary` — while a plain `binary` is NOT a `utf8`, because `any ⊄ {utf8}`. The
+An unbranded type's case admits every brand, not no brand: `binary` constrains
+nothing about brands, so `utf8 <: binary` — dropping the refinement leaves a
+structural `binary` — while a plain `binary` is NOT a `utf8`, because `any ⊄
+{utf8}`. The
 direction is the whole point: a `@spec` position declared `binary` accepts a
 `utf8` argument, and a position declared `utf8` rejects a bare `binary`
 (`spec/violation`). Opaque tags make two distinct opaque names lattice-disjoint,
@@ -482,31 +524,23 @@ artefact: there is no intersection type expression, so `Positive and Even` is
 unwritable, and the lattice reads the meet of two brands over one inner as
 EMPTY. `Meters or int` is `int`, and `Meters and Feet` is `none`.
 
-There is no complement operation on a descriptor, and that is by construction:
-`not Meters` is "not an int" OR "an int under another brand", two rectangles
-where a descriptor holds one, so any `neg` would have to widen to `any` and
-forget the brand. Difference is the primitive instead — `Descr::diff` subtracts
-the two factors separately. It is EXACT in the three shapes a brand model
-produces at one structure: the subtrahend's slot covers ours (`Meters \ int` is
-empty), the slots are disjoint (`Meters \ Feet` is `Meters`), and the structures
-are syntactically equal (`int \ Meters` is `not(Meters)(int)`). It
-OVER-approximates when the slots partly overlap across DIFFERENT structures —
-`(int | binary) \ Meters(int)` is the whole `int | binary`, because the exact
-answer is two rectangles and a descriptor holds one. That is the safe direction:
-every consumer asks `diff(..).is_empty()`, so a too-big difference can only
-answer `is_subtype = false` or leave a narrowed branch too wide.
-`Descr::neg_structure` is its private helper, the complement of the kind axes
-alone.
+`Descr::diff` is exact across the outer cases. For each minuend/subtrahend pair
+it keeps `(structure \\ other_structure, minuend_brands)` and the overlapping
+structure under `minuend_brands \\ other_brands`; further cases repeat the carve.
+Thus `utf8(binary) | nil` remains two correlated arms, and subtracting either
+arm cannot release the other arm's brand. `Descr::neg_structure` is only the
+private complement of one case's structural axes; the outer difference is the
+authority for the full correlated result.
 
 A bottom therefore arrives in more than one descriptor shape: `Descr::none()`
-carries an empty slot, `int and binary` meets at empty kind axes with the slot
-still at top, and a tuple with an empty coordinate empties through a structural
-axis. They all denote the same set, so `Types::intern` answers every provably
-empty descriptor with the one `none` identity, and `Types::is_empty(t)` holds
-exactly when `t` is that id. Descriptor arithmetic runs BEFORE interning and
-still meets the several shapes, so `Descr::looks_empty()` — never
-`== Descr::none()` — stays the descriptor-level bottom test that `union` and
-`erase_nominal` ask first, so that no bottom widens or resurrects.
+has no cases, a case with an empty brand set is uninhabited even when its
+structure is inhabited, and a tuple with an empty coordinate empties through a
+structural axis. They all denote the same set, so `Types::intern` answers every
+provably empty descriptor with the one `none` identity, and `Types::is_empty(t)`
+holds exactly when `t` is that id. Descriptor arithmetic runs BEFORE interning
+and still meets the several shapes, so `Descr::looks_empty()` — never
+`== Descr::none()` — stays the descriptor-level bottom test that `union` asks
+before it admits a case.
 
 A refinement renders as a refinement, never as a union: `utf8(binary)`,
 `not(Meters)(int)`, `(Feet | Meters)(int)`. Rendering it `binary | utf8` would
@@ -514,19 +548,14 @@ read as a SUPERTYPE of `binary`, which is the lattice inverted. `display` and
 `TyCanon` share the one renderer (`format::brand_refinement`), so the two
 surfaces cannot drift.
 
-**Where the encoding is not exact.** A descriptor holds ONE rectangle, and
-`union` is the pointwise hull of both factors. That is exact whenever the
-operands agree on one factor (`Meters | int`, `Meters | Feet`), but ANY union
-whose operands disagree on BOTH factors releases the slot to top and loses the
-brand entirely. It takes only one brand to reach: `utf8 | nil` — the shape every
-optional `@spec` is written in — admits a bare binary, and so does `utf8 |
-integer`. `TypeExpr::Union` is the language's only type combinator, so a brand
-cannot yet be trusted at a `@spec` gate beyond the single-brand case. This is a
-missed diagnostic, never a miscompile: no runtime test reads the slot, so a
-program that slips through the gate runs exactly as the unbranded one would. The
-cure is a descriptor holding a union of rectangles — the slot pushed down onto
-the per-axis DNF clauses — which is a data-model change; it is a known-wrong pin
-in `brand_lattice_law`, see fz-kdt.203.
+The case partition is canonical at every interning boundary. It splits every
+mentioned name into a singleton cell plus the cofinite residual, unions and
+normalizes the structural payload admitted by each cell, drops structurally
+empty cells without querying unresolved recursive locals, then groups equal
+payloads back into finite/cofinite cases in deterministic order. Ordinary and
+regular-component interning use this one construction. Consequently overlapping
+carvings, input order, and productive recursive references have one `Ty`
+identity, while `utf8(binary) | nil` rejects a bare binary exactly.
 
 Because brand inners live in the symbol, **brand questions are answered from the
 symbol's own structure** — there is no side map and nothing about a name is
@@ -545,13 +574,13 @@ set axis, distinct from ordinary `OpaqueTag::Named(String)` source names.
 kinds are Bitstring/ProcBin/Struct/…; see [`any-value`](any-value.md)), and the
 runtime compares structure and bytes, so a `utf8` value is indistinguishable from
 the binary it wraps. `erase_nominal` is the type-level expression of that fact: it
-releases the `brands` slot to top and drops the `opaques` axis, keeping the
+ignores each case's `brands` set and drops the `opaques` axis, keeping the
 structural axes that remain and recursing through every structural position, so a
-brand nested inside a tuple is discharged too. Releasing the slot IS the whole
-brand erasure, because the inner is already the structural axes beside it. A pure
-opaque tag with no structural axes over-approximates to `any()` so the erased set
-is never too small. The runtime type predicate reads the same way: it never
-consults the brand slot.
+brand nested inside a tuple is discharged too. Ignoring the case set IS the whole
+brand erasure, because the inner is already the structural payload beside it. A
+pure opaque tag with no structural axes over-approximates to `any()` so the erased
+set is never too small. The runtime type predicate reads the same way: it never
+consults the brand set.
 
 ## Two models: typing vs runtime
 
@@ -592,8 +621,8 @@ The choice of predicate follows the question, not the call site:
 
 There is one runtime-equality relation, `is_value_disjoint`, and every value site
 consults it; a literal/guard comparison and a pattern-arm prune lower to that same
-brand-blind question. The brand slot is a TYPING fact only: a runtime test is
-built by `Types::runtime_type_predicate`, which never reads the slot, so no
+brand-blind question. The case's brand set is a TYPING fact only: a runtime test
+is built by `Types::runtime_type_predicate`, which never reads it, so no
 runtime test can separate a `utf8` from the binary it wraps. A brand is checked
 where types are checked — spec positions, dispatch, boundaries — and nowhere
 else.

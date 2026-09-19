@@ -2,7 +2,7 @@
 
 use super::bits::BASIC_NAMES;
 use super::conj::Conj;
-use super::descr::Descr;
+use super::descr::{Descr, Structure};
 use super::render_bindings::{BindingVisit, RenderBindings};
 use super::sigs::{ArrowSig, ListSig, MapSig, MapTag, ResourceSig, TupleSig};
 use super::{CallableValueKind, MapKey, Ty, TyCtx};
@@ -67,6 +67,16 @@ impl TypeDisplay<'_> {
         if d.looks_full() {
             return "any".to_string();
         }
+        let mut cases = d
+            .cases
+            .iter()
+            .map(|case| brand_refinement(&case.brands, self.structure(&case.structure)))
+            .collect::<Vec<_>>();
+        cases.sort();
+        cases.join(" | ")
+    }
+
+    fn structure(&mut self, d: &Structure) -> String {
         let mut parts = Vec::new();
         for (bit, name) in BASIC_NAMES {
             if d.basic.contains_all(*bit) {
@@ -81,7 +91,7 @@ impl TypeDisplay<'_> {
         parts.extend(d.resources.iter().map(|c| self.resource_clause(c)));
         parts.extend(d.funcs.iter().map(|c| self.arrow_clause(c)));
         parts.extend(d.maps.iter().map(|c| self.map_clause(c)));
-        brand_refinement(&d.brands, parts.join(" | "))
+        parts.join(" | ")
     }
 
     fn tuple_clause(&mut self, c: &Conj<TupleSig>) -> String {

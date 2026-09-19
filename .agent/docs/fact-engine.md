@@ -222,7 +222,9 @@ or not — announces a publisher and moves nothing. It is minted at revision
 **0**: present, at bottom, no content movement (`facts::appearance_revision`),
 and `None` <-> `Some(0)` is not a content change in either direction
 (`FactChange::content_changed`). `Current` readers stay asleep; a `Current`
-wait is now satisfiable, and `Settled` subscribers wake on the readiness edge.
+wait is now satisfiable. A concluded reader carries the new finality through
+its outputs without re-running; a standing `Settled` wait wakes only when the
+fact becomes final.
 The first claim that carries real evidence is an ordinary ascent, 0 -> 1.
 
 A REPLACING fact has no bottom to be at, so this never applies to one: whatever
@@ -276,9 +278,10 @@ an edge for EVERY callsite it reaches, unresolved and all
 (`CallSiteResolution`, [`semantic-fixpoint`](semantic-fixpoint.md)), so silence
 about one really is knowledge and nothing about those kinds is preserved. A
 preserved claim is RE-LISTED, never re-published: its revision does not move, its stored
-value is untouched, and no `Current` reader wakes (a readiness flip on a
-re-listed key is representable and reaches `Settled` subscribers only). One
-side effect is real: re-listed `Activation` keys pass
+value is untouched, and no reader wakes. A readiness flip on a re-listed key
+still propagates finality through concluded readers and can satisfy a standing
+`Settled` wait only when it becomes final. One side effect is real:
+re-listed `Activation` keys pass
 back through the completion's frontier harvest, so an unsettled callee is
 re-noted on every preserving conclusion — bounded, and retired by the drain
 pass's has-run guard.
@@ -320,20 +323,31 @@ it yields several answers.
 The scope walk (`source_publish.rs`) publishes answers reached before its run
 concludes. `ScopeSession::define_source_function` records a
 `Function(f)` derivation as soon as it defines each function, carrying the
-reads accumulated up to that point (`ground_derivations` in `jobs/source.rs`
-splices in the reads the scope walk's own job had before the walk began, so an
-answer that read nothing downstream still stands on real ground rather than
-looking quiet by omission). When the walk later blocks on something further
-down — an item-macro expansion, say — `blocked_effects` carries every
-derivation reached so far out with the job's wait.
+reads accumulated up to that point. `ground_derivations` in `jobs/source.rs`
+adds only the scope job's base ground — the prelude and parent scope read
+before the walk — to each such prefix. The scope conclusion separately reads
+the walk's complete final dependency set, including imports encountered after
+an earlier function. This keeps a function source on real ground without
+making it subscribe to later source forms. When the walk later blocks on
+something further down — an item-macro expansion, say — `blocked_effects`
+carries every derivation reached so far out with the job's wait, and
+`scope_code` adds that pre-walk base ground to both the derivations and the
+blocked job answer. Later reads inside the blocked walk remain specific to the
+answers that actually reached them.
 `AnalyzeActivation(a)` publishes `ReturnType(a)` under its own `Activation(a)`
 derivation, so its waits, reads, claims, rebase state, and return payload have
 one identity. An inactive activation re-lists that same own derivation through
 the ordinary `JobEffects::{reads,outputs,changed}` fields.
-`World::complete_job_with_external` always appends the job's own derivation
-last, carrying the ordinary `JobEffects::{reads,outputs,changed}` exactly as
-before; a job that answers one question per run only ever has this one
-derivation, so its shape is unchanged.
+`World::complete_job_with_external` always appends the job's own
+`Derivation::own` derivation last, carrying the ordinary
+`JobEffects::{reads,outputs,changed}` exactly as before. That is the `Job` key
+for ordinary jobs and the `Activation` key for `AnalyzeActivation`; a job that
+answers one question per run still has only this one derivation.
+
+When the last `ReturnType(a)` claim retracts, `World` clears
+that payload and its ascent count before a later derivation can reuse the key.
+The fact table remains the visibility authority; there is no shadow return
+store.
 
 A run's conclusion replaces reads and claims for each derivation it concludes
 this time (`concluding` — every derivation except the job's own while the job
@@ -449,10 +463,12 @@ claim from a publisher that is still deriving makes the fact unquiet, and that
 reader unfinalises through the same wave as any other reader.
 
 A readiness-only change (a fact losing or regaining finality with the same
-content) reaches `Settled` subscribers ONLY. Routing it
-to `Current` subscribers as well would recompute formulas whose input content
-never moved; `compiler2_scheduler_readiness_only_movement_evaluates_nobody`
-holds that line.
+content) changes the finality of every concluded reader's outputs, but
+evaluates no concluded reader. Only its false-to-true edge can satisfy a
+standing `Settled` wait. Routing it to subscribers, or to `Current` readers,
+would recompute formulas whose input content never moved;
+`compiler2_scheduler_readiness_only_movement_evaluates_nobody` holds that
+line.
 
 ### The drain arbiter
 

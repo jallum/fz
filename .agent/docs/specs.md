@@ -73,9 +73,10 @@ Compiler2 owns the active contract path:
   where the walk reaches a NODE it cannot read — the witness carries variables,
   or names no structure of the pattern's kind — every covariant variable beneath
   it is owed a term it did not get, and what `Sigma` holds is a PARTIAL join.
-  (The unit is the node's merged outcome, not the individual occurrence; see
-  [`addressed-arrow`](addressed-arrow.md) for the two collectors that skip an
-  occurrence without marking it.) The parameter surface still refines from it
+  A node-wide unreadable witness marks every lower occurrence beneath it; a
+  collector that skips one live subtree marks that subtree at the skip boundary.
+  A callable UNION already satisfied by one arm owes no observation from an
+  unused alternative. The parameter surface still refines from it
   (it is a sound lower bound), but the verdict is `Underconstrained`, so
   `FunctionContract::apply` publishes no result for that clause. `reduce_cont`'s
   accumulator variable occurs at the SEED and inside the reducer arrow's RESULT;

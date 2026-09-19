@@ -350,18 +350,15 @@ Fact waits returned by product producers in `jobs::artifact`, `jobs::backend`,
 `jobs::transport`, and `jobs::runtime_demand` are polled by the pull driver, so
 they do not register scheduler waiters. Scheduler jobs are different:
 `SeedRoot`, for example, returns settled `JobEffects` waits that
-`World::complete_job` registers with the work graph. fz-kdt.45 added another
-scheduler formula, `DeriveExecutableFacts(E)`, for the direct
-`ExecutableFacts(E)` World fact. It stands directly on settled semantic facts;
-in this fixture, `ActivationAnalyzed` and `CallSiteSummary` finality flips wake
-that exact producer and exercise `Cause::Readiness`. This signal comes from
-direct `ExecutableFacts` scheduling and is independent of how root analysis is
-ignited. On
-`00181_enum_reduce_operator_ref`, the 21 recorded wakes are 18 enqueues and 3
-coalesces, producing 18 readiness-caused evaluations and no uncaused work.
+`World::complete_job` registers with the work graph. A false-to-true finality
+movement wakes one of those standing waiters; a concluded formula that merely
+read a settled fact instead carries the changed finality through its outputs
+without another evaluation. fz-kdt.45's `DeriveExecutableFacts(E)` is one such
+direct fact formula once it has concluded. On
+`00181_enum_reduce_operator_ref`,
 `the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation`
-(`tests/fz2_cli.rs`) pins the cause identities and preserves the surrounding
-causal and output counts.
+(`tests/fz2_cli.rs`) pins that all formula work is either initial or caused by
+content, with no readiness-caused or unexplained re-run.
 
 The public stream is SELF-DESCRIBING (fz-kdt.34.6). A raw `Ty` or `FunctionId`
 is a position in one `World`, so a log that carries only ids means nothing to a

@@ -102,7 +102,7 @@ use crate::fz_ir::FnId;
 
 use super::addressed::address_path;
 use super::conj::Conj;
-use super::descr::Descr;
+use super::descr::{Descr, Structure};
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{Ty, TyCtx, TypeVarId};
 
@@ -168,7 +168,7 @@ impl<'a> ClauseOrder<'a> {
     /// Factors have to lead: a clause compares by its stored factor lists, so
     /// the clause sort is a function of the clause SET only once each clause is
     /// a function of its own factor set.
-    pub(super) fn sort_axes(&self, d: &mut Descr) {
+    pub(super) fn sort_axes(&self, d: &mut Structure) {
         self.sort_axis(&mut d.tuples);
         self.sort_axis(&mut d.lists);
         self.sort_axis(&mut d.resources);
@@ -248,11 +248,22 @@ impl<'a> ClauseOrder<'a> {
     }
 
     fn cmp_descr(&self, a: &Descr, b: &Descr) -> Ordering {
+        lex(&a.cases, &b.cases, |left, right| {
+            left.brands
+                .cmp(&right.brands)
+                .then_with(|| self.cmp_structure(&left.structure, &right.structure))
+        })
+    }
+
+    /// A descriptor is an ordered finite/cofinite brand partition, not one
+    /// structural payload plus a global refinement.  The pair memo stays at
+    /// `Ty` edges in `cmp_ty`; case comparison delegates each payload through
+    /// the same child comparator, so regular cycles retain those guards.
+    fn cmp_structure(&self, a: &Structure, b: &Structure) -> Ordering {
         a.basic
             .cmp(&b.basic)
             .then_with(|| a.atoms.cmp(&b.atoms))
             .then_with(|| a.opaques.cmp(&b.opaques))
-            .then_with(|| a.brands.cmp(&b.brands))
             .then_with(|| self.cmp_vars(&a.vars, &b.vars))
             .then_with(|| self.cmp_axis(&a.tuples, &b.tuples))
             .then_with(|| self.cmp_axis(&a.lists, &b.lists))

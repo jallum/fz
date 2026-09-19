@@ -118,6 +118,7 @@ pub(super) fn scope_code(
             if world.is_prelude(source_owner) {
                 world.set_prelude_head(namespace);
             }
+            let derivations = ground_derivations(derivations, &reads);
             reads.extend(scope_reads);
             let scoped_changed = world.finish_code_scope(source_owner, namespace);
             outputs.push(FactKey::CodeScoped(source_owner));
@@ -127,13 +128,17 @@ pub(super) fn scope_code(
             Ok(JobEffects {
                 reads: current_uses(reads.clone()),
                 product_reads,
-                derivations: ground_derivations(derivations, &reads),
+                derivations,
                 outputs,
                 changed,
                 ..JobEffects::default()
             })
         }
-        ScopePublication::Blocked(effects) => Ok(effects),
+        ScopePublication::Blocked(mut effects) => {
+            effects.reads.splice(0..0, current_uses(reads.clone()));
+            effects.derivations = ground_derivations(effects.derivations, &reads);
+            Ok(effects)
+        }
     }
 }
 

@@ -1926,6 +1926,93 @@ fn compiler2_scheduler_readiness_only_movement_evaluates_nobody() {
     assert_eq!(scheduler.pending_jobs(), 0, "nothing may be left to evaluate");
 }
 
+#[test]
+fn compiler2_scheduler_losing_settledness_unfinalizes_but_does_not_wake_a_settled_reader() {
+    let mut scheduler = TestScheduler::new();
+    complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["u"],
+        vec!["u"],
+    );
+    complete(
+        &mut scheduler,
+        JOB_A,
+        HashSet::from([settled("u")]),
+        HashSet::new(),
+        vec!["a"],
+        vec!["a"],
+    );
+    while scheduler.pop().is_some() {}
+    assert!(scheduler.facts().is_settled(&"a"));
+
+    let step = complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::from([current("later")]),
+        vec!["u"],
+        Vec::new(),
+    );
+
+    assert!(
+        step.wakes.is_empty(),
+        "losing readiness makes the settled reader's answer unfinal without evaluating it"
+    );
+    assert_eq!(scheduler.pop(), None, "a readiness loss cannot start work");
+    assert!(
+        !scheduler.facts().is_settled(&"a"),
+        "the settled reader's output still tracks its upstream finality"
+    );
+
+    complete(
+        &mut scheduler,
+        JOB_B,
+        HashSet::new(),
+        HashSet::from([settled("u")]),
+        Vec::new(),
+        Vec::new(),
+    );
+    let restored = complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["u"],
+        Vec::new(),
+    );
+    assert_eq!(
+        enqueued_jobs(&restored),
+        vec![JOB_B],
+        "regaining readiness resumes only the job that was waiting for it"
+    );
+    assert_eq!(scheduler.pop(), Some(JOB_B));
+    complete(
+        &mut scheduler,
+        JOB_B,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let content = complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["u"],
+        vec!["u"],
+    );
+    assert_eq!(
+        enqueued_jobs(&content),
+        vec![JOB_A],
+        "a content revision still wakes its concluded settled reader"
+    );
+}
+
 /// Spec test 2. When the head's content really does move, only the transitive
 /// CONTENT readers evaluate — one hop per completion, exactly as before this
 /// ticket. Transitive finality adds no evaluations.

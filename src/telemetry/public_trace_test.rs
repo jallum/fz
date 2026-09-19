@@ -1541,7 +1541,10 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             // helpers the reached paths call as ordinary generic functions;
             // the three edit scenarios walk only what their edit moves, which
             // is why `unchanged` and `unreachable_edit` are zero and the two
-            // reached edits are a fraction of cold. Tuple-field demands join
+            // reached edits are a fraction of cold. Finality-only edges do
+            // not re-walk concluded runtime-demand readers, so each
+            // reached-leaf edit performs only its one content-driven body
+            // walk. Tuple-field demands join
             // as prefixes, so a field one consumer reads stays distinct from
             // a field another ignores -- take/drop/split pays two extra cold
             // walks for that and saves eighteen on the replacement edit, which
@@ -1553,7 +1556,7 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // beside the closure value, rather than materializing a
                 // synthetic callable value for the contract. That removes
                 // redundant demand body walks on the callable lenses.
-                [[237, 0, 0, 5, 5], [592, 0, 0, 49, 6], [1117, 0, 0, 53, 6]][fixture_index][scenario],
+                [[237, 0, 0, 1, 5], [592, 0, 0, 1, 6], [1117, 0, 0, 1, 6]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()

@@ -7,6 +7,7 @@ mod addressed;
 mod arrow_match;
 mod axis;
 mod bits;
+mod callable;
 mod canon;
 mod closure_surface_var;
 mod conj;
@@ -54,8 +55,8 @@ use addressed::AddrStep;
 pub(crate) use closure_surface_var::{ClosureSurfacePos, decode_closure_surface_var};
 use closure_surface_var::{closure_ret_var_id, closure_var_id};
 use conj::Conj;
-use descr::Descr;
 use descr::OpaqueTag;
+use descr::{BrandCase, Descr, Structure, StructureOf, canonical_brand_partition, union_of};
 pub(crate) use descr::{DescrOf, union_of as union_regular_bodies};
 use dnf::dnf_intersect_with;
 pub(crate) use regular::ComponentRef;
@@ -165,10 +166,6 @@ struct TypeInterner {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "boxing the sole direct descriptor key adds an allocation to every ordinary interner lookup"
-)]
 enum InternKey {
     Direct(Descr),
     Regular(Box<regular::RegularKey>),
@@ -248,7 +245,7 @@ pub(super) fn normalize_tuple_coordinate_difference_with<R: Clone>(
     Conj::pos_of(TupleSigOf { elems })
 }
 
-fn normalize_literal_callable_surfaces_with<R: Clone>(ops: &mut impl CallableSurfaceOps<R>, d: &mut DescrOf<R>) {
+fn normalize_literal_callable_surfaces_with<R: Clone>(ops: &mut impl CallableSurfaceOps<R>, d: &mut StructureOf<R>) {
     for sig in d
         .funcs
         .iter_mut()
@@ -527,20 +524,23 @@ impl TypeInterner {
     #[cfg(debug_assertions)]
     fn debug_assert_dnf_axes_hygienic(&self, d: &Descr) {
         let cx = self.ctx();
-        debug_assert_no_empty_clauses(cx, &d.tuples, emptiness::tuple_clause_empty, "tuples");
-        debug_assert_no_empty_clauses(cx, &d.lists, emptiness::list_clause_empty, "lists");
-        debug_assert_no_empty_clauses(cx, &d.resources, emptiness::resource_clause_empty, "resources");
-        debug_assert_no_empty_clauses(cx, &d.funcs, emptiness::func_clause_empty, "funcs");
-        debug_assert_no_empty_clauses(cx, &d.maps, emptiness::map_clause_empty, "maps");
-        debug_assert_absorbed(cx, &d.tuples, "tuple", &axis::TUPLES);
-        debug_assert_absorbed(cx, &d.lists, "list", &axis::LISTS);
-        debug_assert_absorbed(cx, &d.resources, "resource", &axis::RESOURCES);
-        debug_assert_absorbed(cx, &d.maps, "map", &axis::MAPS);
-        if callable_axis_is_literal_free(&d.funcs) {
-            debug_assert_absorbed(cx, &d.funcs, "callable", &axis::FUNCS);
+        for case in &d.cases {
+            let d = &case.structure;
+            debug_assert_no_empty_clauses(cx, &d.tuples, emptiness::tuple_clause_empty, "tuples");
+            debug_assert_no_empty_clauses(cx, &d.lists, emptiness::list_clause_empty, "lists");
+            debug_assert_no_empty_clauses(cx, &d.resources, emptiness::resource_clause_empty, "resources");
+            debug_assert_no_empty_clauses(cx, &d.funcs, emptiness::func_clause_empty, "funcs");
+            debug_assert_no_empty_clauses(cx, &d.maps, emptiness::map_clause_empty, "maps");
+            debug_assert_absorbed(cx, &d.tuples, "tuple", &axis::TUPLES);
+            debug_assert_absorbed(cx, &d.lists, "list", &axis::LISTS);
+            debug_assert_absorbed(cx, &d.resources, "resource", &axis::RESOURCES);
+            debug_assert_absorbed(cx, &d.maps, "map", &axis::MAPS);
+            if callable_axis_is_literal_free(&d.funcs) {
+                debug_assert_absorbed(cx, &d.funcs, "callable", &axis::FUNCS);
+            }
+            debug_assert_lists_merged(&d.lists);
+            debug_assert_no_exact_duplicates(&d.funcs, "funcs");
         }
-        debug_assert_lists_merged(&d.lists);
-        debug_assert_no_exact_duplicates(&d.funcs, "funcs");
     }
 }
 
@@ -626,7 +626,7 @@ fn debug_assert_absorbed<T: Clone + PartialEq + 'static>(
     // Runs on an index MISS only, so it asks both relations directly rather
     // than through the caches the boundary itself goes through.
     let subtype = &|narrower: &Ty, wider: &Ty| cx.descr(narrower).is_subtype(cx, cx.descr(wider));
-    let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
+    let covers = &|wider: &Structure, narrower: &Structure| narrower.is_subtype(cx, wider);
     // An axis its clauses cover is written as the ONE spelling of its top, the
     // contentless clause, which the early return above has already let through.
     // Reaching here saturated means the boundary left a second spelling.
@@ -826,17 +826,31 @@ impl Types {
             return ty;
         }
         self.interner.normalized();
-        self.normalize_tuple_axis(&mut d);
-        self.normalize_list_clauses(&mut d);
-        self.normalize_literal_callable_surfaces(&mut d);
-        self.order_clauses(&mut d);
-        self.drop_empty_clauses(&mut d);
-        self.absorb_covered_clauses(&mut d);
-        dedupe_exact_clauses(&mut d.funcs);
+        d = self.normalize_brand_partition(d);
         if d.looks_empty() {
             d = Descr::none();
         }
         self.interner.intern(d)
+    }
+
+    fn normalize_structure(&mut self, structure: &mut Structure) {
+        self.normalize_tuple_axis(structure);
+        self.normalize_list_clauses(structure);
+        self.normalize_literal_callable_surfaces(structure);
+        self.order_clauses(structure);
+        self.drop_empty_clauses(structure);
+        self.absorb_covered_clauses(structure);
+        dedupe_exact_clauses(&mut structure.funcs);
+    }
+
+    /// Canonicalize the one authoritative correlated representation.  Each
+    /// mentioned brand becomes a singleton cell and all other brands share one
+    /// residual cell.  A cell receives the union of exactly the structures its
+    /// input cases admit; equal normalized payloads are then reassembled into
+    /// finite or cofinite brand sets.  Thus overlap, input order, and rectangle
+    /// carving cannot affect a `Ty` identity.
+    fn normalize_brand_partition(&mut self, d: Descr) -> Descr {
+        canonical_brand_partition(d, |structure| self.normalize_structure(structure))
     }
 
     #[cfg(test)]
@@ -869,7 +883,9 @@ impl Types {
     }
 
     pub(crate) fn regular_brand(mut body: DescrOf<ComponentRef>, name: &str) -> DescrOf<ComponentRef> {
-        body.brands = FiniteSet::lit(name.to_string());
+        for case in &mut body.cases {
+            case.brands = FiniteSet::lit(name.to_string());
+        }
         body
     }
 
@@ -897,7 +913,7 @@ impl Types {
 
     /// The list axis rewritten to the one normal form in [`axis`], clause by
     /// clause and then across the set.
-    fn normalize_list_clauses(&mut self, d: &mut Descr) {
+    fn normalize_list_clauses(&mut self, d: &mut Structure) {
         let clauses = std::mem::take(&mut d.lists);
         d.lists = clauses.into_iter().map(|c| self.list_normal_form(c)).collect();
         axis::merge_empty_list_clause(&mut d.lists);
@@ -906,7 +922,7 @@ impl Types {
     /// Direct callable observations are activation coordinates, not value
     /// identity. A named literal has one reproducible owner template; an
     /// anonymous literal keeps only its arity.
-    fn normalize_literal_callable_surfaces(&mut self, d: &mut Descr) {
+    fn normalize_literal_callable_surfaces(&mut self, d: &mut Structure) {
         normalize_literal_callable_surfaces_with(self, d)
     }
 
@@ -964,7 +980,7 @@ impl Types {
             .any(|elem| self.has_vars(&elem))
     }
 
-    fn order_clauses(&self, d: &mut Descr) {
+    fn order_clauses(&self, d: &mut Structure) {
         self.clause_order().sort_axes(d);
     }
 
@@ -1064,7 +1080,12 @@ impl Types {
     fn assert_activation_origins_registered(&self, root: Ty) {
         self.activation_reachable(root, |ty| {
             let d = self.descr(&ty);
-            for sig in d.funcs.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+            for sig in d
+                .cases
+                .iter()
+                .flat_map(|case| case.structure.funcs.iter())
+                .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+            {
                 if let Some(lit) = &sig.lit
                     && let Some(fn_id) = lit.fn_id
                 {
@@ -1087,27 +1108,48 @@ impl Types {
             }
             visit(ty);
             let d = self.descr(&ty);
-            for sig in d.tuples.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+            for sig in d
+                .cases
+                .iter()
+                .flat_map(|case| case.structure.tuples.iter())
+                .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+            {
                 pending.extend(sig.elems.iter().copied());
             }
-            for sig in d.lists.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+            for sig in d
+                .cases
+                .iter()
+                .flat_map(|case| case.structure.lists.iter())
+                .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+            {
                 pending.extend(sig.elem);
             }
             for sig in d
-                .resources
+                .cases
                 .iter()
+                .flat_map(|case| case.structure.resources.iter())
                 .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
             {
                 pending.push(sig.payload);
             }
-            for sig in d.funcs.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+            for sig in d
+                .cases
+                .iter()
+                .flat_map(|case| case.structure.funcs.iter())
+                .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+            {
                 pending.extend(sig.args.iter().copied());
                 pending.push(sig.ret);
                 if let Some(lit) = &sig.lit {
                     pending.extend(lit.captures.iter().copied());
                 }
             }
-            for sig in d.maps.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+            for sig in d
+                .cases
+                .iter()
+                .flat_map(|case| case.structure.maps.iter())
+                .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+            {
                 pending.extend(sig.fields.values().copied());
             }
         }
@@ -1119,7 +1161,7 @@ impl Types {
     /// substitution) with one pass, and keeps garbage from accumulating across
     /// fixpoint iterations or doubling `dnf_neg` factors downstream. Tuple
     /// coordinates are asked through the memoized `Types::is_empty`.
-    fn drop_empty_clauses(&self, d: &mut Descr) {
+    fn drop_empty_clauses(&self, d: &mut Structure) {
         axis::drop_empty_clauses(self.ctx(), d, &|ty| self.is_empty(ty));
     }
 
@@ -1128,7 +1170,7 @@ impl Types {
     /// A closure literal retains its capture layout until the value reaches
     /// the transport projection; the layout is evidence about construction,
     /// not an alternative spelling of a bare callable value.
-    fn absorb_covered_clauses(&self, d: &mut Descr) {
+    fn absorb_covered_clauses(&self, d: &mut Structure) {
         self.absorb_one_axis(&mut d.tuples, &axis::TUPLES);
         self.absorb_one_axis(&mut d.lists, &axis::LISTS);
         self.absorb_one_axis(&mut d.resources, &axis::RESOURCES);
@@ -1141,7 +1183,7 @@ impl Types {
     fn absorb_one_axis<T: Clone + 'static>(&self, clauses: &mut Vec<Conj<T>>, view: &axis::AxisView<T>) {
         let cx = self.ctx();
         let subtype = &|narrower: &Ty, wider: &Ty| self.is_subtype(narrower, wider);
-        let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
+        let covers = &|wider: &Structure, narrower: &Structure| narrower.is_subtype(cx, wider);
         axis::absorb_axis(cx, clauses, subtype, covers, view);
     }
 
@@ -1162,7 +1204,7 @@ impl Types {
     /// here, so a coordinate is a `Ty` by the time the descriptor reaches the
     /// index. That recursion terminates for the same reason the rest of the
     /// boundary does: a coordinate names only types interned before it.
-    fn normalize_tuple_axis(&mut self, d: &mut Descr) {
+    fn normalize_tuple_axis(&mut self, d: &mut Structure) {
         let clauses = std::mem::take(&mut d.tuples);
         let mut complex = Vec::with_capacity(clauses.len());
         let mut rects: Vec<axis::Rect> = Vec::with_capacity(clauses.len());
@@ -1580,7 +1622,9 @@ impl Types {
 
     pub fn mint_brand(&mut self, inner: Ty, name: &str) -> Ty {
         let mut d = self.descr(&inner).clone();
-        d.brands = FiniteSet::lit(name.to_string());
+        for case in &mut d.cases {
+            case.brands = FiniteSet::lit(name.to_string());
+        }
         self.intern(d)
     }
 
@@ -1597,10 +1641,9 @@ impl Types {
     }
 
     pub(crate) fn nominal_protocol_target(&mut self, name: ModuleName) -> Ty {
-        self.intern(Descr {
-            opaques: FiniteSet::lit(OpaqueTag::ProtocolTarget(name)),
-            ..Descr::unbranded()
-        })
+        let mut d = Descr::unbranded();
+        d.cases[0].structure.opaques = FiniteSet::lit(OpaqueTag::ProtocolTarget(name));
+        self.intern(d)
     }
 
     pub(crate) fn struct_map(
@@ -1639,7 +1682,7 @@ impl Types {
     }
 
     pub fn has_list_shape(&self, a: &Ty) -> bool {
-        !self.descr(a).lists.is_empty()
+        self.descr(a).cases.iter().any(|case| !case.structure.lists.is_empty())
     }
 
     pub fn resource_payload_type(&mut self, a: &Ty) -> Option<Ty> {
@@ -1728,26 +1771,35 @@ impl Types {
         let descr = self.descr(a).clone();
         let any = self.any();
         if descr.as_pure_list(any).is_some() {
-            self.list(any)
+            let rebuilt = Descr::list_of(any);
+            self.intern(reapply_common_brand_partition(&descr, &descr, rebuilt))
         } else if let Some(tuple) = descr.pure_tuple() {
             let elems = tuple
                 .elems
                 .iter()
                 .map(|elem| self.convergence_class(elem))
                 .collect::<Vec<_>>();
-            self.tuple(&elems)
+            self.intern(reapply_common_brand_partition(&descr, &descr, Descr::tuple_of(elems)))
         } else if let Some(resource) = descr.pure_resource(any) {
             let payload = self.convergence_class(&resource.payload);
-            self.resource(payload)
+            self.intern(reapply_common_brand_partition(
+                &descr,
+                &descr,
+                Descr::resource_of(payload),
+            ))
         } else if descr.is_pure_callable() {
-            self.intern(Descr::fun_top())
+            self.intern(reapply_common_brand_partition(&descr, &descr, Descr::fun_top()))
         } else if let Some(record) = descr.pure_record() {
             let fields = record
                 .fields
                 .iter()
                 .map(|(key, value)| (key.clone(), self.convergence_class(value)))
                 .collect::<Vec<_>>();
-            self.intern(Descr::record(record.tag.clone(), fields))
+            self.intern(reapply_common_brand_partition(
+                &descr,
+                &descr,
+                Descr::record(record.tag.clone(), fields),
+            ))
         } else {
             *a
         }
@@ -1776,10 +1828,24 @@ impl Types {
     fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep], keep_elements: bool) -> Ty {
         const ADDRESS_COLLAPSE_DEPTH: usize = 8;
         let descr = self.descr(a).clone();
+        if descr.is_pure_list_family() && descr.cases.len() > 1 {
+            // A demanded/addressed list element is part of this key's meaning.
+            // Reaching it through the outer union must therefore transform
+            // each correlated brand cell independently: joining all elements
+            // first would make `red([int]) | blue([atom])` admit
+            // `red([atom])`.
+            let mut collapsed = self.none();
+            for case in descr.cases {
+                let branch = self.intern(Descr { cases: vec![case] });
+                let branch = self.convergence_class_at(&branch, path, keep_elements);
+                collapsed = self.union(collapsed, branch);
+            }
+            return collapsed;
+        }
         if descr.is_pure_list_family() {
             if path.len() >= ADDRESS_COLLAPSE_DEPTH {
                 let any = self.any();
-                return self.list(any);
+                return self.intern(reapply_common_brand_partition(&descr, &descr, Descr::list_of(any)));
             }
             let mut child = path.to_vec();
             child.push(AddrStep::Elem);
@@ -1790,12 +1856,17 @@ impl Types {
             } else {
                 self.address_var(&child)
             };
-            self.list(elem)
+            self.intern(reapply_common_brand_partition(&descr, &descr, Descr::list_of(elem)))
         } else if descr.is_pure_callable() {
             // A clause-less `fun_top` is the unresolvable fallback; the address
             // var keeps the slot resolvable (`has_vars` true) so the indirect
             // reducer still narrows at its call.
-            self.address_var(path)
+            let variable = self.address_var(path);
+            self.intern(reapply_common_brand_partition(
+                &descr,
+                &descr,
+                self.descr(&variable).clone(),
+            ))
         } else if let Some(tuple) = descr.pure_tuple() {
             let elems = tuple
                 .elems
@@ -1807,13 +1878,17 @@ impl Types {
                     self.convergence_class_at(elem, &child, keep_elements)
                 })
                 .collect::<Vec<_>>();
-            self.tuple(&elems)
+            self.intern(reapply_common_brand_partition(&descr, &descr, Descr::tuple_of(elems)))
         } else if let Some(resource) = descr.pure_resource(self.any()) {
             let payload = resource.payload;
             let mut child = path.to_vec();
             child.push(AddrStep::Payload);
             let payload = self.convergence_class_at(&payload, &child, keep_elements);
-            self.resource(payload)
+            self.intern(reapply_common_brand_partition(
+                &descr,
+                &descr,
+                Descr::resource_of(payload),
+            ))
         } else if let Some(record) = descr.pure_record() {
             let fields = record
                 .fields
@@ -1825,7 +1900,11 @@ impl Types {
                     (key.clone(), self.convergence_class_at(value, &child, keep_elements))
                 })
                 .collect::<Vec<_>>();
-            self.intern(Descr::record(record.tag.clone(), fields))
+            self.intern(reapply_common_brand_partition(
+                &descr,
+                &descr,
+                Descr::record(record.tag.clone(), fields),
+            ))
         } else if keep_elements && self.has_vars(a) {
             // A kept leaf that still carries a free variable is replaced by the
             // canonical address var for its position, never kept verbatim: the
@@ -2038,7 +2117,7 @@ impl Types {
         collapse_concrete_ignored: bool,
     ) -> Ty {
         let mut d = self.descr(&ty).clone();
-        if d.tuples.is_empty() {
+        if d.cases.iter().all(|case| case.structure.tuples.is_empty()) {
             return self.convergence_collapse_ignored_leaf(&ty, path, collapse_concrete_ignored);
         }
         // Discriminate tuple alternatives by their `Variant(k)` step exactly as
@@ -2051,27 +2130,31 @@ impl Types {
         // so `executable_key_for_transport_position` reconstructs a distinct key
         // (fz-go4.18.3.2.1).
         let tuple_alternatives = d
-            .tuples
+            .cases
             .iter()
+            .flat_map(|case| case.structure.tuples.iter())
             .map(|conj| conj.pos.len() + conj.neg.len())
             .sum::<usize>();
         let discriminate_tuple_alternatives = tuple_alternatives > 1;
         let mut tuple_alternative = 0_u16;
-        for conj in &mut d.tuples {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                let alternative = tuple_alternative;
-                tuple_alternative = tuple_alternative.saturating_add(1);
-                for (index, elem) in sig.elems.iter_mut().enumerate() {
-                    let demand = fields.get(&(index as u32)).unwrap_or(&DispatchDemand::Ignore);
-                    let returned = returned_fields
-                        .and_then(|returned| returned.get(&(index as u32)))
-                        .unwrap_or(&DispatchDemand::Ignore);
-                    let mut child = path.to_vec();
-                    if discriminate_tuple_alternatives {
-                        child.push(AddrStep::Variant(alternative));
+        for case in &mut d.cases {
+            for conj in &mut case.structure.tuples {
+                for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                    let alternative = tuple_alternative;
+                    tuple_alternative = tuple_alternative.saturating_add(1);
+                    for (index, elem) in sig.elems.iter_mut().enumerate() {
+                        let demand = fields.get(&(index as u32)).unwrap_or(&DispatchDemand::Ignore);
+                        let returned = returned_fields
+                            .and_then(|returned| returned.get(&(index as u32)))
+                            .unwrap_or(&DispatchDemand::Ignore);
+                        let mut child = path.to_vec();
+                        if discriminate_tuple_alternatives {
+                            child.push(AddrStep::Variant(alternative));
+                        }
+                        child.push(AddrStep::Field(index as u16));
+                        *elem =
+                            self.convergence_collapse_ty(*elem, demand, returned, &child, collapse_concrete_ignored);
                     }
-                    child.push(AddrStep::Field(index as u16));
-                    *elem = self.convergence_collapse_ty(*elem, demand, returned, &child, collapse_concrete_ignored);
                 }
             }
         }
@@ -2087,14 +2170,12 @@ impl Types {
         collapse_concrete_ignored: bool,
     ) -> Ty {
         let mut d = self.descr(&ty).clone();
-        if d.lists.is_empty() {
+        if d.cases.iter().all(|case| case.structure.lists.is_empty()) {
             return self.convergence_collapse_ignored_leaf(&ty, path, collapse_concrete_ignored);
         }
         let mut child = path.to_vec();
         child.push(AddrStep::Elem);
         if collapse_concrete_ignored {
-            let elem_descr = list_element_type(self.ctx(), &d);
-            let elem = self.intern(elem_descr);
             // Demand reached this list's SHAPE, so the element is meaning, not
             // freight -- at every depth, because nothing here can say how far
             // down the forwarding chain that reads it looks (fz-kdt.183). An
@@ -2102,24 +2183,41 @@ impl Types {
             // field) is still collapsed by that demand; an element it stops at
             // is KEPT.
             let returned_elem = returned_elem.unwrap_or(&DispatchDemand::Ignore);
-            let elem =
-                if matches!(elem_demand, DispatchDemand::Ignore) && matches!(returned_elem, DispatchDemand::Ignore) {
+            let mut cases = Vec::new();
+            for case in &d.cases {
+                if case.structure.lists.is_empty() {
+                    continue;
+                }
+                let one_case = Descr {
+                    cases: vec![case.clone()],
+                };
+                let elem = self.intern(list_element_type(self.ctx(), &one_case));
+                let elem = if matches!(elem_demand, DispatchDemand::Ignore)
+                    && matches!(returned_elem, DispatchDemand::Ignore)
+                {
                     self.convergence_class_at(&elem, &child, true)
                 } else {
                     self.convergence_collapse_ty(elem, elem_demand, returned_elem, &child, collapse_concrete_ignored)
                 };
-            return self.list(elem);
+                cases.push(BrandCase {
+                    brands: case.brands.clone(),
+                    structure: Descr::list_of(elem).cases.remove(0).structure,
+                });
+            }
+            return self.intern(Descr { cases });
         }
-        for conj in &mut d.lists {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                if let Some(elem) = sig.elem {
-                    sig.elem = Some(self.convergence_collapse_ty(
-                        elem,
-                        elem_demand,
-                        returned_elem.unwrap_or(&DispatchDemand::Ignore),
-                        &child,
-                        collapse_concrete_ignored,
-                    ));
+        for case in &mut d.cases {
+            for conj in &mut case.structure.lists {
+                for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                    if let Some(elem) = sig.elem {
+                        sig.elem = Some(self.convergence_collapse_ty(
+                            elem,
+                            elem_demand,
+                            returned_elem.unwrap_or(&DispatchDemand::Ignore),
+                            &child,
+                            collapse_concrete_ignored,
+                        ));
+                    }
                 }
             }
         }
@@ -2248,7 +2346,15 @@ impl Types {
     }
 
     pub fn key_var_count(&self, key: &[Ty]) -> usize {
-        key.iter().map(|t| self.descr(t).vars.finite_len().unwrap_or(0)).sum()
+        key.iter()
+            .map(|t| {
+                self.descr(t)
+                    .cases
+                    .iter()
+                    .map(|case| case.structure.vars.finite_len().unwrap_or(0))
+                    .sum::<usize>()
+            })
+            .sum()
     }
 
     pub fn key_subsumes_with(&self, query: &Ty, key: &Ty, sigma: &mut Sigma<Ty>) -> bool {
@@ -2392,45 +2498,48 @@ impl Types {
             return;
         }
         let descr = self.descr(&ty);
-        for conj in &descr.tuples {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                for elem in &sig.elems {
-                    self.collect_struct_modules(*elem, seen, modules);
-                }
-            }
-        }
-        for conj in &descr.lists {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                if let Some(elem) = sig.elem {
-                    self.collect_struct_modules(elem, seen, modules);
-                }
-            }
-        }
-        for conj in &descr.resources {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                self.collect_struct_modules(sig.payload, seen, modules);
-            }
-        }
-        for conj in &descr.funcs {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                for arg in &sig.args {
-                    self.collect_struct_modules(*arg, seen, modules);
-                }
-                self.collect_struct_modules(sig.ret, seen, modules);
-                if let Some(lit) = &sig.lit {
-                    for capture in &lit.captures {
-                        self.collect_struct_modules(*capture, seen, modules);
+        for case in &descr.cases {
+            let descr = &case.structure;
+            for conj in &descr.tuples {
+                for sig in conj.pos.iter().chain(&conj.neg) {
+                    for elem in &sig.elems {
+                        self.collect_struct_modules(*elem, seen, modules);
                     }
                 }
             }
-        }
-        for conj in &descr.maps {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                if let MapTag::Struct(tag) = &sig.tag {
-                    modules.insert(tag.module);
+            for conj in &descr.lists {
+                for sig in conj.pos.iter().chain(&conj.neg) {
+                    if let Some(elem) = sig.elem {
+                        self.collect_struct_modules(elem, seen, modules);
+                    }
                 }
-                for field in sig.fields.values() {
-                    self.collect_struct_modules(*field, seen, modules);
+            }
+            for conj in &descr.resources {
+                for sig in conj.pos.iter().chain(&conj.neg) {
+                    self.collect_struct_modules(sig.payload, seen, modules);
+                }
+            }
+            for conj in &descr.funcs {
+                for sig in conj.pos.iter().chain(&conj.neg) {
+                    for arg in &sig.args {
+                        self.collect_struct_modules(*arg, seen, modules);
+                    }
+                    self.collect_struct_modules(sig.ret, seen, modules);
+                    if let Some(lit) = &sig.lit {
+                        for capture in &lit.captures {
+                            self.collect_struct_modules(*capture, seen, modules);
+                        }
+                    }
+                }
+            }
+            for conj in &descr.maps {
+                for sig in conj.pos.iter().chain(&conj.neg) {
+                    if let MapTag::Struct(tag) = &sig.tag {
+                        modules.insert(tag.module);
+                    }
+                    for field in sig.fields.values() {
+                        self.collect_struct_modules(*field, seen, modules);
+                    }
                 }
             }
         }
@@ -2446,50 +2555,53 @@ impl Types {
             return;
         }
         let descr = self.descr(&ty);
-        if let Some(tags) = descr.opaques.finite_elems() {
-            obligations.extend(tags.filter_map(|tag| {
-                let OpaqueTag::Named(tag) = tag else {
-                    return None;
-                };
-                is_protocol_domain_tag(&tag).then(|| ProtocolDomainObligation::from_marker_tag(tag))
-            }));
-        }
-        for conj in &descr.tuples {
-            for sig in &conj.pos {
-                for elem in &sig.elems {
-                    self.collect_protocol_domain_obligations(*elem, seen, obligations);
-                }
+        for case in &descr.cases {
+            let descr = &case.structure;
+            if let Some(tags) = descr.opaques.finite_elems() {
+                obligations.extend(tags.filter_map(|tag| {
+                    let OpaqueTag::Named(tag) = tag else {
+                        return None;
+                    };
+                    is_protocol_domain_tag(&tag).then(|| ProtocolDomainObligation::from_marker_tag(tag))
+                }));
             }
-        }
-        for conj in &descr.lists {
-            for sig in &conj.pos {
-                if let Some(elem) = sig.elem {
-                    self.collect_protocol_domain_obligations(elem, seen, obligations);
-                }
-            }
-        }
-        for conj in &descr.resources {
-            for sig in &conj.pos {
-                self.collect_protocol_domain_obligations(sig.payload, seen, obligations);
-            }
-        }
-        for conj in &descr.funcs {
-            for sig in &conj.pos {
-                for arg in &sig.args {
-                    self.collect_protocol_domain_obligations(*arg, seen, obligations);
-                }
-                self.collect_protocol_domain_obligations(sig.ret, seen, obligations);
-                if let Some(lit) = &sig.lit {
-                    for capture in &lit.captures {
-                        self.collect_protocol_domain_obligations(*capture, seen, obligations);
+            for conj in &descr.tuples {
+                for sig in &conj.pos {
+                    for elem in &sig.elems {
+                        self.collect_protocol_domain_obligations(*elem, seen, obligations);
                     }
                 }
             }
-        }
-        for conj in &descr.maps {
-            for sig in &conj.pos {
-                for field in sig.fields.values() {
-                    self.collect_protocol_domain_obligations(*field, seen, obligations);
+            for conj in &descr.lists {
+                for sig in &conj.pos {
+                    if let Some(elem) = sig.elem {
+                        self.collect_protocol_domain_obligations(elem, seen, obligations);
+                    }
+                }
+            }
+            for conj in &descr.resources {
+                for sig in &conj.pos {
+                    self.collect_protocol_domain_obligations(sig.payload, seen, obligations);
+                }
+            }
+            for conj in &descr.funcs {
+                for sig in &conj.pos {
+                    for arg in &sig.args {
+                        self.collect_protocol_domain_obligations(*arg, seen, obligations);
+                    }
+                    self.collect_protocol_domain_obligations(sig.ret, seen, obligations);
+                    if let Some(lit) = &sig.lit {
+                        for capture in &lit.captures {
+                            self.collect_protocol_domain_obligations(*capture, seen, obligations);
+                        }
+                    }
+                }
+            }
+            for conj in &descr.maps {
+                for sig in &conj.pos {
+                    for field in sig.fields.values() {
+                        self.collect_protocol_domain_obligations(*field, seen, obligations);
+                    }
                 }
             }
         }
@@ -2538,12 +2650,22 @@ impl Types {
             // codegen already implement the per-value membership check
             // and are reused live today for atom membership, so they need
             // no change to pick up real numeric value sets.
-            ints: if widen_non_structs || descr.basic.contains_all(BasicBits::INT) {
+            ints: if widen_non_structs
+                || descr
+                    .cases
+                    .iter()
+                    .any(|case| case.structure.basic.contains_all(BasicBits::INT))
+            {
                 FiniteSet::any()
             } else {
                 FiniteSet::none()
             },
-            floats: if widen_non_structs || descr.basic.contains_all(BasicBits::FLOAT) {
+            floats: if widen_non_structs
+                || descr
+                    .cases
+                    .iter()
+                    .any(|case| case.structure.basic.contains_all(BasicBits::FLOAT))
+            {
                 FiniteSet::any()
             } else {
                 FiniteSet::none()
@@ -2551,7 +2673,10 @@ impl Types {
             atoms: if widen_non_structs {
                 FiniteSet::any()
             } else {
-                descr.atoms.clone()
+                descr
+                    .cases
+                    .iter()
+                    .fold(FiniteSet::none(), |atoms, case| atoms.union(&case.structure.atoms))
             },
             lists: if widen_non_structs {
                 ListShapes::any()
@@ -2566,13 +2691,17 @@ impl Types {
             named_structs: named_structs.clone(),
             allow_other_structs: named_structs.cofinite,
             maps: widen_non_structs || plain_maps,
-            binaries: widen_non_structs || descr.basic.contains_all(BasicBits::BINARY),
+            binaries: widen_non_structs
+                || descr
+                    .cases
+                    .iter()
+                    .any(|case| case.structure.basic.contains_all(BasicBits::BINARY)),
             callables: if widen_non_structs {
                 CallableShapes::any()
             } else {
                 self.runtime_type_predicate_callables(descr)
             },
-            resources: widen_non_structs || !descr.resources.is_empty(),
+            resources: widen_non_structs || descr.cases.iter().any(|case| !case.structure.resources.is_empty()),
         }
     }
 
@@ -2598,8 +2727,9 @@ impl Types {
         if !shapes.contains(&ListShape::NonEmpty) {
             return ListShapes::exact(shapes, Vec::new());
         }
-        let mut heads = Vec::with_capacity(descr.lists.len());
-        for clause in &descr.lists {
+        let clauses = descr.cases.iter().flat_map(|case| case.structure.lists.iter());
+        let mut heads = Vec::new();
+        for clause in clauses {
             if clause.is_top() {
                 // The axis top is written as the clause with no factors
                 // (`types::axis`), so this clause is `[any]` and its head
@@ -2643,8 +2773,8 @@ impl Types {
     /// arity-only reading, which is what every clause answered before
     /// fz-kdt.119.
     fn runtime_type_predicate_tuples(&self, descr: &Descr) -> TupleShapes {
-        let mut shapes = Vec::with_capacity(descr.tuples.len());
-        for clause in &descr.tuples {
+        let mut shapes = Vec::new();
+        for clause in descr.cases.iter().flat_map(|case| case.structure.tuples.iter()) {
             if clause.pos.len() != 1 || !clause.neg.is_empty() {
                 return TupleShapes::arity_only(tuple_root_arities(descr));
             }
@@ -2674,8 +2804,8 @@ impl Types {
     /// clauses that name no literal, subtract one, or name an anonymous
     /// literal.
     fn runtime_type_predicate_callables(&self, descr: &Descr) -> CallableShapes {
-        let mut shapes = Vec::with_capacity(descr.funcs.len());
-        for clause in &descr.funcs {
+        let mut shapes = Vec::new();
+        for clause in descr.cases.iter().flat_map(|case| case.structure.funcs.iter()) {
             let Some(lit) = callable_identity_literal(clause) else {
                 return CallableShapes::any();
             };
@@ -2704,6 +2834,12 @@ impl Types {
             arrow_join_return(cx, cx.descr(a))
         };
         self.intern(d)
+    }
+
+    /// Apply a literal-free callable type at one ground input row. The
+    /// callable module owns the DNF/overload distinction and its trichotomy.
+    pub(super) fn callable_application(&mut self, callable: Ty, args: &[Ty]) -> callable::CallableApplication {
+        callable::return_on_inputs(self, callable, args)
     }
 
     #[cfg(test)]
@@ -3008,7 +3144,7 @@ impl Types {
         self.interner
             .arena
             .iter()
-            .flat_map(|d| d.funcs.iter())
+            .flat_map(|d| d.cases.iter().flat_map(|case| case.structure.funcs.iter()))
             .flat_map(|c| c.pos.iter().chain(c.neg.iter()))
             .filter_map(|sig| sig.lit.as_ref())
             .filter_map(|lit| lit.fn_id)
@@ -3023,18 +3159,17 @@ impl Types {
             .map(|pos| self.intern(Descr::var(closure_var_id(fn_id, pos))))
             .collect();
         let ret = self.intern(Descr::var(closure_ret_var_id(fn_id)));
-        self.intern(Descr {
-            funcs: vec![Conj::pos_of(ArrowSig {
-                args,
-                ret,
-                lit: Some(ClosureLit {
-                    kind: CallableValueKind::FnRef,
-                    fn_id: Some(fn_id),
-                    captures: Vec::new(),
-                }),
-            })],
-            ..Descr::unbranded()
-        })
+        let mut d = Descr::unbranded();
+        d.cases[0].structure.funcs = vec![Conj::pos_of(ArrowSig {
+            args,
+            ret,
+            lit: Some(ClosureLit {
+                kind: CallableValueKind::FnRef,
+                fn_id: Some(fn_id),
+                captures: Vec::new(),
+            }),
+        })];
+        self.intern(d)
     }
 
     pub fn closure_lit(&mut self, target: ClosureTarget, captures: Vec<Ty>, n_args: usize) -> Ty {
@@ -3043,18 +3178,17 @@ impl Types {
             .map(|pos| self.intern(Descr::var(closure_var_id(fn_id, pos))))
             .collect();
         let ret = self.intern(Descr::var(closure_ret_var_id(fn_id)));
-        self.intern(Descr {
-            funcs: vec![Conj::pos_of(ArrowSig {
-                args,
-                ret,
-                lit: Some(ClosureLit {
-                    kind: CallableValueKind::Closure,
-                    fn_id: Some(fn_id),
-                    captures,
-                }),
-            })],
-            ..Descr::unbranded()
-        })
+        let mut d = Descr::unbranded();
+        d.cases[0].structure.funcs = vec![Conj::pos_of(ArrowSig {
+            args,
+            ret,
+            lit: Some(ClosureLit {
+                kind: CallableValueKind::Closure,
+                fn_id: Some(fn_id),
+                captures,
+            }),
+        })];
+        self.intern(d)
     }
 
     pub fn closure_lit_parts(&self, a: &Ty) -> Option<ClosureLitInfo<Ty>> {
@@ -3458,11 +3592,15 @@ impl SharedRenderTypes for Types {
 }
 
 fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
+    let [case] = d.cases.as_slice() else { return None };
+    if !case.brands.is_any() {
+        return None;
+    }
+    let d = &case.structure;
     let finite: Vec<TypeVarId> = d.vars.finite_elems()?.collect();
     let only_vars = d.basic.is_empty()
         && d.atoms.is_none()
         && d.opaques.is_none()
-        && d.brands.is_any()
         && d.tuples.is_empty()
         && d.lists.is_empty()
         && d.resources.is_empty()
@@ -3472,11 +3610,26 @@ fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
 }
 
 fn intersect_descr(types: &mut Types, a: &Descr, b: &Descr) -> Descr {
-    Descr {
+    let mut cases = Vec::new();
+    for left in &a.cases {
+        for right in &b.cases {
+            let brands = left.brands.intersect(&right.brands);
+            if !brands.is_none() {
+                cases.push(BrandCase {
+                    brands,
+                    structure: intersect_structure(types, &left.structure, &right.structure),
+                });
+            }
+        }
+    }
+    Descr { cases }
+}
+
+fn intersect_structure(types: &mut Types, a: &Structure, b: &Structure) -> Structure {
+    Structure {
         basic: a.basic.intersect(b.basic),
         atoms: a.atoms.intersect(&b.atoms),
         opaques: a.opaques.intersect(&b.opaques),
-        brands: a.brands.intersect(&b.brands),
         vars: a.vars.intersect(&b.vars),
         tuples: intersect_dnf(types, &a.tuples, &b.tuples),
         lists: intersect_dnf(types, &a.lists, &b.lists),
@@ -3540,6 +3693,20 @@ fn returned_element(returned: &DispatchDemand) -> Option<&DispatchDemand> {
 }
 
 fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {
+    let relevant = d
+        .cases
+        .iter()
+        .filter(|case| !case.structure.lists.is_empty())
+        .collect::<Vec<_>>();
+    if relevant.is_empty() {
+        return Descr::any();
+    }
+    relevant.into_iter().fold(Descr::none(), |elem, case| {
+        elem.union(cx, &list_element_structure(cx, &case.structure))
+    })
+}
+
+fn list_element_structure(cx: TyCtx<'_>, d: &Structure) -> Descr {
     if d.lists.is_empty() {
         return Descr::any();
     }
@@ -3566,6 +3733,18 @@ fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {
 }
 
 fn resource_payload_type(cx: TyCtx<'_>, d: &Descr) -> Option<Descr> {
+    let mut payload = Descr::none();
+    let mut found = false;
+    for case in d.cases.iter().filter(|case| !case.structure.resources.is_empty()) {
+        if let Some(case_payload) = resource_payload_structure(cx, &case.structure) {
+            payload = payload.union(cx, &case_payload);
+            found = true;
+        }
+    }
+    found.then_some(payload)
+}
+
+fn resource_payload_structure(cx: TyCtx<'_>, d: &Structure) -> Option<Descr> {
     if d.resources.is_empty() {
         return None;
     }
@@ -3588,6 +3767,19 @@ fn resource_payload_type(cx: TyCtx<'_>, d: &Descr) -> Option<Descr> {
 }
 
 fn tuple_projections(cx: TyCtx<'_>, d: &Descr, arity: usize) -> Vec<Descr> {
+    let mut comps = vec![Descr::none(); arity];
+    let mut found = false;
+    for case in d.cases.iter().filter(|case| !case.structure.tuples.is_empty()) {
+        let projected = tuple_projections_structure(cx, &case.structure, arity);
+        for (out, case_out) in comps.iter_mut().zip(projected) {
+            *out = out.union(cx, &case_out);
+        }
+        found = true;
+    }
+    if found { comps } else { vec![Descr::any(); arity] }
+}
+
+fn tuple_projections_structure(cx: TyCtx<'_>, d: &Structure, arity: usize) -> Vec<Descr> {
     let mut comps = vec![Descr::none(); arity];
     let mut found = false;
     for conj in &d.tuples {
@@ -3616,6 +3808,20 @@ fn tuple_projections(cx: TyCtx<'_>, d: &Descr, arity: usize) -> Vec<Descr> {
 }
 
 fn tuple_field_type(cx: TyCtx<'_>, d: &Descr, index: usize) -> Descr {
+    let relevant = d
+        .cases
+        .iter()
+        .filter(|case| !case.structure.tuples.is_empty())
+        .collect::<Vec<_>>();
+    if relevant.is_empty() {
+        return Descr::none();
+    }
+    relevant.into_iter().fold(Descr::none(), |out, case| {
+        out.union(cx, &tuple_field_structure(cx, &case.structure, index))
+    })
+}
+
+fn tuple_field_structure(cx: TyCtx<'_>, d: &Structure, index: usize) -> Descr {
     let mut out = Descr::none();
     let mut found = false;
     for conj in &d.tuples {
@@ -3654,6 +3860,18 @@ fn tuple_field_type(cx: TyCtx<'_>, d: &Descr, index: usize) -> Descr {
 }
 
 fn map_field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
+    let mut acc = Descr::none();
+    let mut found = false;
+    for case in &d.cases {
+        if let Some(value) = map_field_structure(cx, &case.structure, key) {
+            acc = acc.union(cx, &value);
+            found = true;
+        }
+    }
+    found.then_some(acc)
+}
+
+fn map_field_structure(cx: TyCtx<'_>, d: &Structure, key: &MapKey) -> Option<Descr> {
     if d.maps.is_empty() {
         return None;
     }
@@ -3686,7 +3904,7 @@ fn map_field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
 
 fn map_known_keys(d: &Descr) -> Vec<MapKey> {
     let mut keys = BTreeSet::new();
-    for conj in &d.maps {
+    for conj in d.cases.iter().flat_map(|case| case.structure.maps.iter()) {
         for sig in &conj.pos {
             keys.extend(sig.fields.keys().cloned());
         }
@@ -3695,12 +3913,17 @@ fn map_known_keys(d: &Descr) -> Vec<MapKey> {
 }
 
 fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>> {
-    if d.funcs.is_empty() || d.funcs.iter().any(|c| !c.neg.is_empty() || c.pos.is_empty()) {
+    let funcs = d
+        .cases
+        .iter()
+        .flat_map(|case| case.structure.funcs.iter())
+        .collect::<Vec<_>>();
+    if funcs.is_empty() || funcs.iter().any(|c| !c.neg.is_empty() || c.pos.is_empty()) {
         return None;
     }
     Some(
-        d.funcs
-            .iter()
+        funcs
+            .into_iter()
             .flat_map(|conj| conj.pos.iter())
             .map(|arrow| CallableClause {
                 args: arrow.args.clone(),
@@ -3719,20 +3942,22 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
 }
 
 fn runtime_type_predicate_widens_non_structs(descr: &Descr) -> bool {
-    descr.opaques.cofinite
-        || descr
-            .opaques
-            .values
-            .iter()
-            .any(|tag| matches!(tag, OpaqueTag::Builtin(_) | OpaqueTag::Named(_)))
-        || descr.vars.cofinite
-        || !descr.vars.values.is_empty()
+    descr.cases.iter().any(|case| {
+        let d = &case.structure;
+        d.opaques.cofinite
+            || d.opaques
+                .values
+                .iter()
+                .any(|tag| matches!(tag, OpaqueTag::Builtin(_) | OpaqueTag::Named(_)))
+            || d.vars.cofinite
+            || !d.vars.values.is_empty()
+    })
 }
 
 fn runtime_type_predicate_map_tags(descr: &Descr) -> (bool, FiniteSet<ModuleName>) {
     let mut plain = false;
     let mut structs = FiniteSet::none();
-    for clause in &descr.maps {
+    for clause in descr.cases.iter().flat_map(|case| case.structure.maps.iter()) {
         let positive = clause.pos.first().map(|sig| &sig.tag);
         if clause.pos.iter().skip(1).any(|sig| Some(&sig.tag) != positive) {
             continue;
@@ -3764,7 +3989,7 @@ fn runtime_type_predicate_map_tags(descr: &Descr) -> (bool, FiniteSet<ModuleName
 
 fn runtime_type_predicate_list_shapes(descr: &Descr) -> FiniteSet<ListShape> {
     let mut out = FiniteSet::none();
-    for clause in &descr.lists {
+    for clause in descr.cases.iter().flat_map(|case| case.structure.lists.iter()) {
         let mut allowed = FiniteSet::finite([ListShape::Empty, ListShape::NonEmpty]);
         for sig in &clause.pos {
             let sig_allowed = if sig.is_exact_empty() {
@@ -3802,7 +4027,7 @@ fn negative_swallows_the_fragment(clause: &Conj<ListSig>, negative: &ListSig) ->
 
 fn tuple_root_arities(descr: &Descr) -> FiniteSet<usize> {
     let mut out = FiniteSet::none();
-    for clause in &descr.tuples {
+    for clause in descr.cases.iter().flat_map(|case| case.structure.tuples.iter()) {
         let mut allowed = if clause.pos.is_empty() {
             FiniteSet::any()
         } else {
@@ -3823,12 +4048,14 @@ fn tuple_root_arities(descr: &Descr) -> FiniteSet<usize> {
 fn has_only_tuple_runtime_roots(descr: &Descr) -> bool {
     let (maps, named_structs) = runtime_type_predicate_map_tags(descr);
     !runtime_type_predicate_widens_non_structs(descr)
-        && descr.basic.is_empty()
-        && descr.atoms.is_none()
-        && descr.opaques.is_none()
+        && descr.cases.iter().all(|case| {
+            case.structure.basic.is_empty() && case.structure.atoms.is_none() && case.structure.opaques.is_none()
+        })
         && runtime_type_predicate_list_shapes(descr).is_none()
-        && descr.resources.is_empty()
-        && descr.funcs.is_empty()
+        && descr
+            .cases
+            .iter()
+            .all(|case| case.structure.resources.is_empty() && case.structure.funcs.is_empty())
         && !maps
         && named_structs.is_none()
 }
@@ -3896,14 +4123,18 @@ fn callable_identity_literal(clause: &Conj<ArrowSig>) -> Option<&ClosureLit> {
 }
 
 fn runtime_type_predicate_named_structs(descr: &Descr, structs: FiniteSet<ModuleName>) -> FiniteSet<ModuleName> {
-    let nominal = if descr.opaques.cofinite {
-        FiniteSet::none()
-    } else {
-        FiniteSet::finite(descr.opaques.values.iter().filter_map(|tag| match tag {
-            OpaqueTag::ProtocolTarget(module) => Some(module.clone()),
-            OpaqueTag::Builtin(_) | OpaqueTag::Named(_) => None,
-        }))
-    };
+    let nominal = descr.cases.iter().fold(FiniteSet::none(), |acc, case| {
+        let opaques = &case.structure.opaques;
+        let names = if opaques.cofinite {
+            FiniteSet::none()
+        } else {
+            FiniteSet::finite(opaques.values.iter().filter_map(|tag| match tag {
+                OpaqueTag::ProtocolTarget(module) => Some(module.clone()),
+                OpaqueTag::Builtin(_) | OpaqueTag::Named(_) => None,
+            }))
+        };
+        acc.union(&names)
+    });
     nominal.union(&structs)
 }
 
@@ -3928,43 +4159,46 @@ fn collect_free_vars(cx: TyCtx<'_>, ty: Ty, seen: &mut HashSet<Ty>, ids: &mut BT
         return;
     }
     let d = cx.descr(&ty);
-    ids.extend(d.vars.values.iter().copied());
-    for c in &d.tuples {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for t in &sig.elems {
-                collect_free_vars(cx, *t, seen, ids);
-            }
-        }
-    }
-    for c in &d.lists {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            if let Some(t) = sig.elem {
-                collect_free_vars(cx, t, seen, ids);
-            }
-        }
-    }
-    for c in &d.resources {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            collect_free_vars(cx, sig.payload, seen, ids);
-        }
-    }
-    for c in &d.funcs {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for t in &sig.args {
-                collect_free_vars(cx, *t, seen, ids);
-            }
-            collect_free_vars(cx, sig.ret, seen, ids);
-            if let Some(lit) = sig.lit.as_ref() {
-                for t in &lit.captures {
+    for case in &d.cases {
+        let d = &case.structure;
+        ids.extend(d.vars.values.iter().copied());
+        for c in &d.tuples {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                for t in &sig.elems {
                     collect_free_vars(cx, *t, seen, ids);
                 }
             }
         }
-    }
-    for c in &d.maps {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for t in sig.fields.values() {
-                collect_free_vars(cx, *t, seen, ids);
+        for c in &d.lists {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                if let Some(t) = sig.elem {
+                    collect_free_vars(cx, t, seen, ids);
+                }
+            }
+        }
+        for c in &d.resources {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                collect_free_vars(cx, sig.payload, seen, ids);
+            }
+        }
+        for c in &d.funcs {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                for t in &sig.args {
+                    collect_free_vars(cx, *t, seen, ids);
+                }
+                collect_free_vars(cx, sig.ret, seen, ids);
+                if let Some(lit) = sig.lit.as_ref() {
+                    for t in &lit.captures {
+                        collect_free_vars(cx, *t, seen, ids);
+                    }
+                }
+            }
+        }
+        for c in &d.maps {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                for t in sig.fields.values() {
+                    collect_free_vars(cx, *t, seen, ids);
+                }
             }
         }
     }
@@ -3982,43 +4216,46 @@ fn collect_lit_arrow_shapes(cx: TyCtx<'_>, t: &Ty, seen: &mut HashSet<Ty>, shape
         return;
     }
     let d = cx.descr(t);
-    for c in &d.tuples {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for e in &sig.elems {
-                collect_lit_arrow_shapes(cx, e, seen, shapes);
-            }
-        }
-    }
-    for c in &d.lists {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            if let Some(e) = sig.elem {
-                collect_lit_arrow_shapes(cx, &e, seen, shapes);
-            }
-        }
-    }
-    for c in &d.resources {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            collect_lit_arrow_shapes(cx, &sig.payload, seen, shapes);
-        }
-    }
-    for c in &d.funcs {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            if let Some(lit) = sig.lit.as_ref() {
-                shapes.push((lit.fn_id, lit.captures.clone(), sig.args.clone(), sig.ret));
-                for capture in &lit.captures {
-                    collect_lit_arrow_shapes(cx, capture, seen, shapes);
+    for case in &d.cases {
+        let d = &case.structure;
+        for c in &d.tuples {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                for e in &sig.elems {
+                    collect_lit_arrow_shapes(cx, e, seen, shapes);
                 }
             }
-            for arg in &sig.args {
-                collect_lit_arrow_shapes(cx, arg, seen, shapes);
-            }
-            collect_lit_arrow_shapes(cx, &sig.ret, seen, shapes);
         }
-    }
-    for c in &d.maps {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for field in sig.fields.values() {
-                collect_lit_arrow_shapes(cx, field, seen, shapes);
+        for c in &d.lists {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                if let Some(e) = sig.elem {
+                    collect_lit_arrow_shapes(cx, &e, seen, shapes);
+                }
+            }
+        }
+        for c in &d.resources {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                collect_lit_arrow_shapes(cx, &sig.payload, seen, shapes);
+            }
+        }
+        for c in &d.funcs {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                if let Some(lit) = sig.lit.as_ref() {
+                    shapes.push((lit.fn_id, lit.captures.clone(), sig.args.clone(), sig.ret));
+                    for capture in &lit.captures {
+                        collect_lit_arrow_shapes(cx, capture, seen, shapes);
+                    }
+                }
+                for arg in &sig.args {
+                    collect_lit_arrow_shapes(cx, arg, seen, shapes);
+                }
+                collect_lit_arrow_shapes(cx, &sig.ret, seen, shapes);
+            }
+        }
+        for c in &d.maps {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                for field in sig.fields.values() {
+                    collect_lit_arrow_shapes(cx, field, seen, shapes);
+                }
             }
         }
     }
@@ -4034,6 +4271,10 @@ fn has_vars_ty(cx: TyCtx<'_>, ty: Ty, seen: &mut HashSet<Ty>) -> bool {
 }
 
 fn has_vars_descr(cx: TyCtx<'_>, d: &Descr, seen: &mut HashSet<Ty>) -> bool {
+    d.cases.iter().any(|case| has_vars_structure(cx, &case.structure, seen))
+}
+
+fn has_vars_structure(cx: TyCtx<'_>, d: &Structure, seen: &mut HashSet<Ty>) -> bool {
     if !d.vars.values.is_empty() {
         return true;
     }
@@ -4102,43 +4343,42 @@ fn runtime_envelope(
     purpose: RuntimeEnvelopePurpose,
 ) -> Descr {
     let mut descr = types.descr(&ty).clone();
-    if !descr.vars.values.is_empty() {
-        match (polarity, descr.vars.cofinite) {
-            (RuntimeEnvelopePolarity::Positive, _) => return Descr::any(),
-            (RuntimeEnvelopePolarity::Negative, true) => return Descr::none(),
-            (RuntimeEnvelopePolarity::Negative, false) => descr.vars = FiniteSet::none(),
+    for case in &mut descr.cases {
+        let structure = &mut case.structure;
+        if !structure.vars.values.is_empty() {
+            match (polarity, structure.vars.cofinite) {
+                (RuntimeEnvelopePolarity::Positive, _) => return Descr::any(),
+                (RuntimeEnvelopePolarity::Negative, true) => return Descr::none(),
+                (RuntimeEnvelopePolarity::Negative, false) => structure.vars = FiniteSet::none(),
+            }
         }
+        // Only in a positive position: a construction clause drops the arrow and
+        // widens each capture by this same reading, so it names at least the
+        // callables the clause it replaces named -- the direction a test must err
+        // in, and the opposite of the direction a subtracted region may.
+        if purpose == RuntimeEnvelopePurpose::Predicate
+            && polarity == RuntimeEnvelopePolarity::Positive
+            && !structure.funcs.is_empty()
+        {
+            structure.funcs = callable_identity_clauses(types, &structure.funcs);
+        }
+        structure.tuples = std::mem::take(&mut structure.tuples)
+            .into_iter()
+            .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_tuple_sig))
+            .collect();
+        structure.lists = std::mem::take(&mut structure.lists)
+            .into_iter()
+            .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_list_sig))
+            .collect();
+        structure.resources = std::mem::take(&mut structure.resources)
+            .into_iter()
+            .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_resource_sig))
+            .collect();
+        structure.maps = std::mem::take(&mut structure.maps)
+            .into_iter()
+            .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_map_sig))
+            .collect();
     }
-    // Only in a positive position: a construction clause drops the arrow and
-    // widens each capture by this same reading, so it names at least the
-    // callables the clause it replaces named -- the direction a test must err
-    // in, and the opposite of the direction a subtracted region may.
-    if purpose == RuntimeEnvelopePurpose::Predicate
-        && polarity == RuntimeEnvelopePolarity::Positive
-        && !descr.funcs.is_empty()
-    {
-        descr.funcs = callable_identity_clauses(types, &descr.funcs);
-    }
-    descr.tuples = descr
-        .tuples
-        .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_tuple_sig))
-        .collect();
-    descr.lists = descr
-        .lists
-        .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_list_sig))
-        .collect();
-    descr.resources = descr
-        .resources
-        .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_resource_sig))
-        .collect();
-    descr.maps = descr
-        .maps
-        .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_map_sig))
-        .collect();
     descr
 }
 
@@ -4160,7 +4400,7 @@ fn runtime_envelope(
 /// so this path never invents a coarse fallback or a capture layout.
 fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec<Conj<ArrowSig>> {
     if callable_identity_targets(funcs).is_none() {
-        return Descr::fun_top().funcs;
+        return Descr::fun_top().cases.remove(0).structure.funcs;
     }
     let ret = types.any();
     let mut clauses = Vec::with_capacity(funcs.len());
@@ -4299,11 +4539,16 @@ fn runtime_map_sig(
 }
 
 fn arrow_join_return(cx: TyCtx<'_>, d: &Descr) -> Descr {
-    if d.funcs.is_empty() {
+    let funcs = d
+        .cases
+        .iter()
+        .flat_map(|case| case.structure.funcs.iter())
+        .collect::<Vec<_>>();
+    if funcs.is_empty() {
         return Descr::any();
     }
     let mut acc = Descr::none();
-    for c in &d.funcs {
+    for c in funcs {
         if !c.neg.is_empty() || c.pos.is_empty() {
             return Descr::any();
         }
@@ -4340,33 +4585,36 @@ fn contains_callable_literal(types: &Types, root: Ty) -> bool {
             continue;
         }
         let descr = types.descr(&ty);
-        for clause in &descr.funcs {
-            for sig in clause.pos.iter().chain(&clause.neg) {
-                if sig.lit.is_some() {
-                    return true;
+        for case in &descr.cases {
+            let descr = &case.structure;
+            for clause in &descr.funcs {
+                for sig in clause.pos.iter().chain(&clause.neg) {
+                    if sig.lit.is_some() {
+                        return true;
+                    }
+                    work.extend(sig.args.iter().copied());
+                    work.push(sig.ret);
                 }
-                work.extend(sig.args.iter().copied());
-                work.push(sig.ret);
             }
-        }
-        for clause in &descr.tuples {
-            for sig in clause.pos.iter().chain(&clause.neg) {
-                work.extend(sig.elems.iter().copied());
+            for clause in &descr.tuples {
+                for sig in clause.pos.iter().chain(&clause.neg) {
+                    work.extend(sig.elems.iter().copied());
+                }
             }
-        }
-        for clause in &descr.lists {
-            for sig in clause.pos.iter().chain(&clause.neg) {
-                work.extend(sig.elem);
+            for clause in &descr.lists {
+                for sig in clause.pos.iter().chain(&clause.neg) {
+                    work.extend(sig.elem);
+                }
             }
-        }
-        for clause in &descr.resources {
-            for sig in clause.pos.iter().chain(&clause.neg) {
-                work.push(sig.payload);
+            for clause in &descr.resources {
+                for sig in clause.pos.iter().chain(&clause.neg) {
+                    work.push(sig.payload);
+                }
             }
-        }
-        for clause in &descr.maps {
-            for sig in clause.pos.iter().chain(&clause.neg) {
-                work.extend(sig.fields.values().copied());
+            for clause in &descr.maps {
+                for sig in clause.pos.iter().chain(&clause.neg) {
+                    work.extend(sig.fields.values().copied());
+                }
             }
         }
     }
@@ -4393,29 +4641,31 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
     let base = t.descr(&a).clone();
     let mut erased = map_recursive_inputs(t, base, erase_closure_identity);
     let any = t.any();
-    for conj in &mut erased.funcs {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            let Some(lit) = sig.lit.take() else {
-                continue;
-            };
-            sig.args = vec![any; sig.args.len()];
-            sig.ret = any;
-            if lit.captures.is_empty() {
-                continue;
+    for case in &mut erased.cases {
+        for conj in &mut case.structure.funcs {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                let Some(lit) = sig.lit.take() else {
+                    continue;
+                };
+                sig.args = vec![any; sig.args.len()];
+                sig.ret = any;
+                if lit.captures.is_empty() {
+                    continue;
+                }
+                let captures: Vec<Ty> = lit
+                    .captures
+                    .iter()
+                    .map(|capture| {
+                        let capture = erase_closure_identity(t, *capture);
+                        t.intern(capture)
+                    })
+                    .collect();
+                sig.lit = Some(ClosureLit {
+                    kind: lit.kind,
+                    fn_id: None,
+                    captures,
+                });
             }
-            let captures: Vec<Ty> = lit
-                .captures
-                .iter()
-                .map(|capture| {
-                    let capture = erase_closure_identity(t, *capture);
-                    t.intern(capture)
-                })
-                .collect();
-            sig.lit = Some(ClosureLit {
-                kind: lit.kind,
-                fn_id: None,
-                captures,
-            });
         }
     }
     erased
@@ -4431,14 +4681,16 @@ fn erase_transported_closure_identity_for_key(t: &mut Types, a: Ty) -> Descr {
     let base = t.descr(&a).clone();
     let mut erased = map_recursive_inputs(t, base, erase_transported_closure_identity_for_key);
     let literal_targets = erased
-        .funcs
+        .cases
         .iter()
+        .flat_map(|case| case.structure.funcs.iter())
         .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
         .filter_map(|sig| sig.lit.as_ref().and_then(|lit| lit.fn_id))
         .collect::<BTreeSet<_>>();
     let literal_count = erased
-        .funcs
+        .cases
         .iter()
+        .flat_map(|case| case.structure.funcs.iter())
         .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
         .filter(|sig| sig.lit.as_ref().is_some_and(|lit| lit.fn_id.is_some()))
         .count();
@@ -4447,27 +4699,29 @@ fn erase_transported_closure_identity_for_key(t: &mut Types, a: Ty) -> Descr {
     }
 
     let any = t.any();
-    for conj in &mut erased.funcs {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            let Some(lit) = sig.lit.take() else {
-                continue;
-            };
-            sig.args = vec![any; sig.args.len()];
-            sig.ret = any;
-            let captures: Vec<Ty> = lit
-                .captures
-                .iter()
-                .map(|capture| {
-                    let capture = erase_transported_closure_identity_for_key(t, *capture);
-                    t.intern(capture)
-                })
-                .collect();
-            if !captures.is_empty() {
-                sig.lit = Some(ClosureLit {
-                    kind: lit.kind,
-                    fn_id: None,
-                    captures,
-                });
+    for case in &mut erased.cases {
+        for conj in &mut case.structure.funcs {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                let Some(lit) = sig.lit.take() else {
+                    continue;
+                };
+                sig.args = vec![any; sig.args.len()];
+                sig.ret = any;
+                let captures: Vec<Ty> = lit
+                    .captures
+                    .iter()
+                    .map(|capture| {
+                        let capture = erase_transported_closure_identity_for_key(t, *capture);
+                        t.intern(capture)
+                    })
+                    .collect();
+                if !captures.is_empty() {
+                    sig.lit = Some(ClosureLit {
+                        kind: lit.kind,
+                        fn_id: None,
+                        captures,
+                    });
+                }
             }
         }
     }
@@ -4489,7 +4743,7 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
             .zip(r.elems.iter())
             .map(|(l, r)| t.refine_widen(l, r))
             .collect();
-        return t.intern(Descr::tuple_of(elems));
+        return t.intern(reapply_common_brand_partition(&lhs, &rhs, Descr::tuple_of(elems)));
     }
     let any = t.any();
     if let (Some(l), Some(r)) = (lhs.as_pure_list(any), rhs.as_pure_list(any)) {
@@ -4506,11 +4760,11 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
             }),
             None => Descr::empty_list(),
         };
-        return t.intern(d);
+        return t.intern(reapply_common_brand_partition(&lhs, &rhs, d));
     }
     if let (Some(l), Some(r)) = (lhs.pure_resource(any), rhs.pure_resource(any)) {
         let payload = t.refine_widen(&l.payload, &r.payload);
-        return t.resource(payload);
+        return t.intern(reapply_common_brand_partition(&lhs, &rhs, Descr::resource_of(payload)));
     }
     if let (Some(l), Some(r)) = (lhs.pure_arrow().cloned(), rhs.pure_arrow().cloned())
         && l.args.len() == r.args.len()
@@ -4544,10 +4798,9 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
         if let Some(lit) = merged_lit {
             let args: Vec<Ty> = l.args.iter().zip(r.args.iter()).map(|(l, r)| t.union(*l, *r)).collect();
             let ret = t.refine_widen(&l.ret, &r.ret);
-            return t.intern(Descr {
-                funcs: vec![Conj::pos_of(ArrowSig { args, ret, lit })],
-                ..Descr::unbranded()
-            });
+            let mut d = Descr::unbranded();
+            d.cases[0].structure.funcs = vec![Conj::pos_of(ArrowSig { args, ret, lit })];
+            return t.intern(reapply_common_brand_partition(&lhs, &rhs, d));
         }
     }
     if let (Some(l), Some(r)) = (lhs.pure_record().cloned(), rhs.pure_record().cloned())
@@ -4561,10 +4814,40 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
                 fields.insert(key.clone(), *rv);
             }
         }
-        return t.intern(Descr::record(l.tag, fields));
+        return t.intern(reapply_common_brand_partition(&lhs, &rhs, Descr::record(l.tag, fields)));
     }
 
     t.union(a, b)
+}
+
+/// Shape widening may rebuild a descriptor from one common pure payload. That
+/// reconstruction is valid only when the operands share their whole brand
+/// partition; otherwise their least upper bound is the correlated outer union,
+/// not an unbranded hull that cross-pairs payloads and brands.
+fn reapply_common_brand_partition(lhs: &Descr, rhs: &Descr, rebuilt: Descr) -> Descr {
+    let [payload] = rebuilt.cases.as_slice() else {
+        return union_of(lhs, rhs);
+    };
+    if !payload.brands.is_any()
+        || lhs.cases.len() != rhs.cases.len()
+        || lhs
+            .cases
+            .iter()
+            .zip(&rhs.cases)
+            .any(|(left, right)| left.brands != right.brands)
+    {
+        return union_of(lhs, rhs);
+    }
+    Descr {
+        cases: lhs
+            .cases
+            .iter()
+            .map(|case| BrandCase {
+                brands: case.brands.clone(),
+                structure: payload.structure.clone(),
+            })
+            .collect(),
+    }
 }
 
 fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
@@ -4573,20 +4856,26 @@ fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
         return d;
     }
     let mut substituted = Descr::none();
-    let mut base = d.clone();
-    if !base.vars.cofinite {
-        let mut new_set = BTreeSet::new();
-        for id in &d.vars.values {
-            match sigma.get(id) {
-                Some(replacement) => {
-                    substituted = substituted.union(t.ctx(), t.descr(replacement));
-                }
-                None => {
-                    new_set.insert(*id);
+    let mut base = d;
+    for case in &mut base.cases {
+        if !case.structure.vars.cofinite {
+            let mut new_set = BTreeSet::new();
+            for id in &case.structure.vars.values {
+                match sigma.get(id) {
+                    Some(replacement) => {
+                        let mut replacement = t.descr(replacement).clone();
+                        for replacement_case in &mut replacement.cases {
+                            replacement_case.brands = replacement_case.brands.intersect(&case.brands);
+                        }
+                        substituted = substituted.union(t.ctx(), &replacement);
+                    }
+                    None => {
+                        new_set.insert(*id);
+                    }
                 }
             }
+            case.structure.vars = FiniteSet::finite(new_set);
         }
-        base.vars = FiniteSet::finite(new_set);
     }
     let walked = map_recursive_inputs_with(t, base, &mut |t, nested| {
         let d = instantiate(t, nested, sigma);
@@ -4699,34 +4988,37 @@ fn map_recursive_inputs(t: &mut Types, d: Descr, f: fn(&mut Types, Ty) -> Descr)
 }
 
 fn map_recursive_inputs_with(t: &mut Types, mut d: Descr, f: &mut impl FnMut(&mut Types, Ty) -> Ty) -> Descr {
-    for conj in &mut d.tuples {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.elems = sig.elems.iter().map(|ty| f(t, *ty)).collect();
+    for case in &mut d.cases {
+        let d = &mut case.structure;
+        for conj in &mut d.tuples {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                sig.elems = sig.elems.iter().map(|ty| f(t, *ty)).collect();
+            }
         }
-    }
-    for conj in &mut d.lists {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.elem = sig.elem.map(|ty| f(t, ty));
+        for conj in &mut d.lists {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                sig.elem = sig.elem.map(|ty| f(t, ty));
+            }
         }
-    }
-    for conj in &mut d.resources {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.payload = f(t, sig.payload);
+        for conj in &mut d.resources {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                sig.payload = f(t, sig.payload);
+            }
         }
-    }
-    for conj in &mut d.funcs {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.args = sig.args.iter().map(|ty| f(t, *ty)).collect();
-            sig.ret = f(t, sig.ret);
+        for conj in &mut d.funcs {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                sig.args = sig.args.iter().map(|ty| f(t, *ty)).collect();
+                sig.ret = f(t, sig.ret);
+            }
         }
-    }
-    for conj in &mut d.maps {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.fields = sig
-                .fields
-                .iter()
-                .map(|(key, value)| (key.clone(), f(t, *value)))
-                .collect();
+        for conj in &mut d.maps {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                sig.fields = sig
+                    .fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), f(t, *value)))
+                    .collect();
+            }
         }
     }
     d

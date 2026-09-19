@@ -18,10 +18,8 @@
 //! Each rewrites a descriptor to a semantically EQUAL one, so emptiness and
 //! subtyping answers are unchanged; only the clause list shrinks. Equal under
 //! the relation the CALCULATOR answers with, which is the only relation there
-//! is. An axis rule that reasons about a clause as a plain set of values can
-//! outrun the kernel's own containment — see the resource rule below for the
-//! case where it does — and a rule that outruns it drops clauses the union
-//! they are folded into does not contain.
+//! is. Structural filters may reject only a containment that cannot hold; the
+//! shared calculator decides every collective coverage question they cannot.
 //!
 //! The tuple axis has a fourth, because a union of products can be CARVED
 //! into products more than one way and neither carving's clauses contain the
@@ -60,10 +58,9 @@
 //! and arity is unbounded — and a finite union of positive-only map clauses is
 //! never every map, for the same reason about struct tags. But `{any, any} ∨
 //! ¬{any, any}` IS every tuple, and `%{k: any} ∨ ¬%{k: any}` is every map, so
-//! "this axis has no top to reach" would be false. Lists and resources answer
-//! their positive-only case exactly, reading the verdict off the kernel's own
-//! clause-emptiness rule rather than off set reasoning, and go to the
-//! calculator for the rest.
+//! "this axis has no top to reach" would be false. Lists answer their
+//! positive-only case directly, while resources go to the calculator so a
+//! union of payload alternatives can cover their payload space.
 //!
 //! What those two rules ask of a child — "is this every value" — is a question
 //! about the DENOTATION, and `Descr::is_full` is its one implementation. A
@@ -94,7 +91,7 @@
 use super::Ty;
 use super::TyCtx;
 use super::conj::Conj;
-use super::descr::Descr;
+use super::descr::{Descr, Structure};
 use super::dnf::is_dnf_top;
 use super::emptiness::{self, ListDenotation, NonEmptyLists};
 use super::sigs::{ListSig, ListSigOf, ResourceSig, TupleSig, TupleSigOf};
@@ -102,7 +99,7 @@ use super::sigs::{ListSig, ListSigOf, ResourceSig, TupleSig, TupleSigOf};
 /// Install one axis's clauses into an otherwise contentless descriptor. The
 /// axis's containment questions are then asked of the shared type calculator
 /// rather than of a per-axis rule.
-pub(super) type InstallAxis<T> = fn(&mut Descr, Vec<Conj<T>>);
+pub(super) type InstallAxis<T> = fn(&mut Structure, Vec<Conj<T>>);
 
 /// One axis, named once: how to put a clause list into a descriptor and how to
 /// read it back out. Every caller here works through a view rather than
@@ -426,34 +423,17 @@ pub(super) const RESOURCES: AxisView<ResourceSig> = AxisView {
                 _ => false,
             }
     },
-    // EXACT, and no descriptor arithmetic — but exact under the KERNEL's
-    // relation, which is narrower than reading a resource as a set of
-    // payloads. `emptiness::resource_clause_empty` decides a resource clause
-    // carrying negatives by asking whether a SINGLE negative swallows the
-    // payload, never whether their union does, so under the calculator's own
-    // containment `resource(C)` is inside a union of plain resource clauses
-    // exactly when ONE of them contains it — the same reasoning the list rule
-    // uses for its non-empty shape. `clause_covers` has already asked that and
-    // answered no, so there is nothing left for the union to add.
-    coverage: |_, clause, siblings, _| {
-        if plain_sig(clause).is_none() || plain_sigs(siblings.iter().copied()).is_none() {
-            return Coverage::Unproven;
-        }
-        Coverage::NotCovered
-    },
-    // EXACT, by the same reading of the kernel as the list rule. `top` minus a
-    // union of plain resource clauses is the one clause negating them all, and
-    // `emptiness::resource_clause_empty` calls that empty exactly when a
-    // SINGLE negated payload swallows `any` — so the axis is its top exactly
-    // when ONE clause's payload is every value, and two clauses partitioning
-    // the payloads between them are not every resource.
-    //
-    // "Every value" is `Descr::is_full`, for the reason the list rule states.
+    // Resource payload alternatives form a one-coordinate product. More than
+    // one sibling can cover that coordinate, so let the shared calculator
+    // apply `phi_tuple` rather than rejecting collective coverage here.
+    coverage: |_, _, _, _| Coverage::Unproven,
+    // One full payload proves top immediately. Other collective payload
+    // covers, such as `int | not int`, go to the same calculator.
     plain_top: |cx, sigs| {
         if sigs.iter().any(|sig| is_full(cx, sig.payload)) {
             Coverage::Covered
         } else {
-            Coverage::NotCovered
+            Coverage::Unproven
         }
     },
 };
@@ -538,7 +518,7 @@ pub(super) const FUNCS: AxisView<super::sigs::ArrowSig> = AxisView {
 /// consulted only on the plain single-positive tuple product — overwhelmingly
 /// the common shape, and the one where a coordinate decides the clause on its
 /// own.
-pub(super) fn drop_empty_clauses(cx: TyCtx<'_>, d: &mut Descr, is_empty_ty: &dyn Fn(&Ty) -> bool) {
+pub(super) fn drop_empty_clauses(cx: TyCtx<'_>, d: &mut Structure, is_empty_ty: &dyn Fn(&Ty) -> bool) {
     d.tuples.retain(|clause| !tuple_clause_empty(cx, clause, is_empty_ty));
     retain_inhabited(cx, &mut d.lists, emptiness::list_clause_empty);
     retain_inhabited(cx, &mut d.resources, emptiness::resource_clause_empty);
@@ -622,7 +602,7 @@ pub(super) fn axis_is_top<T: Clone + 'static>(
 
 /// `wider ⊇ narrower` for two one-axis descriptors. Injected so the caller
 /// answers through its memo; the relation itself is `Descr::is_subtype`.
-pub(super) type Covers<'a> = &'a dyn Fn(&Descr, &Descr) -> bool;
+pub(super) type Covers<'a> = &'a dyn Fn(&Structure, &Structure) -> bool;
 
 /// Survivorship is threaded through the walk rather than decided pairwise
 /// afterwards, which is what leaves exact duplicates with one survivor: the
@@ -714,8 +694,8 @@ fn axis_covers_its_top<T: Clone>(covers: Covers<'_>, clauses: &[Conj<T>], instal
     )
 }
 
-fn axis_of<T>(clauses: Vec<Conj<T>>, install: InstallAxis<T>) -> Descr {
-    let mut d = Descr::unbranded();
+fn axis_of<T>(clauses: Vec<Conj<T>>, install: InstallAxis<T>) -> Structure {
+    let mut d = Structure::none();
     install(&mut d, clauses);
     d
 }
