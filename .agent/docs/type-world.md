@@ -120,6 +120,13 @@ license a temporary `Ty` to escape. A transformation that changes a recursive
 component must still publish its complete canonical component through the one
 interner boundary before a fact or caller can observe an id.
 
+Component construction uses private local references until that boundary. The
+interner identifies equivalent local nodes by their finite regular structure,
+uses a rooted component key beside its ordinary descriptor keys, and commits a
+miss as complete descriptors in one append. A local reference is never a `Ty`,
+so there is no unfinished arena slot or later redirection for a reader to
+observe.
+
 ## The lattice operations
 
 The keying and join logic lean on a few `Types` methods, each with a distinct job:

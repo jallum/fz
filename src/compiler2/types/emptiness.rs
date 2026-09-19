@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use super::conj::Conj;
 use super::descr::Descr;
-use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
+use super::sigs::{ArrowSig, ClosureLit, ListSig, ListSigOf, MapSig, ResourceSig, TupleSig};
 use super::{MapKey, Ty, TyCtx};
 
 /// Coinductive assumption set for one top-level emptiness query. Emptiness
@@ -153,7 +153,7 @@ pub(crate) struct NonEmptyLists {
 /// does, which is the whole rule: it touches no element, so it is the same
 /// answer before and after a substitution, and the axis merge across a clause
 /// set may ask it without a `TyCtx`.
-pub(super) fn clause_holds_empty(c: &Conj<ListSig>) -> bool {
+pub(super) fn clause_holds_empty<R>(c: &Conj<ListSigOf<R>>) -> bool {
     c.pos.iter().all(|p| p.empty) && !c.neg.iter().any(|n| n.empty)
 }
 

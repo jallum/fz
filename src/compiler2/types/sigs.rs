@@ -63,26 +63,32 @@ impl Ord for StructTag {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct TupleSig {
-    pub elems: Vec<Ty>,
+pub(crate) struct TupleSigOf<R> {
+    pub elems: Vec<R>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) type TupleSig = TupleSigOf<Ty>;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct ListSig {
+pub(crate) struct ListSigOf<R> {
     pub empty: bool,
-    pub elem: Option<Ty>,
+    pub elem: Option<R>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) type ListSig = ListSigOf<Ty>;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct ResourceSig {
-    pub payload: Ty,
+pub(crate) struct ResourceSigOf<R> {
+    pub payload: R,
 }
 
-impl ListSig {
+pub(crate) type ResourceSig = ResourceSigOf<Ty>;
+
+impl<R> ListSigOf<R> {
     pub(super) fn empty() -> Self {
         Self {
             empty: true,
@@ -90,14 +96,14 @@ impl ListSig {
         }
     }
 
-    pub(super) fn possibly_empty(elem: Ty) -> Self {
+    pub(super) fn possibly_empty(elem: R) -> Self {
         Self {
             empty: true,
             elem: Some(elem),
         }
     }
 
-    pub(super) fn non_empty(elem: Ty) -> Self {
+    pub(super) fn non_empty(elem: R) -> Self {
         Self {
             empty: false,
             elem: Some(elem),
@@ -136,9 +142,9 @@ impl ListSig {
 /// `captures` match. Lit-bearing clauses do not collapse with lit-free clauses
 /// under union — callable singletons are stricter than plain arrows, and the
 /// union keeps both to preserve singleton precision downstream.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct ClosureLit {
+pub(crate) struct ClosureLitOf<R> {
     pub kind: CallableValueKind,
     /// The function the value was minted from, or `None` for an ANONYMOUS
     /// literal: a closure of SOME function closed over exactly these capture
@@ -149,17 +155,21 @@ pub(crate) struct ClosureLit {
     /// say — anonymous and capture-free — is not a literal at all: the erasure
     /// drops it and leaves the bare arrow.
     pub fn_id: Option<FnId>,
-    pub captures: Vec<Ty>,
+    pub captures: Vec<R>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) type ClosureLit = ClosureLitOf<Ty>;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct ArrowSig {
-    pub args: Vec<Ty>,
-    pub ret: Ty,
+pub(crate) struct ArrowSigOf<R> {
+    pub args: Vec<R>,
+    pub ret: R,
     /// `None` for ordinary arrows; `Some` for closure literals (fz-ul4.27.22.8).
-    pub lit: Option<ClosureLit>,
+    pub lit: Option<ClosureLitOf<R>>,
 }
+
+pub(crate) type ArrowSig = ArrowSigOf<Ty>;
 
 /// Open-shape map type: "any map containing AT LEAST these literal keys with
 /// values of the corresponding types." Keys are concrete singleton values
@@ -167,12 +177,14 @@ pub(crate) struct ArrowSig {
 ///
 /// Subtyping (open record): `s <: t` iff every field in `t` is in `s` with
 /// subtype value. More required keys = smaller set.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct MapSig {
+pub(crate) struct MapSigOf<R> {
     pub(super) tag: MapTag,
-    pub fields: BTreeMap<MapKey, Ty>,
+    pub fields: BTreeMap<MapKey, R>,
 }
+
+pub(crate) type MapSig = MapSigOf<Ty>;
 
 /// The outcome of intersecting two same-axis positive sigs inside one clause.
 pub(crate) enum PosMeet<T> {

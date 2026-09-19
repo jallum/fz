@@ -6,7 +6,12 @@ use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top};
 use super::emptiness::{
     Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
-use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, StructTag, TupleSig};
+#[cfg(test)]
+use super::sigs::ClosureLitOf;
+use super::sigs::{
+    ArrowSig, ArrowSigOf, ClosureLit, ListSig, ListSigOf, MapSig, MapSigOf, MapTag, ResourceSig, ResourceSigOf,
+    StructTag, TupleSig, TupleSigOf,
+};
 use super::{BuiltinOpaque, MapKey, Ty, TyCtx, TypeVarId};
 use crate::finite_set::FiniteSet;
 use crate::modules::identity::ModuleName;
@@ -44,22 +49,24 @@ type AtomSet = FiniteSet<String>;
 /// itself carries no scope.
 type VarSet = FiniteSet<TypeVarId>;
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(super) struct Descr {
+pub(super) struct DescrOf<R> {
     pub(super) basic: BasicBits,
     pub(super) atoms: AtomSet,
     pub(super) opaques: FiniteSet<OpaqueTag>,
     pub(super) brands: FiniteSet<String>,
     pub(super) vars: VarSet,
-    pub(super) tuples: Vec<Conj<TupleSig>>,
-    pub(super) lists: Vec<Conj<ListSig>>,
-    pub(super) resources: Vec<Conj<ResourceSig>>,
-    pub(super) funcs: Vec<Conj<ArrowSig>>,
-    pub(super) maps: Vec<Conj<MapSig>>,
+    pub(super) tuples: Vec<Conj<TupleSigOf<R>>>,
+    pub(super) lists: Vec<Conj<ListSigOf<R>>>,
+    pub(super) resources: Vec<Conj<ResourceSigOf<R>>>,
+    pub(super) funcs: Vec<Conj<ArrowSigOf<R>>>,
+    pub(super) maps: Vec<Conj<MapSigOf<R>>>,
 }
 
-impl Descr {
+pub(super) type Descr = DescrOf<Ty>;
+
+impl<R: Clone> DescrOf<R> {
     pub(super) fn any() -> Self {
         Self {
             basic: BasicBits::ALL,
@@ -114,18 +121,18 @@ impl Descr {
         d
     }
 
-    pub(super) fn struct_map(tag: StructTag, fields: BTreeMap<MapKey, Ty>) -> Self {
+    pub(super) fn struct_map(tag: StructTag, fields: BTreeMap<MapKey, R>) -> Self {
         let mut d = Self::unbranded();
-        d.maps.push(Conj::pos_of(MapSig {
+        d.maps.push(Conj::pos_of(MapSigOf {
             tag: MapTag::Struct(tag),
             fields,
         }));
         d
     }
 
-    pub(super) fn record(tag: MapTag, fields: impl IntoIterator<Item = (MapKey, Ty)>) -> Self {
+    pub(super) fn record(tag: MapTag, fields: impl IntoIterator<Item = (MapKey, R)>) -> Self {
         let mut d = Self::unbranded();
-        d.maps.push(Conj::pos_of(MapSig {
+        d.maps.push(Conj::pos_of(MapSigOf {
             tag,
             fields: fields.into_iter().collect(),
         }));
@@ -188,39 +195,39 @@ impl Descr {
         d
     }
 
-    pub(super) fn resource_of(payload: Ty) -> Self {
+    pub(super) fn resource_of(payload: R) -> Self {
         let mut d = Self::unbranded();
-        d.resources = vec![Conj::pos_of(ResourceSig { payload })];
+        d.resources = vec![Conj::pos_of(ResourceSigOf { payload })];
         d
     }
 
-    pub(super) fn tuple_of(elems: Vec<Ty>) -> Self {
+    pub(super) fn tuple_of(elems: Vec<R>) -> Self {
         let mut d = Self::unbranded();
-        d.tuples.push(Conj::pos_of(TupleSig { elems }));
+        d.tuples.push(Conj::pos_of(TupleSigOf { elems }));
         d
     }
 
-    pub(super) fn list_sig(sig: ListSig) -> Self {
+    pub(super) fn list_sig(sig: ListSigOf<R>) -> Self {
         let mut d = Self::unbranded();
         d.lists.push(Conj::pos_of(sig));
         d
     }
 
-    pub(super) fn list_of(elem: Ty) -> Self {
-        Self::list_sig(ListSig::possibly_empty(elem))
+    pub(super) fn list_of(elem: R) -> Self {
+        Self::list_sig(ListSigOf::possibly_empty(elem))
     }
 
-    pub(super) fn non_empty_list_of(elem: Ty) -> Self {
-        Self::list_sig(ListSig::non_empty(elem))
+    pub(super) fn non_empty_list_of(elem: R) -> Self {
+        Self::list_sig(ListSigOf::non_empty(elem))
     }
 
     pub(super) fn empty_list() -> Self {
-        Self::list_sig(ListSig::empty())
+        Self::list_sig(ListSigOf::empty())
     }
 
-    pub(super) fn arrow(args: impl IntoIterator<Item = Ty>, ret: Ty) -> Self {
+    pub(super) fn arrow(args: impl IntoIterator<Item = R>, ret: R) -> Self {
         let mut d = Self::unbranded();
-        d.funcs.push(Conj::pos_of(ArrowSig {
+        d.funcs.push(Conj::pos_of(ArrowSigOf {
             args: args.into_iter().collect(),
             ret,
             lit: None,
@@ -232,15 +239,66 @@ impl Descr {
         Self::record(MapTag::Plain, [])
     }
 
-    pub(super) fn map_of(fields: BTreeMap<MapKey, Ty>) -> Self {
+    pub(super) fn map_of(fields: BTreeMap<MapKey, R>) -> Self {
         let mut d = Self::unbranded();
-        d.maps.push(Conj::pos_of(MapSig {
+        d.maps.push(Conj::pos_of(MapSigOf {
             tag: MapTag::Plain,
             fields,
         }));
         d
     }
 
+    #[cfg(test)]
+    /// Rebuild this descriptor over another child-reference domain. Every
+    /// structural child lives here, including closure captures, so a caller
+    /// cannot accidentally transform an arrow surface but leave its
+    /// environment in another reference world.
+    pub(super) fn map_children<S: Clone>(self, mut map: impl FnMut(R) -> S) -> DescrOf<S> {
+        DescrOf {
+            basic: self.basic,
+            atoms: self.atoms,
+            opaques: self.opaques,
+            brands: self.brands,
+            vars: self.vars,
+            tuples: map_clauses(self.tuples, |sig| TupleSigOf {
+                elems: sig.elems.into_iter().map(&mut map).collect(),
+            }),
+            lists: map_clauses(self.lists, |sig| ListSigOf {
+                empty: sig.empty,
+                elem: sig.elem.map(&mut map),
+            }),
+            resources: map_clauses(self.resources, |sig| ResourceSigOf {
+                payload: map(sig.payload),
+            }),
+            funcs: map_clauses(self.funcs, |sig| ArrowSigOf {
+                args: sig.args.into_iter().map(&mut map).collect(),
+                ret: map(sig.ret),
+                lit: sig.lit.map(|lit| ClosureLitOf {
+                    kind: lit.kind,
+                    fn_id: lit.fn_id,
+                    captures: lit.captures.into_iter().map(&mut map).collect(),
+                }),
+            }),
+            maps: map_clauses(self.maps, |sig| MapSigOf {
+                tag: sig.tag,
+                fields: sig.fields.into_iter().map(|(key, value)| (key, map(value))).collect(),
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+fn map_clauses<T, U>(clauses: Vec<Conj<T>>, mut map: impl FnMut(T) -> U) -> Vec<Conj<U>> {
+    clauses
+        .into_iter()
+        .map(|clause| Conj {
+            pos: clause.pos.into_iter().map(&mut map).collect(),
+            neg: clause.neg.into_iter().map(&mut map).collect(),
+        })
+        .collect()
+}
+
+impl DescrOf<Ty> {
     pub(super) fn as_atom_singleton(&self) -> Option<&str> {
         (!self.atoms.cofinite && self.atoms.values.len() == 1)
             .then(|| self.atoms.values.iter().next().map(String::as_str))
