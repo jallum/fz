@@ -1030,8 +1030,11 @@ mod wait_frame_tests {
             executable: ExecutableSymbol {
                 activation: ActivationSymbol {
                     function: crate::compiler2::FunctionId::from_coordinate(id),
-                    arrow,
-                    input: vec![arrow; 32].into_boxed_slice(),
+                    signature: crate::compiler2::ActivationSignature {
+                        inputs: vec![arrow; 32].into_boxed_slice(),
+                        result: arrow,
+                    },
+                    callable_surfaces: Box::default(),
                 },
                 need: crate::compiler2::identity::ExecutableNeed::Value,
             },
@@ -1042,7 +1045,7 @@ mod wait_frame_tests {
         let ProductKey::TransportShape(position) = key else {
             panic!("expected a positioned product")
         };
-        position.executable().activation.input.as_ptr()
+        position.executable().activation.signature.inputs.as_ptr()
     }
 
     #[test]
@@ -1452,8 +1455,11 @@ mod wait_frame_tests {
                 executable: ExecutableSymbol {
                     activation: ActivationSymbol {
                         function: crate::compiler2::FunctionId::from_coordinate(91),
-                        arrow,
-                        input,
+                        signature: crate::compiler2::ActivationSignature {
+                            inputs: input,
+                            result: arrow,
+                        },
+                        callable_surfaces: Box::default(),
                     },
                     need: crate::compiler2::identity::ExecutableNeed::Value,
                 },
@@ -1468,7 +1474,7 @@ mod wait_frame_tests {
             unreachable!()
         };
         assert_eq!(
-            position.executable().activation.input.as_ptr(),
+            position.executable().activation.signature.inputs.as_ptr(),
             storage,
             "suspending a selected key moves its boxed input rather than allocating a duplicate"
         );

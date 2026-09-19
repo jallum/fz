@@ -627,7 +627,7 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
             )
         }
         BackendBody::Clauses { clauses, entries, .. } => {
-            let semantic_inputs = bind_executable_inputs(transport, types, runtime, &executable, &args)?;
+            let semantic_inputs = bind_executable_inputs(transport, &executable, &args)?;
             let clause_index = match &executable.abi.materialized.entry_dispatch {
                 None => 0,
                 Some(dispatch) => {
@@ -971,7 +971,6 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     lanes.extend(encode_call_args(
                         transport,
                         program,
-                        types,
                         runtime,
                         callee_executable.as_ref(),
                         &env,
@@ -1022,7 +1021,6 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     let callee_executable = backend_executable_ref(program, types, &member.target)?;
                     let lanes = ConstructionInputEncoder {
                         runtime,
-                        types,
                         transport,
                         program,
                         target: callee_executable.as_ref(),
@@ -1783,7 +1781,6 @@ fn eval_backend_direct_call_edge(
             let callee = backend_executable_ref(program, types, callee)?;
             eval_direct_call(
                 runtime,
-                types,
                 transport,
                 program,
                 callee,
@@ -1804,7 +1801,6 @@ fn eval_backend_direct_call_edge(
 
 fn eval_direct_call(
     runtime: &mut IrInterpRuntime,
-    types: &mut crate::compiler2::Types,
     transport: &TransportStore,
     program: &BackendProgram,
     callee: Rc<BackendExecutable>,
@@ -1816,7 +1812,7 @@ fn eval_direct_call(
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     let executable = callee.as_ref();
-    let call_args = encode_call_args(transport, program, types, runtime, executable, &env, args, 0)?;
+    let call_args = encode_call_args(transport, program, runtime, executable, &env, args, 0)?;
     let continuations = match dest {
         ControlDestination::Return => continuations,
         ControlDestination::Deliver(target) => {
@@ -1971,12 +1967,10 @@ fn env_get_value(env: &HashMap<ValueId, BackendBoundValue>, value: ValueId) -> R
 
 fn bind_executable_inputs(
     transport: &TransportStore,
-    types: &crate::compiler2::Types,
-    _runtime: &mut IrInterpRuntime,
     executable: &BackendExecutable,
     args: &[AnyValue],
 ) -> Result<Vec<Option<BackendBoundValue>>, String> {
-    let semantic_arity = executable.key.activation.input_len(types);
+    let semantic_arity = executable.key.activation.input_len();
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
     for input in &executable.abi.semantic_inputs {
@@ -2271,7 +2265,6 @@ pub(super) fn construction_wrapper_invocation(
     let executable = target.as_ref();
     let lanes = ConstructionInputEncoder {
         runtime,
-        types,
         transport,
         program,
         target: executable,
@@ -2284,7 +2277,6 @@ pub(super) fn construction_wrapper_invocation(
 
 struct ConstructionInputEncoder<'a> {
     runtime: &'a mut IrInterpRuntime,
-    types: &'a crate::compiler2::Types,
     transport: &'a TransportStore,
     program: &'a BackendProgram,
     target: &'a BackendExecutable,
@@ -2304,7 +2296,7 @@ impl ConstructionInputEncoder<'_> {
         // `semantic_index`. What must hold is that each published index addresses
         // a real input, since the lookups below are by that key and it indexes
         // `semantic_values` / `explicit_values`.
-        let semantic_arity = self.target.key.activation.input_len(self.types);
+        let semantic_arity = self.target.key.activation.input_len();
         if let Some(input) = self
             .member
             .target_inputs
@@ -2454,18 +2446,13 @@ pub(super) fn materialize_transport_value(
 fn encode_call_args(
     transport: &TransportStore,
     program: &BackendProgram,
-    types: &crate::compiler2::Types,
     runtime: &mut IrInterpRuntime,
     executable: &BackendExecutable,
     env: &HashMap<ValueId, BackendBoundValue>,
     args: &[crate::compiler2::BackendCallArg],
     semantic_start: usize,
 ) -> Result<Vec<AnyValue>, String> {
-    let expected = executable
-        .key
-        .activation
-        .input_len(types)
-        .saturating_sub(semantic_start);
+    let expected = executable.key.activation.input_len().saturating_sub(semantic_start);
     if args.len() != expected {
         return Err(format!(
             "backend executable {} expected {} semantic call arg(s), got {}",

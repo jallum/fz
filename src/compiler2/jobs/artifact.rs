@@ -39,7 +39,7 @@ use super::super::semantic::SemanticOrd;
 use super::super::semantic::{ActivationAnalysis, CallSiteSummary, CallTargetSummary, SelectedCallee};
 #[cfg(test)]
 use super::super::transport::ShapeDescr;
-use super::super::transport::{ActivationSymbol, ExecutableSymbol, PhysicalLaneSource, TransportPosition};
+use super::super::transport::{ExecutableSymbol, PhysicalLaneSource, TransportPosition};
 use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::transport::{ClosureCallForm, closure_call_form};
@@ -102,10 +102,9 @@ pub(crate) fn produce_materialized_executable_product(
     let body = pruned.body;
     let callsite_args = super::super::body::callsite_call_args(&body);
     let mut transport_positions = vec![TransportPosition::ExecutableReturn {
-        executable: transport_executable_symbol(executable, world.types()),
+        executable: ExecutableSymbol::from_key(executable),
     }];
     transport_positions.extend(required_call_edge_transport_positions(
-        world,
         executable,
         &executable_facts,
         &body,
@@ -193,21 +192,25 @@ fn reachable_struct_modules(
         }
     }
 
-    let mut type_roots = Vec::with_capacity(2 + value_types.len() + call_edges.len() * 2);
-    type_roots.extend([executable.activation.arrow, return_ty]);
+    let mut type_roots =
+        Vec::with_capacity(3 + executable.activation.input_len() + value_types.len() + call_edges.len() * 3);
+    type_roots.extend(executable.activation.inputs().iter().copied());
+    type_roots.extend([executable.activation.signature.result, return_ty]);
     type_roots.extend(value_types.values().copied());
     for edge in call_edges.values() {
         type_roots.push(edge.return_ty());
         match edge.target() {
             CallEdge::Direct(direct) => {
                 if let Some(callee) = direct.callee.local() {
-                    type_roots.push(callee.activation.arrow);
+                    type_roots.extend(callee.activation.inputs().iter().copied());
+                    type_roots.push(callee.activation.signature.result);
                 }
             }
             CallEdge::Dispatch(dispatch) => {
                 for arm in &dispatch.arms {
                     if let Some(callee) = arm.callee.local() {
-                        type_roots.push(callee.activation.arrow);
+                        type_roots.extend(callee.activation.inputs().iter().copied());
+                        type_roots.push(callee.activation.signature.result);
                     }
                 }
             }
@@ -332,11 +335,7 @@ pub(crate) fn produce_abi_executable_product(
         .iter()
         .map(|(position, _)| position.clone())
         .collect::<Vec<_>>();
-    transport_positions.extend(required_executable_transport_positions(
-        world,
-        executable,
-        &materialized,
-    ));
+    transport_positions.extend(required_executable_transport_positions(executable, &materialized));
     let position_layouts = match read_transport_layouts(tel, context, world.types(), transport_positions) {
         Ok(position_layouts) => position_layouts,
         Err(transport_waits) => {
@@ -411,7 +410,7 @@ fn materialized_executable_transport(
     executable: &ExecutableKey,
     types: &Types,
 ) -> MaterializedExecutableTransport {
-    let symbol = transport_executable_symbol(executable, types);
+    let symbol = ExecutableSymbol::from_key(executable);
     position_layouts.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, types));
     position_layouts.dedup_by(|left, right| {
         if left.0 != right.0 {
@@ -479,14 +478,13 @@ impl ArtifactTransportLookup<'_> {
 }
 
 fn required_entry_capture_transport_positions(
-    world: &World,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { entries, .. } = &materialized.body else {
         return Vec::new();
     };
-    let symbol = transport_executable_symbol(executable, world.types());
+    let symbol = ExecutableSymbol::from_key(executable);
     let mut positions = Vec::new();
     for (entry_index, entry) in entries.iter().enumerate() {
         let entry_id = materialized
@@ -513,36 +511,22 @@ fn required_entry_capture_transport_positions(
 /// in the executable's ABI. The ABI product drives them before building the ABI
 /// value.
 fn required_executable_transport_positions(
-    world: &World,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
     let mut positions = Vec::new();
-    positions.extend(required_executable_input_transport_positions(
-        world,
-        executable,
-        materialized,
-    ));
-    positions.extend(required_entry_capture_transport_positions(
-        world,
-        executable,
-        materialized,
-    ));
-    positions.extend(required_resume_transport_positions(world, executable, materialized));
-    positions.extend(required_local_backend_transport_positions(
-        world,
-        executable,
-        materialized,
-    ));
+    positions.extend(required_executable_input_transport_positions(executable, materialized));
+    positions.extend(required_entry_capture_transport_positions(executable, materialized));
+    positions.extend(required_resume_transport_positions(executable, materialized));
+    positions.extend(required_local_backend_transport_positions(executable, materialized));
     positions
 }
 
 fn required_executable_input_transport_positions(
-    world: &World,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
-    let symbol = transport_executable_symbol(executable, world.types());
+    let symbol = ExecutableSymbol::from_key(executable);
     materialized
         .runtime_demand
         .input_demands
@@ -562,14 +546,13 @@ fn required_executable_input_transport_positions(
 }
 
 fn required_resume_transport_positions(
-    world: &World,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { entries, .. } = &materialized.body else {
         return Vec::new();
     };
-    let symbol = transport_executable_symbol(executable, world.types());
+    let symbol = ExecutableSymbol::from_key(executable);
     let mut positions = Vec::new();
     let mut deliver_callsites = HashMap::new();
     for entry in entries {
@@ -612,14 +595,13 @@ fn required_resume_transport_positions(
 }
 
 fn required_local_backend_transport_positions(
-    world: &World,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { clauses, entries, .. } = &materialized.body else {
         return Vec::new();
     };
-    let symbol = transport_executable_symbol(executable, world.types());
+    let symbol = ExecutableSymbol::from_key(executable);
     let mut positions = Vec::new();
     positions.extend(
         materialized
@@ -745,7 +727,6 @@ pub(crate) fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::
 }
 
 fn required_call_edge_transport_positions(
-    world: &mut World,
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
     body: &LoweredBody,
@@ -754,7 +735,7 @@ fn required_call_edge_transport_positions(
     let LoweredBody::Clauses { entries, .. } = body else {
         return Vec::new();
     };
-    let caller_symbol = transport_executable_symbol(executable, world.types());
+    let caller_symbol = ExecutableSymbol::from_key(executable);
     let callsite_needs = facts.callsite_needs();
     let summaries = facts.callsites();
     let mut positions = HashSet::new();
@@ -773,7 +754,6 @@ fn required_call_edge_transport_positions(
                             )
                         })
                     }),
-                    world.types(),
                 );
             }
             LoweredTail::ClosureCall {
@@ -801,14 +781,7 @@ fn required_call_edge_transport_positions(
                         })
                     })
                     .collect::<Vec<_>>();
-                record_return_flow_transport_positions(
-                    &mut positions,
-                    &caller_symbol,
-                    *callsite,
-                    dest,
-                    callees,
-                    world.types(),
-                );
+                record_return_flow_transport_positions(&mut positions, &caller_symbol, *callsite, dest, callees);
             }
             LoweredTail::Value { .. }
             | LoweredTail::If { .. }
@@ -826,11 +799,8 @@ fn record_return_flow_transport_positions(
     callsite: CallSiteId,
     dest: &ControlDestination,
     callees: impl IntoIterator<Item = ExecutableKey>,
-    types: &Types,
 ) {
-    let callee_symbols = callees
-        .into_iter()
-        .map(|callee| transport_executable_symbol(&callee, types));
+    let callee_symbols = callees.into_iter().map(|callee| ExecutableSymbol::from_key(&callee));
     for position in return_flow_transport_positions(caller_symbol, callsite, dest, callee_symbols) {
         positions.insert(position);
     }
@@ -860,17 +830,6 @@ fn return_flow_transport_positions(
             .map(|callee| TransportPosition::ExecutableReturn { executable: callee }),
     );
     positions
-}
-
-fn transport_executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSymbol {
-    ExecutableSymbol {
-        activation: ActivationSymbol {
-            function: executable.activation.function,
-            arrow: executable.activation.arrow,
-            input: executable.activation.inputs(types).into_boxed_slice(),
-        },
-        need: executable.need,
-    }
 }
 
 fn sort_transport_positions(positions: &mut [TransportPosition], types: &Types) {
@@ -926,7 +885,7 @@ fn materialize_call_edges(
                 ..
             } => {
                 let callee_position = TransportPosition::Value {
-                    executable: transport_executable_symbol(executable, world.types()),
+                    executable: ExecutableSymbol::from_key(executable),
                     value: *callee,
                 };
                 let callee_layout = require_transport_layout(tel, root_id, transport_plan, &callee_position)?;
@@ -1110,7 +1069,6 @@ fn materialize_closure_call_edge(
                 CallReturnFlow::NoReturn { local_source: None }
             } else {
                 call_return_flow(
-                    world,
                     tel,
                     root_id,
                     transport_plan,
@@ -1252,10 +1210,9 @@ fn lower_materialized_call_target(
     };
     let return_ty = target.settled_return(world.types_mut());
     let return_flow = if world.types().is_empty(&return_ty) {
-        exact_no_return_flow(world, &callee)
+        exact_no_return_flow(&callee)
     } else {
         call_return_flow(
-            world,
             tel,
             root_id,
             transport_plan,
@@ -1278,7 +1235,6 @@ fn lower_materialized_call_target(
 }
 
 fn call_return_flow(
-    world: &World,
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
     transport_plan: &ArtifactTransportLookup<'_>,
@@ -1289,7 +1245,7 @@ fn call_return_flow(
     original_entry_ids: &[ControlEntryId],
     public_callable: bool,
 ) -> Result<CallReturnFlow, FatalError> {
-    let caller_symbol = transport_executable_symbol(executable, world.types());
+    let caller_symbol = ExecutableSymbol::from_key(executable);
     match dest {
         ControlDestination::Deliver(entry) => {
             let transport_entry = original_entry_ids
@@ -1309,7 +1265,7 @@ fn call_return_flow(
             } else {
                 match callee {
                     Some(CallTarget::Local(callee)) => TransportPosition::ExecutableReturn {
-                        executable: transport_executable_symbol(callee, world.types()),
+                        executable: ExecutableSymbol::from_key(callee),
                     },
                     Some(CallTarget::ProviderBoundary(_)) => resume.clone(),
                     None => {
@@ -1339,7 +1295,7 @@ fn call_return_flow(
                 payload.clone()
             } else if let Some(CallTarget::Local(callee)) = callee {
                 TransportPosition::ExecutableReturn {
-                    executable: transport_executable_symbol(callee, world.types()),
+                    executable: ExecutableSymbol::from_key(callee),
                 }
             } else {
                 payload.clone()
@@ -1363,9 +1319,9 @@ fn call_return_flow(
     }
 }
 
-fn exact_no_return_flow(world: &World, callee: &CallTarget<ExecutableKey>) -> CallReturnFlow {
+fn exact_no_return_flow(callee: &CallTarget<ExecutableKey>) -> CallReturnFlow {
     let local_source = callee.local().map(|callee| TransportPosition::ExecutableReturn {
-        executable: transport_executable_symbol(callee, world.types()),
+        executable: ExecutableSymbol::from_key(callee),
     });
     CallReturnFlow::NoReturn { local_source }
 }
@@ -1561,7 +1517,7 @@ fn resolve_extern_marshals(
         if index < fixed {
             let expected = fixed_params[index];
             if let Some(ascription) = &arg.ascription {
-                let ascribed = parse_extern_ascription(world, tel, root_id, ascription)?;
+                let ascribed = parse_extern_ascription(tel, root_id, ascription)?;
                 if ascribed != expected {
                     return Err(incomplete_semantic_plan(
                         tel,
@@ -1580,7 +1536,7 @@ fn resolve_extern_marshals(
         }
 
         if let Some(ascription) = &arg.ascription {
-            let ascribed = parse_extern_ascription(world, tel, root_id, ascription)?;
+            let ascribed = parse_extern_ascription(tel, root_id, ascription)?;
             if ascribed == crate::fz_ir::ExternTy::F64 {
                 return Err(refuse_float_variadic_marshal(tel, root_id));
             }
@@ -1602,7 +1558,6 @@ fn resolve_extern_marshals(
 }
 
 fn parse_extern_ascription(
-    _world: &World,
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
     body: &crate::ast::TypeExprBody,
@@ -2081,10 +2036,13 @@ mod tests {
         let function = world.root_entry(root).function;
         let int = world.types_mut().int();
         let symbol = ExecutableSymbol {
-            activation: ActivationSymbol {
+            activation: crate::compiler2::transport::ActivationSymbol {
                 function,
-                arrow: int,
-                input: vec![int].into_boxed_slice(),
+                signature: crate::compiler2::ActivationSignature {
+                    inputs: vec![int].into_boxed_slice(),
+                    result: int,
+                },
+                callable_surfaces: Box::default(),
             },
             need: ExecutableNeed::Value,
         };
@@ -2118,8 +2076,8 @@ mod tests {
         let mut world = World::new();
         let caller = fake_call_executable(&mut world, 10, 11, &[]);
         let callee = fake_call_executable(&mut world, 10, 12, &[]);
-        let caller_symbol = transport_executable_symbol(&caller, world.types());
-        let callee_symbol = transport_executable_symbol(&callee, world.types());
+        let caller_symbol = ExecutableSymbol::from_key(&caller);
+        let callee_symbol = ExecutableSymbol::from_key(&callee);
         let callsite = CallSiteId::from_u32(7);
 
         let positions = return_flow_transport_positions(
@@ -2147,13 +2105,13 @@ mod tests {
         let mut world = World::new();
         let callee = fake_call_executable(&mut world, 100, 102, &[]);
         let target = CallTarget::Local(callee.clone());
-        let flow = exact_no_return_flow(&world, &target);
+        let flow = exact_no_return_flow(&target);
 
         assert_eq!(
             flow,
             CallReturnFlow::NoReturn {
                 local_source: Some(TransportPosition::ExecutableReturn {
-                    executable: transport_executable_symbol(&callee, world.types()),
+                    executable: ExecutableSymbol::from_key(&callee),
                 }),
             }
         );
@@ -2228,7 +2186,7 @@ mod tests {
             value_types: call_returns.then_some((result_value, int)).into_iter().collect(),
         };
         let positions = if call_returns {
-            let caller_symbol = transport_executable_symbol(&caller, world.types());
+            let caller_symbol = ExecutableSymbol::from_key(&caller);
             let caller_return = TransportPosition::ExecutableReturn {
                 executable: caller_symbol.clone(),
             };

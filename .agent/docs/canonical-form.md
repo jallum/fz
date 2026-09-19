@@ -149,8 +149,10 @@ Built on `canon(Ty)`, by four rules:
   Two entries that render the same tie fall back to published order, so that
   order must also be semantic. `SemanticOrd<Types>` is the single typed owner
   for `ExecutableKey`, `ExecutableSymbol`, and `TransportPosition`; it compares
-  activation arrows structurally through `Types::cmp_activation_ty`, never by
-  raw interner ids or rendered text. Packaging and wrapper enumeration consume
+  activation coordinate records structurally through
+  `Types::cmp_activation_signature` and their callable-observation sidecars
+  through `Types::cmp_activation_callable_surfaces`, never by raw interner ids
+  or rendered text. Packaging and wrapper enumeration consume
   that same relation. `Types::ComparisonCache` stores predicate and activation-
   order verdicts in one operation-tagged key → typed-outcome map; immutable
   interned `Ty` handles make each verdict reusable for the World lifetime, and

@@ -6183,11 +6183,10 @@ fn compiler2_native_program_keeps_grounded_predicates_distinct_without_boxed_cap
         .filter(|entry| entry.key.activation.function == reducer_id)
         .collect::<Vec<_>>();
     assert_eq!(reducers.len(), 2, "both semantic predicate identities remain");
-    let types = compiler.types_for_test();
     assert_eq!(
         reducers
             .iter()
-            .map(|entry| entry.key.activation.inputs(types)[0])
+            .map(|entry| entry.key.activation.inputs()[0])
             .collect::<HashSet<_>>()
             .len(),
         2,
@@ -10625,7 +10624,7 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
         panic!("the destructor lambda should lower to a top-level executable body");
     };
     assert_eq!(
-        key.activation.inputs(compiler.types_for_test()),
+        key.activation.inputs(),
         vec![int_ty],
         "the escaping destructor keys its activation at the grounded payload type carried by make_resource's boundary surface, not its own (t) template",
     );
@@ -11408,7 +11407,7 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
     let mut keys_by_function: BTreeMap<FunctionId, BTreeSet<Ty>> = BTreeMap::new();
     for executable in program.executables() {
         let activation = &executable.key.activation;
-        let Some(first) = activation.inputs(types).first().copied() else {
+        let Some(first) = activation.inputs().first().copied() else {
             continue;
         };
         keys_by_function.entry(activation.function).or_default().insert(first);
@@ -13887,7 +13886,7 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         .filter(|activation| activation.function == partition_id)
         .cloned()
         .collect::<Vec<_>>();
-    partition_activations.sort_by_key(|activation| activation.inputs(types));
+    partition_activations.sort_by_key(|activation| activation.inputs().to_vec());
     // Both qsort activations call partition with the same canonical
     // (pivot, rest) — hd/tl of a non-empty and a general list coincide — so
     // ONE partition activation is the tight answer. The historical second
@@ -13901,10 +13900,10 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     assert!(
         partition_activations
             .iter()
-            .all(|activation| activation.input_len(types) == 4),
+            .all(|activation| activation.input_len() == 4),
         "partition/4 should stay keyed on its four inputs"
     );
-    let partition_inputs = partition_activations[0].inputs(types);
+    let partition_inputs = partition_activations[0].inputs();
     // fz-f98.14.10.2: the two recursive accumulator slots collapse to their
     // ADDRESSED convergence class — `[a2_e]` and `[a3_e]` — list-family slots
     // whose element is a resolvable structural-address var, not the path-blind
@@ -13923,9 +13922,7 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         "root closure should collapse append/2 recursive list-family inputs to one activation key"
     );
     assert!(
-        append_activations
-            .iter()
-            .all(|activation| activation.input_len(types) == 2),
+        append_activations.iter().all(|activation| activation.input_len() == 2),
         "append/2 should stay keyed on its two inputs"
     );
     // fz-5xp.30: 17 -> 22. The three additions that total the observable heap
@@ -14807,9 +14804,7 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
          from its ascent -- a known-unbought split fz-kdt.213 owns, pinned so it cannot grow",
     );
     assert!(
-        build_activations
-            .iter()
-            .all(|activation| activation.input_len(compiler.types_for_test()) != 0),
+        build_activations.iter().all(|activation| activation.input_len() != 0),
         "the collapsed build/2 activation should still carry the recursive accumulator slot",
     );
 }
@@ -20330,7 +20325,7 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
                 (
                     world.function_ref(activation.function).display_name(),
                     activation
-                        .inputs(world.types())
+                        .inputs()
                         .iter()
                         .map(|ty| world.types().display(ty))
                         .collect::<Vec<_>>(),
@@ -21545,7 +21540,7 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
             (list, non_empty, list_key, non_empty_key)
         };
         assert_eq!(types.display(&list), types.display(&non_empty));
-        let raw_order = list_key.arrow < non_empty_key.arrow;
+        let raw_order = list_key.signature < non_empty_key.signature;
 
         let jobs = [
             Job::AnalyzeActivation(list_key.clone()),
@@ -21756,7 +21751,7 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
         for executable in program.executables() {
             let activation = &executable.key.activation;
             let columns = activation
-                .inputs(types)
+                .inputs()
                 .iter()
                 .map(|input| canonical_type_body(&canon.render(types, *input)))
                 .collect::<Vec<_>>();

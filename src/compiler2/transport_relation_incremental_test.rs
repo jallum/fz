@@ -315,13 +315,13 @@ fn apply_slot(compiler: &mut Compiler2<ConfiguredTelemetry>, relations: &Relatio
     slots[0].clone()
 }
 
-fn owner(world: &World, slot: &InputSlot) -> ProductKey {
+fn owner(slot: &InputSlot) -> ProductKey {
     ProductKey::CallableConstruction(TransportPosition::ExecutableInput {
         executable: ExecutableSymbol {
             activation: ActivationSymbol {
                 function: slot.executable.activation.function,
-                arrow: slot.executable.activation.arrow,
-                input: slot.executable.activation.inputs(world.types()).into_boxed_slice(),
+                signature: slot.executable.activation.signature.clone(),
+                callable_surfaces: slot.executable.activation.callable_surfaces.clone(),
             },
             need: slot.executable.need,
         },
@@ -446,7 +446,7 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
         executable: forward.clone(),
         semantic_index: 0,
     };
-    let ProductKey::CallableConstruction(position) = owner(compiler.world(), &slot) else {
+    let ProductKey::CallableConstruction(position) = owner(&slot) else {
         unreachable!()
     };
     let shape = ProductKey::TransportShape(position.clone());
@@ -580,8 +580,8 @@ fn retained_callable_input_relations_ignore_unchanged_and_unrelated_requests() {
     assert_eq!(compiler.run_root_interp(control), Ok(43));
     let slot = apply_slot(&mut compiler, &relations.borrow(), main);
     let control_slot = apply_slot(&mut compiler, &relations.borrow(), control);
-    let control_owner = owner(compiler.world(), &control_slot);
-    let main_owner = owner(compiler.world(), &slot);
+    let control_owner = owner(&control_slot);
+    let main_owner = owner(&slot);
     let main_generation = compiler.retained_product_generation(main, &main_owner).unwrap();
     let control_generation = compiler.retained_product_generation(control, &control_owner).unwrap();
     let local = Rc::clone(compiler.world().incoming_input_sources(&slot).unwrap());
@@ -702,7 +702,7 @@ fn adding_and_removing_a_caller_edge_updates_the_existing_input_slot() {
     assert_eq!(compiler.run_root_interp(main), Ok(42));
     let slot = apply_slot(&mut compiler, &relations.borrow(), main);
     let key = FactKey::IncomingInputSlot(slot.clone());
-    let reader = owner(compiler.world(), &slot);
+    let reader = owner(&slot);
     let revision = compiler.world().fact_revision(&key).unwrap();
     let first = Rc::clone(compiler.world().incoming_input_sources(&slot).unwrap());
     assert_eq!(first.len(), 1);

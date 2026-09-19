@@ -59,10 +59,10 @@ use super::scheduler::ExternalDependencyStates;
 use super::scheduler::{CompletionEffects, FatalError, WorkStartReason, WorkStartTally};
 use super::scope::ScopeSnapshot;
 use super::semantic::{
-    ActivationAnalysis, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap,
-    CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap, CallableConstructionTargetKey,
-    ContributionMap, ContributionReplace, ExecutableRuntimeDemand, RuntimeDemandInputMap, RuntimeDemandTypeProjection,
-    TargetDemandContribution,
+    ActivationAnalysis, ActivationInput, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey,
+    CallSiteMap, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap,
+    CallableConstructionTargetKey, ContributionMap, ContributionReplace, ExecutableRuntimeDemand,
+    RuntimeDemandInputMap, RuntimeDemandTypeProjection, TargetDemandContribution,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -853,6 +853,25 @@ impl World {
         self.canonical_activation_key(root, function, inputs)
     }
 
+    /// Build an activation identity from semantic input evidence.  The value
+    /// denotation and its callable observations are separate coordinates: a
+    /// closure's `Ty` names the runtime value, while `ActivationInput` carries
+    /// the call surfaces that make this body specialization meaningful.
+    pub(crate) fn activation_key_for_inputs(
+        &mut self,
+        root: RootId,
+        function: FunctionId,
+        inputs: &[ActivationInput],
+    ) -> ActivationKey {
+        let value_inputs = inputs.iter().map(ActivationInput::ty).collect::<Vec<_>>();
+        let callable_surfaces = inputs
+            .iter()
+            .map(ActivationInput::callable_surfaces)
+            .cloned()
+            .collect::<Vec<_>>();
+        self.canonical_activation_key_with_callable_surfaces(root, function, &value_inputs, &callable_surfaces)
+    }
+
     /// The correlated body-input evidence of an activation, once its fact
     /// exists: the canonical antichain of publisher rows. Semantic analysis
     /// reads THIS — each row is analyzed independently, never a column mix.
@@ -868,7 +887,14 @@ impl World {
     /// genuinely per-column (transport lane typing), after semantic decisions.
     pub(crate) fn activation_inputs_joined(&self, key: &ActivationKey) -> Option<Vec<Ty>> {
         self.fact_revision(&FactKey::ActivationInputs(key.clone()))?;
-        Some(self.activation_inputs.get(key)?.joined().to_vec())
+        Some(
+            self.activation_inputs
+                .get(key)?
+                .joined()
+                .iter()
+                .map(super::semantic::ActivationInput::ty)
+                .collect(),
+        )
     }
 
     pub fn activation_analysis(&self, key: &ActivationKey) -> Option<&ActivationAnalysis> {
@@ -905,7 +931,7 @@ impl World {
         &mut self,
         job: &Job,
         previous_output_keys: HashSet<ActivationKey>,
-        contributions: Vec<(ActivationKey, Vec<Ty>)>,
+        contributions: Vec<(ActivationKey, Vec<super::semantic::ActivationInput>)>,
         rebased: bool,
     ) -> ContributionReplace<ActivationKey> {
         let next = self.normalize_contributions(contributions);
@@ -926,7 +952,7 @@ impl World {
     fn extend_activation_input_contributions(
         &mut self,
         job: &Job,
-        contributions: Vec<(ActivationKey, Vec<Ty>)>,
+        contributions: Vec<(ActivationKey, Vec<super::semantic::ActivationInput>)>,
     ) -> ContributionReplace<ActivationKey> {
         let next = self.normalize_contributions(contributions);
         self.activation_inputs.extend(&mut self.types, job.clone(), next)
@@ -934,7 +960,7 @@ impl World {
 
     fn normalize_contributions(
         &mut self,
-        contributions: Vec<(ActivationKey, Vec<Ty>)>,
+        contributions: Vec<(ActivationKey, Vec<super::semantic::ActivationInput>)>,
     ) -> HashMap<ActivationKey, ActivationInputAlternatives> {
         let mut next = HashMap::<ActivationKey, ActivationInputAlternatives>::new();
         for (activation, inputs) in contributions {
@@ -942,7 +968,11 @@ impl World {
             // built (fz-hwn.27.6, A): one shared addressing pass, so distinct
             // observed vars stay distinct and the evidence shares the key's
             // canonical form. Idempotent on already-addressed contributions.
-            let normalized = self.types.address_inputs(&inputs);
+            let raw_inputs = inputs
+                .iter()
+                .map(super::semantic::ActivationInput::ty)
+                .collect::<Vec<_>>();
+            let normalized = self.types.address_inputs(&raw_inputs);
             let normalized = if self
                 .body_keying(activation.function)
                 .is_some_and(|keying| keying.recursive)
@@ -960,12 +990,17 @@ impl World {
             // Each contribution stays one correlated row (fz-9i4.7.10.2):
             // a publisher's second row for the same activation is an
             // ALTERNATIVE, never a column-wise blend of the two.
+            let normalized = inputs
+                .into_iter()
+                .zip(normalized)
+                .map(|(input, ty)| input.with_ty(ty).addressed_callable_surfaces(&mut self.types))
+                .collect();
             match next.entry(activation) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(ActivationInputAlternatives::from_row(normalized));
+                    entry.insert(ActivationInputAlternatives::from_inputs(normalized));
                 }
                 std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    entry.get_mut().push_row(&mut self.types, normalized);
+                    entry.get_mut().push_inputs(&mut self.types, normalized);
                 }
             }
         }
@@ -1833,7 +1868,7 @@ impl World {
     /// begins.
     pub(crate) fn activation_capture_count(&self, activation: &super::identity::ActivationKey) -> usize {
         activation
-            .input_len(self.types())
+            .input_len()
             .saturating_sub(self.function_arity(activation.function))
     }
 
@@ -2266,6 +2301,17 @@ impl World {
         function: FunctionId,
         inputs: &[Ty],
     ) -> super::identity::ActivationKey {
+        let callable_surfaces = vec![std::collections::BTreeSet::new(); inputs.len()];
+        self.canonical_activation_key_with_callable_surfaces(root, function, inputs, &callable_surfaces)
+    }
+
+    fn canonical_activation_key_with_callable_surfaces(
+        &mut self,
+        root: RootId,
+        function: FunctionId,
+        inputs: &[Ty],
+        callable_surfaces: &[std::collections::BTreeSet<super::identity::ActivationSignature>],
+    ) -> super::identity::ActivationKey {
         let demand = self
             .input_demand(function)
             .expect("activation keying should wait for input demand facts before activation")
@@ -2273,10 +2319,16 @@ impl World {
         let keying = self
             .body_keying(function)
             .expect("activation keying should wait for recursive facts before activation");
-        // The arrow is the PRECISE evidence: address the whole input vector in one
+        // The coordinates are PRECISE evidence: address the whole input vector in one
         // pass (fz-hwn.27.6), so two distinct inference vars `[Ty27,Ty28]` address
         // to distinct `[a0,a1]` and never collapse to the phantom `[a0,a0]`.
-        let key = super::identity::ActivationKey::from_inputs(root, function, inputs, &mut self.types);
+        let key = super::identity::ActivationKey::from_inputs_with_callable_surfaces(
+            root,
+            function,
+            inputs,
+            callable_surfaces,
+            &mut self.types,
+        );
         if !keying.recursive {
             // A non-recursive body that never consumes callable identity only
             // TRANSPORTS the closures that reach it, so WHICH lambda arrived
@@ -2297,20 +2349,55 @@ impl World {
             if keying.consumes_callable_identity {
                 return key;
             }
-            let arrow = self
+            let inputs = self
                 .types
-                .erase_transported_closure_identities(key.arrow, &demand.local_dispatch);
-            return super::identity::ActivationKey { arrow, ..key };
+                .erase_transported_closure_identity_inputs(key.inputs(), &demand.local_dispatch);
+            // A forwarding body does not inspect a locally-ignored callable
+            // slot. Its observed call surfaces remain on `ActivationInputs`
+            // for the downstream call, but they are freight to THIS key just
+            // like the closure brand. Otherwise the carrier would split the
+            // very forwarder the value coordinates just proved equivalent.
+            let callable_surfaces = key
+                .callable_surfaces
+                .iter()
+                .enumerate()
+                .map(|(slot, surfaces)| {
+                    matches!(demand.local_dispatch.get(slot), Some(DispatchDemand::Ignore))
+                        .then(Default::default)
+                        .unwrap_or_else(|| surfaces.clone())
+                })
+                .collect();
+            return super::identity::ActivationKey {
+                signature: super::identity::ActivationSignature {
+                    inputs,
+                    result: key.signature.result,
+                },
+                callable_surfaces,
+                ..key
+            };
         }
-        // Bounded specialization (fz-y6w): the dispatch KEY is a whole-arrow
+        // Bounded specialization: the dispatch KEY is a coordinate
         // convergence collapse of that evidence — recursive slots nothing
         // demands widen to their convergence class so the ascent settles. Key
         // != evidence is intentional; the precise arrow stays in
         // `ActivationInputs`.
-        let arrow = self
+        let inputs = self
             .types
-            .convergence_collapse(key.arrow, &demand.forwarded_dispatch, &demand.returned);
-        super::identity::ActivationKey { arrow, ..key }
+            .convergence_collapse_inputs(key.inputs(), &demand.forwarded_dispatch, &demand.returned);
+        // Recursive keying deliberately converges value coordinates to a
+        // bounded class. Callable observations are retained by the precise
+        // activation rows and feed the child calls they reach; making them
+        // recursive-key coordinates would bypass that bound and manufacture a
+        // fresh self activation for every observed closure surface.
+        let callable_surfaces = vec![std::collections::BTreeSet::new(); inputs.len()].into_boxed_slice();
+        super::identity::ActivationKey {
+            signature: super::identity::ActivationSignature {
+                inputs,
+                result: key.signature.result,
+            },
+            callable_surfaces,
+            ..key
+        }
     }
 
     pub(crate) fn closure_ty(&mut self, function: FunctionId, captures: Vec<Ty>) -> Ty {

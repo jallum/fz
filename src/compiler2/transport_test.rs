@@ -84,8 +84,8 @@ fn transport_consumers_share_one_typed_semantic_order() {
     let symbols = keys.each_ref().map(|key| ExecutableSymbol {
         activation: ActivationSymbol {
             function: key.activation.function,
-            arrow: key.activation.arrow,
-            input: key.activation.inputs(&types).into_boxed_slice(),
+            signature: key.activation.signature.clone(),
+            callable_surfaces: key.activation.callable_surfaces.clone(),
         },
         need: key.need,
     });
@@ -246,8 +246,11 @@ fn transport_descriptors_share_across_root_positions() {
     let executable = ExecutableSymbol {
         activation: ActivationSymbol {
             function: add,
-            arrow: int,
-            input: vec![int, int].into_boxed_slice(),
+            signature: crate::compiler2::ActivationSignature {
+                inputs: vec![int, int].into_boxed_slice(),
+                result: int,
+            },
+            callable_surfaces: Box::default(),
         },
         need: ExecutableNeed::Value,
     };

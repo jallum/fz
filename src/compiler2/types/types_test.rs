@@ -413,32 +413,28 @@ fn unchanged_instantiation_returns_before_it_probes_or_normalizes() {
 }
 
 #[test]
-fn closure_erasure_with_no_ignored_parameter_returns_before_it_rebuilds_the_arrow() {
+fn closure_input_erasure_leaves_unignored_inputs_unchanged() {
     let mut t = Types::new();
     let int = t.int();
-    let arrow = t.arrow(&[int], int);
+    let inputs = [int];
     let before = t.interning_work_stats();
 
     assert_eq!(
-        t.erase_transported_closure_identities(arrow, &[DispatchDemand::Whole]),
-        arrow
+        t.erase_transported_closure_identity_inputs(&inputs, &[DispatchDemand::Whole])
+            .as_ref(),
+        inputs
     );
-    let expected = InterningWorkStats {
-        identity_shortcuts: before.identity_shortcuts + 1,
-        ..before
-    };
     assert_eq!(
         t.interning_work_stats(),
-        expected,
-        "a closure-erasure mask without an ignored parameter cannot change the arrow"
+        before,
+        "an input-erasure mask without an ignored parameter cannot intern a value"
     );
 
     let literal = t.closure_lit(ClosureTarget(7), vec![], 0);
-    let closure_arrow = t.arrow(&[literal], int);
-    let erased = t.erase_transported_closure_identities(closure_arrow, &[DispatchDemand::Ignore]);
+    let erased = t.erase_transported_closure_identity_inputs(&[literal], &[DispatchDemand::Ignore]);
     assert_ne!(
-        erased, closure_arrow,
-        "an ignored closure parameter must still erase its construction identity"
+        erased[0], literal,
+        "an ignored closure input must still erase its construction identity"
     );
 }
 
@@ -1080,7 +1076,7 @@ fn the_envelope_and_the_predicate_agree_on_a_callable_clause() {
 /// fz-kdt.127 -- WHY the erased forwarder key and the construction axis
 /// compose, stated from the side that actually decides it: the KEYING rule.
 ///
-/// `erase_transported_closure_identities` anonymises only the slots the
+/// `erase_transported_closure_identity_inputs` anonymises only the slots the
 /// dispatch mask marks `Ignore` -- the ones no runtime test reads. A slot the
 /// body dispatches on keeps its brand, so it stays shapeable and a test can
 /// still name the construction, while the anonymous literal the erasure mints
@@ -1094,10 +1090,11 @@ fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
     let surface = t.arrow(&[int], int);
     let branded = t.closure_lit(ClosureTarget(3), vec![int], 1);
     let branded = t.intersect(branded, surface);
-    let arrow = t.arrow(&[branded, branded], int);
-
-    let erased = t.erase_transported_closure_identities(arrow, &[DispatchDemand::Ignore, DispatchDemand::Whole]);
-    let params = t.arrow_params(&erased);
+    let erased = t.erase_transported_closure_identity_inputs(
+        &[branded, branded],
+        &[DispatchDemand::Ignore, DispatchDemand::Whole],
+    );
+    let params = erased.as_ref();
     assert_eq!(params.len(), 2);
     assert_ne!(
         params[0], branded,
@@ -1887,14 +1884,16 @@ macro_rules! semantic_helper_conformance_tests {
                 let mut t = $ctor;
                 let int = t.int();
                 let list_int = t.list(int.clone());
-                let arrow = t.arrow(&[list_int.clone(), list_int.clone()], int.clone());
-                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::Whole, DispatchDemand::Ignore], &[]);
+                let collapsed = t.convergence_collapse_inputs(
+                    &[list_int.clone(), list_int.clone()],
+                    &[DispatchDemand::Whole, DispatchDemand::Ignore],
+                    &[],
+                );
 
-                let params = t.arrow_params(&collapsed);
-                let ret = t.arrow_join_return(&collapsed);
+                let params = collapsed.as_ref();
                 assert_eq!(t.display(&params[0]), "[int]");
                 assert_eq!(t.display(&params[1]), "[a1_e]");
-                assert_eq!(t.display(&ret), "int");
+                assert_eq!(t.display(&int), "int");
             }
 
             #[test]
@@ -1904,17 +1903,14 @@ macro_rules! semantic_helper_conformance_tests {
                 let non_empty = t.non_empty_list(int.clone());
                 let list_int = t.list(int);
                 let joined_list_family = t.union(list_int, non_empty);
-                let sentinel = t.none();
-                let arrow = t.arrow(&[joined_list_family], sentinel.clone());
-                let collapsed = t.convergence_collapse(
-                    arrow,
+                let collapsed = t.convergence_collapse_inputs(
+                    &[joined_list_family],
                     &[DispatchDemand::ListShape(Box::new(DispatchDemand::Whole))],
                     &[],
                 );
 
-                let expected = t.arrow(&[list_int], sentinel);
                 assert!(
-                    t.is_equivalent(&collapsed, &expected),
+                    t.is_equivalent(&collapsed[0], &list_int),
                     "recursive list-shape dispatch should converge joined list-family shape while preserving demanded element type"
                 );
             }
@@ -1926,24 +1922,21 @@ macro_rules! semantic_helper_conformance_tests {
                 let payload = t.list(elem);
                 let tag = t.atom_lit("cont");
                 let state = t.tuple(&[tag, payload]);
-                let sentinel = t.none();
-                let arrow = t.arrow(&[state], sentinel);
                 let mut fields = BTreeMap::new();
                 fields.insert(0, DispatchDemand::Whole);
-                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)], &[]);
+                let collapsed = t.convergence_collapse_inputs(&[state], &[DispatchDemand::TupleFields(fields)], &[]);
 
                 // The dispatch tag (field 0) is preserved exactly; the ignored
                 // payload (field 1) collapses to its ADDRESSED class — the list
                 // element addressed at `[Param(0), Field(1), Elem]`, displayed
                 // `a0_1_e` — not the path-blind `list(any)` (fz-f98.14.10.2).
-                let params = t.arrow_params(&collapsed);
+                let params = collapsed.as_ref();
                 assert_eq!(
                     t.display(&params[0]),
                     "{:cont, [a0_1_e]}",
                     "nested dispatch demand should preserve the tag and collapse the payload to its addressed class: {}",
-                    t.display(&collapsed)
+                    t.display(&params[0])
                 );
-                let _ = sentinel;
             }
 
             #[test]
@@ -1967,14 +1960,12 @@ macro_rules! semantic_helper_conformance_tests {
                     t.tuple(&[tag, payload])
                 };
                 let union = t.union(cont, halt); // {:cont,[T]} | {:halt,[T]}
-                let sentinel = t.none();
-                let arrow = t.arrow(&[union], sentinel);
                 let mut fields = BTreeMap::new();
                 fields.insert(0, DispatchDemand::Whole); // tag dispatches, payload ignored
-                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)], &[]);
+                let collapsed = t.convergence_collapse_inputs(&[union], &[DispatchDemand::TupleFields(fields)], &[]);
 
-                let params = t.arrow_params(&collapsed);
-                let readdressed = t.address_inputs(&params);
+                let params = collapsed.as_ref();
+                let readdressed = t.address_inputs(params);
                 assert_eq!(
                     readdressed, params,
                     "collapsed union slot must be canonically addressed (round-trip): {} vs {}",
@@ -2140,10 +2131,9 @@ macro_rules! closure_helper_conformance_tests {
         mod $mod_name {
             use super::*;
 
-            /// The erasure drops the BRAND and keeps the capture types: two
-            /// lambdas closed over the same thing become one key, one lambda
-            /// closed over two things stays two, and neither result is a
-            /// singleton any consumer could call directly (fz-kdt.127).
+            /// Erasure drops the brand and callable observation while keeping
+            /// capture denotations: two lambdas closed over the same thing
+            /// become one key, while different capture types remain distinct.
             #[test]
             fn erase_closure_identity_drops_the_brand_and_keeps_the_captures() {
                 let mut t = $ctor;
@@ -2161,9 +2151,8 @@ macro_rules! closure_helper_conformance_tests {
                 assert_eq!(clauses[0].args.len(), 2);
                 assert!(clauses[0].closure.is_none());
 
-                // Compared over ONE declared surface, the way a key is: a raw
-                // literal's own arrow is written in the minting lambda's
-                // surface vars, which the key addresses away before erasing.
+                // A call surface cannot survive brand erasure in `Ty`: it is
+                // planner evidence carried by the activation row instead.
                 let int = t.int();
                 let surface = t.arrow(&[int, int], int);
                 let left = t.closure_lit(ClosureTarget(3), vec![int], 2);
@@ -2189,15 +2178,16 @@ macro_rules! closure_helper_conformance_tests {
                 let bare = t.closure_lit(ClosureTarget(3), Vec::new(), 2);
                 let bare = t.intersect(bare, surface);
                 let erased_bare = t.erase_closure_identity(&bare);
+                let any = t.any();
+                let generic_surface = t.arrow(&[any, any], any);
                 assert_eq!(
-                    erased_bare, surface,
-                    "a capture-free literal has nothing left to say once its brand is gone, so \
-                     it erases to the bare arrow"
+                    erased_bare, generic_surface,
+                    "a capture-free literal retains arity but not an observed call surface"
                 );
             }
 
             #[test]
-            fn callable_value_clauses_apply_surface_to_closure_vars() {
+            fn callable_value_clauses_keep_literal_denotations_unspecialized() {
                 let mut t = $ctor;
                 let closure = t.fn_ref_lit(ClosureTarget(3), 1);
                 let int = t.int();
@@ -2210,19 +2200,14 @@ macro_rules! closure_helper_conformance_tests {
                 assert_eq!(clauses.len(), 1);
                 let clause = &clauses[0];
                 assert!(clause.closure.is_some(), "value clauses should preserve closure identity");
-                assert!(t.is_integer(&clause.args[0]), "the surface should specialize the closure arg");
-                assert!(t.is_nil(&clause.ret), "the surface should specialize the closure return");
+                assert!(
+                    t.has_vars(&clause.args[0]) && t.has_vars(&clause.ret),
+                    "the literal owns one generic callable denotation; exact observations live in ActivationInput"
+                );
             }
 
-            /// Construction and read are ONE specialization.
-            ///
-            /// A literal and the surface it is viewed at meet in two places: a
-            /// `Types::intersect` folds the surface into the literal's clause,
-            /// and `callable_value_clauses` views a literal through a surface
-            /// clause standing beside it in a union. Both ask the same question
-            /// -- what does this callable's own arrow look like once the
-            /// surface's witnesses are substituted through it -- so they report
-            /// one shape, and a second implementation of it could drift.
+            /// A literal's construction and reads retain one denotation even
+            /// when a caller presents an exact arrow surface beside it.
             #[test]
             fn meeting_a_surface_and_reading_through_one_report_one_shape() {
                 let mut t = $ctor;
@@ -2243,9 +2228,9 @@ macro_rules! closure_helper_conformance_tests {
                 assert_eq!(
                     (met[0].args.clone(), met[0].ret),
                     (read[0].args.clone(), read[0].ret),
-                    "the meet and the read specialize the literal the same way",
+                    "the meet and the read retain the literal's one denotation",
                 );
-                assert!(t.is_integer(&read[0].args[0]) && t.is_nil(&read[0].ret));
+                assert!(t.has_vars(&read[0].args[0]) && t.has_vars(&read[0].ret));
             }
 
             #[test]
@@ -2270,10 +2255,10 @@ macro_rules! closure_helper_conformance_tests {
                     "same-target fn-ref widen should preserve callable identity instead of erasing to an opaque surface"
                 );
                 assert!(
-                    t.is_integer(&clause.args[0]),
-                    "same-target fn-ref widen should widen literal arg observations through the preserved callable clause"
+                    t.has_vars(&clause.args[0]),
+                    "same-target fn-ref widening keeps the one literal denotation; observations do not enter Ty"
                 );
-                assert!(t.is_nil(&clause.ret));
+                assert!(t.has_vars(&clause.ret));
             }
 
             #[test]

@@ -28,6 +28,7 @@ use crate::runtime_type_predicate::{
     CallableShape, CallableShapes, ListShape, ListShapes, RuntimeTypePredicate, TupleShapes,
 };
 
+use super::identity::ActivationSignature;
 use super::protocol::{ProtocolDomainObligation, is_protocol_domain_tag};
 use crate::type_expr::opaque_owner_module;
 use crate::types::{
@@ -54,9 +55,7 @@ use conj::Conj;
 use descr::Descr;
 use descr::OpaqueTag;
 use dnf::dnf_intersect_with;
-use sigs::{
-    ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig, specialize_surface,
-};
+use sigs::{ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig};
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
 /// `(brand, captures, args, ret)`, the brand `None` for an anonymous literal.
@@ -803,6 +802,48 @@ impl Types {
             }
         }
         a.len().cmp(&b.len())
+    }
+
+    /// Total typed order for the coordinate record that specializes one body.
+    ///
+    /// An activation is not an arrow value: its inputs and pending result are
+    /// planner-owned coordinates. Keep their ordering beside the existing
+    /// typed `Ty` order rather than re-packing them onto the callable axis.
+    pub(crate) fn cmp_activation_signature(
+        &self,
+        left: &ActivationSignature,
+        right: &ActivationSignature,
+    ) -> std::cmp::Ordering {
+        self.cmp_activation_tys(&left.inputs, &right.inputs)
+            .then_with(|| self.cmp_activation_ty(left.result, right.result))
+    }
+
+    /// Total typed order for the direct callable observations attached to an
+    /// activation key.  `BTreeSet`'s raw `Ty` order is only a storage detail;
+    /// sorting each set through the owning interner keeps emitted-product order
+    /// semantic and stable across allocation histories.
+    pub(crate) fn cmp_activation_callable_surfaces(
+        &self,
+        left: &[BTreeSet<ActivationSignature>],
+        right: &[BTreeSet<ActivationSignature>],
+    ) -> std::cmp::Ordering {
+        for (left_slot, right_slot) in left.iter().zip(right) {
+            let mut left_surfaces = left_slot.iter().collect::<Vec<_>>();
+            let mut right_surfaces = right_slot.iter().collect::<Vec<_>>();
+            left_surfaces.sort_by(|a, b| self.cmp_activation_signature(a, b));
+            right_surfaces.sort_by(|a, b| self.cmp_activation_signature(a, b));
+            for (left_surface, right_surface) in left_surfaces.iter().zip(&right_surfaces) {
+                let order = self.cmp_activation_signature(left_surface, right_surface);
+                if order != std::cmp::Ordering::Equal {
+                    return order;
+                }
+            }
+            let order = left_surfaces.len().cmp(&right_surfaces.len());
+            if order != std::cmp::Ordering::Equal {
+                return order;
+            }
+        }
+        left.len().cmp(&right.len())
     }
 
     fn assert_activation_origins_registered(&self, root: Ty) {
@@ -1592,7 +1633,7 @@ impl Types {
         }
     }
 
-    /// Derive a recursive activation's KEY from its precise evidence arrow by
+    /// Derive a recursive activation's KEY inputs from precise evidence by
     /// widening every UNDEMANDED subtree to its convergence class, so the
     /// recursive ascent settles (fz-y6w bounded specialization). The mask is
     /// `InputDemand::forwarded_dispatch`: what this body asks about a slot,
@@ -1609,25 +1650,18 @@ impl Types {
     /// literal; fz-y6w's termination argument does not cover a slot with no
     /// collapse.
     ///
-    /// This is ONE whole-arrow operation on the interned arrow (fz-hwn.27.7) — it
-    /// replaces a per-input `convergence_class` pre-pass run before the inputs
-    /// were addressed. The two agree because `convergence_class` only collapses
-    /// pure lists (`list(τ) -> list(any)`), which is invariant under the
-    /// variable-addressing `from_inputs` applies. The arrow remains the PRECISE
-    /// evidence surface (carried by `ActivationInputs`); the collapse is a derived
-    /// dispatch key, and key != evidence is intentional.
-    pub(crate) fn convergence_collapse(
+    /// This is one coordinate-record operation applied after
+    /// whole-scope addressing. `convergence_class` only collapses pure lists
+    /// (`list(τ) -> list(any)`), so it is invariant under that addressing. The
+    /// precise evidence remains in `ActivationInputs`; this returns the derived
+    /// dispatch coordinates, and key != evidence is intentional.
+    pub(crate) fn convergence_collapse_inputs(
         &mut self,
-        arrow: Ty,
+        inputs: &[Ty],
         mask: &[DispatchDemand],
         returned: &[DispatchDemand],
-    ) -> Ty {
-        let Some(sig) = self.descr(&arrow).pure_arrow() else {
-            return arrow;
-        };
-        let params = sig.args.clone();
-        let ret = sig.ret;
-        let collapsed = params
+    ) -> Box<[Ty]> {
+        inputs
             .iter()
             .enumerate()
             .map(|(slot, param)| {
@@ -1636,19 +1670,18 @@ impl Types {
                 let path = [AddrStep::Param(slot as u16)];
                 self.convergence_collapse_ty(*param, demand, result, &path, true)
             })
-            .collect::<Vec<_>>();
-        self.arrow(&collapsed, ret)
+            .collect()
     }
 
     /// The transported-callable key collapse (fz-6gb, fz-kdt.127): erase
-    /// closure BRANDS from the arrow's non-dispatch slots, leaving everything
+    /// closure BRANDS from non-dispatch input coordinates, leaving everything
     /// else -- data types, callable surfaces, CAPTURE TYPES, dispatch-relevant
     /// slots -- exactly as the evidence stated it. Two closures of the same
     /// shape then key one activation of a function that only carries them,
     /// while a slot the function dispatches on keeps brand identity, and two
     /// capture types through one slot stay two keys because the body a key
     /// names grounds its callees' capture lanes. Unlike
-    /// [`convergence_collapse`], no slot becomes an address var: this erasure
+    /// [`convergence_collapse_inputs`], no slot becomes an address var: this erasure
     /// is value-language throughout, so nothing key-shaped can leak into
     /// evidence.
     ///
@@ -1662,29 +1695,19 @@ impl Types {
     /// lambda closed over one `int` with that lambda closed over one `float`;
     /// preserving dispatch-free static grounding while erasing more therefore
     /// requires a flow-sensitive non-observability proof.
-    pub(crate) fn erase_transported_closure_identities(&mut self, arrow: Ty, mask: &[DispatchDemand]) -> Ty {
-        let Some(sig) = self.descr(&arrow).pure_arrow() else {
-            return arrow;
-        };
-        if !sig
-            .args
-            .iter()
-            .enumerate()
-            .any(|(slot, _)| matches!(mask.get(slot), Some(DispatchDemand::Ignore)))
-        {
-            return self.unchanged(arrow);
-        }
-        let params = sig.args.clone();
-        let ret = sig.ret;
-        let erased = params
+    pub(crate) fn erase_transported_closure_identity_inputs(
+        &mut self,
+        inputs: &[Ty],
+        mask: &[DispatchDemand],
+    ) -> Box<[Ty]> {
+        inputs
             .iter()
             .enumerate()
             .map(|(slot, param)| match mask.get(slot).unwrap_or(&DispatchDemand::Whole) {
-                DispatchDemand::Ignore => self.erase_closure_identity(param),
+                DispatchDemand::Ignore => self.erase_transported_closure_identity_for_key(param),
                 _ => *param,
             })
-            .collect::<Vec<_>>();
-        self.arrow(&erased, ret)
+            .collect()
     }
 
     pub(crate) fn convergence_collapse_evidence_inputs(&mut self, inputs: &[Ty], mask: &[DispatchDemand]) -> Vec<Ty> {
@@ -2836,56 +2859,53 @@ impl Types {
         })
     }
 
+    /// The callable-surface variables owned by one literal before any caller
+    /// observes it. This is planner evidence, not part of the literal's value
+    /// denotation; semantic rows carry the returned coordinate record when a
+    /// literal needs a surface.
+    pub(crate) fn callable_literal_signature(&self, a: &Ty) -> Option<ActivationSignature> {
+        let sig = self.descr(a).pure_arrow()?;
+        sig.lit.as_ref()?;
+        Some(ActivationSignature {
+            inputs: sig.args.clone().into_boxed_slice(),
+            result: sig.ret,
+        })
+    }
+
+    /// Read an arrow coordinate record without treating it as a callable
+    /// value. Contracts use this to attach their matched callback surface to
+    /// an activation input rather than intersecting it into a closure `Ty`.
+    pub(crate) fn callable_signature(&self, a: &Ty) -> Option<ActivationSignature> {
+        let sig = self.descr(a).pure_arrow()?;
+        Some(ActivationSignature {
+            inputs: sig.args.clone().into_boxed_slice(),
+            result: sig.ret,
+        })
+    }
+
     pub fn callable_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
         callable_clauses(self.ctx(), self.descr(a))
     }
 
     pub fn callable_value_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
-        let clauses = self.callable_clauses(a)?;
-        let surface_clauses = clauses
-            .iter()
-            .filter(|clause| clause.closure.is_none())
-            .cloned()
-            .collect::<Vec<_>>();
-        if surface_clauses.is_empty() {
-            return Some(clauses);
-        }
-
-        let mut resolved = Vec::new();
-        for clause in clauses {
-            if clause.closure.is_none() {
-                continue;
-            }
-            let mut specialized = false;
-            for surface in surface_clauses
-                .iter()
-                .filter(|surface| surface.args.len() == clause.args.len())
-            {
-                specialized = true;
-                let (args, ret) = specialize_surface(self, (&clause.args, clause.ret), (&surface.args, surface.ret));
-                let resolved_clause = CallableClause {
-                    args,
-                    ret,
-                    closure: clause.closure.clone(),
-                };
-                if !resolved.contains(&resolved_clause) {
-                    resolved.push(resolved_clause);
-                }
-            }
-            if !specialized && !resolved.contains(&clause) {
-                resolved.push(clause);
-            }
-        }
-
-        if resolved.is_empty() {
-            Some(surface_clauses)
-        } else {
-            Some(resolved)
-        }
+        // Call observations are carried beside the value by `ActivationInput`.
+        // This compatibility accessor therefore has no literal-specialization
+        // arm: every named closure has precisely the callable clauses its
+        // denotation owns.
+        self.callable_clauses(a)
     }
 
     pub fn erase_closure_identity(&mut self, a: &Ty) -> Ty {
         let d = erase_closure_identity(self, *a);
+        self.intern(d)
+    }
+
+    /// Key erasure keeps a joined family of one closure target intact: a
+    /// runtime-selected capture layout still needs its construction word to
+    /// discriminate the member. A one-literal forwarding input instead drops
+    /// its target/surface identity and keeps only its capture denotation.
+    fn erase_transported_closure_identity_for_key(&mut self, a: &Ty) -> Ty {
+        let d = erase_transported_closure_identity_for_key(self, *a);
         self.intern(d)
     }
 }
@@ -3603,9 +3623,9 @@ fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
 /// unrestricted answer -- and this is the ONE place that decides it, for the
 /// predicate projection and for the envelope alike. It never actually arrives.
 /// An anonymous literal is minted in exactly one place,
-/// [`Types::erase_transported_closure_identities`], which puts it in the
-/// `arrow` of the ACTIVATION KEY of a non-recursive body that consumes no
-/// callable identity, and only in the slots the dispatch mask marks
+/// [`Types::erase_transported_closure_identity_inputs`], which puts it in the
+/// ACTIVATION KEY of a non-recursive body that consumes no callable identity,
+/// and only in the slots the dispatch mask marks
 /// `DispatchDemand::Ignore`; a runtime test is asked of a VALUE's type -- a
 /// callsite's `CallTargetSummary::surface_inputs`, a lane's carrier -- never of
 /// a key. THAT is what makes an erased forwarder key and the construction axis
@@ -3908,7 +3928,7 @@ fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec
     for clause in funcs {
         let mut pos = Vec::with_capacity(clause.pos.len());
         for lit in clause.pos.iter().filter_map(|sig| sig.lit.as_ref()) {
-            let captures = lit
+            let captures: Vec<Ty> = lit
                 .captures
                 .iter()
                 .map(|capture| {
@@ -4085,21 +4105,25 @@ fn is_literal(cx: TyCtx<'_>, a: &Ty) -> bool {
 /// capture types answers it by the key instead.
 ///
 /// The captures are erased by this same rule, so brands nested inside a
-/// captured closure go too and same-typed literals still share one body. A
-/// literal with no captures has nothing left to say once its brand is gone, so
-/// it erases to the bare arrow it always did.
+/// captured closure go too and same-typed literals still share one body. The
+/// literal's argument/result fields are planner observations, so erasure also
+/// replaces them with the generic callable surface; direct activation rows
+/// retain the observations needed to plan a call.
 fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
     let base = t.descr(&a).clone();
     let mut erased = map_recursive_inputs(t, base, erase_closure_identity);
+    let any = t.any();
     for conj in &mut erased.funcs {
         for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
             let Some(lit) = sig.lit.take() else {
                 continue;
             };
+            sig.args = vec![any; sig.args.len()];
+            sig.ret = any;
             if lit.captures.is_empty() {
                 continue;
             }
-            let captures = lit
+            let captures: Vec<Ty> = lit
                 .captures
                 .iter()
                 .map(|capture| {
@@ -4112,6 +4136,59 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
                 fn_id: None,
                 captures,
             });
+        }
+    }
+    erased
+}
+
+/// The activation-key form of closure erasure.  A joined value with several
+/// capture layouts of the SAME closure target cannot be selected statically;
+/// its literal target remains the runtime construction discriminator.  A
+/// single arrival, on the other hand, transports only freight through a body
+/// that does not inspect it, so its target and call surface must not fork that
+/// body's key.
+fn erase_transported_closure_identity_for_key(t: &mut Types, a: Ty) -> Descr {
+    let base = t.descr(&a).clone();
+    let mut erased = map_recursive_inputs(t, base, erase_transported_closure_identity_for_key);
+    let literal_targets = erased
+        .funcs
+        .iter()
+        .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+        .filter_map(|sig| sig.lit.as_ref().and_then(|lit| lit.fn_id))
+        .collect::<BTreeSet<_>>();
+    let literal_count = erased
+        .funcs
+        .iter()
+        .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+        .filter(|sig| sig.lit.as_ref().is_some_and(|lit| lit.fn_id.is_some()))
+        .count();
+    if literal_targets.len() == 1 && literal_count > 1 {
+        return erased;
+    }
+
+    let any = t.any();
+    for conj in &mut erased.funcs {
+        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+            let Some(lit) = sig.lit.take() else {
+                continue;
+            };
+            sig.args = vec![any; sig.args.len()];
+            sig.ret = any;
+            let captures: Vec<Ty> = lit
+                .captures
+                .iter()
+                .map(|capture| {
+                    let capture = erase_transported_closure_identity_for_key(t, *capture);
+                    t.intern(capture)
+                })
+                .collect();
+            if !captures.is_empty() {
+                sig.lit = Some(ClosureLit {
+                    kind: lit.kind,
+                    fn_id: None,
+                    captures,
+                });
+            }
         }
     }
     erased

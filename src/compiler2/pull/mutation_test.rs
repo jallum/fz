@@ -118,7 +118,7 @@ fn mutation_admission_keeps_single_products_inline_and_never_clones_rejected_key
 fn mutation_positioned_key(types: &mut super::super::Types, id: u32) -> ProductKey {
     let executable = fake_executable_with_function(RootId::for_test(100), id);
     let mut symbol = executable_symbol_for_test(&executable);
-    symbol.activation.input = vec![types.any(); 32].into_boxed_slice();
+    symbol.activation.signature.inputs = vec![types.any(); 32].into_boxed_slice();
     ProductKey::TransportShape(TransportPosition::ExecutableReturn { executable: symbol })
 }
 
@@ -126,7 +126,7 @@ fn mutation_input(key: &ProductKey) -> *const super::super::Ty {
     let ProductKey::TransportShape(position) = key else {
         panic!("positioned key")
     };
-    position.executable().activation.input.as_ptr()
+    position.executable().activation.signature.inputs.as_ptr()
 }
 
 #[test]

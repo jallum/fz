@@ -501,8 +501,7 @@ fn zero_lane_inputs_preserve_tuple_structure_without_inventing_absence() {
         })
         .collect();
     let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
-    let bound =
-        bind_executable_inputs(&transport, world.types(), &mut runtime, &executable, &[]).expect("zero physical lanes");
+    let bound = bind_executable_inputs(&transport, &executable, &[]).expect("zero physical lanes");
     assert!(
         matches!(&bound[0], Some(BackendBoundValue::Absent)),
         "a published Nothing layout carries explicit absence"

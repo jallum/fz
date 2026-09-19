@@ -369,7 +369,8 @@ pub(crate) fn executable_key_for_symbol(root: RootId, symbol: &ExecutableSymbol)
         activation: ActivationKey {
             root,
             function: symbol.activation.function,
-            arrow: symbol.activation.arrow,
+            signature: symbol.activation.signature.clone(),
+            callable_surfaces: symbol.activation.callable_surfaces.clone(),
         },
         need: symbol.need,
     }
@@ -1131,7 +1132,7 @@ fn collect_executable_atoms(
                 collect_dispatch_atoms(world, dispatch.plan(), seen, atoms);
             }
             for clause in clauses {
-                collect_step_atoms(world, &clause.projections, seen, atoms);
+                collect_step_atoms(&clause.projections, seen, atoms);
             }
             for entry in entries {
                 collect_entry_atoms(world, entry, seen, atoms);
@@ -1141,11 +1142,11 @@ fn collect_executable_atoms(
 }
 
 fn collect_entry_atoms(world: &mut World, entry: &BackendEntry, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
-    collect_step_atoms(world, &entry.steps, seen, atoms);
+    collect_step_atoms(&entry.steps, seen, atoms);
     collect_tail_atoms(world, &entry.tail, seen, atoms);
 }
 
-fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+fn collect_step_atoms(steps: &[BackendStep], seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     for step in steps {
         match step {
             BackendStep::Const { literal, .. } | BackendStep::AssertLiteral { literal, .. } => {
@@ -1405,8 +1406,11 @@ mod tests {
             executable: ExecutableSymbol {
                 activation: ActivationSymbol {
                     function: FunctionId::from_coordinate(1),
-                    arrow: ty,
-                    input: Box::default(),
+                    signature: crate::compiler2::ActivationSignature {
+                        inputs: Box::default(),
+                        result: ty,
+                    },
+                    callable_surfaces: Box::default(),
                 },
                 need: ExecutableNeed::Value,
             },
@@ -1479,7 +1483,11 @@ mod tests {
                 activation: ActivationKey {
                     root: RootId::for_test(0),
                     function: FunctionId::from_coordinate(0),
-                    arrow: int,
+                    signature: crate::compiler2::ActivationSignature {
+                        inputs: Box::default(),
+                        result: int,
+                    },
+                    callable_surfaces: Box::default(),
                 },
                 need: ExecutableNeed::Value,
             };

@@ -413,9 +413,30 @@ impl<'a> ProgramCanon<'a> {
 
     fn activation_key(&mut self, activation: &ActivationKey) -> String {
         let inputs: Vec<String> = activation
-            .inputs(self.world.types())
+            .inputs()
             .iter()
-            .map(|ty| self.ty(*ty))
+            .enumerate()
+            .map(|(slot, ty)| {
+                let Some(surfaces) = activation
+                    .callable_surfaces(slot)
+                    .filter(|surfaces| !surfaces.is_empty())
+                else {
+                    return self.ty(*ty);
+                };
+                surfaces
+                    .iter()
+                    .map(|surface| {
+                        let inputs = surface
+                            .inputs
+                            .iter()
+                            .map(|ty| self.ty(*ty))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("({inputs}) -> {}", self.ty(surface.result))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            })
             .collect();
         format!(
             "{}[{}]",

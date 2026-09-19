@@ -291,19 +291,13 @@ faithfulness ratchet exists to forbid. The canonical rendering asks the same
 function, so the boundary and the oracle cannot disagree about what `any` is.
 
 The CALLABLE axis gets IDEMPOTENCE alone: exact-duplicate clauses are dropped
-(`A ∨ A = A`, `dedupe_exact_clauses`, first occurrence kept), which is the rule
-the ACTIVATION KEY depends on. It is the one axis absorption does not reach;
-`types/axis.rs` carries the one statement of why, and all three of its facts
-are measured. A LIT-FREE arrow is the type language's record: `ActivationKey`
-keeps a specialization's canonical inputs and result as one arrow's params and
-result and reads them back with `Types::arrow_params`, and a resolved `@spec`
-is decomposed the same way — while the kernel calls `(any, int) -> any` every
-callable, because an arrow whose result is every value constrains nothing a
-callable could fail. Collapsing such an arrow to the axis top leaves that
-reader `arrow_params` empty and `arrow_result` `None`, which `resolve` and
-`contract` both `expect`: a panic (`axis_test`). An activation key escapes only
-because its result slot is the unknown `r0` and not `any`; a declared callable
-parameter does not. A LIT-BEARING arrow's `args` and `ret` are evidence
+(`A ∨ A = A`, `dedupe_exact_clauses`, first occurrence kept). The lit-free
+record obstruction is gone: `ActivationKey` keeps a specialization's canonical
+inputs and result in `ActivationSignature`, and `ContractArrow` keeps direct
+`params`/`result`, so neither constructs an `ArrowSig` just to carry planner
+coordinates. A lit-free `(any, int) -> any` can therefore be recognized as the
+whole callable axis without deleting activation or contract evidence. The axis
+is still excluded while a LIT-BEARING arrow's `args` and `ret` are evidence
 `func_clause_empty` never looks at, so two specializations of one lambda are
 mutually subtypes and a rule reading the denotation alone would merge them;
 `Types::row_column_dominates` is what adds the evidence back, and
@@ -318,16 +312,14 @@ captures of every clause it finds.
 is what fails when the axis is absorbed. `TyCanon` still collapses the axis for
 RENDERING, where nothing reads the arrow back.
 
-That is also where the arena's remaining callable duplicates come from, and
-they are two different populations. Measured over the full arena of
-`00420_enum_take_drop_split`, `fz_f98_range_map_converges` and
-`json_roundtrip`, counting the SURPLUS ids per canonical class the census
-sums: 118 / 11 / 0 are ONE closure literal stored at several surfaces
-(construction vars, addressed vars, a ground instantiation), and 5 / 4 / 25 are
-lit-free arrows the kernel already calls the whole axis. The rest — 5 / 0 / 2 —
-are tuple carvings. Neither callable population can be folded at the boundary
-without erasing something a reader takes back out, so the census counts them;
-one `Ty` per callable VALUE would mean the surface evidence leaving the type.
+The planner no longer stores direct callable observations in the callable axis:
+`ActivationInput` carries a closure value `Ty` beside a set of addressed direct
+`ActivationSignature`s. This removes the synthetic lit-free and re-specialized literal
+values that existed only to move planner evidence. The callable axis still
+retains literal capture layouts and the value denotations the runtime reads;
+the carrier retains the surface a contract or call analysis observed. Each has
+one owner, so normalizing the axis cannot erase planner evidence and planning
+cannot create a second type identity for one closure value.
 
 The coverage walk and the dedupe only ever remove, and both visit in index
 order, so what they leave is still sorted; a saturated axis is REPLACED by the

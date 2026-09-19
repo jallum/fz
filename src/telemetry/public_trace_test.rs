@@ -1039,7 +1039,7 @@ const SAME_FUNCTION_TWO_TYPES_SOURCE: &str =
 /// real compile can produce indistinguishable in the public log. This proves
 /// the projection now renders within-run identity: two activations of the
 /// SAME function (`identity/1`, called once with an int and once with an
-/// atom) show equal `function_id` and different `arrow` in the public
+/// atom) show equal `function_id` and different input coordinates in the public
 /// stream.
 #[test]
 fn analyze_activation_job_spans_distinguish_two_activations_of_one_function() {
@@ -1047,7 +1047,7 @@ fn analyze_activation_job_spans_distinguish_two_activations_of_one_function() {
     assert!(matches!(trace.outcome, DriveOutcome::Resolved));
 
     let job_spans = trace.spans_named(&["fz", "compiler2", "job"]);
-    let analyze_activations: Vec<(u64, u64)> = job_spans
+    let analyze_activations: Vec<(u64, Vec<u64>, u64)> = job_spans
         .iter()
         .filter_map(|span| {
             let job = span.start.metadata_key("job")?;
@@ -1055,30 +1055,41 @@ fn analyze_activation_job_spans_distinguish_two_activations_of_one_function() {
                 return None;
             }
             let function_id = job.get("function_id")?.as_u64()?;
-            let arrow = job.get("arrow")?.as_u64()?;
-            Some((function_id, arrow))
+            let inputs = job
+                .get("inputs")?
+                .as_array()?
+                .iter()
+                .map(|input| input.as_u64())
+                .collect::<Option<Vec<_>>>()?;
+            let result = job.get("result")?.as_u64()?;
+            Some((function_id, inputs, result))
         })
         .collect();
 
     assert!(
         analyze_activations.len() >= 2,
-        "expected at least two AnalyzeActivation job spans with function_id/arrow metadata, got {analyze_activations:?}"
+        "expected at least two AnalyzeActivation job spans with function_id/input/result metadata, got {analyze_activations:?}"
     );
 
-    let mut arrows_by_function: std::collections::HashMap<u64, std::collections::HashSet<u64>> =
+    let mut coordinates_by_function: std::collections::HashMap<u64, std::collections::HashSet<(Vec<u64>, u64)>> =
         std::collections::HashMap::new();
-    for (function_id, arrow) in &analyze_activations {
-        arrows_by_function.entry(*function_id).or_default().insert(*arrow);
+    for (function_id, inputs, result) in &analyze_activations {
+        coordinates_by_function
+            .entry(*function_id)
+            .or_default()
+            .insert((inputs.clone(), *result));
     }
     assert!(
-        arrows_by_function.values().any(|arrows| arrows.len() >= 2),
-        "expected two AnalyzeActivation job spans with EQUAL function_id and DIFFERENT arrow \
+        coordinates_by_function
+            .values()
+            .any(|coordinates| coordinates.len() >= 2),
+        "expected two AnalyzeActivation job spans with EQUAL function_id and DIFFERENT coordinates \
          (two activations of one function distinguishable in the public log): {analyze_activations:?}"
     );
 }
 
 /// A settled `backend_executable` product carries identity beyond `"kind"`:
-/// the activation it was built for (`function_id`, `arrow`) and which need
+/// the activation it was built for (`function_id`, `inputs`, `result`) and which need
 /// it answers (`need`).
 #[test]
 fn backend_executable_product_settled_carries_identity_beyond_kind() {
@@ -1097,8 +1108,12 @@ fn backend_executable_product_settled_carries_identity_beyond_kind() {
         "backend_executable product metadata missing function_id: {backend_executable:?}"
     );
     assert!(
-        backend_executable.get("arrow").and_then(|v| v.as_u64()).is_some(),
-        "backend_executable product metadata missing arrow: {backend_executable:?}"
+        backend_executable.get("inputs").and_then(|v| v.as_array()).is_some(),
+        "backend_executable product metadata missing inputs: {backend_executable:?}"
+    );
+    assert!(
+        backend_executable.get("result").and_then(|v| v.as_u64()).is_some(),
+        "backend_executable product metadata missing result: {backend_executable:?}"
     );
     assert!(
         backend_executable.get("need").and_then(|v| v.as_str()).is_some(),
@@ -1534,7 +1549,11 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             // reached.
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                [[237, 0, 0, 9, 5], [592, 0, 0, 64, 6], [1117, 0, 0, 70, 6]][fixture_index][scenario],
+                // A reached-leaf edit carries a direct callable observation
+                // beside the closure value, rather than materializing a
+                // synthetic callable value for the contract. That removes
+                // redundant demand body walks on the callable lenses.
+                [[237, 0, 0, 5, 5], [592, 0, 0, 49, 6], [1117, 0, 0, 53, 6]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1692,9 +1711,6 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // result/status helpers are ordinary generic calls.
     // The typed `==` clauses this fixture's predicates reach add one
     // component evaluation and their StaticCallees work.
-    // Publishing a function's source one round earlier leaves it
-    // present-but-dirty while the scope walk that published it is still
-    // blocked; one extraction blocks once more on that earlier-visible body.
     ("fixtures2/behavior/enum_take_drop_split.fz", 129, 26, 274, 141),
 ];
 
@@ -2125,8 +2141,6 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The ordering families carry no `binary` clause, so the StaticCallees
         // evaluations above are the whole of what this total counts for them;
         // causal work stays exact.
-        // Deleting the source-copy job removes one semantic evaluation per
-        // reached function.
         total_evaluations: 1048,
     },
     AnalysisClaimRatchet {
@@ -2214,8 +2228,6 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The ordering families this fixture's predicates reach each end in an
         // `any`/`any` body that calls `compare/2`, and that body brings its own
         // reached formulas to this total.
-        // Deleting the source-copy job removes one semantic evaluation per
-        // reached function.
         total_evaluations: 1425,
     },
     AnalysisClaimRatchet {
@@ -2333,10 +2345,6 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The ordering families this fixture's predicates reach end in an
         // `any`/`any` clause through `compare/2`; three of the rebased
         // completions are standing completions of those families.
-        // Publishing a function's source one round earlier leaves it
-        // present-but-dirty while the scope walk that published it is still
-        // blocked, where before it was absent; five more DeriveInputDemand
-        // completions rebase on that earlier-visible, still-moving ground.
         shifts: shifts(26, 85),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
@@ -2404,10 +2412,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // predicates reach.
         // The ordering families carry no `binary` clause, so no analysis of
         // one is counted here; equal reproductions stay at 15.
-        // Two analyses fewer: their inputs settle without the intermediate
-        // source-copy conclusion between them.
-        analyze_evaluations: 900,
-        analyze_zero_change: 16,
+        // Direct callable observations no longer allocate synthetic value
+        // types. The continuation ladders therefore have a different semantic
+        // order, while their settled activations and terminal artifacts hold.
+        analyze_evaluations: 912,
+        analyze_zero_change: 21,
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
         // typed ordering removes the fifteen analyses above.
@@ -2423,9 +2432,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // activation and callsite populations do not see them.
         // The ordering families' `any`/`any` clauses contribute four formulas
         // and no `binary` clause analyses; the claim populations stay put.
-        // Deleting the source-copy job removes one semantic evaluation per
-        // reached function.
-        total_evaluations: 2360,
+        total_evaluations: 2372,
     },
 ];
 

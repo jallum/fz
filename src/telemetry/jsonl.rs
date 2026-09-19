@@ -1323,7 +1323,7 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
                     if row_index > 0 {
                         out.push(',');
                     }
-                    write_types(out, world, row.columns());
+                    write_types(out, world, &row.tys());
                 }
                 out.push(']');
             }
@@ -2014,7 +2014,8 @@ pub(crate) fn list_retention_counts(program: &crate::compiler2::BackendProgram) 
 fn write_activation_key(out: &mut String, key: &crate::compiler2::ActivationKey) {
     write_root_id(out, key.root);
     write_function_id(out, key.function);
-    write_arrow(out, key.arrow);
+    write_activation_signature(out, &key.signature);
+    write_activation_callable_surfaces(out, &key.callable_surfaces);
 }
 
 fn write_id_field(out: &mut String, key: &'static str, id: u32) {
@@ -2037,12 +2038,61 @@ fn write_function_id(out: &mut String, function: crate::compiler2::FunctionId) {
     write_id_field(out, "function_id", function.as_u32());
 }
 
-/// An activation's arrow, the one raw `Ty` the public stream carries. Its
-/// canonical form is what makes the stream comparable across processes, so
-/// every rendering funnels through here to be noted for definition.
-fn write_arrow(out: &mut String, arrow: crate::compiler2::Ty) {
-    note_named_type(arrow);
-    write_id_field(out, "arrow", arrow.as_u32());
+/// An activation is identified by addressed input/result coordinates, not a
+/// synthetic callable type. Each raw `Ty` is noted for its later definition so
+/// the public stream remains comparable across processes.
+fn write_activation_signature(out: &mut String, signature: &crate::compiler2::ActivationSignature) {
+    out.push(',');
+    write_str_lit(out, "inputs");
+    out.push(':');
+    out.push('[');
+    for (index, ty) in signature.inputs.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        note_named_type(*ty);
+        push_u64(out, ty.as_u32() as u64);
+    }
+    out.push(']');
+    note_named_type(signature.result);
+    write_id_field(out, "result", signature.result.as_u32());
+}
+
+/// The observation coordinates complete an activation identity when an input
+/// is callable. They are direct signatures, never synthetic callable values,
+/// so each is emitted as an ordinary input/result record.
+fn write_activation_callable_surfaces(
+    out: &mut String,
+    surfaces: &[std::collections::BTreeSet<crate::compiler2::ActivationSignature>],
+) {
+    out.push(',');
+    write_str_lit(out, "callable_surfaces");
+    out.push_str(":[");
+    for (slot, surfaces) in surfaces.iter().enumerate() {
+        if slot > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        for (index, signature) in surfaces.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"inputs\":[");
+            for (input, ty) in signature.inputs.iter().enumerate() {
+                if input > 0 {
+                    out.push(',');
+                }
+                note_named_type(*ty);
+                push_u64(out, ty.as_u32() as u64);
+            }
+            out.push_str("],\"result\":");
+            note_named_type(signature.result);
+            push_u64(out, signature.result.as_u32() as u64);
+            out.push('}');
+        }
+        out.push(']');
+    }
+    out.push(']');
 }
 
 fn write_root_id(out: &mut String, root: crate::compiler2::RootId) {
@@ -2146,19 +2196,8 @@ fn transport_position_kind(position: &crate::compiler2::transport::TransportPosi
 
 fn write_activation_symbol(out: &mut String, symbol: &crate::compiler2::transport::ActivationSymbol) {
     write_function_id(out, symbol.function);
-    write_arrow(out, symbol.arrow);
-    out.push(',');
-    write_str_lit(out, "input");
-    out.push(':');
-    out.push('[');
-    for (index, ty) in symbol.input.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        note_named_type(*ty);
-        push_u64(out, ty.as_u32() as u64);
-    }
-    out.push(']');
+    write_activation_signature(out, &symbol.signature);
+    write_activation_callable_surfaces(out, &symbol.callable_surfaces);
 }
 
 fn write_executable_symbol(out: &mut String, symbol: &crate::compiler2::transport::ExecutableSymbol) {

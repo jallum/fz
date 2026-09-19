@@ -9,7 +9,7 @@ use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::facts::FactUse;
-use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId};
+use super::identity::{ActivationKey, ActivationSignature, ExecutableKey, ExecutableNeed, FunctionId};
 use super::types::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -71,6 +71,9 @@ pub struct CallTargetSummary {
     /// The exact bounded activation this target demanded, when the callee is
     /// compiler-owned. Provider boundaries do not name a compiler2 activation.
     pub activation: Option<ActivationKey>,
+    /// Compiler-owned targets carry their exact activation inputs here;
+    /// provider boundaries use it for the explicit direct call contract while
+    /// `surface_inputs` continues to name the runtime value denotation.
     pub activation_inputs: Option<Vec<Ty>>,
     /// Fixed positional inputs consumed by an extern body; absent for ordinary
     /// executables and provider boundaries.
@@ -807,7 +810,7 @@ pub struct ActivationMap {
 }
 
 /// A total, owner-aware semantic order for identities that cannot derive
-/// `Ord`: activation arrows contain World-local intern handles, so only the
+/// `Ord`: activation coordinates contain World-local intern handles, so only the
 /// owning `Types` can compare what they mean.
 pub trait SemanticOrd<Ctx> {
     fn semantic_cmp(&self, other: &Self, ctx: &Ctx) -> Ordering;
@@ -833,7 +836,8 @@ impl SemanticOrd<Types> for ActivationKey {
         self.root
             .cmp(&other.root)
             .then_with(|| self.function.cmp(&other.function))
-            .then_with(|| types.cmp_activation_ty(self.arrow, other.arrow))
+            .then_with(|| types.cmp_activation_signature(&self.signature, &other.signature))
+            .then_with(|| types.cmp_activation_callable_surfaces(&self.callable_surfaces, &other.callable_surfaces))
     }
 }
 
@@ -931,18 +935,99 @@ pub const ACTIVATION_INPUT_ROW_BUDGET: usize = 8;
 /// together from one call analysis and may only be read together. A row is
 /// never synthesized by mixing columns of different rows — that Cartesian
 /// combination is exactly what this type exists to make unrepresentable.
+///
+/// `ty` is the value denotation. `callable_surfaces` is the planner evidence
+/// for callable values reachable through that denotation. They deliberately
+/// travel together here rather than being re-encoded in an `ArrowSig`: one
+/// closure value then has one `Ty`, while two observed specializations remain
+/// two input-row alternatives.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ActivationInput {
+    ty: Ty,
+    callable_surfaces: BTreeSet<ActivationSignature>,
+}
+
+impl ActivationInput {
+    pub fn new(ty: Ty) -> Self {
+        Self {
+            ty,
+            callable_surfaces: BTreeSet::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_callable_surface(ty: Ty, surface: ActivationSignature) -> Self {
+        Self {
+            ty,
+            callable_surfaces: BTreeSet::from([surface]),
+        }
+    }
+
+    pub fn ty(&self) -> Ty {
+        self.ty
+    }
+
+    /// The direct callable observations associated with this value.  These
+    /// are activation coordinates, not members of the value type.
+    pub(crate) fn callable_surfaces(&self) -> &BTreeSet<ActivationSignature> {
+        &self.callable_surfaces
+    }
+
+    pub(crate) fn from_parts(ty: Ty, callable_surfaces: BTreeSet<ActivationSignature>) -> Self {
+        Self { ty, callable_surfaces }
+    }
+
+    pub(crate) fn with_ty(mut self, ty: Ty) -> Self {
+        self.ty = ty;
+        self
+    }
+
+    pub(crate) fn extend_callable_surfaces(mut self, surfaces: impl IntoIterator<Item = ActivationSignature>) -> Self {
+        self.callable_surfaces.extend(surfaces);
+        self
+    }
+
+    pub(crate) fn addressed_callable_surfaces(mut self, types: &mut Types) -> Self {
+        self.callable_surfaces = self
+            .callable_surfaces
+            .iter()
+            .map(|surface| types.address_signature_with_env(&surface.inputs, surface.result).0)
+            .collect();
+        self
+    }
+
+    fn equivalent(&self, other: &Self, types: &Types) -> bool {
+        self.callable_surfaces == other.callable_surfaces && types.is_equivalent(&self.ty, &other.ty)
+    }
+
+    fn dominates(&self, other: &Self, types: &Types) -> bool {
+        self.callable_surfaces.is_subset(&other.callable_surfaces) && types.row_column_dominates(&self.ty, &other.ty)
+    }
+
+    fn join_assign(&mut self, other: &Self, types: &mut Types) {
+        if self.ty != other.ty && !types.is_equivalent(&self.ty, &other.ty) {
+            self.ty = types.union(self.ty, other.ty);
+        }
+        self.callable_surfaces.extend(other.callable_surfaces.iter().cloned());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationInputRow {
-    columns: Vec<Ty>,
+    columns: Vec<ActivationInput>,
 }
 
 impl ActivationInputRow {
-    pub fn new(columns: Vec<Ty>) -> Self {
+    pub fn from_inputs(columns: Vec<ActivationInput>) -> Self {
         Self { columns }
     }
 
-    pub fn columns(&self) -> &[Ty] {
+    pub(crate) fn inputs(&self) -> &[ActivationInput] {
         &self.columns
+    }
+
+    pub fn tys(&self) -> Vec<Ty> {
+        self.columns.iter().map(ActivationInput::ty).collect()
     }
 }
 
@@ -957,14 +1042,19 @@ impl ActivationInputRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationInputAlternatives {
     rows: Vec<ActivationInputRow>,
-    joined: Vec<Ty>,
+    joined: Vec<ActivationInput>,
 }
 
 impl ActivationInputAlternatives {
+    #[cfg(test)]
     pub fn from_row(columns: Vec<Ty>) -> Self {
+        Self::from_inputs(columns.into_iter().map(ActivationInput::new).collect())
+    }
+
+    pub fn from_inputs(columns: Vec<ActivationInput>) -> Self {
         Self {
             joined: columns.clone(),
-            rows: vec![ActivationInputRow::new(columns)],
+            rows: vec![ActivationInputRow::from_inputs(columns)],
         }
     }
 
@@ -975,12 +1065,17 @@ impl ActivationInputAlternatives {
     /// The column-wise joined projection: each column is the union of that
     /// column across every row. Correlation-blind by construction — only
     /// consumers whose question is genuinely per-column may read it.
-    pub fn joined(&self) -> &[Ty] {
+    pub fn joined(&self) -> &[ActivationInput] {
         &self.joined
     }
 
+    #[cfg(test)]
     pub fn push_row(&mut self, types: &mut Types, columns: Vec<Ty>) {
-        self.insert_row(types, ActivationInputRow::new(columns));
+        self.push_inputs(types, columns.into_iter().map(ActivationInput::new).collect());
+    }
+
+    pub fn push_inputs(&mut self, types: &mut Types, columns: Vec<ActivationInput>) {
+        self.insert_row(types, ActivationInputRow::from_inputs(columns));
         self.rebuild(types);
     }
 
@@ -1044,22 +1139,34 @@ impl ActivationInputAlternatives {
                 "one activation input fact cannot receive differing arities from one publisher",
             );
         }
-        if self
-            .rows
-            .iter()
-            .any(|existing| existing.columns.equivalent(&row.columns, types))
-        {
+        if self.rows.iter().any(|existing| {
+            existing.columns.len() == row.columns.len()
+                && existing
+                    .columns
+                    .iter()
+                    .zip(&row.columns)
+                    .all(|(left, right)| left.equivalent(right, types))
+        }) {
             return;
         }
-        if self
-            .rows
-            .iter()
-            .any(|standing| types.row_dominates(&row.columns, &standing.columns))
-        {
+        if self.rows.iter().any(|standing| {
+            row.columns.len() == standing.columns.len()
+                && row
+                    .columns
+                    .iter()
+                    .zip(&standing.columns)
+                    .all(|(sub, dom)| sub.dominates(dom, types))
+        }) {
             return;
         }
-        self.rows
-            .retain(|standing| !types.row_dominates(&standing.columns, &row.columns));
+        self.rows.retain(|standing| {
+            standing.columns.len() != row.columns.len()
+                || !standing
+                    .columns
+                    .iter()
+                    .zip(&row.columns)
+                    .all(|(sub, dom)| sub.dominates(dom, types))
+        });
         self.rows.push(row);
     }
 
@@ -1068,17 +1175,28 @@ impl ActivationInputAlternatives {
     /// projection recomputed.
     fn rebuild(&mut self, types: &mut Types) {
         self.rows
-            .sort_by(|left, right| types.cmp_activation_tys(&left.columns, &right.columns));
-        let mut joined = Vec::new();
+            .sort_by(|left, right| types.cmp_activation_tys(&left.tys(), &right.tys()));
+        let mut joined = Vec::<ActivationInput>::new();
         for row in &self.rows {
-            joined.join_assign(&row.columns, types);
+            if joined.is_empty() {
+                joined.clone_from(&row.columns);
+                continue;
+            }
+            assert_eq!(
+                joined.len(),
+                row.columns.len(),
+                "one activation input fact cannot join differing arities"
+            );
+            for (current, observed) in joined.iter_mut().zip(&row.columns) {
+                current.join_assign(observed, types);
+            }
         }
         self.joined = joined;
         if self.rows.len() > ACTIVATION_INPUT_ROW_BUDGET {
             // The count goes to the type store because the type store is the
             // only thing this join holds: see `Types::activation_input_collapses`.
             types.note_activation_input_collapse();
-            self.rows = vec![ActivationInputRow::new(self.joined.clone())];
+            self.rows = vec![ActivationInputRow::from_inputs(self.joined.clone())];
         }
     }
 }
@@ -1109,11 +1227,14 @@ impl JoinContribution for ActivationInputAlternatives {
 
     fn equivalent(&self, other: &Self, types: &Types) -> bool {
         self.rows.len() == other.rows.len()
-            && self
-                .rows
-                .iter()
-                .zip(&other.rows)
-                .all(|(left, right)| left.columns.equivalent(&right.columns, types))
+            && self.rows.iter().zip(&other.rows).all(|(left, right)| {
+                left.columns.len() == right.columns.len()
+                    && left
+                        .columns
+                        .iter()
+                        .zip(&right.columns)
+                        .all(|(left, right)| left.equivalent(right, types))
+            })
     }
 }
 
@@ -1386,11 +1507,10 @@ where
         // same contributor set in a different order can settle on
         // equivalent-but-differently-interned `Ty`s — so pin the fold order
         // itself to a deterministic, publisher-identity-derived key.
-        // `SemanticOrd` (not raw `Debug`) is load-bearing here: `Job` embeds
-        // `ActivationKey.arrow`, a bare interned `Ty`, and two runs can settle
-        // on an equal-but-differently-numbered arrow for the same activation —
-        // sorting by its raw id would reintroduce the very order-dependence
-        // this fold order exists to remove.
+        // `SemanticOrd` (not raw `Debug`) is load-bearing here: a `Job` embeds
+        // typed activation coordinates, and two runs can mint equal types with
+        // different arena ids on the way to one activation. Sorting by a raw
+        // id would reintroduce the very order-dependence this fold removes.
         let mut ordered_contributors = slot.contributors.iter().collect::<Vec<_>>();
         ordered_contributors.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let joined = join_contributions(ctx, ordered_contributors.into_iter().map(|(_, value)| value));
@@ -1627,7 +1747,7 @@ mod tests {
     use crate::compiler2::drive::JobEffects;
     use crate::compiler2::{ExecutableNeed, FactKey, Job, RootId, World};
     use crate::telemetry::ConfiguredTelemetry;
-    use crate::types::{ClosureTarget, Sigma};
+    use crate::types::ClosureTarget;
 
     fn test_key(world: &mut World, _tel: &ConfiguredTelemetry) -> ActivationKey {
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
@@ -2343,8 +2463,8 @@ mod tests {
                 false,
             );
             (
-                map.get(&list_key).expect("list contribution").rows()[0].columns()[0],
-                map.get(&non_empty_key).expect("non-empty contribution").rows()[0].columns()[0],
+                map.get(&list_key).expect("list contribution").rows()[0].inputs()[0].ty(),
+                map.get(&non_empty_key).expect("non-empty contribution").rows()[0].inputs()[0].ty(),
                 world.types().identity_inventory(),
             )
         };
@@ -2671,18 +2791,6 @@ mod tests {
         panic!("the widening operator must terminate a strictly-deepening ascent");
     }
 
-    /// The ground instance of a closure literal at one signature: the same
-    /// `fn_id` and captures, with the surface vars `closure_lit` mints for its
-    /// parameters and return replaced by concrete types.
-    fn ground_instance(world: &mut World, lambda: Ty, args: &[Ty], ret: Ty) -> Ty {
-        let shape = world.types_mut().arrow(args, ret);
-        let mut sigma = Sigma::new();
-        world
-            .types_mut()
-            .collect_instantiation_subst(&lambda, &shape, &mut sigma);
-        world.types_mut().instantiate(&lambda, &sigma)
-    }
-
     /// Push rows into one antichain the way a publisher does, and read back the
     /// column vectors that survived.
     fn settled_rows(world: &mut World, rows: &[Vec<Ty>]) -> Vec<Vec<Ty>> {
@@ -2690,7 +2798,15 @@ mod tests {
         for row in &rows[1..] {
             alternatives.push_row(world.types_mut(), row.clone());
         }
-        alternatives.rows().iter().map(|row| row.columns().to_vec()).collect()
+        alternatives.rows().iter().map(ActivationInputRow::tys).collect()
+    }
+
+    fn settled_input_rows(world: &mut World, rows: &[Vec<ActivationInput>]) -> Vec<Vec<ActivationInput>> {
+        let mut alternatives = ActivationInputAlternatives::from_inputs(rows[0].clone());
+        for row in &rows[1..] {
+            alternatives.push_inputs(world.types_mut(), row.clone());
+        }
+        alternatives.rows().iter().map(|row| row.inputs().to_vec()).collect()
     }
 
     /// fz-kdt.106: an ascent LADDER is one caller's history, not four
@@ -2742,21 +2858,33 @@ mod tests {
         let nil = world.types_mut().nil();
         let int_or_nil = world.types_mut().union(int, nil);
         let template = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
-        let ground = ground_instance(&mut world, template, &[int], int);
+        let template_surface = world
+            .types()
+            .callable_literal_signature(&template)
+            .expect("a literal has its owner surface");
+        let ground_surface = ActivationSignature {
+            inputs: vec![int].into_boxed_slice(),
+            result: int,
+        };
 
         assert!(
-            world.types().is_subtype(&template, &ground) && world.types().is_subtype(&ground, &template),
-            "the hazard this test guards must actually exist: func_clause_empty judges a \
-             var-carrying template arrow and its ground instance over one lambda equivalent",
+            world.types().is_subtype(&template, &template),
+            "the closure is one denotation; its template and ground observations live in the row carrier",
         );
 
-        assert_ne!(
-            world.types().free_var_ids(&template),
-            world.types().free_var_ids(&ground),
-            "the template's surface vars are what tells the two apart",
+        let rows = settled_input_rows(
+            &mut world,
+            &[
+                vec![
+                    ActivationInput::new(int),
+                    ActivationInput::with_callable_surface(template, template_surface),
+                ],
+                vec![
+                    ActivationInput::new(int_or_nil),
+                    ActivationInput::with_callable_surface(template, ground_surface),
+                ],
+            ],
         );
-
-        let rows = settled_rows(&mut world, &[vec![int, template], vec![int_or_nil, ground]]);
 
         assert_eq!(
             rows.len(),
@@ -2768,14 +2896,10 @@ mod tests {
     /// fz-kdt.106: `is_subtype` cannot decide a closure-literal column, so
     /// dominance may not be "simplified" back to it.
     ///
-    /// `types::emptiness::func_clause_empty` decides `P \ N` for a negative
-    /// arrow carrying a `ClosureLit` from `fn_id` and `captures` ALONE -- it
-    /// never reads `args` or `ret` -- so two arrows over ONE lambda are judged
-    /// mutually subtypes however far apart their signatures are. Absorbing on
-    /// that judgement drops a row whose reducer really is a different
-    /// specialization. `Types::row_column_dominates` therefore requires the
-    /// dominated column's closure-literal arrow shapes to appear verbatim in
-    /// the dominator's, which is the part subtyping refuses to look at.
+    /// A closure denotation no longer embeds its input/result surface. Row
+    /// dominance therefore compares direct callable surfaces alongside the
+    /// denotational `Ty`, rather than asking the callable kernel to recover
+    /// planner facts it intentionally does not model.
     #[test]
     fn activation_input_rows_keep_arrows_that_differ_only_where_subtyping_is_blind() {
         let _tel = ConfiguredTelemetry::new();
@@ -2784,24 +2908,32 @@ mod tests {
         let nil = world.types_mut().nil();
         let int_or_nil = world.types_mut().union(int, nil);
         let lambda = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
-        let narrow = ground_instance(&mut world, lambda, &[int], int);
-        let wide = ground_instance(&mut world, lambda, &[int_or_nil], int);
-
-        assert_ne!(narrow, wide, "the two reducer arrows must be distinct types");
+        let narrow = ActivationSignature {
+            inputs: vec![int].into_boxed_slice(),
+            result: int,
+        };
+        let wide = ActivationSignature {
+            inputs: vec![int_or_nil].into_boxed_slice(),
+            result: int,
+        };
         assert!(
-            world.types().is_subtype(&narrow, &wide) && world.types().is_subtype(&wide, &narrow),
-            "the hazard this test guards must actually exist: func_clause_empty judges two \
-             signatures over one lambda equivalent",
+            world.types().is_subtype(&lambda, &lambda),
+            "one closure value stays one callable type whatever direct surface observes it",
         );
 
-        assert_eq!(
-            world.types().free_var_ids(&narrow),
-            world.types().free_var_ids(&wide),
-            "both arrows are ground, so free-var parity cannot be what keeps them apart -- the \
-             literal SHAPE has to",
+        let rows = settled_input_rows(
+            &mut world,
+            &[
+                vec![
+                    ActivationInput::new(int),
+                    ActivationInput::with_callable_surface(lambda, narrow),
+                ],
+                vec![
+                    ActivationInput::new(int_or_nil),
+                    ActivationInput::with_callable_surface(lambda, wide),
+                ],
+            ],
         );
-
-        let rows = settled_rows(&mut world, &[vec![int, narrow], vec![int_or_nil, wide]]);
 
         assert_eq!(
             rows.len(),
@@ -2811,17 +2943,58 @@ mod tests {
         );
     }
 
+    /// The callable value and the call surface are different kinds of fact.
+    /// Once literal arrows stop storing the latter, this is the row relation
+    /// that still keeps two specializations of one closure apart.
+    #[test]
+    fn activation_input_rows_keep_direct_callable_surfaces_beside_one_closure_value() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let nil = world.types_mut().nil();
+        let int_or_nil = world.types_mut().union(int, nil);
+        let lambda = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
+
+        let narrow = ActivationSignature {
+            inputs: vec![int].into_boxed_slice(),
+            result: int,
+        };
+        let wide = ActivationSignature {
+            inputs: vec![int_or_nil].into_boxed_slice(),
+            result: int,
+        };
+        assert!(
+            world.types().is_subtype(&lambda, &lambda) && world.types().is_subtype(&lambda, &lambda),
+            "the closure denotation is one value whatever surface observes it",
+        );
+
+        let rows = settled_input_rows(
+            &mut world,
+            &[
+                vec![
+                    ActivationInput::new(int),
+                    ActivationInput::with_callable_surface(lambda, narrow),
+                ],
+                vec![
+                    ActivationInput::new(int_or_nil),
+                    ActivationInput::with_callable_surface(lambda, wide),
+                ],
+            ],
+        );
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "two specializations of one closure are two row-carried observations, not two callable types: {rows:?}",
+        );
+    }
+
     /// fz-kdt.106: the blind spot is STRUCTURAL, so the evidence has to be
     /// collected structurally.
     ///
-    /// `func_clause_empty` reaches a lambda wrapped in a tuple exactly as it
-    /// reaches a bare one, so `{:tag, fn}` columns over one lambda that differ
-    /// only in the nested arrow's signature are mutually subtypes too. A
-    /// `lit_arrow_shapes` that walked only the column's own funcs axis would
-    /// report no shapes on either side, containment would hold vacuously both
-    /// ways, and the pair would absorb -- the depth-0 sibling above, one tuple
-    /// deep. Nothing in the corpus builds this row today; the walk is
-    /// structural so that nothing has to.
+    /// The carrier follows a closure through structural values. A tuple that
+    /// contains one closure value can still carry two distinct observations of
+    /// that value; a top-level-only carrier would silently absorb this pair.
     #[test]
     fn activation_input_rows_keep_nested_arrows_that_differ_only_where_subtyping_is_blind() {
         let _tel = ConfiguredTelemetry::new();
@@ -2831,28 +3004,29 @@ mod tests {
         let int_or_nil = world.types_mut().union(int, nil);
         let tag = world.types_mut().atom_lit("tag");
         let lambda = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
-        let narrow = ground_instance(&mut world, lambda, &[int], int);
-        let wide = ground_instance(&mut world, lambda, &[int_or_nil], int);
-        let narrow = world.types_mut().tuple(&[tag, narrow]);
-        let wide = world.types_mut().tuple(&[tag, wide]);
+        let tuple = world.types_mut().tuple(&[tag, lambda]);
+        let narrow = ActivationSignature {
+            inputs: vec![int].into_boxed_slice(),
+            result: int,
+        };
+        let wide = ActivationSignature {
+            inputs: vec![int_or_nil].into_boxed_slice(),
+            result: int,
+        };
 
-        assert_ne!(narrow, wide, "the two wrapped reducer arrows must be distinct types");
-        assert!(
-            world.types().is_subtype(&narrow, &wide) && world.types().is_subtype(&wide, &narrow),
-            "the hazard this test guards must actually exist: subtyping is blind to the nested \
-             signature exactly as it is blind to a bare one",
+        let rows = settled_input_rows(
+            &mut world,
+            &[
+                vec![
+                    ActivationInput::new(int),
+                    ActivationInput::with_callable_surface(tuple, narrow),
+                ],
+                vec![
+                    ActivationInput::new(int_or_nil),
+                    ActivationInput::with_callable_surface(tuple, wide),
+                ],
+            ],
         );
-        assert_eq!(
-            world.types().free_var_ids(&narrow),
-            world.types().free_var_ids(&wide),
-            "both wrapped arrows are ground, so free-var parity cannot be what keeps them apart",
-        );
-        assert!(
-            !world.types().lit_arrow_shapes(&narrow).is_empty(),
-            "the shapes have to be found THROUGH the tuple, or containment holds vacuously",
-        );
-
-        let rows = settled_rows(&mut world, &[vec![int, narrow], vec![int_or_nil, wide]]);
 
         assert_eq!(
             rows.len(),

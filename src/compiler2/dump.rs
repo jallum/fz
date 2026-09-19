@@ -286,7 +286,7 @@ fn activation_cmp(world: &World, left: &ActivationKey, right: &ActivationKey) ->
 
 fn activation_label(world: &World, activation: &ActivationKey) -> String {
     let inputs = activation
-        .inputs(world.types())
+        .inputs()
         .iter()
         .map(|ty| world.types().display(ty))
         .collect::<Vec<_>>()

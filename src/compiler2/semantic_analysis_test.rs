@@ -635,7 +635,10 @@ fn compiler2_semantic_callsite_retains_reduce_and_count_specializations() {
                 .push(activation);
         }
         targets_by_callee.values().any(|activations| {
-            activations.len() >= 2 && activations.windows(2).any(|pair| pair[0].arrow != pair[1].arrow)
+            activations.len() >= 2
+                && activations
+                    .windows(2)
+                    .any(|pair| pair[0].signature != pair[1].signature)
         })
     });
 

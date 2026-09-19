@@ -1479,7 +1479,7 @@ fn product_fact_waits_use_semantic_order_across_type_mint_histories() {
             let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
             (list_key, non_empty_key)
         };
-        let raw_order = list_key.arrow < non_empty_key.arrow;
+        let raw_order = list_key.signature < non_empty_key.signature;
         let list_fact = FactKey::ReturnType(list_key);
         let non_empty_fact = FactKey::ReturnType(non_empty_key);
         let mut waits = if non_empty_first {
@@ -1699,7 +1699,16 @@ fn live_executable_order_distinguishes_noninjective_display_pairs() {
     }
     let reachable_by_executable = executables
         .iter()
-        .map(|executable| types.activation_reachable_tys(executable.activation.arrow))
+        .map(|executable| {
+            executable
+                .activation
+                .inputs()
+                .iter()
+                .copied()
+                .chain(std::iter::once(executable.activation.signature.result))
+                .flat_map(|ty| types.activation_reachable_tys(ty))
+                .collect::<std::collections::HashSet<_>>()
+        })
         .collect::<Vec<_>>();
     let mut measured_pairs = Vec::new();
     for tys in by_display.into_values().filter(|tys| tys.len() > 1) {

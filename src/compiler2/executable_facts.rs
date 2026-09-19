@@ -339,7 +339,7 @@ fn prepare_runtime_demand_type_inputs(
     let any = world.types_mut().any();
     let mut builder = RuntimeDemandTypeBuilder::new(any);
     let mut tys = analysis.value_types.values().copied().collect::<HashSet<_>>();
-    let activation_inputs = executable.activation.inputs(world.types());
+    let activation_inputs = executable.activation.inputs();
     tys.extend(
         entry_dispatch_demand
             .iter()
@@ -354,6 +354,13 @@ fn prepare_runtime_demand_type_inputs(
         for target in &summary.targets {
             tys.extend(target.surface_inputs.iter().copied());
             prepare_surface(world, &mut builder, &target.surface_inputs);
+            if (matches!(target.callee, super::semantic::SelectedCallee::ProviderBoundary(_))
+                || target.extern_params.is_some())
+                && let Some(boundary_inputs) = target.activation_inputs.as_deref()
+            {
+                tys.extend(boundary_inputs.iter().copied());
+                prepare_surface(world, &mut builder, boundary_inputs);
+            }
         }
     }
     if let LoweredBody::Clauses { entries, .. } = body {

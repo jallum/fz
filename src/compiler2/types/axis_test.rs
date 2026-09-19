@@ -72,19 +72,13 @@ fn a_positive_tuple_axis_is_never_its_top_but_a_contentless_clause_is() {
     assert_eq!(vec![Conj::top()], forward);
 }
 
-/// The first of the three surpluses that keep the callable axis out of the
-/// absorber, measured rather than preferred (see the module doc for all
-/// three).
-///
-/// An arrow is also how the compiler writes a record down: `ActivationKey`
-/// keeps a specialization's inputs and result as one arrow's params and result
-/// and reads them back with `Types::arrow_params`. The kernel calls an arrow
-/// whose result is every value the WHOLE callable axis, so the top rule would
-/// answer that question and replace the key with the contentless clause --
-/// after which the same reader finds no params at all, and two activations
-/// over different inputs key one specialization.
+/// A lit-free arrow whose result is every value denotes the whole callable axis
+/// under the kernel. That can no longer erase activation or source-contract
+/// evidence: those use direct coordinate records, not this callable type.
 #[test]
-fn absorbing_the_callable_axis_would_erase_the_inputs_a_key_reads_back() {
+fn a_callable_axis_top_is_not_an_activation_coordinate_carrier() {
+    use crate::compiler2::identity::{ActivationKey, FunctionId, RootId};
+
     let mut t = Types::new();
     let any = t.any();
     let int = t.int();
@@ -95,20 +89,14 @@ fn absorbing_the_callable_axis_would_erase_the_inputs_a_key_reads_back() {
         t.is_subtype(&key_shaped, &fun_top) && t.is_subtype(&fun_top, &key_shaped),
         "the hazard this test guards must exist: the kernel already calls this arrow every callable",
     );
-    assert_eq!(
-        vec![any, int],
-        t.arrow_params(&key_shaped),
-        "and its params are what a key reads back out of it",
-    );
-
     let clauses = t.descr(&key_shaped).funcs.clone();
     assert_eq!(
         vec![Conj::top()],
         absorbed(&t, clauses, &FUNCS),
-        "so the absorber would answer the denotation and throw the inputs away",
+        "the callable axis correctly collapses its denotation",
     );
-    assert!(
-        t.arrow_params(&fun_top).is_empty(),
-        "there is nothing left to read out of the clause it would leave behind",
-    );
+    let activation =
+        ActivationKey::from_inputs(RootId::for_test(1), FunctionId::from_coordinate(2), &[any, int], &mut t);
+    assert_eq!(activation.inputs(), &[any, int]);
+    assert_eq!(activation.signature.result, t.result_alpha());
 }

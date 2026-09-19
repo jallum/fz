@@ -82,9 +82,9 @@ pub use drive::{DependencyKey, FactKey, Job, ProductAddress, WorkGraph};
 pub use facts::{FactChange, FactMovement, FactReadiness, FactReplace, FactState, FactTable, FactUse};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
-    ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, FunctionMap, FunctionRef, FunctionSource, FunctionState,
-    ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind,
-    RootMap, TypeName,
+    ActivationKey, ActivationSignature, ExecutableKey, ExecutableNeed, FunctionId, FunctionMap, FunctionRef,
+    FunctionSource, FunctionState, ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, NotedTypeDecl,
+    RootEntry, RootId, RootKind, RootMap, TypeName,
 };
 pub(crate) use keying::InputDemand;
 pub use module_interface::{

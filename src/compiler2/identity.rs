@@ -1,5 +1,5 @@
 use crate::modules::identity::{ModuleDenotation, ModuleName};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::function_surface::FunctionSurface;
@@ -88,23 +88,35 @@ impl RootId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ActivationSignature {
+    pub inputs: Box<[Ty]>,
+    pub result: Ty,
+}
+
+impl ActivationSignature {
+    pub fn inputs(&self) -> &[Ty] {
+        &self.inputs
+    }
+
+    pub fn input_len(&self) -> usize {
+        self.inputs.len()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ActivationKey {
     pub root: RootId,
     pub function: FunctionId,
-    /// The canonical activation signature as an interned arrow `(a0, a1, …) -> r0`.
-    /// The dispatch identity is the params (input) side; the result slot is the
-    /// addressed result variable `r0` — "return not yet known", an unknown to be
-    /// resolved, NOT `none()` (⊥). `none`, like `any`, must be EARNED, never a
-    /// fallback for an unknown (fz-f98.14.10.1). Read the inputs via `inputs`.
-    pub arrow: Ty,
+    pub signature: ActivationSignature,
+    pub callable_surfaces: Box<[BTreeSet<ActivationSignature>]>,
 }
 
 impl ActivationKey {
     /// Construct a key from a raw input vector by whole-scope addressing: the
     /// inputs map into the param-address space `(a0, a1, …)` in one shared pass
-    /// (distinct positions stay distinct, repeats share). The arrow is canonical
-    /// the moment it is built, so the interner is the canonical form — there is
-    /// no separate normalization pass. The result slot is the addressed result
+    /// (distinct positions stay distinct, repeats share). The coordinates are
+    /// canonical the moment they are built; unlike a callable they need no
+    /// interner identity. The result slot is the addressed result
     /// var `r0` (an unknown, not `none`): a key is minted from inputs ONLY, so
     /// there is no concrete result to preserve input↔result identity against yet
     /// (a source-contract concern — the resolver seam, B). Dispatch is on the
@@ -113,25 +125,67 @@ impl ActivationKey {
     /// single mint shared by
     /// `World::canonical_activation_key` and every other key-construction site.
     pub fn from_inputs(root: RootId, function: FunctionId, inputs: &[Ty], types: &mut super::types::Types) -> Self {
+        let callable_surfaces = vec![BTreeSet::new(); inputs.len()];
+        Self::from_inputs_with_callable_surfaces(root, function, inputs, &callable_surfaces, types)
+    }
+
+    /// Construct a key from value denotations plus their independently
+    /// observed callable surfaces.  The two coordinate spaces are addressed
+    /// separately: input coordinates describe values entering this body,
+    /// while each nested signature describes a callable observation made of
+    /// one such value.
+    pub fn from_inputs_with_callable_surfaces(
+        root: RootId,
+        function: FunctionId,
+        inputs: &[Ty],
+        callable_surfaces: &[BTreeSet<ActivationSignature>],
+        types: &mut super::types::Types,
+    ) -> Self {
+        assert_eq!(
+            inputs.len(),
+            callable_surfaces.len(),
+            "every activation input must have one callable-surface coordinate set"
+        );
         let addressed = types.address_inputs(inputs);
+        let callable_surfaces = callable_surfaces
+            .iter()
+            .enumerate()
+            .map(|(input, surfaces)| {
+                surfaces
+                    .iter()
+                    .map(|surface| types.address_signature_at_input(input, surface))
+                    .collect()
+            })
+            .collect();
         // The result slot is the addressed result var `r0` — "return not yet
         // known", an unknown to resolve — NOT `none()` (⊥). `none`, like `any`,
         // must be earned, never a fallback for an unknown (fz-f98.14.10.1).
         let result = types.result_alpha();
-        let arrow = types.arrow(&addressed, result);
-        Self { root, function, arrow }
+        Self {
+            root,
+            function,
+            signature: ActivationSignature {
+                inputs: addressed.into_boxed_slice(),
+                result,
+            },
+            callable_surfaces,
+        }
     }
 
-    /// The canonical input vector — the params side of `arrow`. This is the
-    /// dispatch identity that every consumer reads; the field is an arrow only
-    /// to keep the key in the single arrow type language.
-    pub fn inputs(&self, types: &super::types::Types) -> Vec<Ty> {
-        types.arrow_params(&self.arrow)
+    /// The canonical input coordinates. This is the dispatch identity every
+    /// consumer reads.
+    pub fn inputs(&self) -> &[Ty] {
+        self.signature.inputs()
     }
 
-    /// Input arity without cloning the param vector.
-    pub fn input_len(&self, types: &super::types::Types) -> usize {
-        types.arrow_arity(&self.arrow)
+    /// Input arity without cloning the coordinate vector.
+    pub fn input_len(&self) -> usize {
+        self.signature.input_len()
+    }
+
+    /// Exact callable observations made of one input coordinate.
+    pub fn callable_surfaces(&self, input: usize) -> Option<&BTreeSet<ActivationSignature>> {
+        self.callable_surfaces.get(input)
     }
 }
 

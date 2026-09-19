@@ -159,11 +159,11 @@ fn normalize_fact_spans(
         .map(|mut fact| {
             fact.caller = normalize_label_spans(&fact.caller, prefix);
             fact.callsite = normalize_label_spans(&fact.callsite, prefix);
-            fact.return_ty = normalize_label_spans(&fact.return_ty, prefix);
+            fact.return_type_text = normalize_label_spans(&fact.return_type_text, prefix);
             for target in &mut fact.targets {
                 target.target = normalize_label_spans(&target.target, prefix);
-                target.return_ty = normalize_label_spans(&target.return_ty, prefix);
-                for input in &mut target.input_types {
+                target.return_type_text = normalize_label_spans(&target.return_type_text, prefix);
+                for input in &mut target.input_type_text {
                     *input = normalize_label_spans(input, prefix);
                 }
             }

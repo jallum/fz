@@ -197,12 +197,9 @@ impl World {
         // -> r0, nested by path), assigned here in one whole-scope pass so two
         // alpha-equivalent specs intern byte-identical. Names and bounds re-key
         // through the env, never escaping un-addressed (addressing > encounter).
-        let (arrow, env) = self.types_mut().address_arrow_with_env(&params, result);
-        let params = self.types_mut().arrow_params(&arrow);
-        let result = self
-            .types_mut()
-            .arrow_result(&arrow)
-            .expect("an addressed spec arrow has a result slot");
+        let (signature, env) = self.types_mut().address_signature_with_env(&params, result);
+        let params = signature.inputs.into_vec();
+        let result = signature.result;
         let mut sigma: HashMap<TypeVarId, Ty> = HashMap::with_capacity(env.len());
         for (&original, &address) in &env {
             let addressed_var = self.types_mut().type_var(address);

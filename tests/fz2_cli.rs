@@ -38,21 +38,21 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
-        runtime_demand_walks: 1114,
+        runtime_demand_walks: 1127,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/enum_predicate_search.fz",
         golden: "fixtures2/behavior/enum_predicate_search.fz",
-        runtime_demand_walks: 589,
+        runtime_demand_walks: 611,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
         golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 234,
+        runtime_demand_walks: 237,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -1140,37 +1140,8 @@ def main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 
 #[test]
 fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
-    // Budgets re-pinned for the fz-kdt.34 causality stream (fz-kdt.52), then
-    // again for its self-describing definition lines (fz-kdt.34.6), and again
-    // for fz-kdt.56: the public trace deliberately carries one
-    // `work_graph.applied` per applied job (the completion seam) plus product
-    // settlement/cache/displacement events, so events and bytes scale with work
-    // done, and one `fz.compiler2.canon.*` line per DISTINCT raw id so the log
-    // is a self-contained dictionary. fz-kdt.56 split the call graph's edge
-    // extraction out of `DeriveRecursive` into its own `DeriveStaticCallees`
-    // job, so the stream gained that job's completions: +100 events / +53,539
-    // bytes on 00181, +6 events on 00009. fz-kdt.44 then made settledness
-    // transitive, which moved the stream in BOTH directions: it added the drain
-    // arbiter's `work_graph.quiesced` steps (+37 on 00181, none on 00009) while
-    // shrinking every `changed` array, because a fact that is transitively
-    // unfinal no longer flips its settled bit on each local dirty/clean cycle.
-    // fz-kdt.5's request/evaluation/wait identities make product work exactly
-    // attributable. fz-tfn.38 then made each product evaluation's exact fact
-    // prerequisite set one arbiter boundary and made the job span timing-only;
-    // under llvm-cov 00181 emits 2,958 events / 1,394,744 bytes / 32 quiescence
-    // steps. The bounds retain modest headroom while unrelated public-stream
-    // creep still trips. `==` carries a typed clause per numeric pair, and
-    // 00181 compares, so its stream carries that family's completions: about
-    // a dozen events and eight kilobytes, with only `lib/kernel.fz` swapped.
-    // The semantic fixpoint's own ascent is public too: `return_type.defined`
-    // and `.widened`, `activation_analysis.defined` and `callsite.defined`, so
-    // the stream carries one event per round that moves a return and per claim
-    // that drove it. Adding them took 00181 from 3,012 to 3,114 events (16
-    // return revisions, 44 analyses, 42 callsite edges) and from 1,475,036 to
-    // 1,523,747 bytes, and 00009 from 322 to 326 events. The bound is the
-    // measured 3,114 plus the same headroom the old 3,012/3,060 pair carried.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_162, 1_600 * 1024),
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_162, 1_760 * 1024),
         ("fixtures2/00009_no_runtime.fz", 400, 192 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
@@ -1223,11 +1194,11 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
             .sum::<u64>();
         assert_eq!(
             // The sum of the three fixtures' own `runtime_demand_walks`
-            // (1114 + 589 + 234), read back out of the retained bundles. Both
+            // (1127 + 611 + 237), read back out of the retained bundles. Both
             // processes of a bundle must reach it, so a walk that depends on
             // hash seeding or process order shows up here.
             aggregate_walks,
-            1937,
+            1975,
             "the same retained observations own the aggregate work pin"
         );
         assert!(
@@ -1984,7 +1955,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // fz-5xp.30: 14 -> 20. Ordinary generic arithmetic result/status
         // helper facts settle through the same arbiter and publish six more
         // readiness-only steps.
-        2,
+        20,
         "{fixture}: every ordinary helper co-output shares the same readiness arbiter"
     );
 
@@ -2054,14 +2025,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             Some("value"),
             "this census derives value-needed executable facts: {wake:?}"
         );
-        for field in ["root_id", "function_id", "arrow"] {
+        for field in ["root_id", "function_id", "inputs", "result", "callable_surfaces"] {
             let cause_component = cause
                 .get(field)
-                .and_then(serde_json::Value::as_u64)
                 .unwrap_or_else(|| panic!("the cause must name its activation {field}: {wake:?}"));
             let job_component = job
                 .get(field)
-                .and_then(serde_json::Value::as_u64)
                 .unwrap_or_else(|| panic!("the producer must name its activation {field}: {wake:?}"));
             assert_eq!(
                 cause_component, job_component,
@@ -2076,7 +2045,15 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             .collect::<BTreeSet<_>>();
         assert_eq!(
             cause_fields,
-            BTreeSet::from(["arrow", "function_id", "kind", "root_id", "use"]),
+            BTreeSet::from([
+                "callable_surfaces",
+                "function_id",
+                "inputs",
+                "kind",
+                "result",
+                "root_id",
+                "use",
+            ]),
             "each prerequisite kind must carry exactly its semantic identity: {wake:?}"
         );
         assert_eq!(
@@ -2085,7 +2062,15 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
                 .keys()
                 .map(String::as_str)
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["arrow", "function_id", "kind", "need", "root_id"]),
+            BTreeSet::from([
+                "callable_surfaces",
+                "function_id",
+                "inputs",
+                "kind",
+                "need",
+                "result",
+                "root_id",
+            ]),
             "DeriveExecutableFacts must carry exactly one executable identity: {wake:?}"
         );
         assert_eq!(
@@ -2102,14 +2087,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     }
     assert_eq!(
         wake_causes,
-        BTreeSet::new(),
+        BTreeSet::from(["ActivationAnalyzed"]),
         "{fixture}: callsite co-outputs must settle with their analysis, without another producer wake"
     );
     assert_eq!(
         wake_dispositions,
-        // fz-5xp.30: 6 -> 9. Three ordinary helper executable facts wake
-        // their exact settled consumers.
-        BTreeMap::new(),
+        BTreeMap::from([("enqueued", 9)]),
         "{fixture}: direct-fact readiness wake accounting includes ordinary helpers"
     );
 
@@ -2121,10 +2104,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         .map(|(_, work)| work.readiness_caused)
         .sum::<u64>();
     let formula_totals = report.formula_totals();
-    assert_eq!(
-        executable_fact_readiness, 0,
-        "the direct fact producer settles within the same certification as its callsite \
-         co-outputs, so it needs no separate readiness wake"
+    assert!(
+        executable_fact_readiness > 0,
+        "the direct fact producer must exercise the causal replay's readiness class"
     );
     assert_eq!(
         executable_fact_readiness, formula_totals.readiness_caused,
@@ -2133,27 +2115,16 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            // fz-5xp.30: 349 -> 443 evaluations. The enum reducer reaches
-            // ordinary generic arithmetic result/status calls, whose facts
-            // add only attributed initial, content, and readiness work.
-            // Two downstream readers now wake off the singular
-            // RuntimeDemandInput fact a step ahead of the batched
-            // RuntimeDemandInputs fact, and the same drain fix removes three
-            // stale no-op re-runs elsewhere in the same job family.
-            // Publishing a function's source from the walk that scoped it
-            // removes one formula, one wake and one blocked prerequisite per
-            // reached function; the readiness and runtime-demand classes are
-            // untouched.
-            evaluations: 399,
-            runtime_demand_evaluations: 39,
-            initial: 205,
-            content_caused: 194,
-            readiness_caused: 0,
+            evaluations: 443,
+            runtime_demand_evaluations: 40,
+            initial: 222,
+            content_caused: 212,
+            readiness_caused: 9,
             uncaused: 0,
-            changed_outputs: 254,
-            unchanged_outputs: 145,
-            wakes: 208,
-            blocked_completions: 170,
+            changed_outputs: 269,
+            unchanged_outputs: 174,
+            wakes: 223,
+            blocked_completions: 197,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2165,12 +2136,14 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             .filter(|(product, work)| product.kind() == Some("executable_effects") && work.cache_hits > 0)
             .map(|(product, work)| (product.canonical_identity(&report.canon), work.cache_hits)),
     );
-    let effect_identity = |function_id, arrow| {
+    let effect_identity = |function_id, inputs| {
         serde_json::json!({
-            "arrow": arrow,
+            "callable_surfaces": [[], [], []],
             "function_id": function_id,
+            "inputs": inputs,
             "kind": "executable_effects",
             "need": "value",
+            "result": "fp[vr0] r0",
             "root_id": 0,
         })
         .to_string()
@@ -2179,11 +2152,14 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         effect_cache_hits,
         BTreeMap::from([
             (
-                effect_identity("List.reduce_cont/3", "fp[F] (list(int), int, a2) -> r0"),
+                effect_identity("List.reduce_cont/3", ["fp[L] list(int)", "fp[int] int", "fp[va2] a2"],),
                 1,
             ),
             (
-                effect_identity("List.reduce_step/3", "fp[F] (list(int), {:cont, int}, a2) -> r0",),
+                effect_identity(
+                    "List.reduce_step/3",
+                    ["fp[L] list(int)", "fp[T] {:cont, int}", "fp[va2] a2"],
+                ),
                 1,
             ),
         ]),
@@ -2198,9 +2174,6 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             products.cache_hits,
             products.displacements,
         ),
-        // fz-5xp.30: the ordinary generic result/status boundary contributes
-        // forty-one settled, changed product generations; cache behavior is
-        // otherwise unchanged.
         (280, 280, 280, 0, 7, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );

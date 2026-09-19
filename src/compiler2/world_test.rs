@@ -3,14 +3,19 @@ use crate::dispatch_matrix::demand::DispatchDemand;
 use super::facts::FactUse;
 use super::keying::{BodyKeying, InputDemand};
 use super::{
-    DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, TypeName, Types, World,
+    DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, Ty, TypeName, Types, World,
 };
 use crate::ast::Attribute;
 use crate::compiler2::drive::{DependencyKey, JobEffects};
+use crate::compiler2::semantic::ActivationInput;
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 use std::cell::Cell;
 use std::rc::Rc;
+
+fn activation_inputs(inputs: impl IntoIterator<Item = Ty>) -> Vec<ActivationInput> {
+    inputs.into_iter().map(ActivationInput::new).collect()
+}
 
 #[test]
 fn private_extern_is_lexically_callable_but_absent_from_module_interface() {
@@ -605,12 +610,12 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
     let int = world.types_mut().int();
     let raw_input = world.types_mut().list(int);
     let key = world.activation_key(root, function, &[raw_input]);
-    let canonical_input = key.inputs(world.types())[0];
+    let canonical_input = key.inputs()[0];
 
     world.complete_job(
         Job::SeedRoot(root),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![raw_input])],
+            activation_input_contributions: vec![(key.clone(), activation_inputs([raw_input]))],
             ..JobEffects::default()
         },
     );
@@ -755,7 +760,7 @@ fn compiler2_activation_input_join_is_quiet_for_absorbed_list_evidence() {
     world.complete_job(
         Job::SeedRoot(root),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![list_int])],
+            activation_input_contributions: vec![(key.clone(), activation_inputs([list_int]))],
             ..JobEffects::default()
         },
     );
@@ -786,7 +791,7 @@ fn compiler2_activation_input_join_is_quiet_for_absorbed_list_evidence() {
     let step = world.complete_job(
         Job::AnalyzeActivation(key.clone()),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![empty_then_list])],
+            activation_input_contributions: vec![(key.clone(), activation_inputs([empty_then_list]))],
             ..JobEffects::default()
         },
     );
@@ -842,7 +847,7 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
     world.complete_job(
         Job::AnalyzeActivation(caller_key.clone()),
         JobEffects {
-            activation_input_contributions: vec![(callee_key.clone(), vec![int])],
+            activation_input_contributions: vec![(callee_key.clone(), activation_inputs([int]))],
             ..JobEffects::default()
         },
     );
@@ -932,14 +937,14 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
     world.complete_job(
         Job::SeedRoot(root),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![input_a])],
+            activation_input_contributions: vec![(key.clone(), activation_inputs([input_a]))],
             ..JobEffects::default()
         },
     );
     world.complete_job(
         Job::AnalyzeActivation(key.clone()),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![input_b])],
+            activation_input_contributions: vec![(key.clone(), activation_inputs([input_b]))],
             ..JobEffects::default()
         },
     );
@@ -1022,8 +1027,8 @@ fn compiler2_correlated_activation_input_rows_stay_alternatives() {
         Job::SeedRoot(root),
         JobEffects {
             activation_input_contributions: vec![
-                (key.clone(), vec![int_list, int]),
-                (key.clone(), vec![atom_list, atom]),
+                (key.clone(), activation_inputs([int_list, int])),
+                (key.clone(), activation_inputs([atom_list, atom])),
             ],
             ..JobEffects::default()
         },
@@ -1033,11 +1038,7 @@ fn compiler2_correlated_activation_input_rows_stay_alternatives() {
         .activation_input_alternatives(&key)
         .expect("correlated contributions should publish alternatives")
         .clone();
-    let rows = alternatives
-        .rows()
-        .iter()
-        .map(|row| row.columns().to_vec())
-        .collect::<Vec<_>>();
+    let rows = alternatives.rows().iter().map(|row| row.tys()).collect::<Vec<_>>();
     assert_eq!(
         rows.len(),
         2,
@@ -1094,14 +1095,14 @@ fn compiler2_withdrawing_a_publisher_retracts_only_its_rows() {
     world.complete_job(
         Job::SeedRoot(root),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![input_a])],
+            activation_input_contributions: vec![(key.clone(), activation_inputs([input_a]))],
             ..JobEffects::default()
         },
     );
     world.complete_job(
         Job::AnalyzeActivation(key.clone()),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![input_b])],
+            activation_input_contributions: vec![(key.clone(), activation_inputs([input_b]))],
             ..JobEffects::default()
         },
     );
@@ -1117,7 +1118,7 @@ fn compiler2_withdrawing_a_publisher_retracts_only_its_rows() {
         .expect("the surviving publisher's fact should remain")
         .rows()
         .iter()
-        .map(|row| row.columns().to_vec())
+        .map(|row| row.tys())
         .collect::<Vec<_>>();
     assert_eq!(
         rows,
@@ -1152,7 +1153,10 @@ fn compiler2_activation_input_rows_widen_past_the_budget() {
     world.complete_job(
         Job::SeedRoot(root),
         JobEffects {
-            activation_input_contributions: inputs.iter().map(|input| (key.clone(), vec![*input])).collect(),
+            activation_input_contributions: inputs
+                .iter()
+                .map(|input| (key.clone(), activation_inputs([*input])))
+                .collect(),
             ..JobEffects::default()
         },
     );
@@ -1167,8 +1171,12 @@ fn compiler2_activation_input_rows_widen_past_the_budget() {
         "past the row budget the antichain should widen to one joined row",
     );
     assert_eq!(
-        alternatives.rows()[0].columns(),
-        alternatives.joined(),
+        alternatives.rows()[0].tys(),
+        alternatives
+            .joined()
+            .iter()
+            .map(ActivationInput::ty)
+            .collect::<Vec<_>>(),
         "the widened row should be the joined projection itself",
     );
 }
@@ -1194,7 +1202,7 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
     world.complete_job(
         Job::SeedRoot(root),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![input])],
+            activation_input_contributions: vec![(key.clone(), activation_inputs([input]))],
             ..JobEffects::default()
         },
     );
@@ -1240,7 +1248,7 @@ fn terminal_unresolved_inventory_uses_semantic_order_across_type_mint_histories(
             (list, non_empty, list_activation, non_empty_activation)
         };
         assert_eq!(world.types().display(&list), world.types().display(&non_empty));
-        let raw_order = list_activation.arrow < non_empty_activation.arrow;
+        let raw_order = list_activation.signature < non_empty_activation.signature;
         let list_fact = FactKey::Executable(super::ExecutableKey {
             activation: list_activation,
             need: super::ExecutableNeed::Value,
@@ -1318,7 +1326,7 @@ fn completion_outputs_movements_and_wakes_use_semantic_order_across_seeds() {
             let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
             (list_key, non_empty_key)
         };
-        let raw_order = list_key.arrow < non_empty_key.arrow;
+        let raw_order = list_key.signature < non_empty_key.signature;
         let list_fact = FactKey::ReturnType(list_key);
         let non_empty_fact = FactKey::ReturnType(non_empty_key);
         world.complete_job(
@@ -1522,7 +1530,7 @@ fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
                 FactKey::Activation(callee.clone()),
                 FactKey::ActivationInputs(callee.clone()),
             ],
-            activation_input_contributions: vec![(callee.clone(), vec![input])],
+            activation_input_contributions: vec![(callee.clone(), activation_inputs([input]))],
             ..JobEffects::default()
         },
     );

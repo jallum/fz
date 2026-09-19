@@ -91,7 +91,7 @@ fn equivalent_executable_keys(types: &Types, program: &super::BackendProgram) ->
     let executables = program
         .executables()
         .iter()
-        .map(|executable| (&executable.key, executable.key.activation.inputs(types)))
+        .map(|executable| (&executable.key, executable.key.activation.inputs()))
         .collect::<Vec<_>>();
     let mut duplicates = Vec::new();
     for (index, (left_key, left_inputs)) in executables.iter().enumerate() {
@@ -105,7 +105,7 @@ fn equivalent_executable_keys(types: &Types, program: &super::BackendProgram) ->
             if left_inputs.len() == right_inputs.len()
                 && left_inputs
                     .iter()
-                    .zip(right_inputs)
+                    .zip(right_inputs.iter())
                     .all(|(left, right)| equivalent(types, *left, *right))
             {
                 duplicates.push(((*left_key).clone(), (*right_key).clone()));
@@ -211,8 +211,8 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
 /// intermediate types are not.
 fn duplicate_ceiling(name: &str) -> usize {
     match name {
-        "fixtures2/00420_enum_take_drop_split.fz" => 123,
-        "fixtures2/behavior/fz_f98_range_map_converges.fz" => 15,
+        "fixtures2/00420_enum_take_drop_split.fz" => 45,
+        "fixtures2/behavior/fz_f98_range_map_converges.fz" => 6,
         other => panic!("no pinned ceiling for {other}"),
     }
 }
@@ -592,7 +592,11 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-5xp.30 re-measured 113 -> 114: binary-concat sugar now
             // retains the public Kernel.<>/2 wrapper between source callers
             // and the private fz_binary_concat/2 physical gateway.
-            118,
+            // `Enum.map_join/3` must not retain duplicate bodies whose only
+            // distinction was caller-local callable-address spelling. The
+            // closure is one value denotation; its direct observation is a
+            // separate activation coordinate.
+            117,
         ),
         (
             "fixtures2/behavior/mailbox_closure_each.fz",
@@ -755,10 +759,7 @@ fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order()
             .filter(|(_, pair)| pair[0].key.activation.function == pair[1].key.activation.function)
             .filter(|(_, pair)| {
                 types
-                    .cmp_activation_tys(
-                        &pair[0].key.activation.inputs(types),
-                        &pair[1].key.activation.inputs(types),
-                    )
+                    .cmp_activation_tys(pair[0].key.activation.inputs(), pair[1].key.activation.inputs())
                     .is_gt()
             })
             .map(|(index, pair)| {
