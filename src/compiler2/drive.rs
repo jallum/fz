@@ -265,6 +265,7 @@ pub enum FactKey {
     ModuleInterface(ModuleId),
     FunctionSource(FunctionId),
     ExpandedFunctionSource(FunctionId),
+    TypeDeclared(TypeName),
     TypeDefined(TypeName),
     StructDefined(ModuleId),
     ProtocolDispatch(ModuleId),
@@ -324,7 +325,8 @@ impl FactKey {
             | (FactKey::CallGraphComponent(left), FactKey::CallGraphComponent(right))
             | (FactKey::InputDemand(left), FactKey::InputDemand(right))
             | (FactKey::Recursive(left), FactKey::Recursive(right)) => left.cmp(right),
-            (FactKey::TypeDefined(left), FactKey::TypeDefined(right)) => left.cmp(right),
+            (FactKey::TypeDeclared(left), FactKey::TypeDeclared(right))
+            | (FactKey::TypeDefined(left), FactKey::TypeDefined(right)) => left.cmp(right),
             (FactKey::IncomingInputSlot(left), FactKey::IncomingInputSlot(right)) => left.semantic_cmp(right, types),
             (FactKey::RootEntry(left), FactKey::RootEntry(right)) => left.cmp(right),
             (FactKey::Activation(left), FactKey::Activation(right))
@@ -383,6 +385,7 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::RuntimeDemand(_) => 32,
         FactKey::RuntimeDemandInput(_) => 33,
         FactKey::RuntimeDemandInputs(_) => 34,
+        FactKey::TypeDeclared(_) => 35,
         FactKey::IncomingInputSlot(_) => 37,
     }
 }
@@ -628,7 +631,11 @@ impl World {
             // same producer mapping or it would stall forever with no wake
             // source.
             FactKey::StructDefined(module) => Some(Job::DefineModule(*module)),
-            FactKey::TypeDefined(name) => Some(Job::DeriveTypeDef(name.clone())),
+            FactKey::TypeDefined(name) => Some(Job::DeriveTypeDef(
+                self.recursive_type_def_component(name)
+                    .map(|component| component.owner)
+                    .unwrap_or_else(|| name.clone()),
+            )),
             FactKey::FunctionContract(function) => Some(Job::DeriveFunctionContract(*function)),
             FactKey::CodeIndexed(code) => Some(Job::IndexCode(*code)),
             FactKey::GuardDispatch(function) => Some(Job::ReifyGuardDispatch(*function)),

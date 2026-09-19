@@ -197,21 +197,25 @@ pub(crate) fn publish_protocol_surface(
         arity: 0,
     };
     scope = world.bind_namespace(scope, "t".to_string(), NamespaceSymbol::Type(protocol_t.clone()));
-    note_protocol_domain_type(world, tel, protocol_t, scope, Vec::new());
-    note_protocol_domain_type(
-        world,
-        tel,
-        TypeName {
-            module: module_id,
-            name: "t".to_string(),
-            arity: 1,
-        },
-        scope,
-        vec!["a".to_string()],
-    );
+    let protocol_t_changed = note_protocol_domain_type(world, tel, protocol_t.clone(), scope, Vec::new());
+    let protocol_t1 = TypeName {
+        module: module_id,
+        name: "t".to_string(),
+        arity: 1,
+    };
+    let protocol_t1_changed = note_protocol_domain_type(world, tel, protocol_t1.clone(), scope, vec!["a".to_string()]);
 
-    let mut outputs = Vec::new();
+    let mut outputs = vec![
+        FactKey::TypeDeclared(protocol_t.clone()),
+        FactKey::TypeDeclared(protocol_t1.clone()),
+    ];
     let mut changed = Vec::new();
+    if protocol_t_changed {
+        changed.push(FactKey::TypeDeclared(protocol_t));
+    }
+    if protocol_t1_changed {
+        changed.push(FactKey::TypeDeclared(protocol_t1));
+    }
     let mut callables = Vec::new();
     for form in &surface.forms {
         let ScopeForm::Function(callback) = form else {
@@ -727,7 +731,8 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         {
             let mut refs = Vec::new();
             collect_type_refs(self.world, self.namespace, &body.inner, &mut refs);
-            super::drive::ExecutionContext::new(self.world, self.telemetry).record_type_def_refs(&name, refs);
+            let refs_changed =
+                super::drive::ExecutionContext::new(self.world, self.telemetry).record_type_def_refs(&name, refs);
 
             // The struct-record half of the same walk: every `%Mod{field:
             // ...}` this `@type` body names records an `A.field` obligation
@@ -744,9 +749,9 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 &requester,
                 &mut struct_refs,
             )?;
-            self.world.record_type_def_struct_refs(name.clone(), struct_refs);
+            let struct_refs_changed = self.world.record_type_def_struct_refs(name.clone(), struct_refs);
 
-            super::drive::ExecutionContext::new(self.world, self.telemetry).note_type_decl(
+            let declaration_changed = super::drive::ExecutionContext::new(self.world, self.telemetry).note_type_decl(
                 &name,
                 NotedTypeDecl {
                     params,
@@ -755,6 +760,11 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                     span,
                 },
             );
+            let fact = FactKey::TypeDeclared(name);
+            self.outputs.push(fact.clone());
+            if refs_changed || struct_refs_changed || declaration_changed {
+                self.changed.push(fact);
+            }
         }
         Ok(())
     }
@@ -1869,8 +1879,8 @@ fn note_protocol_domain_type(
     name: TypeName,
     namespace: Namespace,
     params: Vec<String>,
-) {
-    super::drive::ExecutionContext::new(world, tel).note_type_decl(
+) -> bool {
+    let changed = super::drive::ExecutionContext::new(world, tel).note_type_decl(
         &name,
         NotedTypeDecl {
             params,
@@ -1883,6 +1893,7 @@ fn note_protocol_domain_type(
         },
     );
     super::drive::ExecutionContext::new(world, tel).record_type_def_refs(&name, Vec::new());
+    changed
 }
 
 fn find_callable<'a>(

@@ -6,11 +6,9 @@ use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top};
 use super::emptiness::{
     Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
-#[cfg(test)]
-use super::sigs::ClosureLitOf;
 use super::sigs::{
-    ArrowSig, ArrowSigOf, ClosureLit, ListSig, ListSigOf, MapSig, MapSigOf, MapTag, ResourceSig, ResourceSigOf,
-    StructTag, TupleSig, TupleSigOf,
+    ArrowSig, ArrowSigOf, ClosureLit, ClosureLitOf, ListSig, ListSigOf, MapSig, MapSigOf, MapTag, ResourceSig,
+    ResourceSigOf, StructTag, TupleSig, TupleSigOf,
 };
 use super::{BuiltinOpaque, MapKey, Ty, TyCtx, TypeVarId};
 use crate::finite_set::FiniteSet;
@@ -51,7 +49,7 @@ type VarSet = FiniteSet<TypeVarId>;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(super) struct DescrOf<R> {
+pub(crate) struct DescrOf<R> {
     pub(super) basic: BasicBits,
     pub(super) atoms: AtomSet,
     pub(super) opaques: FiniteSet<OpaqueTag>,
@@ -66,8 +64,46 @@ pub(super) struct DescrOf<R> {
 
 pub(super) type Descr = DescrOf<Ty>;
 
+pub(crate) fn union_of<R: Clone + PartialEq>(left: &DescrOf<R>, right: &DescrOf<R>) -> DescrOf<R> {
+    if looks_empty(left) {
+        return if looks_empty(right) {
+            DescrOf::none()
+        } else {
+            right.clone()
+        };
+    }
+    if looks_empty(right) {
+        return left.clone();
+    }
+    DescrOf {
+        basic: left.basic.union(right.basic),
+        atoms: left.atoms.union(&right.atoms),
+        opaques: left.opaques.union(&right.opaques),
+        brands: left.brands.union(&right.brands),
+        vars: left.vars.union(&right.vars),
+        tuples: dnf_union(&left.tuples, &right.tuples),
+        lists: dnf_union(&left.lists, &right.lists),
+        resources: dnf_union(&left.resources, &right.resources),
+        funcs: dnf_union(&left.funcs, &right.funcs),
+        maps: dnf_union(&left.maps, &right.maps),
+    }
+}
+
+fn looks_empty<R>(body: &DescrOf<R>) -> bool {
+    body.brands.is_none()
+        || (body.basic.is_empty()
+            && body.atoms.is_none()
+            && body.opaques.is_none()
+            && body.vars.is_none()
+            && body.tuples.is_empty()
+            && body.lists.is_empty()
+            && body.resources.is_empty()
+            && body.funcs.is_empty()
+            && body.maps.is_empty())
+}
+
 impl<R: Clone> DescrOf<R> {
-    pub(super) fn any() -> Self {
+    pub(crate) fn any() -> Self {
         Self {
             basic: BasicBits::ALL,
             atoms: AtomSet::any(),
@@ -87,14 +123,14 @@ impl<R: Clone> DescrOf<R> {
     /// factor, not a kind of value — an unbranded `int` admits a branded int
     /// (`Meters <: int`), so its slot is top, and `Descr::none()`'s bottom slot
     /// is what makes `none` the union identity on that axis.
-    pub(super) fn unbranded() -> Self {
+    pub(crate) fn unbranded() -> Self {
         Self {
             brands: FiniteSet::any(),
             ..Self::none()
         }
     }
 
-    pub(super) fn none() -> Self {
+    pub(crate) fn none() -> Self {
         Self {
             basic: BasicBits::NONE,
             atoms: AtomSet::none(),
@@ -109,13 +145,13 @@ impl<R: Clone> DescrOf<R> {
         }
     }
 
-    pub(super) fn opaque_of(name: impl Into<String>) -> Self {
+    pub(crate) fn opaque_of(name: impl Into<String>) -> Self {
         let mut d = Self::unbranded();
         d.opaques = FiniteSet::lit(OpaqueTag::Named(name.into()));
         d
     }
 
-    pub(super) fn builtin_opaque(builtin: BuiltinOpaque) -> Self {
+    pub(crate) fn builtin_opaque(builtin: BuiltinOpaque) -> Self {
         let mut d = Self::unbranded();
         d.opaques = FiniteSet::lit(OpaqueTag::Builtin(builtin));
         d
@@ -139,23 +175,23 @@ impl<R: Clone> DescrOf<R> {
         d
     }
 
-    pub(super) fn var(id: TypeVarId) -> Self {
+    pub(crate) fn var(id: TypeVarId) -> Self {
         let mut d = Self::unbranded();
         d.vars = VarSet::lit(id);
         d
     }
 
-    pub(super) fn nil() -> Self {
+    pub(crate) fn nil() -> Self {
         Self::atom_lit("nil")
     }
 
-    pub(super) fn bool_t() -> Self {
+    pub(crate) fn bool_t() -> Self {
         let mut d = Self::unbranded();
         d.atoms = AtomSet::lit("true".to_string()).union(&AtomSet::lit("false".to_string()));
         d
     }
 
-    pub(super) fn atom_top() -> Self {
+    pub(crate) fn atom_top() -> Self {
         let mut d = Self::unbranded();
         d.atoms = AtomSet::any();
         d
@@ -165,27 +201,27 @@ impl<R: Clone> DescrOf<R> {
     /// canonical value-lane representative for every callable value: a callable's
     /// runtime layout is one word (a code pointer or a closure ref) regardless of
     /// signature or identity, so every callable shares this one lane.
-    pub(super) fn fun_top() -> Self {
+    pub(crate) fn fun_top() -> Self {
         let mut d = Self::unbranded();
         d.funcs = vec![Conj::top()];
         d
     }
 
-    pub(super) fn atom_lit(name: impl Into<String>) -> Self {
+    pub(crate) fn atom_lit(name: impl Into<String>) -> Self {
         let mut d = Self::unbranded();
         d.atoms = AtomSet::lit(name.into());
         d
     }
 
-    pub(super) fn int() -> Self {
+    pub(crate) fn int() -> Self {
         Self::from_basic(BasicBits::INT)
     }
 
-    pub(super) fn float() -> Self {
+    pub(crate) fn float() -> Self {
         Self::from_basic(BasicBits::FLOAT)
     }
 
-    pub(super) fn str_t() -> Self {
+    pub(crate) fn str_t() -> Self {
         Self::from_basic(BasicBits::BINARY)
     }
 
@@ -195,37 +231,37 @@ impl<R: Clone> DescrOf<R> {
         d
     }
 
-    pub(super) fn resource_of(payload: R) -> Self {
+    pub(crate) fn resource_of(payload: R) -> Self {
         let mut d = Self::unbranded();
         d.resources = vec![Conj::pos_of(ResourceSigOf { payload })];
         d
     }
 
-    pub(super) fn tuple_of(elems: Vec<R>) -> Self {
+    pub(crate) fn tuple_of(elems: Vec<R>) -> Self {
         let mut d = Self::unbranded();
         d.tuples.push(Conj::pos_of(TupleSigOf { elems }));
         d
     }
 
-    pub(super) fn list_sig(sig: ListSigOf<R>) -> Self {
+    pub(crate) fn list_sig(sig: ListSigOf<R>) -> Self {
         let mut d = Self::unbranded();
         d.lists.push(Conj::pos_of(sig));
         d
     }
 
-    pub(super) fn list_of(elem: R) -> Self {
+    pub(crate) fn list_of(elem: R) -> Self {
         Self::list_sig(ListSigOf::possibly_empty(elem))
     }
 
-    pub(super) fn non_empty_list_of(elem: R) -> Self {
+    pub(crate) fn non_empty_list_of(elem: R) -> Self {
         Self::list_sig(ListSigOf::non_empty(elem))
     }
 
-    pub(super) fn empty_list() -> Self {
+    pub(crate) fn empty_list() -> Self {
         Self::list_sig(ListSigOf::empty())
     }
 
-    pub(super) fn arrow(args: impl IntoIterator<Item = R>, ret: R) -> Self {
+    pub(crate) fn arrow(args: impl IntoIterator<Item = R>, ret: R) -> Self {
         let mut d = Self::unbranded();
         d.funcs.push(Conj::pos_of(ArrowSigOf {
             args: args.into_iter().collect(),
@@ -235,11 +271,11 @@ impl<R: Clone> DescrOf<R> {
         d
     }
 
-    pub(super) fn map_top() -> Self {
+    pub(crate) fn map_top() -> Self {
         Self::record(MapTag::Plain, [])
     }
 
-    pub(super) fn map_of(fields: BTreeMap<MapKey, R>) -> Self {
+    pub(crate) fn map_of(fields: BTreeMap<MapKey, R>) -> Self {
         let mut d = Self::unbranded();
         d.maps.push(Conj::pos_of(MapSigOf {
             tag: MapTag::Plain,
@@ -248,12 +284,11 @@ impl<R: Clone> DescrOf<R> {
         d
     }
 
-    #[cfg(test)]
     /// Rebuild this descriptor over another child-reference domain. Every
     /// structural child lives here, including closure captures, so a caller
     /// cannot accidentally transform an arrow surface but leave its
     /// environment in another reference world.
-    pub(super) fn map_children<S: Clone>(self, mut map: impl FnMut(R) -> S) -> DescrOf<S> {
+    pub(crate) fn map_children<S: Clone>(self, mut map: impl FnMut(R) -> S) -> DescrOf<S> {
         DescrOf {
             basic: self.basic,
             atoms: self.atoms,
@@ -287,7 +322,6 @@ impl<R: Clone> DescrOf<R> {
     }
 }
 
-#[cfg(test)]
 fn map_clauses<T, U>(clauses: Vec<Conj<T>>, mut map: impl FnMut(T) -> U) -> Vec<Conj<U>> {
     clauses
         .into_iter()
@@ -553,20 +587,6 @@ impl DescrOf<Ty> {
             && self.vars.is_none()
     }
 
-    /// The structural union carries nothing — the descriptor denotes the empty
-    /// set however its brand slot reads.
-    fn structure_looks_empty(&self) -> bool {
-        self.basic.is_empty()
-            && self.atoms.is_none()
-            && self.opaques.is_none()
-            && self.vars.is_none()
-            && self.tuples.is_empty()
-            && self.lists.is_empty()
-            && self.resources.is_empty()
-            && self.funcs.is_empty()
-            && self.maps.is_empty()
-    }
-
     /// A refinement of nothing is nothing, and a value carries at most one
     /// brand, so an empty brand slot (`Meters and Feet`) is empty too.
     ///
@@ -577,7 +597,7 @@ impl DescrOf<Ty> {
     /// `Types::intern` those shapes are one interned identity, and
     /// `Types::is_empty(t)` holds exactly when `t` is `none()`.
     pub(super) fn looks_empty(&self) -> bool {
-        self.brands.is_none() || self.structure_looks_empty()
+        looks_empty(self)
     }
 
     /// Whether this descriptor denotes EVERY value.
@@ -646,31 +666,7 @@ impl DescrOf<Ty> {
     /// it here is what keeps `∅ ∪ x = x` a law of the arithmetic rather than a
     /// property of the one identity interning later assigns.
     pub(super) fn union(&self, _cx: TyCtx<'_>, other: &Descr) -> Descr {
-        if self.looks_empty() {
-            // A join of two nothings is THE nothing: answering with either
-            // operand would make the join non-commutative in the interned id
-            // it produces, for no gain.
-            return if other.looks_empty() {
-                Descr::none()
-            } else {
-                other.clone()
-            };
-        }
-        if other.looks_empty() {
-            return self.clone();
-        }
-        Descr {
-            basic: self.basic.union(other.basic),
-            atoms: self.atoms.union(&other.atoms),
-            opaques: self.opaques.union(&other.opaques),
-            brands: self.brands.union(&other.brands),
-            vars: self.vars.union(&other.vars),
-            tuples: dnf_union(&self.tuples, &other.tuples),
-            lists: dnf_union(&self.lists, &other.lists),
-            resources: dnf_union(&self.resources, &other.resources),
-            funcs: dnf_union(&self.funcs, &other.funcs),
-            maps: dnf_union(&self.maps, &other.maps),
-        }
+        union_of(self, other)
     }
 
     /// Exact on every axis: a rectangle meets a rectangle. Two brands over one

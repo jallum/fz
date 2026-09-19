@@ -305,13 +305,14 @@ type — and five reach seventeen and widen (`Json.value/1`, `Json.val/1`,
 fixtures share its decode loop and measure the same climb, so pinning the goal
 program pins them too.
 
-Two companions fail from opposite ends. `behavior/recursive_typedef.fz` declares
-the type the ladder is reaching for, `@type t :: :start | {integer, t}`, and
-stalls before any return can climb: `DeriveTypeDef(t)` waits on the
-`TypeDefined(t)` it alone produces, so the product pull fails on a stall rather
-than on a diagnostic. `behavior/return_tuple_accumulator.fz` grows the same
-nesting in an argument instead, so each rung keys a new activation with a fresh
-budget and the drive does not terminate, which is why that fixture is deferred.
+Two companions expose the same missing denotation from different directions.
+`behavior/recursive_typedef.fz` declares the type the ladder is reaching for,
+`@type t :: :start | {integer, t}`. Its declaration now commits one finite
+regular component before its ordinary consumers run; re-driving the unchanged
+declaration reuses that `Ty`. `behavior/return_tuple_accumulator.fz` grows the
+same nesting in an argument instead, so each rung keys a new activation with a
+fresh budget and the drive does not terminate, which is why that fixture is
+deferred.
 
 These counts are whole-compile totals on one cold compile, not the ladder's own
 round counter. `ActivationSlot::ascents` resets to zero when an activation is

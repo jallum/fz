@@ -24,6 +24,15 @@ pub struct TypeDef {
     pub params: Vec<TypeVarId>,
 }
 
+/// The one producer and complete output set of a recursive declaration
+/// equation. It is derived from the current declaration edges; it is not a
+/// second cache beside those edges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TypeDefComponent {
+    pub(crate) owner: TypeName,
+    pub(crate) members: Vec<TypeName>,
+}
+
 impl TypeDef {
     /// Instantiates this definition at a use site by substituting `args` for the
     /// formal parameters. A monomorphic definition (or a use that supplies no
@@ -60,5 +69,9 @@ impl TypeDefMap {
 
     pub fn get(&self, name: &TypeName) -> Option<&TypeDef> {
         self.slots.get(name)
+    }
+
+    pub fn remove(&mut self, name: &TypeName) {
+        self.slots.remove(name);
     }
 }

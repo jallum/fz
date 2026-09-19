@@ -96,6 +96,39 @@ fn completion_claims_belong_directly_to_the_job_that_read_their_ground() {
     );
 }
 
+#[test]
+fn type_definition_store_withdraws_with_its_fact() {
+    let mut world = World::new();
+    let name = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "withdrawn".to_string(),
+        arity: 0,
+    };
+    let definition = super::typedef::TypeDef {
+        ty: world.types_mut().int(),
+        params: Vec::new(),
+    };
+    assert!(world.define_type_def(&name, definition));
+    let job = Job::DeriveTypeDef(name.clone());
+    world.complete_job(
+        job.clone(),
+        JobEffects {
+            outputs: vec![FactKey::TypeDefined(name.clone())],
+            ..JobEffects::default()
+        },
+    );
+    assert!(
+        world.type_def(&name).is_some(),
+        "the fact gates the retained definition"
+    );
+
+    world.complete_job(job, JobEffects::default());
+    assert!(
+        world.type_def(&name).is_none(),
+        "withdrawing TypeDefined also removes the definition it made visible",
+    );
+}
+
 /// The demand fact a body that forwards NOTHING and returns none of its own
 /// inputs publishes: what its own clauses ask about its inputs is the whole of
 /// what anything asks about them, so both dispatch halves of `InputDemand`

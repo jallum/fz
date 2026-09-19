@@ -258,7 +258,6 @@ pub(super) fn tuple_clause_covers<R: PartialEq>(
         }
 }
 
-#[cfg(test)]
 pub(super) fn drop_directly_covered_clauses<T>(
     clauses: &mut Vec<Conj<T>>,
     clause_covers: impl Fn(&Conj<T>, &Conj<T>) -> bool,

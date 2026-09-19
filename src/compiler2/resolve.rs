@@ -17,7 +17,7 @@
 //! resolves an `@spec` to a [`ResolvedSpec`] — hard types plus their structural
 //! shapes — for the contract and dispatch seams to consume.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::{SpecDecl, TypeExprBody};
 use crate::diag::Diagnostic;
@@ -30,7 +30,7 @@ use super::identity::{NotedTypeDecl, TypeName};
 use super::namespace::Namespace;
 use super::type_expr::{NominalKind, TypeExpr, TypeExprError, parse_type_expr};
 use super::typedef::TypeDef;
-use super::types::{MapKey, Ty, TypeVarId, Types};
+use super::types::{ComponentRef, DescrOf, MapKey, Ty, TypeVarId, Types};
 use super::world::World;
 
 /// An `@spec` resolved against its captured namespace: hard compiler2 types in
@@ -449,5 +449,281 @@ impl World {
                 span: Span::DUMMY,
             }),
         }
+    }
+}
+
+pub(crate) fn resolve_regular_type_defs(world: &mut World, names: &[TypeName]) -> Result<Vec<TypeDef>, TypeExprError> {
+    let declarations = names
+        .iter()
+        .map(|name| {
+            world.type_decl(name).cloned().ok_or_else(|| TypeExprError {
+                msg: "type declaration disappeared before its equation resolved".to_string(),
+                span: Span::DUMMY,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(decl) = declarations.iter().find(|decl| !decl.params.is_empty()) {
+        return Err(TypeExprError {
+            msg: "recursive parameterized type declarations are not yet regular equations".to_string(),
+            span: decl.span,
+        });
+    }
+
+    let locals = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.clone(), ComponentRef::local(index)))
+        .collect();
+    let opaque_locals = names
+        .iter()
+        .zip(&declarations)
+        .filter(|(_, decl)| matches!(&decl.body.kind, NominalKind::Opaque))
+        .map(|(name, _)| name.clone())
+        .collect();
+    let mut resolver = RegularTypeResolver {
+        world,
+        locals,
+        opaque_locals,
+        bodies: (0..names.len()).map(|_| None).collect(),
+    };
+    for (index, (name, decl)) in names.iter().zip(declarations.iter()).enumerate() {
+        let mut vars = HashMap::new();
+        let body = resolver.resolve_descr(decl.namespace, &decl.body.inner, &mut vars)?;
+        let body = match decl.body.kind {
+            NominalKind::Plain => body,
+            NominalKind::Refines => {
+                let tag = resolver.world.qualified_type_tag(name);
+                Types::regular_brand(body, &tag)
+            }
+            NominalKind::Opaque => {
+                let tag = resolver.world.qualified_type_tag(name);
+                let ty = resolver.world.types_mut().opaque_of(&tag);
+                resolver.world.types().regular_published(ty)
+            }
+        };
+        resolver.bodies[index] = Some(body);
+    }
+    let bodies = resolver
+        .bodies
+        .into_iter()
+        .map(|body| body.expect("every regular type equation has a body"))
+        .collect();
+    let tys = resolver.world.types_mut().intern_regular_bodies(bodies);
+    Ok(tys.into_iter().map(|ty| TypeDef { ty, params: Vec::new() }).collect())
+}
+
+struct RegularTypeResolver<'a> {
+    world: &'a mut World,
+    locals: HashMap<TypeName, ComponentRef>,
+    opaque_locals: HashSet<TypeName>,
+    bodies: Vec<Option<DescrOf<ComponentRef>>>,
+}
+
+impl RegularTypeResolver<'_> {
+    fn resolve_descr(
+        &mut self,
+        namespace: Namespace,
+        expr: &TypeExpr,
+        vars: &mut HashMap<String, TypeVarId>,
+    ) -> Result<DescrOf<ComponentRef>, TypeExprError> {
+        match expr {
+            TypeExpr::Name { path, args } => self.resolve_name(namespace, path, args, vars),
+            TypeExpr::List(inner) => Ok(DescrOf::list_of(self.resolve_child(namespace, inner, vars)?)),
+            TypeExpr::EmptyList => Ok(DescrOf::empty_list()),
+            TypeExpr::Tuple(elems) => Ok(DescrOf::tuple_of(
+                elems
+                    .iter()
+                    .map(|elem| self.resolve_child(namespace, elem, vars))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            TypeExpr::Arrow { params, result } => Ok(DescrOf::arrow(
+                params
+                    .iter()
+                    .map(|param| self.resolve_child(namespace, param, vars))
+                    .collect::<Result<Vec<_>, _>>()?,
+                self.resolve_child(namespace, result, vars)?,
+            )),
+            TypeExpr::Union(elems) => {
+                let mut elems = elems.iter();
+                let first = self.resolve_descr(namespace, elems.next().expect("a union is nonempty"), vars)?;
+                elems.try_fold(first, |left, right| {
+                    self.resolve_descr(namespace, right, vars)
+                        .map(|right| super::types::union_regular_bodies(&left, &right))
+                })
+            }
+            TypeExpr::StructRecord { module, fields } => self.resolve_struct(namespace, module, fields, vars),
+            TypeExpr::Map(pairs) => {
+                let fields = pairs
+                    .iter()
+                    .map(|(key, value)| {
+                        Ok((
+                            self.world.resolve_map_key(key)?,
+                            self.resolve_child(namespace, value, vars)?,
+                        ))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, TypeExprError>>()?;
+                Ok(DescrOf::map_of(fields))
+            }
+            TypeExpr::AtomLit(name) => Ok(DescrOf::atom_lit(name)),
+            TypeExpr::IntLit(value) => {
+                self.world.warn_numeric_literal_type(&value.to_string());
+                Ok(DescrOf::int())
+            }
+            TypeExpr::FloatLit(bits) => {
+                self.world.warn_numeric_literal_type(&f64::from_bits(*bits).to_string());
+                Ok(DescrOf::float())
+            }
+            TypeExpr::Wildcard => Ok(DescrOf::any()),
+            TypeExpr::Nil => Ok(DescrOf::nil()),
+            TypeExpr::Bool => Ok(DescrOf::bool_t()),
+        }
+    }
+
+    fn resolve_child(
+        &mut self,
+        namespace: Namespace,
+        expr: &TypeExpr,
+        vars: &mut HashMap<String, TypeVarId>,
+    ) -> Result<ComponentRef, TypeExprError> {
+        if let TypeExpr::Name { path, args } = expr
+            && let NameClass::Named(name) = self.world.classify_name(namespace, path, args.len(), vars)
+            && let Some(reference) = self.local_reference(&name)
+        {
+            if !args.is_empty() {
+                return Err(self
+                    .world
+                    .name_error(path, "a recursive type equation cannot apply a local alias"));
+            }
+            return Ok(reference);
+        }
+        let body = self.resolve_descr(namespace, expr, vars)?;
+        if let Some(ty) = self.world.types_mut().intern_ground_regular_body(body.clone()) {
+            return Ok(ComponentRef::Published(ty));
+        }
+        let index = self.bodies.len();
+        self.bodies.push(Some(body));
+        Ok(ComponentRef::local(index))
+    }
+
+    fn resolve_name(
+        &mut self,
+        namespace: Namespace,
+        path: &[String],
+        args: &[TypeExpr],
+        vars: &mut HashMap<String, TypeVarId>,
+    ) -> Result<DescrOf<ComponentRef>, TypeExprError> {
+        let args = args
+            .iter()
+            .map(|arg| self.resolve_child(namespace, arg, vars))
+            .collect::<Result<Vec<_>, _>>()?;
+        match self.world.classify_name(namespace, path, args.len(), vars) {
+            NameClass::Builtin(entry) => {
+                if !entry.arity.accepts(args.len()) {
+                    return Err(self.world.name_error(
+                        path,
+                        &format!("expected {} type argument(s), got {}", entry.arity, args.len()),
+                    ));
+                }
+                match entry.name {
+                    "list" => Ok(DescrOf::list_of(
+                        args.first().copied().unwrap_or_else(|| self.any_ref()),
+                    )),
+                    "resource" => Ok(DescrOf::resource_of(
+                        args.first().copied().unwrap_or_else(|| self.any_ref()),
+                    )),
+                    _ => {
+                        let ty = (entry.build)(self.world.types_mut(), &[]);
+                        Ok(self.world.types().regular_published(ty))
+                    }
+                }
+            }
+            NameClass::Named(name) => {
+                if let Some(reference) = self.local_reference(&name) {
+                    return match reference {
+                        ComponentRef::Published(ty) if args.is_empty() => Ok(self.world.types().regular_published(ty)),
+                        ComponentRef::Published(_) => Err(self
+                            .world
+                            .name_error(path, "a recursive type equation cannot apply a local alias")),
+                        ComponentRef::Local(_) => Err(self.world.name_error(
+                            path,
+                            "a recursive type equation must pass through a structural constructor",
+                        )),
+                    };
+                }
+                let args = args
+                    .into_iter()
+                    .map(|arg| match arg {
+                        ComponentRef::Published(ty) => Ok(ty),
+                        ComponentRef::Local(_) => Err(self.world.name_error(
+                            path,
+                            "a recursive type equation cannot pass a local alias to another declaration",
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let Some(def) = self.world.type_def(&name).cloned() else {
+                    return Err(self.world.name_error(path, "type is referenced before it is resolved"));
+                };
+                let ty = def.instantiate(self.world.types_mut(), &args);
+                Ok(self.world.types().regular_published(ty))
+            }
+            NameClass::Var(id) => {
+                if !args.is_empty() {
+                    return Err(self.world.name_error(path, "a type variable takes no type arguments"));
+                }
+                Ok(DescrOf::var(id))
+            }
+            NameClass::Unknown => Err(self.world.name_error(path, "unknown type name")),
+        }
+    }
+
+    fn resolve_struct(
+        &mut self,
+        namespace: Namespace,
+        module: &[String],
+        fields: &[(String, TypeExpr)],
+        vars: &mut HashMap<String, TypeVarId>,
+    ) -> Result<DescrOf<ComponentRef>, TypeExprError> {
+        let module_name = ModuleName::from_segments(module.to_vec());
+        let module_id = self
+            .world
+            .lookup_module_path(namespace, &module_name)
+            .unwrap_or_else(|| self.world.reference_module(module_name));
+        let field_order = self.world.struct_def_fields(module_id).map(|fields| fields.to_vec());
+        let mut fields_by_name = HashMap::new();
+        for (name, field) in fields {
+            fields_by_name.insert(name.clone(), self.resolve_child(namespace, field, vars)?);
+        }
+        let ordered_names = field_order.unwrap_or_else(|| fields.iter().map(|(name, _)| name.clone()).collect());
+        let any = self.any_ref();
+        let ordered = ordered_names
+            .into_iter()
+            .map(|name| (name.clone(), fields_by_name.get(&name).copied().unwrap_or(any)))
+            .collect::<Vec<_>>();
+        let module_name = self
+            .world
+            .module_name(module_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "named struct module {} should have a reverse lookup",
+                    module_id.as_u32()
+                )
+            })
+            .clone();
+        Ok(self
+            .world
+            .types_mut()
+            .regular_struct_map(module_id, module_name, ordered))
+    }
+
+    fn any_ref(&mut self) -> ComponentRef {
+        ComponentRef::Published(self.world.types_mut().any())
+    }
+
+    fn local_reference(&mut self, name: &TypeName) -> Option<ComponentRef> {
+        if self.opaque_locals.contains(name) {
+            let tag = self.world.qualified_type_tag(name);
+            return Some(ComponentRef::Published(self.world.types_mut().opaque_of(&tag)));
+        }
+        self.locals.get(name).copied()
     }
 }

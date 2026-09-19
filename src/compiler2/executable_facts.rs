@@ -451,15 +451,7 @@ fn prepare_runtime_demand_for_type(
     escape: bool,
 ) -> RuntimeDemand {
     let Some(clauses) = world.types_mut().callable_clauses(&ty) else {
-        let predicate = world.types().runtime_type_predicate(&ty);
-        if !predicate.tuples.arities().cofinite && predicate.tuples.arities().values.len() == 1 {
-            let arity = *predicate
-                .tuples
-                .arities()
-                .values
-                .iter()
-                .next()
-                .expect("one exact tuple arity");
+        if let Some(arity) = world.types().exclusive_tuple_root_arity(&ty) {
             let any = builder.inputs.any;
             let mut fields = world.types_mut().tuple_projections(&ty, arity);
             fields.resize(arity, any);

@@ -36,6 +36,20 @@ It is the same path a value name takes — `Var("Enum")` → `ModuleId` →
   contracts use (see [`fact-engine`](fact-engine.md)). `DeriveTypeDef` reads the
   declaring module's `@type` body, mints the symbol once, and publishes it.
 
+Recursive nullary declarations are equations, not requests for their own output.
+When a pulled declaration reaches a self or mutual cycle, the exact
+`TypeDefined` fact-to-producer mapping routes every member to the component's
+canonical owner. That owner keeps the complete member set on every re-drive,
+waits only on references outside it, and publishes every member fact together.
+The resolver lowers those bodies with local coordinates, then partitions the
+*retained* descriptor graph before committing each regular component through
+`Types`: an opaque declaration may validate a source body while retaining only
+its nominal leaf. Each member's `TypeDefined` fact publishes its canonical
+`Ty`; an unchanged re-drive finds the same identities, moves no fact, and
+withdrawal removes the matching definition-store entry with the fact. A source
+replacement that omits an `@type` retracts its `TypeDeclared` fact, its noted
+body and reference contributions, then the dependent `TypeDefined` fact.
+
 ## Reference before define
 
 Recording a spec does not require its type names to be resolved.
@@ -139,10 +153,13 @@ type_expr.rs       compiler2-owned syntax parser; names stay bare TypeExpr::Name
 resolve.rs         classifies names against the captured Namespace, reads
                    TypeDefined stores, and mints hard Ty through World.types
 source_publish.rs  notes @type declarations, binds NamespaceSymbol::Type, and
-                   records exact TypeDefined wait sets for @type/@spec/extern
-drive.rs           FactKey::TypeDefined(TypeName); Job::DeriveTypeDef(TypeName)
-jobs/types.rs      derive_type_def — wait on referenced TypeDefined facts,
-                   resolve the noted body, publish TypeDefined
+                   publishes TypeDeclared when a declaration or its named
+                   edges move
+drive.rs           FactKey::TypeDeclared(TypeName),
+                   FactKey::TypeDefined(TypeName), Job::DeriveTypeDef(TypeName)
+jobs/types.rs      derive_type_def — reads declaration availability for itself
+                   and each named edge, waits on referenced TypeDefined facts,
+                   resolves the noted body, publishes TypeDefined
 jobs/contract.rs   derive_function_contract — wait on function TypeDefined refs,
                    resolve @spec/extern contracts, publish FunctionContract
 ```
@@ -156,6 +173,7 @@ internals:
 cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer
 cargo test --lib compiler2::drive_test::compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inventory
 cargo test --lib compiler2::world_test::compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_captured_namespace
+cargo test --lib compiler2::drive_test::compiler2_late_typedef_edge_rebuilds_its_existing_component_owner
 cargo test --test fixture_matrix enumerable_protocol_dispatch
 cargo test --lib compiler2::types::arrow_match
 ```

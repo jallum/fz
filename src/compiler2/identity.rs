@@ -807,6 +807,10 @@ impl TypeDeclMap {
     pub fn get(&self, name: &TypeName) -> Option<&NotedTypeDecl> {
         self.decls.get(name)
     }
+
+    pub fn remove(&mut self, name: &TypeName) -> bool {
+        self.decls.remove(name).is_some()
+    }
 }
 
 /// The type names each consumer references, recorded by the reference walk
@@ -856,6 +860,12 @@ impl TypeRefMap {
     // Consumed by DeriveTypeDef (fz-rh2.12.2); recorded one inch ahead.
     pub fn type_refs(&self, name: &TypeName) -> &[TypeName] {
         self.by_type.get(name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn remove_type(&mut self, name: &TypeName) -> bool {
+        let references = self.by_type.remove(name).is_some();
+        let structs = self.by_type_structs.remove(name).is_some();
+        references || structs
     }
 
     pub fn record_type_structs(&mut self, name: TypeName, refs: Vec<ModuleId>) -> bool {

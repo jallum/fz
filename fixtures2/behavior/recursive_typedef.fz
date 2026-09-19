@@ -1,20 +1,10 @@
 #---
-# purpose: "a legal recursive @type declaration that the compiler cannot yet resolve"
-# expect: diagnostic
+# purpose: "a recursive @type declaration resolves once as a finite denotation"
 #---
 #
-# `t` is a legal recursive declaration: it is `:start` or a pair whose second
-# field is another `t`. Resolving it needs a recursive denotation — a type whose
-# definition names itself. The compiler has none, so `DeriveTypeDef(t)` waits on
-# `TypeDefined(t)`, which is its own output. Every job that needs the spec waits
-# behind it, the drive finds no ready producer, and the program is rejected on
-# all three doors with that unresolved wait printed. Nothing runs.
-#
-# `expect: diagnostic` is satisfied here by a stall, not by a diagnostic: the
-# drive emits no `fz.diag.*` event, it prints the wait it could not satisfy and
-# exits nonzero. That is why this fixture pins stderr rather than a
-# `diagnostic.code`, and why its golden is the smallest substring that still
-# names the cycle. The harness cannot yet tell the two apart.
+# `t` is `:start` or a pair whose second field is another `t`. Its declaration
+# resolves as one finite regular component before ordinary specialization and
+# backend materialization consume the resulting `Ty`.
 def main() do
   dbg(build(3))
 end

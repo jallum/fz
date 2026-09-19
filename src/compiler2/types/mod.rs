@@ -15,7 +15,6 @@ mod dnf;
 mod emptiness;
 mod format;
 mod order;
-#[cfg(test)]
 mod regular;
 mod render_bindings;
 mod sigs;
@@ -31,7 +30,7 @@ use crate::runtime_type_predicate::{
     CallableShape, CallableShapes, ListShape, ListShapes, RuntimeTypePredicate, TupleShapes,
 };
 
-use super::identity::ActivationSignature;
+use super::identity::{ActivationSignature, ModuleId};
 use super::protocol::{ProtocolDomainObligation, is_protocol_domain_tag};
 use crate::type_expr::opaque_owner_module;
 use crate::types::{
@@ -55,11 +54,11 @@ use addressed::AddrStep;
 pub(crate) use closure_surface_var::{ClosureSurfacePos, decode_closure_surface_var};
 use closure_surface_var::{closure_ret_var_id, closure_var_id};
 use conj::Conj;
+use descr::Descr;
 use descr::OpaqueTag;
-use descr::{Descr, DescrOf};
+pub(crate) use descr::{DescrOf, union_of as union_regular_bodies};
 use dnf::dnf_intersect_with;
-#[cfg(test)]
-use regular::ComponentRef;
+pub(crate) use regular::ComponentRef;
 use sigs::{ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig, TupleSigOf};
 #[cfg(test)]
 use sigs::{ArrowSigOf, ClosureLitOf, ListSigOf};
@@ -166,10 +165,12 @@ struct TypeInterner {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(test, expect(clippy::large_enum_variant))]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "boxing the sole direct descriptor key adds an allocation to every ordinary interner lookup"
+)]
 enum InternKey {
     Direct(Descr),
-    #[cfg(test)]
     Regular(Box<regular::RegularKey>),
 }
 
@@ -458,17 +459,14 @@ impl TypeInterner {
         self.index.get(&InternKey::Direct(d.clone())).copied()
     }
 
-    #[cfg(test)]
     fn len(&self) -> usize {
         self.arena.len()
     }
 
-    #[cfg(test)]
     fn lookup_regular(&self, key: &regular::RegularKey) -> Option<Ty> {
         self.index.get(&InternKey::Regular(Box::new(key.clone()))).copied()
     }
 
-    #[cfg(test)]
     fn intern_regular(&mut self, keys: Vec<regular::RegularKey>, descriptors: Vec<Descr>) -> Vec<Ty> {
         assert_eq!(keys.len(), descriptors.len(), "regular keys and descriptors must align");
         assert!(
@@ -842,12 +840,50 @@ impl Types {
     }
 
     #[cfg(test)]
-    fn intern_regular_component(
+    pub(crate) fn intern_regular_component(
         &mut self,
         count: usize,
         build: impl FnOnce(&[ComponentRef]) -> Vec<DescrOf<ComponentRef>>,
     ) -> Vec<Ty> {
         regular::intern(self, count, build)
+    }
+
+    pub(crate) fn intern_regular_bodies(&mut self, bodies: Vec<DescrOf<ComponentRef>>) -> Vec<Ty> {
+        regular::intern_bodies(self, bodies)
+    }
+
+    pub(crate) fn regular_published(&self, ty: Ty) -> DescrOf<ComponentRef> {
+        self.descr(&ty).clone().map_children(ComponentRef::Published)
+    }
+
+    pub(crate) fn intern_ground_regular_body(&mut self, body: DescrOf<ComponentRef>) -> Option<Ty> {
+        let mut has_local = false;
+        let body = body.map_children(|reference| match reference {
+            ComponentRef::Published(ty) => ty,
+            ComponentRef::Local(_) => {
+                has_local = true;
+                self.any()
+            }
+        });
+        (!has_local).then(|| self.intern(body))
+    }
+
+    pub(crate) fn regular_brand(mut body: DescrOf<ComponentRef>, name: &str) -> DescrOf<ComponentRef> {
+        body.brands = FiniteSet::lit(name.to_string());
+        body
+    }
+
+    pub(crate) fn regular_struct_map(
+        &mut self,
+        module: ModuleId,
+        name: ModuleName,
+        fields: impl IntoIterator<Item = (String, ComponentRef)>,
+    ) -> DescrOf<ComponentRef> {
+        let fields = fields
+            .into_iter()
+            .map(|(field, ty)| (MapKey::Atom(field), ty))
+            .collect::<BTreeMap<_, _>>();
+        DescrOf::struct_map(StructTag { module, name }, fields)
     }
 
     /// Return an input whose operation has proved unchanged before any
@@ -3067,6 +3103,9 @@ impl Types {
     }
 
     pub fn erase_closure_identity(&mut self, a: &Ty) -> Ty {
+        if !contains_callable_literal(self, *a) {
+            return self.unchanged(*a);
+        }
         let d = erase_closure_identity(self, *a);
         self.intern(d)
     }
@@ -3076,6 +3115,9 @@ impl Types {
     /// discriminate the member. A one-literal forwarding input instead drops
     /// its target/surface identity and keeps only its capture denotation.
     fn erase_transported_closure_identity_for_key(&mut self, a: &Ty) -> Ty {
+        if !contains_callable_literal(self, *a) {
+            return self.unchanged(*a);
+        }
         let d = erase_transported_closure_identity_for_key(self, *a);
         self.intern(d)
     }
@@ -4290,6 +4332,47 @@ fn is_literal(cx: TyCtx<'_>, a: &Ty) -> bool {
 
 // More recursive transforms live in this module so they can thread the owning
 // interner explicitly without exposing the private descriptor representation.
+fn contains_callable_literal(types: &Types, root: Ty) -> bool {
+    let mut seen = HashSet::new();
+    let mut work = vec![root];
+    while let Some(ty) = work.pop() {
+        if !seen.insert(ty) {
+            continue;
+        }
+        let descr = types.descr(&ty);
+        for clause in &descr.funcs {
+            for sig in clause.pos.iter().chain(&clause.neg) {
+                if sig.lit.is_some() {
+                    return true;
+                }
+                work.extend(sig.args.iter().copied());
+                work.push(sig.ret);
+            }
+        }
+        for clause in &descr.tuples {
+            for sig in clause.pos.iter().chain(&clause.neg) {
+                work.extend(sig.elems.iter().copied());
+            }
+        }
+        for clause in &descr.lists {
+            for sig in clause.pos.iter().chain(&clause.neg) {
+                work.extend(sig.elem);
+            }
+        }
+        for clause in &descr.resources {
+            for sig in clause.pos.iter().chain(&clause.neg) {
+                work.push(sig.payload);
+            }
+        }
+        for clause in &descr.maps {
+            for sig in clause.pos.iter().chain(&clause.neg) {
+                work.extend(sig.fields.values().copied());
+            }
+        }
+    }
+    false
+}
+
 /// Erase every closure literal's BRAND and keep its capture TYPES, at every
 /// depth (fz-6gb, fz-kdt.127).
 ///
