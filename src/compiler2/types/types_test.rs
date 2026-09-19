@@ -448,6 +448,53 @@ fn types_intern_two_phase_is_idempotent() {
     assert_eq!(t.identity_inventory(), inventory);
 }
 
+#[test]
+fn cyclic_readers_collect_the_finite_variable_and_substitution_result() {
+    let mut t = Types::new();
+    let alpha = TypeVarId(97);
+    let variable = t.type_var(alpha);
+    let int = t.int();
+    let self_recursive = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of(vec![reserved[0]])])[0];
+    let pattern = t.intern_two_phase(2, |reserved| {
+        vec![
+            Descr::tuple_of(vec![reserved[1]]),
+            Descr::tuple_of(vec![reserved[0], variable]),
+        ]
+    })[0];
+    let witness = t.intern_two_phase(2, |reserved| {
+        vec![
+            Descr::tuple_of(vec![reserved[1]]),
+            Descr::tuple_of(vec![reserved[0], int]),
+        ]
+    })[0];
+
+    assert!(!t.has_vars(&self_recursive));
+    assert!(t.has_vars(&pattern));
+    assert_eq!(t.free_var_ids(&pattern), [alpha].into_iter().collect());
+
+    let mut sigma = Sigma::new();
+    t.collect_instantiation_subst(&pattern, &witness, &mut sigma);
+    assert_eq!(sigma, Sigma::from([(alpha, int)]));
+}
+
+#[test]
+fn types_emptiness_discharges_a_negation_bearing_cycle() {
+    let mut t = Types::new();
+    let recursive = t.intern_two_phase(1, |reserved| {
+        let sig = TupleSig {
+            elems: vec![reserved[0]],
+        };
+        let mut descr = Descr::unbranded();
+        descr.tuples.push(Conj {
+            pos: vec![sig.clone()],
+            neg: vec![sig],
+        });
+        vec![descr]
+    })[0];
+
+    assert!(t.descr(&recursive).is_empty(t.ctx()));
+}
+
 fn regular_test_tys(t: &mut Types) -> Vec<Ty> {
     let first_self = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of(vec![reserved[0]])])[0];
     let second_self = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of(vec![reserved[0]])])[0];

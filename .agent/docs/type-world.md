@@ -105,6 +105,21 @@ ids already stored in facts.
 This is the payoff that lets `fact-engine` use revisions-on-change rather than
 fingerprints.
 
+## Cyclic reads stay inside the kernel
+
+Completed regular types may contain a path back to an already-completed `Ty`.
+Every reader that follows structural children therefore owns a traversal key:
+`has_vars` and free-variable collection visit a `Ty` once; substitution
+collection visits one `(pattern, witness, side, target)` relation once; and arrow
+matching treats a re-entered in-flight relation as its coinductive hypothesis.
+The emptiness calculator carries the same kind of descriptor-keyed hypothesis
+while it evaluates temporary intersections and differences.
+
+Those guards make readers finite; they do not create a second type store or
+license a temporary `Ty` to escape. A transformation that changes a recursive
+component must still publish its complete canonical component through the one
+interner boundary before a fact or caller can observe an id.
+
 ## The lattice operations
 
 The keying and join logic lean on a few `Types` methods, each with a distinct job:

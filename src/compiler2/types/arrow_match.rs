@@ -366,13 +366,29 @@ impl Types {
         side: BindingSide,
         bounds: &mut MatchBounds,
     ) -> MatchWitness {
+        let mut in_flight = HashSet::new();
+        self.collect_match_subst_with(pattern, witness, side, bounds, &mut in_flight)
+    }
+
+    fn collect_match_subst_with(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        side: BindingSide,
+        bounds: &mut MatchBounds,
+        in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
+    ) -> MatchWitness {
+        let relation = (*pattern, *witness, side);
+        if !in_flight.insert(relation) {
+            return MatchWitness::Known;
+        }
         let outcome = MatchWitness::Unknown
             .merge(self.collect_var_match(pattern, witness, side, bounds))
-            .merge(self.collect_tuple_match(pattern, witness, side, bounds))
-            .merge(self.collect_list_match(pattern, witness, side, bounds))
-            .merge(self.collect_resource_match(pattern, witness, side, bounds))
-            .merge(self.collect_map_match(pattern, witness, side, bounds))
-            .merge(self.collect_arrow_match(pattern, witness, side, bounds));
+            .merge(self.collect_tuple_match(pattern, witness, side, bounds, in_flight))
+            .merge(self.collect_list_match(pattern, witness, side, bounds, in_flight))
+            .merge(self.collect_resource_match(pattern, witness, side, bounds, in_flight))
+            .merge(self.collect_map_match(pattern, witness, side, bounds, in_flight))
+            .merge(self.collect_arrow_match(pattern, witness, side, bounds, in_flight));
         if outcome == MatchWitness::Unknown && self.has_vars(pattern) {
             // No collector read this node. Every variable that occurs
             // covariantly beneath it was owed a term of its join and did not
@@ -386,6 +402,7 @@ impl Types {
             let mut seen = HashSet::new();
             self.collect_lower_occurrences(pattern, side, &mut seen, &mut bounds.undetermined);
         }
+        in_flight.remove(&relation);
         outcome
     }
 
@@ -465,6 +482,7 @@ impl Types {
         witness: &Ty,
         side: BindingSide,
         bounds: &mut MatchBounds,
+        in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
     ) -> MatchWitness {
         let arity = self.max_tuple_arity(pattern);
         if arity == 0 {
@@ -477,7 +495,7 @@ impl Types {
         {
             return MatchWitness::Unknown;
         }
-        if let Some(outcome) = self.collect_correlated_tuple_match(pattern, witness, side, bounds) {
+        if let Some(outcome) = self.collect_correlated_tuple_match(pattern, witness, side, bounds, in_flight) {
             return outcome;
         }
         if self.max_tuple_arity(witness) < arity {
@@ -491,7 +509,8 @@ impl Types {
         let witness_fields = self.tuple_projections(witness, arity);
         let mut outcome = MatchWitness::Unknown;
         for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
-            outcome = outcome.merge(self.collect_match_subst(pattern_field, witness_field, side, bounds));
+            outcome =
+                outcome.merge(self.collect_match_subst_with(pattern_field, witness_field, side, bounds, in_flight));
         }
         outcome
     }
@@ -502,6 +521,7 @@ impl Types {
         witness: &Ty,
         side: BindingSide,
         bounds: &mut MatchBounds,
+        in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
     ) -> Option<MatchWitness> {
         let pattern_alternatives = self.tuple_positive_alternatives(pattern)?;
         let witness_alternatives = self.tuple_positive_alternatives(witness)?;
@@ -519,11 +539,12 @@ impl Types {
                 let mut pair_bounds = MatchBounds::default();
                 let mut pair_outcome = MatchWitness::Unknown;
                 for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
-                    pair_outcome = pair_outcome.merge(self.collect_match_subst(
+                    pair_outcome = pair_outcome.merge(self.collect_match_subst_with(
                         pattern_field,
                         witness_field,
                         side,
                         &mut pair_bounds,
+                        in_flight,
                     ));
                 }
                 if pair_outcome == MatchWitness::Invalid {
@@ -625,6 +646,7 @@ impl Types {
         witness: &Ty,
         side: BindingSide,
         bounds: &mut MatchBounds,
+        in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
     ) -> MatchWitness {
         if !self.has_list_shape(pattern) {
             return MatchWitness::Unknown;
@@ -641,7 +663,7 @@ impl Types {
             };
         }
         let witness_elem = self.list_element_type(witness);
-        self.collect_match_subst(&pattern_elem, &witness_elem, side, bounds)
+        self.collect_match_subst_with(&pattern_elem, &witness_elem, side, bounds, in_flight)
     }
 
     fn collect_resource_match(
@@ -650,6 +672,7 @@ impl Types {
         witness: &Ty,
         side: BindingSide,
         bounds: &mut MatchBounds,
+        in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
     ) -> MatchWitness {
         let Some(pattern_payload) = self.resource_payload_type(pattern) else {
             return MatchWitness::Unknown;
@@ -664,7 +687,7 @@ impl Types {
                 MatchWitness::Invalid
             };
         };
-        self.collect_match_subst(&pattern_payload, &witness_payload, side, bounds)
+        self.collect_match_subst_with(&pattern_payload, &witness_payload, side, bounds, in_flight)
     }
 
     fn collect_map_match(
@@ -673,6 +696,7 @@ impl Types {
         witness: &Ty,
         side: BindingSide,
         bounds: &mut MatchBounds,
+        in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
     ) -> MatchWitness {
         let witness_keys = self.map_known_keys(witness);
         let mut outcome = MatchWitness::Unknown;
@@ -690,7 +714,13 @@ impl Types {
                 continue;
             }
             if let Some(witness_field) = self.map_field_lookup(witness, &key) {
-                outcome = outcome.merge(self.collect_match_subst(&pattern_field, &witness_field, side, bounds));
+                outcome = outcome.merge(self.collect_match_subst_with(
+                    &pattern_field,
+                    &witness_field,
+                    side,
+                    bounds,
+                    in_flight,
+                ));
             }
         }
         outcome
@@ -709,6 +739,7 @@ impl Types {
         witness: &Ty,
         side: BindingSide,
         bounds: &mut MatchBounds,
+        in_flight: &mut HashSet<(Ty, Ty, BindingSide)>,
     ) -> MatchWitness {
         let Some(pattern_clauses) = self.callable_clauses(pattern) else {
             return MatchWitness::Unknown;
@@ -736,10 +767,21 @@ impl Types {
                 }
                 saw_compatible_arity = true;
                 for (pattern_arg, witness_arg) in pattern_clause.args.iter().zip(witness_clause.args.iter()) {
-                    outcome = outcome.merge(self.collect_match_subst(pattern_arg, witness_arg, side.flipped(), bounds));
+                    outcome = outcome.merge(self.collect_match_subst_with(
+                        pattern_arg,
+                        witness_arg,
+                        side.flipped(),
+                        bounds,
+                        in_flight,
+                    ));
                 }
-                outcome =
-                    outcome.merge(self.collect_match_subst(&pattern_clause.ret, &witness_clause.ret, side, bounds));
+                outcome = outcome.merge(self.collect_match_subst_with(
+                    &pattern_clause.ret,
+                    &witness_clause.ret,
+                    side,
+                    bounds,
+                    in_flight,
+                ));
             }
         }
         if saw_compatible_arity {
@@ -820,6 +862,23 @@ mod tests {
             ArrowMatch::Underconstrained { .. } => {}
             other => panic!("expected Underconstrained, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn recursive_match_relation_is_coinductive() {
+        let mut t = Types::new();
+        let alpha = TypeVarId(97);
+        let variable = t.type_var(alpha);
+        let int = t.int();
+        let pattern = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of(vec![reserved[0], variable])])[0];
+        let witness = t.intern_two_phase(1, |reserved| vec![Descr::tuple_of(vec![reserved[0], int])])[0];
+        let mut bounds = MatchBounds::default();
+
+        assert_eq!(
+            t.collect_match_subst(&pattern, &witness, BindingSide::Lower, &mut bounds),
+            MatchWitness::Known
+        );
+        assert_eq!(bounds.lower, Sigma::from([(alpha, int)]));
     }
 
     #[test]
