@@ -381,12 +381,34 @@ the index, which is also what keeps the absorption's containment questions to a
 small constant per compile.
 
 A regular component is prepared outside the arena with private local
-references. The interner refines equivalent local nodes, assigns a canonical
-rooted graph key, and checks that key in the same index that holds ordinary
-descriptors. A hit returns the component's existing complete `Ty`s. A miss
-maps local references to the final contiguous ids and appends only completed
-descriptors plus their direct and regular keys. No incomplete id, redirect, or
-second type graph can escape the transaction.
+references. Refining those local nodes against each other answers "which of my
+nodes are the same state?"; on its own it does not answer "is one of my states
+a handle that already exists?". So the refinement also takes the states of
+every recursive handle the component mentions, as fixed nodes, and a mention
+becomes a reference to that fixed node rather than an opaque leaf.
+`TypeInterner::is_regular` is the id-to-"this names a recursive state"
+direction that finding those handles needs; the regular keys in the index are
+the other direction, from key to id. Fixed nodes are already minimal, so a
+local node can only join one by being bisimilar to it, and the handle set is
+closed under its own children, so once a class holds a fixed node every class
+it reaches holds one too. A class that lands with a fixed node is that handle,
+and the nodes in it resolve to that existing `Ty`.
+
+What is left over is the genuinely new part of the component, and it alone is
+keyed and minted. Its bodies name the resolved handles as ordinary published
+children; putting a handle back where a symbolic node stood can let clauses
+absorb one another, so a body a substitution touched is normalized once more.
+The residual then gets a canonical rooted graph key, checked in the same index
+that holds ordinary descriptors. A hit returns the existing complete `Ty`s. A
+miss maps local references to the final contiguous ids and appends only
+completed descriptors plus their direct and regular keys. No incomplete id,
+redirect, or second type graph can escape the transaction.
+
+Resolution is bisimulation of the DNF bodies, which is what makes it exact and
+cheap to decide. It does not see a containment that holds only through the
+types a clause names: with `A = μX. int | [X]`, the component
+`μY. int | [[A]] | [Y]` denotes `A` — `is_subtype` says so both ways — but no
+partition of the clause structure says so, so it keeps an id of its own.
 
 A component's nodes go through the same tuple-coordinate carving as ordinary
 descriptors while they are still local, unresolved references to each other's

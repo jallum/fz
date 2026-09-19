@@ -163,6 +163,7 @@ impl Default for Types {
 struct TypeInterner {
     arena: Vec<Descr>,
     index: HashMap<InternKey, Ty>,
+    regular: HashSet<Ty>,
     #[cfg(test)]
     work: InterningWork,
 }
@@ -466,6 +467,14 @@ impl TypeInterner {
         self.index.get(&InternKey::Regular(Box::new(key.clone()))).copied()
     }
 
+    /// Whether this id names a state of a recursive automaton. The regular
+    /// keys in the index answer the other direction, from key to id; a cluster
+    /// that mentions a handle needs this one, from id back to "that handle has
+    /// states of its own".
+    fn is_regular(&self, ty: Ty) -> bool {
+        self.regular.contains(&ty)
+    }
+
     fn intern_regular(&mut self, keys: Vec<regular::RegularKey>, descriptors: Vec<Descr>) -> Vec<Ty> {
         assert_eq!(keys.len(), descriptors.len(), "regular keys and descriptors must align");
         assert!(
@@ -493,6 +502,7 @@ impl TypeInterner {
         for (key, ty) in keys.into_iter().zip(tys.iter().copied()) {
             assert!(self.index.insert(InternKey::Regular(Box::new(key)), ty).is_none());
         }
+        self.regular.extend(tys.iter().copied());
         #[cfg(test)]
         {
             self.work.inserted += tys.len();

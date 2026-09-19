@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 use super::axis;
 use super::conj::Conj;
@@ -36,6 +36,17 @@ pub(super) struct RegularKey {
     nodes: Vec<DescrOf<RegularRef>>,
 }
 
+/// Intern one strongly connected cluster, resolving it against the recursive
+/// handles it mentions.
+///
+/// Minimizing the cluster on its own answers "which of my nodes are the same
+/// state?" but not "is one of my states a handle that already exists?". So the
+/// states of every mentioned handle join the refinement as fixed nodes, and a
+/// mention becomes a reference to the fixed node rather than an opaque atom. A
+/// class that lands with a fixed node is that handle -- fixed nodes are
+/// already minimal, so a local can only join one by being bisimilar to it.
+/// What is left over is the genuinely new part of the cluster: it alone is
+/// keyed and minted, naming the resolved handles as ordinary children.
 pub(super) fn intern(
     types: &mut Types,
     count: usize,
@@ -49,24 +60,72 @@ pub(super) fn intern(
     assert_eq!(bodies.len(), count, "a regular component needs one body per node");
     assert_strongly_connected(&bodies);
 
-    let classes = refine_partition(types, &bodies);
+    let handles = mentioned_handle_states(types, &bodies);
+    let nodes = bodies_with_handle_states(types, bodies, &handles);
+    let classes = refine_partition(types, &nodes);
     let class_count = classes.iter().copied().max().map_or(0, |class| class + 1);
-    let class_bodies = quotient_bodies(types, &bodies, &classes, class_count);
-    if class_bodies.iter().all(|body| !has_local_child(body)) {
-        let interned = class_bodies
-            .iter()
-            .cloned()
+    let resolved = resolved_classes(&classes, count, &handles, class_count);
+    let handle_of = |node: usize| resolved[classes[node]];
+    if (0..count).all(|node| handle_of(node).is_some()) {
+        return (0..count)
+            .map(|node| handle_of(node).expect("every node resolved to a handle"))
+            .collect();
+    }
+
+    let class_bodies = quotient_bodies(types, &nodes, &classes, class_count);
+    let residual = (0..class_count)
+        .filter(|class| resolved[*class].is_none())
+        .collect::<Vec<_>>();
+    let mut residual_index = vec![None; class_count];
+    for (index, &class) in residual.iter().enumerate() {
+        residual_index[class] = Some(index);
+    }
+    let residual_bodies = residual
+        .iter()
+        .map(|&class| {
+            let body = class_bodies[class].clone().map_children(|reference| match reference {
+                RegularRef::Published(ty) => RegularRef::Published(ty),
+                RegularRef::Local(class) => match resolved[class] {
+                    Some(ty) => RegularRef::Published(ty),
+                    None => RegularRef::Local(residual_index[class].expect("a class is resolved or residual")),
+                },
+            });
+            // Putting a handle back where a symbolic node stood can let
+            // clauses absorb one another, which the symbolic form had to
+            // refuse. A body no substitution touched is already in normal
+            // form.
+            match body == class_bodies[class] {
+                true => body,
+                false => normalize_shape(types, body),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let minted = mint_residual(types, residual_bodies);
+    (0..count)
+        .map(|node| match handle_of(node) {
+            Some(ty) => ty,
+            None => minted[residual_index[classes[node]].expect("an unresolved node is residual")],
+        })
+        .collect()
+}
+
+/// Give the residual quotient its ids: replay an acyclic one through the
+/// ordinary interner, and key a cyclic one by its rooted automaton.
+fn mint_residual(types: &mut Types, bodies: Vec<DescrOf<RegularRef>>) -> Vec<Ty> {
+    if bodies.iter().all(|body| !has_local_child(body)) {
+        return bodies
+            .into_iter()
             .map(|body| {
                 types.intern(body.map_children(|reference| match reference {
                     RegularRef::Published(ty) => ty,
                     RegularRef::Local(_) => unreachable!("an acyclic quotient has no local children"),
                 }))
             })
-            .collect::<Vec<_>>();
-        return classes.into_iter().map(|class| interned[class]).collect();
+            .collect();
     }
-    let keys = (0..class_count)
-        .map(|class| rooted_key(class, &class_bodies))
+    let keys = (0..bodies.len())
+        .map(|root| rooted_key(root, &bodies))
         .collect::<Vec<_>>();
 
     let existing = keys
@@ -78,20 +137,83 @@ pub(super) fn intern(
             existing.iter().all(Option::is_some),
             "a regular component was only partially present in the type interner"
         );
-        return classes.into_iter().map(|class| existing[class].unwrap()).collect();
+        return existing.into_iter().map(|ty| ty.expect("a present identity")).collect();
     }
 
-    let descriptors = class_bodies
+    let descriptors = bodies
         .into_iter()
         .map(|body| {
             body.map_children(|reference| match reference {
                 RegularRef::Published(ty) => ty,
-                RegularRef::Local(class) => Ty((types.interner.len() + class) as u32),
+                RegularRef::Local(index) => Ty((types.interner.len() + index) as u32),
             })
         })
         .collect();
-    let interned = types.interner.intern_regular(keys, descriptors);
-    classes.into_iter().map(|class| interned[class]).collect()
+    types.interner.intern_regular(keys, descriptors)
+}
+
+/// The automaton states reachable from the recursive handles this cluster
+/// mentions. A handle's own children are handles again, so the set is closed:
+/// once a class holds a fixed node, every class it reaches holds one too.
+fn mentioned_handle_states(types: &Types, bodies: &[DescrOf<ComponentRef>]) -> Vec<Ty> {
+    let mut states = BTreeSet::new();
+    let mut work = Vec::new();
+    for body in bodies {
+        visit_children(body, |reference| {
+            if let ComponentRef::Published(ty) = reference
+                && types.interner.is_regular(ty)
+            {
+                work.push(ty);
+            }
+        });
+    }
+    while let Some(ty) = work.pop() {
+        if !states.insert(ty) {
+            continue;
+        }
+        visit_children(types.descr(&ty), |child| {
+            if types.interner.is_regular(child) {
+                work.push(child);
+            }
+        });
+    }
+    states.into_iter().collect()
+}
+
+/// The cluster's own bodies followed by one body per handle state, with every
+/// mention of a handle rewritten to the node that now stands for it.
+fn bodies_with_handle_states(
+    types: &Types,
+    bodies: Vec<DescrOf<ComponentRef>>,
+    handles: &[Ty],
+) -> Vec<DescrOf<ComponentRef>> {
+    let count = bodies.len();
+    let name = |reference| match reference {
+        ComponentRef::Published(ty) => match handles.binary_search(&ty) {
+            Ok(index) => ComponentRef::Local(NodeId(count + index)),
+            Err(_) => ComponentRef::Published(ty),
+        },
+        local @ ComponentRef::Local(_) => local,
+    };
+    bodies
+        .into_iter()
+        .map(|body| body.map_children(name))
+        .chain(handles.iter().map(|&ty| types.regular_published(ty).map_children(name)))
+        .collect()
+}
+
+/// The handle each class resolves to, read off the fixed nodes that landed in
+/// it. Two handles in one class would be two ids for one denotation, which is
+/// the very thing this resolution exists to prevent.
+fn resolved_classes(classes: &[usize], count: usize, handles: &[Ty], class_count: usize) -> Vec<Option<Ty>> {
+    let mut resolved = vec![None; class_count];
+    for (offset, &ty) in handles.iter().enumerate() {
+        match &mut resolved[classes[count + offset]] {
+            Some(existing) => assert_eq!(*existing, ty, "two recursive handles denote the same type"),
+            slot @ None => *slot = Some(ty),
+        }
+    }
+    resolved
 }
 
 /// Intern every root in an equation forest. Source-level recursion and the
@@ -585,3 +707,7 @@ fn normalize_axis<T: Ord>(clauses: &mut Vec<Conj<T>>) {
     clauses.sort();
     clauses.dedup();
 }
+
+#[cfg(test)]
+#[path = "regular_test.rs"]
+mod regular_test;
