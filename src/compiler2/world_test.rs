@@ -129,6 +129,70 @@ fn type_definition_store_withdraws_with_its_fact() {
     );
 }
 
+#[test]
+fn withdrawing_an_activation_return_derivation_clears_its_payload() {
+    let telemetry = NullTelemetry;
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "answer", 1);
+    let int = world.types_mut().int();
+    let activation = super::ActivationKey::from_inputs(root, function, &[int], world.types_mut());
+    let job = Job::AnalyzeActivation(activation.clone());
+    let return_fact = FactKey::ReturnType(activation.clone());
+
+    let return_derivation = super::drive::Derivation::own(&job);
+    assert!(
+        super::drive::ExecutionContext::new(&mut world, &telemetry)
+            .define_activation_return(&return_derivation, Some(int))
+    );
+    world.complete_job(
+        job.clone(),
+        JobEffects {
+            outputs: vec![return_fact.clone()],
+            changed: vec![return_fact.clone()],
+            ..JobEffects::default()
+        },
+    );
+    assert_eq!(world.activation_return(&activation), Some(int));
+
+    let (outputs, reads) = world.standing_claims_and_reads(&job);
+    world.complete_job(
+        job.clone(),
+        JobEffects {
+            reads: reads.into_iter().collect(),
+            outputs,
+            ..JobEffects::default()
+        },
+    );
+    assert_eq!(
+        world
+            .work_graph
+            .facts()
+            .publishers(&DependencyKey::Fact(return_fact.clone()))
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![return_derivation],
+        "an inactive analysis must re-list the return under its activation derivation"
+    );
+
+    world.complete_job(job, JobEffects::default());
+
+    assert!(
+        !world.has_fact(&return_fact),
+        "the concluded omission retracts the exact activation return claim"
+    );
+    assert_eq!(
+        world.activation_return_evidence(&activation),
+        None,
+        "an absent ReturnType fact must leave bottom storage for a later re-claim"
+    );
+    assert_eq!(
+        world.activation_return_ascents(&activation),
+        0,
+        "withdrawing the final claim resets its old ascent history"
+    );
+}
+
 /// The demand fact a body that forwards NOTHING and returns none of its own
 /// inputs publishes: what its own clauses ask about its inputs is the whole of
 /// what anything asks about them, so both dispatch halves of `InputDemand`

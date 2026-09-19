@@ -18,7 +18,7 @@ use super::super::body::{
 };
 use super::super::contract::FunctionContract;
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{Derivation, FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{
     ActivationKey, ActivationSignature, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
 };
@@ -395,8 +395,9 @@ pub(super) fn analyze_activation(
             || world.activation_return_evidence(activation).is_none(),
         "a ReturnType claim is absent while its store holds content -- revision-0 minting would lie"
     );
-    let return_changed =
-        super::super::drive::ExecutionContext::new(world, tel).define_activation_return(activation, return_evidence);
+    let return_derivation = Derivation::own(&Job::AnalyzeActivation(activation.clone()));
+    let return_changed = super::super::drive::ExecutionContext::new(world, tel)
+        .define_activation_return(&return_derivation, return_evidence);
     let return_fact = FactKey::ReturnType(activation.clone());
     outputs.push(return_fact.clone());
     if return_changed {

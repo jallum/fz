@@ -1346,6 +1346,14 @@ impl ActivationMap {
         }
     }
 
+    pub fn clear_return(&mut self, key: &ActivationKey) {
+        let Some(slot) = self.slots.get_mut(key) else {
+            return;
+        };
+        slot.return_ty = None;
+        slot.ascents = 0;
+    }
+
     pub fn define_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> bool {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
         let changed = slot.analysis.as_ref() != Some(&analysis);

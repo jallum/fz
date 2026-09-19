@@ -33,7 +33,7 @@ use super::contract::{FunctionContract, FunctionContractMap};
 use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{DependencyKey, fact_dependency};
-use super::drive::{ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
+use super::drive::{Derivation, DerivationKey, ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
 use super::facts::FactUse;
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
@@ -693,7 +693,7 @@ impl World {
                 derivations: reached
                     .into_iter()
                     .chain([super::scheduler::DerivationEffects {
-                        publisher: super::drive::Derivation::of(job.clone(), super::drive::DerivationKey::Job),
+                        publisher: super::drive::Derivation::own(&job),
                         reads,
                         outputs: outputs.into_iter().map(DependencyKey::Fact).collect(),
                         changed: changed.into_iter().map(DependencyKey::Fact).collect(),
@@ -713,6 +713,9 @@ impl World {
                     }
                     DependencyKey::Fact(FactKey::TypeDefined(name)) => {
                         self.type_defs.remove(name);
+                    }
+                    DependencyKey::Fact(FactKey::ReturnType(activation)) => {
+                        self.activations.clear_return(activation);
                     }
                     _ => {}
                 }
@@ -3176,17 +3179,29 @@ impl World {
         self.activations.define_analysis(key, analysis)
     }
 
-    pub fn define_activation_return(&mut self, key: &ActivationKey, evidence: Option<Ty>) -> bool {
-        self.define_activation_return_outcome(key, evidence).changed
+    pub fn define_activation_return(&mut self, derivation: &Derivation, evidence: Option<Ty>) -> bool {
+        self.define_activation_return_outcome(derivation, evidence).changed
     }
 
     fn define_activation_return_outcome(
         &mut self,
-        key: &ActivationKey,
+        derivation: &Derivation,
         evidence: Option<Ty>,
     ) -> super::semantic::ReturnDefine {
-        let rebased = self.work_graph.rebased(&Job::AnalyzeActivation(key.clone()));
-        self.activations.define_return(&mut self.types, key, evidence, rebased)
+        let Derivation {
+            job: Job::AnalyzeActivation(key),
+            key: DerivationKey::Activation(owner),
+        } = derivation
+        else {
+            panic!("ReturnType must be owned by its activation derivation")
+        };
+        assert_eq!(key, owner, "ReturnType derivation and payload must name one activation");
+        self.activations.define_return(
+            &mut self.types,
+            key,
+            evidence,
+            self.work_graph.derivation_rebased(derivation),
+        )
     }
 
     pub fn define_callsite_summary(
@@ -3645,14 +3660,17 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         changed
     }
 
-    pub fn define_activation_return(&mut self, key: &ActivationKey, evidence: Option<Ty>) -> bool {
+    pub fn define_activation_return(&mut self, derivation: &Derivation, evidence: Option<Ty>) -> bool {
         // Return evidence is produced in the activation's addressed frame (clause
         // returns over addressed inputs), so it is already canonical — the old
         // encounter-order pass diverged it from the key (fz-hwn.27.8).
         // The publisher of a ReturnType claim is, by construction, the
         // activation's own analysis job — its rebase state selects join
         // (the within-epoch ascent) or replace (the narrowing path).
-        let outcome = self.world.define_activation_return_outcome(key, evidence);
+        let outcome = self.world.define_activation_return_outcome(derivation, evidence);
+        let DerivationKey::Activation(key) = &derivation.key else {
+            panic!("ReturnType must be owned by an activation derivation")
+        };
         if outcome.changed {
             self.emit_world_key(&["fz", "compiler2", "return_type", "defined"], key);
         }
