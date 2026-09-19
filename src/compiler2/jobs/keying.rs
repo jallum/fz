@@ -15,13 +15,13 @@ use crate::telemetry::TelemetryExt as _;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StaticEdge {
     Direct(FunctionId),
-    Lambda(FunctionId),
+    Construction(FunctionId),
 }
 
 impl StaticEdge {
     fn function(self) -> FunctionId {
         match self {
-            StaticEdge::Direct(function) | StaticEdge::Lambda(function) => function,
+            StaticEdge::Direct(function) | StaticEdge::Construction(function) => function,
         }
     }
 }
@@ -109,11 +109,7 @@ fn body_static_callees(world: &World, function: FunctionId, reads: &mut Vec<Fact
             reads.push(FactKey::FunctionDefined(target));
             continue;
         }
-        if matches!(edge, StaticEdge::Lambda(_)) {
-            // A lambda target is an edge only once its generated function
-            // exists. The conclusion consulted that fact, so it is read
-            // whether or not it was there -- a definition that lands later
-            // must be able to grow this edge set.
+        if matches!(edge, StaticEdge::Construction(_)) {
             reads.push(FactKey::FunctionDefined(target));
             if world.function_defined_revision(target).is_none() {
                 continue;
@@ -158,9 +154,9 @@ fn publish_static_callees(
 /// Identity consumption is a body-local property with no call-graph content,
 /// but it has always ridden `FactKey::Recursive`'s one value and still does.
 ///
-/// Lambda creation is a static edge from the owner to the generated function,
-/// so recursion through generated closures is handled the same way as direct
-/// or mutual recursion.
+/// Callable construction is a static edge from the owner to its named or
+/// generated function, so recursion through references and closures is handled
+/// the same way as direct or mutual recursion.
 pub(super) fn derive_call_graph_component(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
     if world.function_is_provider_boundary(function) {
         // No body in this program: no edges, so the component is the function
@@ -1030,7 +1026,7 @@ fn static_edges(body: &LoweredBody) -> Vec<StaticEdge> {
     edges.sort_by_key(|edge| {
         let rank = match edge {
             StaticEdge::Direct(_) => 0_u32,
-            StaticEdge::Lambda(_) => 1_u32,
+            StaticEdge::Construction(_) => 1_u32,
         };
         (edge.function().as_u32(), rank)
     });
@@ -1041,7 +1037,9 @@ fn static_edges(body: &LoweredBody) -> Vec<StaticEdge> {
 fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
     for step in steps {
         match step {
-            LoweredStep::Lambda { function, .. } => edges.push(StaticEdge::Lambda(*function)),
+            LoweredStep::Lambda { function, .. } | LoweredStep::FunctionRef { function, .. } => {
+                edges.push(StaticEdge::Construction(*function));
+            }
             LoweredStep::Const { .. }
             | LoweredStep::Tuple { .. }
             | LoweredStep::List { .. }
@@ -1049,7 +1047,6 @@ fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
             | LoweredStep::MapUpdate { .. }
             | LoweredStep::Struct { .. }
             | LoweredStep::Bitstring { .. }
-            | LoweredStep::FunctionRef { .. }
             | LoweredStep::BinaryOp { .. }
             | LoweredStep::UnaryOp { .. }
             | LoweredStep::MapIndex { .. }

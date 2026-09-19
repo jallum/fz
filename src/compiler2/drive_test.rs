@@ -14810,6 +14810,72 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
 }
 
 #[test]
+fn compiler2_recursive_keying_sees_recursion_through_function_references() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let source = "def main(), do: {ping(1), reference_only()}\n\
+                  def reference_only(), do: &pong/1\n\
+                  def ping(0), do: 0\n\
+                  def ping(n) do\n\
+                    next = &pong/1\n\
+                    next.(n)\n\
+                  end\n\
+                  def pong(0), do: 0\n\
+                  def pong(n) do\n\
+                    next = &ping/1\n\
+                    next.(n)\n\
+                  end\n";
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_function_reference_recursion.fz".to_string()),
+        text: source.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(
+        compiler.drive(),
+        "function-reference recursion should settle through recursive activation key facts",
+    );
+
+    let ping = function_id(&functions, "ping", 1);
+    let pong = function_id(&functions, "pong", 1);
+    let reference_only = function_id(&functions, "reference_only", 0);
+    for (caller, callee) in [(ping, pong), (pong, ping)] {
+        assert_eq!(
+            compiler.world().static_callees(caller),
+            &[callee],
+            "a named function reference is this body's only static construction edge"
+        );
+        assert!(
+            compiler
+                .world()
+                .body_keying(caller)
+                .expect("function-reference body keying")
+                .recursive,
+            "the function-reference cycle must be recursive"
+        );
+    }
+    assert_eq!(
+        compiler.world().call_graph_component(ping),
+        compiler.world().call_graph_component(pong),
+        "the function-reference cycle is one strong component"
+    );
+    assert!(
+        !compiler
+            .world()
+            .body_keying(reference_only)
+            .expect("function-reference body keying")
+            .consumes_callable_identity,
+        "a named function reference has no captured identity"
+    );
+}
+
+#[test]
 fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
