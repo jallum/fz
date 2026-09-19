@@ -14876,6 +14876,48 @@ fn compiler2_recursive_keying_sees_recursion_through_function_references() {
 }
 
 #[test]
+fn compiler2_value_call_self_cycle_mints_one_activation_key() {
+    // def loop(_f, 0), do: :done
+    // def loop(f, n), do: f.(f, n - 1)
+    // def main(), do: dbg(loop(&loop/2, 2))
+    //
+    // main's call to `loop(&loop/2, 2)` addresses `f`'s callable surface
+    // fresh, nested under input slot 0 (`Types::address_signature_at_input`
+    // via `ActivationKey::from_inputs_with_callable_surfaces`). loop/2's own
+    // self call `f.(f, n - 1)` binds `f` by reading loop's own settled
+    // `ActivationInputs` row instead, so the very same activation must
+    // address that row's callable surface identically -- one function, one
+    // address, one key -- or the two producers fork the activation in two.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let analyses = ActivationAnalysisCapture::new();
+    analyses.install(&tel);
+
+    let (mut compiler, root) = submit_main_root(
+        tel,
+        "value_call_self_cycle.fz",
+        include_str!("../../fixtures2/behavior/value_call_self_cycle.fz"),
+    );
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("the self-cycle program reaches a backend program");
+
+    let loop_id = function_id(&functions, "loop", 2);
+    let loop_keys: HashSet<ActivationKey> = analyses
+        .keys_for_root(root)
+        .into_iter()
+        .filter(|key| key.function == loop_id)
+        .collect();
+    assert_eq!(
+        loop_keys.len(),
+        1,
+        "loop/2's entry surface and its own settled-input-row surface must address to the \
+         same activation key, not fork into two: {loop_keys:#?}",
+    );
+}
+
+#[test]
 fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -20483,7 +20525,7 @@ type PinnedAscent = (&'static str, u64, bool);
 /// climbs past `RETURN_LADDER_CEILING`.
 type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 
-/// Every activation that climbs past that ceiling in the two fixtures below,
+/// Every activation that climbs past that ceiling in the fixtures below,
 /// measured through the product pull on one cold compile.
 ///
 /// This is the ladder as it stands on the compiler the doors run, a defect
@@ -20497,8 +20539,30 @@ type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 /// seventeen is not one outcome but two: a widened row ran out of budget and was
 /// coarsened, while an unwidened row arrived at its answer on its own evidence
 /// before the budget could fire.
+///
+/// `self_guarded_nest` and `false_embedding` are two more single-activation and
+/// two-activation shapes that climb the same seventeen-revision, widened
+/// ceiling: a plain self cycle guarded by one list constructor (`nest/1`), and
+/// a value that embeds an unrelated recursive call under a tuple without a
+/// recursive edge there (`f/1` calling the unrelated `leaf/1`, which climbs on
+/// its own account rather than through a manufactured cycle). `alias_cycle_with_entry`
+/// and `unproductive_spin` are the negative population: an alias-only cycle
+/// reached from an activation outside it settles under the ceiling, and a
+/// locally cyclic function reachable only from a dead branch never runs, so
+/// neither carries a row.
 const RETURN_LADDERS: &[PinnedLadder] = &[
+    (
+        "fixtures2/behavior/mutual_tuple_states.fz",
+        &[("even/1", 17, true), ("odd/1", 17, true)],
+    ),
     ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
+    ("fixtures2/behavior/self_guarded_nest.fz", &[("nest/1", 17, true)]),
+    ("fixtures2/behavior/alias_cycle_with_entry.fz", &[]),
+    (
+        "fixtures2/behavior/false_embedding.fz",
+        &[("f/1", 17, true), ("leaf/1", 17, true)],
+    ),
+    ("fixtures2/behavior/unproductive_spin.fz", &[]),
     (
         "fixtures2/behavior/json_roundtrip.fz",
         &[
@@ -20538,7 +20602,35 @@ const RETURN_LADDERS: &[PinnedLadder] = &[
 
 /// The other four `json_*` fixtures share this one's decode loop and measure the
 /// same climb, so pinning the goal program pins them too.
+///
+/// `behavior/mutual_tuple_states.fz` is the two-state mutual recursion whose
+/// tuple-tagged returns climb the same ladder; it is here because its compile
+/// terminates only through the emptiness memo, so the row also pins that.
+///
+/// `behavior/nesting_accumulator.fz` is deliberately absent: it drives the
+/// same list-family return widen this table exercises, but
+/// `measure_return_ascents` drives to `DumpStage::Backend`, which that
+/// fixture's compile never reaches -- after the widening every round
+/// contributes a strictly deeper ground input row to the shared `build/2`
+/// activation, and `ActivationInputAlternatives::insert_row` compares it
+/// against every standing row through DNF, so adding it here would
+/// hang this test rather than pin it. It carries its own `defer:` and is
+/// confirmed by hand: `--log-telemetry` shows `return_type.widened` firing
+/// once, at ascent nine, collapsing to `[any]`.
+///
+/// `behavior/self_guarded_nest.fz` nests a list the same way, but on one
+/// argument rather than an accumulator's two, so its shared activation key
+/// never receives the growing input rows its sibling's evidence join chokes
+/// on; it reaches `DumpStage::Backend` and pins cleanly. `behavior/false_embedding.fz`
+/// and `behavior/alias_cycle_with_entry.fz` are the tuple-return and
+/// alias-cycle counterparts to the mutual and bare ladders above, and
+/// `behavior/unproductive_spin.fz` is the unreached branch: a local cycle that
+/// only compiles the arm that never calls it.
 const RETURN_LADDER_FIXTURES: &[(&str, &str)] = &[
+    (
+        "fixtures2/behavior/mutual_tuple_states.fz",
+        include_str!("../../fixtures2/behavior/mutual_tuple_states.fz"),
+    ),
     (
         "fixtures2/behavior/return_tuple_ladder.fz",
         include_str!("../../fixtures2/behavior/return_tuple_ladder.fz"),
@@ -20546,6 +20638,22 @@ const RETURN_LADDER_FIXTURES: &[(&str, &str)] = &[
     (
         "fixtures2/behavior/json_roundtrip.fz",
         include_str!("../../fixtures2/behavior/json_roundtrip.fz"),
+    ),
+    (
+        "fixtures2/behavior/self_guarded_nest.fz",
+        include_str!("../../fixtures2/behavior/self_guarded_nest.fz"),
+    ),
+    (
+        "fixtures2/behavior/alias_cycle_with_entry.fz",
+        include_str!("../../fixtures2/behavior/alias_cycle_with_entry.fz"),
+    ),
+    (
+        "fixtures2/behavior/false_embedding.fz",
+        include_str!("../../fixtures2/behavior/false_embedding.fz"),
+    ),
+    (
+        "fixtures2/behavior/unproductive_spin.fz",
+        include_str!("../../fixtures2/behavior/unproductive_spin.fz"),
     ),
 ];
 

@@ -22,6 +22,7 @@ mod sigs;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::dispatch_matrix::demand::DispatchDemand;
@@ -39,6 +40,7 @@ use crate::types::{
     VisibilityTypes as SharedVisibilityTypes,
 };
 use bits::BasicBits;
+use emptiness::Operand;
 
 pub use crate::types::{
     BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError,
@@ -161,6 +163,7 @@ impl Default for Types {
 struct TypeInterner {
     arena: Vec<Descr>,
     index: HashMap<InternKey, Ty>,
+    regular: HashSet<Ty>,
     #[cfg(test)]
     work: InterningWork,
 }
@@ -464,6 +467,14 @@ impl TypeInterner {
         self.index.get(&InternKey::Regular(Box::new(key.clone()))).copied()
     }
 
+    /// Whether this id names a state of a recursive automaton. The regular
+    /// keys in the index answer the other direction, from key to id; a cluster
+    /// that mentions a handle needs this one, from id back to "that handle has
+    /// states of its own".
+    fn is_regular(&self, ty: Ty) -> bool {
+        self.regular.contains(&ty)
+    }
+
     fn intern_regular(&mut self, keys: Vec<regular::RegularKey>, descriptors: Vec<Descr>) -> Vec<Ty> {
         assert_eq!(keys.len(), descriptors.len(), "regular keys and descriptors must align");
         assert!(
@@ -491,6 +502,7 @@ impl TypeInterner {
         for (key, ty) in keys.into_iter().zip(tys.iter().copied()) {
             assert!(self.index.insert(InternKey::Regular(Box::new(key)), ty).is_none());
         }
+        self.regular.extend(tys.iter().copied());
         #[cfg(test)]
         {
             self.work.inserted += tys.len();
@@ -1211,7 +1223,7 @@ impl Types {
         for clause in clauses {
             let clause = self.normalize_tuple_coordinate_difference(clause);
             match (clause.pos.as_slice(), clause.neg.as_slice()) {
-                ([sig], []) => rects.push(sig.elems.iter().map(|ty| axis::Coord::Interned(*ty)).collect()),
+                ([sig], []) => rects.push(sig.elems.iter().map(|ty| Operand::Ty(*ty)).collect()),
                 _ => complex.push(clause),
             }
         }
@@ -1221,8 +1233,10 @@ impl Types {
             let elems = rect
                 .into_iter()
                 .map(|coord| match coord {
-                    axis::Coord::Interned(ty) => ty,
-                    axis::Coord::Built(descr) => self.intern(*descr),
+                    Operand::Ty(ty) => ty,
+                    Operand::Built(descr) => {
+                        self.intern(Rc::try_unwrap(descr).unwrap_or_else(|descr| (*descr).clone()))
+                    }
                 })
                 .collect();
             d.tuples.push(Conj::pos_of(TupleSig { elems }));
@@ -1770,7 +1784,7 @@ impl Types {
     pub fn convergence_class(&mut self, a: &Ty) -> Ty {
         let descr = self.descr(a).clone();
         let any = self.any();
-        if descr.as_pure_list(any).is_some() {
+        if descr.is_pure_list_family() {
             let rebuilt = Descr::list_of(any);
             self.intern(reapply_common_brand_partition(&descr, &descr, rebuilt))
         } else if let Some(tuple) = descr.pure_tuple() {

@@ -1,0 +1,12 @@
+#---
+# purpose: "two-state mutual recursion with distinct tuple tags: emptiness must not fan out across the cycle"
+#---
+def even([]), do: {:even, 0}
+def even([_ | t]), do: {:e, odd(t)}
+
+def odd([]), do: {:odd, 0}
+def odd([_ | t]), do: {:o, even(t)}
+
+def main() do
+  dbg(even([1, 2]))
+end

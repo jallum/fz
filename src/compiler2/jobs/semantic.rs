@@ -25,11 +25,12 @@ use super::super::identity::{
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, ActivationInput, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets,
-    CallTargetSummary, SelectedCallee,
+    ActivationAnalysis, ActivationInput, ActivationInputAlternatives, CallSiteKey, CallSiteResolution, CallSiteSummary,
+    CallSiteTargets, CallTargetSummary, SelectedCallee,
 };
-use super::super::types::{ClosureTarget, Ty, Types};
+use super::super::types::{ClosureTarget, MapKey, Ty, Types};
 use super::super::world::World;
+use super::return_flow::{ReturnExpression, ReturnFlow};
 
 #[derive(Clone, Copy)]
 struct TupleFieldProjection {
@@ -42,6 +43,14 @@ struct TupleFieldProjection {
 struct SemanticValue {
     ty: Ty,
     callable_surfaces: BTreeSet<ActivationSignature>,
+    /// How this value's type was produced, in lock-step with `ty` exactly as
+    /// `ReturnFlow` keeps its `observed`/`expression` pair in lock-step for
+    /// an activation's return. Every constructor below defaults it to
+    /// `Published(ty)` -- the honest answer for a value with no further
+    /// structural history -- and each `apply_step` arm that builds a value
+    /// from others' companions overrides it with the matching structural
+    /// rule.
+    expression: ReturnExpression,
 }
 
 impl SemanticValue {
@@ -49,6 +58,7 @@ impl SemanticValue {
         Self {
             ty,
             callable_surfaces: BTreeSet::new(),
+            expression: ReturnExpression::Published(ty),
         }
     }
 
@@ -56,6 +66,7 @@ impl SemanticValue {
         Self {
             ty,
             callable_surfaces: BTreeSet::from([surface]),
+            expression: ReturnExpression::Published(ty),
         }
     }
 
@@ -68,14 +79,21 @@ impl SemanticValue {
     }
 
     fn from_activation_input(input: ActivationInput) -> Self {
+        let ty = input.ty();
         Self {
-            ty: input.ty(),
+            ty,
             callable_surfaces: input.callable_surfaces().clone(),
+            expression: ReturnExpression::Published(ty),
         }
     }
 
     fn with_ty(mut self, ty: Ty) -> Self {
         self.ty = ty;
+        self
+    }
+
+    fn with_expression(mut self, expression: ReturnExpression) -> Self {
+        self.expression = expression;
         self
     }
 
@@ -164,6 +182,39 @@ struct CallEmission {
 struct ActivationContribution {
     key: ActivationKey,
     inputs: Vec<ActivationInput>,
+    /// The Ty this walk actually assigned to the call's value for this
+    /// activation -- the same value that lands in the delivered
+    /// `SemanticValue`, after every refinement (contract, closure-clause
+    /// return arrow) the call site applies. NOT `ReturnType(key)`: that
+    /// published fact is the cumulative join across every round this
+    /// activation has ever seen (and, past the widening budget, a coarsened
+    /// class or `any`) -- strictly wider than what one walk consumed at one
+    /// call. `None` mirrors `return_ty`'s own absence (no evidence yet).
+    value_ty: Option<Ty>,
+}
+
+/// What a walk over one activation's dispatch-reachable clauses determines,
+/// before any of it reaches `World`. Producing this value never writes a
+/// fact -- every read that shapes it is an ordinary `Current` read, and every
+/// unresolved question it meets becomes a wait rather than a block. Only
+/// `commit_activation_evaluation` turns it into published facts.
+struct ActivationEvaluation {
+    activation: ActivationKey,
+    input_rows: Vec<Vec<Ty>>,
+    entry_reachability: super::super::semantic::EntryReachability,
+    reachable_entries: Vec<super::super::body::ControlEntryId>,
+    value_types: ValueTypes,
+    return_evidence: Option<Ty>,
+    /// The symbolic companion of `return_evidence`, proven equivalent to it
+    /// by `evaluate_activation`'s debug assertion. `commit_activation_evaluation`
+    /// does not publish it as a fact yet -- the recursive-return solver that
+    /// would consume a published expression does not exist -- but it is a
+    /// real, complete product of the walk, not a test-only extra: it is the
+    /// exact `return_flow.expression` the join produced.
+    expression: ReturnExpression,
+    analysis_calls: Vec<CallEmission>,
+    reads: Vec<FactKey>,
+    waits: HashSet<FactKey>,
 }
 
 /// Analyzes one rooted function activation against its lowered body.
@@ -208,7 +259,6 @@ pub(super) fn analyze_activation(
     let alternatives = alternatives.clone();
 
     let function = activation.function;
-    let function_fact = FactKey::FunctionDefined(function);
     let Some(_) = world.function_defined_revision(function) else {
         return Ok(world.wait_for_function_definition(function));
     };
@@ -227,16 +277,29 @@ pub(super) fn analyze_activation(
         return Ok(JobEffects::wait_on_current(dispatch_fact));
     }
 
+    let evaluation = evaluate_activation(world, tel, activation, &alternatives)?;
+    Ok(commit_activation_evaluation(world, tel, evaluation))
+}
+
+/// Walks `activation`'s dispatch-reachable clauses and produces the
+/// evaluation `commit_activation_evaluation` installs. Every gate that can
+/// still turn this analysis into a wait instead of an answer already ran in
+/// `analyze_activation`; from here on the walk always reaches a conclusion.
+fn evaluate_activation(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    activation: &ActivationKey,
+    alternatives: &ActivationInputAlternatives,
+) -> Result<ActivationEvaluation, FatalError> {
+    let function = activation.function;
     let mut reads = vec![
         FactKey::Activation(activation.clone()),
         FactKey::ActivationInputs(activation.clone()),
-        function_fact,
-        lowered_fact,
-        dispatch_fact,
+        FactKey::FunctionDefined(function),
+        FactKey::LoweredBody(function),
+        FactKey::EntryDispatch(function),
     ];
     let mut waits = HashSet::new();
-    let mut outputs = Vec::new();
-    let mut changed = Vec::new();
 
     let entry_dispatch = world.entry_dispatch(function);
     let lowered_body = world.lowered_body(function);
@@ -283,10 +346,10 @@ pub(super) fn analyze_activation(
     // a provable fact (a body all of whose paths halt). At the fixpoint the
     // two coincide; mid-climb only readers of settled facts may conflate
     // them, and the settled gate keeps everyone else out.
-    let mut return_evidence: Option<Ty> = None;
+    let mut return_flow = ReturnFlow::bottom();
     match &*lowered_body {
         LoweredBody::Extern { signature } => {
-            return_evidence = Some(signature.return_ty);
+            return_flow = ReturnFlow::published(signature.return_ty);
         }
         LoweredBody::Clauses { clauses, entries, .. } => {
             for (clause_id, clause_inputs) in row_clause_inputs.iter().flatten() {
@@ -325,11 +388,32 @@ pub(super) fn analyze_activation(
                     &mut reads,
                     &mut waits,
                 )?;
-                return_evidence = join_evidence(world, return_evidence, clause_return);
+                return_flow = ReturnFlow::join(world.types_mut(), return_flow, clause_return);
             }
         }
     }
 
+    // The join is complete: every clause (or the extern signature) has
+    // contributed, so the symbolic expression now describes exactly the
+    // shape that produced `return_flow.observed`. Lowering it here maps
+    // every `Local` it carries to the exact value THIS walk assigned that
+    // call -- not the callee's published `ReturnType`, which is the
+    // cumulative widened join of every round the callee has ever seen (see
+    // `walk_member_map`) -- so the two views must still agree; a
+    // divergence here means the companion drifted from the ordinary walk
+    // it is meant to mirror.
+    let member_map = walk_member_map(world, activation, &analysis_calls);
+    let lowered_expression = return_flow.expression.to_ty(world.types_mut(), &member_map);
+    debug_assert!(
+        match (return_flow.observed, lowered_expression) {
+            (None, None) => true,
+            (Some(observed), Some(lowered)) => world.types().is_equivalent(&observed, &lowered),
+            _ => false,
+        },
+        "return-flow companion for {activation:?} diverged from the return evidence it mirrors"
+    );
+
+    let mut return_evidence = return_flow.observed;
     for row in alternatives.rows() {
         if let Some(contract_return_ty) =
             activation_contract_return(world, tel, function, &row.tys(), &mut reads, &mut waits)?
@@ -342,6 +426,99 @@ pub(super) fn analyze_activation(
     // claims (it cannot retract), so partial evidence publishes safely and
     // the waits simply ride the final effects.
     analysis_calls = coalesce_call_emissions(world, analysis_calls)?;
+
+    Ok(ActivationEvaluation {
+        activation: activation.clone(),
+        input_rows: alternatives.rows().iter().map(|row| row.tys()).collect(),
+        entry_reachability,
+        reachable_entries: {
+            let mut entries = reachable_entries.into_iter().collect::<Vec<_>>();
+            entries.sort_by_key(|entry| entry.as_u32());
+            entries
+        },
+        value_types,
+        return_evidence,
+        expression: return_flow.expression,
+        analysis_calls,
+        reads,
+        waits,
+    })
+}
+
+/// The member map THIS walk's own evidence needs for lowering: every
+/// `Local` the walk built, resolved to the exact Ty the walk assigned to
+/// that call's value -- never `ReturnType(key)`, the published fact, which
+/// only ascends round over round and is coarsened past the widening budget
+/// (`ActivationMap::define_return`), so it is strictly wider than what one
+/// walk consumed at one call (proven by probe: `nest/1`'s base case reads
+/// back as the universal list through `ReturnType`, where the walk itself
+/// used a nonempty list of the element type; `def/1` diverges the same way
+/// at two tuple positions).
+///
+/// `analysis_calls` already carries that per-key value on every
+/// `ActivationContribution` -- `resolve_function_call`, `resolve_protocol_call`,
+/// and `resolve_closure_call` all set it at the point they refine and settle
+/// a target's return -- so this only folds it into a map. A key this walk
+/// observed with two genuinely different value Tys would mean `Local(key)`
+/// alone cannot address the value it stands for; the walk asserts that
+/// never happens rather than silently choosing one.
+fn walk_member_map(
+    world: &World,
+    activation: &ActivationKey,
+    analysis_calls: &[CallEmission],
+) -> HashMap<ActivationKey, Ty> {
+    let mut member_map = HashMap::new();
+    for call in analysis_calls {
+        for contribution in &call.activations {
+            let Some(value_ty) = contribution.value_ty else {
+                continue;
+            };
+            match member_map.entry(contribution.key.clone()) {
+                Entry::Vacant(entry) => {
+                    entry.insert(value_ty);
+                }
+                Entry::Occupied(entry) => {
+                    debug_assert!(
+                        world.types().is_equivalent(entry.get(), &value_ty),
+                        "walk for {activation:?} observed {:?} with two different value Tys: {:?} and {:?}",
+                        contribution.key,
+                        entry.get(),
+                        value_ty,
+                    );
+                }
+            }
+        }
+    }
+    member_map
+}
+
+/// Installs one activation's evaluation into `World`. This is the only place
+/// `analyze_activation`'s walk writes a fact; everything that shaped
+/// `evaluation` was an ordinary read. The early gates in `analyze_activation`
+/// -- the absent activation, and the waits on input alternatives, the
+/// function definition, the lowered body, and the entry dispatch -- return
+/// before a walk ever reaches here, so none of them touch this function.
+fn commit_activation_evaluation(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    evaluation: ActivationEvaluation,
+) -> JobEffects {
+    let ActivationEvaluation {
+        activation,
+        input_rows,
+        entry_reachability,
+        reachable_entries,
+        value_types,
+        return_evidence,
+        // Not yet published: see `ActivationEvaluation::expression`'s doc.
+        expression: _expression,
+        analysis_calls,
+        reads,
+        waits,
+    } = evaluation;
+
+    let mut outputs = Vec::new();
+    let mut changed = Vec::new();
 
     let mut emitted_activations = HashSet::new();
     let mut emitted_activation_inputs = HashSet::new();
@@ -392,7 +569,7 @@ pub(super) fn analyze_activation(
     // fz-kdt.69 decommission must clear the ActivationSlot to keep it.
     debug_assert!(
         world.has_fact(&FactKey::ReturnType(activation.clone()))
-            || world.activation_return_evidence(activation).is_none(),
+            || world.activation_return_evidence(&activation).is_none(),
         "a ReturnType claim is absent while its store holds content -- revision-0 minting would lie"
     );
     let return_derivation = Derivation::own(&Job::AnalyzeActivation(activation.clone()));
@@ -405,15 +582,11 @@ pub(super) fn analyze_activation(
     }
 
     let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
-        activation,
+        &activation,
         ActivationAnalysis {
-            input_rows: alternatives.rows().iter().map(|row| row.tys()).collect(),
+            input_rows,
             entry_reachability,
-            reachable_entries: {
-                let mut entries = reachable_entries.into_iter().collect::<Vec<_>>();
-                entries.sort_by_key(|entry| entry.as_u32());
-                entries
-            },
+            reachable_entries,
             // The callsites this analysis RESOLVED. An unresolved edge names
             // no targets, so the products keyed off this list -- materialized
             // call edges, runtime demand, the canonical call-edge snapshot --
@@ -425,20 +598,20 @@ pub(super) fn analyze_activation(
             value_types,
         },
     );
-    let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
+    let analyzed_fact = FactKey::ActivationAnalyzed(activation);
     outputs.push(analyzed_fact.clone());
     if analysis_changed {
         changed.push(analyzed_fact);
     }
 
-    Ok(JobEffects {
+    JobEffects {
         reads: current_uses(reads),
         waits: current_uses(waits),
         outputs: dedupe_facts(outputs),
         changed: dedupe_facts(changed),
         activation_input_contributions,
         ..JobEffects::default()
-    })
+    }
 }
 
 fn analyze_entry(
@@ -453,7 +626,7 @@ fn analyze_entry(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Result<Option<Ty>, FatalError> {
+) -> Result<ReturnFlow, FatalError> {
     reachable_entries.insert(entry_id);
     let entry = &entries[entry_id.as_u32() as usize];
     let mut local = values.clone();
@@ -514,20 +687,22 @@ fn apply_step(
             let tuple = world
                 .types_mut()
                 .tuple(&items.iter().map(SemanticValue::ty).collect::<Vec<_>>());
-            values.insert_value(*value, SemanticValue::composed(tuple, items));
+            let expression = ReturnExpression::Tuple(items.iter().map(|item| item.expression.clone()).collect());
+            values.insert_value(
+                *value,
+                SemanticValue::composed(tuple, items).with_expression(expression),
+            );
         }
         LoweredStep::List { value, items, tail, .. } => {
-            if let Some(list) = list_ty(world, values, items, *tail) {
+            if let Some((list, expression)) = list_value(world, values, items, *tail) {
                 let mut parts = items
                     .iter()
                     .filter_map(|item| values.get(item).cloned())
                     .collect::<Vec<_>>();
-                if let Some(tail) = tail
-                    && let Some(tail) = values.get(tail).cloned()
-                {
-                    parts.push(tail);
+                if let Some(tail_value) = tail.and_then(|tail| values.get(&tail).cloned()) {
+                    parts.push(tail_value);
                 }
-                values.insert_value(*value, SemanticValue::composed(list, parts));
+                values.insert_value(*value, SemanticValue::composed(list, parts).with_expression(expression));
             }
         }
         LoweredStep::Map { value, entries, .. } => {
@@ -536,7 +711,10 @@ fn apply_step(
                     .iter()
                     .filter_map(|(_, value)| values.get(value).cloned())
                     .collect::<Vec<_>>();
-                values.insert_value(*value, SemanticValue::composed(map, parts));
+                let expression = map_expression(world, values, entries)
+                    .map(ReturnExpression::Map)
+                    .unwrap_or(ReturnExpression::Published(map));
+                values.insert_value(*value, SemanticValue::composed(map, parts).with_expression(expression));
             }
         }
         LoweredStep::MapUpdate { value, base, entries } => {
@@ -557,8 +735,15 @@ fn apply_step(
                     break;
                 }
             }
+            // A map update has no structural rule of its own: its result
+            // is not a fold over its operands' companions the way a fresh
+            // map literal is, so the companion is `Published(map_ty)`
+            // outright below, same as it always was -- the update's real
+            // `Ty` is already fully computed above regardless of whether
+            // `base`/the item values still carry an open `Local`.
             let mut semantic = values.get(base).cloned().unwrap_or_else(|| SemanticValue::new(map_ty));
             semantic.ty = map_ty;
+            semantic.expression = ReturnExpression::Published(map_ty);
             for (_, item) in entries {
                 if let Some(item) = values.get(item) {
                     semantic.extend_surfaces(item);
@@ -584,7 +769,26 @@ fn apply_step(
                 .iter()
                 .filter_map(|(_, value)| values.get(value).cloned())
                 .collect::<Vec<_>>();
-            values.insert_value(*value, SemanticValue::composed(struct_ty, parts));
+            let expression = match world.module_name(*module).cloned() {
+                Some(name) => ReturnExpression::Struct(
+                    *module,
+                    name,
+                    fields
+                        .iter()
+                        .zip(parts.iter())
+                        .map(|((field_name, _), part)| (MapKey::Atom(field_name.clone()), part.expression.clone()))
+                        .collect(),
+                ),
+                // Every struct is indexed before its module can produce this
+                // step (`AssertStruct`/body lowering both wait on
+                // `StructDefined`), so an absent name here is unreached in
+                // practice; fall back the same way an unnamed map does.
+                None => ReturnExpression::Published(struct_ty),
+            };
+            values.insert_value(
+                *value,
+                SemanticValue::composed(struct_ty, parts).with_expression(expression),
+            );
         }
         LoweredStep::Bitstring { value, .. } => {
             values.insert(*value, world.types_mut().str_t());
@@ -622,38 +826,50 @@ fn apply_step(
             values.insert_value(*value, semantic);
         }
         LoweredStep::BinaryOp { value, op, left, right } => {
-            let (Some(left), Some(right)) = (value_ty(values, *left), value_ty(values, *right)) else {
+            let (Some(left), Some(right)) = (values.get(left).cloned(), values.get(right).cloned()) else {
                 return Ok(());
             };
-            values.insert(*value, lowered_binop_ty(world, *op, left, right));
+            // Arithmetic has no structural rule of its own -- its result is
+            // not a fold over its operands' companions, just a freshly
+            // computed scalar `Ty` -- so the companion is `Published`
+            // outright, same as it always was, regardless of whether
+            // either operand still carries an open `Local`.
+            values.insert(*value, lowered_binop_ty(world, *op, left.ty(), right.ty()));
         }
         LoweredStep::UnaryOp { value, op, input } => {
-            let Some(input) = value_ty(values, *input) else {
+            let Some(input) = values.get(input).cloned() else {
                 return Ok(());
             };
-            values.insert(*value, lowered_unop_ty(world, *op, input));
+            values.insert(*value, lowered_unop_ty(world, *op, input.ty()));
         }
         LoweredStep::MapIndex { value, base, key } => {
-            let Some(base_ty) = value_ty(values, *base) else {
+            let Some(base_val) = values.get(base).cloned() else {
                 return Ok(());
             };
             let Some(key) = lowered_map_key(world, values, key) else {
                 return Ok(());
             };
             let field_ty = key
-                .and_then(|key| world.types_mut().map_field_lookup(&base_ty, &key))
+                .as_ref()
+                .and_then(|key| world.types_mut().map_field_lookup(&base_val.ty, key))
                 .unwrap_or_else(|| any_ty(world));
-            values.insert(*value, field_ty);
+            let expression = key
+                .and_then(|key| map_projected_expression(&base_val.expression, &key))
+                .unwrap_or(ReturnExpression::Published(field_ty));
+            values.insert_value(*value, SemanticValue::new(field_ty).with_expression(expression));
         }
         LoweredStep::FieldAccess { value, base, field } => {
-            let Some(base_ty) = value_ty(values, *base) else {
+            let Some(base_val) = values.get(base).cloned() else {
                 return Ok(());
             };
+            let key = MapKey::Atom(field.clone());
             let field_ty = world
                 .types_mut()
-                .map_field_lookup(&base_ty, &super::super::types::MapKey::Atom(field.clone()))
+                .map_field_lookup(&base_val.ty, &key)
                 .unwrap_or_else(|| any_ty(world));
-            values.insert(*value, field_ty);
+            let expression =
+                map_projected_expression(&base_val.expression, &key).unwrap_or(ReturnExpression::Published(field_ty));
+            values.insert_value(*value, SemanticValue::new(field_ty).with_expression(expression));
         }
         LoweredStep::AssertLiteral { source, literal } => {
             let Some(source_ty) = value_ty(values, *source) else {
@@ -672,13 +888,18 @@ fn apply_step(
             refine_value(world, values, *source, refined);
         }
         LoweredStep::RequireMapValue { value, source, key } => {
-            let Some(source_ty) = value_ty(values, *source) else {
+            let Some(source_val) = values.get(source).cloned() else {
                 return Ok(());
             };
-            let field_ty = literal_map_key(key)
-                .and_then(|key| world.types_mut().map_field_lookup(&source_ty, &key))
+            let literal_key = literal_map_key(key);
+            let field_ty = literal_key
+                .as_ref()
+                .and_then(|key| world.types_mut().map_field_lookup(&source_val.ty, key))
                 .unwrap_or_else(|| any_ty(world));
-            values.insert(*value, field_ty);
+            let expression = literal_key
+                .and_then(|key| map_projected_expression(&source_val.expression, &key))
+                .unwrap_or(ReturnExpression::Published(field_ty));
+            values.insert_value(*value, SemanticValue::new(field_ty).with_expression(expression));
         }
         LoweredStep::AssertTuple { source, arity } => {
             let any = world.types_mut().any();
@@ -692,11 +913,16 @@ fn apply_step(
             refine_value(world, values, *source, refined);
         }
         LoweredStep::TupleField { value, source, index } => {
-            let Some(source_ty) = value_ty(values, *source) else {
+            let Some(source_val) = values.get(source).cloned() else {
                 return Ok(());
             };
-            let field_ty = world.types_mut().tuple_field_type(&source_ty, *index);
-            values.insert(*value, field_ty);
+            let field_ty = world.types_mut().tuple_field_type(&source_val.ty, *index);
+            let expression = match &source_val.expression {
+                ReturnExpression::Tuple(fields) => fields.get(*index).cloned(),
+                _ => None,
+            }
+            .unwrap_or(ReturnExpression::Published(field_ty));
+            values.insert_value(*value, SemanticValue::new(field_ty).with_expression(expression));
             values.project_tuple_field(*value, *source, *index);
         }
         LoweredStep::AssertEmptyList { source } => {
@@ -716,9 +942,10 @@ fn apply_step(
             refine_value(world, values, *value, both);
         }
         LoweredStep::SplitList { source, head, tail } => {
-            let Some(source_ty) = value_ty(values, *source) else {
+            let Some(source_val) = values.get(source).cloned() else {
                 return Ok(());
             };
+            let source_ty = source_val.ty;
             let elem = world.types_mut().list_element_type(&source_ty);
             let rest = world.types_mut().list(elem);
             // A successful split proves the source is a non-empty list. Record
@@ -731,8 +958,23 @@ fn apply_step(
             let non_empty = world.types_mut().non_empty_list(any);
             let refined_source = world.types_mut().intersect(source_ty, non_empty);
             refine_value(world, values, *source, refined_source);
-            values.insert(*head, elem);
-            values.insert(*tail, rest);
+            // The list's uniform element companion projects onto the head
+            // exactly, and stays with the tail unchanged -- removing one
+            // element leaves the same uniform shape behind. The remaining
+            // tail is always the possibly-empty constructor (`rest` above),
+            // matching `list_value`'s own tail-merge branch, regardless of
+            // whether the source was itself provably non-empty. A source
+            // that is not itself a `List`/`NonEmptyList` construction (a
+            // `Local`, a param) has no element view to project, so both
+            // fall back to `Published`.
+            let (head_expression, tail_expression) = match &source_val.expression {
+                ReturnExpression::List(inner) | ReturnExpression::NonEmptyList(inner) => {
+                    ((**inner).clone(), ReturnExpression::List(inner.clone()))
+                }
+                _ => (ReturnExpression::Published(elem), ReturnExpression::Published(rest)),
+            };
+            values.insert_value(*head, SemanticValue::new(elem).with_expression(head_expression));
+            values.insert_value(*tail, SemanticValue::new(rest).with_expression(tail_expression));
         }
         LoweredStep::BitstringInit { reader, source } => {
             if let Some(source_ty) = value_ty(values, *source) {
@@ -807,7 +1049,7 @@ fn analyze_branch(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Result<Option<Ty>, FatalError> {
+) -> Result<ReturnFlow, FatalError> {
     let scope = entry_scope(entries, entry_id, values, None, params);
     analyze_entry(
         world,
@@ -837,7 +1079,7 @@ fn analyze_tail(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Result<Option<Ty>, FatalError> {
+) -> Result<ReturnFlow, FatalError> {
     match tail {
         LoweredTail::Value { value, dest } => deliver_tail_value(
             world,
@@ -866,19 +1108,23 @@ fn analyze_tail(
                 .collect::<Option<Vec<_>>>()
             else {
                 calls.push(reached_but_unresolved(activation, *callsite));
-                return Ok(None);
+                return Ok(ReturnFlow::bottom());
             };
             let arg_inputs = arg_values.iter().map(SemanticValue::as_activation_input).collect();
             let (emission, return_ty) =
                 resolve_direct_call(world, tel, activation, *callsite, *callee, arg_inputs, reads, waits)?;
+            let expression = return_ty.map(|ty| call_return_expression(ty, emission.as_ref()));
             if let Some(emission) = emission {
                 calls.push(emission);
             }
-            let Some(return_ty) = return_ty else {
-                return Ok(None);
+            let (Some(return_ty), Some(expression)) = (return_ty, expression) else {
+                return Ok(ReturnFlow::bottom());
             };
             let mut delivered = values.clone();
-            delivered.insert_value(*value, semantic_value_from_ty(world, return_ty));
+            delivered.insert_value(
+                *value,
+                semantic_value_from_ty(world, return_ty).with_expression(expression),
+            );
             merge_value_types(world, value_types, &delivered);
             deliver_tail_value(
                 world,
@@ -909,18 +1155,22 @@ fn analyze_tail(
                     .collect::<Option<Vec<_>>>(),
             ) else {
                 calls.push(reached_but_unresolved(activation, *callsite));
-                return Ok(None);
+                return Ok(ReturnFlow::bottom());
             };
             let (emission, return_ty) =
                 resolve_closure_call(world, tel, activation, *callsite, callee, arg_values, reads, waits)?;
+            let expression = return_ty.map(|ty| call_return_expression(ty, emission.as_ref()));
             if let Some(emission) = emission {
                 calls.push(emission);
             }
-            let Some(return_ty) = return_ty else {
-                return Ok(None);
+            let (Some(return_ty), Some(expression)) = (return_ty, expression) else {
+                return Ok(ReturnFlow::bottom());
             };
             let mut delivered = values.clone();
-            delivered.insert_value(*value, semantic_value_from_ty(world, return_ty));
+            delivered.insert_value(
+                *value,
+                semantic_value_from_ty(world, return_ty).with_expression(expression),
+            );
             merge_value_types(world, value_types, &delivered);
             deliver_tail_value(
                 world,
@@ -968,7 +1218,7 @@ fn analyze_tail(
                 reads,
                 waits,
             )?;
-            Ok(join_evidence(world, then_ty, else_ty))
+            Ok(ReturnFlow::join(world.types_mut(), then_ty, else_ty))
         }
         LoweredTail::Dispatch { inputs, dispatch, .. } => {
             let Some(input_tys) = inputs
@@ -976,10 +1226,10 @@ fn analyze_tail(
                 .map(|input| value_ty(values, *input))
                 .collect::<Option<Vec<_>>>()
             else {
-                return Ok(None);
+                return Ok(ReturnFlow::bottom());
             };
             let reachability = calculate_dispatch_reachability(world.types_mut(), &dispatch.plan, &input_tys);
-            let mut merged = None;
+            let mut merged = ReturnFlow::bottom();
             for (outcome, refined_inputs) in reachability.outcome_inputs {
                 let edge = dispatch.outcome(outcome);
                 let arm_entry = edge.target;
@@ -1016,7 +1266,7 @@ fn analyze_tail(
                     reads,
                     waits,
                 )?;
-                merged = join_evidence(world, merged, arm_ty);
+                merged = ReturnFlow::join(world.types_mut(), merged, arm_ty);
             }
             let miss_ty = analyze_branch(
                 world,
@@ -1032,12 +1282,12 @@ fn analyze_tail(
                 reads,
                 waits,
             )?;
-            Ok(join_evidence(world, merged, miss_ty))
+            Ok(ReturnFlow::join(world.types_mut(), merged, miss_ty))
         }
         LoweredTail::Receive(receive) => {
             // Mailbox messages are a runtime boundary: `any` is earned here.
             let any = world.types_mut().any();
-            let mut merged = None;
+            let mut merged = ReturnFlow::bottom();
             let reachability = calculate_dispatch_reachability(world.types_mut(), &receive.dispatch, &[any]);
             for (outcome, refined_inputs) in reachability.outcome_inputs {
                 let edge = receive.outcomes.get(outcome.0 as usize).expect("winning receive edge");
@@ -1070,7 +1320,7 @@ fn analyze_tail(
                     reads,
                     waits,
                 )?;
-                merged = join_evidence(world, merged, clause_ty);
+                merged = ReturnFlow::join(world.types_mut(), merged, clause_ty);
             }
             if let Some(after) = &receive.after {
                 let after_ty = analyze_branch(
@@ -1087,12 +1337,12 @@ fn analyze_tail(
                     reads,
                     waits,
                 )?;
-                merged = join_evidence(world, merged, after_ty);
+                merged = ReturnFlow::join(world.types_mut(), merged, after_ty);
             }
             Ok(merged)
         }
         // A halt path contributes no value: the join identity, not a type.
-        LoweredTail::Halt { .. } => Ok(None),
+        LoweredTail::Halt { .. } => Ok(ReturnFlow::bottom()),
     }
 }
 
@@ -1110,18 +1360,24 @@ fn deliver_tail_value(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Result<Option<Ty>, FatalError> {
+) -> Result<ReturnFlow, FatalError> {
     // No evidence for the delivered value means no evidence for the path.
     let Some(delivered) = values.get(&value).cloned() else {
-        return Ok(None);
+        return Ok(ReturnFlow::bottom());
     };
     // A proven-empty value is evidence: nothing flows past this point, the
     // path is dead.
     if world.types().is_empty(&delivered.ty()) {
-        return Ok(Some(delivered.ty()));
+        return Ok(ReturnFlow::published(delivered.ty()));
     }
     match dest {
-        ControlDestination::Return => Ok(Some(delivered.ty())),
+        ControlDestination::Return => {
+            let observed = Some(delivered.ty());
+            Ok(ReturnFlow {
+                observed,
+                expression: delivered.expression,
+            })
+        }
         ControlDestination::Deliver(entry_id) => {
             let scope = entry_scope(entries, *entry_id, values, Some((value, delivered)), &[]);
             analyze_entry(
@@ -1185,6 +1441,34 @@ fn reached_but_unresolved(activation: &ActivationKey, callsite: CallSiteId) -> C
         },
         resolution: CallSiteResolution::Unresolved,
         activations: Vec::new(),
+    }
+}
+
+/// The structural companion for a call's return value: `Local(key)` per
+/// activation the call resolved to, unioned in the order those activations
+/// were contributed (a direct or resolved-closure call contributes exactly
+/// one; a protocol call may contribute several, one per matched target). A
+/// call with no resolved activation -- dead, unresolved, or a boundary edge
+/// with no compiler-owned callee -- has no key to address and falls back to
+/// `Published`, exactly as every call's return has always been represented.
+///
+/// A contribution with no `value_ty` of its own (that one target has not
+/// itself produced evidence this round) contributes nothing here, mirroring
+/// exactly how `return_ty` was built: `join_evidence`'s fold already treats
+/// `None` as the identity, so the aggregate `return_ty` this call publishes
+/// is the union of only the settled targets. Addressing an unsettled
+/// target's key here anyway would build a `Local` the member map can never
+/// resolve -- that target has published nothing to resolve it from.
+fn call_return_expression(return_ty: Ty, emission: Option<&CallEmission>) -> ReturnExpression {
+    let activations = emission.map(|call| call.activations.as_slice()).unwrap_or(&[]);
+    let settled = activations
+        .iter()
+        .filter(|contribution| contribution.value_ty.is_some())
+        .map(|contribution| ReturnExpression::Local(contribution.key.clone()))
+        .fold(ReturnExpression::Bottom, ReturnExpression::union);
+    match settled {
+        ReturnExpression::Bottom => ReturnExpression::Published(return_ty),
+        settled => settled,
     }
 }
 
@@ -1400,6 +1684,7 @@ fn resolve_function_call(
         vec![ActivationContribution {
             key: activation,
             inputs: input_evidence,
+            value_ty: return_ty,
         }],
         return_ty,
     ))
@@ -1530,6 +1815,7 @@ fn resolve_protocol_call(
         activations.push(ActivationContribution {
             key: activation,
             inputs: refined_evidence,
+            value_ty: target_return,
         });
     }
     Ok((
@@ -1707,6 +1993,21 @@ fn resolve_closure_call(
                     selected_targets.push(rebuilt_target);
                 }
             }
+            // Each contribution's `value_ty` was set inside `resolve_function_call`
+            // using only its own contract refinement; the closure clause's
+            // arrow return (`clause.ret`) narrows every one of this clause's
+            // targets the same way `target_return` above was just narrowed,
+            // so the per-key record must carry the same refinement.
+            let clause_activations = clause_activations
+                .into_iter()
+                .map(|contribution| {
+                    let value_ty = refine_call_return(world, contribution.value_ty, Some(clause.ret));
+                    ActivationContribution {
+                        value_ty,
+                        ..contribution
+                    }
+                })
+                .collect::<Vec<_>>();
             activations.extend(clause_activations);
         } else {
             let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
@@ -2243,46 +2544,75 @@ fn literal_ty(world: &mut World, literal: &GroundValue) -> Ty {
     }
 }
 
-fn list_ty(world: &mut World, values: &SemanticValues, items: &[ValueId], tail: Option<ValueId>) -> Option<Ty> {
+/// A list construction's real type and structural companion, built in one
+/// pass so the two views cannot drift apart: every branch picks one `Types`
+/// list constructor and the matching `ReturnExpression` form in the same
+/// step, instead of two separate functions re-deriving the same branch
+/// twice and risking a different answer each time.
+///
+/// A tail with no element view of its own (a `Local`, a call's `Published`
+/// result) leaves nothing to merge structurally, so that slot falls back to
+/// `Published` of the real per-element `Ty` -- a plain lookup, not a
+/// reconstruction, so it never discards a `Local` the way approximating the
+/// whole value would.
+fn list_value(
+    world: &mut World,
+    values: &SemanticValues,
+    items: &[ValueId],
+    tail: Option<ValueId>,
+) -> Option<(Ty, ReturnExpression)> {
     let mut elem_ty = none_ty(world);
+    let mut elem_expr = ReturnExpression::Bottom;
     for item in items {
-        let item_ty = value_ty(values, *item)?;
+        let item_val = values.get(item)?;
         elem_ty = if world.types().is_empty(&elem_ty) {
-            item_ty
+            item_val.ty()
         } else {
-            world.types_mut().union(elem_ty, item_ty)
+            world.types_mut().union(elem_ty, item_val.ty())
         };
+        elem_expr = ReturnExpression::union(elem_expr, item_val.expression.clone());
     }
-    let list = match tail {
+    Some(match tail {
         Some(tail) => {
-            let tail_ty = value_ty(values, tail)?;
+            let tail_val = values.get(&tail)?;
+            let tail_ty = tail_val.ty();
             if world.types().has_list_shape(&tail_ty) {
-                let tail_elem = world.types_mut().list_element_type(&tail_ty);
-                let elem_ty = if world.types().is_empty(&elem_ty) {
-                    tail_elem
+                let tail_elem_ty = world.types_mut().list_element_type(&tail_ty);
+                let merged_elem_ty = if world.types().is_empty(&elem_ty) {
+                    tail_elem_ty
                 } else {
-                    world.types_mut().union(elem_ty, tail_elem)
+                    world.types_mut().union(elem_ty, tail_elem_ty)
                 };
-                world.types_mut().list(elem_ty)
+                let tail_elem_expr = match &tail_val.expression {
+                    ReturnExpression::List(inner) | ReturnExpression::NonEmptyList(inner) => (**inner).clone(),
+                    _ => ReturnExpression::Published(tail_elem_ty),
+                };
+                let list = world.types_mut().list(merged_elem_ty);
+                let expr = ReturnExpression::List(Box::new(ReturnExpression::union(elem_expr, tail_elem_expr)));
+                (list, expr)
             } else if world.types().is_empty(&elem_ty) {
                 let any = any_ty(world);
-                world.types_mut().list(any)
+                let list = world.types_mut().list(any);
+                (list, ReturnExpression::Published(list))
             } else {
-                world.types_mut().non_empty_list(elem_ty)
+                let list = world.types_mut().non_empty_list(elem_ty);
+                (list, ReturnExpression::NonEmptyList(Box::new(elem_expr)))
             }
         }
         None => {
             if items.is_empty() {
-                world.types_mut().empty_list()
+                let list = world.types_mut().empty_list();
+                (list, ReturnExpression::Published(list))
             } else if world.types().is_empty(&elem_ty) {
                 let any = any_ty(world);
-                world.types_mut().list(any)
+                let list = world.types_mut().list(any);
+                (list, ReturnExpression::Published(list))
             } else {
-                world.types_mut().non_empty_list(elem_ty)
+                let list = world.types_mut().non_empty_list(elem_ty);
+                (list, ReturnExpression::NonEmptyList(Box::new(elem_expr)))
             }
         }
-    };
-    Some(list)
+    })
 }
 
 fn map_ty(world: &mut World, values: &SemanticValues, entries: &[(LoweredMapKey, ValueId)]) -> Option<Ty> {
@@ -2311,6 +2641,40 @@ fn lowered_map_key(
     }
     let key_ty = value_ty(values, key.value)?;
     Some(map_key_from_ty(world, key_ty))
+}
+
+/// A map construction's structural companion, field by field, keyed exactly
+/// as `map_ty` keys the type it builds. `None` when any key is not a literal
+/// singleton -- `map_ty` degrades the whole map to `map_top()` in that case,
+/// and there is no per-field companion to attach to an unknown key.
+fn map_expression(
+    world: &mut World,
+    values: &SemanticValues,
+    entries: &[(LoweredMapKey, ValueId)],
+) -> Option<Vec<(MapKey, ReturnExpression)>> {
+    let mut fields = Vec::with_capacity(entries.len());
+    for (key, value) in entries {
+        let key = lowered_map_key(world, values, key)??;
+        let expression = values.get(value)?.expression.clone();
+        fields.push((key, expression));
+    }
+    fields.sort_by(|(a, _), (b, _)| a.cmp(b));
+    Some(fields)
+}
+
+/// The structural companion at a literal map/struct key, when the source's
+/// own companion is a `Map` or `Struct` construction built with that same
+/// key. `None` leaves the read as `Published` -- an ordinary lookup with no
+/// structural shape to project into (a `Local`, a call result, a dynamic
+/// map).
+fn map_projected_expression(source: &ReturnExpression, key: &MapKey) -> Option<ReturnExpression> {
+    match source {
+        ReturnExpression::Map(fields) | ReturnExpression::Struct(_, _, fields) => fields
+            .iter()
+            .find(|(field, _)| field == key)
+            .map(|(_, value)| value.clone()),
+        _ => None,
+    }
 }
 
 fn struct_assertion_ty(
@@ -2696,3 +3060,7 @@ end
         );
     }
 }
+
+#[cfg(test)]
+#[path = "semantic_test.rs"]
+mod semantic_test;

@@ -1,0 +1,19 @@
+#---
+# purpose: "a list accumulator that nests one level per call: the shared-key return ladder"
+# defer: "the shared key's return widens once (ascent 9, collapses to [any]), but the compile never finishes: every round contributes a strictly deeper ground input row ([acc] wrapped once more) to the shared build/2 activation, the evidence-side collapse for a recursive activation widens only types that carry variables, so no standing row is equivalent to or dominates the new one and ActivationInputAlternatives::insert_row pays one DNF comparison per standing row over an ever deeper type; the row-budget join is a union of depths the next row is not a subtype of, so the loop input -> body -> self-call argument -> contribution never closes"
+#---
+#
+# The list sibling of `return_tuple_accumulator`. There the accumulator's
+# arity-shaped nesting mints a fresh activation key per rung, so the ladder
+# never reaches its own top. Here the accumulator nests inside a LIST instead
+# of a tuple, so the input-side convergence class already folds every rung to
+# one shared `build/2` activation key (a list family collapses regardless of
+# depth). That shared key's RETURN evidence still climbs one nesting level per
+# round, so it is this key's widening budget, not its key space, that has to
+# turn a growing union of list depths into one converged list family.
+def build(0, acc), do: acc
+def build(n, acc), do: build(n - 1, [acc])
+
+def main() do
+  dbg(build(2, 0))
+end

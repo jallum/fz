@@ -13,8 +13,8 @@ The pieces, and what each owns:
 
 - `types/addressed.rs` — the address vocabulary (`AddrStep`), the var-id
   partition (`ADDRESS_TAG`), and the addressing builders (`address_arrow`,
-  `address_signature_with_env`, `address_inputs`, `own_surface`). This is the
-  construction machinery.
+  `address_signature_with_env`, `address_inputs`, `address_signature_at_input`,
+  `own_surface`). This is the construction machinery.
 - `identity.rs` — `ActivationKey { root, function, signature: ActivationSignature }`.
   Dispatch identity is `signature.inputs`, plus the direct callable observations
   retained beside each value coordinate.
@@ -159,13 +159,28 @@ Neither contribution intersects an arrow into the closure's `Ty`.
 
 `ActivationKey::from_inputs_with_callable_surfaces` addresses the outer value
 inputs as `a0`, `a1`, … and then addresses each nested callable signature below
-the owning input (`a0_p0`, `a0_r`, …). Thus equal observations share a carrier
-coordinate and an observation cannot accidentally alias the enclosing body
-parameter. A non-consuming forwarding body clears the carrier of every
-locally-ignored callable slot together with the erased closure brand, and a
-recursive key clears the whole carrier during convergence. Precise
-`ActivationInputs` rows always retain it, so downstream calls still receive the
-observation.
+the owning input (`a0_p0`, `a0_r`, …) with `Types::address_signature_at_input`.
+Thus equal observations share a carrier coordinate and an observation cannot
+accidentally alias the enclosing body parameter. A non-consuming forwarding
+body clears the carrier of every locally-ignored callable slot together with
+the erased closure brand, and a recursive key clears the whole carrier during
+convergence. Precise `ActivationInputs` rows always retain it — and address it
+with that same `address_signature_at_input(input, surface)` call
+(`ActivationInput::addressed_callable_surfaces`, driven from
+`World::normalize_contributions`), nested under the row's own input slot — so
+a self call that reads its own settled row back and an entry call that
+addresses the surface fresh at key-mint time land on the identical coordinate.
+One function, one frame, one activation key for the one activation.
+`address_vars_at`'s `CallableSurface` arm derives every address fresh, scoped
+to the current addressing call's own `AddressCorrelations` (`binder.surface`
+for names repeated within one callable's own params/result, `correlations.values`
+across the call); it no longer passes an already-address-tagged var through
+unchanged from some earlier, unrelated addressing call. That pass-through
+existed for a callable *embedded* inside a larger structure, but a repeated
+`address_signature_at_input` call on the same evidence needs the opposite:
+re-derive the address under the current call's frame every time, or a stale
+frame from one call leaks into the next and mints a second key for what is
+otherwise the same activation.
 
 ## The dispatch key is a derived collapse, not the evidence
 

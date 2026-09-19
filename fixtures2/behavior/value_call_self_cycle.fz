@@ -1,0 +1,9 @@
+#---
+# purpose: "a self cycle closed through a resolved value call, mints one activation key"
+#---
+def loop(_f, 0), do: :done
+def loop(f, n), do: f.(f, n - 1)
+
+def main() do
+  dbg(loop(&loop/2, 2))
+end

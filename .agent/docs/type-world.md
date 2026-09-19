@@ -128,10 +128,11 @@ interner boundary before a fact or caller can observe an id.
 
 Component construction uses private local references until that boundary. The
 interner identifies equivalent local nodes by their finite regular structure,
-uses a rooted component key beside its ordinary descriptor keys, and commits a
-miss as complete descriptors in one append. A local reference is never a `Ty`,
-so there is no unfinished arena slot or later redirection for a reader to
-observe.
+resolves the ones that are states of a recursive handle the component mentions
+to that handle's existing `Ty`, uses a rooted component key beside its ordinary
+descriptor keys for whatever is left, and commits a miss as complete
+descriptors in one append. A local reference is never a `Ty`, so there is no
+unfinished arena slot or later redirection for a reader to observe.
 
 Transport's `exclusive_tuple_root_arity` is a root-shape question owned by
 `Types`. It reads only the root descriptor's runtime-observable axes and tuple

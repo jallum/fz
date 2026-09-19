@@ -381,12 +381,51 @@ the index, which is also what keeps the absorption's containment questions to a
 small constant per compile.
 
 A regular component is prepared outside the arena with private local
-references. The interner refines equivalent local nodes, assigns a canonical
-rooted graph key, and checks that key in the same index that holds ordinary
-descriptors. A hit returns the component's existing complete `Ty`s. A miss
-maps local references to the final contiguous ids and appends only completed
-descriptors plus their direct and regular keys. No incomplete id, redirect, or
-second type graph can escape the transaction.
+references. Refining those local nodes against each other answers "which of my
+nodes are the same state?"; on its own it does not answer "is one of my states
+a handle that already exists?". So the refinement also takes the states of
+every recursive handle the component mentions, as fixed nodes, and a mention
+becomes a reference to that fixed node rather than an opaque leaf.
+`TypeInterner::is_regular` is the id-to-"this names a recursive state"
+direction that finding those handles needs; the regular keys in the index are
+the other direction, from key to id. Fixed nodes are already minimal, so a
+local node can only join one by being bisimilar to it, and the handle set is
+closed under its own children, so once a class holds a fixed node every class
+it reaches holds one too. A class that lands with a fixed node is that handle,
+and the nodes in it resolve to that existing `Ty`.
+
+What is left over is the genuinely new part of the component, and it alone is
+keyed and minted. Its bodies name the resolved handles as ordinary published
+children; putting a handle back where a symbolic node stood can let clauses
+absorb one another, so a body a substitution touched is normalized once more.
+The residual then gets a canonical rooted graph key, checked in the same index
+that holds ordinary descriptors. A hit returns the existing complete `Ty`s. A
+miss maps local references to the final contiguous ids and appends only
+completed descriptors plus their direct and regular keys. No incomplete id,
+redirect, or second type graph can escape the transaction.
+
+Resolution is bisimulation of the DNF bodies, which is what makes it exact and
+cheap to decide. It does not see a containment that holds only through the
+types a clause names: with `A = μX. int | [X]`, the component
+`μY. int | [[A]] | [Y]` denotes `A` — `is_subtype` says so both ways — but no
+partition of the clause structure says so, so it keeps an id of its own.
+
+A component's nodes go through the same tuple-coordinate carving as ordinary
+descriptors while they are still local, unresolved references to each other's
+eventual `Ty`s. Widening there asks the same "is this wider rectangle already
+covered by its siblings" question, but a coordinate that is still a local
+reference has no `Descr` to ask it with. The calculator only trusts a
+coordinate's covering question when every sibling row is resolved the same
+way the trial rectangle is at that coordinate: where the trial names a local
+node, every sibling row must name that exact same node (it then cancels out
+of the comparison symbolically, whatever the node turns out to mean once
+published); where the trial holds a published type, no sibling row may hold
+an unresolved local reference at that coordinate instead. Either mismatch has
+no sound stand-in for "the type this cyclic reference will eventually have,"
+so the calculator declines to claim coverage rather than guess with `any`.
+Guessing wide there let two distinct tags from a mutual component's own arms
+fuse into one before either arm was published, corrupting the component's own
+canonical body.
 
 What clause order canNOT reconcile is a different CARVING of one type:
 `{[int], :false} | {[int], :true}` and `{[int], :false | :true}` are one
@@ -406,7 +445,25 @@ left to absorb, and callable idempotence; it runs on an index miss, so
 it costs one sweep per distinct descriptor. The tuple-emptiness
 recursion (`emptiness::phi_tuple`) returns early on an empty coordinate and drops
 negations disjoint from the product, so it explores only inhabited splits
-instead of fanning out `arity^|negs|` branches.
+instead of fanning out `arity^|negs|` branches on any ONE call; pruning alone
+does not stop the same `(coordinates, negations)` subproblem from being
+re-asked from every branch of an enclosing recursion (two mutually recursive
+tuple-tagged clauses, for instance), so `phi_tuple` and `Descr::is_empty_memo`
+both answer through `emptiness::Memo`, one result cache keyed on
+`emptiness::Operand` (`MemoKey::Tuple`/`MemoKey::Descr`) and shared across
+every branch of one top-level emptiness question. Each coordinate an
+`Operand` carries is either the interned `Ty` itself, compared and hashed by
+id, or, for a descriptor that algebra (intersect/diff/union) has just built
+and not yet interned, a reference-counted `Descr` compared and hashed by
+content; touching an already-interned coordinate never allocates or clones
+one. `Memo` runs Tarjan's SCC algorithm on the
+fly over its own call graph: a witness (`false`) is cached the instant it is
+found, cyclic or not, because an over-optimistic coinductive guess can only
+ever make a computation look MORE empty, never manufacture a witness; an
+empty (`true`) result is cached only once the strongly-connected component
+that produced it closes with no witness anywhere inside it, so every member
+of a cycle becomes cacheable together, not just the subproblem that happened
+to close the recursion.
 
 Callable emptiness uses the same proof shape without giving a partition an
 integer identity. For a negative arrow `S -> V`, a positive-arrow partition
@@ -416,8 +473,8 @@ calculator walks that partition recursively, carrying those two residual
 descriptors. Selecting a positive shrinks only the input residual; leaving it
 unselected shrinks only the output residual. An empty residual can never become
 inhabited again, so that subtree is exact to prune. This makes the decision
-independent of the number of positive arrows while retaining the ordinary
-descriptor emptiness memo as the only child authority.
+independent of the number of positive arrows while retaining the same shared
+`Memo` as the only child authority.
 
 ## One implementation, shared trait
 

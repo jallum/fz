@@ -1018,7 +1018,8 @@ impl World {
             let normalized = inputs
                 .into_iter()
                 .zip(normalized)
-                .map(|(input, ty)| input.with_ty(ty).addressed_callable_surfaces(&mut self.types))
+                .enumerate()
+                .map(|(position, (input, ty))| input.with_ty(ty).addressed_callable_surfaces(position, &mut self.types))
                 .collect();
             match next.entry(activation) {
                 std::collections::hash_map::Entry::Vacant(entry) => {

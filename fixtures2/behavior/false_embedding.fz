@@ -1,0 +1,13 @@
+#---
+# purpose: "a return that embeds its own earlier value under a tuple WITHOUT a recursive edge there: must not fold to a false μ"
+#---
+def leaf(0), do: 0
+def leaf(n), do: [leaf(n - 1)]
+
+def f(0), do: 0
+def f(1), do: {:ok, leaf(1)}
+def f(n), do: f(n - 1)
+
+def main() do
+  dbg(f(2))
+end

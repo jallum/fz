@@ -1,0 +1,9 @@
+#---
+# purpose: "self recursion whose return is guarded by a list constructor: the smallest μ"
+#---
+def nest(0), do: 0
+def nest(n), do: [nest(n - 1)]
+
+def main() do
+  dbg(nest(2))
+end

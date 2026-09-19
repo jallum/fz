@@ -93,7 +93,7 @@ use super::TyCtx;
 use super::conj::Conj;
 use super::descr::{Descr, Structure};
 use super::dnf::is_dnf_top;
-use super::emptiness::{self, ListDenotation, NonEmptyLists};
+use super::emptiness::{self, ListDenotation, NonEmptyLists, Operand};
 use super::sigs::{ListSig, ListSigOf, ResourceSig, TupleSig, TupleSigOf};
 
 /// Install one axis's clauses into an otherwise contentless descriptor. The
@@ -704,35 +704,13 @@ fn axis_of<T>(clauses: Vec<Conj<T>>, install: InstallAxis<T>) -> Structure {
 // Tuple carving
 // ----------------------------------------------------------------------
 
-/// One tuple coordinate. Carving builds coordinates that no type names yet, so
-/// a coordinate is either the id it arrived as or a descriptor still to be
-/// interned — and a coordinate carving never touched costs no interning at
-/// all.
-#[derive(Clone)]
-pub(super) enum Coord {
-    Interned(Ty),
-    Built(Box<Descr>),
-}
-
-impl Coord {
-    fn descr(&self, cx: TyCtx<'_>) -> Descr {
-        match self {
-            Self::Interned(ty) => cx.descr(ty).clone(),
-            Self::Built(d) => (**d).clone(),
-        }
-    }
-
-    fn same_as(&self, other: &Self, cx: TyCtx<'_>) -> bool {
-        match (self, other) {
-            (Self::Interned(a), Self::Interned(b)) => a == b,
-            _ => self.descr(cx) == other.descr(cx),
-        }
-    }
-}
-
 /// A plain single-positive tuple clause, read as the product of its
-/// coordinates.
-pub(super) type Rect = Vec<Coord>;
+/// coordinates. A coordinate is [`emptiness::Operand`], the same "the `Ty` it
+/// arrived as, or a descriptor still to be interned" cell `phi_tuple` keys
+/// its own memo on — carving and emptiness both build coordinates no type
+/// names yet, so one cell serves both instead of two shapes for the same
+/// idea.
+pub(super) type Rect = Vec<Operand>;
 
 pub(super) trait TupleRectOps<R> {
     fn same(&self, left: &R, right: &R) -> bool;
@@ -744,23 +722,20 @@ struct DirectTupleRectOps<'a> {
     cx: TyCtx<'a>,
 }
 
-impl TupleRectOps<Coord> for DirectTupleRectOps<'_> {
-    fn same(&self, left: &Coord, right: &Coord) -> bool {
+impl TupleRectOps<Operand> for DirectTupleRectOps<'_> {
+    fn same(&self, left: &Operand, right: &Operand) -> bool {
         left.same_as(right, self.cx)
     }
 
-    fn union(&mut self, left: &Coord, right: &Coord) -> Option<Coord> {
-        Some(Coord::Built(Box::new(
-            left.descr(self.cx).union(self.cx, &right.descr(self.cx)),
-        )))
+    fn union(&mut self, left: &Operand, right: &Operand) -> Option<Operand> {
+        Some(Operand::built(
+            left.as_descr(self.cx).union(self.cx, right.as_descr(self.cx)),
+        ))
     }
 
-    fn covered_by(&self, candidate: &[Coord], rectangles: &[Vec<Coord>]) -> bool {
-        let candidate = candidate.iter().map(|coord| coord.descr(self.cx)).collect::<Vec<_>>();
-        let rectangles = rectangles
-            .iter()
-            .map(|rectangle| rectangle.iter().map(|coord| coord.descr(self.cx)).collect())
-            .collect::<Vec<_>>();
+    fn covered_by(&self, candidate: &[Operand], rectangles: &[Vec<Operand>]) -> bool {
+        let candidate = candidate.to_vec();
+        let rectangles = rectangles.to_vec();
         emptiness::phi_tuple(self.cx, &candidate, &rectangles, &mut emptiness::Memo::default())
     }
 }

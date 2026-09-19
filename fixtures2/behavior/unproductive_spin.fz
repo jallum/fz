@@ -1,0 +1,12 @@
+#---
+# purpose: "a local-only cycle with no productive branch: bottom, never any"
+#---
+def spin(n), do: spin(n + 1)
+
+def main() do
+  if false do
+    spin(0)
+  else
+    dbg(:ok)
+  end
+end
