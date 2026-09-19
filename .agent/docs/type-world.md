@@ -115,6 +115,11 @@ matching treats a re-entered in-flight relation as its coinductive hypothesis.
 The emptiness calculator carries the same kind of descriptor-keyed hypothesis
 while it evaluates temporary intersections and differences.
 
+Rendering is another cyclic reader. `Types::display` and `TyCanon` bind an
+active `Ty` on a repeated path (`μX. ... X`) so their output is finite. The
+binder belongs only to that rendering; the component transaction remains the
+only source of recursive type identity and equivalence.
+
 Those guards make readers finite; they do not create a second type store or
 license a temporary `Ty` to escape. A transformation that changes a recursive
 component must still publish its complete canonical component through the one

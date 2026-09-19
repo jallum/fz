@@ -110,8 +110,17 @@ variables are alpha-normalized before they become activation coordinates.
 
 Normalization runs on DESCRIPTORS rather than on interned `Ty`s alone: a list
 clause's element fragment is a descriptor that was never interned, and interning
-it would mutate the arena being described. Rendering is memoized by `Ty`, so the
-cost is per distinct type rather than per rendering site.
+it would mutate the arena being described. Completed root forms are memoized by
+`Ty`; a recursive body is rendered in its root's binding scope, so it is never
+reused as if it were a closed form.
+
+Completed regular components can point back to themselves. Both `Types::display`
+and `TyCanon` carry a per-render stack of active `Ty`s: a path that re-enters an
+active type is spelled with a binder, such as `μX. :start | {X}`, rather than
+followed again. `TyCanon` applies the same binding when list denotation builds a
+temporary descriptor equal to an active type's descriptor. The binding is only a
+finite serialization of the already-completed component. It never compares types,
+changes the interner, or grants a temporary descriptor an identity.
 
 Every canonical form opens with a **fingerprint** — basic bits, the four nominal
 sets, and which structural axes are inhabited. Every component is provably

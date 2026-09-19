@@ -17,6 +17,7 @@ mod format;
 mod order;
 #[cfg(test)]
 mod regular;
+mod render_bindings;
 mod sigs;
 
 use std::cell::RefCell;
@@ -3091,11 +3092,11 @@ impl Types {
 
 impl Types {
     pub fn display(&self, a: &Ty) -> String {
-        format::display(self.ctx(), self.descr(a))
+        format::display(self.ctx(), *a)
     }
 
     pub fn display_for_diag(&self, a: &Ty) -> String {
-        format::display_for_diag(self.ctx(), self.descr(a))
+        format::display_for_diag(self.ctx(), *a)
     }
 }
 
