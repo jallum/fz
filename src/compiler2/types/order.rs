@@ -33,27 +33,31 @@
 //! before rendering while this walks the descriptor as stored. Compared in
 //! place rather than materialized as text, so a comparison stops at the first
 //! difference and nothing is allocated. Two `Ty`s are compared by their
-//! descriptors, recursively; the recursion terminates because a descriptor can
-//! only name `Ty`s that were interned before it, so every step moves to strictly
-//! smaller ids. `Types` memoizes repeated activation-order verdicts; storage
-//! canonicalization remains a direct walk.
+//! descriptors, recursively. The pair memo records each normalized pair while
+//! it is being compared; re-entering that pair finds no further structural
+//! difference, and a completed pair reuses its verdict. Thus the walk
+//! terminates for regular trees as well as acyclic ones. `Types` memoizes
+//! repeated activation-order verdicts; storage canonicalization remains a
+//! direct walk.
 //!
 //! # Why it is injective
 //!
 //! `cmp_ty(a, b)` is `Equal` exactly when `a == b`: the interner is keyed by
-//! `Descr`, so distinct ids have structurally distinct descriptors, and the
-//! comparison below reads every structural field. Injectivity is what makes the
-//! sort canonical — if two DIFFERENT clauses could tie, the sort would leave
-//! them in arrival order and hand the schedule its dependence right back.
+//! `Descr`, so distinct acyclic ids have structurally distinct descriptors, and
+//! the comparison below reads every structural field. Distinct cyclic ids can
+//! have the same finite unfolding, so a completed structural tie falls back to
+//! the root identity order as well. Injectivity is what makes the sort
+//! canonical — if two DIFFERENT clauses could tie, the sort would leave them in
+//! arrival order and hand the schedule its dependence right back.
 //!
 //! # Why storage order reads nothing outside the descriptor
 //!
-//! The storage relation is a function of the descriptor's own bytes and the
-//! ids it names, and of nothing else. That is what lets the interner trust its
-//! index: a descriptor already in the index was normalized once, and because
-//! nothing the normal form depends on can change afterwards, the id it was
-//! given then is still the id it would be given now. So a hit is answered
-//! without normalizing at all.
+//! The storage relation is a function of the descriptor's own bytes, the ids it
+//! names, and its completed-tie identity order, and of nothing mutable. That
+//! is what lets the interner trust its index: a descriptor already in the index
+//! was normalized once, and because nothing the normal form depends on can
+//! change afterwards, the id it was given then is still the id it would be
+//! given now. So a hit is answered without normalizing at all.
 //!
 //! The one place that could have broken it is the closure literal. A callable
 //! can be interned before its owner exists, and `Types::define_callable_origin`
@@ -88,6 +92,7 @@
 //! a pair of ids — but they are real, and they are where this module cannot
 //! promise confluence across arenas.
 
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -115,6 +120,14 @@ trait OrderedSig: Sized {
 pub(super) struct ClauseOrder<'a> {
     cx: TyCtx<'a>,
     purpose: OrderPurpose<'a>,
+    comparison_active: Cell<bool>,
+    pairs: RefCell<HashMap<(Ty, Ty), PairComparison>>,
+}
+
+#[derive(Clone, Copy)]
+enum PairComparison {
+    InFlight,
+    Complete(Ordering),
 }
 
 /// Which of the two relations this comparator is, and — for the activation
@@ -132,18 +145,21 @@ impl<'a> ClauseOrder<'a> {
         Self {
             cx,
             purpose: OrderPurpose::Storage,
+            comparison_active: Cell::new(false),
+            pairs: RefCell::default(),
         }
     }
 
-    /// The activation-facing relation preserves the established callable
-    /// surface precedence (arguments, return, literal) while reading each
-    /// field structurally. Storage canonicalization deliberately puts the
-    /// literal first so equal-callable clauses group together; the two orders
-    /// answer different questions and must not be conflated.
+    /// The activation-facing relation leads with callable construction. Direct
+    /// call surfaces are ordered separately as `ActivationSignature`s, so a
+    /// literal's owner identity must not be recovered from its value type's
+    /// template variables.
     pub(super) fn for_activation(cx: TyCtx<'a>, origins: &'a CallableOrigins) -> Self {
         Self {
             cx,
             purpose: OrderPurpose::Activation(origins),
+            comparison_active: Cell::new(false),
+            pairs: RefCell::default(),
         }
     }
 
@@ -191,7 +207,44 @@ impl<'a> ClauseOrder<'a> {
         if a == b {
             return Ordering::Equal;
         }
-        self.cmp_descr(self.cx.descr(&a), self.cx.descr(&b))
+        if self.comparison_active.get() {
+            return self.cmp_ty_structural(a, b);
+        }
+
+        self.pairs.borrow_mut().clear();
+        self.comparison_active.set(true);
+        let structural = self.cmp_ty_structural(a, b);
+        self.comparison_active.set(false);
+        if structural == Ordering::Equal {
+            a.cmp(&b)
+        } else {
+            structural
+        }
+    }
+
+    fn cmp_ty_structural(&self, a: Ty, b: Ty) -> Ordering {
+        if a == b {
+            return Ordering::Equal;
+        }
+        let (low, high, reversed) = if a < b { (a, b, false) } else { (b, a, true) };
+        let normalized = self.cmp_ty_structural_normalized(low, high);
+        if reversed { normalized.reverse() } else { normalized }
+    }
+
+    fn cmp_ty_structural_normalized(&self, low: Ty, high: Ty) -> Ordering {
+        if let Some(comparison) = self.pairs.borrow().get(&(low, high)).copied() {
+            return match comparison {
+                PairComparison::InFlight => Ordering::Equal,
+                PairComparison::Complete(order) => order,
+            };
+        }
+
+        self.pairs.borrow_mut().insert((low, high), PairComparison::InFlight);
+        let order = self.cmp_descr(self.cx.descr(&low), self.cx.descr(&high));
+        self.pairs
+            .borrow_mut()
+            .insert((low, high), PairComparison::Complete(order));
+        order
     }
 
     fn cmp_descr(&self, a: &Descr, b: &Descr) -> Ordering {
@@ -256,9 +309,9 @@ impl<'a> ClauseOrder<'a> {
                 .then_with(|| self.cmp_tys(&a.args, &b.args))
                 .then_with(|| self.cmp_ty(a.ret, b.ret)),
             OrderPurpose::Activation(_) => self
-                .cmp_tys(&a.args, &b.args)
-                .then_with(|| self.cmp_ty(a.ret, b.ret))
-                .then_with(|| self.cmp_lit(a.lit.as_ref(), b.lit.as_ref())),
+                .cmp_lit(a.lit.as_ref(), b.lit.as_ref())
+                .then_with(|| self.cmp_tys(&a.args, &b.args))
+                .then_with(|| self.cmp_ty(a.ret, b.ret)),
         }
     }
 

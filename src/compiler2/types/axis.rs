@@ -68,9 +68,9 @@
 //! What those two rules ask of a child — "is this every value" — is a question
 //! about the DENOTATION, and `Descr::is_full` is its one implementation. A
 //! structural reading would answer no for an `any` written some other way,
-//! which the unabsorbed callable axis makes reachable (`f ∨ ¬f` is every
-//! callable in two clauses), and `[x]` and `[any]` would take two ids and two
-//! canonical forms for one set of lists.
+//! which a retained literal callable axis can make reachable (`f ∨ ¬f` is
+//! every callable in two clauses), and `[x]` and `[any]` would take two ids
+//! and two canonical forms for one set of lists.
 //!
 //! `Types::intern` is the authority: it applies them at the persistence
 //! boundary, so an interned descriptor arrives already rewritten and identity
@@ -81,40 +81,15 @@
 //! types. One function each way, so the boundary and the rendering cannot
 //! drift apart.
 //!
-//! Absorption reaches the tuple, list, resource and map axes. The callable
-//! axis remains excluded on the two measured facts about literal shapes that
-//! still carry planner evidence. The formerly separate lit-free obstruction is
-//! gone: `ActivationKey` and resolved source contracts now keep their addressed
-//! inputs and result in typed coordinate records, not an `ArrowSig`, so an axis
-//! top can no longer erase planner bookkeeping from a callable `Ty`.
+//! Absorption reaches the tuple, list, resource, map and literal-free callable
+//! axes. A callable axis with a literal remains a construction layout: its
+//! captures are projected by transport and cannot be discarded as coverage.
 //!
-//! A LIT-BEARING arrow's `args` and `ret` are evidence `func_clause_empty`
-//! does not read, so two specializations of one lambda are mutually subtypes
-//! and a rule reading the denotation alone would merge them — stated once, and
-//! pinned against the planner that reads them, by `semantic`'s
-//! `activation_input_rows_keep_arrows_that_differ_only_where_subtyping_is_blind`.
-//! What puts the discarded evidence back is `Types::row_column_dominates`,
-//! and it is a conjunction of three: equal free var ids (which is what keeps
-//! a template beside its ground instance, a surplus with its own test),
-//! containment of `lit_arrow_shapes` in one direction — every literal shape of
-//! the dominated column appears in the dominator's — and `is_subtype`. A shape
-//! is `(brand, captures, args, ret)`; the kernel reads brand and captures, so
-//! `args` and `ret` are the part containment adds.
-//!
-//! A closure literal's CAPTURE LAYOUT is the third, and here the kernel
-//! ENDORSES the containment rather than refusing it: the capture-subset rule
-//! in `func_clause_empty` makes `closure[f]([mailbox]) ⊆ closure[f]([any])`,
-//! so absorbing the narrower clause into the wider one would be exact — and
-//! would still erase an environment, because `Types::callable_clauses` hands
-//! transport the captures of every clause it finds, narrower ones included.
-//! Absorb the axis and
-//! `transport_relation_incremental_test::a_nested_source_union_retains_both_environments_of_the_same_function`
-//! fails: one source union stops naming the same lambda with a `[mailbox]`
-//! environment beside its `[any]` one.
-//!
-//! That axis keeps its exact-duplicate dedupe instead. Dropping what denotes
-//! nothing is safe there and reaches all five. This is the one statement of
-//! that exclusion; every other site points here.
+//! A literal keeps its capture layout: transport reads every possible
+//! environment, and a capture-subset absorption could erase one. Its arrow
+//! surface is normalized to the literal owner's deterministic template before
+//! interning; a separately observed surface belongs to the activation input.
+//! Literal-bearing axes therefore retain exact duplicate removal only.
 
 use super::Ty;
 use super::TyCtx;
@@ -508,17 +483,14 @@ pub(super) const MAPS: AxisView<super::sigs::MapSig> = AxisView {
 /// Whether a clause's child denotes every value, asked of the one
 /// implementation of that question ([`Descr::is_full`]). A structural answer
 /// alone would report `[x]` and `[any]` as two types wherever `x` is `any`
-/// written some other way — which the callable axis, left unabsorbed here,
-/// makes reachable.
+/// written some other way — which a literal callable axis can make reachable.
 fn is_full(cx: TyCtx<'_>, ty: Ty) -> bool {
     cx.descr(&ty).is_full(cx)
 }
 
-/// The callable axis, absorbed only where a RENDERING asks for it — where
-/// nothing reads the arrow back, so none of the three surpluses the module
-/// doc names can be lost. Intern leaves this axis alone, so its clause rule
-/// is the axis-independent one and every real question goes to the
-/// calculator.
+/// The literal-free callable axis uses the same absorption rule as the other
+/// denotational axes. `Types::intern` keeps literal-bearing axes out of that
+/// rule because their capture layouts remain construction evidence.
 pub(super) const FUNCS: AxisView<super::sigs::ArrowSig> = AxisView {
     install: |d, clauses| d.funcs = clauses,
     clause_covers: |wider, narrower, _| factors_are_superset(wider, narrower),
@@ -631,9 +603,9 @@ pub(super) type Covers<'a> = &'a dyn Fn(&Descr, &Descr) -> bool;
 /// Clauses are visited in index order. At `Types::intern` that is the
 /// canonical clause order the sort just imposed, so which of a MUTUALLY
 /// covering pair lives is a function of the descriptor and not of the
-/// schedule that built it. That order is canonical within one arena; on the
-/// callable axis, which only the renderer absorbs, two arenas agree only as
-/// far as their `FnId` mint orders do.
+/// schedule that built it. That order is canonical within one arena; on a
+/// literal-bearing callable axis, two arenas agree only as far as their `FnId`
+/// mint orders do.
 ///
 /// [`TyCanon`](super::canon) also runs this on descriptors it synthesized
 /// itself, whose clause lists carry the order its folds produced; there a

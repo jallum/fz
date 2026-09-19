@@ -108,22 +108,19 @@ coordinate or resource payload, a non-empty list sig with no element left).
 The persistence boundary (`Types::intern`) canonicalizes every descriptor
 entering the interner.
 
-First the TUPLE NORMALIZER (`types/axis.rs`), the tuple axis's own normal form
-and the one rule that reaches a different CARVING of one type. Per clause
-first: a ground difference whose cover differs in exactly one coordinate is
-still one rectangle, and is rewritten to one — which also turns a clause
-carrying a negative into a plain rectangle the axis step can carve. Then the
-axis as a whole, to fixpoint: FUSION merges two rectangles that agree on every
-coordinate but one into the single rectangle over the union of that coordinate
-(`{A,C} ∨ {B,C} = {A∨B, C}`, exact, and what turns a tagged union's width
-growth into depth growth), and WIDENING grows a coordinate to the union of that
-coordinate over its same-arity siblings while the grown rectangle is still
-inside the axis union. A rectangle only grows and never past the union, so the
-denoted set is invariant and the outcome does not depend on the order the steps
-are taken in. Fusion mints the union coordinate it merges on, so this is a fold
-that can spend an interned type to save an identity: the coordinate it builds
-is interned through this same boundary, which terminates because a coordinate
-names only types interned before it.
+First the TUPLE NORMALIZER (`Types::normalize_tuple_axis`). Per clause,
+`normalize_tuple_coordinate_difference` rewrites a ground difference whose
+cover differs in exactly one coordinate to one rectangle, which also turns a
+clause carrying a negative into a plain rectangle. Then
+`axis::fuse_tuple_rects` reaches a fixpoint: FUSION merges two rectangles that
+agree on every coordinate but one into the single rectangle over the union of
+that coordinate (`{A,C} ∨ {B,C} = {A∨B, C}`), and WIDENING grows a coordinate
+to the union of that coordinate over its same-arity siblings while the grown
+rectangle remains inside the axis union. A rectangle only grows and never past
+the union, so the denoted set is invariant and the outcome does not depend on
+arrival order. Fusion mints the union coordinate it merges on, so this fold can
+spend an interned type to save an identity; the coordinate it builds is interned
+through this same boundary and names only older types.
 
 Then, still before the sort, the LIST NORMAL FORM (`emptiness::list_denotation`,
 `types/axis.rs`). A `ListSig` denotes `[]` (when `empty`) together with every
@@ -170,17 +167,20 @@ to be sorted first: a clause compares by its stored factor lists, so the clause
 order is a function of the clause set only once each clause is a function of
 its own factors. Sorting also puts equal factors adjacent, which is where
 `A ∧ A = A` collapses. The order is lexicographic over the structure,
-compared in place rather than rendered as text: two `Ty`s compare by their
-descriptors, recursively, which terminates because a descriptor can only name
-`Ty`s interned before it. It is injective — ties happen only between identical
-clauses — because the interner is keyed by `Descr`, so distinct ids have
-distinct structure; a comparator that could tie two DIFFERENT clauses would hand
-the survivor back to arrival order. Structural address vars order by their
+compared in place rather than rendered as text. A comparison records each
+normalized pair while it is in flight; re-entering a pair breaks the back edge
+as no further structural difference, and a completed pair reuses its verdict.
+The walk therefore terminates for regular trees as well as acyclic ones. A
+distinct cyclic pair can have the same finite unfolding, so a completed
+structural tie also takes the root identity order. `Equal` still means exactly
+the same `Ty`; a comparator that could tie two DIFFERENT clauses would hand the
+survivor back to arrival order. Structural address vars order by their
 `AddrStep` path, never by the mint-order `TypeVarId` behind them.
 
-Storage order reads NOTHING outside the descriptor and the ids it names. That
-is a hard requirement, not a preference: the index lookup below is sound only
-while a descriptor's normal form cannot move under it. Closure literals are
+Storage order reads NOTHING mutable outside the descriptor, the ids it names,
+and its completed-tie identity order. That is a hard requirement, not a
+preference: the index lookup below is sound only while a descriptor's normal
+form cannot move under it. Closure literals are
 where it had to be won. A callable can be interned before its owner exists and
 `Types::define_callable_origin` registers the typed origin later, so ordering
 two literals by their registered origins would rewrite a stored clause order
@@ -209,9 +209,9 @@ makes the bottom collapse below exact AND cheap: an axis with no empty clause
 left is empty exactly when it holds no clause at all, so the collapse reads the
 descriptor structurally instead of re-running the recursion.
 
-Then ABSORPTION (`types/axis.rs`), one rule for the tuple, list, resource and
-map axes. An axis denotes the UNION of its clauses, so a clause the union of
-its surviving siblings already covers adds nothing and is dropped
+Then ABSORPTION (`types/axis.rs`), one rule for the tuple, list, resource, map
+and literal-free callable axes. An axis denotes the UNION of its clauses, so a
+clause the union of its surviving siblings already covers adds nothing and is dropped
 (`A ⊆ B₁ ∨ … ∨ Bₙ ⇒ A ∨ B₁ ∨ … ∨ Bₙ = B₁ ∨ … ∨ Bₙ`), and an axis whose clauses
 between them cover the axis IS that axis's top and collapses to it.
 Union coverage is strictly stronger than the pairwise containment it replaces:
@@ -274,52 +274,34 @@ signature admits `[]` and one negated signature's element swallows the
 fragment, while `emptiness::resource_clause_empty` calls it empty exactly when
 a SINGLE negated payload swallows `any` — which is why two resource clauses
 that partition the payloads between them are still not every resource. Both go
-to the calculator for the rest, as the CALLABLE axis always does: a clause
-naming a closure literal is one construction, not every callable, and nothing
-in the signature tells them apart.
+to the calculator for the rest. A literal-free callable axis does the same; a
+clause naming a closure literal instead names a construction layout and does
+not participate in callable absorption.
 
 What those two rules ask of a child — "is this every value" — is a question
 about the DENOTATION, and `Descr::is_full` is its one implementation:
 structural where it can be (`looks_full`), otherwise the exact containment,
 guarded by the necessary conditions so the common answer costs no question.
-A structural reading ALONE is incomplete, because the callable axis is left
-unabsorbed and `f ∨ ¬f` is every callable in two clauses — a descriptor
-carrying it denotes everything without looking full. Reading the spelling
+A structural reading ALONE is incomplete, because a retained literal callable
+axis can write `f ∨ ¬f` for every callable without looking full. Reading the spelling
 instead of the denotation would leave `[x]` and `[any]` two ids and two
 canonical forms for one set of lists, the false difference the canon
 faithfulness ratchet exists to forbid. The canonical rendering asks the same
 function, so the boundary and the oracle cannot disagree about what `any` is.
 
-The CALLABLE axis gets IDEMPOTENCE alone: exact-duplicate clauses are dropped
-(`A ∨ A = A`, `dedupe_exact_clauses`, first occurrence kept). The lit-free
-record obstruction is gone: `ActivationKey` keeps a specialization's canonical
-inputs and result in `ActivationSignature`, and `ContractArrow` keeps direct
-`params`/`result`, so neither constructs an `ArrowSig` just to carry planner
-coordinates. A lit-free `(any, int) -> any` can therefore be recognized as the
-whole callable axis without deleting activation or contract evidence. The axis
-is still excluded while a LIT-BEARING arrow's `args` and `ret` are evidence
-`func_clause_empty` never looks at, so two specializations of one lambda are
-mutually subtypes and a rule reading the denotation alone would merge them;
-`Types::row_column_dominates` is what adds the evidence back, and
-`semantic::activation_input_rows_keep_arrows_that_differ_only_where_subtyping_is_blind`
-pins that against the planner. A closure literal's CAPTURE LAYOUT is the third,
-and it is the one the kernel ENDORSES: the capture-subset rule in
-`func_clause_empty` makes `closure[f]([mailbox]) ⊆ closure[f]([any])`, so
-absorbing the narrower clause would be exact — and would still erase the
-narrower environment, because `Types::callable_clauses` hands transport the
-captures of every clause it finds.
-`transport_relation_incremental_test::a_nested_source_union_retains_both_environments_of_the_same_function`
-is what fails when the axis is absorbed. `TyCanon` still collapses the axis for
-RENDERING, where nothing reads the arrow back.
+The literal-free CALLABLE axis is absorbed at the boundary: its arrow signature
+does not distinguish runtime callable values. A literal-bearing arrow retains
+its capture layout, because transport reads every possible environment and a
+capture-subset absorption could erase a real one. Literal-bearing axes get
+exact duplicate removal only.
 
-The planner no longer stores direct callable observations in the callable axis:
-`ActivationInput` carries a closure value `Ty` beside a set of addressed direct
-`ActivationSignature`s. This removes the synthetic lit-free and re-specialized literal
-values that existed only to move planner evidence. The callable axis still
-retains literal capture layouts and the value denotations the runtime reads;
-the carrier retains the surface a contract or call analysis observed. Each has
-one owner, so normalizing the axis cannot erase planner evidence and planning
-cannot create a second type identity for one closure value.
+The literal's args and result are not value identity. Before ordering,
+`Types::intern` restores a named literal's deterministic owner template and an
+anonymous literal's arity-only `any` surface. `ActivationInput` carries the
+separate addressed `ActivationSignature`s a contract or call analysis observed.
+The value and observation therefore have one owner each: observations cannot
+mint a second closure value identity, and normalizing a value cannot erase an
+observed call surface.
 
 The coverage walk and the dedupe only ever remove, and both visit in index
 order, so what they leave is still sorted; a saturated axis is REPLACED by the
@@ -359,14 +341,22 @@ The whole pass runs only when the descriptor is not already in the index
 (`TypeInterner::lookup`). The invariant that makes the shortcut sound is that
 an interned descriptor's normal form is a pure function of the descriptor:
 every pass above reads the descriptor's own bytes and the immutable descriptors
-of the ids it names, and storage clause order reads nothing outside them
-either. A descriptor the index holds was normalized once, so it is its own
-normal form and re-deriving it would rewrite it to itself. Asking first keeps
-the boundary's cost proportional to the types a compile mints rather than to
-how often it asks for them, and it is the common case by a wide margin: on
+of the ids it names, plus the stable identity that resolves a completed
+structural tie. A descriptor the index holds was normalized once, so it is its
+own normal form and re-deriving it would rewrite it to itself. Asking first
+keeps the boundary's cost proportional to the types a compile mints rather than
+to how often it asks for them, and it is the common case by a wide margin: on
 the target fixtures the overwhelming majority of intern calls are answered by
 the index, which is also what keeps the absorption's containment questions to a
 small constant per compile.
+
+The interner can also reserve one or more identities before their normalized
+bodies are available. A reserved slot is unreadable; filling it publishes the
+body in that slot and then keys the index by the completed descriptor. A body
+may name its reservation, which is how a finite regular tree closes a cycle.
+The ordinary debug hygiene sweep stays on the normalized one-phase path: it
+queries child descriptors and therefore cannot run while a reservation is
+unfinished.
 
 What clause order canNOT reconcile is a different CARVING of one type:
 `{[int], :false} | {[int], :true}` and `{[int], :false | :true}` are one
@@ -381,8 +371,8 @@ otherwise intern as a different `Ty` than `funcs = [A]`. That difference is
 what the activation key is built from, so idempotence at the boundary is what
 makes the key a join homomorphism (fz-kdt.80). A debug-build assert in
 `TypeInterner::intern` (`debug_assert_dnf_axes_hygienic`) checks the
-empty-clause invariant on all five axes, that the four denotational axes have
-nothing left to absorb, and callable idempotence; it runs on an index miss, so
+empty-clause invariant on all five axes, that every absorbable axis has nothing
+left to absorb, and callable idempotence; it runs on an index miss, so
 it costs one sweep per distinct descriptor. The tuple-emptiness
 recursion (`emptiness::phi_tuple`) returns early on an empty coordinate and drops
 negations disjoint from the product, so it explores only inhabited splits

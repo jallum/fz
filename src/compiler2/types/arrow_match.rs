@@ -2338,7 +2338,7 @@ mod pinned_verdicts {
         let bool_t = t.bool();
         let ground_pred = t.arrow(&[any], bool_t);
         let v = t.match_arrow(&[list_a, pred_pat], &list_a, &no_bounds(), &[list_int, ground_pred]);
-        assert_eq!(render(&t, &v), "Known params=[[int], (int) -> any] result=[int]", "A13");
+        assert_eq!(render(&t, &v), "Known params=[[int], fun] result=[int]", "A13");
     }
 
     // A14. `none` at a bare variable.
@@ -2556,7 +2556,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[{:done | :halted, []} | {:suspended, [], () -> any}] result=[]",
+            "Known params=[{:done | :halted, []} | {:suspended, [], fun}] result=[]",
             "X4"
         );
     }

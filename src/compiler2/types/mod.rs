@@ -152,7 +152,7 @@ impl Default for Types {
 
 #[derive(Default)]
 struct TypeInterner {
-    arena: Vec<Descr>,
+    arena: Vec<Option<Descr>>,
     index: HashMap<Descr, Ty>,
     #[cfg(test)]
     work: InterningWork,
@@ -272,7 +272,7 @@ pub(crate) struct ComparisonCacheStats {
 
 #[derive(Clone, Copy)]
 pub(super) struct TyCtx<'a> {
-    arena: &'a [Descr],
+    arena: &'a [Option<Descr>],
     /// The address reverse table (path per address id), so display can render a
     /// structural address as `a1_0`/`r0`. Empty for the interner-internal ctx,
     /// which only resolves descriptors and never renders.
@@ -281,9 +281,11 @@ pub(super) struct TyCtx<'a> {
 
 impl<'a> TyCtx<'a> {
     fn descr(&self, t: &Ty) -> &'a Descr {
-        self.arena
-            .get(t.0 as usize)
-            .unwrap_or_else(|| panic!("unknown interned type id {}", t.0))
+        match self.arena.get(t.0 as usize) {
+            Some(Some(descr)) => descr,
+            Some(None) => panic!("unfinished interned type id {}", t.0),
+            None => panic!("unknown interned type id {}", t.0),
+        }
     }
 
     /// Render one type variable: a structural address (`a0`, `a1_0`, `r0`) when
@@ -315,27 +317,45 @@ impl TypeInterner {
         }
         #[cfg(debug_assertions)]
         self.debug_assert_dnf_axes_hygienic(&d);
+        let ty = self.reserve();
+        self.fill_normalized(ty, d);
+        ty
+    }
+
+    fn reserve(&mut self) -> Ty {
         let raw = self.arena.len();
         assert!(u32::try_from(raw).is_ok(), "type interner exhausted ids");
         let ty = Ty(raw as u32);
-        self.arena.push(d.clone());
+        self.arena.push(None);
+        ty
+    }
+
+    fn fill_normalized(&mut self, ty: Ty, d: Descr) {
+        let Some(slot) = self.arena.get_mut(ty.0 as usize) else {
+            panic!("unknown reserved type id {}", ty.0);
+        };
+        assert!(slot.is_none(), "type id {} is already filled", ty.0);
+        assert!(
+            !self.index.contains_key(&d),
+            "two-phase intern received an already-interned descriptor"
+        );
+        *slot = Some(d.clone());
         self.index.insert(d, ty);
         #[cfg(test)]
         {
             self.work.inserted += 1;
         }
-        ty
     }
 
     /// The id already given to this exact descriptor, if it has one.
     ///
     /// A descriptor the index holds was normalized on its way in, and
     /// normalization is a pure function of the descriptor — every step reads
-    /// the descriptor's own bytes and the immutable descriptors of the ids it
-    /// names, and nothing else (`super::order` states the one rule that makes
-    /// this true of clause order). So the normal form it was given then is the
-    /// normal form it would be given now, and the id can be returned without
-    /// re-deriving it.
+    /// the descriptor's own bytes, the immutable descriptors of the ids it
+    /// names, and the stable identity that resolves a completed structural tie
+    /// (`super::order` states the one rule that makes this true of clause
+    /// order). So the normal form it was given then is the normal form it would
+    /// be given now, and the id can be returned without re-deriving it.
     fn lookup(&mut self, d: &Descr) -> Option<Ty> {
         #[cfg(test)]
         {
@@ -363,10 +383,10 @@ impl TypeInterner {
     }
 
     /// The debug half of the interned-DNF invariant: a descriptor that reaches
-    /// the index carries no provably-empty clause on any axis, nothing left to
-    /// absorb on the four denotational axes, and no exact duplicate on the
-    /// callable axis. This runs on an index MISS, so it costs one sweep per
-    /// distinct descriptor.
+    /// the index carries no provably-empty clause, no missed absorption on a
+    /// literal-free axis, and no exact duplicate on a literal-bearing callable
+    /// axis. This runs on an index MISS, so it costs one sweep per distinct
+    /// descriptor.
     #[cfg(debug_assertions)]
     fn debug_assert_dnf_axes_hygienic(&self, d: &Descr) {
         let cx = self.ctx();
@@ -379,6 +399,9 @@ impl TypeInterner {
         debug_assert_absorbed(cx, &d.lists, "list", &axis::LISTS);
         debug_assert_absorbed(cx, &d.resources, "resource", &axis::RESOURCES);
         debug_assert_absorbed(cx, &d.maps, "map", &axis::MAPS);
+        if callable_axis_is_literal_free(&d.funcs) {
+            debug_assert_absorbed(cx, &d.funcs, "callable", &axis::FUNCS);
+        }
         debug_assert_lists_merged(&d.lists);
         debug_assert_no_exact_duplicates(&d.funcs, "funcs");
     }
@@ -398,18 +421,20 @@ fn debug_assert_lists_merged(clauses: &[Conj<ListSig>]) {
     );
 }
 
-/// `A ∨ A = A` on the callable axis, the one axis absorption does not reach
-/// ([`axis`] states why).
+fn callable_axis_is_literal_free(clauses: &[Conj<ArrowSig>]) -> bool {
+    clauses
+        .iter()
+        .flat_map(|clause| clause.pos.iter().chain(&clause.neg))
+        .all(|sig| sig.lit.is_none())
+}
+
+/// `A ∨ A = A` on a literal-bearing callable axis.
 ///
-/// The four denotational axes get the stronger coverage rule; this one gets
-/// idempotence, which is the rule the ACTIVATION KEY depends on. A key is
-/// built by erasing what the key language cannot address — closure brands
-/// above all — and erasure runs IN PLACE, so a union that legitimately kept one
-/// clause per brand becomes `A ∨ A` the moment the brands go. Without this
-/// collapse `funcs = [A, A]` interns as a different `Ty` than `funcs = [A]`,
-/// the key stops being a join homomorphism, and a callsite reached down two
-/// rows publishes an edge naming neither activation its walk actually read
-/// (fz-kdt.80).
+/// Literal-free clauses get the stronger coverage rule. Erasure runs in place,
+/// so a union that legitimately kept one clause per closure brand can become
+/// `A ∨ A` when the brands go. Without this collapse `funcs = [A, A]` interns
+/// as a different `Ty` than `funcs = [A]`, and the key stops being a join
+/// homomorphism.
 ///
 /// First occurrence wins, so the canonical order the `order` pass just imposed
 /// survives this filter — which is the whole reason the two compose. The
@@ -588,9 +613,10 @@ impl Types {
     ///
     /// THE INDEX ANSWERS FIRST. An interned descriptor's normal form is a pure
     /// function of the descriptor: every pass below reads the descriptor's own
-    /// bytes and the immutable descriptors of the ids it names, and storage
-    /// clause order reads nothing outside them either (`order`'s module doc
-    /// carries that rule and why the callable axis is where it had to be won).
+    /// bytes, the immutable descriptors of the ids it names, and the stable
+    /// identity that resolves a completed structural tie. Storage clause order
+    /// reads nothing mutable outside them either (`order`'s module doc carries
+    /// that rule and why the callable axis is where it had to be won).
     /// A descriptor the index already holds is therefore its own normal form,
     /// and the id it was given is the id the whole pass below would arrive at,
     /// so the lookup returns it and the derivation is skipped. That is the
@@ -634,11 +660,8 @@ impl Types {
     /// nothing but the set they denote: a clause the union of its surviving
     /// siblings already covers is dropped, and an axis its clauses between
     /// them cover collapses to that axis's one top spelling, the clause with no
-    /// factors. The callable axis is the one exception ([`axis`] states why),
-    /// so it gets IDEMPOTENCE alone, exact duplicates collapsed. The coverage
-    /// walk and the dedupe only ever remove, and both visit in index order, so
-    /// what they leave is still sorted; a saturated axis is REPLACED by that
-    /// one clause, and one clause is sorted whatever it is.
+    /// factors. Literal-bearing callable clauses retain their construction
+    /// layout and get exact duplicate removal after their surfaces normalize.
     ///
     /// The BOTTOM COLLAPSE closes the pass. The empty set is reachable by many
     /// descriptor shapes — an empty brand slot, empty kind axes under a slot
@@ -668,6 +691,7 @@ impl Types {
         self.interner.normalized();
         self.normalize_tuple_axis(&mut d);
         self.normalize_list_clauses(&mut d);
+        self.normalize_literal_callable_surfaces(&mut d);
         self.order_clauses(&mut d);
         self.drop_empty_clauses(&mut d);
         self.absorb_covered_clauses(&mut d);
@@ -687,12 +711,53 @@ impl Types {
         ty
     }
 
+    #[cfg(test)]
+    fn intern_two_phase(&mut self, count: usize, build: impl FnOnce(&[Ty]) -> Vec<Descr>) -> Vec<Ty> {
+        assert!(count > 0, "two-phase intern needs at least one reserved type");
+        let reserved = (0..count).map(|_| self.interner.reserve()).collect::<Vec<_>>();
+        let bodies = build(&reserved);
+        assert_eq!(bodies.len(), reserved.len(), "every reserved type needs one body");
+        for (ty, body) in reserved.iter().copied().zip(bodies) {
+            self.interner.fill_normalized(ty, body);
+        }
+        reserved
+    }
+
     /// The list axis rewritten to the one normal form in [`axis`], clause by
     /// clause and then across the set.
     fn normalize_list_clauses(&mut self, d: &mut Descr) {
         let clauses = std::mem::take(&mut d.lists);
         d.lists = clauses.into_iter().map(|c| self.list_normal_form(c)).collect();
         axis::merge_empty_list_clause(&mut d.lists);
+    }
+
+    /// Direct callable observations are activation coordinates, not value
+    /// identity. A named literal has one reproducible owner template; an
+    /// anonymous literal keeps only its arity.
+    fn normalize_literal_callable_surfaces(&mut self, d: &mut Descr) {
+        for sig in d
+            .funcs
+            .iter_mut()
+            .flat_map(|clause| clause.pos.iter_mut().chain(&mut clause.neg))
+        {
+            let Some(lit) = &sig.lit else {
+                continue;
+            };
+            let arity = sig.args.len();
+            match lit.fn_id {
+                Some(fn_id) => {
+                    sig.args = (0..arity)
+                        .map(|position| self.type_var(closure_var_id(fn_id, position)))
+                        .collect();
+                    sig.ret = self.type_var(closure_ret_var_id(fn_id));
+                }
+                None => {
+                    let any = self.any();
+                    sig.args = vec![any; arity];
+                    sig.ret = any;
+                }
+            }
+        }
     }
 
     /// One list clause rewritten to what it denotes.
@@ -908,13 +973,19 @@ impl Types {
         axis::drop_empty_clauses(self.ctx(), d, &|ty| self.is_empty(ty));
     }
 
-    /// The four axes a denotation fully describes, absorbed by the one rule in
-    /// [`axis`]. The callable axis is left out, for the reason stated there.
+    /// Every literal-free axis is absorbed by the shared rule in [`axis`].
+    ///
+    /// A closure literal retains its capture layout until the value reaches
+    /// the transport projection; the layout is evidence about construction,
+    /// not an alternative spelling of a bare callable value.
     fn absorb_covered_clauses(&self, d: &mut Descr) {
         self.absorb_one_axis(&mut d.tuples, &axis::TUPLES);
         self.absorb_one_axis(&mut d.lists, &axis::LISTS);
         self.absorb_one_axis(&mut d.resources, &axis::RESOURCES);
         self.absorb_one_axis(&mut d.maps, &axis::MAPS);
+        if callable_axis_is_literal_free(&d.funcs) {
+            self.absorb_one_axis(&mut d.funcs, &axis::FUNCS);
+        }
     }
 
     fn absorb_one_axis<T: Clone + 'static>(&self, clauses: &mut Vec<Conj<T>>, view: &axis::AxisView<T>) {
@@ -1084,7 +1155,12 @@ impl Types {
     /// interned population, and needs the census rather than any particular id.
     #[cfg(test)]
     pub(crate) fn interned_tys(&self) -> Vec<Ty> {
-        (0..self.interner.arena.len() as u32).map(Ty).collect()
+        self.interner
+            .arena
+            .iter()
+            .enumerate()
+            .filter_map(|(index, descr)| descr.as_ref().map(|_| Ty(index as u32)))
+            .collect()
     }
 
     #[cfg(test)]
@@ -1112,7 +1188,7 @@ impl Types {
     /// untouched: interned type descriptors and interned structural addresses.
     #[cfg(test)]
     pub(crate) fn identity_inventory(&self) -> (usize, usize) {
-        (self.interner.arena.len(), self.address_paths.len())
+        (self.interner.arena.iter().flatten().count(), self.address_paths.len())
     }
 
     #[cfg(test)]
@@ -2801,6 +2877,7 @@ impl Types {
         self.interner
             .arena
             .iter()
+            .flatten()
             .flat_map(|d| d.funcs.iter())
             .flat_map(|c| c.pos.iter().chain(c.neg.iter()))
             .filter_map(|sig| sig.lit.as_ref())
@@ -4107,7 +4184,7 @@ fn is_literal(cx: TyCtx<'_>, a: &Ty) -> bool {
 /// The captures are erased by this same rule, so brands nested inside a
 /// captured closure go too and same-typed literals still share one body. The
 /// literal's argument/result fields are planner observations, so erasure also
-/// replaces them with the generic callable surface; direct activation rows
+/// replaces them with the literal-free callable form; direct activation rows
 /// retain the observations needed to plan a call.
 fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
     let base = t.descr(&a).clone();
