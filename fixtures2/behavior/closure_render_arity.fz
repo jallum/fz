@@ -8,6 +8,26 @@
 # the environment size cannot tell them apart. Their arities differ (0 and 2),
 # which is what Elixir's `#Function<.../arity>` reports and what `#fn<id/n>`
 # reports here.
+#
+# Paper answer.
+#
+# A closure body is a lifted function whose activation input row is its captures
+# followed by its declared parameters, so an activation's input count equals its
+# clause's parameter count by construction:
+#
+#   fn (x, acc) -> x + acc end      0 captures, arity 2, input row 2
+#   nullary = fn () -> total end    1 capture (total), arity 0, input row 1
+#   binary  = fn (x, y) -> ...      1 capture (total), arity 2, input row 3
+#   main/0                          0 captures, arity 0, input row 0
+#
+# Arity is a static property of the function a closure was minted from, never an
+# observed one. Both dbg calls here reach one callee activation of one input, so the
+# callable surfaces seen of that slot are the union of everything that arrives at
+# it. Projecting that union back onto an argument has to keep each member's own
+# arity: an arity-0 surface belongs to nullary and says nothing about binary. A
+# value that takes its surface from a different member of the union is minted with
+# that member's input row, and its own clause then indexes past the end of it.
+#
 def main() do
   xs = [1, 2, 3]
   total = Enum.reduce(xs, 0, fn (x, acc) -> x + acc end)
