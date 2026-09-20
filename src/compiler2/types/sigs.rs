@@ -148,12 +148,10 @@ pub(crate) struct ClosureLitOf<R> {
     pub kind: CallableValueKind,
     /// The function the value was minted from, or `None` for an ANONYMOUS
     /// literal: a closure of SOME function closed over exactly these capture
-    /// types, which is what [`Types::erase_closure_identity`] leaves of a
-    /// literal whose brand it dropped. An anonymous literal contains every
-    /// branded literal whose captures are inside its own, so it is never a
-    /// singleton and never names a call target. A literal with nothing left to
-    /// say — anonymous and capture-free — is not a literal at all: the erasure
-    /// drops it and leaves the bare arrow.
+    /// types. Nothing mints one: the brand erasures that did are gone. An
+    /// anonymous literal contains every branded literal whose captures are
+    /// inside its own, so it is never a singleton and never names a call
+    /// target.
     pub fn_id: Option<FnId>,
     pub captures: Vec<R>,
 }
