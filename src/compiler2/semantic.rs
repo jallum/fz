@@ -9,10 +9,9 @@ use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::facts::FactUse;
-use super::identity::{ActivationKey, ActivationSignature, ExecutableKey, ExecutableNeed, FunctionId, ModuleId};
+use super::identity::{ActivationKey, ActivationSignature, ExecutableKey, ExecutableNeed, FunctionId};
 use super::return_membership::ComponentUnknowns;
 use super::types::{MapKey, Ty, Types};
-use crate::modules::identity::ModuleName;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallSiteKey {
@@ -794,104 +793,10 @@ pub(crate) struct ReturnComponent {
     pub(crate) unknowns: ComponentUnknowns,
 }
 
-/// A return type and the symbolic expression that produced it, kept in
-/// lock-step. `observed` is the ordinary evidence exactly as
-/// `join_evidence` always computed it; `expression` is what the component
-/// solver reads.
-#[derive(Debug, Clone)]
-pub struct ReturnFlow {
-    pub observed: Option<Ty>,
-    pub expression: ReturnExpression,
-}
-
-impl ReturnFlow {
-    /// The join identity: no path has produced a value yet.
-    pub fn bottom() -> Self {
-        Self {
-            observed: None,
-            expression: ReturnExpression::Bottom,
-        }
-    }
-
-    /// A concrete observed return type.
-    pub fn published(ty: Ty) -> Self {
-        Self {
-            observed: Some(ty),
-            expression: ReturnExpression::Published(ty),
-        }
-    }
-
-    /// Join two path results, the companion of `jobs::semantic::join_evidence`.
-    /// `Bottom` is the identity; evidence joins by union. The expression
-    /// joins the same way, one layer behind. A separate function from
-    /// `join_evidence` on purpose: that helper also
-    /// merges call-target summaries that carry no companion at all, so this
-    /// step only touches the paths that build one.
-    pub fn join(types: &mut Types, a: ReturnFlow, b: ReturnFlow) -> ReturnFlow {
-        let observed = match (a.observed, b.observed) {
-            (None, x) | (x, None) => x,
-            (Some(x), Some(y)) if x == y => Some(x),
-            (Some(x), Some(y)) => Some(types.union(x, y)),
-        };
-        let expression = ReturnExpression::union(a.expression, b.expression);
-        ReturnFlow { observed, expression }
-    }
-}
-
-/// A symbolic description of how a return value's type was produced.
-/// `Bottom` and `Published` mirror the two states `Option<Ty>` evidence can
-/// hold; `Local` addresses a still-unsolved sibling activation by its key,
-/// and the rest describe a value's shape one layer at a time, over children
-/// that are themselves any of these constructors.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ReturnExpression {
-    /// No path has produced a value yet -- the join identity.
-    Bottom,
-    /// A concrete observed return type.
-    Published(Ty),
-    /// Another activation's return, addressed by its key. The component
-    /// solver substitutes a sibling member's settled expression for it, and
-    /// reads a non-member's already-published return type.
-    Local(ActivationKey),
-    /// A clause parameter, addressed by the owning activation's key and its
-    /// slot position. The key already carries the type that slot holds, so
-    /// the address is the whole leaf: `SolveReturnComponent` substitutes the
-    /// one shared unknown a member's slot solves to, and reads any other
-    /// activation's slot straight off its key.
-    Input {
-        activation: ActivationKey,
-        slot: usize,
-    },
-    /// The join of several return paths (an `if`, a dispatch, a receive).
-    Union(Vec<ReturnExpression>),
-    Tuple(Vec<ReturnExpression>),
-    /// A possibly-empty list: `Types::list`. Built for a cons onto a tail
-    /// that is itself list-shaped, where the result is never provably
-    /// non-empty on its own (the tail might be).
-    List(Box<ReturnExpression>),
-    /// A provably non-empty list: `Types::non_empty_list`. Built for a flat
-    /// literal (`[a, b, c]`) or a cons onto a tail with no known list shape
-    /// -- in both cases the head alone already proves at least one element.
-    NonEmptyList(Box<ReturnExpression>),
-    Map(Vec<(MapKey, ReturnExpression)>),
-    Struct(ModuleId, ModuleName, Vec<(MapKey, ReturnExpression)>),
-    /// One layer read back OUT of a value whose own shape is still symbolic:
-    /// the head of a `Local` call's list result, a field of a parameter's
-    /// tuple. Built only by [`ReturnExpression::project`], which reduces the
-    /// projection away whenever `of` already carries the matching
-    /// constructor, so this form survives only over `Local`, `Input` and a
-    /// further `Project`. Ordinary lowering resolves `of` first and then
-    /// applies the same `Types` operation the walk applied to the observed
-    /// type, so the two views agree exactly.
-    Project {
-        of: Box<ReturnExpression>,
-        step: ProjectStep,
-    },
-}
-
-/// The one layer a [`ReturnExpression::Project`] reads. Each variant names
-/// the `Types` operation the ordinary walk already performs at that step, so
-/// the symbolic and the observed view are computed by one function.
+/// The one layer a [`Skeleton::Project`](super::return_skeleton::Skeleton)
+/// reads. Each variant names the `Types` operation the ordinary walk
+/// performs at that step, so the static and the observed view are computed
+/// by one function.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProjectStep {
     /// Field `index` of a tuple: `Types::tuple_field_type`.
@@ -924,148 +829,6 @@ impl ProjectStep {
     }
 }
 
-impl ReturnExpression {
-    /// Read one layer out of `of`, reducing structurally wherever `of`
-    /// already carries the constructor being read: a tuple field of a
-    /// `Tuple` is that element, a list element of a `List` is its inner
-    /// companion, a projection of `Published` is `Published` of the
-    /// projected type, and a projection of a `Union` distributes. Only a
-    /// value whose shape is still symbolic -- a `Local`, an `Input`, or a
-    /// projection of one -- keeps the `Project` node, which is exactly the
-    /// information the component solver needs and the erasure to `Published`
-    /// used to throw away.
-    pub fn project(types: &mut Types, of: ReturnExpression, step: ProjectStep) -> ReturnExpression {
-        match (&of, &step) {
-            (ReturnExpression::Bottom, _) => ReturnExpression::Bottom,
-            (ReturnExpression::Published(ty), _) => ReturnExpression::Published(step.apply(types, *ty)),
-            (ReturnExpression::Union(branches), _) => branches
-                .clone()
-                .into_iter()
-                .map(|branch| ReturnExpression::project(types, branch, step.clone()))
-                .fold(ReturnExpression::Bottom, ReturnExpression::union),
-            (ReturnExpression::Tuple(elems), ProjectStep::TupleField(index)) if *index < elems.len() => {
-                elems[*index].clone()
-            }
-            (ReturnExpression::List(inner) | ReturnExpression::NonEmptyList(inner), ProjectStep::ListElement) => {
-                (**inner).clone()
-            }
-            // Removing one element leaves the same uniform shape behind, no
-            // longer provably non-empty.
-            (ReturnExpression::List(inner) | ReturnExpression::NonEmptyList(inner), ProjectStep::ListTail) => {
-                ReturnExpression::List(inner.clone())
-            }
-            (ReturnExpression::Map(fields) | ReturnExpression::Struct(_, _, fields), ProjectStep::MapField(wanted))
-                if fields.iter().any(|(key, _)| key == wanted) =>
-            {
-                fields
-                    .iter()
-                    .find(|(key, _)| key == wanted)
-                    .map(|(_, value)| value.clone())
-                    .expect("the guard just proved this field is present")
-            }
-            _ => ReturnExpression::Project { of: Box::new(of), step },
-        }
-    }
-
-    /// Combine two expressions the way `ReturnFlow::join` combines its two
-    /// paths' companions, and the way a structural construction step folds
-    /// its children into one uniform-element companion (a list's elements,
-    /// several matched protocol targets for one call). `Bottom` is the
-    /// identity, so a single real contribution never gets wrapped in a
-    /// `Union` of one. A repeated fold over more than two paths (three or
-    /// more clauses, three or more dispatch outcomes) calls this pairwise,
-    /// left to right; an existing `Union` on either side is the same join
-    /// still in progress; flattening into it keeps that fold's result one
-    /// flat, stably ordered list instead of a binary tree of one-off pairs.
-    /// Type union is associative, so this never changes what the result
-    /// denotes -- only how many `Union` layers wrap it.
-    ///
-    /// A join is a SET operation, so it is idempotent: joining an expression
-    /// with itself, or with a member the flat list already holds, is that
-    /// list unchanged. Without that, a walk that revisits one path grows the
-    /// same member once per round and the expression a member hands its
-    /// solver keeps changing while denoting the same thing.
-    pub fn union(a: ReturnExpression, b: ReturnExpression) -> ReturnExpression {
-        let mut members = Vec::new();
-        ReturnExpression::collect_union_member(&mut members, a);
-        ReturnExpression::collect_union_member(&mut members, b);
-        match members.len() {
-            0 => ReturnExpression::Bottom,
-            1 => members.pop().expect("a one-member join is that member"),
-            _ => ReturnExpression::Union(members),
-        }
-    }
-
-    /// Add one contribution to a join in progress. `Bottom` contributes
-    /// nothing, a `Union` contributes its own members (the same join still
-    /// running), and a member already standing contributes nothing again --
-    /// joining a set with something it already holds is that set. Order is
-    /// first occurrence first, so the result reads the way the walk found it.
-    fn collect_union_member(out: &mut Vec<ReturnExpression>, expression: ReturnExpression) {
-        match expression {
-            ReturnExpression::Bottom => {}
-            ReturnExpression::Union(members) => members
-                .into_iter()
-                .for_each(|member| ReturnExpression::collect_union_member(out, member)),
-            member => {
-                if !out.contains(&member) {
-                    out.push(member);
-                }
-            }
-        }
-    }
-
-    /// Every activation whose whole RETURN this expression names, anywhere in
-    /// its tree. A parameter slot (`Input`) is deliberately not one of these:
-    /// it names a position a caller fills, not a value the callee's own
-    /// return equation produces, so treating it as a return dependency would
-    /// make every forwarding function share a cycle with the body it forwards
-    /// to.
-    /// The order is the tree's own, first occurrence first, so two reads of
-    /// one expression name the same activations in the same order -- a set
-    /// here would hand its callers an iteration order that varies run to run.
-    pub fn locals(&self, out: &mut Vec<ActivationKey>) {
-        match self {
-            ReturnExpression::Bottom | ReturnExpression::Published(_) | ReturnExpression::Input { .. } => {}
-            ReturnExpression::Local(key) => {
-                if !out.contains(key) {
-                    out.push(key.clone());
-                }
-            }
-            ReturnExpression::Union(branches) => branches.iter().for_each(|branch| branch.locals(out)),
-            ReturnExpression::Tuple(elems) => elems.iter().for_each(|elem| elem.locals(out)),
-            ReturnExpression::List(elem) | ReturnExpression::NonEmptyList(elem) => elem.locals(out),
-            ReturnExpression::Map(fields) | ReturnExpression::Struct(_, _, fields) => {
-                fields.iter().for_each(|(_, value)| value.locals(out))
-            }
-            ReturnExpression::Project { of, .. } => of.locals(out),
-        }
-    }
-
-    /// Every parameter this expression names, as `(activation, slot)`. The
-    /// companion for a slot is a position, not a value, so whoever reads the
-    /// expression has to go and fetch what that position holds -- which is
-    /// the owning activation's own input evidence.
-    pub fn input_slots(&self, out: &mut Vec<(ActivationKey, usize)>) {
-        match self {
-            ReturnExpression::Bottom | ReturnExpression::Published(_) | ReturnExpression::Local(_) => {}
-            ReturnExpression::Input { activation, slot } => {
-                let named = (activation.clone(), *slot);
-                if !out.contains(&named) {
-                    out.push(named);
-                }
-            }
-            ReturnExpression::Union(branches) => branches.iter().for_each(|branch| branch.input_slots(out)),
-            ReturnExpression::Tuple(elems) => elems.iter().for_each(|elem| elem.input_slots(out)),
-            ReturnExpression::List(elem) | ReturnExpression::NonEmptyList(elem) => elem.input_slots(out),
-            ReturnExpression::Map(fields) | ReturnExpression::Struct(_, _, fields) => {
-                fields.iter().for_each(|(_, value)| value.input_slots(out))
-            }
-            ReturnExpression::Project { of, .. } => of.input_slots(out),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationAnalysis {
     /// Correlated rows already read by the activation analysis.
@@ -1074,12 +837,6 @@ pub struct ActivationAnalysis {
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
     pub value_types: HashMap<ValueId, Ty>,
-    /// The symbolic companion of `value_types`'s return-carrying value: how
-    /// the activation's return type was produced, not just what it is. A
-    /// component solver reads this to substitute a sibling's settled
-    /// expression into a still-open `Local` reference; an ordinary
-    /// (non-member) activation never needs to read its own.
-    pub expression: ReturnExpression,
 }
 
 #[derive(Debug, Clone)]
@@ -1210,43 +967,45 @@ impl<K> Default for ContributionReplace<K> {
 /// rows, joined as a canonical antichain of alternatives (fz-9i4.7.10.2).
 pub type ActivationInputMap<P> = ContributionMap<ActivationKey, P, ActivationInputAlternatives>;
 
-/// Per-slot symbolic evidence for one activation's parameters, joined across
-/// every call site that has ever targeted it. Unlike `ActivationInputAlternatives`,
-/// this never widens or collapses rows: `SolveReturnComponent` needs a
-/// member's slot resolved to the exact shape every caller passed, not the
-/// budget-coarsened class the ordinary ground pipeline keeps for dispatch.
-/// A slot no contributor has addressed yet is `ReturnExpression::Bottom`,
-/// the same "no evidence" state `ReturnFlow` uses.
+/// Every call site that addresses one activation: the inverse of
+/// `CallSiteTargets`, keyed by the callee.
+///
+/// It exists for one reader. `SolveReturnComponent` answers a whole
+/// recursive-return component at once, and the set of members it answers for
+/// is discovered, not declared -- an activation minted later can call a member
+/// and so join the component after the owner has already solved. The owner's
+/// reads name the members it knew, so nothing it subscribed to moves on a
+/// newcomer's account. Reading this fact for each member is that subscription:
+/// the component owner re-solves when a member gains a caller.
+///
+/// It carries call sites and nothing else. What a caller PASSES is the
+/// argument skeleton, read statically off `FunctionSkeleton`, and what a
+/// callee RETURNS is its return skeleton. Neither is duplicated here.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ArgumentFlow(Vec<ReturnExpression>);
+pub struct Callers(BTreeSet<CallSiteKey>);
 
-impl ArgumentFlow {
-    pub fn from_slots(slots: Vec<ReturnExpression>) -> Self {
-        Self(slots)
+impl Callers {
+    pub fn of(site: CallSiteKey) -> Self {
+        Self(BTreeSet::from([site]))
     }
 }
 
-impl JoinContribution for ArgumentFlow {
+impl JoinContribution for Callers {
     type Ctx = Types;
 
     fn bottom() -> Self {
-        Self(Vec::new())
+        Self(BTreeSet::new())
     }
 
-    /// Per-slot union: a slot's evidence is the join of what every call site
-    /// that ever addressed it passed, one `ReturnExpression::union` at a
-    /// time, exactly the way a clause's own return paths join.
+    /// Set union. A caller is a caller however many rows or arms reach it, and
+    /// one that stops calling cannot unsay another's edge -- the same
+    /// cumulative rule the input evidence beside it follows.
     fn join_assign(&mut self, other: &Self, _ctx: &mut Types) {
-        if self.0.len() < other.0.len() {
-            self.0.resize(other.0.len(), ReturnExpression::Bottom);
-        }
-        for (slot, incoming) in self.0.iter_mut().zip(other.0.iter().cloned()) {
-            *slot = ReturnExpression::union(slot.clone(), incoming);
-        }
+        self.0.extend(other.0.iter().cloned());
     }
 }
 
-pub type ArgumentFlowMap<P> = ContributionMap<ActivationKey, P, ArgumentFlow>;
+pub type CallerMap<P> = ContributionMap<ActivationKey, P, Callers>;
 
 /// Past this many alternatives the antichain widens to its single column-wise
 /// joined row: termination is a theorem for every program, not a property of

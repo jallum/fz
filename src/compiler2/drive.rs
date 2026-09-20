@@ -315,8 +315,9 @@ pub enum FactKey {
     Activation(ActivationKey),
     ActivationInputs(ActivationKey),
     ActivationAnalyzed(ActivationKey),
+    /// Every call site that addresses this activation (`semantic::Callers`).
+    Callers(ActivationKey),
     ReturnType(ActivationKey),
-    ArgumentFlow(ActivationKey),
     CallSiteTargets(CallSiteKey),
     CallSiteSummary(CallSiteKey),
     Executable(ExecutableKey),
@@ -367,8 +368,8 @@ impl FactKey {
             (FactKey::Activation(left), FactKey::Activation(right))
             | (FactKey::ActivationInputs(left), FactKey::ActivationInputs(right))
             | (FactKey::ActivationAnalyzed(left), FactKey::ActivationAnalyzed(right))
-            | (FactKey::ReturnType(left), FactKey::ReturnType(right))
-            | (FactKey::ArgumentFlow(left), FactKey::ArgumentFlow(right)) => left.semantic_cmp(right, types),
+            | (FactKey::Callers(left), FactKey::Callers(right))
+            | (FactKey::ReturnType(left), FactKey::ReturnType(right)) => left.semantic_cmp(right, types),
             (FactKey::CallSiteTargets(left), FactKey::CallSiteTargets(right))
             | (FactKey::CallSiteSummary(left), FactKey::CallSiteSummary(right)) => left.semantic_cmp(right, types),
             (FactKey::CallableConstructionTarget(left), FactKey::CallableConstructionTarget(right)) => {
@@ -425,7 +426,7 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::RuntimeDemandInputs(_) => 34,
         FactKey::TypeDeclared(_) => 35,
         FactKey::IncomingInputSlot(_) => 37,
-        FactKey::ArgumentFlow(_) => 38,
+        FactKey::Callers(_) => 38,
     }
 }
 
@@ -439,6 +440,7 @@ impl ClaimShape for FactKey {
             self,
             FactKey::ReturnType(_)
                 | FactKey::ActivationInputs(_)
+                | FactKey::Callers(_)
                 | FactKey::RuntimeDemandInput(_)
                 | FactKey::IncomingInputSlot(_)
         )
@@ -617,10 +619,10 @@ pub(crate) struct JobEffects {
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::semantic::ActivationInput>)>,
-    /// Per-slot symbolic argument evidence, one activation's worth of
-    /// per-parameter `ReturnExpression`s at a time -- the channel
-    /// `SolveReturnComponent` reads through `World::argument_flow`.
-    pub(crate) argument_flow_contributions: Vec<(ActivationKey, Vec<super::semantic::ReturnExpression>)>,
+    /// One call edge per entry, keyed by the CALLEE: the channel that keeps a
+    /// recursive-return component's owner subscribed to its members gaining
+    /// callers.
+    pub(crate) caller_contributions: Vec<(ActivationKey, CallSiteKey)>,
     pub(crate) runtime_demand_input_contributions: Vec<(ExecutableKey, super::semantic::TargetDemandContribution)>,
     pub(crate) incoming_input_contributions:
         std::collections::HashMap<super::incoming_inputs::InputSlot, super::incoming_inputs::IncomingInputSources>,
@@ -731,7 +733,6 @@ impl World {
                 self.seed_activation_producer(activation)
             }
             FactKey::ActivationAnalyzed(activation)
-            | FactKey::ArgumentFlow(activation)
             | FactKey::CallSiteTargets(CallSiteKey { activation, .. })
             | FactKey::CallSiteSummary(CallSiteKey { activation, .. }) => {
                 let activation = activation.clone();

@@ -129,15 +129,10 @@ entry on it would suppress siblings of the one starved path. The empty type
 appears only where it is earned: provider boundaries, unresolvable callable
 values, mailbox binds, and the root's public inputs.
 
-Absent evidence is the ascent's BOTTOM, and it is not the empty type. Every
-walked value carries a symbolic `ReturnExpression` companion beside its
-`Option<Ty>`, and the two stay in lock-step at every constructor
-(`SemanticValue::composed`): a tuple whose fields are not all observed has no
-type yet, but its companion is `Tuple` over the fields' own companions and its
-shape is exactly known. So a callsite whose callee has published nothing still
-yields a value -- companion `Local(callee_activation)`, type `None` -- the
-clause carries on past it, and the callee's `Activation` and `CallSiteTargets`
-facts exist from the caller's FIRST walk. That is what lets
+Absent evidence is the ascent's BOTTOM, and it is not the empty type. A
+callsite whose callee has published nothing still yields a value -- type
+`None` -- so the clause carries on past it, and the callee's `Activation` and
+`CallSiteTargets` facts exist from the caller's FIRST walk. That is what lets
 `return_membership` see the whole system on its first query, so a component is
 solved once rather than growing a member at a time.
 
@@ -641,12 +636,10 @@ projection; a *guarded* edge crosses a constructor. A position is UNKNOWN
 when it sits on a cycle that carries at least one guarded edge -- such a
 cycle wraps another layer each turn, so its solution is a recursive type. A
 cycle of bare edges alone is settled by the ordinary join: the least solution
-of `rest = tail(rest) | [int]` is `[int]`, reached in one step. Asking this
-of the skeletons rather than of an activation is what keeps it stable: an
-answer read off an activation's own companions would be read from evidence
-the answer then destroys, because the moment a caller learns its callee is a
-member it re-keys that callee and the activation that carried the evidence
-stops being named.
+of `rest = tail(rest) | [int]` is `[int]`, reached in one step. The skeletons
+are the only thing there is to ask: a function's return has ONE lowering, and
+it is written before any activation of that function exists, which is what
+lets keying have the answer in its first round.
 
 A call made THROUGH a value names no callee in any body, so this walk cannot
 see past it: the arguments such a call hands on are recorded, and what it
@@ -679,11 +672,28 @@ component fact to retract.
 Ownership of each member's `ReturnType` follows that query directly (see
 *Ownership boundaries* below): `SolveReturnComponent(owner)` -- one job per
 component, keyed by its owner -- solves and publishes every member's
-`ReturnType` at once. It reads each member's `ActivationAnalysis` (waiting
-only if one is still missing entirely; a component cannot be solved from a
-partial membership) for its `ReturnExpression`, the same expression
-`AnalyzeActivation` already builds and stores there for every activation, in
-or out of a component. It never invents a second fact to carry it.
+`ReturnType` at once. It evaluates each member's static return skeleton
+under that member's own bindings, and every one of those bindings is a fact
+the walk already publishes: `ActivationAnalysis` (waiting only if one is
+still missing entirely; a component cannot be solved from a partial
+membership) binds a `Ground` leaf through `value_types` and says which
+entries the activation returns through via `reachable_entries`;
+`CallSiteTargets` binds a `Result` leaf to the activations that site
+addressed; `ActivationInputs` binds an `Input` slot to the evidence already
+standing at it, beside the arguments the member's callers hand it. It never
+invents a fact to carry a shape, and there is no second tree to keep in
+step.
+
+One more fact is read, and it carries no shape at all. Membership is
+discovered, not declared: an activation minted after the solve concludes can
+call a member and so join the component. Every binding above names only the
+members the solve already knew, so none of them moves on a newcomer's
+account, and the scheduler's rule that a concluded producer already
+subscribes to everything its conclusion depended on does not reach this case.
+`Callers` -- the inverse of `CallSiteTargets`, keyed by the callee -- closes
+it: the newcomer's call edge moves its callee's caller set, the owner
+re-solves, and rediscovers membership with the newcomer in it. The solve
+reads it for the movement, never for the value.
 
 The solve (`jobs/return_component.rs`) is a small fixpoint over the finite
 member set, not a re-run of type inference:
@@ -727,9 +737,9 @@ publishes every member's `ReturnType` in one atomic conclusion, so a reader
 waiting on any one member sees the whole component settle together.
 
 The same solve settles each member's own INPUT evidence: a member's slot
-equation is the join of every call site's argument expression, so its solution
-is the closed form of an accumulator that would otherwise be discovered one
-nesting at a time. It is contributed back through the ordinary
+equation is the join of every call site's argument skeleton, evaluated in
+the caller that made the call, so its solution is the closed form of an
+accumulator that would otherwise be discovered one nesting at a time. It is contributed back through the ordinary
 `ActivationInputs` join, one whole row per member -- and only when the solve
 named EVERY column of that row. A row is one correlated observation, so a
 member whose slots the system did not all reach contributes nothing rather

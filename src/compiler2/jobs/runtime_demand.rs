@@ -2548,9 +2548,7 @@ mod tests {
     #[test]
     fn first_class_capture_retention_joins_available_exact_targets_without_guessing_missing_inputs() {
         use crate::compiler2::identity::{ActivationKey, RootId};
-        use crate::compiler2::semantic::{
-            ActivationAnalysis, EntryReachability, ReturnExpression, RuntimeDemandTypeInputs,
-        };
+        use crate::compiler2::semantic::{ActivationAnalysis, EntryReachability, RuntimeDemandTypeInputs};
 
         let mut types = Types::new();
         let (any, int, atom) = (types.any(), types.int(), types.atom());
@@ -2571,7 +2569,6 @@ mod tests {
                 reachable_entries: Vec::new(),
                 callsites: Vec::new(),
                 value_types: HashMap::new(),
-                expression: ReturnExpression::Bottom,
             },
             body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
             entry_dispatch: None,

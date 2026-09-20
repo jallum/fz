@@ -591,3 +591,41 @@ fn a_guard_dispatch_never_reaches_still_names_a_system_of_one() {
         "the unreached clause contributes nothing, so the answer is the clause that runs",
     );
 }
+
+/// A member that joins a component AFTER its owner has already solved still
+/// gets its return answered.
+///
+/// `Map.keys/1` and `Map.to_list/1` walk the same recursive helper. Analysing
+/// the first mints that helper's activation into a component, which solves.
+/// Analysing the second reaches the SAME helper activation, so a brand-new
+/// activation joins a component whose owner has already concluded.
+///
+/// Every other fact the solve reads is read for its VALUE, and each of them
+/// names only the members the solve already knew -- so none of them can move
+/// on a newcomer's account, and `drive.rs`'s rule that a concluded producer
+/// subscribes to everything its conclusion depended on does not reach this
+/// case on its own. `Callers` is what closes it: the newcomer's call edge
+/// moves the member's caller set, the owner re-solves, and it rediscovers
+/// membership with the newcomer in it. Drop that read and this drive never
+/// publishes the second traversal's return at all.
+#[test]
+fn a_member_that_gains_a_caller_after_the_solve_still_gets_its_return() {
+    let (mut compiler, settled, analyzed) = drive_fixture(
+        "later_caller_joins_return_component.fz",
+        include_str!("../../../fixtures2/behavior/later_caller_joins_return_component.fz"),
+    );
+    let settled = settled.borrow();
+    let world = compiler.world_mut();
+
+    let analyzed = analyzed.borrow();
+    let stranded: Vec<&ActivationKey> = analyzed
+        .iter()
+        .filter(|key| world.return_component(key).is_some())
+        .filter(|key| !settled.contains(*key))
+        .collect();
+    assert!(
+        stranded.is_empty(),
+        "every activation on a return component is some owner's obligation, so none may finish \
+         the drive unanswered; these did: {stranded:?}",
+    );
+}
