@@ -13,8 +13,7 @@
 //! a list tail, a map value and a bitstring field are positions the lattice
 //! cannot name, so a question reached through one of them collapses to `Whole`.
 //! `demand_at_step` turns one step and the demand beyond it into the demand on
-//! the value the step was taken from, and `demand_at_path` folds a whole path
-//! that way, from its end back to the value it started from.
+//! the value the step was taken from.
 
 use std::collections::BTreeMap;
 
@@ -84,14 +83,6 @@ pub(crate) fn demand_at_step(step: &DemandPathStep, demand: DispatchDemand) -> D
         | DemandPathStep::StructField
         | DemandPathStep::BitstringField => DispatchDemand::Whole,
     }
-}
-
-/// The same, for a whole path: the demand at the path's end travels back
-/// through each step to the value the path started from.
-pub(crate) fn demand_at_path(path: &[DemandPathStep], demand: DispatchDemand) -> DispatchDemand {
-    path.iter()
-        .rev()
-        .fold(demand, |demand, step| demand_at_step(step, demand))
 }
 
 #[cfg(test)]

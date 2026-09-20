@@ -1,4 +1,4 @@
-use super::{DemandPathStep, DispatchDemand, demand_at_path};
+use super::{DemandPathStep, DispatchDemand, demand_at_step};
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringExtraction, BitstringFieldKind, BitstringFieldShape, ProjectionKind,
 };
@@ -14,11 +14,11 @@ fn a_demand_descends_through_tuple_fields_and_list_heads_and_stops_everywhere_el
     let mut second_field = BTreeMap::new();
     second_field.insert(1, DispatchDemand::Whole);
     assert_eq!(
-        demand_at_path(&[DemandPathStep::TupleField(1)], DispatchDemand::Whole),
+        demand_at_step(&DemandPathStep::TupleField(1), DispatchDemand::Whole),
         DispatchDemand::TupleFields(second_field)
     );
     assert_eq!(
-        demand_at_path(&[DemandPathStep::ListHead], DispatchDemand::Whole),
+        demand_at_step(&DemandPathStep::ListHead, DispatchDemand::Whole),
         DispatchDemand::ListShape(Box::new(DispatchDemand::Whole))
     );
 
@@ -28,10 +28,8 @@ fn a_demand_descends_through_tuple_fields_and_list_heads_and_stops_everywhere_el
         DemandPathStep::MapValue,
         DemandPathStep::BitstringField,
     ] {
-        assert_eq!(
-            demand_at_path(&[collapsing, DemandPathStep::TupleField(0)], DispatchDemand::Whole),
-            DispatchDemand::Whole
-        );
+        let inner = demand_at_step(&DemandPathStep::TupleField(0), DispatchDemand::Whole);
+        assert_eq!(demand_at_step(&collapsing, inner), DispatchDemand::Whole);
     }
 }
 

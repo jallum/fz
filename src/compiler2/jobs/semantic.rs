@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry};
 use crate::ast::{BinOp, UnOp};
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
+use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 
@@ -23,6 +24,7 @@ use super::super::identity::{
     ActivationKey, ActivationSignature, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
 };
 use super::super::protocol::ProtocolCallbackImpl;
+use super::super::return_unknowns::KeyShape;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, ActivationInput, ActivationInputAlternatives, CallSiteKey, CallSiteResolution, CallSiteSummary,
@@ -1421,7 +1423,6 @@ fn resolve_direct_call(
         tel,
         caller,
         function,
-        callsite,
         0,
         arg_inputs,
         callsite.span(),
@@ -1549,7 +1550,6 @@ fn resolve_function_call(
     tel: &impl crate::telemetry::Telemetry,
     caller: &ActivationKey,
     function: FunctionId,
-    callsite: CallSiteId,
     argument_offset: usize,
     input_evidence: Vec<ActivationInput>,
     call_span: Span,
@@ -1564,7 +1564,6 @@ fn resolve_function_call(
             caller,
             function,
             callback.protocol,
-            callsite,
             argument_offset,
             input_evidence,
             call_span,
@@ -1606,15 +1605,8 @@ fn resolve_function_call(
             Some(return_ty),
         ));
     }
-    let (activation, return_evidence) = prepare_function_call(
-        world,
-        caller,
-        function,
-        callsite,
-        argument_offset,
-        &input_evidence,
-        reads,
-    );
+    let (activation, return_evidence) =
+        prepare_function_call(world, caller, function, argument_offset, &input_evidence, reads);
     let return_ty = refine_call_return(world, return_evidence, contract_return_ty);
     let activation_inputs = if callee_extern_params(world, function).is_some() {
         boundary_surface_inputs(world, &input_evidence)
@@ -1649,7 +1641,6 @@ fn resolve_protocol_call(
     caller: &ActivationKey,
     callback_function: FunctionId,
     protocol: ModuleId,
-    callsite: CallSiteId,
     argument_offset: usize,
     input_evidence: Vec<ActivationInput>,
     call_span: Span,
@@ -1759,7 +1750,6 @@ fn resolve_protocol_call(
             world,
             caller,
             selected.function,
-            callsite,
             argument_offset,
             &refined_evidence,
             reads,
@@ -1963,7 +1953,6 @@ fn resolve_closure_call(
             tel,
             caller,
             function,
-            callsite,
             captures_len,
             input_evidence,
             callsite.span(),
@@ -2317,47 +2306,95 @@ fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>)
 }
 /// The key coordinates one call site hands its callee, one per argument.
 ///
-/// Every coordinate comes from the same function, `KeyShape::coordinate`,
-/// asked of the STATIC shape the call site's arguments have -- a fact about
-/// the two bodies involved, settled before either of them has an activation.
-/// A call site that hands on nothing the fixpoint is still solving keys
-/// verbatim; one that does keys that position on its address and everything
-/// beside it verbatim, because a value can be settled at one field and still
-/// climbing at the one beside it.
+/// This is the one place a key coordinate is decided, and every answer it
+/// gives is a fact about the CALLEE SLOT rather than about this call site.
+/// One slot gets one rule: a seed call handing `[]` and an ascent call
+/// handing `[x | acc]` must name the position the same way, or the seed keys
+/// apart from every round after it.
+///
+/// Two static questions decide a slot, in order.
+///
+/// The first: is the value that arrives here a position the fixpoint is still
+/// SOLVING? `FunctionUnknowns::input_shape` answers it from the callee's own
+/// return skeleton, joined over every call site that feeds the slot. A
+/// climbing position keys on its address variable, because what the walk
+/// observed there is how far the ascent has got rather than what the program
+/// denotes, and keying on it would mint one activation per round. A value can
+/// be settled at one field and climbing at the one beside it, so the answer
+/// descends.
+///
+/// The second, asked only where the first has settled everything: can a value
+/// at this slot be OBSERVED from outside the activation at all? Two things
+/// make it observable -- a dispatch question that reads it
+/// (`InputDemand::forwarded_dispatch`), or the callee's published return
+/// being built from it (`FunctionUnknowns::returns_input`). A slot neither of
+/// those reaches is FREIGHT: the value is carried and handed back to no one,
+/// so no code the callee compiles can depend on its type, and every value
+/// that arrives there deserves the same activation. Freight keys on the
+/// slot's bare address variable, which is what keeps a recursive accumulator
+/// from minting one activation per element type it is called with.
+///
+/// Because freight and a climbing whole slot want the same coordinate, the
+/// two questions fold into one `KeyShape` and one call to
+/// `KeyShape::coordinate` -- `Settled` there means "key on what arrived".
+///
+/// The observability question is asked at SLOT granularity. The dispatch half
+/// is type-shaped and could be read per path, but the return half is a
+/// reachability answer over static positions, and a body only has positions
+/// for the places it actually projects. Asking at the slot keeps the two
+/// halves the same shape, and it over-reads rather than under-reads: a slot
+/// whose return-flow touches one field keys the whole slot verbatim, which
+/// costs a key and never a wrong one.
 ///
 /// `argument_offset` is how many of `arg_inputs` the call site did not
 /// write: a closure call's captures sit ahead of its positional arguments in
-/// the callee's input space, and they are values already closed over, so
-/// nothing about them is still being solved.
+/// the callee's input space, and they are values already closed over, so the
+/// lambda's own activation has already named them.
 fn key_inputs_for_call(
     world: &mut World,
-    caller: &ActivationKey,
-    callsite: CallSiteId,
+    callee: FunctionId,
     argument_offset: usize,
     arg_inputs: &[ActivationInput],
 ) -> Vec<ActivationInput> {
-    let Some(unknowns) = world.return_unknowns(caller.function).cloned() else {
+    let Some(unknowns) = world.return_unknowns(callee).cloned() else {
         return arg_inputs.to_vec();
     };
-    if unknowns.callsite(callsite).is_none() {
-        return arg_inputs.to_vec();
-    }
+    let observable = observable_inputs(world, callee, arg_inputs.len());
     let mut path = Vec::new();
     arg_inputs
         .iter()
         .enumerate()
         .map(|(slot, input)| {
-            let Some(index) = slot.checked_sub(argument_offset) else {
-                return input.clone();
-            };
-            let shape = unknowns.argument(callsite, index);
-            if shape.is_settled() {
+            if slot < argument_offset {
                 return input.clone();
             }
+            let shape = match (unknowns.input_shape(slot), observable[slot]) {
+                (KeyShape::Settled, false) => &KeyShape::Unknown,
+                (shape, _) => shape,
+            };
             path.clear();
             path.push(AddrStep::Param(slot as u16));
             let coordinate = shape.coordinate(world.types_mut(), input.ty(), &mut path);
             input.clone().with_ty(coordinate)
+        })
+        .collect()
+}
+
+/// Which of a callee's slots hold a value anything can read: one a dispatch
+/// question reaches, or one its published return is built from. Absent facts
+/// answer "observable", so a slot is only ever addressed on a proven answer.
+fn observable_inputs(world: &World, callee: FunctionId, len: usize) -> Vec<bool> {
+    let demand = world.input_demand(callee);
+    let unknowns = world.return_unknowns(callee);
+    (0..len)
+        .map(|slot| {
+            let dispatched = demand.is_none_or(|demand| {
+                demand
+                    .forwarded_dispatch
+                    .get(slot)
+                    .is_none_or(DispatchDemand::asks_anything)
+            });
+            dispatched || unknowns.is_none_or(|unknowns| unknowns.returns_input(slot))
         })
         .collect()
 }
@@ -2369,12 +2406,11 @@ fn prepare_function_call(
     world: &mut World,
     caller: &ActivationKey,
     function: FunctionId,
-    callsite: CallSiteId,
     argument_offset: usize,
     arg_inputs: &[ActivationInput],
     reads: &mut Vec<FactKey>,
 ) -> (ActivationKey, Option<Ty>) {
-    let key_inputs = key_inputs_for_call(world, caller, callsite, argument_offset, arg_inputs);
+    let key_inputs = key_inputs_for_call(world, function, argument_offset, arg_inputs);
     let activation = world.activation_key_for_inputs(caller.root, function, &key_inputs);
     // The read is the subscription that re-wakes this caller when the
     // callee's return evidence rises — chaotic iteration needs no wait here,

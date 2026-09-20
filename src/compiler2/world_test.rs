@@ -188,14 +188,11 @@ fn withdrawing_an_activation_return_derivation_clears_its_payload() {
     );
 }
 
-/// The demand fact a body that forwards NOTHING and returns none of its own
-/// inputs publishes: what its own clauses ask about its inputs is the whole of
-/// what anything asks about them, so both dispatch halves of `InputDemand`
-/// carry the same mask (fz-kdt.183) and the `returned` axis is empty
-/// (fz-kdt.199).
+/// The demand fact a body that forwards NOTHING publishes: what its own
+/// clauses ask about its inputs is the whole of what anything asks about them,
+/// so both halves of `InputDemand` carry the same mask.
 fn unforwarded_demand(mask: Vec<DispatchDemand>) -> InputDemand {
     InputDemand {
-        returned: vec![DispatchDemand::Ignore; mask.len()],
         local_dispatch: mask.clone(),
         forwarded_dispatch: mask,
     }
@@ -680,8 +677,12 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
     );
 }
 
+/// A key NAMES an activation; evidence says what actually arrived at it.
+/// They are two facts, and publishing evidence materializes its own: what
+/// comes back out is exactly what the caller put in, whatever coordinate the
+/// key chose for the same slot.
 #[test]
-fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() {
+fn compiler2_activation_inputs_are_published_as_their_own_fact() {
     let _tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
@@ -695,14 +696,9 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
     ));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Ignore])));
 
-    // A recursive fn's UNDEMANDED slot collapses to its convergence class
-    // in the KEY (list(int) -> list(any)), while the body-input EVIDENCE
-    // keeps the precise type. (Numeric literals no longer exist to widen;
-    // the list collapse is the surviving canonicalization.)
     let int = world.types_mut().int();
     let raw_input = world.types_mut().list(int);
     let key = world.activation_key(root, function, &[raw_input]);
-    let canonical_input = key.inputs()[0];
 
     world.complete_job(
         Job::SeedRoot(root),
@@ -719,104 +715,6 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
         observed_inputs,
         vec![raw_input],
         "activation body evidence should preserve the published caller input",
-    );
-    assert!(
-        !world.types().is_equivalent(&canonical_input, &observed_inputs[0]),
-        "recursive key convergence should not overwrite the separate activation-input evidence",
-    );
-}
-
-#[test]
-fn compiler2_recursive_activation_key_ignores_accumulator_list_shape() {
-    let _tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
-    let function = world.reference_function(ModuleId::GLOBAL, "partition", 4);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: true,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(
-        function,
-        unforwarded_demand(vec![
-            DispatchDemand::Whole,
-            DispatchDemand::ListShape(Box::new(DispatchDemand::Whole)),
-            DispatchDemand::Ignore,
-            DispatchDemand::Ignore,
-        ]),
-    ));
-
-    let int = world.types_mut().int();
-    let list_int = world.types_mut().list(int);
-    let empty = world.types_mut().empty_list();
-    let non_empty = world.types_mut().non_empty_list(int);
-
-    let initial = world.activation_key(root, function, &[int, non_empty, empty, empty]);
-    let lo_accumulated = world.activation_key(root, function, &[int, list_int, non_empty, empty]);
-    let hi_accumulated = world.activation_key(root, function, &[int, list_int, empty, non_empty]);
-
-    assert_eq!(
-        initial, lo_accumulated,
-        "ignored accumulator list shape must not split recursive activation keys",
-    );
-    assert_eq!(
-        initial, hi_accumulated,
-        "ignored accumulator list shape must not split recursive activation keys",
-    );
-}
-
-#[test]
-fn compiler2_recursive_activation_key_ignores_tuple_accumulator_list_shape() {
-    let _tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
-    let function = world.reference_function(ModuleId::GLOBAL, "split_while_cont", 3);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: true,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(
-        function,
-        unforwarded_demand(vec![
-            DispatchDemand::ListShape(Box::new(DispatchDemand::Ignore)),
-            DispatchDemand::Ignore,
-            DispatchDemand::Ignore,
-        ]),
-    ));
-
-    let int = world.types_mut().int();
-    let list_int = world.types_mut().list(int);
-    let empty = world.types_mut().empty_list();
-    let non_empty = world.types_mut().non_empty_list(int);
-    let initial_acc = world.types_mut().tuple(&[empty, empty]);
-    let left_accumulated = world.types_mut().tuple(&[non_empty, empty]);
-    let right_accumulated = world.types_mut().tuple(&[empty, non_empty]);
-    let callable_a = {
-        let result = world.types_mut().atom_lit("cont");
-        world.types_mut().arrow(&[int], result)
-    };
-    let callable_b = {
-        let result = world.types_mut().atom_lit("halt");
-        world.types_mut().arrow(&[int], result)
-    };
-
-    let initial = world.activation_key(root, function, &[list_int, initial_acc, callable_a]);
-    let left = world.activation_key(root, function, &[list_int, left_accumulated, callable_a]);
-    let right = world.activation_key(root, function, &[list_int, right_accumulated, callable_b]);
-
-    assert_eq!(
-        initial, left,
-        "ignored tuple accumulator list shape must not split recursive activation keys",
-    );
-    assert_eq!(
-        initial, right,
-        "ignored callable surface details must not split recursive activation keys",
     );
 }
 

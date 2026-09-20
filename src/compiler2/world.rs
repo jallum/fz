@@ -1099,21 +1099,10 @@ impl World {
                 .iter()
                 .map(super::semantic::ActivationInput::ty)
                 .collect::<Vec<_>>();
+            // Evidence is the PRECISE arrow: it states what actually arrived,
+            // whatever the key chose to name. Widening it here would erase the
+            // very types transport and runtime demand read back.
             let normalized = self.types.address_inputs(&raw_inputs);
-            let normalized = if self
-                .body_keying(activation.function)
-                .is_some_and(|keying| keying.recursive)
-            {
-                // The evidence collapse mirrors the KEY collapse, so it reads
-                // the same half of the demand fact the key does.
-                let mask = self
-                    .input_demand(activation.function)
-                    .map(|demand| demand.forwarded_dispatch.clone())
-                    .unwrap_or_else(|| vec![DispatchDemand::Whole; normalized.len()]);
-                self.types.convergence_collapse_evidence_inputs(&normalized, &mask)
-            } else {
-                normalized
-            };
             // Each contribution stays one correlated row (fz-9i4.7.10.2):
             // a publisher's second row for the same activation is an
             // ALTERNATIVE, never a column-wise blend of the two.
@@ -2271,7 +2260,19 @@ impl World {
             waits.insert(input_demand);
         }
 
-        recursive_ready && input_demand_ready
+        // The key asks this callee whether its own return is built from each
+        // slot, so the answer has to be in before any caller mints a key for
+        // it. The fact is derived from static skeletons alone, so waiting on
+        // it cannot wait on an activation.
+        let return_unknowns = FactKey::ReturnUnknowns(function);
+        let return_unknowns_ready = self.has_fact(&return_unknowns);
+        if return_unknowns_ready {
+            reads.push(return_unknowns);
+        } else {
+            waits.insert(return_unknowns);
+        }
+
+        recursive_ready && input_demand_ready && return_unknowns_ready
     }
 
     pub(crate) fn lookup_callable_namespace(
@@ -2529,67 +2530,46 @@ impl World {
             callable_surfaces,
             &mut self.types,
         );
-        if !keying.recursive {
-            // A non-recursive body that never consumes callable identity only
-            // TRANSPORTS the closures that reach it, so WHICH lambda arrived
-            // is freight: erase the brands from non-dispatch slots and every
-            // same-shape lambda shares one activation (fz-6gb). What it closed
-            // over is NOT freight -- the capture types survive the erasure, so
-            // a forwarder handed one lambda at two capture types keys one body
-            // per type and its callees stay grounded (fz-kdt.127). A consuming
-            // body keeps the precise key -- its specializations buy direct
-            // dispatch. Evidence is precise either way.
-            //
-            // Brand erasure asks the LOCAL question: "does a clause of THIS
-            // body test this slot" (fz-6gb). What a callee downstream demands
-            // of the slot is a different question, and keying the erasure off
-            // it would un-share a forwarder that only transports its callable
-            // (fz-kdt.183: `fwd(f, x)` splits into one activation per lambda
-            // once `apply2/2`'s `:none` test raises the slot).
-            if keying.consumes_callable_identity {
-                return key;
-            }
-            let inputs = self
-                .types
-                .erase_transported_closure_identity_inputs(key.inputs(), &demand.local_dispatch);
-            // A forwarding body does not inspect a locally-ignored callable
-            // slot. Its observed call surfaces remain on `ActivationInputs`
-            // for the downstream call, but they are freight to THIS key just
-            // like the closure brand. Otherwise the carrier would split the
-            // very forwarder the value coordinates just proved equivalent.
-            let callable_surfaces = key
-                .callable_surfaces
-                .iter()
-                .enumerate()
-                .map(|(slot, surfaces)| {
-                    matches!(demand.local_dispatch.get(slot), Some(DispatchDemand::Ignore))
-                        .then(Default::default)
-                        .unwrap_or_else(|| surfaces.clone())
-                })
-                .collect();
-            return super::identity::ActivationKey {
-                signature: super::identity::ActivationSignature {
-                    inputs,
-                    result: key.signature.result,
-                },
-                callable_surfaces,
-                ..key
-            };
+        // The VALUE coordinates arrive already decided. `key_inputs_for_call`
+        // asked the two static questions -- is this position still climbing,
+        // and can anything observe what arrives here -- and named each slot
+        // accordingly, so there is nothing left for the key to collapse. What
+        // remains is the one question a call site cannot answer for itself.
+        //
+        // A body that never consumes callable identity only TRANSPORTS the
+        // closures that reach it, so WHICH lambda arrived is freight: erase
+        // the brands from non-dispatch slots and every same-shape lambda
+        // shares one activation. What it closed over is NOT freight -- the
+        // capture types survive the erasure, so a forwarder handed one lambda
+        // at two capture types keys one body per type and its callees stay
+        // grounded. A consuming body keeps the precise key: its
+        // specializations buy direct dispatch. Evidence is precise either way.
+        //
+        // Brand erasure asks the LOCAL question, "does a clause of THIS body
+        // test this slot". What a callee downstream demands of the slot is a
+        // different question, and keying the erasure off it would un-share a
+        // forwarder that only transports its callable.
+        if keying.consumes_callable_identity {
+            return key;
         }
-        // Bounded specialization: the dispatch KEY is a coordinate
-        // convergence collapse of that evidence — recursive slots nothing
-        // demands widen to their convergence class so the ascent settles. Key
-        // != evidence is intentional; the precise arrow stays in
-        // `ActivationInputs`.
         let inputs = self
             .types
-            .convergence_collapse_inputs(key.inputs(), &demand.forwarded_dispatch, &demand.returned);
-        // Recursive keying deliberately converges value coordinates to a
-        // bounded class. Callable observations are retained by the precise
-        // activation rows and feed the child calls they reach; making them
-        // recursive-key coordinates would bypass that bound and manufacture a
-        // fresh self activation for every observed closure surface.
-        let callable_surfaces = vec![std::collections::BTreeSet::new(); inputs.len()].into_boxed_slice();
+            .erase_transported_closure_identity_inputs(key.inputs(), &demand.local_dispatch);
+        // A forwarding body does not inspect a locally-ignored callable slot.
+        // Its observed call surfaces remain on `ActivationInputs` for the
+        // downstream call, but they are freight to THIS key just like the
+        // closure brand. Otherwise the carrier would split the very forwarder
+        // the value coordinates just proved equivalent.
+        let callable_surfaces = key
+            .callable_surfaces
+            .iter()
+            .enumerate()
+            .map(|(slot, surfaces)| {
+                matches!(demand.local_dispatch.get(slot), Some(DispatchDemand::Ignore))
+                    .then(Default::default)
+                    .unwrap_or_else(|| surfaces.clone())
+            })
+            .collect();
         super::identity::ActivationKey {
             signature: super::identity::ActivationSignature {
                 inputs,

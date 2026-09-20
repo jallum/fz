@@ -1,0 +1,10 @@
+#---
+# purpose: "a recursive slot nothing reads and nothing returns is freight: both callers key one activation"
+#---
+def carry(0, junk), do: 0
+def carry(n, junk), do: carry(n - 1, junk)
+
+def main() do
+  dbg(carry(3, [1, 2]))
+  dbg(carry(3, ["a", "b"]))
+end

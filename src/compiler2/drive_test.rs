@@ -675,8 +675,11 @@ fn compiler2_inline_bitstring_recipes_have_distinct_subjects() {
     );
 }
 
+/// A clause whose body is a `case` that binds the whole input and hands it
+/// back still counts as returning that input: the inlining that removes the
+/// binding must not remove the flow it stood for.
 #[test]
-fn compiler2_inline_forwarding_preserves_input_return_demand() {
+fn compiler2_inline_forwarding_preserves_return_flow() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -693,13 +696,12 @@ fn compiler2_inline_forwarding_preserves_input_return_demand() {
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42));
     let forward = function_id(&functions, "forward", 1);
-    assert_eq!(
+    assert!(
         compiler
             .world()
-            .input_demand(forward)
-            .expect("forward demand settled")
-            .returned,
-        [crate::dispatch_matrix::demand::DispatchDemand::Whole],
+            .return_unknowns(forward)
+            .expect("forward return unknowns settled")
+            .returns_input(0),
         "a winning whole-input binding forwards the original input into the return"
     );
 }
@@ -22243,36 +22245,33 @@ const ASCENT_RUNG_FIXTURES: &[&str] = &[
     "fixtures2/behavior/dead_closure_capture_empty_list.fz",
 ];
 
-/// fz-kdt.183 / fz-kdt.124: an ascent rung never climbs a slot nothing demands.
+/// An ascent rung never climbs a position the fixpoint is still solving.
 ///
 /// A RUNG is two keys of one function where one is the other with a list
 /// position EMPTIED -- `empty_list()` where the sibling has a list family that
 /// contains it. It exists because `list_element_type([])` is `none`, so `[]`
-/// never converges with `list(τ)`, and a slot that keeps its element therefore
-/// keys the accumulator's first call apart from every later one. That is
-/// fz-kdt.124's ladder. The distinct empty/list inputs remain honest keys;
-/// fz-kdt.182 removes only redundant union representatives of a later rung.
+/// never converges with `list(t)`, and a slot that keeps its element therefore
+/// keys an accumulator's first call apart from every later one. Those distinct
+/// empty/list inputs are honest keys: each names a value the callee sees.
 ///
-/// What THIS gate holds is the boundary fz-kdt.183 drew and fz-kdt.199 widened
-/// by one axis. A slot BOTH axes leave at `Ignore` is FREIGHT: the collapse
-/// maps every list family reaching it to one addressed class, so `[]` and
-/// `list(τ)` cannot key apart there, and a rung on such a slot would mean the
-/// collapse did not run. The measured count is 0 and it is 0 by construction,
-/// which is why the assertion is an emptiness and not a number.
+/// What THIS gate holds is the boundary the one keying rule draws. A call
+/// site's coordinate for an argument comes from `KeyShape::coordinate`, asked
+/// of the callee's static return skeleton, and an argument the skeleton leaves
+/// wholly `Unknown` becomes that position's bare ADDRESS VARIABLE. An address
+/// variable is neither `[]` nor a list family, so on a slot every call site in
+/// the program leaves `Unknown` there is nothing for a rung to climb. The
+/// measured count is 0 and it is 0 by construction, which is why the assertion
+/// is an emptiness and not a number. A second pass putting structure back over
+/// an unknown position would read here as `[]` beside `list(a_e)`.
 ///
-/// The six rungs fz-kdt.183 ADDED are all on demanded slots and all honest:
-/// `Map.to_list/4` slot 3 and `Map.reverse/2` slot 0 (map.fz's `reverse(acc,
-/// [])` forwards the accumulator into `Map.reverse/2`'s dispatch slot),
-/// `Range.slice_from/5` slot 4 and `Range.reverse/2` slot 0 (range.fz the
-/// same), and `Kernel.dbg/1` / `Kernel.fz_dbg_value/1` on
-/// `00277_enum_tier0_fixture`, whose final mask is `[Ignore]` on a
-/// NON-recursive body -- the key is precise evidence there and no mask plays
-/// any part. `Range.reduce/5`'s rung retires in the same motion. One
-/// accumulator per function, not a product: bounded by the rule's own law.
+/// A slot whose shape is a LIST of an unknown element is a different fact:
+/// there the skeleton asserts the structure, `list(a1_e)` is what the rule
+/// mints, and it may stand beside `empty_list()` honestly.
 #[test]
-fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
+fn compiler2_no_ascent_rung_sits_on_an_unsolved_position() {
+    use crate::compiler2::return_unknowns::KeyShape;
     let mut readings = 0_usize;
-    let mut on_freight = Vec::new();
+    let mut on_unsolved = Vec::new();
     for fixture in ASCENT_RUNG_FIXTURES {
         let (compiler, program) = driven_backend_program(fixture);
         let world = compiler.world();
@@ -22296,15 +22295,16 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
                 seen.push(columns);
             }
         }
+        // Whether the callee's own answer leaves a slot wholly for the
+        // fixpoint to solve. The fact is per SLOT, joined over every call
+        // site that feeds it, so there is one answer to read rather than a
+        // quorum to take.
+        let unsolved = |function: &crate::compiler2::FunctionId, slot: usize| {
+            world
+                .return_unknowns(*function)
+                .is_some_and(|unknowns| matches!(unknowns.input_shape(slot), KeyShape::Unknown))
+        };
         for (function, columns) in &columns_by_function {
-            if !world.body_keying(*function).is_some_and(|keying| keying.recursive) {
-                // A non-recursive key is precise evidence; no collapse runs and
-                // the demand plays no part in it.
-                continue;
-            }
-            let demand = world
-                .input_demand(*function)
-                .expect("a keyed activation should have published its input demand");
             for low in columns {
                 for high in columns {
                     for (slot, (low, high)) in low.iter().zip(high.iter()).enumerate() {
@@ -22312,21 +22312,10 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
                             continue;
                         }
                         readings += 1;
-                        let ignored = |axis: &Vec<crate::dispatch_matrix::demand::DispatchDemand>| {
-                            matches!(
-                                axis.get(slot),
-                                None | Some(crate::dispatch_matrix::demand::DispatchDemand::Ignore)
-                            )
-                        };
-                        // A rung may sit on a slot EITHER axis names: the
-                        // dispatch axis keeps a demanded list's element, and
-                        // the `returned` axis keeps a returned position's
-                        // ground class (fz-kdt.199). Freight is the slot
-                        // neither names.
-                        if ignored(&demand.forwarded_dispatch) && ignored(&demand.returned) {
-                            on_freight.push(format!(
-                                "{fixture} {} slot {slot}: `{low}` keys apart from `{high}` on a slot \
-                                 nothing demands",
+                        if unsolved(function, slot) {
+                            on_unsolved.push(format!(
+                                "{fixture} {} slot {slot}: `{low}` keys apart from `{high}` on a position \
+                                 every call site leaves for the fixpoint to solve",
                                 crate::compiler2::canon::function_label(world, *function),
                             ));
                         }
@@ -22340,9 +22329,9 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
         ASCENT_RUNG_FIXTURES.len()
     );
     assert!(
-        on_freight.is_empty(),
-        "a freight slot collapses every list family to one addressed class, so a rung there means the \
-         collapse did not run: {on_freight:#?}",
+        on_unsolved.is_empty(),
+        "a position every call site leaves unsolved keys on its address variable, which is neither \
+         `[]` nor a list family, so a rung there means something minted structure over it: {on_unsolved:#?}",
     );
     assert!(
         readings > 0,
@@ -22438,69 +22427,61 @@ fn split_top_level(text: &str) -> Vec<&str> {
     parts
 }
 
-/// The keying laws fz-kdt.183 and fz-kdt.199 must hold in BOTH directions,
-/// each as the smallest program that states one: source, the function the law
-/// is about, and how many activations of it the program may key.
+/// The keying rule must hold in BOTH directions, each row the smallest
+/// program that states one: source, the function the law is about, and how
+/// many activations of it the program may key.
 ///
-/// The first four are the rules' LOWER bound -- a slot nothing demands and
-/// nothing returns is freight and must not split, which is what makes this a
-/// demand rule rather than "keep every element" (measured: keeping every list
-/// element splits `partition/4` 1 -> 4 and `split4/6` 1 -> 16, all bodies
-/// identical).
+/// There is ONE rule, and `key_inputs_for_call` is the only place it is
+/// applied. A call site asks two static questions of each argument. Is this
+/// position still climbing -- `KeyShape` from the callee's return skeleton?
+/// Then key on its ADDRESS, because what arrived is how far the ascent has
+/// got, not what the program denotes. Otherwise, can anything outside the
+/// activation observe what arrives here -- a dispatch question reaching the
+/// slot, or the callee's published return being built from it? Then key on
+/// the observed TYPE. A slot neither question reaches is freight, and keys on
+/// a bare address variable: every caller shares one activation.
 ///
-/// `tag/3`'s accumulator states fz-kdt.199's exclusion, and it is a COST law
-/// rather than a precision one. `tag/3` returns its accumulator, so the return
-/// does depend on a slot the key erases -- but the recursion SUPPLIES that
-/// slot, so the seed activation is the one every caller passes through and its
-/// `[]` is the same `[]` for all of them. Keying it mints one activation per
-/// ascent state (measured: three) and the seed still publishes the join, so the
-/// split is cost with nothing bought.
+/// The first four rows are the rule's LOWER bound. `carry/2`'s list is pure
+/// freight -- no clause tests it and no clause returns it -- and must not
+/// split, which is what makes this a demand rule rather than "keep every list
+/// element" (measured: keeping every element splits `partition/4` 1 -> 4 and
+/// `split4/6` 1 -> 16, all bodies identical).
 ///
-/// `fwd/2` is fz-6gb's law, and it is why `InputDemand`'s dispatch demand
-/// carries two halves. `fwd/2` only TRANSPORTS its callable: no clause of
-/// `fwd/2` tests it, so two same-shape lambdas must key one activation. But
-/// `apply2/2` -- which `fwd/2` forwards both slots to -- tests slot 0 against
-/// `:none`, so the FORWARDED demand on that slot is `Whole`. Erasing brands
-/// against the forwarded half would un-share `fwd/2` into one activation per
-/// lambda; erasing against the LOCAL half keeps fz-6gb's law intact while the
-/// key collapse still reads the forwarded demand.
+/// `tag/3`'s accumulator IS returned, so observability alone would key it.
+/// It stays at one because the first question answers first: each round conses
+/// onto it, so its position sits on a cycle crossing a constructor and is
+/// `KeyShape::Unknown`. Keying it on the arriving type would mint one
+/// activation per ascent state (measured: three), and the seed still publishes
+/// the join, so the split buys nothing. `split3/5` and `split4/6` say the same
+/// for three and four accumulators at once.
 ///
-/// The last three are the rules' UPPER bound: a position the activation
-/// RETURNS and the recursion does NOT supply must key its users apart, or one
-/// activation answers for both with the join of their returns (fz-kdt.199).
-/// `loop/2` states it at a whole slot and `walk/2` one tuple field down, where
-/// the key names the tag and the return IS the payload. `walk/2`'s four are two
-/// tags times two payload element types.
+/// `fwd/2` is why `InputDemand` carries two dispatch halves. `fwd/2` only
+/// TRANSPORTS its callable: no clause of `fwd/2` tests it, so two same-shape
+/// lambdas key one activation. `apply2/2` -- which `fwd/2` forwards both slots
+/// to -- does test slot 0 against `:none`, so the FORWARDED demand there is
+/// `Whole` and the slot is observable. The key therefore keeps the slot's
+/// type, and closure-brand erasure, which asks the LOCAL question, still
+/// erases the two lambdas' identities. Two questions, two answers, one key.
 ///
-/// `loop/2` is a CORRECTION of a landed law. fz-kdt.183 blessed exactly this
-/// program at ONE activation as its freight law. Measured on the tree that law
-/// landed on: `loop(0, junk), do: junk` keys one activation publishing
-/// `non_empty_list(binary) | non_empty_list(int)`, and a `@spec` consumer
-/// asking `[binary]` for the first user rejects the program with
-/// `error[spec/violation] ([binary] | [int])`. So the blessed row was pinning a
-/// live wrong-typing as correct: it was a COST law, not a correctness one, and
-/// this axis is what makes freight collapse safe. `carry/2` -- the same shape
-/// that does NOT return the slot -- is the true freight statement and stays
-/// at 1.
+/// The last three are the rule's UPPER bound: a position the activation hands
+/// back must key its users apart, or one activation answers for both with the
+/// JOIN of their returns. `loop/2` states it at a whole slot: one activation
+/// there publishes `non_empty_list(binary) | non_empty_list(int)`, and a
+/// `@spec` consumer asking `[binary]` for the first user rejects the program
+/// with `error[spec/violation] ([binary] | [int])`. `carry/2` -- the same
+/// shape that does NOT return the slot -- is the freight statement and stays
+/// at 1. `go/3` is a pure PERMUTATION whose base returns slot 1: the cycle
+/// crosses no constructor, so both slots are settled and the returned one keys.
+/// `walk/2` states it one tuple field down, where the key names the tag and
+/// the return IS the payload; its four are two tags times two payload element
+/// types.
 ///
-/// `go/3` states the exclusion's boundary. It is a pure PERMUTATION: each
-/// self-call hands a slot the value the caller held at the OTHER slot, so the
-/// recursion supplies neither and both stay carried. That is why the exclusion
-/// is a LEAST FIXPOINT over "held nowhere, or held only at supplied positions"
-/// rather than the eager "not held at this same position" -- the eager test
-/// marks both slots supplied here and re-blends the two users into the base's
-/// wrong diagnostic.
-///
-/// What these rows prove, stated exactly: for every shape here the published
-/// return depends only on what the key names. They do NOT prove the invariant
-/// in general. The exclusion reads SELF calls only, so a position supplied
-/// across a mutual cycle or through a generated lambda is keyed anyway (cost,
-/// never unsoundness -- fz-kdt.213), and the axis rides fz-kdt.183's dispatch
-/// edge set, which does not see a reconstructed or projected forwarding
-/// argument (a missed cure -- fz-kdt.214).
+/// Return flow composes on its own. It is reachability from `Return(f)` in the
+/// position graph, so a function that returns `g(x)` inherits whatever `g`
+/// does with its parameter without a second walk.
 const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
     (
-        "a slot no callee reads and the body does not return is freight",
+        "a slot nothing reads and nothing returns is freight",
         "carry/2",
         "def carry(0, junk), do: 0\n\
          def carry(n, junk), do: carry(n - 1, junk)\n\
@@ -22576,8 +22557,7 @@ const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
 ];
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
-fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
+fn compiler2_keys_one_activation_where_nothing_can_observe_the_slot() {
     let mut moved = Vec::new();
     for (law, label, source, expected) in ONE_ACTIVATION_KEYING_LAWS {
         let tel = ConfiguredTelemetry::new();
@@ -22617,10 +22597,10 @@ fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
     }
     assert!(
         moved.is_empty(),
-        "a slot is keyed on DEMAND, not on structure, and demand has TWO axes: a dispatch question \
-         reaching it (fz-kdt.183) or the published return being built from it and the recursion not \
-         supplying it (fz-kdt.199). A slot NEITHER axis reaches stays collapsed, and brand erasure \
-         keeps asking the local question: {moved:#?}",
+        "a slot is keyed on what can be OBSERVED there, not on the structure that arrives: a \
+         position the fixpoint is still solving keys on its address, one a dispatch question or a \
+         published return reaches keys on its type, and one neither reaches stays collapsed while \
+         brand erasure keeps asking the local question: {moved:#?}",
     );
 }
 

@@ -1,9 +1,10 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::mem;
 use std::slice;
 
 use super::*;
 use crate::compiler2::ModuleId;
+use crate::compiler2::return_unknowns::KeyShape;
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::finite_set::FiniteSet;
 use crate::runtime_type_predicate::{CallableShape, ListShape, ListShapes, RuntimeTypePredicate};
@@ -2727,235 +2728,6 @@ macro_rules! semantic_helper_conformance_tests {
             }
 
             #[test]
-            fn convergence_class_unifies_all_list_shapes_but_separates_other_families() {
-                let mut t = $ctor;
-                let int = t.int();
-                let empty = t.empty_list();
-                let nonempty = t.non_empty_list(int.clone());
-                let list = t.list(int.clone());
-                let empty_class = t.convergence_class(&empty);
-                let nonempty_class = t.convergence_class(&nonempty);
-                let list_class = t.convergence_class(&list);
-                assert!(t.is_equivalent(&empty_class, &nonempty_class));
-                assert!(t.is_equivalent(&nonempty_class, &list_class));
-                let joined = t.union(empty, nonempty);
-                let joined_class = t.convergence_class(&joined);
-                assert!(
-                    t.is_equivalent(&joined_class, &list_class),
-                    "empty | non-empty list unions should share the recursive list convergence class"
-                );
-
-                let tagged = t.tuple(&[int.clone(), int.clone()]);
-                let tagged_class = t.convergence_class(&tagged);
-                assert!(!t.is_equivalent(&tagged_class, &list_class));
-
-                let int_class = t.convergence_class(&int);
-                assert!(!t.is_equivalent(&int_class, &list_class));
-            }
-
-            #[test]
-            fn convergence_class_collapses_nested_list_and_callable_runtime_detail() {
-                let mut t = $ctor;
-                let int = t.int();
-                let empty = t.empty_list();
-                let nonempty = t.non_empty_list(int.clone());
-                let cont = t.atom_lit("cont");
-                let halt = t.atom_lit("halt");
-                let callable_a = t.arrow(std::slice::from_ref(&int), cont);
-                let callable_b = t.arrow(std::slice::from_ref(&int), halt);
-                let tuple_a = t.tuple(&[empty, callable_a]);
-                let tuple_b = t.tuple(&[nonempty, callable_b]);
-
-                let class_a = t.convergence_class(&tuple_a);
-                let class_b = t.convergence_class(&tuple_b);
-
-                assert!(
-                    t.is_equivalent(&class_a, &class_b),
-                    "ignored recursive tuple slots should collapse nested list/callable detail while preserving tuple family"
-                );
-            }
-
-            #[test]
-            fn convergence_class_collapses_a_list_family_across_nesting_depths() {
-                // `build(n, acc)` (each recursive round wraps
-                // `acc` in one more list, `build(n - 1, [acc])`) mints ONE
-                // shared activation key, because the INPUT-side gate
-                // (`convergence_class_at`, reached below through the public
-                // `Ignore`-demand key path) already folds a list family
-                // regardless of nesting depth. That shared key's RETURN
-                // evidence is a union of lists at different depths
-                // (`[int] | [[int]] | [[[int]]]`, one clause per depth), and
-                // it must fold the very same way. Before this fix,
-                // `convergence_class`'s list branch asked `as_pure_list`,
-                // which demands exactly ONE list clause, so a multi-depth
-                // union never matched it and the fold was a no-op — the
-                // return climbed one depth per round instead of converging.
-                let mut t = $ctor;
-                let int = t.int();
-                let list_int = t.list(int.clone());
-                let list_list_int = t.list(list_int.clone());
-                let list_list_list_int = t.list(list_list_int.clone());
-                let family = t.union(list_int.clone(), list_list_int.clone());
-                let family = t.union(family, list_list_list_int.clone());
-
-                assert_eq!(
-                    t.descr(&family).cases[0].structure.lists.len(),
-                    3,
-                    "the union must genuinely carry one clause per nesting depth before either gate runs"
-                );
-
-                let keyed = t.convergence_collapse_inputs(&[family], &[DispatchDemand::Ignore], &[]);
-                assert_eq!(
-                    t.descr(&keyed[0]).cases[0].structure.lists.len(),
-                    1,
-                    "the input-side gate already folds a list family across nesting depths to one clause"
-                );
-
-                let widened = t.convergence_class(&family);
-                assert_eq!(
-                    t.descr(&widened).cases[0].structure.lists.len(),
-                    1,
-                    "convergence_class must fold a list family across nesting depths the same way \
-                     convergence_class_at does, not leave every depth as its own clause: {}",
-                    t.display(&widened)
-                );
-                assert!(
-                    !t.is_equivalent(&widened, &family),
-                    "a no-op convergence_class leaves the return climbing one nesting depth per round \
-                     instead of converging to one list family"
-                );
-            }
-
-            #[test]
-            fn convergence_collapse_widens_only_non_dispatch_slots_of_the_arrow() {
-                // The dispatch KEY of a recursive activation is a whole-arrow
-                // collapse of its precise evidence arrow (fz-hwn.27.7): a
-                // non-dispatch list slot widens to its ADDRESSED convergence
-                // class so the recursive ascent settles, while dispatch slots and
-                // the result are preserved exactly. Here slot 0 dispatches and
-                // slot 1 does not, so slot 1's `list(int)` collapses to
-                // `list(a1_e)` — a resolvable element address var at the slot's
-                // structural address, not the path-blind `list(any)`
-                // (fz-f98.14.10.2). Breadth is still one address per position so
-                // fz-y6w termination holds.
-                let mut t = $ctor;
-                let int = t.int();
-                let list_int = t.list(int.clone());
-                let collapsed = t.convergence_collapse_inputs(
-                    &[list_int.clone(), list_int.clone()],
-                    &[DispatchDemand::Whole, DispatchDemand::Ignore],
-                    &[],
-                );
-
-                let params = collapsed.as_ref();
-                assert_eq!(t.display(&params[0]), "[int]");
-                assert_eq!(t.display(&params[1]), "[a1_e]");
-                assert_eq!(t.display(&int), "int");
-            }
-
-            #[test]
-            fn convergence_collapse_list_shape_keeps_element_but_not_recursive_list_shape() {
-                let mut t = $ctor;
-                let int = t.int();
-                let non_empty = t.non_empty_list(int.clone());
-                let list_int = t.list(int);
-                let joined_list_family = t.union(list_int, non_empty);
-                let collapsed = t.convergence_collapse_inputs(
-                    &[joined_list_family],
-                    &[DispatchDemand::ListShape(Box::new(DispatchDemand::Whole))],
-                    &[],
-                );
-
-                assert!(
-                    t.is_equivalent(&collapsed[0], &list_int),
-                    "recursive list-shape dispatch should converge joined list-family shape while preserving demanded element type"
-                );
-            }
-
-            #[test]
-            fn convergence_collapse_preserves_nested_dispatch_field_and_collapses_payload() {
-                let mut t = $ctor;
-                let elem = t.type_var(TypeVarId(0));
-                let payload = t.list(elem);
-                let tag = t.atom_lit("cont");
-                let state = t.tuple(&[tag, payload]);
-                let mut fields = BTreeMap::new();
-                fields.insert(0, DispatchDemand::Whole);
-                let collapsed = t.convergence_collapse_inputs(&[state], &[DispatchDemand::TupleFields(fields)], &[]);
-
-                // The dispatch tag (field 0) is preserved exactly; the ignored
-                // payload (field 1) collapses to its ADDRESSED class — the list
-                // element addressed at `[Param(0), Field(1), Elem]`, displayed
-                // `a0_1_e` — not the path-blind `list(any)` (fz-f98.14.10.2).
-                let params = collapsed.as_ref();
-                assert_eq!(
-                    t.display(&params[0]),
-                    "{:cont, [a0_1_e]}",
-                    "nested dispatch demand should preserve the tag and collapse the payload to its addressed class: {}",
-                    t.display(&params[0])
-                );
-            }
-
-            #[test]
-            fn convergence_collapse_tuple_union_arrow_roundtrips_through_address_inputs() {
-                // A multi-alternative tagged union slot collapsed by the recursive
-                // dispatch-key mint MUST round-trip through `address_inputs` (the
-                // canonical addresser, fz-hwn.27): the collapsed arrow is already
-                // canonically addressed, so re-addressing it is the identity. This
-                // fails if `convergence_collapse` omits the per-variant `Variant(k)`
-                // discriminator that `address_inputs` inserts when alternatives > 1
-                // (fz-go4.18.3.2.1).
-                let mut t = $ctor;
-                let elem = t.type_var(TypeVarId(0));
-                let payload = t.list(elem); // [T]
-                let cont = {
-                    let tag = t.atom_lit("cont");
-                    t.tuple(&[tag, payload])
-                };
-                let halt = {
-                    let tag = t.atom_lit("halt");
-                    t.tuple(&[tag, payload])
-                };
-                let union = t.union(cont, halt); // {:cont,[T]} | {:halt,[T]}
-                let mut fields = BTreeMap::new();
-                fields.insert(0, DispatchDemand::Whole); // tag dispatches, payload ignored
-                let collapsed = t.convergence_collapse_inputs(&[union], &[DispatchDemand::TupleFields(fields)], &[]);
-
-                let params = collapsed.as_ref();
-                let readdressed = t.address_inputs(params);
-                assert_eq!(
-                    readdressed, params,
-                    "collapsed union slot must be canonically addressed (round-trip): {} vs {}",
-                    t.display(&readdressed[0]),
-                    t.display(&params[0]),
-                );
-            }
-
-            #[test]
-            fn evidence_collapse_only_widens_variable_non_dispatch_payloads() {
-                let mut t = $ctor;
-                let int = t.int();
-                let concrete = t.list(int.clone());
-                let var = t.type_var(TypeVarId(0));
-                let variable = t.list(var);
-                let collapsed = t.convergence_collapse_evidence_inputs(
-                    &[concrete, variable],
-                    &[DispatchDemand::Ignore, DispatchDemand::Ignore],
-                );
-
-                let any = t.any();
-                let list_any = t.list(any);
-                assert!(
-                    t.is_equivalent(&collapsed[0], &concrete),
-                    "concrete non-dispatch evidence should stay precise"
-                );
-                assert!(
-                    t.is_equivalent(&collapsed[1], &list_any),
-                    "variable non-dispatch evidence should converge to list(any)"
-                );
-            }
-
-            #[test]
             fn refine_widen_recurses_into_tuple_fields() {
                 let mut t = $ctor;
                 let empty = t.empty_list();
@@ -5253,41 +5025,13 @@ mod brand_lattice_law {
     }
 
     #[test]
-    fn convergence_preserves_brand_constraints() {
-        let mut t = Types::new();
-        let int = t.int();
-        let list_int = t.list(int);
-        let branded_list = t.mint_brand(list_int, "A");
-        let collapsed = t.convergence_class(&branded_list);
-        let any = t.any();
-        let list_any = t.list(any);
-        let branded_family = t.mint_brand(list_any, "A");
-        assert!(t.is_subtype(&collapsed, &branded_family));
-        assert!(!t.is_equivalent(&collapsed, &list_any));
-
-        let tuple = t.tuple(&[list_int]);
-        let branded_tuple = t.mint_brand(tuple, "A");
-        let tuple_class = t.convergence_class(&branded_tuple);
-        let tuple_family = t.tuple(&[list_any]);
-        let branded_tuple_family = t.mint_brand(tuple_family, "A");
-        assert!(t.is_subtype(&tuple_class, &branded_tuple_family));
-        assert!(!t.is_equivalent(&tuple_class, &tuple_family));
-
-        let resource = t.resource(list_int);
-        let branded_resource = t.mint_brand(resource, "A");
-        let resource_class = t.convergence_class(&branded_resource);
-        let resource_family = t.resource(list_any);
-        let branded_resource_family = t.mint_brand(resource_family, "A");
-        assert!(t.is_subtype(&resource_class, &branded_resource_family));
-        assert!(!t.is_equivalent(&resource_class, &resource_family));
-
-        let addressed = t.convergence_collapse_inputs(&[branded_list], &[DispatchDemand::Ignore], &[]);
-        assert!(t.is_subtype(&addressed[0], &branded_family));
-        assert!(!t.is_equivalent(&addressed[0], &list_any));
-    }
-
-    #[test]
-    fn demanded_mixed_brand_lists_do_not_cross_elements() {
+    fn a_key_coordinate_never_invents_a_brand_element_pairing() {
+        // A slot whose value carries correlated brands -- `A` always over
+        // `[int]`, `B` always over `[atom]` -- must never key on a type that
+        // admits `A` over `[atom]`. There are exactly two coordinates a slot
+        // can get, and neither can invent the pairing: a settled position
+        // keys on what arrived, and an unsolved one keys on a bare address
+        // variable that mentions no brand at all.
         let mut t = Types::new();
         let int = t.int();
         let atom = t.atom();
@@ -5296,42 +5040,29 @@ mod brand_lattice_law {
         let a_int = t.mint_brand(list_int, "A");
         let b_atom = t.mint_brand(list_atom, "B");
         let joined = t.union(a_int, b_atom);
-
-        let collapsed = t.convergence_collapse_inputs(
-            &[joined],
-            &[DispatchDemand::ListShape(Box::new(DispatchDemand::Whole))],
-            &[],
-        );
         let a_atom = t.mint_brand(list_atom, "A");
         let b_int = t.mint_brand(list_int, "B");
-        assert!(t.is_subtype(&a_int, &collapsed[0]));
-        assert!(t.is_subtype(&b_atom, &collapsed[0]));
-        assert!(!t.is_subtype(&a_atom, &collapsed[0]));
-        assert!(!t.is_subtype(&b_int, &collapsed[0]));
+
+        let mut path = vec![AddrStep::Param(0)];
+        let settled = KeyShape::Settled.coordinate(&mut t, joined, &mut path);
+        assert_eq!(settled, joined, "a settled position keys on exactly what arrived");
+        assert!(t.is_subtype(&a_int, &settled));
+        assert!(t.is_subtype(&b_atom, &settled));
+        assert!(!t.is_subtype(&a_atom, &settled));
+        assert!(!t.is_subtype(&b_int, &settled));
+
+        let unsolved = KeyShape::Unknown.coordinate(&mut t, joined, &mut path);
+        assert_eq!(
+            unsolved,
+            t.address_var(&[AddrStep::Param(0)]),
+            "an unsolved position keys on the variable that addresses it"
+        );
+        assert!(
+            !t.is_subtype(&a_atom, &unsolved) || !t.is_subtype(&a_int, &unsolved),
+            "an address variable stands for one position, not a family of brandings: {}",
+            t.display(&unsolved)
+        );
     }
-
-    #[test]
-    fn addressed_returned_list_convergence_keeps_brand_element_correlation() {
-        let mut t = Types::new();
-        let int = t.int();
-        let atom = t.atom();
-        let list_int = t.list(int);
-        let list_atom = t.list(atom);
-        let red_int = t.mint_brand(list_int, "red");
-        let blue_atom = t.mint_brand(list_atom, "blue");
-        let joined = t.union(red_int, blue_atom);
-
-        // `returned = Whole` reaches `convergence_class_at(..., true)`, rather
-        // than the casewise `convergence_collapse_list_shape` path above.
-        let collapsed = t.convergence_collapse_inputs(&[joined], &[DispatchDemand::Ignore], &[DispatchDemand::Whole]);
-        let red_atom = t.mint_brand(list_atom, "red");
-        let blue_int = t.mint_brand(list_int, "blue");
-        assert!(t.is_subtype(&red_int, &collapsed[0]));
-        assert!(t.is_subtype(&blue_atom, &collapsed[0]));
-        assert!(!t.is_subtype(&red_atom, &collapsed[0]));
-        assert!(!t.is_subtype(&blue_int, &collapsed[0]));
-    }
-
     #[test]
     fn refine_widen_different_brand_partitions_keeps_correlated_union() {
         let mut t = Types::new();
