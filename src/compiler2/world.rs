@@ -971,18 +971,6 @@ impl World {
         self.activation_inputs.get(key)
     }
 
-    /// The joined symbolic evidence for an activation's parameter slots,
-    /// across every call site that has ever targeted it. Unlike
-    /// `activation_input_alternatives`, this channel never widens or
-    /// collapses rows — `SolveReturnComponent` reads it to name the exact
-    /// per-slot unknown a member's return equations depend on.
-    pub(crate) fn argument_flow(&self, key: &ActivationKey) -> Option<&ArgumentFlow> {
-        #[cfg(test)]
-        self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
-        self.fact_revision(&FactKey::ArgumentFlow(key.clone()))?;
-        self.argument_flow.get(key)
-    }
-
     /// The column-wise joined projection of the activation's input rows —
     /// correlation-blind by construction. Only for consumers whose question is
     /// genuinely per-column (transport lane typing), after semantic decisions.

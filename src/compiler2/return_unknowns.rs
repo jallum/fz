@@ -65,7 +65,7 @@ use std::rc::Rc;
 
 use super::body::{CallInputMode, CallSiteId};
 use super::identity::FunctionId;
-use super::return_skeleton::{FunctionSkeleton, Skeleton};
+use super::return_skeleton::{FunctionSkeleton, Returns, Skeleton};
 use super::semantic::ProjectStep;
 use super::types::{AddrStep, MapKey, Ty, Types};
 
@@ -89,13 +89,19 @@ enum Position {
 fn position_of(function: FunctionId, skeleton: &Skeleton) -> Option<Position> {
     match skeleton {
         Skeleton::Input(slot) => Some(Position::Slot(function, *slot)),
-        Skeleton::Result(callsite) => Some(Position::Result(function, *callsite)),
+        Skeleton::Result { callsite, .. } => Some(Position::Result(function, *callsite)),
         Skeleton::Project { .. } => Some(Position::Interior(function, skeleton.clone())),
         // A ground value, a constructor and a union carry their own answer
         // rather than pointing at another position, so there is no node to
         // name. What a constructor GUARDS is found by descending into it
         // (`guarded_positions`), never by asking it for a position.
-        Skeleton::Ground | Skeleton::Union(_) | Skeleton::Tuple(_) | Skeleton::List(_) | Skeleton::Map(_) => None,
+        Skeleton::Bottom
+        | Skeleton::Ground(_)
+        | Skeleton::Union(_)
+        | Skeleton::Tuple(_)
+        | Skeleton::List { .. }
+        | Skeleton::Map(_)
+        | Skeleton::Struct(_, _) => None,
     }
 }
 
@@ -122,8 +128,8 @@ fn collect_guarded(function: FunctionId, skeleton: &Skeleton, out: &mut Vec<Posi
                 collect_held(function, elem, out);
             }
         }
-        Skeleton::List(elem) => collect_held(function, elem, out),
-        Skeleton::Map(fields) => {
+        Skeleton::List { element, .. } => collect_held(function, element, out),
+        Skeleton::Map(fields) | Skeleton::Struct(_, fields) => {
             for (_, value) in fields {
                 collect_held(function, value, out);
             }
@@ -140,7 +146,9 @@ fn collect_held(function: FunctionId, skeleton: &Skeleton, out: &mut Vec<Positio
                 collect_held(function, alternative, out);
             }
         }
-        Skeleton::Tuple(_) | Skeleton::List(_) | Skeleton::Map(_) => collect_guarded(function, skeleton, out),
+        Skeleton::Tuple(_) | Skeleton::List { .. } | Skeleton::Map(_) | Skeleton::Struct(_, _) => {
+            collect_guarded(function, skeleton, out)
+        }
         _ => out.extend(position_of(function, skeleton)),
     }
 }
@@ -475,7 +483,16 @@ impl<'a> PositionGraph<'a> {
                 let Some(skeleton) = self.skeletons.get(function).cloned() else {
                     return out;
                 };
-                self.expand_into(from, *function, &skeleton.returns, &mut out, &mut seen);
+                // A declared return states its own answer and guards
+                // nothing, so it puts no branch on any cycle. The entries
+                // stay apart in the skeleton; the static question is asked
+                // of all of them at once, because which ones an activation
+                // reaches is not a static fact.
+                if let Returns::Entries(entries) = &skeleton.returns {
+                    for entry in entries.values() {
+                        self.expand_into(from, *function, entry, &mut out, &mut seen);
+                    }
+                }
             }
             Position::Slot(function, slot) => {
                 let feeds = self.slot_feeds.get(&(*function, *slot)).cloned().unwrap_or_default();
@@ -528,7 +545,7 @@ impl<'a> PositionGraph<'a> {
         seen: &mut HashSet<(FunctionId, Skeleton)>,
     ) {
         match skeleton {
-            Skeleton::Ground => {}
+            Skeleton::Bottom | Skeleton::Ground(_) => {}
             Skeleton::Union(branches) => {
                 for branch in branches.clone() {
                     self.expand_into(from, function, &branch, out, seen);
@@ -537,7 +554,7 @@ impl<'a> PositionGraph<'a> {
             // A bare reference carries no shape of its own: what it denotes
             // is what the position it names denotes, so its branches are
             // absorbed and the edge is recorded as unguarded.
-            Skeleton::Input(_) | Skeleton::Result(_) | Skeleton::Project { .. } => {
+            Skeleton::Input(_) | Skeleton::Result { .. } | Skeleton::Project { .. } => {
                 let Some(position) = position_of(function, skeleton) else {
                     return;
                 };
@@ -623,7 +640,7 @@ pub(crate) fn derive(skeletons: &HashMap<FunctionId, Rc<FunctionSkeleton>>, func
 /// token list however unsettled the tuple it is read out of.
 fn key_shape(unknown: &HashSet<Position>, function: FunctionId, skeleton: &Skeleton) -> KeyShape {
     match skeleton {
-        Skeleton::Ground => KeyShape::Settled,
+        Skeleton::Bottom | Skeleton::Ground(_) => KeyShape::Settled,
         Skeleton::Union(branches) => branches
             .iter()
             .map(|branch| key_shape(unknown, function, branch))
@@ -635,11 +652,11 @@ fn key_shape(unknown: &HashSet<Position>, function: FunctionId, skeleton: &Skele
                 .collect::<Vec<_>>();
             settle(shapes.iter().all(KeyShape::is_settled), KeyShape::Tuple(shapes))
         }
-        Skeleton::List(elem) => {
-            let shape = key_shape(unknown, function, elem);
+        Skeleton::List { element, .. } => {
+            let shape = key_shape(unknown, function, element);
             settle(shape.is_settled(), KeyShape::List(Box::new(shape)))
         }
-        Skeleton::Map(fields) => {
+        Skeleton::Map(fields) | Skeleton::Struct(_, fields) => {
             let shapes = fields
                 .iter()
                 .map(|(key, value)| (key.clone(), key_shape(unknown, function, value)))
@@ -649,7 +666,7 @@ fn key_shape(unknown: &HashSet<Position>, function: FunctionId, skeleton: &Skele
                 KeyShape::Map(shapes),
             )
         }
-        Skeleton::Input(_) | Skeleton::Result(_) | Skeleton::Project { .. } => {
+        Skeleton::Input(_) | Skeleton::Result { .. } | Skeleton::Project { .. } => {
             match position_of(function, skeleton).is_some_and(|position| unknown.contains(&position)) {
                 true => KeyShape::Unknown,
                 false => KeyShape::Settled,

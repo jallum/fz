@@ -281,8 +281,8 @@ fn false_embedding_solves_leaf_1_alone() {
 /// forever, with no base case on either side -- the shape source text cannot
 /// reach without diverging at runtime (any live call genuinely loops
 /// forever), so this exercises [`solve`] directly, the same algorithm
-/// `solve_return_component` calls after reducing a real component's
-/// `ActivationAnalysis` expressions to this shape. Every branch is guarded
+/// `solve_return_component` calls after binding a real component's static
+/// skeletons to what its members' walks observed. Every branch is guarded
 /// (a real, flattened branch, unlike a bare unguarded alias), so this is not
 /// the no-evidence bottom case (`unproductive_spin`'s shape, source-level
 /// tested in `fixtures2/behavior/unproductive_spin.fz`): each branch names a
@@ -298,34 +298,39 @@ fn productive_cycle_with_no_base_case_publishes_none() {
     let b = ActivationKey::from_inputs(RootId::for_test(0), FunctionId::from_coordinate(1), &[], &mut types);
     let members = vec![a.clone(), b.clone()];
     let member_set: HashSet<ActivationKey> = members.iter().cloned().collect();
-    let expressions = HashMap::from([
-        (
-            a.clone(),
-            ReturnExpression::Tuple(vec![
-                ReturnExpression::Published(wrap_tag),
-                ReturnExpression::Local(b.clone()),
-            ]),
-        ),
-        (
-            b.clone(),
-            ReturnExpression::Tuple(vec![
-                ReturnExpression::Published(wrap_tag),
-                ReturnExpression::Local(a.clone()),
-            ]),
-        ),
-    ]);
-    let externals = HashMap::new();
 
-    let solved = super::solve(
-        &members,
-        &member_set,
-        &expressions,
-        &[],
-        &HashMap::new(),
-        &externals,
-        &HashMap::new(),
-        &mut types,
-    );
+    // Each member's static shape: `{tag, <what my one call yields>}`. The
+    // tag is a ground value, answered by what the walk observed at it; the
+    // call is answered by the activation its call site addressed.
+    let tag = ValueId::from_u32(0);
+    let result = ValueId::from_u32(1);
+    let callsite = CallSiteId::from_u32(0);
+    let wrapping = |activation: &ActivationKey| {
+        Term::Shape(
+            activation.clone(),
+            Skeleton::Tuple(vec![
+                Skeleton::Ground(tag),
+                Skeleton::Result {
+                    callsite,
+                    value: result,
+                },
+            ]),
+        )
+    };
+    let bindings = Bindings {
+        value_types: HashMap::from([
+            (a.clone(), HashMap::from([(tag, wrap_tag)])),
+            (b.clone(), HashMap::from([(tag, wrap_tag)])),
+        ]),
+        results: HashMap::from([
+            ((a.clone(), callsite), vec![Term::Return(b.clone())]),
+            ((b.clone(), callsite), vec![Term::Return(a.clone())]),
+        ]),
+        returns: HashMap::from([(a.clone(), vec![wrapping(&a)]), (b.clone(), vec![wrapping(&b)])]),
+        ..Bindings::default()
+    };
+
+    let solved = solve(&members, &member_set, &bindings, &[], &mut types);
 
     assert_eq!(
         solved.returns.len(),

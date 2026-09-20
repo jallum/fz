@@ -1224,10 +1224,6 @@ impl ArgumentFlow {
     pub fn from_slots(slots: Vec<ReturnExpression>) -> Self {
         Self(slots)
     }
-
-    pub fn slot(&self, index: usize) -> Option<&ReturnExpression> {
-        self.0.get(index)
-    }
 }
 
 impl JoinContribution for ArgumentFlow {

@@ -1,0 +1,9 @@
+#---
+# purpose: "a projection out of an input feeds the return: second/1 returns field 1 of the tuple loop/1 hands it, and that projection sits on loop's productive cycle"
+#---
+def loop([]), do: {:done, 0}
+def loop([_ | t]), do: {:done, [second(loop(t))]}
+
+def second({_, b}), do: b
+
+def main(), do: dbg(loop([1, 2]))
