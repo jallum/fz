@@ -15928,11 +15928,6 @@ end
 }
 
 #[test]
-// Triaged 2026-08-24: blocked on fz-k22, not awaiting triage. It fails with
-// that ticket's exact signature -- "backend value ValueId(0) ... must be bound
-// before runtime use" (native.rs's unbound-value invariant) -- so this test is
-// one of fz-k22's detectors and re-enables with it.
-#[ignore = "blocked on fz-k22: generic Enum HOF leaves a backend value unbound"]
 fn compiler2_jit_and_backend_interp_agree_on_list_retention_exit_counters() {
     let source = r#"
 def ping(x), do: x
