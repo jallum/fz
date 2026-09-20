@@ -402,7 +402,6 @@ fn local_only_recursion_with_no_productive_branch_stays_bottom() {
 /// accumulator, and it is what BUILDS the next one, so the system that names
 /// the accumulator's type cannot be drawn without it.
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn enum_reverse_drives_list_reduce_cont_step_into_one_component() {
     let (mut compiler, settled, _analyzed) = drive_fixture(
         "enum_reverse_reduce_cycle.fz",

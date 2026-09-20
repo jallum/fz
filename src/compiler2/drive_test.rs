@@ -5797,7 +5797,6 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
 /// fresh-`Compiler2` hash seeds. Observed through the `native_program`
 /// telemetry product, not an internal projection hook.
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_native_program_resume_payload_shape_is_schedule_independent() {
     let delivered_tuple_field_continuation_arities = || -> Vec<usize> {
         let tel = ConfiguredTelemetry::new();
@@ -5876,7 +5875,6 @@ fn compiler2_native_program_resume_payload_shape_is_schedule_independent() {
 /// flip one of these on some schedule (collapsing the consumed tuple field to
 /// `Nothing`, or erasing the discarded zero-width continuation).
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_ignored_by_value() {
     let destination_passing_tuple_field_arities = || -> Vec<usize> {
         let tel = ConfiguredTelemetry::new();
@@ -5969,7 +5967,6 @@ fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -10640,9 +10637,9 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
     );
 }
 
-/// fz-hwn.19.3 -- a typed-capture closure that the compiler resolves to a known
-/// target is dispatched DIRECTLY; it does not publish an opaque first-class
-/// callable boundary.
+/// A typed-capture closure that the compiler resolves to a known target is
+/// dispatched directly; it does not publish an opaque first-class callable
+/// boundary.
 ///
 /// `add_to(x, y)` returns `fn (z) -> x + y + z`, and `apply1(f, x)` calls `f.(x)`.
 /// Because the closure's producer and call site are both visible, transport
@@ -10650,15 +10647,10 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
 /// `boundary_publication_count == 0`); `apply1`'s `f.(z)` lowers to a direct
 /// call to the lambda body, passing the captured `[x, y]` lanes straight through.
 ///
-/// The previous form of this test asserted the opposite -- that the program
-/// publishes a widened `ValueRef` opaque callable boundary -- which is provably
-/// wrong for this fixture: compiler2 never makes this closure opaque, so no such
-/// boundary exists (verified: `callable_boundaries` is empty). The settled
-/// callable-boundary *selection* this red-worklist entry was reaching for is the
-/// rematerialization path, now covered by
+/// This fixture publishes no callable boundary at all, so it says nothing about
+/// how a settled boundary is selected. That selection is the rematerialization
+/// path, covered by
 /// `compiler2_native_callable_materialization_selects_the_callableid_fact_boundary`.
-/// fz-hwn.19.5 removed the native-codegen return-shape vocabulary that kept
-/// this fixture from reaching JIT execution.
 #[test]
 fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_published_boundary() {
     let tel = ConfiguredTelemetry::new();
@@ -11906,7 +11898,6 @@ fn compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order() {
 /// The census is a RATCHET, not a target: a new entry under ANY setting is a
 /// new latent miscompile and wants a ticket, not a re-blessed constant.
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
     let settled = blind_escape_census();
     println!(
@@ -13839,7 +13830,6 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -19962,7 +19952,6 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_unproductive_deepening_settles_at_bottom() {
     // def deep(x), do: [deep(x)] — the inner call must produce a value before
     // the list ever exists, so this function NEVER returns: its least
@@ -19994,7 +19983,6 @@ fn compiler2_unproductive_deepening_settles_at_bottom() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_productive_deepening_converges_by_component_solve() {
     // def deep(0), do: []
     // def deep(n), do: [deep(n - 1)]
@@ -20040,7 +20028,6 @@ fn compiler2_productive_deepening_converges_by_component_solve() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_tuple_return_ladder_settles_via_component_solve() {
     // def build(0), do: :start
     // def build(n), do: {n, build(n - 1)}
@@ -20810,7 +20797,6 @@ fn compiler2_quicksort_return_revisions_stay_bounded() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_quicksort_converges_identically_on_every_schedule() {
     // The runaway was bimodal: per-process hash seeds picked the wake order,
     // and one order in a handful locked the engine into a period-2
@@ -23226,7 +23212,6 @@ fn compiler2_a_wrapped_recursive_return_is_solved_as_one_component() {
 /// the same conflation of unknown with empty that the bottom cures one layer
 /// down, and it is not cured by curing that layer.
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_a_wrapped_recursive_return_solves_its_component_once() {
     for fixture in [
         "fixtures2/behavior/wrapped_recursive_return.fz",

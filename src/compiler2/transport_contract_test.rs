@@ -3389,7 +3389,6 @@ fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 #[serial_test::serial]
 fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_refs() {
     let tel = ConfiguredTelemetry::new();

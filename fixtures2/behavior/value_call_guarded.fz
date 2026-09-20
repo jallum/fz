@@ -1,6 +1,6 @@
 #---
 # purpose: "a self cycle with a constructor across it, closed through a value call rather than a named callee"
-# defer: "compiling gloop/2 does not terminate: its return climbs one list layer per round -- int, int | [int], int | [int | [int]], 477 rounds and still climbing after 90s with the activation frontier growing one per round -- because the recursive call is made THROUGH a value, so it names no callee in any body, the static return-unknowns walk cannot see the cycle, and no component solve ever owns the return"
+# defer: "running this fixture needs a compile timeout: compiling gloop/2 does not terminate (killed at 620s having produced nothing). Its return climbs one list layer per round -- int, int | [int], int | [int | [int]] -- and the activation frontier grows one per round, because the recursive call is made through a value, so it names no callee in any body, the static return-unknowns walk cannot see the cycle, and no component solve ever owns the return"
 #---
 def gloop(_f, 0), do: 0
 def gloop(f, n), do: [f.(f, n - 1)]

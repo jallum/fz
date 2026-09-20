@@ -235,7 +235,6 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let tel = ConfiguredTelemetry::new();
     let evaluations = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(ProductKey, PullOutcome)>::new()));

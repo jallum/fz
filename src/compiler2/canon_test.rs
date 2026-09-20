@@ -554,7 +554,6 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// arithmetic lowering. The target fixtures gain four or five executables;
 /// inlining is deliberately deferred to a future optimizer.
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (name, text, executables) in [
         (
