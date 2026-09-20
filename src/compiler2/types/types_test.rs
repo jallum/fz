@@ -1327,10 +1327,10 @@ fn construction_order_reuses_identity_for_lists_tuples_and_literals() {
     let fun = t.arrow(&[], any);
     assert_reuses_identity(&mut t, fun, |t| t.arrow(&[int], any));
 
-    let branded = t.closure_lit(ClosureTarget(3), vec![int], 1);
-    let anonymous = t.erase_closure_identity(&branded);
-    let merged = t.intersect(branded, anonymous);
-    assert_reuses_identity(&mut t, merged, |t| t.intersect(anonymous, branded));
+    let left_brand = t.closure_lit(ClosureTarget(3), vec![int], 1);
+    let right_brand = t.closure_lit(ClosureTarget(4), vec![int], 1);
+    let both_brands = t.union(left_brand, right_brand);
+    assert_reuses_identity(&mut t, both_brands, |t| t.union(right_brand, left_brand));
 }
 
 #[test]
@@ -2015,15 +2015,11 @@ fn the_envelope_and_the_predicate_agree_on_a_callable_clause() {
     );
 }
 
-/// fz-kdt.127 -- a closure holds exactly one value per capture slot, so a
-/// literal whose capture TYPE is empty denotes nothing at all.
-///
-/// The anonymous literal is one way to build one: it is every brand at once,
-/// so it merges with a branded literal instead of staying distinct from it,
-/// and the merged literal's capture is the two captures' intersection. Two
-/// literals of the SAME brand at different capture types are the other way,
-/// and that hole predates the anonymous literal. One law in
-/// `func_clause_empty` closes both.
+/// A closure holds exactly one value per capture slot, so a literal whose
+/// capture TYPE is empty denotes nothing at all. Two literals of one brand at
+/// different capture types meet at an empty capture, and `func_clause_empty`
+/// is the law that reports the meet empty rather than a live closure with an
+/// uninhabited capture slot. Two brands over one surface are no value either.
 #[test]
 fn a_closure_literal_with_an_empty_capture_is_empty() {
     let mut t = Types::new();
@@ -2034,19 +2030,12 @@ fn a_closure_literal_with_an_empty_capture_is_empty() {
     let branded_int = t.intersect(branded_int, surface);
     let branded_float = t.closure_lit(ClosureTarget(4), vec![float], 1);
     let branded_float = t.intersect(branded_float, surface);
-    let anon_int = t.erase_closure_identity(&branded_int);
 
-    let meets_its_own_brand = t.intersect(anon_int, branded_int);
-    assert_eq!(
-        meets_its_own_brand, branded_int,
-        "an anonymous literal is every brand at once, so meeting one leaves that one",
-    );
-
-    let meets_another_brand = t.intersect(anon_int, branded_float);
+    let two_brands = t.intersect(branded_int, branded_float);
     assert!(
-        t.is_empty(&meets_another_brand),
+        t.is_empty(&two_brands),
         "a closure over an int and a closure over a float are not one value: {}",
-        t.display(&meets_another_brand)
+        t.display(&two_brands)
     );
 
     let branded_int_at_float = t.closure_lit(ClosureTarget(3), vec![float], 1);
@@ -2054,8 +2043,7 @@ fn a_closure_literal_with_an_empty_capture_is_empty() {
     let one_brand_two_captures = t.intersect(branded_int, branded_int_at_float);
     assert!(
         t.is_empty(&one_brand_two_captures),
-        "and the same holds for ONE brand at two capture types -- the hole the anonymous \
-         literal widened was already there: {}",
+        "and the same holds for ONE brand at two capture types: {}",
         t.display(&one_brand_two_captures)
     );
 }
@@ -2846,61 +2834,6 @@ macro_rules! closure_helper_conformance_tests {
     ($mod_name:ident, $ctor:expr) => {
         mod $mod_name {
             use super::*;
-
-            /// Erasure drops the brand and callable observation while keeping
-            /// capture denotations: two lambdas closed over the same thing
-            /// become one key, while different capture types remain distinct.
-            #[test]
-            fn erase_closure_identity_drops_the_brand_and_keeps_the_captures() {
-                let mut t = $ctor;
-                let ten = t.int_lit(10);
-                let lit = t.closure_lit(ClosureTarget(3), vec![ten], 2);
-                let erased = t.erase_closure_identity(&lit);
-                assert!(
-                    t.closure_lit_parts(&erased).is_none(),
-                    "an erased literal names no target, so nothing may call it directly"
-                );
-                let clauses = t
-                    .callable_clauses(&erased)
-                    .expect("erased closure should remain callable");
-                assert_eq!(clauses.len(), 1);
-                assert_eq!(clauses[0].args.len(), 2);
-                assert!(clauses[0].closure.is_none());
-
-                // A call surface cannot survive brand erasure in `Ty`: it is
-                // planner evidence carried by the activation row instead.
-                let int = t.int();
-                let surface = t.arrow(&[int, int], int);
-                let left = t.closure_lit(ClosureTarget(3), vec![int], 2);
-                let left = t.intersect(left, surface);
-                let left = t.erase_closure_identity(&left);
-                let right = t.closure_lit(ClosureTarget(4), vec![int], 2);
-                let right = t.intersect(right, surface);
-                let right = t.erase_closure_identity(&right);
-                assert_eq!(
-                    left, right,
-                    "two lambdas closed over the same type are one key: the brand is freight"
-                );
-
-                let float = t.float();
-                let other = t.closure_lit(ClosureTarget(3), vec![float], 2);
-                let other = t.intersect(other, surface);
-                let other = t.erase_closure_identity(&other);
-                assert_ne!(
-                    other, left,
-                    "one lambda closed over two types is two keys: the captures are meaning"
-                );
-
-                let bare = t.closure_lit(ClosureTarget(3), Vec::new(), 2);
-                let bare = t.intersect(bare, surface);
-                let erased_bare = t.erase_closure_identity(&bare);
-                let any = t.any();
-                let generic_surface = t.arrow(&[any, any], any);
-                assert_eq!(
-                    erased_bare, generic_surface,
-                    "a capture-free literal becomes the literal-free callable top"
-                );
-            }
 
             #[test]
             fn callable_value_clauses_keep_literal_denotations_unspecialized() {
@@ -3819,86 +3752,6 @@ mod smoke {
     }
 
     impl_smoke_suite!(types, Types::new());
-}
-
-/// fz-kdt.80 — the interned DNF carries no exact-duplicate clause on any axis.
-///
-/// The activation key is supposed to be a join homomorphism: keying the union
-/// of two evidence rows must give the same key as keying either row, whenever
-/// the key language cannot tell them apart. `erase_closure_identity` is the
-/// step that makes two branded closures indistinguishable — and the union it
-/// erases carries one funcs clause per brand. Erasing the brands in place
-/// leaves `A ∨ A`, which interns as a DIFFERENT `Ty` than `A` unless the
-/// persistence boundary collapses it.
-mod erased_closure_dnf_hygiene {
-    use super::*;
-    use crate::compiler2::identity::{ActivationKey, FunctionId, RootId};
-
-    /// Two closures over one declared surface, differing only in brand.
-    fn branded_pair(t: &mut Types) -> (Ty, Ty) {
-        let int = t.int();
-        let nil = t.nil();
-        let surface = t.arrow(&[int], nil);
-        let left = t.closure_lit(ClosureTarget(3), vec![], 1);
-        let right = t.closure_lit(ClosureTarget(4), vec![], 1);
-        let left = t.intersect(left, surface);
-        let right = t.intersect(right, surface);
-        (left, right)
-    }
-
-    #[test]
-    fn erasing_two_brands_of_one_surface_leaves_one_funcs_clause() {
-        let mut t = Types::new();
-        let (left, right) = branded_pair(&mut t);
-        let joined = t.union(left, right);
-        assert_eq!(
-            t.descr(&joined)
-                .cases
-                .iter()
-                .map(|case| case.structure.funcs.len())
-                .sum::<usize>(),
-            2,
-            "the brands are distinguishable before erasure, so the union keeps both clauses"
-        );
-
-        let erased = t.erase_closure_identity(&joined);
-        assert_eq!(
-            t.descr(&erased)
-                .cases
-                .iter()
-                .map(|case| case.structure.funcs.len())
-                .sum::<usize>(),
-            1,
-            "A ∨ A = A: erasing the only distinguishing field must not leave two copies, got {}",
-            t.display(&erased)
-        );
-        assert_eq!(
-            erased,
-            t.erase_closure_identity(&left),
-            "and the collapsed union must be the very same interned id as either erased arm"
-        );
-    }
-
-    #[test]
-    fn the_activation_key_of_an_erased_union_is_the_key_of_each_arm() {
-        let mut t = Types::new();
-        let (left, right) = branded_pair(&mut t);
-        let joined = t.union(left, right);
-
-        let key_of = |t: &mut Types, ty: Ty| {
-            let erased = t.erase_closure_identity(&ty);
-            ActivationKey::from_inputs(RootId::for_test(0), FunctionId::from_coordinate(0), &[erased], t)
-        };
-        let left_key = key_of(&mut t, left);
-        let right_key = key_of(&mut t, right);
-        let joined_key = key_of(&mut t, joined);
-
-        assert_eq!(left_key, right_key, "same surface, erased brand: one key");
-        assert_eq!(
-            joined_key, left_key,
-            "the key must be a join homomorphism where the key language cannot see the difference"
-        );
-    }
 }
 
 /// fz-kdt.105 — a union's interned identity is its DENOTATION, not the order

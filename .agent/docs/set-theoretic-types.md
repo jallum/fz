@@ -434,9 +434,11 @@ neither carving's clauses contain the other's. The TUPLE NORMALIZER above is
 what reconciles them, by rewriting both to the same union of rectangles.
 
 Union-time hygiene is not enough, because clauses are also made
-equal AFTER a union — `erase_closure_identity` strips closure brands in place,
-turning a legitimate two-brand union into `A ∨ A`, and `funcs = [A, A]` would
-otherwise intern as a different `Ty` than `funcs = [A]`. That difference is
+equal AFTER a union — key erasure
+(`erase_transported_closure_identity_for_key`) strips a transported closure's
+brand in place, turning a legitimate two-brand union into `A ∨ A`, and
+`funcs = [A, A]` would otherwise intern as a different `Ty` than
+`funcs = [A]`. That difference is
 what the activation key is built from, so idempotence at the boundary is what
 makes the key a join homomorphism (fz-kdt.80). A debug-build assert in
 `TypeInterner::intern` (`debug_assert_dnf_axes_hygienic`) checks the

@@ -2805,14 +2805,6 @@ impl Types {
         // denotation owns.
         self.callable_clauses(a)
     }
-
-    pub fn erase_closure_identity(&mut self, a: &Ty) -> Ty {
-        if !contains_callable_literal(self, *a) {
-            return self.unchanged(*a);
-        }
-        let d = erase_closure_identity(self, *a);
-        self.intern(d)
-    }
 }
 
 impl Types {
@@ -3122,10 +3114,6 @@ impl SharedClosureTypes for Types {
 
     fn callable_clauses(&mut self, a: &Self::Ty) -> Option<Vec<CallableClause<Self::Ty>>> {
         Types::callable_clauses(self, a)
-    }
-
-    fn erase_closure_identity(&mut self, a: &Self::Ty) -> Self::Ty {
-        Types::erase_closure_identity(self, a)
     }
 }
 
@@ -3610,12 +3598,11 @@ fn has_only_tuple_runtime_roots(descr: &Descr) -> bool {
 ///
 /// An ANONYMOUS literal names no code at all, so it is that same unrestricted
 /// answer -- and this is the ONE place that decides it, for the predicate
-/// projection and for the envelope alike. It never actually arrives: the only
-/// thing that mints one is [`Types::erase_closure_identity`], and a runtime
-/// test is asked of a VALUE's type -- a callsite's
-/// `CallTargetSummary::surface_inputs`, a lane's carrier -- which no erasure
-/// stands between. The `debug_assert!` is the gate on that; the `?` behind it
-/// keeps the sound unrestricted answer if the rule is ever broken.
+/// projection and for the envelope alike. It never actually arrives: nothing
+/// mints one, and a runtime test is asked of a VALUE's type -- a callsite's
+/// `CallTargetSummary::surface_inputs`, a lane's carrier. The `debug_assert!`
+/// is the gate on that; the `?` behind it keeps the sound unrestricted answer
+/// if the rule is ever broken.
 fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>> {
     let mut targets = BTreeSet::new();
     for clause in funcs {
@@ -4220,100 +4207,6 @@ fn is_literal(cx: TyCtx<'_>, a: &Ty) -> bool {
 
 // More recursive transforms live in this module so they can thread the owning
 // interner explicitly without exposing the private descriptor representation.
-fn contains_callable_literal(types: &Types, root: Ty) -> bool {
-    let mut seen = HashSet::new();
-    let mut work = vec![root];
-    while let Some(ty) = work.pop() {
-        if !seen.insert(ty) {
-            continue;
-        }
-        let descr = types.descr(&ty);
-        for case in &descr.cases {
-            let descr = &case.structure;
-            for clause in &descr.funcs {
-                for sig in clause.pos.iter().chain(&clause.neg) {
-                    if sig.lit.is_some() {
-                        return true;
-                    }
-                    work.extend(sig.args.iter().copied());
-                    work.push(sig.ret);
-                }
-            }
-            for clause in &descr.tuples {
-                for sig in clause.pos.iter().chain(&clause.neg) {
-                    work.extend(sig.elems.iter().copied());
-                }
-            }
-            for clause in &descr.lists {
-                for sig in clause.pos.iter().chain(&clause.neg) {
-                    work.extend(sig.elem);
-                }
-            }
-            for clause in &descr.resources {
-                for sig in clause.pos.iter().chain(&clause.neg) {
-                    work.push(sig.payload);
-                }
-            }
-            for clause in &descr.maps {
-                for sig in clause.pos.iter().chain(&clause.neg) {
-                    work.extend(sig.fields.values().copied());
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Erase every closure literal's BRAND and keep its capture TYPES, at every
-/// depth (fz-6gb, fz-kdt.127).
-///
-/// A forwarder key must not fork on WHICH lambda travelled through it -- that
-/// is freight, and forking on it drags a private copy of every library
-/// function the lambda reaches. It must fork on what that lambda CLOSED OVER:
-/// a body keyed at one capture type grounds its callees' capture lanes to that
-/// type, so two capture types arriving through one key leave a choice no
-/// static key can pin and only a runtime test could answer. Keeping the
-/// capture types answers it by the key instead.
-///
-/// The captures are erased by this same rule, so brands nested inside a
-/// captured closure go too and same-typed literals still share one body. The
-/// literal's argument/result fields are planner observations, so erasure also
-/// replaces them with the literal-free callable form; direct activation rows
-/// retain the observations needed to plan a call.
-fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
-    let base = t.descr(&a).clone();
-    let mut erased = map_recursive_inputs(t, base, erase_closure_identity);
-    let any = t.any();
-    for case in &mut erased.cases {
-        for conj in &mut case.structure.funcs {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                let Some(lit) = sig.lit.take() else {
-                    continue;
-                };
-                sig.args = vec![any; sig.args.len()];
-                sig.ret = any;
-                if lit.captures.is_empty() {
-                    continue;
-                }
-                let captures: Vec<Ty> = lit
-                    .captures
-                    .iter()
-                    .map(|capture| {
-                        let capture = erase_closure_identity(t, *capture);
-                        t.intern(capture)
-                    })
-                    .collect();
-                sig.lit = Some(ClosureLit {
-                    kind: lit.kind,
-                    fn_id: None,
-                    captures,
-                });
-            }
-        }
-    }
-    erased
-}
-
 /// Returns an interned `Ty`: every result is canonically interned in `Types`,
 /// so a widened type is never an un-interned `Descr` that a caller might compare
 /// or store without canonicalization.
@@ -4564,13 +4457,6 @@ fn collect_subst_into_with(
             }
         }
     }
-}
-
-fn map_recursive_inputs(t: &mut Types, d: Descr, f: fn(&mut Types, Ty) -> Descr) -> Descr {
-    map_recursive_inputs_with(t, d, &mut |t, nested| {
-        let d = f(t, nested);
-        t.intern(d)
-    })
 }
 
 fn map_recursive_inputs_with(t: &mut Types, mut d: Descr, f: &mut impl FnMut(&mut Types, Ty) -> Ty) -> Descr {
