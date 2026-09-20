@@ -129,6 +129,28 @@ entry on it would suppress siblings of the one starved path. The empty type
 appears only where it is earned: provider boundaries, unresolvable callable
 values, mailbox binds, and the root's public inputs.
 
+Absent evidence is the ascent's BOTTOM, and it is not the empty type. Every
+walked value carries a symbolic `ReturnExpression` companion beside its
+`Option<Ty>`, and the two stay in lock-step at every constructor
+(`SemanticValue::composed`): a tuple whose fields are not all observed has no
+type yet, but its companion is `Tuple` over the fields' own companions and its
+shape is exactly known. So a callsite whose callee has published nothing still
+yields a value -- companion `Local(callee_activation)`, type `None` -- the
+clause carries on past it, and the callee's `Activation` and `CallSiteTargets`
+facts exist from the caller's FIRST walk. That is what lets
+`return_membership` see the whole system on its first query, so a component is
+solved once rather than growing a member at a time.
+
+The checks that kill a path all test a TYPE, so bottom cannot trip them:
+`resolve_direct_call` drops a call only when an argument's observed type is
+proven empty, `deliver_tail_value` prunes only a delivered value it has
+observed, and a callsite's local edge is drawn from the callee's STATIC
+position (`FunctionUnknowns`), never from the shape currently standing at it.
+Guarding on the observed shape instead would make membership a function of
+published values, which is a flicker: the component grows and shrinks with
+each revision, ownership moves with it, and the unreached-output rule retracts
+the return the previous owner had just published.
+
 `resolve_closure_call` sorts every callee into exactly three answers. The line
 between the first two is INHABITATION; the line between the last two is
 GROUNDNESS. Collapsing any pair of them is a known defect class.
@@ -295,12 +317,14 @@ Executable(callee_key, need)
 
 That publication is how executable demand grows. No separate sweep discovers
 reachable callees. Publishing any `Activation(key)` is also the record site
-for `World`'s activation frontier: `World::complete_job` folds the key into
-`activation_frontier` unless `ActivationAnalyzed(key)` has already settled,
-and `World::demand_activation_frontier_analyses` demands its
-`AnalyzeActivation` the next time the agenda drains. Root entries published by
-`SeedRoot` and caller-discovered callees published by `analyze_activation` use
-this one path.
+for `World`'s activation frontier: `World::note_activation_frontier` folds
+the key into `activation_frontier` unless `ActivationAnalyzed(key)` has
+already settled (and, for a recursive-return component member, until its
+`ReturnType` has too -- see *Recursive-return components* below), and
+`World::demand_activation_frontier_analyses` demands its `AnalyzeActivation`
+the next time the agenda drains. Root entries published by `SeedRoot` and
+caller-discovered callees published by `analyze_activation` use this one
+path.
 `analyze_activation`
 itself never schedules the callee directly: `prepare_function_call` only
 `reads` the callee's `ReturnType` (so mutual recursion cannot deadlock), so
@@ -325,23 +349,45 @@ and joined — see fz-kdt.64 for the recorded asymmetry) (`World::preserved_anal
 path*). This keeps fixpoint evidence from descending just because an
 intermediate clause-reachability approximation changed. The row set is compared by per-column type equivalence, not raw `Ty`
 handle equality, so representative-only changes do not dirty the scheduler.
-`ReturnType(a)` is a CUMULATIVE claim owned by
-`Derivation(AnalyzeActivation(a), Activation(a))`: the store
-(`ActivationMap::define_return`) joins that derivation's evidence by union (which
-preserves closure identities), reports `changed=false` for equal joins, and
-only that derivation's rebased publisher replaces — within an epoch the return can only
-ascend, which is what makes the iteration converge on every schedule. Past a per-epoch
-budget of strict ascents (`RETURN_WIDENING_BUDGET`, a total since the last
-rebase — not a consecutive-ascent delay, which spurious quiet wakes could
-starve) the join widens the growing spine (`convergence_class`, then `any`),
-emitting `fz.compiler2.return_type.widened` only when the operator actually
-coarsened the stored value; corpus programs converge in a few rungs and never
-meet it. `CallSiteSummary` snapshots carry
+`ReturnType(a)` is a CUMULATIVE claim, and its owning derivation follows a
+closed rule (`World::define_activation_return_outcome`): when `a` is not a
+member of any recursive-return component, `Derivation(AnalyzeActivation(a),
+Activation(a))` owns it, exactly as before. When `a` IS a member —
+`World::return_component(a)` finds it in a component — ownership moves to
+`Derivation(SolveReturnComponent(owner), Activation(a))`, one derivation per
+member, where `owner` is the component's own first member in semantic order.
+`World::return_component` recomputes membership fresh from the current
+`ActivationAnalysis.callsites` and `CallSiteTargets` facts every time it is
+asked (see *Recursive-return components* below), so a membership change moves
+ownership the moment the derivation offered for a `ReturnType` publish
+changes: the mismatched derivation is refused by the same assertion that
+enforces the rule, and the correct owner's next conclusion republishes the
+fact through the ordinary join/replace path below. There is no separate
+retraction step, and return storage is never cleared to force one. Either
+owner's store (`ActivationMap::define_return`) takes its evidence according to
+HOW IT MEETS the slot that already stands, which `ReturnArrival` names in two
+cases. An ASCENDING round is a walk over unchanged ground: it reached one
+round's worth of clauses, so its evidence joins by union (which preserves
+closure identities) and reports `changed=false` for an equal join. Within an
+epoch such a return can only ascend, which is what makes the iteration
+converge on every schedule. Evidence that SUPERSEDES replaces the slot whole,
+and it has two producers that say the same thing. A component solve produced
+the whole recursive answer in one step, so its answer is the system's fixed
+point rather than another rung of the climb, and a union with the partial
+rounds that preceded it would pollute it. A walk whose ground shifted stands
+on facts that no longer hold, so its standing value has to be able to
+descend, or a re-analysis over edited source would keep a type its ground no
+longer supports. `World::define_activation_return_outcome` reads the first
+from the derivation it publishes under and the second from
+`WorkGraph::derivation_rebased`. Nothing coarsens that join: a return that would otherwise
+climb belongs to a cycle the static layer calls unknown, and its component's
+solve names the recursive type outright, so there is no budget to spend and
+no widened value to emit. `CallSiteSummary` snapshots carry
 `return_ty: Option<Ty>` — honest mid-ascent records whose `None` reads, behind
 the settled gate, as "provably never returns" (`settled_return`).
-When the final `ReturnType(a)` claim retracts, `ActivationMap` clears its value
-and ascent count before a later claim can mint bottom revision zero. A remaining
-claim leaves the shared payload intact.
+When the final `ReturnType(a)` claim retracts, `ActivationMap` clears its
+value before a later claim can mint bottom revision zero. A remaining claim
+leaves the shared payload intact.
 
 `CallSiteTargets(a, callsite)` is the membership signal: each edge carries only
 callee identity plus the selected activation key, so surface/return type ascents
@@ -572,6 +618,159 @@ Settled(...)  = scheduler-level proof that downstream work may rely on it
 That is not yet the final semantic shape, but it is the current code shape and
 the basis for the remaining type-system tickets.
 
+## Recursive-return components
+
+Most activations' returns are settled by their own `AnalyzeActivation` alone.
+When two or more activations reach each other -- or one reaches itself -- their
+returns are mutually dependent, and one activation's ordinary fixpoint ascent
+can no longer answer the question by itself: `AnalyzeActivation(a)` only ever
+`reads` a callee's `ReturnType` (`prepare_function_call`), so a bare cycle of
+reads alone converges, but the LEAST fixed point over the whole cycle is a
+computation only one place can do once, for every member together.
+
+`World::return_component(seed)` answers, freshly, which set of activations
+`seed` solves its return with. It is built in two layers, and the split
+between them is what makes the answer settle.
+
+The STATIC layer decides which POSITIONS of a return system are still being
+solved, from the lowered bodies alone (`return_skeleton.rs`,
+`return_unknowns.rs`). A position is a function's whole return, one of its
+parameter slots, one of its own call sites' results, or an interior place
+inside a skeleton. A *bare* edge between positions is an alias or a
+projection; a *guarded* edge crosses a constructor. A position is UNKNOWN
+when it sits on a cycle that carries at least one guarded edge -- such a
+cycle wraps another layer each turn, so its solution is a recursive type. A
+cycle of bare edges alone is settled by the ordinary join: the least solution
+of `rest = tail(rest) | [int]` is `[int]`, reached in one step. Asking this
+of the skeletons rather than of an activation is what keeps it stable: an
+answer read off an activation's own companions would be read from evidence
+the answer then destroys, because the moment a caller learns its callee is a
+member it re-keys that callee and the activation that carried the evidence
+stops being named.
+
+A call made THROUGH a value names no callee in any body, so this walk cannot
+see past it: the arguments such a call hands on are recorded, and what it
+yields reaches nothing. A cycle that closes only through a value call is
+therefore invisible here, and the activation layer below handles it by the
+ordinary climb rather than by a component solve.
+
+The ACTIVATION layer lifts that answer to the activations that exist
+(`return_membership.rs`). One rule draws every edge: a call is unsolved when
+it hands on an argument the fixpoint is still solving, or when what it yields
+is itself such a position. The argument case puts the callee's matching SLOT
+on the caller's cycle -- that is how `wrap`, which mentions nothing
+recursive, joins a cycle it is handed, and how the lambda that builds an
+accumulator joins the system that names the accumulator's type. The result
+case names no slot: a function that wraps a constructor around its own
+recursive result hands on nothing unsolved, and only its result says the two
+returns are one system. Membership is the CONNECTED component of that
+relation, so the answer is a property of the set rather than of the seed and
+either member's query agrees on the same canonical owner. A function whose
+return the static layer says it owes is a member even when its call sites
+resolved nothing -- a system of one -- which is what makes the owner known
+from an activation's first walk. An activation on neither side of that
+relation returns `None` and is answered by its own `AnalyzeActivation` as
+always. Members sort by the existing semantic activation order
+(`SemanticOrd`), and the first member is the component's canonical owner.
+Because this is a live query over current facts rather than a cached one, a
+membership change is visible on the very next call -- there is no separate
+component fact to retract.
+
+Ownership of each member's `ReturnType` follows that query directly (see
+*Ownership boundaries* below): `SolveReturnComponent(owner)` -- one job per
+component, keyed by its owner -- solves and publishes every member's
+`ReturnType` at once. It reads each member's `ActivationAnalysis` (waiting
+only if one is still missing entirely; a component cannot be solved from a
+partial membership) for its `ReturnExpression`, the same expression
+`AnalyzeActivation` already builds and stores there for every activation, in
+or out of a component. It never invents a second fact to carry it.
+
+The solve (`jobs/return_component.rs`) is a small fixpoint over the finite
+member set, not a re-run of type inference:
+
+1. **Flatten.** An expression may reference another member two ways: guarded,
+   nested inside a real constructor (a `Tuple` element, ...), or unguarded, as
+   a bare alternative of a top-level `Union` (or the whole expression). An
+   unguarded reference carries no information of its own -- the least fixed
+   point of `x = x | y` is just `y` -- so it is inlined away before anything
+   else runs. A guarded reference is left alone; it already denotes the
+   standard equi-recursive type over however many times the cycle unfolds.
+2. **Contributes.** For every member, whether at least one flattened branch
+   reaches a `Published` leaf or an external activation's evidence without
+   depending on a member that itself never contributes, computed as the least
+   fixed point of that monotone rule over the finite member set. A member with
+   flattened branches but none that contribute is a *productive cycle with no
+   base case*: every branch is real, but every one of them depends, transitively,
+   on another branch that never bottoms out in real evidence -- so its least
+   fixed point is the empty type, published as `none`, a real, computed fact
+   distinct from a member with NO flattened branches at all (a bare, unguarded
+   self-reference, inlined away by step 1), which publishes nothing -- the
+   ordinary bottom, exactly like an activation nothing has evidenced yet.
+3. **Lower and intern.** Every contributing member's surviving branches lower
+   to one `DescrOf<ComponentRef>` (`ComponentRef::Local(index)` for an
+   in-component structural reference, `ComponentRef::Published(ty)` for a
+   `none`-member or an external one), folded by `union_regular_bodies`.
+   Every contributing member's body is handed to `Types::intern_regular_bodies`
+   in ONE call -- the interner's own bisimulation partition refinement is what
+   collapses two members whose bodies turn out identical (an alias pair), so
+   the solve never needs a separate closure-comparison pass of its own.
+
+Every OTHER `Local` a member's expression names -- any activation outside the
+component, including one owned by a different component -- is an external
+dependency: its `ReturnType` is `reads`, never `waits`, mirroring
+`prepare_function_call`'s own rule exactly. A still-absent external is this
+solve's bottom so far, not a block; the read is what re-wakes the solve once
+that external's evidence rises. Waiting on it instead would deadlock the
+moment two components' owners depended on each other's members. The solve
+therefore only ever `waits` on a member's own `ActivationAnalyzed`, and
+publishes every member's `ReturnType` in one atomic conclusion, so a reader
+waiting on any one member sees the whole component settle together.
+
+The same solve settles each member's own INPUT evidence: a member's slot
+equation is the join of every call site's argument expression, so its solution
+is the closed form of an accumulator that would otherwise be discovered one
+nesting at a time. It is contributed back through the ordinary
+`ActivationInputs` join, one whole row per member -- and only when the solve
+named EVERY column of that row. A row is one correlated observation, so a
+member whose slots the system did not all reach contributes nothing rather
+than filling the gap from somewhere else. Each column is the whole input the
+solve settled -- the type AND the callable surfaces standing behind the
+callers' parameters that reach it (`slot_surfaces`) -- so a solved row is one
+the member's own walk could equally have published, and `insert_row`'s
+equivalence recognises it as the row already standing instead of adding an
+alternative beside it. An activation KEY coordinate is never that value: it
+names a position rather than describing one, and a row that mixed a solved
+type with the member's own key surfaces would offer a callable the walk never
+saw, leaving the call it feeds with no clauses to match and an `any` result
+that every callee keyed off the row inherits.
+
+`SolveReturnComponent` schedules no follow-up job of its own, exactly like
+`AnalyzeActivation`. Nothing ever `waits` on a member's `ReturnType`
+(`prepare_function_call` only `reads` it, to avoid deadlocking mutual
+recursion), so a genuine waiter or a changed-revision wake on one of its own
+reads is not, by itself, enough to guarantee the solve ever ignites -- a
+non-member's `ReturnType` has no such gap because `AnalyzeActivation`
+self-publishes it unconditionally as a side effect of running, but ownership
+moving to `SolveReturnComponent` carries no analogous guarantee. The
+`activation_frontier` closes that gap the same way it ignites first-run
+analysis: `World::activation_owes_return(key)` is true exactly while `key` is
+a component member and its `ReturnType` has not yet settled, and both
+`activation_frontier`'s insertion (`World::note_activation_frontier`) and its
+retirement (inside `World::complete_job_with_external`) check it alongside
+`ActivationAnalyzed(key)`'s own settledness. `World::demand_activation_frontier_analyses`
+pokes the owning `SolveReturnComponent` once per distinct owner identity, the
+same first-run gate it already applies to `AnalyzeActivation`, and leaves the
+member on the frontier afterwards so a later owner change -- membership
+growing to promote a different first member -- is still caught the next time
+the frontier is scanned. A component whose members nothing ever reaches at
+all -- a dead branch, statically unreachable -- never gets an `Activation`
+fact published for any member, so it never enters the frontier and never
+runs; its members' `ReturnType`s simply never settle, which is the same
+"no fact" bottom an ordinary un-analyzed activation has. A component that IS
+reached, by contrast, has every member's return settle once its own analysis
+does, whether or not anything downstream happens to consume it -- matching
+the same unconditional guarantee a non-member already carries.
+
 ## Ownership boundaries
 
 - `SeedRoot` owns `RootEntry(root)` and seeds the entry `Activation` and
@@ -583,21 +782,29 @@ the basis for the remaining type-system tickets.
   only while `ActivationInputs(a)` has no publisher
   (`World::seed_activation_producer`). A key a caller discovered is the
   caller's to publish and to withdraw.
-- `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `ReturnType(a)`,
-  `CallSiteTargets(...)`, `CallSiteSummary(...)`, and any callee demand facts it
-  publishes; it publishes an edge for every callsite it reaches, so an omitted
-  edge is withdrawn by any conclusion, while an omitted `Activation` is
-  withdrawn only by a rebased one. It
+- `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `CallSiteTargets(...)`,
+  `CallSiteSummary(...)`, and any callee demand facts it publishes; it
+  publishes an edge for every callsite it reaches, so an omitted edge is
+  withdrawn by any conclusion, while an omitted `Activation` is withdrawn only
+  by a rebased one. It
   schedules no follow-up job of its own: publishing `Activation(callee_key)` is
   what feeds `World`'s activation frontier. When its OWN `Activation(a)` is
   absent -- nothing claims `a` -- it concludes on the recorded read and
   re-lists its standing claims, rather than waiting on a producer that no
-  longer exists for it.
+  longer exists for it. It also owns `ReturnType(a)` -- but ONLY while `a` is
+  not a recursive-return component member; see *Recursive-return components*
+  below for the member case.
+- `SolveReturnComponent(owner)` owns `ReturnType(member)` for every member of
+  `owner`'s component -- see *Recursive-return components* below.
 - `World` owns the `activation_frontier` standing-demand set alongside the
-  scheduler it wraps. `World::complete_job` is its sole maintenance site
-  (insert on an `Activation(key)` publish, retire once `ActivationAnalyzed(key)`
-  settles or once `AnalyzeActivation(key)` has run at all), and
-  `World::demand_activation_frontier_analyses` is its sole reader.
+  scheduler it wraps. `World::note_activation_frontier` is its sole insertion
+  site (on an `Activation(key)` publish), and inserts whenever `key`'s
+  analysis has not settled OR `key` currently owes a recursive-return
+  component solve (`World::activation_owes_return`); `World::complete_job_with_external`
+  retires a key once neither holds. `World::demand_activation_frontier_analyses`
+  is its sole reader: it demands `AnalyzeActivation` the first time (as
+  before), and once that has run, demands the owning `SolveReturnComponent`
+  once per distinct owner identity while `activation_owes_return` still holds.
 - Product artifact producers own request-local `ProductValue`s in
   `PullSession`, not scheduler facts. They wait on settled semantic facts by
   exact key and must not publish activation facts or schedule follow-up jobs.

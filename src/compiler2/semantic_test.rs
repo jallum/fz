@@ -73,3 +73,54 @@ fn a_provider_boundary_is_never_the_one_owned_target() {
         "a compiler-owned callee with one activation is the target",
     );
 }
+
+/// A join is a set operation. `ReturnFlow::join` folds one activation's
+/// paths pairwise and a member's walk re-runs every time a sibling's return
+/// moves, so the same contribution arrives again and again. If each arrival
+/// appended another copy, a member would hand its solver an expression that
+/// grew without bound while denoting exactly the same thing, and nothing
+/// downstream could tell a genuinely new alternative from the same one
+/// counted twice.
+#[test]
+fn joining_a_companion_with_something_it_already_names_changes_nothing() {
+    use crate::compiler2::semantic::ReturnExpression;
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "f", 1);
+    let activation = ActivationKey::from_inputs(RootId::for_test(0), function, &[int], world.types_mut());
+
+    let local = ReturnExpression::Local(activation);
+    let published = ReturnExpression::Published(int);
+
+    assert_eq!(
+        ReturnExpression::union(local.clone(), local.clone()),
+        local,
+        "joining an expression with itself is that expression"
+    );
+    let pair = ReturnExpression::union(local.clone(), published.clone());
+    assert_eq!(
+        pair,
+        ReturnExpression::Union(vec![local.clone(), published.clone()]),
+        "two distinct alternatives join into one flat list in the order they arrived"
+    );
+    assert_eq!(
+        ReturnExpression::union(pair.clone(), local.clone()),
+        pair,
+        "a member the list already holds adds nothing"
+    );
+    assert_eq!(
+        ReturnExpression::union(pair.clone(), published),
+        pair,
+        "and neither does the other one"
+    );
+    assert_eq!(
+        ReturnExpression::union(pair.clone(), pair.clone()),
+        pair,
+        "nor does the whole list joined with itself"
+    );
+    assert_eq!(
+        ReturnExpression::union(ReturnExpression::Bottom, local.clone()),
+        local,
+        "bottom is still the identity, and never wraps a lone member in a union"
+    );
+}

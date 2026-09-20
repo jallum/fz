@@ -19,7 +19,7 @@ mod executable_facts;
 mod keying;
 mod native;
 pub(super) use native::produce_native_program;
-mod return_flow;
+mod return_component;
 mod root;
 pub(crate) mod runtime_demand;
 #[cfg(test)]
@@ -60,9 +60,12 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::DeriveStaticCallees(function_id) => keying::derive_static_callees(world, tel, *function_id),
         Job::DeriveCallGraphComponent(function_id) => keying::derive_call_graph_component(world, *function_id),
         Job::DeriveInputDemand(function_id) => keying::derive_input_demand(world, tel, *function_id),
+        Job::DeriveReturnSkeleton(function_id) => keying::derive_return_skeleton(world, *function_id),
+        Job::DeriveReturnUnknowns(function_id) => keying::derive_return_unknowns(world, *function_id),
         Job::SeedRoot(root_id) => root::seed_root(world, tel, *root_id),
         Job::SeedActivation(activation) => root::seed_activation(activation),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, tel, activation),
+        Job::SolveReturnComponent(owner) => return_component::solve_return_component(world, tel, owner),
         Job::DeriveExecutableFacts(executable) => executable_facts::derive_executable_facts(world, executable),
         Job::DeriveCallableConstructionTarget(key) => callable_target::derive(world, key),
         Job::DeriveRuntimeDemand(executable) => runtime_demand::derive_runtime_demand_fact(world, tel, executable),

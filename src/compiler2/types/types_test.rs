@@ -689,6 +689,65 @@ fn canon_distinguishes_recursive_denotations_without_ids() {
     assert!(!list.contains("Ty("));
 }
 
+/// `{tag, payload}`, the shape a tagged recursive state is written in.
+fn tagged_tuple(tag: Ty, payload: ComponentRef) -> DescrOf<ComponentRef> {
+    DescrOf::tuple_of(vec![ComponentRef::Published(tag), payload])
+}
+
+/// A two-state mutual recursion over a tuple axis:
+///
+/// ```text
+/// A = {:a, base} | {:x, B}
+/// B = {:b, int}  | {:y, A}
+/// ```
+///
+/// Only `base` distinguishes one such pair from another, so two pairs built
+/// with different bases denote different sets while agreeing everywhere else.
+fn tagged_state_pair(t: &mut Types, base: Ty) -> Vec<Ty> {
+    let (a, b, x, y) = (t.atom_lit("a"), t.atom_lit("b"), t.atom_lit("x"), t.atom_lit("y"));
+    let int = t.int();
+    t.intern_regular_component(2, move |nodes| {
+        vec![
+            union_of(
+                &tagged_tuple(a, ComponentRef::Published(base)),
+                &tagged_tuple(x, nodes[1]),
+            ),
+            union_of(
+                &tagged_tuple(b, ComponentRef::Published(int)),
+                &tagged_tuple(y, nodes[0]),
+            ),
+        ]
+    })
+}
+
+/// A union over a tuple axis has to answer even when both operands are
+/// recursive.
+///
+/// Unioning two distinct recursive types meets the same coordinate at every
+/// rung: `{:x, B} | {:x, B'}` is one rectangle over `B | B'`, whose own
+/// `{:y, A} | {:y, A'}` is one rectangle over the union we started from. The
+/// unfolding never repeats a descriptor that has an identity yet, so the
+/// answer exists only as a cycle, and the construction that assigns it has to
+/// close that cycle rather than descend it.
+#[test]
+fn a_union_of_two_recursive_tuple_types_is_the_recursive_union() {
+    let mut t = Types::new();
+    let int = t.int();
+    let str_t = t.str_t();
+    let ints = tagged_state_pair(&mut t, int);
+    let strs = tagged_state_pair(&mut t, str_t);
+    assert_ne!(ints[0], strs[0], "different bases denote different recursive types");
+
+    let united = t.union(ints[0], strs[0]);
+
+    let int_or_str = t.union(int, str_t);
+    let expected = tagged_state_pair(&mut t, int_or_str);
+    assert_eq!(
+        united, expected[0],
+        "the union of two recursive states is the recursive state over their unioned bases"
+    );
+}
+
 fn recursive_capture_body(capture: ComponentRef, result: Ty) -> DescrOf<ComponentRef> {
     let mut descr = DescrOf::unbranded();
     descr.cases[0].structure.funcs.push(Conj::pos_of(ArrowSigOf {
@@ -1771,6 +1830,53 @@ fn semantic_struct_envelopes_keep_projectable_fields_and_predicate_envelopes_kee
     assert!(
         t.is_subtype(&raw_not_record, &negative_predicate),
         "a field-blind predicate must retain the untestable residue of a shaped negative struct"
+    );
+}
+
+#[test]
+fn runtime_envelopes_of_a_recursive_type_terminate_and_keep_the_cycle() {
+    let mut t = Types::new();
+    let recursive = t.intern_regular_component(1, |nodes| vec![recursive_list_body(nodes[0])])[0];
+    let int = t.int();
+    let carrier = t.tuple(&[recursive, int]);
+
+    assert_eq!(
+        t.runtime_envelope(recursive),
+        recursive,
+        "a ground recursive type carries no variable to widen, so it is its own runtime envelope"
+    );
+    assert_eq!(t.runtime_type_test_envelope(recursive), recursive);
+    assert_eq!(
+        t.runtime_envelope(carrier),
+        carrier,
+        "reaching the cycle through a tuple coordinate reaches the same fixed point"
+    );
+}
+
+#[test]
+fn a_runtime_envelope_widens_a_variable_under_a_recursive_type() {
+    let mut t = Types::new();
+    let var = t.type_var(TypeVarId(909));
+    let recursive = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.cases[0].structure.tuples.push(Conj::pos_of(TupleSigOf {
+            elems: vec![ComponentRef::Published(var), nodes[0]],
+        }));
+        vec![body]
+    })[0];
+    let any = t.any();
+    let expected = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.cases[0].structure.tuples.push(Conj::pos_of(TupleSigOf {
+            elems: vec![ComponentRef::Published(any), nodes[0]],
+        }));
+        vec![body]
+    })[0];
+
+    assert_eq!(
+        t.runtime_envelope(recursive),
+        expected,
+        "the per-node rules apply at every rung of the cycle, not only at its entry"
     );
 }
 

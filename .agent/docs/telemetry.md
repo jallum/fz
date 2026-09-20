@@ -664,12 +664,17 @@ carries the same completion plus `World`, and handlers iterate its affected
 activation-key set.
 Return publication carries raw `World` plus `ActivationKey` only when the
 stored return changes. Event presence is the change signal; handlers read the
-settled return from `World`. `return_type.widened` is a separate raw
-`World`-plus-key event emitted only when the widening operator coarsens the
-candidate. Both are public (allowlisted in `is_public_compiler2_trace_event`),
-as are `activation_analysis.defined` and `callsite.defined`; the JSONL
-projection adds a `semantic` object carrying the standing return and the
-activation's ascent count.
+settled return from `World`. `return_type.cleared` is its counterpart: it fires
+with the same payload when an activation's return slot drops, so a test can
+tell "the return never moved" from "the return was published and then
+retracted" -- the signature of a component whose ownership flickers.
+`return_component.solved` carries the solve's `owner` beside the `members` it
+answered, which is the membership a test asserts rather than re-deriving.
+These are public (allowlisted in `is_public_compiler2_trace_event`), as are
+`activation_analysis.defined` and `callsite.defined`; the JSONL projection
+gives `activation_analysis.defined`, `callsite.defined` and the return
+publication a `semantic` object, and for a return publication that object
+carries the standing return.
 
 `root.submitted` carries raw `World` and `RootId`. `code.submitted` carries raw
 `World` with the submitted `SourceOwner` or runtime registration. Protocol callback

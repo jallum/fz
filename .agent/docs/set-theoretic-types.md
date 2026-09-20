@@ -703,7 +703,13 @@ positional tuple storage is derived later from the settled schema, never unioned
 into the semantic type. Unknown or ambiguous field projection stays `any`.
 
 The two runtime envelopes preserve different evidence through the same
-polarity-aware structural walk. `runtime_envelope` prepares semantic projection:
+polarity-aware walk. That walk covers the input's whole reachable component: it
+builds one body per reachable `(type, polarity)` node over `ComponentRef` and
+interns the result through the regular-component path, so a recursive input has
+a recursive envelope and the walk terminates on a cyclic `Ty` graph exactly as
+it does on an acyclic one. A node whose finished body names no local sibling is
+interned as soon as it is built, which is every node of an acyclic input.
+`runtime_envelope` prepares semantic projection:
 it retains tagged-record fields and recursively widens unresolved field types,
 while preserving callable typing. `runtime_type_test_envelope` prepares an
 observable predicate: it keeps a struct's tag and a callable's construction

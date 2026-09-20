@@ -1,0 +1,13 @@
+#---
+# purpose: "a recursive integer accumulator: the component's own solve must not hand its key coordinate back as evidence"
+#---
+def go(list, acc) do
+  case list do
+    [] -> acc
+    [h | t] -> go(t, h + acc)
+  end
+end
+
+def main() do
+  dbg(go([1, 2, 3], 0))
+end

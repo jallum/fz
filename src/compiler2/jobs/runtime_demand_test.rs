@@ -6,7 +6,8 @@ use crate::compiler2::executable_facts::ExecutableFacts;
 use crate::compiler2::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use crate::compiler2::jobs::runtime_demand::{RuntimeDemandFormulaSnapshot, RuntimeDemandOwnInput};
 use crate::compiler2::semantic::{
-    ActivationAnalysis, EntryReachability, ExecutableRuntimeDemand, RuntimeDemand, RuntimeDemandTypeInputs, ShapeDemand,
+    ActivationAnalysis, EntryReachability, ExecutableRuntimeDemand, ReturnExpression, RuntimeDemand,
+    RuntimeDemandTypeInputs, ShapeDemand,
 };
 use crate::compiler2::types::Types;
 
@@ -113,6 +114,7 @@ fn propagate_tuple_step_demand(
             reachable_entries: Vec::new(),
             callsites: Vec::new(),
             value_types: HashMap::new(),
+            expression: ReturnExpression::Bottom,
         },
         body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
         entry_dispatch: None,

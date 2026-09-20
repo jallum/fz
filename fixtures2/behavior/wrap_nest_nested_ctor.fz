@@ -1,0 +1,10 @@
+#---
+# purpose: "a self cycle whose guard sits two constructors deep: nest is μX. 0 | {:ok, [X]} and wrap has one activation"
+#---
+def nest([]), do: 0
+def nest([_ | rest]), do: wrap(nest(rest))
+def wrap(v), do: {:ok, [v]}
+
+def main() do
+  dbg(nest([1, 2]))
+end

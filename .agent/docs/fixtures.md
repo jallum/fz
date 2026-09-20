@@ -302,8 +302,8 @@ The shared grammar is intentionally small:
 - `budget.<namespace>.<metric>:` — behavioural compiler-shape budgets.
 - `root:` — compiler2 root to drive, written as `name/arity`.
 - `assert.metric.<name>:` — a numeric invariant. The current built-in names are
-  `semantic.activations`, `semantic.executables`, `semantic.callsites`,
-  `call_edges.count`, and `return_type.widened`.
+  `semantic.activations`, `semantic.executables`, `semantic.callsites`, and
+  `call_edges.count`.
 - `assert.edge:` — one semantic edge claim, written
   `caller | callsite | dispatch | target`. `target` matches the canonical target
   label, while the optional snapshot carries full input/return type detail.

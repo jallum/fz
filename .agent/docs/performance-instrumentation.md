@@ -53,15 +53,12 @@ before/after revision and settledness, the wakes it caused with their causes,
 the full movement report, its blocked waits, and its read set. This is what an
 investigation reads: which formula ran, on what evidence, and what it moved.
 
-**Return ascents** — `fz.compiler2.return_type.defined` fires on every round
-that moves an activation's return evidence, and `fz.compiler2.return_type.widened`
-on the round where `RETURN_WIDENING_BUDGET` ended the climb instead of the
-program doing so. Both name the activation (`root_id`/`function_id`/`inputs`/`result`/
-`callable_surfaces`) and
-project the evidence standing after the round plus `ascents`, the ladder's
-own round counter since the last rebase — not a fact revision. An activation
-tops out at `2 * RETURN_WIDENING_BUDGET + 1` ascents, where the stored value
-becomes `any` and stops changing. The claims that drive the ascent ride alongside:
+**Return revisions** — `fz.compiler2.return_type.defined` fires on every round
+that moves an activation's return evidence. It names the activation
+(`root_id`/`function_id`/`inputs`/`result`/`callable_surfaces`) and projects
+the evidence standing after the round. A return the component solver owns is
+named in one step, so a count that grows is a defect with a cause rather than
+a budget being spent. The claims that drive a revision ride alongside:
 `activation_analysis.defined` is the round that produced the evidence, carrying
 its reachable clauses, entries, callsites and value count, and
 `callsite.defined` is the edge that carries a callee's return back to its caller

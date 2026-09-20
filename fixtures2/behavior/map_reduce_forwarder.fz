@@ -1,0 +1,15 @@
+#---
+# purpose: "a map-reduce loop reached through a forwarder: the solve's view of a non-member caller's slot is that caller's evidence, never its key coordinate"
+#---
+def mr(xs, acc, f), do: mr_list(xs, acc, f)
+
+def mr_list([], acc, _f), do: {[], acc}
+def mr_list([h | t], acc, f) do
+  {y, next} = f.(h, acc)
+  {ys, last} = mr_list(t, next, f)
+  {[y | ys], last}
+end
+
+def main() do
+  dbg(mr([1, 2], 0, fn (x, acc) -> {x + acc, acc + x} end))
+end

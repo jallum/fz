@@ -48,6 +48,11 @@ keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveInputDemand
             publishes two: CallGraphComponent(f), the smallest FunctionId
             mutually reachable with f, and Recursive(f), which that component
             decides (more than one member, or f's own edges name f)
+            DeriveReturnSkeleton lowers one body to its return skeleton, and
+            DeriveReturnUnknowns walks that skeleton's reach to decide which
+            positions of the return system are still being solved; a call made
+            THROUGH a value names no callee in any body, so the walk records
+            its arguments and follows nothing out of its result
 semantic  SeedRoot, SeedActivation, AnalyzeActivation
             root entry facts, activation evidence, return types, callsite targets,
             callsite summaries, and executable demand

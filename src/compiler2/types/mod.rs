@@ -52,7 +52,7 @@ pub use arrow_match::ArrowMatch;
 pub(crate) use canon::TyCanon;
 
 use crate::modules::identity::ModuleName;
-use addressed::AddrStep;
+pub(crate) use addressed::AddrStep;
 #[cfg(test)]
 pub(crate) use closure_surface_var::{ClosureSurfacePos, decode_closure_surface_var};
 use closure_surface_var::{closure_ret_var_id, closure_var_id};
@@ -62,9 +62,10 @@ use descr::{BrandCase, Descr, Structure, StructureOf, canonical_brand_partition,
 pub(crate) use descr::{DescrOf, union_of as union_regular_bodies};
 use dnf::dnf_intersect_with;
 pub(crate) use regular::ComponentRef;
-use sigs::{ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig, TupleSigOf};
-#[cfg(test)]
-use sigs::{ArrowSigOf, ClosureLitOf, ListSigOf};
+use sigs::{
+    ArrowSig, ArrowSigOf, ClosureLit, ClosureLitOf, ListSig, ListSigOf, MapSig, MapSigOf, MapTag, MergeSig, PosMeet,
+    ResourceSig, ResourceSigOf, StructTag, TupleSig, TupleSigOf,
+};
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
 /// `(brand, captures, args, ret)`, the brand `None` for an anonymous literal.
@@ -2265,6 +2266,11 @@ impl Types {
             BinaryTypeOperation::Union(b, a)
         };
         self.binary_type_operation(key, |types| {
+            // A union that can reach a cycle is built over the whole component
+            // it reaches, because the answer exists only as a cycle of its own.
+            if types.interner.is_regular(a) || types.interner.is_regular(b) {
+                return regular::union(types, a, b);
+            }
             let d = {
                 let cx = types.ctx();
                 cx.descr(&a).union(cx, cx.descr(&b))
@@ -3020,13 +3026,12 @@ impl Types {
     }
 
     pub fn runtime_envelope(&mut self, ty: Ty) -> Ty {
-        let descr = runtime_envelope(
+        runtime_envelope(
             self,
             ty,
             RuntimeEnvelopePolarity::Positive,
             RuntimeEnvelopePurpose::Projection,
-        );
-        self.intern(descr)
+        )
     }
 
     /// The static surface from which a runtime test and its projections are
@@ -3056,13 +3061,12 @@ impl Types {
     /// fz-kdt.125's defect one tuple deep, and leave a depth-0/depth-1 seam
     /// nothing in the runtime justifies.
     pub(crate) fn runtime_type_test_envelope(&mut self, ty: Ty) -> Ty {
-        let descr = runtime_envelope(
+        runtime_envelope(
             self,
             ty,
             RuntimeEnvelopePolarity::Positive,
             RuntimeEnvelopePurpose::Predicate,
-        );
-        self.intern(descr)
+        )
     }
 
     pub fn instantiate(&mut self, a: &Ty, sigma: &Sigma<Ty>) -> Ty {
@@ -4324,7 +4328,7 @@ fn has_vars_structure(cx: TyCtx<'_>, d: &Structure, seen: &mut HashSet<Ty>) -> b
     })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum RuntimeEnvelopePolarity {
     Positive,
     Negative,
@@ -4350,50 +4354,245 @@ enum RuntimeEnvelopePurpose {
     Predicate,
 }
 
+/// The runtime envelope of one type, built over its whole reachable component.
+///
+/// A `Ty` graph is not always a tree: a regular type's descriptor names the
+/// type itself, so rebuilding each child on its own would descend a cycle
+/// forever. The envelope is therefore built the way the type layer builds
+/// every other recursive value -- one body per reachable `(type, polarity)`
+/// node, each read by the same per-node rules, handed to the regular interner
+/// which ties the knot. An acyclic input travels the same path: no node of it
+/// names a local sibling, so every node interns as it is finished and the root
+/// comes back already published.
 fn runtime_envelope(
     types: &mut Types,
     ty: Ty,
     polarity: RuntimeEnvelopePolarity,
     purpose: RuntimeEnvelopePurpose,
-) -> Descr {
-    let mut descr = types.descr(&ty).clone();
-    for case in &mut descr.cases {
-        let structure = &mut case.structure;
-        if !structure.vars.values.is_empty() {
-            match (polarity, structure.vars.cofinite) {
-                (RuntimeEnvelopePolarity::Positive, _) => return Descr::any(),
-                (RuntimeEnvelopePolarity::Negative, true) => return Descr::none(),
-                (RuntimeEnvelopePolarity::Negative, false) => structure.vars = FiniteSet::none(),
+) -> Ty {
+    let mut walk = RuntimeEnvelopeWalk {
+        purpose,
+        nodes: HashMap::new(),
+        bodies: Vec::new(),
+    };
+    match runtime_envelope_node(types, &mut walk, ty, polarity) {
+        ComponentRef::Published(ty) => ty,
+        // The root is the first node the walk opens, so it is body zero.
+        ComponentRef::Local(_) => types.intern_regular_bodies(walk.bodies)[0],
+    }
+}
+
+/// The nodes of one envelope under construction.
+struct RuntimeEnvelopeWalk {
+    purpose: RuntimeEnvelopePurpose,
+    nodes: HashMap<(Ty, RuntimeEnvelopePolarity), RuntimeEnvelopeNode>,
+    bodies: Vec<DescrOf<ComponentRef>>,
+}
+
+enum RuntimeEnvelopeNode {
+    /// Still on the walk's own stack. Reaching it again is the back edge that
+    /// makes the component recursive, and this is the body it closes onto.
+    Open(usize),
+    Settled(ComponentRef),
+}
+
+/// The reference standing for one coordinate's envelope.
+///
+/// A finished body naming no local sibling is interned at once, so the common
+/// acyclic input never reaches the regular interner, every emptiness question
+/// below is asked of a real type, and a coordinate reached twice is answered
+/// from the memo.
+fn runtime_envelope_node(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    ty: Ty,
+    polarity: RuntimeEnvelopePolarity,
+) -> ComponentRef {
+    match walk.nodes.get(&(ty, polarity)) {
+        Some(RuntimeEnvelopeNode::Settled(reference)) => return *reference,
+        Some(RuntimeEnvelopeNode::Open(index)) => return ComponentRef::local(*index),
+        None => {}
+    }
+    let index = walk.bodies.len();
+    walk.bodies.push(DescrOf::none());
+    walk.nodes.insert((ty, polarity), RuntimeEnvelopeNode::Open(index));
+    let body = runtime_envelope_body(types, walk, ty, polarity);
+    let reference = match types.intern_ground_regular_body(body.clone()) {
+        Some(ground) => ComponentRef::Published(ground),
+        None => ComponentRef::local(index),
+    };
+    walk.bodies[index] = body;
+    walk.nodes
+        .insert((ty, polarity), RuntimeEnvelopeNode::Settled(reference));
+    reference
+}
+
+/// One node's body: the same reading at every rung of a cycle as at the top of
+/// an acyclic type.
+fn runtime_envelope_body(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    ty: Ty,
+    polarity: RuntimeEnvelopePolarity,
+) -> DescrOf<ComponentRef> {
+    let mut cases = Vec::new();
+    for case in types.descr(&ty).clone().cases {
+        let BrandCase { brands, structure } = case;
+        let mut vars = structure.vars;
+        if !vars.values.is_empty() {
+            match (polarity, vars.cofinite) {
+                (RuntimeEnvelopePolarity::Positive, _) => return DescrOf::any(),
+                (RuntimeEnvelopePolarity::Negative, true) => return DescrOf::none(),
+                (RuntimeEnvelopePolarity::Negative, false) => vars = FiniteSet::none(),
             }
         }
         // Only in a positive position: a construction clause drops the arrow and
         // widens each capture by this same reading, so it names at least the
         // callables the clause it replaces named -- the direction a test must err
         // in, and the opposite of the direction a subtracted region may.
-        if purpose == RuntimeEnvelopePurpose::Predicate
+        let funcs = if walk.purpose == RuntimeEnvelopePurpose::Predicate
             && polarity == RuntimeEnvelopePolarity::Positive
             && !structure.funcs.is_empty()
         {
-            structure.funcs = callable_identity_clauses(types, &structure.funcs);
-        }
-        structure.tuples = std::mem::take(&mut structure.tuples)
-            .into_iter()
-            .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_tuple_sig))
-            .collect();
-        structure.lists = std::mem::take(&mut structure.lists)
-            .into_iter()
-            .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_list_sig))
-            .collect();
-        structure.resources = std::mem::take(&mut structure.resources)
-            .into_iter()
-            .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_resource_sig))
-            .collect();
-        structure.maps = std::mem::take(&mut structure.maps)
-            .into_iter()
-            .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_map_sig))
-            .collect();
+            callable_identity_clauses(types, walk, &structure.funcs)
+        } else {
+            published_clauses(structure.funcs, published_arrow)
+        };
+        cases.push(BrandCase {
+            brands,
+            structure: StructureOf {
+                basic: structure.basic,
+                atoms: structure.atoms,
+                opaques: structure.opaques,
+                vars,
+                tuples: runtime_envelope_axis(types, walk, structure.tuples, polarity, runtime_tuple_sig),
+                lists: runtime_envelope_axis(types, walk, structure.lists, polarity, runtime_list_sig),
+                resources: runtime_envelope_axis(types, walk, structure.resources, polarity, runtime_resource_sig),
+                funcs,
+                maps: runtime_envelope_axis(types, walk, structure.maps, polarity, runtime_map_sig),
+            },
+        });
     }
-    descr
+    DescrOf { cases }
+}
+
+/// A coordinate holding no value at all empties the signature that holds it. A
+/// local reference is a rung the walk has not closed yet; it stands for a
+/// constructor, so it holds values.
+fn runtime_envelope_is_empty(types: &Types, reference: ComponentRef) -> bool {
+    match reference {
+        ComponentRef::Published(ty) => types.is_empty(&ty),
+        ComponentRef::Local(_) => false,
+    }
+}
+
+fn runtime_envelope_axis<T, U>(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    clauses: Vec<Conj<T>>,
+    polarity: RuntimeEnvelopePolarity,
+    transform: fn(&mut Types, &mut RuntimeEnvelopeWalk, T, RuntimeEnvelopePolarity) -> Option<U>,
+) -> Vec<Conj<U>> {
+    clauses
+        .into_iter()
+        .filter_map(|conj| runtime_structural_conj(types, walk, conj, polarity, transform))
+        .collect()
+}
+
+fn runtime_structural_conj<T, U>(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    conj: Conj<T>,
+    polarity: RuntimeEnvelopePolarity,
+    transform: fn(&mut Types, &mut RuntimeEnvelopeWalk, T, RuntimeEnvelopePolarity) -> Option<U>,
+) -> Option<Conj<U>> {
+    let mut pos = Vec::with_capacity(conj.pos.len());
+    for sig in conj.pos {
+        pos.push(transform(types, walk, sig, polarity)?);
+    }
+    let neg = conj
+        .neg
+        .into_iter()
+        .filter_map(|sig| transform(types, walk, sig, polarity.flipped()))
+        .collect();
+    Some(Conj { pos, neg })
+}
+
+fn runtime_tuple_sig(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    sig: TupleSig,
+    polarity: RuntimeEnvelopePolarity,
+) -> Option<TupleSigOf<ComponentRef>> {
+    let elems = sig
+        .elems
+        .into_iter()
+        .map(|ty| runtime_envelope_node(types, walk, ty, polarity))
+        .collect::<Vec<_>>();
+    (!elems.iter().any(|elem| runtime_envelope_is_empty(types, *elem))).then_some(TupleSigOf { elems })
+}
+
+fn runtime_list_sig(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    sig: ListSig,
+    polarity: RuntimeEnvelopePolarity,
+) -> Option<ListSigOf<ComponentRef>> {
+    let elem = sig.elem.map(|ty| runtime_envelope_node(types, walk, ty, polarity));
+    match elem {
+        Some(elem) if runtime_envelope_is_empty(types, elem) && !sig.empty => None,
+        Some(elem) if runtime_envelope_is_empty(types, elem) => Some(ListSigOf::empty()),
+        _ => Some(ListSigOf { empty: sig.empty, elem }),
+    }
+}
+
+fn runtime_resource_sig(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    sig: ResourceSig,
+    polarity: RuntimeEnvelopePolarity,
+) -> Option<ResourceSigOf<ComponentRef>> {
+    let payload = runtime_envelope_node(types, walk, sig.payload, polarity);
+    (!runtime_envelope_is_empty(types, payload)).then_some(ResourceSigOf { payload })
+}
+
+fn runtime_map_sig(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    sig: MapSig,
+    polarity: RuntimeEnvelopePolarity,
+) -> Option<MapSigOf<ComponentRef>> {
+    match (walk.purpose, &sig.tag, polarity) {
+        // A struct question observes the schema tag; its field layout is owned
+        // by the settled schema and lowered operation, not the question.
+        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Positive) => Some(MapSigOf {
+            tag: sig.tag,
+            fields: BTreeMap::new(),
+        }),
+        // A shaped struct negative cannot be tested exactly. Dropping it
+        // widens in the safe direction; a fieldless negative names the whole
+        // family.
+        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Negative)
+            if sig.fields.is_empty() =>
+        {
+            Some(MapSigOf {
+                tag: sig.tag,
+                fields: BTreeMap::new(),
+            })
+        }
+        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Negative) => None,
+        // Semantic projection retains both record families' field evidence.
+        // Plain maps also retain it in the runtime test surface.
+        _ => {
+            let fields = sig
+                .fields
+                .into_iter()
+                .map(|(key, ty)| (key, runtime_envelope_node(types, walk, ty, polarity)))
+                .collect::<BTreeMap<_, _>>();
+            (!fields.values().any(|field| runtime_envelope_is_empty(types, *field)))
+                .then_some(MapSigOf { tag: sig.tag, fields })
+        }
+    }
 }
 
 /// The function axis reduced to the one question the runtime can ask of a
@@ -4412,31 +4611,28 @@ fn runtime_envelope(
 /// same interned one-literal clause it would have seen unenveloped. The
 /// persistence boundary rejects the impossible several-literal intersection,
 /// so this path never invents a coarse fallback or a capture layout.
-fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec<Conj<ArrowSig>> {
+fn callable_identity_clauses(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    funcs: &[Conj<ArrowSig>],
+) -> Vec<Conj<ArrowSigOf<ComponentRef>>> {
     if callable_identity_targets(funcs).is_none() {
-        return Descr::fun_top().cases.remove(0).structure.funcs;
+        return published_clauses(Descr::fun_top().cases.remove(0).structure.funcs, published_arrow);
     }
-    let ret = types.any();
+    let ret = ComponentRef::Published(types.any());
     let mut clauses = Vec::with_capacity(funcs.len());
     for clause in funcs {
         let mut pos = Vec::with_capacity(clause.pos.len());
         for lit in clause.pos.iter().filter_map(|sig| sig.lit.as_ref()) {
-            let captures: Vec<Ty> = lit
+            let captures: Vec<ComponentRef> = lit
                 .captures
                 .iter()
-                .map(|capture| {
-                    runtime_envelope_ty(
-                        types,
-                        *capture,
-                        RuntimeEnvelopePolarity::Positive,
-                        RuntimeEnvelopePurpose::Predicate,
-                    )
-                })
+                .map(|capture| runtime_envelope_node(types, walk, *capture, RuntimeEnvelopePolarity::Positive))
                 .collect();
-            pos.push(ArrowSig {
+            pos.push(ArrowSigOf {
                 args: Vec::new(),
                 ret,
-                lit: Some(ClosureLit {
+                lit: Some(ClosureLitOf {
                     kind: CallableValueKind::Closure,
                     fn_id: lit.fn_id,
                     captures,
@@ -4448,107 +4644,27 @@ fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec
     clauses
 }
 
-fn runtime_envelope_ty(
-    types: &mut Types,
-    ty: Ty,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-) -> Ty {
-    let descr = runtime_envelope(types, ty, polarity, purpose);
-    types.intern(descr)
-}
-
-fn runtime_structural_conj<T>(
-    types: &mut Types,
-    conj: Conj<T>,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-    transform: fn(&mut Types, T, RuntimeEnvelopePolarity, RuntimeEnvelopePurpose) -> Option<T>,
-) -> Option<Conj<T>> {
-    let mut pos = Vec::with_capacity(conj.pos.len());
-    for sig in conj.pos {
-        pos.push(transform(types, sig, polarity, purpose)?);
-    }
-    let neg = conj
-        .neg
+/// An axis the envelope leaves alone still changes reference kind: every
+/// coordinate of the descriptor it was read from is a published type.
+fn published_clauses<T, U>(clauses: Vec<Conj<T>>, mut published: impl FnMut(T) -> U) -> Vec<Conj<U>> {
+    clauses
         .into_iter()
-        .filter_map(|sig| transform(types, sig, polarity.flipped(), purpose))
-        .collect();
-    Some(Conj { pos, neg })
+        .map(|conj| Conj {
+            pos: conj.pos.into_iter().map(&mut published).collect::<Vec<_>>(),
+            neg: conj.neg.into_iter().map(&mut published).collect::<Vec<_>>(),
+        })
+        .collect()
 }
 
-fn runtime_tuple_sig(
-    types: &mut Types,
-    sig: TupleSig,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-) -> Option<TupleSig> {
-    let elems = sig
-        .elems
-        .into_iter()
-        .map(|ty| runtime_envelope_ty(types, ty, polarity, purpose))
-        .collect::<Vec<_>>();
-    (!elems.iter().any(|ty| types.is_empty(ty))).then_some(TupleSig { elems })
-}
-
-fn runtime_list_sig(
-    types: &mut Types,
-    sig: ListSig,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-) -> Option<ListSig> {
-    let elem = sig.elem.map(|ty| runtime_envelope_ty(types, ty, polarity, purpose));
-    match elem {
-        Some(elem) if types.is_empty(&elem) && !sig.empty => None,
-        Some(elem) if types.is_empty(&elem) => Some(ListSig::empty()),
-        _ => Some(ListSig { empty: sig.empty, elem }),
-    }
-}
-
-fn runtime_resource_sig(
-    types: &mut Types,
-    sig: ResourceSig,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-) -> Option<ResourceSig> {
-    let payload = runtime_envelope_ty(types, sig.payload, polarity, purpose);
-    (!types.is_empty(&payload)).then_some(ResourceSig { payload })
-}
-
-fn runtime_map_sig(
-    types: &mut Types,
-    sig: sigs::MapSig,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-) -> Option<sigs::MapSig> {
-    match (purpose, &sig.tag, polarity) {
-        // A struct question observes the schema tag; its field layout is owned
-        // by the settled schema and lowered operation, not the question.
-        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Positive) => {
-            Some(sigs::MapSig {
-                tag: sig.tag,
-                fields: BTreeMap::new(),
-            })
-        }
-        // A shaped struct negative cannot be tested exactly. Dropping it
-        // widens in the safe direction; a fieldless negative names the whole
-        // family.
-        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Negative)
-            if sig.fields.is_empty() =>
-        {
-            Some(sig)
-        }
-        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Negative) => None,
-        // Semantic projection retains both record families' field evidence.
-        // Plain maps also retain it in the runtime test surface.
-        _ => {
-            let fields = sig
-                .fields
-                .into_iter()
-                .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity, purpose)))
-                .collect::<BTreeMap<_, _>>();
-            (!fields.values().any(|ty| types.is_empty(ty))).then_some(sigs::MapSig { tag: sig.tag, fields })
-        }
+fn published_arrow(sig: ArrowSig) -> ArrowSigOf<ComponentRef> {
+    ArrowSigOf {
+        args: sig.args.into_iter().map(ComponentRef::Published).collect(),
+        ret: ComponentRef::Published(sig.ret),
+        lit: sig.lit.map(|lit| ClosureLitOf {
+            kind: lit.kind,
+            fn_id: lit.fn_id,
+            captures: lit.captures.into_iter().map(ComponentRef::Published).collect(),
+        }),
     }
 }
 

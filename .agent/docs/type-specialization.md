@@ -183,6 +183,53 @@ reading of the code rather than a measured divergence. Folding the two axes
 would have to raise a returned position to `Whole`, which has no collapse at
 all.
 
+### An unsolved return is not evidence to specialize on
+
+Both axes above are properties of the CALLEE's body. A third question belongs
+to the call site: is the value this argument carries a value at all, or the
+current rung of an ascent still being solved?
+
+The walk answers it from the companion it already carries beside every value
+(`ReturnExpression`, [`semantic-fixpoint`](semantic-fixpoint.md)). An argument
+whose companion names `Local(k)` for a member `k` of the caller's own
+recursive-return component is an ITERATE: what the walk observed is how far the
+solve has climbed, not what the program denotes. `nest([_ | rest]), do:
+wrap(nest(rest))` hands `wrap` `int`, then `int | [int]`, then one more layer
+every round, and keying on that mints a `wrap/1` activation per rung, none of
+which is the answer.
+
+`KeyShape::coordinate` names such a position by the variable that
+addresses it -- `wrap/1[a0]` -- which is the same coordinate at every round, so
+`wrap/1` has one activation whose input evidence simply grows to the solved
+type. This is the ordinary key-is-not-evidence split: the precise argument still
+reaches the callee through `ActivationInputs`.
+
+The dispatch axis wins where the two meet, position by position: a position
+some body on the forwarding chain asks about decides which callee is reached,
+so its evidence is the key's own meaning and stays verbatim. A clause reading
+one tuple field says nothing about the fields beside it, which is why the
+contest is settled per position rather than per slot -- `item/2` matching
+`{:ok, v, rest}` keeps its tag and abstracts what the tag does not name.
+Structure the companion itself exposes survives too: an accumulator built by
+consing an unsolved value onto a solved list keys as a LIST of the variable at
+its element address (`items/2[_, [a1_e]]`), never as a bare variable, because
+only the element is still climbing.
+
+That argument dependency is also a return dependency, so it is an edge of the
+relation `return_membership::discover` walks: `wrap`'s return is a function of
+`nest`'s, and `nest`'s of `wrap`'s, so the two are one component and are solved
+as the one equation system they are. The coordinate is what says so -- a slot
+keyed as the bare `a{i}` and nothing else -- so the edge exists exactly where
+the call site declared the value unsolved, and an accumulator keyed `[a1_e]`,
+whose shape is settled and whose element merely converges, carries none.
+
+A key coordinate never travels the other way. `SolveReturnComponent`
+contributes a member's solved slots back as input evidence only when the solve
+named every column of the row; an addressed variable arriving as evidence
+widens to `any`, and every callee keyed off that row inherits it (`Kernel.+/2`
+reached at `any` answers `int | float`, so an integer fold reads back as
+`int | float`).
+
 Positions the RECURSION supplies are subtracted, as a LEAST FIXPOINT: a
 position is supplied when a self-call hands it a value the caller held nowhere,
 or held only at positions that are themselves supplied. A supplied position
@@ -257,97 +304,63 @@ two keys onto one published return (fz-kdt.214).
 Termination is a theorem, not a property of lucky inputs. Three facts carry it:
 numeric literal chains cannot exist (the lattice has no numeric singletons —
 see [`set-theoretic-types`](set-theoretic-types.md)); atom chains are bounded
-by the program's finite atom set; and structural deepening is cut by the
-return join's widening operator (`ActivationMap::define_return`,
-`RETURN_WIDENING_BUDGET`): past N strict ascents of one activation's return
-within an epoch the growing spine collapses via `convergence_class`, past 2N
-it tops out at `any`. Every widening that coarsens the stored value emits
-`fz.compiler2.return_type.widened`, so widening on a real program is a
-visible regression, never silent precision loss. The key ops
-live in [`type-world`](type-world.md).
+by the program's finite atom set; and structural deepening is answered rather
+than cut. A position that would deepen forever sits on a cycle that crosses a
+constructor, which the static layer calls an unknown, and its component's
+solve names the recursive type outright (see *Recursive-return components* in
+[`semantic-fixpoint`](semantic-fixpoint.md)). There is no widening operator on
+the return join, no budget of ascents, and no coarsened value to report. The
+key ops live in [`type-world`](type-world.md).
 
-What the ladder costs is measured rather than assumed, and **which driver does
-the measuring decides the answer**. `Compiler2::drive()` alone is a shorter
-calculation than any door takes: on `json_roundtrip.fz` it reaches 277
-activations that revise a return, 843 analyses, a deepest climb of nine, and no
-widening at all. Every door instead pulls the root's `BackendProgram` product —
-the stage `run_root_interp` and `run_root_jit` reach before executing anything —
-and that same file reaches 380 activations, 1,476 analyses, a deepest climb of
-seventeen, and five widenings.
+What replaced the ladder is visible in the fixtures it used to name.
+`return_tuple_ladder.fz` (a plain self cycle under a tuple),
+`self_guarded_nest.fz` (the same under a list), `mutual_tuple_states.fz` (the
+two-function mutual version), `false_embedding.fz` (a value that embeds an
+unrelated recursive call under a tuple with no recursive edge there) and
+`alias_cycle_with_entry.fz` (an alias cycle carrying a growing accumulator,
+reached from outside it) each name their answer through the component solve
+rather than climbing towards it, and each prints its exact expected output.
+`json_roundtrip.fz` is the composite -- several of those shapes at once over a
+genuinely heterogeneous value type -- and it terminates with its exact output
+and no budget anywhere in the path.
 
-The extra climb is a population, not an edge. The pull does not add a demand
-that pushes `Json.value/1` higher; it adds 103 activations, and their evidence
-flows into returns they share. Three keys carry it: `Json.decode/1` goes from 9
-to 17, `Json.val/1` from 8 to 17, and `Json.value/1` from 8 to 17, all three on
-the same arrow. A recursive value type keys a new activation per level, each new
-activation publishes into the shared return, and the shared return climbs again.
-That is why a number taken from the standalone drive describes no door, and why
-`PublicTrace::compile` — which drives the standalone path — says so in its own
-documentation.
-
-`return_ladders_are_pinned_per_activation` in `drive_test.rs` is the pin. It
-pulls two fixtures through that product path and compares, per activation, every
-return revised more than five times against a table of (function label,
-revisions, widened), asserting nothing else in those compiles climbs or widens.
-
-`return_tuple_ladder.fz` is the bare reproducer: `def build(n), do: {n,
-build(n - 1)}` has one activation, analyzed 19 times, with a return revised 17
-times that ends at the widening budget. Its caller pays too, without climbing:
-`main/0` is re-analyzed 22 times because each rung retypes the argument it hands
-`dbg/1`, while its own return moves twice. Re-analysis and ascent are separate
-costs and only one of them is the ladder.
-
-`json_roundtrip.fz` is the goal program and shows the same defect at scale:
-thirty-one activations past the ceiling, of which `Json.array_item/2` and
-`Json.array_next/2` supply a dozen each — one per level of the recursive value
-type — and five reach seventeen and widen (`Json.value/1`, `Json.val/1`,
-`Json.decode/1`, `Json.array/2`, `Json.array_element/2`). The other four `json_*`
-fixtures share its decode loop and measure the same climb, so pinning the goal
-program pins them too.
-
-Two companions expose the same missing denotation from different directions.
-`behavior/recursive_typedef.fz` declares the type the ladder is reaching for,
-`@type t :: :start | {integer, t}`. Its declaration now commits one finite
-regular component before its ordinary consumers run; re-driving the unchanged
+Two companions come at the same shape from the other side.
+`behavior/recursive_typedef.fz` declares the type outright,
+`@type t :: :start | {integer, t}`. Its declaration commits one finite regular
+component before its ordinary consumers run; re-driving the unchanged
 declaration reuses that `Ty`. `behavior/return_tuple_accumulator.fz` grows the
-same nesting in an argument instead, so each rung keys a new activation with a
-fresh budget and the drive does not terminate, which is why that fixture is
-deferred.
+same nesting in an ARGUMENT instead, where a return-side unknown has nothing
+to say, and it is deferred: `build/2` keys exactly two activations and the
+recursive one re-analyses without end because its input evidence deepens by a
+tuple each round.
 
 `convergence_class` and `convergence_class_at` share one list-family predicate,
 `Descr::is_pure_list_family` (true whenever a structure is purely lists, no
 matter how many clauses or nesting depths — `axis_free()` plus at least one
-list clause). `convergence_class`'s list branch once asked
-`Descr::as_pure_list`, which additionally demands exactly one list
-clause, so a return that had grown into a union of list depths (one clause per
-depth) never matched and the widen was a no-op: the activation's return kept
-ascending past its budget instead of collapsing. `as_pure_list` still exists
-for its two remaining callers (`refine_widen_uncached`,
+list clause). The distinction is load-bearing: `Descr::as_pure_list`
+additionally demands exactly ONE list clause, so a value that has grown into a
+union of list depths (one clause per depth) does not match it, and a keying
+gate asking that question would key every depth apart instead of folding them
+to one class. `as_pure_list` still exists for its two remaining callers (`refine_widen_uncached`,
 `collect_subst_into_with`), which destructure the concrete `ListSig` and
 therefore genuinely need the single-clause guarantee; that is a different
 question from "is this purely a list family," so it keeps its own predicate.
 `behavior/nesting_accumulator.fz` is the list sibling of
 `return_tuple_accumulator.fz`: `def build(n, acc), do: build(n - 1, [acc])`
-nests inside a list argument instead of a tuple, so the input-side gate already
-folds every rung to one shared `build/2` activation key. That shared key's
-return widens: telemetry shows `return_type.widened` firing once, at ascent
-nine, collapsing to `[any]`. The fixture is still deferred because the compile
-does not finish after the widening: every round contributes a strictly deeper
-ground input row for `acc` to the shared `build/2` activation, and
-`Types::convergence_collapse_evidence_inputs` widens an ignored slot only when
-the type carries variables, so no standing row is equivalent to or dominates
-the new one. `ActivationInputAlternatives::insert_row` pays one DNF comparison
+nests inside a list argument instead of a tuple, so the list family collapses
+every depth and the shared `build/2` key is reached at once. It is deferred for
+the same reason its tuple sibling is, and that reason is entirely input-side:
+every round contributes a strictly deeper ground input row for `acc` to the
+shared activation, and `Types::convergence_collapse_evidence_inputs` widens an
+ignored slot only when the type carries variables, so no standing row is
+equivalent to or dominates the new one.
+`ActivationInputAlternatives::insert_row` pays one DNF comparison
 (`is_equivalent` / `row_column_dominates`) per standing row over an ever deeper
 type, the row-budget join is a union of depths the next row is not a subtype
 of, and the loop input evidence -> body -> self-call argument -> contribution
-never closes. This is the input-side twin of the return ladder,
-`acc(n + 1) = base | list(acc(n))`.
-
-These counts are whole-compile totals on one cold compile, not the ladder's own
-round counter. `ActivationSlot::ascents` resets to zero when an activation is
-rebased and the climb starts again, while every revision in the new epoch still
-fires `return_type.defined`, so a warm or re-driven world counts the epochs
-together and `ascents` does not.
+never closes. `acc(n + 1) = base | list(acc(n))` is the unknown nobody names:
+the static layer answers deepening RETURNS, and nothing yet answers a
+deepening argument.
 
 ```text
 fib(0,0,1), fib(1,0,1), fib(10,0,1), fib(20,0,1)

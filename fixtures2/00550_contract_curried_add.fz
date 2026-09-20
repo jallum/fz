@@ -5,7 +5,6 @@
 # assert.metric.semantic.executables: 6
 # assert.metric.semantic.callsites: 12
 # assert.metric.call_edges.count: 12
-# assert.metric.return_type.widened: 0
 # assert.edge: apply/2[(a0_p0) -> a0_r, int] | @74-79 | closure | add3/1#lambda@0/1
 # assert.edge: apply/2[(a0_p0) -> a0_r, int] | @74-79 | closure | add3/1#lambda@0/1#lambda@1/1
 # assert.edge: main/0[] | @113-121 | direct | add3/1
