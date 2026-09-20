@@ -625,11 +625,19 @@ impl<'a> PositionGraph<'a> {
                 let Some(skeleton) = self.skeletons.get(function).cloned() else {
                     return out;
                 };
-                // A declared return states its own answer and guards
-                // nothing, so it puts no branch on any cycle. The entries
-                // stay apart in the skeleton; the static question is asked
-                // of all of them at once, because which ones an activation
-                // reaches is not a static fact.
+                // This one loop answers two different questions at once: the
+                // edges it records here are read both for cycle membership
+                // (the productive-SCC check below) and for plain
+                // reachability (`reached_from_return`). A declared return
+                // puts no branch on either -- but only because
+                // `return_skeleton::lower` already promotes a return that
+                // is, or contains, one of its own parameters' type
+                // variables to `Entries`, so `Declared` is left holding
+                // exactly the returns that name no parameter at all and
+                // truly have nothing to contribute to either question. The
+                // entries stay apart in the skeleton; the static question is
+                // asked of all of them at once, because which ones an
+                // activation reaches is not a static fact.
                 if let Returns::Entries(entries) = &skeleton.returns {
                     for entry in entries.values() {
                         self.expand_into(from, *function, entry, &mut out, &mut seen);

@@ -30,7 +30,7 @@ use super::super::semantic::{
     ActivationAnalysis, ActivationInput, ActivationInputAlternatives, CallSiteKey, CallSiteResolution, CallSiteSummary,
     CallSiteTargets, CallTargetSummary, SelectedCallee,
 };
-use super::super::types::{AddrStep, ClosureTarget, MapKey, Ty, Types};
+use super::super::types::{AddrStep, ClosureTarget, MapKey, Sigma, Ty, Types};
 use super::super::world::{ACTIVATION_KEY_FACTS_PROVEN, World};
 
 #[derive(Clone, Copy)]
@@ -362,7 +362,25 @@ fn evaluate_activation(
     let mut return_flow: Option<Ty> = None;
     match &*lowered_body {
         LoweredBody::Extern { signature } => {
-            return_flow = Some(signature.return_ty);
+            // An extern has no body to carry the parameter into the result,
+            // so the binding the clause arm below gets from
+            // `SemanticValue::from_activation_input` has to be done directly
+            // here: unify the contract's declared parameters (the pattern)
+            // against this activation's concrete inputs (the witness), then
+            // instantiate the declared return through the resulting
+            // substitution.
+            let mut sigma = Sigma::new();
+            for (pattern, witness) in signature
+                .semantic_contract
+                .params
+                .iter()
+                .zip(activation.signature.inputs())
+            {
+                world
+                    .types_mut()
+                    .collect_instantiation_subst(pattern, witness, &mut sigma);
+            }
+            return_flow = Some(world.types_mut().instantiate(&signature.return_ty, &sigma));
         }
         LoweredBody::Clauses { clauses, entries, .. } => {
             for (clause_id, clause_inputs) in row_clause_inputs.iter().flatten() {
