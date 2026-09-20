@@ -33,7 +33,11 @@ mod quoted_expander;
 mod quoted_function;
 mod quoted_surface;
 mod resolve;
+mod return_membership;
+mod return_skeleton;
+mod return_unknowns;
 mod runtime;
+mod scc;
 mod scheduler;
 mod scope;
 mod semantic;
@@ -97,11 +101,6 @@ pub use scheduler::{
     AppliedStep, DriveOutcome, FatalError, Scheduler, Wake, WakeDisposition, WorkStartReason, WorkStartTally,
 };
 pub use scope::ScopeSnapshot;
-/// The widening budget is the fixpoint's own constant; nothing outside
-/// `semantic` acts on it, and only the telemetry tests read it — to check that
-/// a widening event can only appear past it.
-#[cfg(test)]
-pub(crate) use semantic::RETURN_WIDENING_BUDGET;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteResolution, CallSiteSummary,
     CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, ContributionMap, ContributionReplace,
@@ -179,6 +178,8 @@ mod quoted_function_test;
 mod quoted_surface_test;
 #[cfg(test)]
 mod resolve_test;
+#[cfg(test)]
+mod scc_test;
 #[cfg(test)]
 mod scheduler_test;
 #[cfg(test)]

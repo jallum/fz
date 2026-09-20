@@ -1,0 +1,6 @@
+#---
+# purpose: "Enum.reverse([1]) drives List.reduce's mutual reduce_cont/reduce_step cycle: the stdlib SCC witness"
+#---
+def main() do
+  dbg(Enum.reverse([1]))
+end

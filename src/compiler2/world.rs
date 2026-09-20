@@ -10,7 +10,7 @@ use std::any::Any;
 #[cfg(test)]
 use std::cell::Cell;
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, hash_map};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
@@ -41,7 +41,10 @@ use super::identity::{
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
-use super::keying::{BodyKeying, BodyKeyingMap, CallGraphComponentMap, InputDemand, InputDemandMap, StaticCalleeMap};
+use super::keying::{
+    BodyKeying, BodyKeyingMap, CallGraphComponentMap, InputDemand, InputDemandMap, ReturnSkeletonMap,
+    ReturnUnknownsMap, StaticCalleeMap,
+};
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap,
@@ -54,15 +57,18 @@ use super::protocol::{
 };
 use super::quoted_expander::surface_read_diagnostic;
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
+use super::return_skeleton::FunctionSkeleton;
+use super::return_unknowns::FunctionUnknowns;
 use super::runtime::{self, RuntimeModuleCode};
 use super::scheduler::ExternalDependencyStates;
 use super::scheduler::{CompletionEffects, FatalError, WorkStartReason, WorkStartTally};
 use super::scope::ScopeSnapshot;
 use super::semantic::{
-    ActivationAnalysis, ActivationInput, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey,
-    CallSiteMap, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap,
-    CallableConstructionTargetKey, ContributionMap, ContributionReplace, ExecutableRuntimeDemand,
-    RuntimeDemandInputMap, RuntimeDemandTypeProjection, TargetDemandContribution,
+    ActivationAnalysis, ActivationInput, ActivationInputAlternatives, ActivationInputMap, ActivationMap, ArgumentFlow,
+    ArgumentFlowMap, CallSiteKey, CallSiteMap, CallSiteResolution, CallSiteSummary, CallSiteTargets,
+    CallSiteTargetsMap, CallableConstructionTargetKey, ContributionMap, ContributionReplace, ExecutableRuntimeDemand,
+    JoinContribution, ReturnArrival, ReturnComponent, RuntimeDemandInputMap, RuntimeDemandTypeProjection, SemanticOrd,
+    TargetDemandContribution,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -145,6 +151,8 @@ pub struct World {
     entry_dispatches: EntryDispatchMap,
     body_keying: BodyKeyingMap,
     input_demands: InputDemandMap,
+    return_skeletons: ReturnSkeletonMap,
+    return_unknowns: ReturnUnknownsMap,
     static_callees: StaticCalleeMap,
     call_graph_components: CallGraphComponentMap,
     protocol_callbacks: ProtocolCallbackMap,
@@ -153,6 +161,7 @@ pub struct World {
     protocol_impl_providers: ProtocolImplProviderMap,
     activations: ActivationMap,
     activation_inputs: ActivationInputMap<Job>,
+    argument_flow: ArgumentFlowMap<Job>,
     callsites: CallSiteMap,
     callsite_targets: CallSiteTargetsMap,
     executable_facts: HashMap<ExecutableKey, std::rc::Rc<super::executable_facts::ExecutableFacts>>,
@@ -281,6 +290,8 @@ impl World {
             entry_dispatches: EntryDispatchMap::new(),
             body_keying: BodyKeyingMap::new(),
             input_demands: InputDemandMap::new(),
+            return_skeletons: ReturnSkeletonMap::new(),
+            return_unknowns: ReturnUnknownsMap::new(),
             static_callees: StaticCalleeMap::new(),
             call_graph_components: CallGraphComponentMap::new(),
             protocol_callbacks: ProtocolCallbackMap::new(),
@@ -289,6 +300,7 @@ impl World {
             protocol_impl_providers: ProtocolImplProviderMap::new(),
             activations: ActivationMap::new(),
             activation_inputs: ActivationInputMap::new(),
+            argument_flow: ArgumentFlowMap::new(),
             callsites: CallSiteMap::new(),
             callsite_targets: CallSiteTargetsMap::new(),
             executable_facts: HashMap::new(),
@@ -597,6 +609,13 @@ impl World {
                 _ => None,
             })
             .collect::<HashSet<_>>();
+        let previous_argument_flow_outputs = previous_output_keys
+            .iter()
+            .filter_map(|fact| match fact {
+                FactKey::ArgumentFlow(key) => Some(key.clone()),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
         let ContributionReplace {
             output_keys: activation_input_outputs,
             changed_keys: activation_input_changed,
@@ -609,6 +628,38 @@ impl World {
             )
         } else {
             self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
+        };
+        // Argument-flow evidence is cumulative caller evidence, exactly like
+        // activation-input evidence above: a rerun can add or widen a slot's
+        // evidence, but a temporarily unreachable call site cannot retract a
+        // contribution another still-standing call site made. One job can
+        // reach the same callee from more than one call site (recursion, or
+        // two clauses both calling the same helper), so contributions with
+        // the same key join here -- the same per-slot union
+        // `ArgumentFlow::join_assign` performs once installed.
+        let mut argument_flow_next: HashMap<ActivationKey, ArgumentFlow> = HashMap::new();
+        for (key, slots) in effects.argument_flow_contributions {
+            let incoming = ArgumentFlow::from_slots(slots);
+            match argument_flow_next.entry(key) {
+                hash_map::Entry::Occupied(mut entry) => entry.get_mut().join_assign(&incoming, &mut self.types),
+                hash_map::Entry::Vacant(entry) => {
+                    entry.insert(incoming);
+                }
+            }
+        }
+        let ContributionReplace {
+            output_keys: argument_flow_outputs,
+            changed_keys: argument_flow_changed,
+        } = if waits.is_empty() {
+            self.argument_flow.conclude_preserving_frontier(
+                &mut self.types,
+                job.clone(),
+                previous_argument_flow_outputs,
+                argument_flow_next,
+            )
+        } else {
+            self.argument_flow
+                .extend(&mut self.types, job.clone(), argument_flow_next)
         };
         let runtime_demand_input_contributions = effects
             .runtime_demand_input_contributions
@@ -652,6 +703,7 @@ impl World {
         let mut outputs = effects.outputs;
         outputs.extend(incoming.output_keys.into_iter().map(FactKey::IncomingInputSlot));
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
+        outputs.extend(argument_flow_outputs.into_iter().map(FactKey::ArgumentFlow));
         outputs.extend(
             runtime_demand_input_outputs
                 .into_iter()
@@ -664,6 +716,7 @@ impl World {
         let mut changed = effects.changed;
         changed.extend(incoming.changed_keys.into_iter().map(FactKey::IncomingInputSlot));
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
+        changed.extend(argument_flow_changed.into_iter().map(FactKey::ArgumentFlow));
         changed.extend(
             runtime_demand_input_changed
                 .iter()
@@ -722,7 +775,7 @@ impl World {
             }
         }
         for key in analyzed_published {
-            if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
+            if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) && !self.activation_owes_return(&key) {
                 self.activation_frontier.remove(&key);
             }
         }
@@ -768,10 +821,14 @@ impl World {
     }
 
     /// The SOLE insertion point into `activation_frontier`: a discovered
-    /// `Activation(key)` publish becomes a standing analysis demand unless
-    /// its `ActivationAnalyzed` fact has already settled.
+    /// `Activation(key)` publish becomes a standing demand for whichever of
+    /// its analysis or its return (`activation_owes_return`) is still
+    /// outstanding. A member's return can only be recognized as outstanding
+    /// once its own analysis has already settled (`return_component` reads
+    /// `ActivationAnalysis`), so both checks stay live here rather than one
+    /// gating the other.
     fn note_activation_frontier(&mut self, key: ActivationKey) {
-        if !self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
+        if !self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) || self.activation_owes_return(&key) {
             self.activation_frontier.insert(key);
         }
     }
@@ -900,11 +957,30 @@ impl World {
     /// The correlated body-input evidence of an activation, once its fact
     /// exists: the canonical antichain of publisher rows. Semantic analysis
     /// reads THIS — each row is analyzed independently, never a column mix.
+    /// Every activation key this world holds, in arbitrary order. The
+    /// membership walk reads it because a component is a connected set and a
+    /// helper has to be able to find the caller that handed it the cycle.
+    pub(crate) fn activation_keys(&self) -> Vec<ActivationKey> {
+        self.activations.keys().cloned().collect()
+    }
+
     pub(crate) fn activation_input_alternatives(&self, key: &ActivationKey) -> Option<&ActivationInputAlternatives> {
         #[cfg(test)]
         self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
         self.fact_revision(&FactKey::ActivationInputs(key.clone()))?;
         self.activation_inputs.get(key)
+    }
+
+    /// The joined symbolic evidence for an activation's parameter slots,
+    /// across every call site that has ever targeted it. Unlike
+    /// `activation_input_alternatives`, this channel never widens or
+    /// collapses rows — `SolveReturnComponent` reads it to name the exact
+    /// per-slot unknown a member's return equations depend on.
+    pub(crate) fn argument_flow(&self, key: &ActivationKey) -> Option<&ArgumentFlow> {
+        #[cfg(test)]
+        self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
+        self.fact_revision(&FactKey::ArgumentFlow(key.clone()))?;
+        self.argument_flow.get(key)
     }
 
     /// The column-wise joined projection of the activation's input rows —
@@ -928,6 +1004,59 @@ impl World {
         self.activations.get(key).and_then(|slot| slot.analysis())
     }
 
+    /// The recursive-return component `seed` belongs to, or `None` when
+    /// `seed`'s own return is settled by its own `AnalyzeActivation` alone.
+    ///
+    /// Derived fresh from the current `ActivationAnalysis.callsites` and
+    /// `CallSiteTargets` facts reachable from `seed` -- not a second cache
+    /// beside those facts, so membership tracks their revisions without a
+    /// retraction step of its own. A component exists only for a self edge
+    /// or more than one mutually reachable activation, mirroring
+    /// [`World::recursive_type_def_component`]'s rule for `@type` equations.
+    /// An unresolved callsite or a provider-boundary edge contributes no
+    /// neighbor, so it never joins two activations into one component.
+    pub(crate) fn return_component(&self, seed: &ActivationKey) -> Option<ReturnComponent> {
+        let (mut members, unknowns) = super::return_membership::discover(self, seed).component?;
+        members.sort_by(|a, b| a.semantic_cmp(b, &self.types));
+        let mut slots = unknowns.slots();
+        slots.sort_by(|a, b| a.0.semantic_cmp(&b.0, &self.types).then(a.1.cmp(&b.1)));
+        Some(ReturnComponent {
+            owner: members.first().cloned().expect("a return component has a member"),
+            members,
+            slots,
+            unknowns,
+        })
+    }
+
+    /// Every activation the membership walk touched while establishing
+    /// `seed`'s component -- always a superset of the eventual
+    /// [`ReturnComponent::members`], since the walk passes through the
+    /// activations whose returns and slots the component's own positions are
+    /// built from. Any of these activations' `ActivationAnalyzed` or
+    /// `CallSiteTargets` facts moving can redraw the boundary, membership
+    /// included, so a caller that wants a real, attributable cause for a
+    /// membership change reads all of these, not only `seed`'s own
+    /// component.
+    pub(crate) fn return_flow_frontier(&self, seed: &ActivationKey) -> Vec<ActivationKey> {
+        super::return_membership::discover(self, seed).frontier
+    }
+
+    /// Whether `key` currently owes a `ReturnType` that only its recursive-
+    /// return component's `SolveReturnComponent` may publish -- true exactly
+    /// while `key` is a component member (`return_component` derived fresh)
+    /// and that fact has not yet settled. A non-member never owes anything
+    /// here: `analyze_activation` self-publishes its own return as an
+    /// unconditional side effect of its own (frontier-driven) run, the
+    /// moment membership is `None`, so nothing else needs to demand it.
+    /// Component membership can only be discovered once its member
+    /// activations' own `CallSiteTargets` resolve, which can lag several
+    /// reruns behind an activation's first analysis -- this predicate is
+    /// re-checked, never cached, so a late discovery is caught the next
+    /// time anything re-derives it.
+    pub(crate) fn activation_owes_return(&self, key: &ActivationKey) -> bool {
+        self.return_component(key).is_some() && !self.fact_is_settled(&FactKey::ReturnType(key.clone()))
+    }
+
     /// The activation's current return EVIDENCE. `None` means the claim is
     /// retracted or no path has produced a value yet — the ascent's bottom,
     /// never the type `none`. Behind the settled gate, a still-`None` read
@@ -942,14 +1071,6 @@ impl World {
         #[cfg(test)]
         self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
         self.activations.get(key).and_then(|slot| slot.return_ty().copied())
-    }
-
-    /// How many strict ascents the activation's return evidence has taken
-    /// since its last rebase. An activation with no slot has taken none.
-    pub(crate) fn activation_return_ascents(&self, key: &ActivationKey) -> u32 {
-        #[cfg(test)]
-        self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
-        self.activations.get(key).map_or(0, |slot| slot.return_ascents())
     }
 
     fn conclude_activation_input_contributions(
@@ -1617,6 +1738,28 @@ impl World {
     /// `FactKey::InputDemand`. `None` until `Job::DeriveInputDemand` has run.
     pub(crate) fn input_demand(&self, function: FunctionId) -> Option<&InputDemand> {
         self.input_demands.get(function)
+    }
+
+    /// One function's static shape, behind `FactKey::ReturnSkeleton`: what
+    /// it returns and what it hands each of its call sites, written over its
+    /// own inputs and its own call results.
+    pub(crate) fn define_return_skeleton(&mut self, function: FunctionId, skeleton: Rc<FunctionSkeleton>) -> bool {
+        self.return_skeletons.define(function, skeleton)
+    }
+
+    pub(crate) fn return_skeleton(&self, function: FunctionId) -> Option<&Rc<FunctionSkeleton>> {
+        self.return_skeletons.get(function)
+    }
+
+    /// Which of one function's positions the fixpoint is still solving,
+    /// behind `FactKey::ReturnUnknowns`. This is the fact a call site's key
+    /// coordinate reads, and the only one it reads.
+    pub(crate) fn define_return_unknowns(&mut self, function: FunctionId, unknowns: Rc<FunctionUnknowns>) -> bool {
+        self.return_unknowns.define(function, unknowns)
+    }
+
+    pub(crate) fn return_unknowns(&self, function: FunctionId) -> Option<&Rc<FunctionUnknowns>> {
+        self.return_unknowns.get(function)
     }
 
     /// The call graph's out-edges for one function, behind
@@ -3181,28 +3324,65 @@ impl World {
     }
 
     pub fn define_activation_return(&mut self, derivation: &Derivation, evidence: Option<Ty>) -> bool {
-        self.define_activation_return_outcome(derivation, evidence).changed
+        self.define_activation_return_outcome(derivation, evidence)
     }
 
-    fn define_activation_return_outcome(
-        &mut self,
-        derivation: &Derivation,
-        evidence: Option<Ty>,
-    ) -> super::semantic::ReturnDefine {
-        let Derivation {
-            job: Job::AnalyzeActivation(key),
-            key: DerivationKey::Activation(owner),
-        } = derivation
-        else {
-            panic!("ReturnType must be owned by its activation derivation")
+    /// The closed `ReturnType` ownership rule: a non-member activation's own
+    /// `AnalyzeActivation` owns its `ReturnType`; a recursive-return
+    /// component member's `ReturnType` is owned by its component's
+    /// `SolveReturnComponent(owner)` instead, one derivation per member.
+    /// `World::return_component` is recomputed fresh here, so a membership
+    /// change moves ownership the moment the derivation offered for it
+    /// changes, through the ordinary conclusion/replacement facts already
+    /// give every claim -- there is no separate retraction step, and return
+    /// storage itself is never cleared to force one.
+    fn define_activation_return_outcome(&mut self, derivation: &Derivation, evidence: Option<Ty>) -> bool {
+        let (key, arrival) = match derivation {
+            Derivation {
+                job: Job::AnalyzeActivation(job_key),
+                key: DerivationKey::Activation(payload_key),
+            } => {
+                assert_eq!(
+                    job_key, payload_key,
+                    "ReturnType derivation and payload must name one activation"
+                );
+                assert!(
+                    self.return_component(job_key).is_none(),
+                    "ReturnType({job_key:?}) is a recursive-return component member; only its \
+                     component's SolveReturnComponent may publish it"
+                );
+                // A walk whose ground shifted is re-deriving from facts that
+                // replaced the ones behind the standing value, so its answer
+                // supersedes rather than joins; an ordinary round is one more
+                // step of the same climb.
+                let arrival = match self.work_graph.derivation_rebased(derivation) {
+                    true => ReturnArrival::Supersedes,
+                    false => ReturnArrival::Ascends,
+                };
+                (job_key, arrival)
+            }
+            Derivation {
+                job: Job::SolveReturnComponent(owner),
+                key: DerivationKey::Activation(member),
+            } => {
+                let component = self
+                    .return_component(member)
+                    .filter(|component| &component.owner == owner)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "ReturnType({member:?}) published by SolveReturnComponent({owner:?}), \
+                             which is not {member:?}'s current component owner"
+                        )
+                    });
+                assert!(
+                    component.members.contains(member),
+                    "SolveReturnComponent({owner:?}) may only publish ReturnType for its own members"
+                );
+                (member, ReturnArrival::Supersedes)
+            }
+            _ => panic!("ReturnType must be owned by an AnalyzeActivation or SolveReturnComponent derivation"),
         };
-        assert_eq!(key, owner, "ReturnType derivation and payload must name one activation");
-        self.activations.define_return(
-            &mut self.types,
-            key,
-            evidence,
-            self.work_graph.derivation_rebased(derivation),
-        )
+        self.activations.define_return(&mut self.types, key, evidence, arrival)
     }
 
     pub fn define_callsite_summary(
@@ -3668,17 +3848,14 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         // The publisher of a ReturnType claim is, by construction, the
         // activation's own analysis job — its rebase state selects join
         // (the within-epoch ascent) or replace (the narrowing path).
-        let outcome = self.world.define_activation_return_outcome(derivation, evidence);
+        let changed = self.world.define_activation_return_outcome(derivation, evidence);
         let DerivationKey::Activation(key) = &derivation.key else {
             panic!("ReturnType must be owned by an activation derivation")
         };
-        if outcome.changed {
+        if changed {
             self.emit_world_key(&["fz", "compiler2", "return_type", "defined"], key);
         }
-        if outcome.widened {
-            self.emit_world_key(&["fz", "compiler2", "return_type", "widened"], key);
-        }
-        outcome.changed
+        changed
     }
 
     pub fn define_callsite_summary(

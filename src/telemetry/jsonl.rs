@@ -1210,19 +1210,26 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "pull", "recursive_group", "searched"]
             | ["fz", "compiler2", "work", "started"]
             // The semantic fixpoint's own ascent. `return_type.defined` is the
-            // join point every recursive activation climbs through and
-            // `return_type.widened` is the budget's escape hatch firing, so
-            // together they say how many rounds a return took and whether the
-            // answer was widened rather than found. `activation_analysis.defined`
+            // join point every recursive activation climbs through, and it
+            // carries the type that round installed. `activation_analysis.defined`
             // is the round itself -- the analysis that produced that evidence --
             // and `callsite.defined` is the edge that carries a callee's return
             // back to its caller, which is what wakes the next round. Each
             // already has a semantic projection below; without them the stream
             // shows the cost of the climb but not the claim that drove it.
             | ["fz", "compiler2", "return_type", "defined"]
-            | ["fz", "compiler2", "return_type", "widened"]
+            // The retraction counterpart: an unreached output withdrew a
+            // return that a previous round had installed. A stream with only
+            // the definitions reads a flickering slot as an ascending one.
+            | ["fz", "compiler2", "return_type", "cleared"]
             | ["fz", "compiler2", "activation_analysis", "defined"]
             | ["fz", "compiler2", "callsite", "defined"]
+            // Fires once per `SolveReturnComponent` conclusion, carrying the
+            // component's member count and how many of them the solve found
+            // evidence for -- the component-solve counterpart to the ascent
+            // pair above, for the recursive-return components that settle
+            // together instead of one activation's own analysis alone.
+            | ["fz", "compiler2", "return_component", "solved"]
             | ["fz", "compiler2", "drive", "stalled"]
             | ["fz", "compiler2", "drive", "timed_out"]
             | ["fz", "compiler2", "drive", "demand_on_stall"]
@@ -1316,7 +1323,7 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
                 out.push(',');
             }
             out.push_str("{\"activation\":");
-            write_activation_key(out, activation);
+            write_activation_key_object(out, activation);
             if let Some(alternatives) = world.activation_input_alternatives(activation) {
                 out.push_str(",\"rows\":[");
                 for (row_index, row) in alternatives.rows().iter().enumerate() {
@@ -1361,15 +1368,34 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
         return;
     };
     match ev.name {
-        ["fz", "compiler2", "return_type", "defined"] | ["fz", "compiler2", "return_type", "widened"] => {
-            // `ascents` is the ladder's own round counter, not a fact
-            // revision: it counts strict ascents of this activation's return
-            // evidence since its last rebase, so it says how far into the
-            // widening budget the climb has gone.
+        ["fz", "compiler2", "return_component", "solved"] => {
+            // Which activations settled together, and under whose ownership.
+            // The member count alone says how big the component was; the
+            // membership says which one it was, which is what distinguishes a
+            // component that grew a member from one that re-ran unchanged.
+            let Some(members) = ev
+                .metadata
+                .get("members")
+                .and_then(Value::downcast_ref::<Vec<crate::compiler2::ActivationKey>>)
+            else {
+                return;
+            };
+            out.push_str(",\"semantic\":{\"owner\":");
+            write_activation_key_object(out, activation);
+            out.push_str(",\"members\":[");
+            for (index, member) in members.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_activation_key_object(out, member);
+            }
+            out.push_str("]}");
+        }
+        ["fz", "compiler2", "return_type", "defined"] => {
+            // The type this round installed, so a trace reads the answer and
+            // not just the fact that one moved.
             out.push_str(",\"semantic\":{\"return\":");
             write_optional_type(out, world, world.activation_return_evidence(activation));
-            out.push_str(",\"ascents\":");
-            push_u64(out, world.activation_return_ascents(activation) as u64);
             out.push('}');
         }
         ["fz", "compiler2", "activation_analysis", "defined"] => {
@@ -2011,6 +2037,16 @@ pub(crate) fn list_retention_counts(program: &crate::compiler2::BackendProgram) 
     (construction_count, physical_capture_count)
 }
 
+/// An activation key as a JSON object of its own. [`write_activation_key`]
+/// emits a comma-led field list, which is what an enclosing object that has
+/// already written a field of its own needs; a key standing alone as a value
+/// needs the braces and a leading field to hang the commas off.
+fn write_activation_key_object(out: &mut String, key: &crate::compiler2::ActivationKey) {
+    out.push_str("{\"kind\":\"activation\"");
+    write_activation_key(out, key);
+    out.push('}');
+}
+
 fn write_activation_key(out: &mut String, key: &crate::compiler2::ActivationKey) {
     write_root_id(out, key.root);
     write_function_id(out, key.function);
@@ -2283,10 +2319,14 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
         | Job::PlanEntryDispatch(function)
         | Job::DeriveStaticCallees(function)
         | Job::DeriveCallGraphComponent(function)
-        | Job::DeriveInputDemand(function) => write_function_id(out, *function),
+        | Job::DeriveInputDemand(function)
+        | Job::DeriveReturnSkeleton(function)
+        | Job::DeriveReturnUnknowns(function) => write_function_id(out, *function),
         Job::DeriveTypeDef(type_name) => write_type_name(out, type_name),
         Job::SeedRoot(root) => write_root_id(out, *root),
-        Job::SeedActivation(key) | Job::AnalyzeActivation(key) => write_activation_key(out, key),
+        Job::SeedActivation(key) | Job::AnalyzeActivation(key) | Job::SolveReturnComponent(key) => {
+            write_activation_key(out, key)
+        }
         Job::DeriveExecutableFacts(key) | Job::DeriveRuntimeDemand(key) => write_executable_key(out, key),
         Job::DeriveCallableConstructionTarget(key) => write_callable_construction_target_key(out, key),
     }
@@ -2315,13 +2355,16 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::StaticCallees(function)
         | FactKey::CallGraphComponent(function)
         | FactKey::Recursive(function)
-        | FactKey::InputDemand(function) => write_function_id(out, *function),
+        | FactKey::InputDemand(function)
+        | FactKey::ReturnSkeleton(function)
+        | FactKey::ReturnUnknowns(function) => write_function_id(out, *function),
         FactKey::TypeDeclared(type_name) | FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
         FactKey::RootEntry(root) => write_root_id(out, *root),
         FactKey::Activation(key)
         | FactKey::ActivationInputs(key)
         | FactKey::ActivationAnalyzed(key)
-        | FactKey::ReturnType(key) => write_activation_key(out, key),
+        | FactKey::ReturnType(key)
+        | FactKey::ArgumentFlow(key) => write_activation_key(out, key),
         FactKey::CallSiteTargets(key) | FactKey::CallSiteSummary(key) => write_callsite_key_identity(out, key),
         FactKey::CallableConstructionTarget(key) => write_callable_construction_target_key(out, key),
         FactKey::Executable(key)
@@ -2543,11 +2586,14 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::CallGraphComponent(_) => "CallGraphComponent",
         FactKey::Recursive(_) => "Recursive",
         FactKey::InputDemand(_) => "InputDemand",
+        FactKey::ReturnSkeleton(_) => "ReturnSkeleton",
+        FactKey::ReturnUnknowns(_) => "ReturnUnknowns",
         FactKey::RootEntry(_) => "RootEntry",
         FactKey::Activation(_) => "Activation",
         FactKey::ActivationInputs(_) => "ActivationInputs",
         FactKey::ActivationAnalyzed(_) => "ActivationAnalyzed",
         FactKey::ReturnType(_) => "ReturnType",
+        FactKey::ArgumentFlow(_) => "ArgumentFlow",
         FactKey::CallSiteTargets(_) => "CallSiteTargets",
         FactKey::CallSiteSummary(_) => "CallSiteSummary",
         FactKey::Executable(_) => "Executable",
@@ -2578,32 +2624,38 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::DeriveStaticCallees(_) => "DeriveStaticCallees",
         Job::DeriveCallGraphComponent(_) => "DeriveCallGraphComponent",
         Job::DeriveInputDemand(_) => "DeriveInputDemand",
+        Job::DeriveReturnSkeleton(_) => "DeriveReturnSkeleton",
+        Job::DeriveReturnUnknowns(_) => "DeriveReturnUnknowns",
         Job::SeedRoot(_) => "SeedRoot",
         Job::SeedActivation(_) => "SeedActivation",
         Job::AnalyzeActivation(_) => "AnalyzeActivation",
+        Job::SolveReturnComponent(_) => "SolveReturnComponent",
         Job::DeriveExecutableFacts(_) => "DeriveExecutableFacts",
         Job::DeriveCallableConstructionTarget(_) => "DeriveCallableConstructionTarget",
         Job::DeriveRuntimeDemand(_) => "DeriveRuntimeDemand",
     }
 }
 
+/// A JSON string literal. The walk is over CHARACTERS, not bytes: JSON strings
+/// are text, and a multi-byte character emitted one byte at a time reads back
+/// as one mojibake character per byte. Anything above the control range is
+/// written through as itself, which JSON allows for UTF-8 output.
 fn write_str_lit(out: &mut String, s: &str) {
     out.push('"');
-    for b in s.bytes() {
-        match b {
-            b'"' => out.push_str("\\\""),
-            b'\\' => out.push_str("\\\\"),
-            b'\n' => out.push_str("\\n"),
-            b'\r' => out.push_str("\\r"),
-            b'\t' => out.push_str("\\t"),
-            0x00..=0x1f => {
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let b = c as u32;
                 out.push_str("\\u00");
-                let hi = b >> 4;
-                let lo = b & 0xf;
-                out.push(hex_digit(hi));
-                out.push(hex_digit(lo));
+                out.push(hex_digit((b >> 4) as u8));
+                out.push(hex_digit((b & 0xf) as u8));
             }
-            _ => out.push(b as char),
+            c => out.push(c),
         }
     }
     out.push('"');

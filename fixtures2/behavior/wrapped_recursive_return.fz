@@ -1,0 +1,11 @@
+#---
+# purpose: "a recursive return handed straight to a wrapper: the wrapper's activation must exist before the component is solved"
+#---
+def wrap(v), do: [v]
+
+def dup([]), do: []
+def dup([_ | xs]), do: wrap(dup(xs))
+
+def main() do
+  dbg(dup([1]))
+end

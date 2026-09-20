@@ -1,0 +1,17 @@
+#---
+# purpose: "a guarded recursive clause dispatch never reaches: the static answer says the return is solved, the activation has no recursive call at all"
+#---
+#
+# `step/1`'s first clause wraps its own result in a list, so statically the
+# return sits on a productive cycle and every activation of `step/1` owes its
+# return to a component solve. The only activation this program has is
+# `step/1[:stop]`, which reaches the second clause alone: it makes no call, so
+# no call edge joins it to anything. The solve still happens -- a function
+# whose return is being solved is a one-member system when nothing else is on
+# it -- and the answer is the clause's own `:done`.
+def step([value | _]), do: [step(value)]
+def step(_), do: :done
+
+def main() do
+  dbg(step(:stop))
+end

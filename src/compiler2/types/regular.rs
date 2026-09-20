@@ -1,11 +1,12 @@
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use super::axis;
 use super::conj::Conj;
 use super::descr::{DescrOf, StructureOf, canonical_brand_partition};
 use super::emptiness::Operand;
+use super::sigs::TupleSigOf;
 use super::{
-    CallableSurfaceOps, TupleCoordinateOps, Ty, Types, normalize_literal_callable_surfaces_with,
+    BinaryTypeOperation, CallableSurfaceOps, TupleCoordinateOps, Ty, Types, normalize_literal_callable_surfaces_with,
     normalize_tuple_coordinate_difference_with,
 };
 use crate::fz_ir::FnId;
@@ -271,68 +272,173 @@ pub(super) fn intern_bodies(types: &mut Types, bodies: Vec<DescrOf<ComponentRef>
         .collect()
 }
 
-fn strongly_connected_components(bodies: &[DescrOf<ComponentRef>]) -> Vec<Vec<usize>> {
-    fn visit(
-        node: usize,
-        bodies: &[DescrOf<ComponentRef>],
-        next_index: &mut usize,
-        indices: &mut [Option<usize>],
-        lowlinks: &mut [usize],
-        stack: &mut Vec<usize>,
-        active: &mut [bool],
-        components: &mut Vec<Vec<usize>>,
-    ) {
-        indices[node] = Some(*next_index);
-        lowlinks[node] = *next_index;
-        *next_index += 1;
-        stack.push(node);
-        active[node] = true;
-        for child in local_children(&bodies[node]) {
-            assert!(
-                child < bodies.len(),
-                "component body refers to a node outside its component forest"
-            );
-            if indices[child].is_none() {
-                visit(child, bodies, next_index, indices, lowlinks, stack, active, components);
-                lowlinks[node] = lowlinks[node].min(lowlinks[child]);
-            } else if active[child] {
-                lowlinks[node] = lowlinks[node].min(indices[child].expect("active node has an index"));
-            }
+/// The union of two types when one of them is recursive.
+///
+/// Unioning two recursive types meets a new PAIR of states at every rung:
+/// `{:x, B} | {:x, B'}` is one rectangle over `B | B'`, whose own rungs are
+/// unions again, and for two distinct cycles that unfolding never repeats a
+/// descriptor that has an identity yet. Rebuilding each rung on its own
+/// therefore descends forever, with nothing for the interner's memo to
+/// recognise.
+///
+/// So the union is built the way every other recursive value is: one body per
+/// reachable pair of states, a pair met a second time closing onto the body
+/// already open for it, and the collected bodies handed to the regular
+/// interner, which ties the knot and assigns identity by rooted automaton. A
+/// pair that turns out acyclic never reaches that interner -- its body names
+/// no local sibling, so it is published as it is finished.
+pub(super) fn union(types: &mut Types, a: Ty, b: Ty) -> Ty {
+    let mut walk = UnionWalk {
+        nodes: HashMap::new(),
+        bodies: Vec::new(),
+    };
+    match union_node(types, &mut walk, a, b) {
+        ComponentRef::Published(ty) => ty,
+        // The root is the first node the walk opens, so it is body zero.
+        ComponentRef::Local(_) => types.intern_regular_bodies(reachable_bodies(walk.bodies))[0],
+    }
+}
+
+/// The pairs of one union under construction.
+struct UnionWalk {
+    nodes: HashMap<(Ty, Ty), UnionNode>,
+    bodies: Vec<DescrOf<ComponentRef>>,
+}
+
+enum UnionNode {
+    /// Still on the walk's own stack. Reaching it again is the back edge that
+    /// makes the union recursive, and this is the body it closes onto.
+    Open(usize),
+    Settled(ComponentRef),
+}
+
+/// The reference standing for one pair's union.
+fn union_node(types: &mut Types, walk: &mut UnionWalk, a: Ty, b: Ty) -> ComponentRef {
+    if a == b {
+        return ComponentRef::Published(a);
+    }
+    // A pair with no recursive state has no cycle to close, so it takes the
+    // ordinary boundary and comes back with an identity.
+    if !types.interner.is_regular(a) && !types.interner.is_regular(b) {
+        return ComponentRef::Published(types.union(a, b));
+    }
+    let key = if a <= b { (a, b) } else { (b, a) };
+    if let Some(ty) = types
+        .binary_type_operations
+        .lookup(BinaryTypeOperation::Union(key.0, key.1))
+    {
+        return ComponentRef::Published(ty);
+    }
+    match walk.nodes.get(&key) {
+        Some(UnionNode::Settled(reference)) => return *reference,
+        Some(UnionNode::Open(index)) => return ComponentRef::local(*index),
+        None => {}
+    }
+    let index = walk.bodies.len();
+    walk.bodies.push(DescrOf::none());
+    walk.nodes.insert(key, UnionNode::Open(index));
+    let body = union_body(types, walk, a, b);
+    let reference = match types.intern_ground_regular_body(body.clone()) {
+        Some(ground) => ComponentRef::Published(ground),
+        None => ComponentRef::local(index),
+    };
+    walk.bodies[index] = body;
+    walk.nodes.insert(key, UnionNode::Settled(reference));
+    reference
+}
+
+/// One pair's body: both operands' clauses, carved to the one normal form, so
+/// that the two coordinates a fused rectangle joins become the next pair.
+fn union_body(types: &mut Types, walk: &mut UnionWalk, a: Ty, b: Ty) -> DescrOf<ComponentRef> {
+    let body = {
+        let cx = types.ctx();
+        cx.descr(&a).union(cx, cx.descr(&b))
+    }
+    .map_children(ComponentRef::Published);
+    canonical_brand_partition(body, |structure| {
+        let mut ops = UnionTupleOps { types, walk };
+        normalize_tuple_rect_clauses(&mut ops, &mut structure.tuples);
+    })
+}
+
+/// The bodies the root reaches, renumbered from it.
+///
+/// Carving asks for the union of coordinates it may then discard, so the walk
+/// can open a pair no surviving rectangle names. Dropping those before the
+/// interner sees them is what keeps a speculative question from minting a
+/// type.
+fn reachable_bodies(bodies: Vec<DescrOf<ComponentRef>>) -> Vec<DescrOf<ComponentRef>> {
+    let mut renumbered = vec![None; bodies.len()];
+    let mut order = Vec::new();
+    let mut work = vec![0];
+    while let Some(node) = work.pop() {
+        if renumbered[node].is_some() {
+            continue;
         }
-        if lowlinks[node] == indices[node].expect("visited node has an index") {
-            let mut component = Vec::new();
-            loop {
-                let member = stack.pop().expect("component root is on the stack");
-                active[member] = false;
-                component.push(member);
-                if member == node {
-                    break;
-                }
+        renumbered[node] = Some(order.len());
+        order.push(node);
+        visit_children(&bodies[node], |reference| {
+            if let ComponentRef::Local(NodeId(child)) = reference {
+                work.push(child);
             }
-            component.sort_unstable();
-            components.push(component);
+        });
+    }
+    order
+        .into_iter()
+        .map(|node| {
+            bodies[node].clone().map_children(|reference| match reference {
+                ComponentRef::Published(ty) => ComponentRef::Published(ty),
+                ComponentRef::Local(NodeId(child)) => {
+                    ComponentRef::local(renumbered[child].expect("a reached body is renumbered"))
+                }
+            })
+        })
+        .collect()
+}
+
+struct UnionTupleOps<'a, 'w> {
+    types: &'a mut Types,
+    walk: &'w mut UnionWalk,
+}
+
+impl axis::TupleRectOps<ComponentRef> for UnionTupleOps<'_, '_> {
+    fn same(&self, left: &ComponentRef, right: &ComponentRef) -> bool {
+        left == right
+    }
+
+    fn union(&mut self, left: &ComponentRef, right: &ComponentRef) -> Option<ComponentRef> {
+        match (*left, *right) {
+            (ComponentRef::Published(left), ComponentRef::Published(right)) => {
+                Some(union_node(self.types, self.walk, left, right))
+            }
+            _ => None,
         }
     }
 
-    let mut next_index = 0;
-    let mut indices = vec![None; bodies.len()];
-    let mut lowlinks = vec![0; bodies.len()];
-    let mut stack = Vec::new();
-    let mut active = vec![false; bodies.len()];
-    let mut components = Vec::new();
-    for node in 0..bodies.len() {
-        if indices[node].is_none() {
-            visit(
-                node,
-                bodies,
-                &mut next_index,
-                &mut indices,
-                &mut lowlinks,
-                &mut stack,
-                &mut active,
-                &mut components,
-            );
-        }
+    fn covered_by(&self, candidate: &[ComponentRef], rectangles: &[Vec<ComponentRef>]) -> bool {
+        rectangles_cover(self.types, candidate, rectangles, |reference| match reference {
+            ComponentRef::Published(ty) => Some(*ty),
+            ComponentRef::Local(_) => None,
+        })
+    }
+}
+
+fn strongly_connected_components(bodies: &[DescrOf<ComponentRef>]) -> Vec<Vec<usize>> {
+    let mut components = super::super::scc::strongly_connected_components(0..bodies.len(), |&node| {
+        local_children(&bodies[node])
+            .inspect(|&child| {
+                assert!(
+                    child < bodies.len(),
+                    "component body refers to a node outside its component forest"
+                );
+            })
+            .collect::<Vec<_>>()
+    });
+    // Member order within a component is otherwise just DFS-completion
+    // order; sorting it keeps the local index every downstream `rooted_key`
+    // and interner lookup assigns a member deterministic across runs.
+    for component in &mut components {
+        component.sort_unstable();
     }
     components
 }
@@ -502,7 +608,7 @@ fn normalize_structure(types: &mut Types, body: &mut StructureOf<RegularRef>) {
         .into_iter()
         .map(|clause| normalize_tuple_coordinate_difference_with(&mut tuple_ops, clause))
         .collect();
-    normalize_regular_tuple_axis(&mut tuple_ops, &mut body.tuples);
+    normalize_tuple_rect_clauses(&mut tuple_ops, &mut body.tuples);
     normalize_axis(&mut body.tuples);
     absorb_regular_tuple_clauses(types, &mut body.tuples);
     axis::merge_empty_list_clause(&mut body.lists);
@@ -514,9 +620,12 @@ fn normalize_structure(types: &mut Types, body: &mut StructureOf<RegularRef>) {
     normalize_axis(&mut body.maps);
 }
 
-fn normalize_regular_tuple_axis(
-    ops: &mut RegularTupleOps<'_>,
-    clauses: &mut Vec<Conj<super::sigs::TupleSigOf<RegularRef>>>,
+/// The tuple axis of a body whose coordinates may still be local, carved to
+/// the one normal form. A clause that is a plain rectangle goes through the
+/// shared carving; anything else keeps the form it arrived in.
+fn normalize_tuple_rect_clauses<R: Clone>(
+    ops: &mut impl axis::TupleRectOps<R>,
+    clauses: &mut Vec<Conj<TupleSigOf<R>>>,
 ) {
     let mut complex = Vec::with_capacity(clauses.len());
     let mut rects = Vec::with_capacity(clauses.len());
@@ -530,7 +639,7 @@ fn normalize_regular_tuple_axis(
     clauses.extend(
         axis::normalize_tuple_rects_with(ops, rects)
             .into_iter()
-            .map(|elems| Conj::pos_of(super::sigs::TupleSigOf { elems })),
+            .map(|elems| Conj::pos_of(TupleSigOf { elems })),
     );
 }
 
@@ -548,6 +657,50 @@ fn regular_ref_is_subtype(types: &Types, narrower: &RegularRef, wider: &RegularR
         (RegularRef::Published(narrower), RegularRef::Published(wider)) => types.is_subtype(&narrower, &wider),
         _ => narrower == wider,
     }
+}
+
+/// Whether the union of `rectangles` already contains `candidate`.
+///
+/// A coordinate can only feed the emptiness check once every row agrees on
+/// what it names. A local (not-yet-published) coordinate is sound to compare
+/// only when the candidate names that SAME node at that position in every row
+/// -- the node then cancels out of the comparison symbolically, whatever it
+/// turns out to mean once published. Any row that disagrees -- a different
+/// local node, or a published type sitting where the candidate holds a local
+/// one, or a local node sitting where the candidate holds a published type --
+/// cannot be approximated (there is no sound stand-in for "the type this
+/// cyclic reference will eventually have"), so covering can't be claimed at
+/// all.
+fn rectangles_cover<R: PartialEq>(
+    types: &Types,
+    candidate: &[R],
+    rectangles: &[Vec<R>],
+    published: impl Fn(&R) -> Option<Ty>,
+) -> bool {
+    let coordinates_resolved = candidate.iter().enumerate().all(|(coordinate, coordinate_ref)| {
+        rectangles.iter().all(|rectangle| match published(coordinate_ref) {
+            Some(_) => published(&rectangle[coordinate]).is_some(),
+            None => rectangle[coordinate] == *coordinate_ref,
+        })
+    });
+    if !coordinates_resolved {
+        return false;
+    }
+    let describe = |reference: &R| match published(reference) {
+        Some(ty) => Operand::Ty(ty),
+        None => Operand::built(DescrOf::any()),
+    };
+    let candidate = candidate.iter().map(&describe).collect::<Vec<_>>();
+    let rectangles = rectangles
+        .iter()
+        .map(|rectangle| rectangle.iter().map(&describe).collect())
+        .collect::<Vec<_>>();
+    super::emptiness::phi_tuple(
+        types.ctx(),
+        &candidate,
+        &rectangles,
+        &mut super::emptiness::Memo::default(),
+    )
 }
 
 struct RegularTupleOps<'a> {
@@ -615,41 +768,10 @@ impl axis::TupleRectOps<RegularRef> for RegularTupleOps<'_> {
     }
 
     fn covered_by(&self, candidate: &[RegularRef], rectangles: &[Vec<RegularRef>]) -> bool {
-        // A coordinate can only feed the emptiness check once every row agrees
-        // on what it names. A local (not-yet-published) coordinate is sound to
-        // compare only when the candidate names that SAME node at that
-        // position in every row -- the node then cancels out of the
-        // comparison symbolically, whatever it turns out to mean once
-        // published. Any row that disagrees -- a different local node, or a
-        // published type sitting where the candidate holds a local one, or a
-        // local node sitting where the candidate holds a published type --
-        // cannot be approximated (there is no sound stand-in for "the type
-        // this cyclic reference will eventually have"), so covering can't be
-        // claimed at all.
-        let coordinates_resolved = candidate.iter().enumerate().all(|(coordinate, candidate)| {
-            rectangles.iter().all(|rectangle| match candidate {
-                RegularRef::Local(_) => rectangle[coordinate] == *candidate,
-                RegularRef::Published(_) => !matches!(rectangle[coordinate], RegularRef::Local(_)),
-            })
-        });
-        if !coordinates_resolved {
-            return false;
-        }
-        let describe = |reference| match reference {
-            RegularRef::Published(ty) => Operand::Ty(ty),
-            RegularRef::Local(_) => Operand::built(DescrOf::any()),
-        };
-        let candidate = candidate.iter().copied().map(describe).collect::<Vec<_>>();
-        let rectangles = rectangles
-            .iter()
-            .map(|rectangle| rectangle.iter().copied().map(describe).collect())
-            .collect::<Vec<_>>();
-        super::emptiness::phi_tuple(
-            self.types.ctx(),
-            &candidate,
-            &rectangles,
-            &mut super::emptiness::Memo::default(),
-        )
+        rectangles_cover(self.types, candidate, rectangles, |reference| match reference {
+            RegularRef::Published(ty) => Some(*ty),
+            RegularRef::Local(_) => None,
+        })
     }
 }
 

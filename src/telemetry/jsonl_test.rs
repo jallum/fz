@@ -816,9 +816,11 @@ fn an_unresolved_callsite_edge_renders_as_itself() {
     );
 }
 
-/// A recursive return whose value grows each round: `build/1` returns
-/// `:start` or a tuple wrapping its own next return, so the fixpoint climbs
-/// the ladder one round at a time until the widening budget stops it.
+/// A recursive return: `build/1` returns `:start` or a tuple wrapping its own
+/// next return. `build/1` calls itself across a constructor, so its
+/// recursive-return component names the return directly --
+/// `mu t.(:start | {integer, t})` -- in one solve rather than climbing
+/// towards it.
 const ASCENDING_RETURN_SOURCE: &str =
     "def build(0), do: :start\ndef build(n), do: {n, build(n - 1)}\ndef main(), do: build(3)\n";
 
@@ -840,20 +842,20 @@ fn canon_function_names(trace: &crate::telemetry::public_trace::PublicTrace) -> 
         .collect()
 }
 
-/// The return ascent is the compiler's central cost signal: every round of the
-/// semantic fixpoint that moves an activation's return type is one
-/// `return_type.defined`, and `return_type.widened` is the round where the
-/// budget ended the climb instead of the program doing so. A profile that
-/// cannot see them can measure that a compile was slow but not that its
-/// returns kept moving, so both belong in the public stream with the
-/// activation they are about and the evidence they installed.
+/// A return revision is the compiler's central cost signal: every round of
+/// the semantic fixpoint that moves an activation's return type is one
+/// `return_type.defined`. A profile that cannot see them can measure that a
+/// compile was slow but not that its returns kept moving, so each belongs in
+/// the public stream with the activation it is about and the type it
+/// installed -- and, for a return the component solver names, the count is a
+/// small number rather than a climb.
 #[test]
 fn jsonl_emits_return_type_revisions() {
     let trace = crate::telemetry::public_trace::PublicTrace::compile(ASCENDING_RETURN_SOURCE);
     let names = canon_function_names(&trace);
 
     let defined = trace.events_named(&["fz", "compiler2", "return_type", "defined"]);
-    let build_ascents = defined
+    let build_returns = defined
         .iter()
         .filter(|event| {
             let activation = &event.metadata["activation"];
@@ -870,78 +872,42 @@ fn jsonl_emits_return_type_revisions() {
                     && activation["callable_surfaces"].is_array(),
                 "a revision names the whole activation, not just its function: {activation}"
             );
-            assert!(
-                event.semantic["return"].is_string(),
-                "a revision carries the evidence it installed: {}",
-                event.semantic
-            );
-            event.semantic["ascents"]
-                .as_u64()
-                .expect("a revision counts its ascent")
+            event.semantic["return"]
+                .as_str()
+                .expect("a revision carries the evidence it installed")
+                .to_string()
         })
         .collect::<Vec<_>>();
 
     assert!(
-        build_ascents.len() > 1,
-        "a recursive return climbs more than one round; saw {build_ascents:?} of {} return revisions in total",
+        !build_returns.is_empty(),
+        "build/1's return is defined at least once; saw {} return revisions in total",
         defined.len()
     );
-    // `ascents` counts strict ascents since the activation's last rebase, so it
-    // is monotone within an epoch and starts over at the next one. A revision
-    // whose counter did not climb is therefore not a violation but an epoch
-    // boundary, and the claim to check is that each epoch climbs from one.
-    for epoch in ascent_epochs(&build_ascents) {
-        assert_eq!(
-            epoch.first().copied(),
-            Some(1),
-            "an epoch's first revision is its first ascent: {epoch:?} of {build_ascents:?}"
-        );
-        assert!(
-            epoch.windows(2).all(|pair| pair[0] < pair[1]),
-            "the ascent counter only climbs within an epoch: {epoch:?} of {build_ascents:?}"
-        );
-    }
-
-    let widened = trace.events_named(&["fz", "compiler2", "return_type", "widened"]);
-    assert!(
-        !widened.is_empty(),
-        "a return that grows a tuple spine every round runs past the widening budget, so the stream must show the widening"
+    assert_eq!(
+        build_returns.last().map(String::as_str),
+        Some("\u{3bc}X. :start | {int, X}"),
+        "the solve names build/1's recursive return exactly: {build_returns:?}"
     );
     assert!(
-        widened.iter().all(|event| event.semantic["ascents"]
-            .as_u64()
-            .is_some_and(|ascents| ascents > u64::from(crate::compiler2::RETURN_WIDENING_BUDGET))),
-        "widening only happens past the budget"
+        build_returns.len() <= 2,
+        "a solved return is named in one step, and moves a second time only when the first solve \
+         ran before a callee had published anything: {build_returns:?}"
     );
 }
 
-/// Splits one activation's ascent counters into epochs. The counter resets to
-/// zero when the activation is rebased and starts climbing again, so a value
-/// that does not exceed its predecessor opens a new epoch rather than breaking
-/// monotonicity.
-fn ascent_epochs(ascents: &[u64]) -> Vec<Vec<u64>> {
-    let mut epochs: Vec<Vec<u64>> = Vec::new();
-    for ascent in ascents {
-        match epochs.last_mut() {
-            Some(epoch) if epoch.last().is_some_and(|last| *last < *ascent) => epoch.push(*ascent),
-            _ => epochs.push(vec![*ascent]),
-        }
-    }
-    epochs
-}
-
-/// The claims that feed the return ascent travel with it: an activation's
+/// The claims that feed a return revision travel with it: an activation's
 /// analysis is the round that produced the evidence, and a callsite is the
 /// edge that carries a callee's return back to its caller and wakes the next
 /// round. Both already had a semantic projection; the public stream shows it.
 #[test]
-fn jsonl_emits_the_claims_behind_a_return_ascent() {
+fn jsonl_emits_the_claims_behind_a_return_revision() {
     let trace = crate::telemetry::public_trace::PublicTrace::compile(ASCENDING_RETURN_SOURCE);
 
     let analyses = trace.events_named(&["fz", "compiler2", "activation_analysis", "defined"]);
     assert!(
         !analyses.is_empty(),
-        "every return ascent has an analysis that produced it"
+        "every return revision has an analysis that produced it"
     );
     assert!(
         analyses.iter().all(|event| {

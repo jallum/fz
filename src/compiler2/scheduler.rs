@@ -431,6 +431,8 @@ where
             .any(|publisher| self.rebased.contains(publisher))
     }
 
+    /// Whether this one derivation's ground shifted: its standing answer was
+    /// concluded from facts that have since been replaced.
     pub(crate) fn derivation_rebased(&self, publisher: &P) -> bool {
         self.rebased.contains(publisher)
     }

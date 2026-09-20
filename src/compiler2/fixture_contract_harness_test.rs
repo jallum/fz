@@ -1,14 +1,12 @@
 use super::fixture_facts::{canonical_call_edge_facts, render_canonical_call_edge_snapshot};
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
-use crate::telemetry::handler::{Event, Handler};
 use fz_fixture_metadata::{
     EdgeAssertion, FixtureMetadata, MetricAssertion, fixture_frontmatter_prefix_bytes, parse_fixture_metadata,
 };
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 struct ContractFixture {
@@ -23,27 +21,6 @@ struct EvaluatedFixture {
     facts: Vec<super::fixture_facts::CanonicalCallEdgeFact>,
     snapshot: String,
     metrics: BTreeMap<String, u64>,
-}
-
-#[derive(Default)]
-struct ReturnWideningCounter {
-    count: Arc<Mutex<u64>>,
-}
-
-impl ReturnWideningCounter {
-    fn handler(&self) -> Box<dyn Handler> {
-        let count = Arc::clone(&self.count);
-        Box::new(move |event: &Event<'_, '_, '_>| {
-            if event.name == ["fz", "compiler2", "return_type", "widened"] {
-                let mut count = count.lock().expect("return widening counter lock");
-                *count += 1;
-            }
-        })
-    }
-
-    fn get(&self) -> u64 {
-        *self.count.lock().expect("return widening counter lock")
-    }
 }
 
 fn discover_contract_fixtures() -> Vec<ContractFixture> {
@@ -93,9 +70,6 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
         .unwrap_or_else(|| panic!("fixture {} is missing `root:`", fixture.name));
 
     let tel = ConfiguredTelemetry::new();
-    let widened = ReturnWideningCounter::default();
-    tel.attach(&["fz", "compiler2", "return_type", "widened"], widened.handler());
-
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some(fixture.path.display().to_string()),
@@ -141,7 +115,6 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
     metrics.insert("semantic.executables".to_string(), local_executables);
     metrics.insert("semantic.callsites".to_string(), facts.len() as u64);
     metrics.insert("call_edges.count".to_string(), facts.len() as u64);
-    metrics.insert("return_type.widened".to_string(), widened.get());
 
     EvaluatedFixture {
         facts,

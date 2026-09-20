@@ -9,8 +9,10 @@ use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::facts::FactUse;
-use super::identity::{ActivationKey, ActivationSignature, ExecutableKey, ExecutableNeed, FunctionId};
-use super::types::{Ty, Types};
+use super::identity::{ActivationKey, ActivationSignature, ExecutableKey, ExecutableNeed, FunctionId, ModuleId};
+use super::return_membership::ComponentUnknowns;
+use super::types::{MapKey, Ty, Types};
+use crate::modules::identity::ModuleName;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallSiteKey {
@@ -775,6 +777,295 @@ impl EntryReachability {
     }
 }
 
+/// The one producer and complete member set of a recursive-return
+/// component. It is derived from the current `ActivationAnalysis` and
+/// `CallSiteTargets` facts reachable from its seed; it is not a second cache
+/// beside those facts. `members` is sorted into semantic activation order,
+/// and `owner` is always `members[0]` -- the single canonical key every
+/// member's `ReturnType` is published under while membership holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReturnComponent {
+    pub(crate) owner: ActivationKey,
+    pub(crate) members: Vec<ActivationKey>,
+    /// The parameter slots this system solves for, in semantic order.
+    pub(crate) slots: Vec<(ActivationKey, usize)>,
+    /// Every position the fixpoint is still solving. A call's key
+    /// coordinate asks this and nothing else.
+    pub(crate) unknowns: ComponentUnknowns,
+}
+
+/// A return type and the symbolic expression that produced it, kept in
+/// lock-step. `observed` is the ordinary evidence exactly as
+/// `join_evidence` always computed it; `expression` is what the component
+/// solver reads.
+#[derive(Debug, Clone)]
+pub struct ReturnFlow {
+    pub observed: Option<Ty>,
+    pub expression: ReturnExpression,
+}
+
+impl ReturnFlow {
+    /// The join identity: no path has produced a value yet.
+    pub fn bottom() -> Self {
+        Self {
+            observed: None,
+            expression: ReturnExpression::Bottom,
+        }
+    }
+
+    /// A concrete observed return type.
+    pub fn published(ty: Ty) -> Self {
+        Self {
+            observed: Some(ty),
+            expression: ReturnExpression::Published(ty),
+        }
+    }
+
+    /// Join two path results, the companion of `jobs::semantic::join_evidence`.
+    /// `Bottom` is the identity; evidence joins by union. The expression
+    /// joins the same way, one layer behind. A separate function from
+    /// `join_evidence` on purpose: that helper also
+    /// merges call-target summaries that carry no companion at all, so this
+    /// step only touches the paths that build one.
+    pub fn join(types: &mut Types, a: ReturnFlow, b: ReturnFlow) -> ReturnFlow {
+        let observed = match (a.observed, b.observed) {
+            (None, x) | (x, None) => x,
+            (Some(x), Some(y)) if x == y => Some(x),
+            (Some(x), Some(y)) => Some(types.union(x, y)),
+        };
+        let expression = ReturnExpression::union(a.expression, b.expression);
+        ReturnFlow { observed, expression }
+    }
+}
+
+/// A symbolic description of how a return value's type was produced.
+/// `Bottom` and `Published` mirror the two states `Option<Ty>` evidence can
+/// hold; `Local` addresses a still-unsolved sibling activation by its key,
+/// and the rest describe a value's shape one layer at a time, over children
+/// that are themselves any of these constructors.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ReturnExpression {
+    /// No path has produced a value yet -- the join identity.
+    Bottom,
+    /// A concrete observed return type.
+    Published(Ty),
+    /// Another activation's return, addressed by its key. The component
+    /// solver substitutes a sibling member's settled expression for it, and
+    /// reads a non-member's already-published return type.
+    Local(ActivationKey),
+    /// A clause parameter, addressed by the owning activation's key and its
+    /// slot position. The key already carries the type that slot holds, so
+    /// the address is the whole leaf: `SolveReturnComponent` substitutes the
+    /// one shared unknown a member's slot solves to, and reads any other
+    /// activation's slot straight off its key.
+    Input {
+        activation: ActivationKey,
+        slot: usize,
+    },
+    /// The join of several return paths (an `if`, a dispatch, a receive).
+    Union(Vec<ReturnExpression>),
+    Tuple(Vec<ReturnExpression>),
+    /// A possibly-empty list: `Types::list`. Built for a cons onto a tail
+    /// that is itself list-shaped, where the result is never provably
+    /// non-empty on its own (the tail might be).
+    List(Box<ReturnExpression>),
+    /// A provably non-empty list: `Types::non_empty_list`. Built for a flat
+    /// literal (`[a, b, c]`) or a cons onto a tail with no known list shape
+    /// -- in both cases the head alone already proves at least one element.
+    NonEmptyList(Box<ReturnExpression>),
+    Map(Vec<(MapKey, ReturnExpression)>),
+    Struct(ModuleId, ModuleName, Vec<(MapKey, ReturnExpression)>),
+    /// One layer read back OUT of a value whose own shape is still symbolic:
+    /// the head of a `Local` call's list result, a field of a parameter's
+    /// tuple. Built only by [`ReturnExpression::project`], which reduces the
+    /// projection away whenever `of` already carries the matching
+    /// constructor, so this form survives only over `Local`, `Input` and a
+    /// further `Project`. Ordinary lowering resolves `of` first and then
+    /// applies the same `Types` operation the walk applied to the observed
+    /// type, so the two views agree exactly.
+    Project {
+        of: Box<ReturnExpression>,
+        step: ProjectStep,
+    },
+}
+
+/// The one layer a [`ReturnExpression::Project`] reads. Each variant names
+/// the `Types` operation the ordinary walk already performs at that step, so
+/// the symbolic and the observed view are computed by one function.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ProjectStep {
+    /// Field `index` of a tuple: `Types::tuple_field_type`.
+    TupleField(usize),
+    /// The uniform element of a list: `Types::list_element_type`.
+    ListElement,
+    /// What is left of a list once one element is removed: the
+    /// possibly-empty list of the same uniform element. A matched tail is a
+    /// PROJECTION of the value that was matched, not a list built here --
+    /// the companion is provenance, and `rest` in `[_ | rest]` is part of
+    /// what arrived, not something the clause constructed.
+    ListTail,
+    /// A map or struct field at a literal key: `Types::map_field_lookup`,
+    /// falling back to `any` for a key the type does not promise, exactly as
+    /// the walk's own field read does.
+    MapField(MapKey),
+}
+
+impl ProjectStep {
+    pub fn apply(&self, types: &mut Types, ty: Ty) -> Ty {
+        match self {
+            ProjectStep::TupleField(index) => types.tuple_field_type(&ty, *index),
+            ProjectStep::ListElement => types.list_element_type(&ty),
+            ProjectStep::ListTail => {
+                let elem = types.list_element_type(&ty);
+                types.list(elem)
+            }
+            ProjectStep::MapField(key) => types.map_field_lookup(&ty, key).unwrap_or_else(|| types.any()),
+        }
+    }
+}
+
+impl ReturnExpression {
+    /// Read one layer out of `of`, reducing structurally wherever `of`
+    /// already carries the constructor being read: a tuple field of a
+    /// `Tuple` is that element, a list element of a `List` is its inner
+    /// companion, a projection of `Published` is `Published` of the
+    /// projected type, and a projection of a `Union` distributes. Only a
+    /// value whose shape is still symbolic -- a `Local`, an `Input`, or a
+    /// projection of one -- keeps the `Project` node, which is exactly the
+    /// information the component solver needs and the erasure to `Published`
+    /// used to throw away.
+    pub fn project(types: &mut Types, of: ReturnExpression, step: ProjectStep) -> ReturnExpression {
+        match (&of, &step) {
+            (ReturnExpression::Bottom, _) => ReturnExpression::Bottom,
+            (ReturnExpression::Published(ty), _) => ReturnExpression::Published(step.apply(types, *ty)),
+            (ReturnExpression::Union(branches), _) => branches
+                .clone()
+                .into_iter()
+                .map(|branch| ReturnExpression::project(types, branch, step.clone()))
+                .fold(ReturnExpression::Bottom, ReturnExpression::union),
+            (ReturnExpression::Tuple(elems), ProjectStep::TupleField(index)) if *index < elems.len() => {
+                elems[*index].clone()
+            }
+            (ReturnExpression::List(inner) | ReturnExpression::NonEmptyList(inner), ProjectStep::ListElement) => {
+                (**inner).clone()
+            }
+            // Removing one element leaves the same uniform shape behind, no
+            // longer provably non-empty.
+            (ReturnExpression::List(inner) | ReturnExpression::NonEmptyList(inner), ProjectStep::ListTail) => {
+                ReturnExpression::List(inner.clone())
+            }
+            (ReturnExpression::Map(fields) | ReturnExpression::Struct(_, _, fields), ProjectStep::MapField(wanted))
+                if fields.iter().any(|(key, _)| key == wanted) =>
+            {
+                fields
+                    .iter()
+                    .find(|(key, _)| key == wanted)
+                    .map(|(_, value)| value.clone())
+                    .expect("the guard just proved this field is present")
+            }
+            _ => ReturnExpression::Project { of: Box::new(of), step },
+        }
+    }
+
+    /// Combine two expressions the way `ReturnFlow::join` combines its two
+    /// paths' companions, and the way a structural construction step folds
+    /// its children into one uniform-element companion (a list's elements,
+    /// several matched protocol targets for one call). `Bottom` is the
+    /// identity, so a single real contribution never gets wrapped in a
+    /// `Union` of one. A repeated fold over more than two paths (three or
+    /// more clauses, three or more dispatch outcomes) calls this pairwise,
+    /// left to right; an existing `Union` on either side is the same join
+    /// still in progress; flattening into it keeps that fold's result one
+    /// flat, stably ordered list instead of a binary tree of one-off pairs.
+    /// Type union is associative, so this never changes what the result
+    /// denotes -- only how many `Union` layers wrap it.
+    ///
+    /// A join is a SET operation, so it is idempotent: joining an expression
+    /// with itself, or with a member the flat list already holds, is that
+    /// list unchanged. Without that, a walk that revisits one path grows the
+    /// same member once per round and the expression a member hands its
+    /// solver keeps changing while denoting the same thing.
+    pub fn union(a: ReturnExpression, b: ReturnExpression) -> ReturnExpression {
+        let mut members = Vec::new();
+        ReturnExpression::collect_union_member(&mut members, a);
+        ReturnExpression::collect_union_member(&mut members, b);
+        match members.len() {
+            0 => ReturnExpression::Bottom,
+            1 => members.pop().expect("a one-member join is that member"),
+            _ => ReturnExpression::Union(members),
+        }
+    }
+
+    /// Add one contribution to a join in progress. `Bottom` contributes
+    /// nothing, a `Union` contributes its own members (the same join still
+    /// running), and a member already standing contributes nothing again --
+    /// joining a set with something it already holds is that set. Order is
+    /// first occurrence first, so the result reads the way the walk found it.
+    fn collect_union_member(out: &mut Vec<ReturnExpression>, expression: ReturnExpression) {
+        match expression {
+            ReturnExpression::Bottom => {}
+            ReturnExpression::Union(members) => members
+                .into_iter()
+                .for_each(|member| ReturnExpression::collect_union_member(out, member)),
+            member => {
+                if !out.contains(&member) {
+                    out.push(member);
+                }
+            }
+        }
+    }
+
+    /// Every activation whose whole RETURN this expression names, anywhere in
+    /// its tree. A parameter slot (`Input`) is deliberately not one of these:
+    /// it names a position a caller fills, not a value the callee's own
+    /// return equation produces, so treating it as a return dependency would
+    /// make every forwarding function share a cycle with the body it forwards
+    /// to.
+    /// The order is the tree's own, first occurrence first, so two reads of
+    /// one expression name the same activations in the same order -- a set
+    /// here would hand its callers an iteration order that varies run to run.
+    pub fn locals(&self, out: &mut Vec<ActivationKey>) {
+        match self {
+            ReturnExpression::Bottom | ReturnExpression::Published(_) | ReturnExpression::Input { .. } => {}
+            ReturnExpression::Local(key) => {
+                if !out.contains(key) {
+                    out.push(key.clone());
+                }
+            }
+            ReturnExpression::Union(branches) => branches.iter().for_each(|branch| branch.locals(out)),
+            ReturnExpression::Tuple(elems) => elems.iter().for_each(|elem| elem.locals(out)),
+            ReturnExpression::List(elem) | ReturnExpression::NonEmptyList(elem) => elem.locals(out),
+            ReturnExpression::Map(fields) | ReturnExpression::Struct(_, _, fields) => {
+                fields.iter().for_each(|(_, value)| value.locals(out))
+            }
+            ReturnExpression::Project { of, .. } => of.locals(out),
+        }
+    }
+
+    /// Every parameter this expression names, as `(activation, slot)`. The
+    /// companion for a slot is a position, not a value, so whoever reads the
+    /// expression has to go and fetch what that position holds -- which is
+    /// the owning activation's own input evidence.
+    pub fn input_slots(&self, out: &mut Vec<(ActivationKey, usize)>) {
+        match self {
+            ReturnExpression::Bottom | ReturnExpression::Published(_) | ReturnExpression::Local(_) => {}
+            ReturnExpression::Input { activation, slot } => {
+                let named = (activation.clone(), *slot);
+                if !out.contains(&named) {
+                    out.push(named);
+                }
+            }
+            ReturnExpression::Union(branches) => branches.iter().for_each(|branch| branch.input_slots(out)),
+            ReturnExpression::Tuple(elems) => elems.iter().for_each(|elem| elem.input_slots(out)),
+            ReturnExpression::List(elem) | ReturnExpression::NonEmptyList(elem) => elem.input_slots(out),
+            ReturnExpression::Map(fields) | ReturnExpression::Struct(_, _, fields) => {
+                fields.iter().for_each(|(_, value)| value.input_slots(out))
+            }
+            ReturnExpression::Project { of, .. } => of.input_slots(out),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationAnalysis {
     /// Correlated rows already read by the activation analysis.
@@ -783,25 +1074,18 @@ pub struct ActivationAnalysis {
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
     pub value_types: HashMap<ValueId, Ty>,
+    /// The symbolic companion of `value_types`'s return-carrying value: how
+    /// the activation's return type was produced, not just what it is. A
+    /// component solver reads this to substitute a sibling's settled
+    /// expression into a still-open `Local` reference; an ordinary
+    /// (non-member) activation never needs to read its own.
+    pub expression: ReturnExpression,
 }
 
 #[derive(Debug, Clone)]
 pub struct ActivationSlot {
     return_ty: Option<Ty>,
-    /// Strict ascents of the return evidence since the last rebase. Past
-    /// `RETURN_WIDENING_BUDGET` the join widens; past twice that it tops out.
-    ascents: u32,
     analysis: Option<ActivationAnalysis>,
-}
-
-pub const RETURN_WIDENING_BUDGET: u32 = 8;
-
-/// The outcome of installing one round's return evidence.
-#[derive(Debug, Clone, Copy)]
-pub struct ReturnDefine {
-    pub changed: bool,
-    pub ascents: u32,
-    pub widened: bool,
 }
 
 #[derive(Debug, Default)]
@@ -926,9 +1210,51 @@ impl<K> Default for ContributionReplace<K> {
 /// rows, joined as a canonical antichain of alternatives (fz-9i4.7.10.2).
 pub type ActivationInputMap<P> = ContributionMap<ActivationKey, P, ActivationInputAlternatives>;
 
+/// Per-slot symbolic evidence for one activation's parameters, joined across
+/// every call site that has ever targeted it. Unlike `ActivationInputAlternatives`,
+/// this never widens or collapses rows: `SolveReturnComponent` needs a
+/// member's slot resolved to the exact shape every caller passed, not the
+/// budget-coarsened class the ordinary ground pipeline keeps for dispatch.
+/// A slot no contributor has addressed yet is `ReturnExpression::Bottom`,
+/// the same "no evidence" state `ReturnFlow` uses.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ArgumentFlow(Vec<ReturnExpression>);
+
+impl ArgumentFlow {
+    pub fn from_slots(slots: Vec<ReturnExpression>) -> Self {
+        Self(slots)
+    }
+
+    pub fn slot(&self, index: usize) -> Option<&ReturnExpression> {
+        self.0.get(index)
+    }
+}
+
+impl JoinContribution for ArgumentFlow {
+    type Ctx = Types;
+
+    fn bottom() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Per-slot union: a slot's evidence is the join of what every call site
+    /// that ever addressed it passed, one `ReturnExpression::union` at a
+    /// time, exactly the way a clause's own return paths join.
+    fn join_assign(&mut self, other: &Self, _ctx: &mut Types) {
+        if self.0.len() < other.0.len() {
+            self.0.resize(other.0.len(), ReturnExpression::Bottom);
+        }
+        for (slot, incoming) in self.0.iter_mut().zip(other.0.iter().cloned()) {
+            *slot = ReturnExpression::union(slot.clone(), incoming);
+        }
+    }
+}
+
+pub type ArgumentFlowMap<P> = ContributionMap<ActivationKey, P, ArgumentFlow>;
+
 /// Past this many alternatives the antichain widens to its single column-wise
-/// joined row. The mirror of `RETURN_WIDENING_BUDGET`: termination is a
-/// theorem for every program, not a property of lucky inputs.
+/// joined row: termination is a theorem for every program, not a property of
+/// lucky inputs.
 pub const ACTIVATION_INPUT_ROW_BUDGET: usize = 8;
 
 /// One correlated publication of an activation's inputs: these columns arrived
@@ -1264,6 +1590,21 @@ pub struct CallSiteTargetsMap {
     slots: HashMap<CallSiteKey, CallSiteResolution<CallSiteTargets>>,
 }
 
+/// How a round's return evidence meets the slot that already stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReturnArrival {
+    /// One walk's round on unchanged ground: it reached some of this
+    /// activation's clauses, so what it carries is a CONTRIBUTION to the
+    /// climb and the slot joins it.
+    Ascends,
+    /// Evidence that supersedes what stands. Two producers say this and they
+    /// say the same thing: a component solve, whose answer is the whole
+    /// system's fixed point rather than another rung of it, and a walk whose
+    /// ground shifted, whose standing value was derived from facts that no
+    /// longer hold.
+    Supersedes,
+}
+
 impl ActivationMap {
     pub fn new() -> Self {
         Self::default()
@@ -1280,80 +1621,49 @@ impl ActivationMap {
         self.slots.keys()
     }
 
-    /// Install one round's return evidence — the single join point of the
+    /// Install one round's return evidence -- the single join point of the
     /// fixpoint. `None` is the ascent's bottom: no evidence adds nothing and
-    /// never erases standing evidence. `Some` evidence JOINS by union (which
-    /// preserves closure identities; `refine_widen` does not and is not
-    /// idempotent), so within an epoch the stored value only ascends —
-    /// descent is unrepresentable. A `rebased` publisher REPLACES instead:
-    /// the only narrowing path, taken when its ground shifted.
+    /// never erases standing evidence.
     ///
-    /// The ladder must end: past `RETURN_WIDENING_BUDGET` strict ascents the
-    /// join widens the growing spine (`convergence_class`); past twice the
-    /// budget it tops out at `any`. Termination is then a theorem for every
-    /// program, not a property of lucky inputs.
+    /// How the slot takes evidence follows from how that evidence arrives.
+    /// An ASCENDING round JOINS by union (which preserves closure
+    /// identities; `refine_widen` does not and is not idempotent), so the
+    /// stored value only climbs and descent is unrepresentable. Evidence
+    /// that SUPERSEDES replaces the slot whole, which is the only way a
+    /// return can descend -- and it must be able to, or a component solve's
+    /// answer would be polluted by the partial rounds that preceded it and a
+    /// re-analysis over edited source would keep a type its ground no longer
+    /// supports.
+    ///
+    /// Nothing here bounds the climb. Termination is a property of the
+    /// answer, not of a budget: a return the fixpoint is still solving is
+    /// named by its component's solve, which produces the recursive type in
+    /// one step, and a return that is not is reached by a finite join over
+    /// its clauses.
     pub fn define_return(
         &mut self,
         types: &mut Types,
         key: &ActivationKey,
         evidence: Option<Ty>,
-        rebased: bool,
-    ) -> ReturnDefine {
+        arrival: ReturnArrival,
+    ) -> bool {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
-        if rebased {
+        if arrival == ReturnArrival::Supersedes {
             let changed = slot.return_ty != evidence;
             slot.return_ty = evidence;
-            slot.ascents = 0;
-            return ReturnDefine {
-                changed,
-                ascents: 0,
-                widened: false,
-            };
+            return changed;
         }
         let Some(next) = evidence else {
-            return ReturnDefine {
-                changed: false,
-                ascents: slot.ascents,
-                widened: false,
-            };
+            return false;
         };
         let joined = match slot.return_ty {
             None => next,
-            Some(current) if current == next => {
-                return ReturnDefine {
-                    changed: false,
-                    ascents: slot.ascents,
-                    widened: false,
-                };
-            }
+            Some(current) if current == next => return false,
             Some(current) => types.union(current, next),
         };
-        if Some(joined) == slot.return_ty {
-            return ReturnDefine {
-                changed: false,
-                ascents: slot.ascents,
-                widened: false,
-            };
-        }
-        slot.ascents += 1;
-        let stored = if slot.ascents > 2 * RETURN_WIDENING_BUDGET {
-            types.any()
-        } else if slot.ascents > RETURN_WIDENING_BUDGET {
-            types.convergence_class(&joined)
-        } else {
-            joined
-        };
-        // `widened` reports what actually happened to the stored value, not
-        // that the budget threshold was crossed: past the threshold the
-        // operator is often the identity (the spine already collapsed).
-        let widened = stored != joined;
-        let changed = Some(stored) != slot.return_ty;
-        slot.return_ty = Some(stored);
-        ReturnDefine {
-            changed,
-            ascents: slot.ascents,
-            widened,
-        }
+        let changed = Some(joined) != slot.return_ty;
+        slot.return_ty = Some(joined);
+        changed
     }
 
     pub fn clear_return(&mut self, key: &ActivationKey) {
@@ -1361,7 +1671,6 @@ impl ActivationMap {
             return;
         };
         slot.return_ty = None;
-        slot.ascents = 0;
     }
 
     pub fn define_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> bool {
@@ -1547,20 +1856,12 @@ impl ActivationSlot {
     fn new() -> Self {
         Self {
             return_ty: None,
-            ascents: 0,
             analysis: None,
         }
     }
 
     pub fn return_ty(&self) -> Option<&Ty> {
         self.return_ty.as_ref()
-    }
-
-    /// Strict ascents of the return evidence since the last rebase: which
-    /// round of the ladder the stored value came from. `RETURN_WIDENING_BUDGET`
-    /// is where the join starts widening, twice it is where it tops out.
-    pub fn return_ascents(&self) -> u32 {
-        self.ascents
     }
 
     pub fn analysis(&self) -> Option<&ActivationAnalysis> {
@@ -2138,7 +2439,7 @@ mod tests {
         assert_eq!(
             CallSiteTargets::from_summary(&narrow),
             CallSiteTargets::from_summary(&wider),
-            "membership edges are callee+activation identity only; surface and return type ascents must not move them",
+            "membership edges are callee+activation identity only; surface and return type evidence must not move them",
         );
     }
 
@@ -2638,7 +2939,7 @@ mod tests {
     }
 
     #[test]
-    fn activation_return_joins_within_an_epoch_and_narrows_only_on_rebase() {
+    fn activation_return_joins_a_walk_and_is_replaced_by_its_components_solve() {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let mut activations = ActivationMap::new();
@@ -2646,26 +2947,15 @@ mod tests {
         let any = world.types_mut().any();
         let int = world.types_mut().int();
 
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(any), false)
-                .changed
-        );
+        assert!(activations.define_return(world.types_mut(), &key, Some(any), ReturnArrival::Ascends));
         // Within an epoch evidence only ascends: int joins into any and
         // disappears — descent is unrepresentable without a ground shift.
-        assert!(
-            !activations
-                .define_return(world.types_mut(), &key, Some(int), false)
-                .changed
-        );
+        assert!(!activations.define_return(world.types_mut(), &key, Some(int), ReturnArrival::Ascends));
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&any));
 
-        // The ground shifted (rebase): the fresh derivation replaces.
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(int), true)
-                .changed
-        );
+        // The component solve answers the whole system at once, so its
+        // answer supersedes the rounds that led up to it.
+        assert!(activations.define_return(world.types_mut(), &key, Some(int), ReturnArrival::Supersedes));
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&int));
     }
 
@@ -2678,13 +2968,9 @@ mod tests {
         let int = world.types_mut().int();
 
         // No evidence adds nothing — before and after real evidence lands.
-        assert!(!activations.define_return(world.types_mut(), &key, None, false).changed);
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(int), false)
-                .changed
-        );
-        assert!(!activations.define_return(world.types_mut(), &key, None, false).changed);
+        assert!(!activations.define_return(world.types_mut(), &key, None, ReturnArrival::Ascends));
+        assert!(activations.define_return(world.types_mut(), &key, Some(int), ReturnArrival::Ascends));
+        assert!(!activations.define_return(world.types_mut(), &key, None, ReturnArrival::Ascends));
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&int));
     }
 
@@ -2698,23 +2984,11 @@ mod tests {
         let atom = world.types_mut().atom();
         let both = world.types_mut().union(int, atom);
 
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(int), false)
-                .changed
-        );
+        assert!(activations.define_return(world.types_mut(), &key, Some(int), ReturnArrival::Ascends));
         // Equal republication is quiet — the load-bearing scheduler
         // invariant: changed=false wakes nobody.
-        assert!(
-            !activations
-                .define_return(world.types_mut(), &key, Some(int), false)
-                .changed
-        );
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(atom), false)
-                .changed
-        );
+        assert!(!activations.define_return(world.types_mut(), &key, Some(int), ReturnArrival::Ascends));
+        assert!(activations.define_return(world.types_mut(), &key, Some(atom), ReturnArrival::Ascends));
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&both));
     }
 
@@ -2728,16 +3002,8 @@ mod tests {
         let target = world.reference_function(super::super::identity::ModuleId::GLOBAL, "f", 1);
         let closure = world.closure_ty(target, vec![int]);
 
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(closure), false)
-                .changed
-        );
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(int), false)
-                .changed
-        );
+        assert!(activations.define_return(world.types_mut(), &key, Some(closure), ReturnArrival::Ascends));
+        assert!(activations.define_return(world.types_mut(), &key, Some(int), ReturnArrival::Ascends));
         let joined = *activations
             .get(&key)
             .and_then(|slot| slot.return_ty())
@@ -2746,67 +3012,6 @@ mod tests {
             world.types_mut().callable_value_clauses(&joined).is_some(),
             "the union join must keep the closure identity resolvable",
         );
-    }
-
-    #[test]
-    fn activation_return_widening_reports_only_real_coarsening() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new();
-        let mut activations = ActivationMap::new();
-        let key = test_key(&mut world, &tel);
-
-        // Atom-by-atom growth ascends strictly but never builds a list
-        // spine, so past the budget `convergence_class` is the identity:
-        // crossing the threshold coarsens nothing and must not be reported
-        // as widening.
-        for index in 0..(2 * RETURN_WIDENING_BUDGET) {
-            let atom = world.types_mut().atom_lit(&format!("a{index}"));
-            let outcome = activations.define_return(world.types_mut(), &key, Some(atom), false);
-            assert!(outcome.changed, "each fresh atom is a strict ascent");
-            assert!(
-                !outcome.widened,
-                "round {index}: nothing was coarsened, so nothing may report as widened",
-            );
-        }
-
-        // The ascent past twice the budget tops out at `any` — a real
-        // coarsening, reported exactly once; at the top further evidence
-        // joins quietly.
-        let atom = world.types_mut().atom_lit("top");
-        let outcome = activations.define_return(world.types_mut(), &key, Some(atom), false);
-        assert!(outcome.changed && outcome.widened, "topping out at any IS a coarsening");
-        let atom = world.types_mut().atom_lit("after");
-        let outcome = activations.define_return(world.types_mut(), &key, Some(atom), false);
-        assert!(
-            !outcome.changed && !outcome.widened,
-            "evidence joins quietly at the top"
-        );
-    }
-
-    #[test]
-    fn activation_return_widens_past_the_delay_and_terminates() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new();
-        let mut activations = ActivationMap::new();
-        let key = test_key(&mut world, &tel);
-
-        // The canonical divergent ascent: ever-deeper list nests.
-        let mut ty = world.types_mut().int();
-        let mut widened_at = None;
-        for round in 0..(2 * RETURN_WIDENING_BUDGET + 8) {
-            ty = world.types_mut().list(ty);
-            let outcome = activations.define_return(world.types_mut(), &key, Some(ty), false);
-            if outcome.widened && widened_at.is_none() {
-                widened_at = Some(round);
-            }
-            if !outcome.changed {
-                // The ladder ended: a strictly-deepening ascent reached a
-                // fixed point through the widening operator.
-                assert!(widened_at.is_some(), "termination must come from widening");
-                return;
-            }
-        }
-        panic!("the widening operator must terminate a strictly-deepening ascent");
     }
 
     /// Push rows into one antichain the way a publisher does, and read back the

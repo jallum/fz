@@ -1941,7 +1941,7 @@ fn incomplete_semantic_plan(
 mod tests {
     use super::*;
     use crate::compiler2::semantic::{
-        CallSiteResolution, CallSiteSummary, CallTargetSummary, EntryReachability, SelectedCallee,
+        CallSiteResolution, CallSiteSummary, CallTargetSummary, EntryReachability, ReturnExpression, SelectedCallee,
     };
     use crate::compiler2::transport::{LaneId, TransportCarrier};
     use crate::compiler2::{ActivationKey, FunctionId};
@@ -2184,6 +2184,7 @@ mod tests {
             reachable_entries: Vec::new(),
             callsites: Vec::new(),
             value_types: call_returns.then_some((result_value, int)).into_iter().collect(),
+            expression: ReturnExpression::Bottom,
         };
         let positions = if call_returns {
             let caller_symbol = ExecutableSymbol::from_key(&caller);

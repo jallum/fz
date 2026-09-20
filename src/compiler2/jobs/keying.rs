@@ -7,7 +7,10 @@ use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_p
 use super::super::body::{CallInputMode, LoweredBody, LoweredStep, LoweredTail, ValueId};
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::FunctionId;
+use std::rc::Rc;
+
 use super::super::keying::{BodyKeying, InputDemand};
+use super::super::return_skeleton::FunctionSkeleton;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
 use crate::telemetry::TelemetryExt as _;
@@ -1076,4 +1079,126 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
         | LoweredTail::Receive(_)
         | LoweredTail::Halt { .. } => {}
     }
+}
+
+/// Derives one function's static shape: its return and each of its call
+/// sites' arguments, written over its own input slots and its own call
+/// results.
+///
+/// The answer depends on one body and nothing else, which is what makes the
+/// closure below cheap: the walk that spans the call graph reads one
+/// published skeleton per function instead of re-lowering every body it can
+/// reach.
+pub(super) fn derive_return_skeleton(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
+    let lowered = FactKey::LoweredBody(function);
+    if !world.has_fact(&lowered) {
+        if world.function_is_provider_boundary(function) {
+            // No body in this program: it returns nothing this compilation
+            // can name and hands nobody anything. Every fact that conclusion
+            // rests on is READ, so a definition landing later re-derives it.
+            let module = world.function_module(function);
+            let reads = current_uses([
+                FactKey::FunctionDefined(function),
+                FactKey::ModuleDefined(module),
+                lowered,
+            ]);
+            let changed = world.define_return_skeleton(function, Rc::new(FunctionSkeleton::default()));
+            return Ok(JobEffects {
+                reads,
+                outputs: vec![FactKey::ReturnSkeleton(function)],
+                changed: changed
+                    .then_some(FactKey::ReturnSkeleton(function))
+                    .into_iter()
+                    .collect(),
+                ..JobEffects::default()
+            });
+        }
+        // `LoweredBody`'s sole producer arm is `Job::LowerFunction`.
+        return Ok(JobEffects::wait_on_current(lowered));
+    }
+    let skeleton = Rc::new(super::super::return_skeleton::lower(&world.lowered_body(function)));
+    let changed = world.define_return_skeleton(function, skeleton);
+    Ok(JobEffects {
+        reads: current_uses([lowered]),
+        outputs: vec![FactKey::ReturnSkeleton(function)],
+        changed: changed
+            .then_some(FactKey::ReturnSkeleton(function))
+            .into_iter()
+            .collect(),
+        ..JobEffects::default()
+    })
+}
+
+/// Derives which of one function's positions the fixpoint is still solving.
+///
+/// A position is one the fixpoint solves when it sits on a cycle of the
+/// skeleton graph that crosses a constructor, so the walk has to span the
+/// call graph: a helper's slot joins its caller's cycle without either body
+/// mentioning the other's return. The span is this function's own static
+/// callees, transitively -- a cycle a position of this function sits on runs
+/// through calls this function makes, so it lies inside that reach.
+///
+/// This is the fact a call site's key coordinate reads, and it is decided
+/// before any activation exists. That is the whole point: an answer derived
+/// from an activation's own companions would be derived from evidence the
+/// answer then destroys, and the discovery would oscillate forever.
+pub(super) fn derive_return_unknowns(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
+    let mut reads = Vec::new();
+    let mut waits = HashSet::new();
+    let mut skeletons = HashMap::new();
+    let mut reached = vec![function];
+    let mut next = 0;
+    while next < reached.len() {
+        let reached_function = reached[next];
+        next += 1;
+        // A DEFINED function's skeleton is waited on: keying must be decided
+        // in its first round, and an answer published before a callee's shape
+        // is visible would key that callee verbatim and mint the very ascent
+        // this fact exists to prevent.
+        //
+        // A function this program has not defined is READ instead. Waiting on
+        // one would demand a body for every function the static graph can
+        // name -- including ones no activation ever reaches -- and a body
+        // whose own definition chain never completes would wedge every caller
+        // behind it. No call is keyed against such a function either: a caller
+        // cannot resolve a call to a function it has no definition for, so by
+        // the time the answer is asked for, the definition is there and this
+        // read has already re-derived it.
+        let fact = FactKey::ReturnSkeleton(reached_function);
+        let Some(skeleton) = world.return_skeleton(reached_function).cloned() else {
+            match world.function_defined_revision(reached_function).is_some() {
+                true => waits.insert(fact),
+                false => {
+                    reads.push(fact);
+                    continue;
+                }
+            };
+            continue;
+        };
+        reads.push(fact);
+        for (callee, _) in skeleton.callees.values().copied() {
+            if !reached.contains(&callee) {
+                reached.push(callee);
+            }
+        }
+        skeletons.insert(reached_function, skeleton);
+    }
+    if !waits.is_empty() {
+        return Ok(JobEffects {
+            reads: current_uses(reads),
+            waits: current_uses(waits),
+            ..JobEffects::default()
+        });
+    }
+    let unknowns = Rc::new(super::super::return_unknowns::derive(&skeletons, function));
+    let changed = world.define_return_unknowns(function, unknowns);
+    Ok(JobEffects {
+        reads: current_uses(reads),
+        outputs: vec![FactKey::ReturnUnknowns(function)],
+        changed: changed
+            .then_some(FactKey::ReturnUnknowns(function))
+            .into_iter()
+            .collect(),
+        ..JobEffects::default()
+    })
 }

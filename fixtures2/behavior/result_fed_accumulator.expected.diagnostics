@@ -1,0 +1,9 @@
+warning[type/no-matching-clause]: function clauses don't cover every input
+  --> fixtures2/behavior/result_fed_accumulator.fz:2:1
+   |
+2 | def value([n | rest]), do: {:ok, n, rest}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+

@@ -4386,94 +4386,16 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
         }
     }
 
-    let scc_of = {
-        let mut index_counter = 0usize;
-        let mut stack = Vec::new();
-        let mut on_stack = HashSet::new();
-        let mut index = HashMap::new();
-        let mut lowlink = HashMap::new();
-        let mut scc_of = HashMap::new();
-        let mut scc_count = 0usize;
-        let all_fns = module.fns.iter().map(|function| function.id).collect::<Vec<_>>();
-
-        fn strongconnect(
-            function: FnId,
-            graph: &HashMap<FnId, HashSet<FnId>>,
-            index_counter: &mut usize,
-            stack: &mut Vec<FnId>,
-            on_stack: &mut HashSet<FnId>,
-            index: &mut HashMap<FnId, usize>,
-            lowlink: &mut HashMap<FnId, usize>,
-            scc_of: &mut HashMap<FnId, usize>,
-            scc_count: &mut usize,
-        ) {
-            let function_index = *index_counter;
-            index.insert(function, function_index);
-            lowlink.insert(function, function_index);
-            *index_counter += 1;
-            stack.push(function);
-            on_stack.insert(function);
-
-            if let Some(neighbors) = graph.get(&function) {
-                for neighbor in neighbors.iter().copied().collect::<Vec<_>>() {
-                    if !index.contains_key(&neighbor) {
-                        strongconnect(
-                            neighbor,
-                            graph,
-                            index_counter,
-                            stack,
-                            on_stack,
-                            index,
-                            lowlink,
-                            scc_of,
-                            scc_count,
-                        );
-                        let neighbor_lowlink = lowlink[&neighbor];
-                        let function_lowlink = lowlink.get_mut(&function).expect("function lowlink");
-                        if neighbor_lowlink < *function_lowlink {
-                            *function_lowlink = neighbor_lowlink;
-                        }
-                    } else if on_stack.contains(&neighbor) {
-                        let neighbor_index = index[&neighbor];
-                        let function_lowlink = lowlink.get_mut(&function).expect("function lowlink");
-                        if neighbor_index < *function_lowlink {
-                            *function_lowlink = neighbor_index;
-                        }
-                    }
-                }
-            }
-
-            if lowlink[&function] == index[&function] {
-                let scc_id = *scc_count;
-                *scc_count += 1;
-                loop {
-                    let member = stack.pop().expect("SCC stack member");
-                    on_stack.remove(&member);
-                    scc_of.insert(member, scc_id);
-                    if member == function {
-                        break;
-                    }
-                }
-            }
+    let all_fns = module.fns.iter().map(|function| function.id).collect::<Vec<_>>();
+    let components = super::super::scc::strongly_connected_components(all_fns, |function| {
+        graph.get(function).into_iter().flatten().copied().collect::<Vec<_>>()
+    });
+    let mut scc_of = HashMap::new();
+    for (scc_id, members) in components.into_iter().enumerate() {
+        for member in members {
+            scc_of.insert(member, scc_id);
         }
-
-        for function in &all_fns {
-            if !index.contains_key(function) {
-                strongconnect(
-                    *function,
-                    &graph,
-                    &mut index_counter,
-                    &mut stack,
-                    &mut on_stack,
-                    &mut index,
-                    &mut lowlink,
-                    &mut scc_of,
-                    &mut scc_count,
-                );
-            }
-        }
-        scc_of
-    };
+    }
 
     for function in &mut module.fns {
         let caller_scc = scc_of.get(&function.id).copied().unwrap_or(usize::MAX);

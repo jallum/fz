@@ -1,0 +1,9 @@
+warning[type/no-matching-clause]: `case` clauses don't cover every input
+  --> fixtures2/behavior/ground_accumulator.fz:2:3
+   |
+2 |   case list do
+   |   ^^^^^^^^^^^^ matched values may fall through here
+   |
+   = note: an input matched by no clause halts with `:case_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+

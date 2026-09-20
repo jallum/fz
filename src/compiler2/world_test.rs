@@ -186,11 +186,6 @@ fn withdrawing_an_activation_return_derivation_clears_its_payload() {
         None,
         "an absent ReturnType fact must leave bottom storage for a later re-claim"
     );
-    assert_eq!(
-        world.activation_return_ascents(&activation),
-        0,
-        "withdrawing the final claim resets its old ascent history"
-    );
 }
 
 /// The demand fact a body that forwards NOTHING and returns none of its own
@@ -1224,9 +1219,9 @@ fn compiler2_withdrawing_a_publisher_retracts_only_its_rows() {
     );
 }
 
-/// fz-9i4.7.10.2: the alternatives antichain is finite by construction — past
+/// The alternatives antichain is finite by construction — past
 /// `ACTIVATION_INPUT_ROW_BUDGET` rows it widens to its single column-wise
-/// joined row, mirroring `RETURN_WIDENING_BUDGET`.
+/// joined row.
 #[test]
 fn compiler2_activation_input_rows_widen_past_the_budget() {
     let _tel = ConfiguredTelemetry::new();

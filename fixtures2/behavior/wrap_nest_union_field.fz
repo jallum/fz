@@ -1,0 +1,11 @@
+#---
+# purpose: "a self cycle whose guard sits under a union inside a constructor: each alternative held there is guarded just the same"
+#---
+def nest([]), do: 0
+def nest([_ | rest]), do: wrap(nest(rest), rest)
+def wrap(v, []), do: [v]
+def wrap(v, [_ | _]), do: [{:more, v}]
+
+def main() do
+  dbg(nest([1, 2]))
+end

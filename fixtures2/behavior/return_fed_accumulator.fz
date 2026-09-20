@@ -1,0 +1,16 @@
+#---
+# purpose: "the json parser shape in eight lines: a recursive result feeds a sibling's accumulator, and the return is built from that accumulator. With T the token union and E = T | [E], value/1 on [T] denotes {:ok, E, [T]} and items/2 denotes {:ok, [E], [T]}; the three unknowns (both returns and the accumulator element) form one equation system."
+#---
+def value([:open | rest]), do: items(rest, [])
+def value([n | rest]), do: {:ok, n, rest}
+
+def items([:close | rest], acc), do: {:ok, acc, rest}
+def items(toks, acc) do
+  {:ok, v, rest} = value(toks)
+  items(rest, [v | acc])
+end
+
+def main() do
+  dbg(value([1, :done]))
+  dbg(value([:open, 1, :open, 2, :close, :close, :done]))
+end

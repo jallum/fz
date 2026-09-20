@@ -1,0 +1,10 @@
+#---
+# purpose: "a helper that dispatches on the value the cycle hands it: nest is μX. int | [X] and step has one activation"
+#---
+def nest([]), do: 0
+def nest([_ | rest]), do: step(nest(rest))
+
+def step([h | _]), do: [[h]]
+def step(n), do: [n]
+
+def main(), do: dbg(nest([1, 2]))

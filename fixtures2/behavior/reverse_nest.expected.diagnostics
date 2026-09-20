@@ -1,0 +1,18 @@
+warning[type/no-matching-clause]: function clauses don't cover every input
+  --> fixtures2/behavior/reverse_nest.fz:2:1
+   |
+2 | def value([x | rest]), do: {:ok, x, rest}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
+warning[type/no-matching-clause]: function clauses don't cover every input
+  --> fixtures2/behavior/reverse_nest.fz:11:1
+   |
+11 | def reverse([h | t], out), do: reverse(t, [h | out])
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
