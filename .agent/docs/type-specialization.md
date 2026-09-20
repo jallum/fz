@@ -118,21 +118,34 @@ The danger is a recursive function forking a fresh activation for every precise
 input shape — an accumulator's `[] ⊔ [x] ⊔ [x,y] ⊔ …` cartesian product. Two
 mechanisms bound it, both via the activation **key** (`canonical_activation_key`):
 
-- **The convergence collapse.** For a recursive function, each UNDEMANDED input
-  slot is keyed by its `convergence_class` — the whole list family, including
-  `[] | [t]` joins, folds to one class, while disjoint families (`int` vs a
-  tagged tuple) stay distinct. So many call shapes map to one key (the
-  "balloon"), and the slot's actual type is recovered as the union join of the
-  contributing inputs.
+- **The observability collapse.** `key_inputs_for_call` (`jobs::semantic`) asks
+  two static questions of every call argument, and `KeyShape::coordinate`
+  answers both. Is the value that arrives here a position the fixpoint is still
+  SOLVING? Then the coordinate is the variable that addresses the slot, which is
+  the same coordinate at every round of the ascent. Can the value be OBSERVED
+  from outside the activation at all — a dispatch question that reads it
+  (`InputDemand::forwarded_dispatch`) or a published return built from it
+  (`FunctionUnknowns::returns_input`)? A slot neither reaches is FREIGHT and
+  keys on its address variable too, which is what keeps a recursive accumulator
+  from minting one activation per element type it is called with. So many call
+  shapes map to one key (the "balloon"), and the slot's actual type is recovered
+  as the union join of the contributing inputs.
 - **The input demand.** The collapse is shaped by `InputDemand::forwarded_dispatch`
   (`FactKey::InputDemand`, `jobs::keying::derive_input_demand`). `Whole`
   preserves an input, tuple-field demand preserves only the demanded fields, and
-  `ListShape(elem_demand)` preserves demanded element information from the whole
-  list-family descriptor while converging empty-vs-cons shape for recursive
-  keys. That keeps recursive list walkers from splitting the initial cons call
-  from the possibly-empty tail, even when the input surface is already a joined
-  list family, while still letting body evidence decide which clauses are
-  reachable.
+  a `ListShape` demand preserves the element while folding the arriving type
+  through `Types::list_family_class`: every list it holds, at every depth, is
+  widened to admit the empty list. What a list-shape question distinguishes is
+  `[]` against `[h | t]`, and the callee answers that by testing the value it is
+  handed, so the empty/non-empty refinement is not a coordinate the key has to
+  name. That is what keeps a recursive list walker from splitting the seed's
+  cons from the tail the recursion hands back — the two are one position of one
+  body, and `mutual_tuple_states.fz`'s `even/1` keys one activation rather than
+  one per rung of the cycle. The fold is a widening of what the key names only:
+  the precise type still reaches the callee as `ActivationInputs` evidence, and
+  a returned slot's users read the refinement out of the RESULT coordinate.
+  A recursive type is folded as a cycle of its own (`types::regular`), so the
+  class of a class is itself.
 
 ### Demand is transitive, and that is what a key must name
 

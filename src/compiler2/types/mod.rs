@@ -100,6 +100,10 @@ pub struct Types {
     /// Memoized `value_lane_repr`: the transport-lane representative of a type.
     /// A derived fact about each type, computed once rather than on every lane.
     value_lane_reprs: HashMap<Ty, Ty>,
+    /// Memoized `list_family_class`: the type with every list it holds allowing
+    /// the empty list. A derived fact about each type, computed once rather
+    /// than at every call site that keys on it.
+    list_family_classes: HashMap<Ty, Ty>,
     /// Interned structural addresses (`a0`, `a1_0`, `r0`, ...). Keyed by the
     /// address path so the same address always yields the same `TypeVarId`,
     /// making the addressed arrow canonical by construction. See `addressed`.
@@ -701,6 +705,7 @@ impl Types {
             comparisons: RefCell::default(),
             binary_type_operations: BinaryTypeOperationResults::default(),
             value_lane_reprs: HashMap::new(),
+            list_family_classes: HashMap::new(),
             address_vars: HashMap::new(),
             address_paths: Vec::new(),
             callable_origins: order::CallableOrigins::new(),
@@ -1322,6 +1327,22 @@ impl Types {
         };
         self.value_lane_reprs.insert(ty, repr);
         repr
+    }
+
+    /// `[h | t]` and `[] | [h | t]` are the one type here: every list this type
+    /// holds, at every depth, is widened to admit the empty list.
+    ///
+    /// An activation key reads this wherever the callee's dispatch demand on a
+    /// slot is a list-shape question. Such a question is answered by a runtime
+    /// test on the value that arrives, so the empty/non-empty refinement is
+    /// not something the key has to name, and a seed handing a cons and the
+    /// recursion handing that cons's tail are one position of one body. The
+    /// element type is untouched: a list demand that descends still asks about
+    /// what the list holds.
+    ///
+    /// Memoized -- a derived fact about the type, not recomputed per call site.
+    pub(crate) fn list_family_class(&mut self, ty: Ty) -> Ty {
+        regular::list_family_class(self, ty)
     }
 
     /// Every type the arena holds, in mint order.

@@ -690,6 +690,85 @@ fn canon_distinguishes_recursive_denotations_without_ids() {
     assert!(!list.contains("Ty("));
 }
 
+/// A key that tells `[h | t]` from `[] | [h | t]` mints one activation for a
+/// recursive walker's seed and a second for the tail the walker hands itself,
+/// and the two compile the same body. The class is what makes those one
+/// coordinate, so it has to hold wherever a list sits -- alone, in a union, in
+/// a field, and under another list.
+#[test]
+fn list_family_class_folds_the_empty_refinement_wherever_a_list_sits() {
+    let mut t = Types::new();
+    let int = t.int();
+    let non_empty = t.non_empty_list(int);
+    let proper = t.list(int);
+    let done = t.atom_lit("done");
+
+    assert_eq!(t.list_family_class(non_empty), proper, "[int] keys as [int] | []");
+    assert_eq!(
+        t.list_family_class(proper),
+        proper,
+        "a list that already admits [] is a fixed point"
+    );
+
+    let non_empty_or_done = t.union(non_empty, done);
+    let proper_or_done = t.union(proper, done);
+    assert_eq!(
+        t.list_family_class(non_empty_or_done),
+        proper_or_done,
+        "a union folds the list it holds and leaves the rest alone"
+    );
+
+    let field_non_empty = t.tuple(&[int, non_empty]);
+    let field_proper = t.tuple(&[int, proper]);
+    assert_eq!(
+        t.list_family_class(field_non_empty),
+        field_proper,
+        "a tuple folds the list in its field"
+    );
+
+    let nested_non_empty = t.non_empty_list(non_empty);
+    let nested_proper = t.list(proper);
+    assert_eq!(
+        t.list_family_class(nested_non_empty),
+        nested_proper,
+        "the fold reaches every depth"
+    );
+
+    let empty = t.empty_list();
+    assert_eq!(
+        t.list_family_class(empty),
+        empty,
+        "the exact empty list holds no cons to widen"
+    );
+    assert_eq!(t.list_family_class(int), int, "a type holding no list is unchanged");
+}
+
+/// A recursive list type reaches itself, so folding it one state at a time
+/// descends forever: every rung is a type the fold has not been asked about
+/// yet. The class of `μX. :start | [X]` is the cycle whose every rung admits
+/// `[]`, tied as an automaton of its own rather than as one unfolding of the
+/// type it came from -- which is what makes the class of a class itself.
+#[test]
+fn list_family_class_ties_the_knot_on_a_recursive_list() {
+    let mut t = Types::new();
+    let non_empty = t.intern_regular_component(1, |nodes| vec![recursive_non_empty_list_body(nodes[0])])[0];
+    let proper = t.intern_regular_component(1, |nodes| vec![recursive_list_body(nodes[0])])[0];
+    assert_ne!(non_empty, proper, "the two cycles are distinct types to begin with");
+
+    let class = t.list_family_class(non_empty);
+    assert_eq!(class, proper, "every rung of the cycle admits []");
+    assert_eq!(t.list_family_class(class), class, "the class of a class is itself");
+}
+
+fn recursive_non_empty_list_body(reference: ComponentRef) -> DescrOf<ComponentRef> {
+    let mut descr = DescrOf::atom_lit("start");
+    descr.cases[0]
+        .structure
+        .lists
+        .push(Conj::pos_of(ListSigOf::non_empty(reference)));
+    descr
+}
+
 /// `{tag, payload}`, the shape a tagged recursive state is written in.
 fn tagged_tuple(tag: Ty, payload: ComponentRef) -> DescrOf<ComponentRef> {
     DescrOf::tuple_of(vec![ComponentRef::Published(tag), payload])
