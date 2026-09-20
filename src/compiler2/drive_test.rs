@@ -22286,14 +22286,50 @@ fn compiler2_no_ascent_rung_sits_on_an_unsolved_position() {
                 seen.push(columns);
             }
         }
-        // Whether the callee's own answer leaves a slot wholly for the
-        // fixpoint to solve. The fact is per SLOT, joined over every call
-        // site that feeds it, so there is one answer to read rather than a
-        // quorum to take.
+        // Whether every call site that feeds a slot leaves it wholly for the
+        // fixpoint to solve. Each caller answers for the value it writes, in
+        // its own reach, so the reading is those answers joined -- which is
+        // what `key_inputs_for_call` turns into a coordinate, one call at a
+        // time. A slot no named call site feeds is not a reading at all.
+        let mut reached: Vec<crate::compiler2::FunctionId> = columns_by_function.keys().copied().collect();
+        let mut next = 0;
+        while next < reached.len() {
+            for callee in world.static_callees(reached[next]).to_vec() {
+                if !reached.contains(&callee) {
+                    reached.push(callee);
+                }
+            }
+            next += 1;
+        }
         let unsolved = |function: &crate::compiler2::FunctionId, slot: usize| {
-            world
-                .return_unknowns(*function)
-                .is_some_and(|unknowns| matches!(unknowns.input_shape(slot), KeyShape::Unknown))
+            let Some(input_len) = world.return_skeleton(*function).map(|skeleton| skeleton.input_len) else {
+                return false;
+            };
+            let mut fed = false;
+            let mut answer = KeyShape::Settled;
+            for caller in &reached {
+                let (Some(skeleton), Some(unknowns)) = (world.return_skeleton(*caller), world.return_unknowns(*caller))
+                else {
+                    continue;
+                };
+                for (callsite, (named, mode)) in &skeleton.callees {
+                    if named != function {
+                        continue;
+                    }
+                    let (Some(arguments), Some(site)) =
+                        (skeleton.arguments.get(callsite), unknowns.callsite(*callsite))
+                    else {
+                        continue;
+                    };
+                    for index in 0..arguments.len() {
+                        if mode.semantic_index(input_len, arguments.len(), index) == Some(slot) {
+                            fed = true;
+                            answer = answer.join(site.arguments[index].clone());
+                        }
+                    }
+                }
+            }
+            fed && matches!(answer, KeyShape::Unknown)
         };
         for (function, columns) in &columns_by_function {
             for low in columns {
