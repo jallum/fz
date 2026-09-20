@@ -792,7 +792,7 @@ mod tests {
                 .iter()
                 .flat_map(|case| case.structure.funcs.iter())
                 .flat_map(|conj| conj.pos.iter().chain(&conj.neg))
-                .find(|sig| sig.lit.as_ref().is_some_and(|lit| lit.fn_id == Some(fn_id)))
+                .find(|sig| sig.lit.as_ref().is_some_and(|lit| lit.fn_id == fn_id))
                 .cloned()
                 .expect("literal callable clause")
         }
@@ -810,7 +810,7 @@ mod tests {
             ret: nested_address,
             lit: Some(ClosureLit {
                 kind: CallableValueKind::Closure,
-                fn_id: Some(nested_target.into()),
+                fn_id: nested_target.into(),
                 captures: vec![nested_address],
             }),
         })];
@@ -823,7 +823,7 @@ mod tests {
                 ret: shared,
                 lit: Some(ClosureLit {
                     kind: CallableValueKind::Closure,
-                    fn_id: Some(first_target.into()),
+                    fn_id: first_target.into(),
                     captures: vec![captured, shared, nested],
                 }),
             }),
@@ -832,7 +832,7 @@ mod tests {
                 ret: shared,
                 lit: Some(ClosureLit {
                     kind: CallableValueKind::Closure,
-                    fn_id: Some(second_target.into()),
+                    fn_id: second_target.into(),
                     captures: vec![concrete, shared, captured],
                 }),
             }),

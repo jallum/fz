@@ -127,10 +127,7 @@ impl TypeDisplay<'_> {
     }
 
     fn closure_lit_suffix(&mut self, base: &str, lit: &super::sigs::ClosureLit) -> String {
-        let head = match lit.fn_id {
-            Some(fn_id) => format!("{base}#{}", fn_id.0),
-            None => format!("{base}#?"),
-        };
+        let head = format!("{base}#{}", lit.fn_id.0);
         match lit.kind {
             CallableValueKind::FnRef => head,
             CallableValueKind::Closure => {

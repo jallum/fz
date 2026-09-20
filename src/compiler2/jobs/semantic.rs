@@ -1463,8 +1463,8 @@ fn attach_callable_surface_observations(
 /// summary. Paths join by clause-preserving UNION: the summary is what
 /// materialization reads to resolve escaped callables, so a case that yields
 /// `add_a` on one arm and `add_b` on the other must publish both closure
-/// identities — `refine_widen` merges the arrows into an anonymous clause
-/// and belongs to activation-key canonicalization.
+/// identities — `refine_widen` collapses the arrows into a clause that names
+/// no literal and belongs to activation-key canonicalization.
 fn merge_value_types(world: &mut World, merged: &mut ValueTypes, observed: &SemanticValues) {
     for (&value, semantic) in &observed.types {
         // A value the ascent has not produced yet contributes nothing to the

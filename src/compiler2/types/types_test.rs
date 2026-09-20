@@ -801,6 +801,8 @@ fn a_union_of_two_recursive_tuple_types_is_the_recursive_union() {
     );
 }
 
+/// A closure literal of one fixed function, capturing `capture` and declaring
+/// `result` as its return.
 fn recursive_capture_body(capture: ComponentRef, result: Ty) -> DescrOf<ComponentRef> {
     let mut descr = DescrOf::unbranded();
     descr.cases[0].structure.funcs.push(Conj::pos_of(ArrowSigOf {
@@ -808,7 +810,7 @@ fn recursive_capture_body(capture: ComponentRef, result: Ty) -> DescrOf<Componen
         ret: ComponentRef::Published(result),
         lit: Some(ClosureLitOf {
             kind: CallableValueKind::Closure,
-            fn_id: None,
+            fn_id: ClosureTarget(7).into(),
             captures: vec![capture],
         }),
     }));
@@ -852,8 +854,11 @@ fn regular_components_follow_closure_captures() {
     assert_eq!(t.identity_inventory(), inventory);
 }
 
+/// A literal's declared signature is not its identity: interning restores the
+/// owner's surface template, so two components that differ only in the result
+/// the literal declared are one component.
 #[test]
-fn regular_components_normalize_anonymous_closure_surfaces() {
+fn regular_components_normalize_literal_closure_surfaces() {
     let mut t = Types::new();
     let int = t.int();
     let float = t.float();
