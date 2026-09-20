@@ -6385,11 +6385,13 @@ fn native_no_return_call_does_not_emit_delivery_resume() {
     assert_native_helpers_are_referenced("def main() do\n  panic(:done)\n  42\nend\n");
 }
 
-/// Regenerate `.agent/measurements/fz-kdt.163-native-cps-sharing.txt` with:
+/// Prints the native CPS sharing census: per-fixture body, function and byte
+/// counts before and after sharing, the fixtures that moved, and the totals.
+/// Run it with:
 ///
 /// `cargo test --lib compiler2::drive_test::measure_native_cps_sharing_corpus -- --ignored --exact --nocapture`
 #[test]
-#[ignore = "full-corpus fz-kdt.163 native CPS sharing census"]
+#[ignore = "running this needs the whole fixture corpus: it compiles every fixtures2 and fixtures2/behavior fixture that defines main(), which is why it is not part of a gate run. It does not finish today -- about 80s in, compiling fixtures2/behavior/cross_kind_operators.fz, it overflows the test thread's stack and aborts the whole test binary"]
 fn measure_native_cps_sharing_corpus() {
     #[derive(Default, Debug)]
     struct Totals {
