@@ -99,7 +99,8 @@ fn cycle_partner_activations(
         .filter(|key| key.function == function)
         .filter(|key| {
             world
-                .return_component(key)
+                .return_membership(key)
+                .into_component()
                 .is_some_and(|component| component.members.contains(partner))
         })
         .cloned()
@@ -133,7 +134,7 @@ fn a_bare_value_call_cycle_needs_no_component() {
     let activation = sole_activation(&settled.borrow(), loop_fn, "loop/2");
 
     assert!(
-        world.return_component(&activation).is_none(),
+        world.return_membership(&activation).is_alone(),
         "loop/2's cycle carries nothing across it, so its return is an ordinary union, not a system to solve",
     );
     let returned = world.activation_return(&activation).expect("loop/2 returns");
@@ -189,10 +190,12 @@ fn alias_cycle_component_is_canonical_under_member_permutation() {
     let cont_activation = cont_activations[0].clone();
 
     let from_cont = world
-        .return_component(&cont_activation)
+        .return_membership(&cont_activation)
+        .into_component()
         .expect("cont/2 reaches step/2 and back, a genuine mutual cycle");
     let from_step = world
-        .return_component(&step_activation)
+        .return_membership(&step_activation)
+        .into_component()
         .expect("step/2 reaches cont/2 and back, the same cycle queried from its other member");
     assert_eq!(
         from_cont.owner, from_step.owner,
@@ -218,7 +221,7 @@ fn alias_cycle_component_is_canonical_under_member_permutation() {
     );
 
     assert!(
-        world.return_component(&enter_activation).is_none(),
+        world.return_membership(&enter_activation).is_alone(),
         "enter/1 reaches into the cycle but nothing in the cycle reaches back to enter/1, so it owns its own return",
     );
 }
@@ -245,11 +248,12 @@ fn false_embedding_solves_leaf_1_alone() {
     let leaf_activation = sole_activation(&settled.borrow(), leaf_fn, "leaf/1");
 
     assert!(
-        world.return_component(&f_activation).is_none(),
+        world.return_membership(&f_activation).is_alone(),
         "f/1's cycle is a bare tail call with nothing built across it, so its return is an ordinary union",
     );
     let leaf_component = world
-        .return_component(&leaf_activation)
+        .return_membership(&leaf_activation)
+        .into_component()
         .expect("leaf/1 builds a list of itself, a self edge");
     assert_eq!(
         leaf_component.members,
@@ -383,7 +387,7 @@ fn local_only_recursion_with_no_productive_branch_stays_bottom() {
         "a local-only self cycle with no other branch has no evidence at all, not even a computed empty type",
     );
     assert!(
-        world.return_component(&spin_activation).is_none(),
+        world.return_membership(&spin_activation).is_alone(),
         "a cycle with nothing built across it is not an unknown, so no solve is asked for one that would answer nothing",
     );
 }
@@ -421,7 +425,8 @@ fn enum_reverse_drives_list_reduce_cont_step_into_one_component() {
     let cont_activation = cont_activations[0].clone();
 
     let component = world
-        .return_component(&cont_activation)
+        .return_membership(&cont_activation)
+        .into_component()
         .expect("reduce_cont/reduce_step form a component together");
     let mut member_labels: Vec<String> = component
         .members
@@ -467,7 +472,7 @@ fn enum_reverse_drives_list_reduce_cont_step_into_one_component() {
     );
     for entry in &reduce_activations {
         assert!(
-            world.return_component(entry).is_none(),
+            world.return_membership(entry).is_alone(),
             "List.reduce/3's own entry dispatch sits outside the cont/step cycle it drives into"
         );
     }
@@ -497,7 +502,8 @@ fn wrap_nest_solves_through_its_non_recursive_helper() {
     let wrap_activation = sole_activation(&analyzed.borrow(), wrap_fn, "wrap/1");
 
     let component = world
-        .return_component(&nest_activation)
+        .return_membership(&nest_activation)
+        .into_component()
         .expect("nest/1 calls itself, a self edge");
     assert!(
         component.members.contains(&wrap_activation),
@@ -572,7 +578,8 @@ fn a_guard_dispatch_never_reaches_still_names_a_system_of_one() {
     let activation = sole_activation(&settled.borrow(), step_fn, "step/1");
 
     let component = world
-        .return_component(&activation)
+        .return_membership(&activation)
+        .into_component()
         .expect("step/1's return is being solved statically, so its activation belongs to a system");
     assert_eq!(
         component.members,
@@ -619,7 +626,7 @@ fn a_member_that_gains_a_caller_after_the_solve_still_gets_its_return() {
     let analyzed = analyzed.borrow();
     let stranded: Vec<&ActivationKey> = analyzed
         .iter()
-        .filter(|key| world.return_component(key).is_some())
+        .filter(|key| world.return_membership(key).into_component().is_some())
         .filter(|key| !settled.contains(*key))
         .collect();
     assert!(

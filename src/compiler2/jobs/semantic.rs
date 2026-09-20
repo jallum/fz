@@ -528,14 +528,18 @@ fn commit_activation_evaluation(
         }
     }
 
-    // A recursive-return component member's `ReturnType` is owned by its
-    // component's `SolveReturnComponent`, not by this activation's own
-    // `AnalyzeActivation` (`World::define_activation_return_outcome`'s
-    // closed ownership rule). Whether `activation` is currently a member is
-    // read from the same pre-this-run World state `demand_fact_producer`
-    // used to decide to run this job in the first place, so the two always
-    // agree -- a membership change one round changes ownership the next.
-    if world.return_component(&activation).is_none() {
+    // An activation publishes its own `ReturnType` only while it shares the
+    // solve with nobody. A component member's is owned by its component's
+    // `SolveReturnComponent` instead, and while membership is still unknown
+    // the return is nobody's to publish: a walk that published it across a
+    // call site with no named target would have to withdraw it the moment
+    // the site named one that joins a system
+    // (`World::define_activation_return_outcome`'s closed ownership rule).
+    // Membership is read from the same pre-this-run World state
+    // `demand_fact_producer` used to decide to run this job in the first
+    // place, so the two always agree -- a membership change one round
+    // changes ownership the next.
+    if world.return_membership(&activation).is_alone() {
         // Revision-0 precondition (fz-kdt.84): a cumulative fact's STORE must
         // be empty whenever its fact is absent, or a re-claim after
         // retraction would mint revision 0 while carrying real

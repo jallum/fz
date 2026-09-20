@@ -214,7 +214,7 @@ pub enum Job {
     AnalyzeActivation(ActivationKey),
     /// Solves every member's `ReturnType` for one recursive-return
     /// component at once, keyed by the component's canonical owner (its
-    /// first member in semantic order). See `World::return_component`.
+    /// first member in semantic order). See `World::return_membership`.
     SolveReturnComponent(ActivationKey),
     DeriveExecutableFacts(ExecutableKey),
     DeriveCallableConstructionTarget(CallableConstructionTargetKey),
@@ -749,10 +749,12 @@ impl World {
                 return pokes + self.demand_producer_if_needed(Job::AnalyzeActivation(activation), fact, reason) as u64;
             }
             // A `ReturnType` is owned by `AnalyzeActivation` alone, exactly
-            // like the arm above, unless its activation is currently a
-            // recursive-return component member -- then the component's
-            // canonical owner's `SolveReturnComponent` publishes it instead.
-            // `World::return_component` is derived fresh each call, so this
+            // like the arm above, unless its activation shares the solve --
+            // then the component's canonical owner's `SolveReturnComponent`
+            // publishes it instead. While membership is still unknown the
+            // walk is the job to poke: it is what names the call-site
+            // targets that decide which of the two owns this return.
+            // `World::return_membership` is derived fresh each call, so this
             // routing always matches the ownership rule
             // `World::define_activation_return_outcome` enforces.
             FactKey::ReturnType(activation) => {
@@ -761,7 +763,7 @@ impl World {
                 if let Some(seed) = self.seed_activation_producer(&activation) {
                     pokes += self.demand_producer_if_needed(seed, fact, reason) as u64;
                 }
-                let job = match self.return_component(&activation) {
+                let job = match self.return_membership(&activation).into_component() {
                     Some(component) => Job::SolveReturnComponent(component.owner),
                     None => Job::AnalyzeActivation(activation),
                 };
@@ -940,7 +942,8 @@ impl World {
     /// whose owner is `SolveReturnComponent`, not the member's own analysis.
     /// A member therefore stays on the frontier after its own analysis has
     /// run, and `activation_owes_return` pokes its component's
-    /// `SolveReturnComponent` exactly once per distinct owner identity (the
+    /// `SolveReturnComponent` exactly once per distinct owner identity, once
+    /// there is a component to name an owner at all (the
     /// same first-run gate the analysis branch above uses), relying on that
     /// job's own read subscriptions to carry every later revision. Retires
     /// each key once it owes nothing further so the working set stays
@@ -966,11 +969,16 @@ impl World {
                 // guaranteed self-publish, so it still needs poking here
                 // exactly like a first-run analysis does -- the frontier
                 // stays the one standing-demand source for both obligations.
-                if self.activation_owes_return(&key) {
-                    let owner = self
-                        .return_component(&key)
-                        .expect("activation_owes_return confirmed a component")
-                        .owner;
+                if !self.activation_owes_return(&key) {
+                    self.retire_activation_frontier(&key);
+                    continue;
+                }
+                // An activation whose membership is still unknown owes a
+                // return nobody can publish yet, so there is no owner to
+                // poke. Its own walk is already subscribed to the call-site
+                // targets that will settle the question, and the key stays
+                // on the frontier until they do.
+                if let Some(owner) = self.return_membership(&key).into_component().map(|c| c.owner) {
                     // Poke exactly once per distinct owner identity, mirroring
                     // the `has_run(AnalyzeActivation)` gate above: a
                     // `SolveReturnComponent` that has already run at least
@@ -989,8 +997,6 @@ impl World {
                         );
                         demanded += started;
                     }
-                } else {
-                    self.retire_activation_frontier(&key);
                 }
                 continue;
             }
