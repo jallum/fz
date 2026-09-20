@@ -19,10 +19,11 @@ subsystem model.
   owner and verify that its replacement makes the old mechanism removable.
 
 - [Red-Test Worklist](strategies/red-test-worklist.md)
-  When a branch carries many failing/hanging tests, disable them all behind a
-  greppable marker to make the suite green, then re-enable one at a time --
-  judging each test's intent against its assertions -- so every new red is
-  unmistakably caused by the change in front of you.
+  When a branch carries many failing tests, they stay enabled and the red list
+  a gate run produces is the worklist: each run's list is compared against the
+  previous run's, newly red is quoted verbatim, and the tests that dropped off
+  are the burndown. Entries are worked one at a time, judging each test's
+  intent against its assertions.
 
 - [Profile a Compilation](strategies/profile-a-compilation.md)
   Capture a `--log-telemetry` stream on the slow door, distill it with
