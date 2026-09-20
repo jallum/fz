@@ -255,6 +255,11 @@ impl Default for World {
     }
 }
 
+/// The demand an absent fact stands for: nothing is proven about the slot, so
+/// everything is asked of it. A coordinate is only ever collapsed on a proven
+/// answer.
+static UNPROVEN_DISPATCH: DispatchDemand = DispatchDemand::Whole;
+
 impl World {
     pub(crate) fn work_graph_and_types(&mut self) -> (&mut WorkGraph, &Types) {
         (&mut self.work_graph, &self.types)
@@ -2233,6 +2238,35 @@ impl World {
         ])
     }
 
+    /// What any activation this slot can reach asks about the value that
+    /// arrives there.
+    pub(crate) fn dispatch_demand(&self, function: FunctionId, slot: usize) -> &DispatchDemand {
+        self.input_demand(function)
+            .and_then(|demand| demand.forwarded_dispatch.get(slot))
+            .unwrap_or(&UNPROVEN_DISPATCH)
+    }
+
+    /// Which of a function's slots hold a value anything can read: one a
+    /// dispatch question reaches, or one its published return is built from.
+    /// Absent facts answer "observable", so a slot is only ever collapsed on a
+    /// proven answer.
+    ///
+    /// This is the ONE observability question. `key_inputs_for_call` asks it to
+    /// decide whether a slot keys on the type that arrived or on its bare
+    /// address, and `canonical_activation_key_with_callable_surfaces` asks it to
+    /// decide whether a closure brand at that slot is meaning or freight. One
+    /// function, so the coordinate a call site names and the coordinate the key
+    /// keeps can never disagree about the same slot.
+    pub(crate) fn observable_inputs(&self, function: FunctionId, len: usize) -> Vec<bool> {
+        let unknowns = self.return_unknowns(function);
+        (0..len)
+            .map(|slot| {
+                self.dispatch_demand(function, slot).asks_anything()
+                    || unknowns.is_none_or(|unknowns| unknowns.returns_input(slot))
+            })
+            .collect()
+    }
+
     /// The two facts `canonical_activation_key` reads: the body-shape keying
     /// answer (`Recursive`) and the input demand that shapes the collapse and
     /// the brand erasure (`InputDemand`). Both are named in ONE ask so a caller
@@ -2513,10 +2547,11 @@ impl World {
         inputs: &[Ty],
         callable_surfaces: &[std::collections::BTreeSet<super::identity::ActivationSignature>],
     ) -> super::identity::ActivationKey {
-        let demand = self
-            .input_demand(function)
-            .expect("activation keying should wait for input demand facts before activation")
-            .clone();
+        // The demand fact is a precondition of keying rather than an option:
+        // `require_activation_key_facts` waits on it before any caller mints a
+        // key, and `observable_inputs` below reads it.
+        self.input_demand(function)
+            .expect("activation keying should wait for input demand facts before activation");
         let keying = self
             .body_keying(function)
             .expect("activation keying should wait for recursive facts before activation");
@@ -2536,38 +2571,41 @@ impl World {
         // accordingly, so there is nothing left for the key to collapse. What
         // remains is the one question a call site cannot answer for itself.
         //
-        // A body that never consumes callable identity only TRANSPORTS the
-        // closures that reach it, so WHICH lambda arrived is freight: erase
-        // the brands from non-dispatch slots and every same-shape lambda
-        // shares one activation. What it closed over is NOT freight -- the
-        // capture types survive the erasure, so a forwarder handed one lambda
-        // at two capture types keys one body per type and its callees stay
-        // grounded. A consuming body keeps the precise key: its
-        // specializations buy direct dispatch. Evidence is precise either way.
+        // WHICH lambda arrived is freight exactly where nothing that value
+        // reaches can read it: erase the brands from unobservable slots and
+        // every same-shape lambda shares one activation. What it closed over
+        // is NOT freight -- the capture types survive the erasure, so a
+        // forwarder handed one lambda at two capture types keys one body per
+        // type and its callees stay grounded. Evidence is precise either way.
         //
-        // Brand erasure asks the LOCAL question, "does a clause of THIS body
-        // test this slot". What a callee downstream demands of the slot is a
-        // different question, and keying the erasure off it would un-share a
-        // forwarder that only transports its callable.
+        // The mask is the very vector `key_inputs_for_call` addressed with, so
+        // the key and the erasure ask ONE question of a slot. A slot some
+        // callee calls, tests or hands back is observable, and the coordinate
+        // that names the precise arrow survives to the callee that demands it;
+        // asking a narrower question here would erase the brand the call site
+        // just named and hand the callee a callable with no lane.
         if keying.consumes_callable_identity {
             return key;
         }
+        let observable = self.observable_inputs(function, key.inputs().len());
         let inputs = self
             .types
-            .erase_transported_closure_identity_inputs(key.inputs(), &demand.local_dispatch);
-        // A forwarding body does not inspect a locally-ignored callable slot.
-        // Its observed call surfaces remain on `ActivationInputs` for the
-        // downstream call, but they are freight to THIS key just like the
-        // closure brand. Otherwise the carrier would split the very forwarder
-        // the value coordinates just proved equivalent.
+            .erase_transported_closure_identity_inputs(key.inputs(), &observable);
+        // A call surface is freight on the same terms as the brand it belongs
+        // to: an unobservable slot's observed surfaces stay on
+        // `ActivationInputs` for the downstream call, but naming them here
+        // would split the very forwarder the value coordinates just proved
+        // equivalent.
         let callable_surfaces = key
             .callable_surfaces
             .iter()
             .enumerate()
             .map(|(slot, surfaces)| {
-                matches!(demand.local_dispatch.get(slot), Some(DispatchDemand::Ignore))
-                    .then(Default::default)
-                    .unwrap_or_else(|| surfaces.clone())
+                if observable.get(slot).copied().unwrap_or(true) {
+                    surfaces.clone()
+                } else {
+                    Default::default()
+                }
             })
             .collect();
         super::identity::ActivationKey {

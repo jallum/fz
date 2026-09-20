@@ -5,7 +5,6 @@ use std::slice;
 use super::*;
 use crate::compiler2::ModuleId;
 use crate::compiler2::return_unknowns::KeyShape;
-use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::finite_set::FiniteSet;
 use crate::runtime_type_predicate::{CallableShape, ListShape, ListShapes, RuntimeTypePredicate};
 
@@ -485,21 +484,21 @@ fn closure_input_erasure_leaves_unignored_inputs_unchanged() {
     let before = t.interning_work_stats();
 
     assert_eq!(
-        t.erase_transported_closure_identity_inputs(&inputs, &[DispatchDemand::Whole])
+        t.erase_transported_closure_identity_inputs(&inputs, &[true])
             .as_ref(),
         inputs
     );
     assert_eq!(
         t.interning_work_stats(),
         before,
-        "an input-erasure mask without an ignored parameter cannot intern a value"
+        "an input-erasure mask with no unobservable parameter cannot intern a value"
     );
 
     let literal = t.closure_lit(ClosureTarget(7), vec![], 0);
-    let erased = t.erase_transported_closure_identity_inputs(&[literal], &[DispatchDemand::Ignore]);
+    let erased = t.erase_transported_closure_identity_inputs(&[literal], &[false]);
     assert_ne!(
         erased[0], literal,
-        "an ignored closure input must still erase its construction identity"
+        "an unobservable closure input must still erase its construction identity"
     );
 }
 
@@ -2046,8 +2045,8 @@ fn the_envelope_and_the_predicate_agree_on_a_callable_clause() {
 /// compose, stated from the side that actually decides it: the KEYING rule.
 ///
 /// `erase_transported_closure_identity_inputs` anonymises only the slots the
-/// dispatch mask marks `Ignore` -- the ones no runtime test reads. A slot the
-/// body dispatches on keeps its brand, so it stays shapeable and a test can
+/// observability mask marks unobservable -- the ones nothing reachable reads. A
+/// slot something reads keeps its brand, so it stays shapeable and a test can
 /// still name the construction, while the anonymous literal the erasure mints
 /// lives only in the activation KEY, which no test is ever asked of. Nothing
 /// in the projection has to arrange this; if it ever stops holding, the
@@ -2059,15 +2058,12 @@ fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
     let surface = t.arrow(&[int], int);
     let branded = t.closure_lit(ClosureTarget(3), vec![int], 1);
     let branded = t.intersect(branded, surface);
-    let erased = t.erase_transported_closure_identity_inputs(
-        &[branded, branded],
-        &[DispatchDemand::Ignore, DispatchDemand::Whole],
-    );
+    let erased = t.erase_transported_closure_identity_inputs(&[branded, branded], &[false, true]);
     let params = erased.as_ref();
     assert_eq!(params.len(), 2);
     assert_ne!(
         params[0], branded,
-        "the ignored slot is freight: the erasure takes its brand"
+        "the unobservable slot is freight: the erasure takes its brand"
     );
     assert!(
         t.display(&params[0]).contains("#?"),
@@ -2076,8 +2072,8 @@ fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
     );
     assert_eq!(
         params[1], branded,
-        "a slot the body dispatches on is untouched -- that is why an anonymous literal never \
-         reaches a runtime test"
+        "an observable slot is untouched -- that is why an anonymous literal never reaches a \
+         runtime test"
     );
 
     let capturing = CallableShape {
@@ -2086,7 +2082,7 @@ fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
     };
     assert!(
         t.runtime_type_predicate(&params[1]).callables.admits(&capturing),
-        "and the dispatch slot still names its construction",
+        "and the observable slot still names its construction",
     );
 }
 
@@ -2096,7 +2092,7 @@ fn forwarder_erasure_reuses_a_recursive_type_without_callable_literals() {
     let recursive = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
     let before = t.interning_work_stats();
 
-    let erased = t.erase_transported_closure_identity_inputs(&[recursive], &[DispatchDemand::Ignore]);
+    let erased = t.erase_transported_closure_identity_inputs(&[recursive], &[false]);
 
     assert_eq!(erased.as_ref(), [recursive]);
     let after = t.interning_work_stats();

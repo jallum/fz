@@ -333,8 +333,9 @@ struct ForwardEdge {
 /// hands it to anyone who does. It stays collapsed, which is what keeps one
 /// activation for `loop(n, junk)` and one for `partition/4`'s two accumulators.
 ///
-/// The LOCAL half publishes beside the forwarded one, because brand erasure
-/// asks the local question and only the local question (see [`InputDemand`]).
+/// What a body asks of a slot by itself is an intermediate of this walk, not a
+/// published answer: every consumer wants the question the whole reachable set
+/// asks (see [`InputDemand`]).
 pub(super) fn derive_input_demand(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -353,7 +354,6 @@ pub(super) fn derive_input_demand(
     }
 
     let demand = InputDemand {
-        local_dispatch: graph.get(&function).map(|node| node.local.clone()).unwrap_or_default(),
         forwarded_dispatch: solve_forwarded_demand(&graph, function, |node| &node.local),
     };
     emit_input_demand_derived(tel, &function, &demand);
