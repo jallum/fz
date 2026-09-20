@@ -18,7 +18,8 @@ use crate::telemetry::TelemetryExt as _;
 use super::code::SourceOwner;
 use super::drive::{DerivationKey, FactKey, JobDerivation, JobEffects, current_uses};
 use super::identity::{
-    DeclaredCallableKind, FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource, TypeName,
+    DeclaredCallableKind, FunctionBody, FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource,
+    TypeName,
 };
 use super::module_interface::{InterfaceCallableKind, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable};
 use super::namespace::{Namespace, NamespaceSymbol};
@@ -1675,7 +1676,7 @@ fn publish_function_source(
         capture_params: Vec::new(),
         required_remote_macros,
         variadic: function.variadic,
-        source: function.source.clone(),
+        body: FunctionBody::Declared(function.source.clone()),
     };
     let source_changed =
         super::drive::ExecutionContext::new(world, tel).note_function_source(function_id, source.clone());

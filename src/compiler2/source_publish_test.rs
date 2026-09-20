@@ -213,7 +213,16 @@ fn compiler_service_define_and_direct_source_publish_identical_raw_function_fact
         service_source.required_remote_macros
     );
     assert_eq!(direct_source.variadic, service_source.variadic);
-    assert_eq!(direct_source.source.key(), service_source.source.key());
+    assert_eq!(
+        direct_source
+            .declared_root()
+            .expect("a declared function carries its root")
+            .key(),
+        service_source
+            .declared_root()
+            .expect("a declared function carries its root")
+            .key()
+    );
     assert_eq!(
         world_lookup(&direct_world, direct_source.namespace, "foo"),
         world_lookup(&service_world, service_source.namespace, "foo"),
@@ -505,7 +514,7 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
     let source = world
         .function_source(main)
         .expect("main source should be published at scope time");
-    let tokens = quoted_tokens(&source.source);
+    let tokens = quoted_tokens(source.declared_root().expect("a declared function carries its root"));
     assert!(
         tokens.iter().any(|token| token == "inc") && tokens.iter().any(|token| token == "double"),
         "raw function source should retain macro calls until the function is demanded; tokens={tokens:?}",
@@ -548,7 +557,7 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
     let expanded = world
         .expanded_function_source(main)
         .expect("the demanded function should materialize staged expanded source");
-    let tokens = quoted_tokens(&expanded.source);
+    let tokens = quoted_tokens(expanded.declared_root().expect("a declared function carries its root"));
     assert!(
         tokens.iter().any(|token| token == "+") && tokens.iter().any(|token| token == "*"),
         "expanded source should contain the operators returned by the macros; tokens={tokens:?}",
@@ -623,7 +632,7 @@ end
     let source = world
         .function_source(main)
         .expect("main source should be published at scope time");
-    let tokens = quoted_tokens(&source.source);
+    let tokens = quoted_tokens(source.declared_root().expect("a declared function carries its root"));
     for sugar in ["|>", "&", "++", "--", "<>", "..", "//"] {
         assert!(
             tokens.iter().any(|token| token == sugar),
@@ -644,7 +653,7 @@ end
     let expanded = world
         .expanded_function_source(main)
         .expect("the demanded function should materialize staged expanded source");
-    let tokens = quoted_tokens(&expanded.source);
+    let tokens = quoted_tokens(expanded.declared_root().expect("a declared function carries its root"));
     for sugar in ["|>", "&", "++", "--", "..", "//", "not in"] {
         assert!(
             !tokens.iter().any(|token| token == sugar),
@@ -701,7 +710,7 @@ fn definition_heads_are_not_source_sugar_but_their_bodies_are() {
     let expanded = world
         .expanded_function_source(join)
         .expect("the demanded operator definition should retain expanded source");
-    let tokens = quoted_tokens(&expanded.source);
+    let tokens = quoted_tokens(expanded.declared_root().expect("a declared function carries its root"));
     assert_eq!(
         tokens.iter().filter(|token| token.as_str() == "<>").count(),
         2,

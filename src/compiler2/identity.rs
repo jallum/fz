@@ -301,22 +301,34 @@ pub enum FunctionState {
     },
 }
 
-impl FunctionState {
-    pub fn state_source_heap_id(&self) -> Option<usize> {
+/// Where a function's body text comes from.
+///
+/// A declared function is read from a quoted root, and expanding that root is
+/// how its surface is derived. A lambda has no text of its own: it is minted
+/// while its owner's body is lowered, and that lowering is the only thing that
+/// can say what it is. Naming the owner instead of carrying the owner's root
+/// is what keeps the two apart, so no job can re-derive a lambda's surface
+/// from a declaration it never had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FunctionBody {
+    Declared(QuotedSourceRoot),
+    Generated { owner: FunctionId },
+}
+
+impl FunctionBody {
+    /// The quoted root of a declared function. A generated function has none,
+    /// which is why its surface cannot be derived from source.
+    pub fn declared_root(&self) -> Option<&QuotedSourceRoot> {
         match self {
-            FunctionState::Placeholder => None,
-            FunctionState::Noted { source } | FunctionState::Defined { source, .. } => {
-                Some(source.source.key().heap_id)
-            }
+            FunctionBody::Declared(root) => Some(root),
+            FunctionBody::Generated { .. } => None,
         }
     }
 
-    pub fn state_source_root_word(&self) -> Option<u64> {
+    pub fn generated_owner(&self) -> Option<FunctionId> {
         match self {
-            FunctionState::Placeholder => None,
-            FunctionState::Noted { source } | FunctionState::Defined { source, .. } => {
-                Some(source.source.root().raw_word())
-            }
+            FunctionBody::Declared(_) => None,
+            FunctionBody::Generated { owner } => Some(*owner),
         }
     }
 }
@@ -329,7 +341,15 @@ pub struct FunctionSource {
     pub capture_params: Vec<String>,
     pub required_remote_macros: Vec<FunctionId>,
     pub variadic: bool,
-    pub source: QuotedSourceRoot,
+    pub body: FunctionBody,
+}
+
+impl FunctionSource {
+    /// The quoted root this function was declared from. A generated function
+    /// has none: its owner's lowering is what defines it.
+    pub fn declared_root(&self) -> Option<&QuotedSourceRoot> {
+        self.body.declared_root()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1055,7 +1075,15 @@ fn source_same(left: &FunctionSource, right: &FunctionSource) -> bool {
         && left.capture_params == right.capture_params
         && left.required_remote_macros == right.required_remote_macros
         && left.variadic == right.variadic
-        && left.source.semantically_eq(&right.source, Horizon::Full)
+        && body_same(&left.body, &right.body)
+}
+
+fn body_same(left: &FunctionBody, right: &FunctionBody) -> bool {
+    match (left, right) {
+        (FunctionBody::Declared(left), FunctionBody::Declared(right)) => left.semantically_eq(right, Horizon::Full),
+        (FunctionBody::Generated { owner: left }, FunctionBody::Generated { owner: right }) => left == right,
+        _ => false,
+    }
 }
 
 #[cfg(test)]

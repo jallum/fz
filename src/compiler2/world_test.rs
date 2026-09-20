@@ -1,6 +1,6 @@
 use crate::dispatch_matrix::demand::DispatchDemand;
 
-use super::drive_test::{FunctionCapture, function_id};
+use super::drive_test::{FunctionCapture, function_id, generated_function_ids};
 use super::facts::FactUse;
 use super::keying::{BodyKeying, InputDemand};
 use super::return_unknowns::FunctionUnknowns;
@@ -693,8 +693,11 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
         .expanded_function_source(main)
         .expect("DefineFunction should first materialize staged expanded source");
     assert_eq!(
-        raw.source.key(),
-        expanded.source.key(),
+        raw.declared_root().expect("a declared function carries its root").key(),
+        expanded
+            .declared_root()
+            .expect("a declared function carries its root")
+            .key(),
         "before raw publication flips over, staged expanded source should preserve the same quoted root",
     );
     assert!(
@@ -2147,5 +2150,98 @@ fn lowered_body_reads_share_one_allocation_not_a_fresh_clone() {
     assert!(
         Rc::ptr_eq(&first, &second),
         "two reads of one function's lowered body must share the producer's allocation, not each deep-clone it",
+    );
+}
+
+/// A generated function has no text of its own. It is minted while its owner's
+/// body is lowered, and that lowering publishes its definition in the same
+/// conclusion, so the lowering is its ONE producer.
+///
+/// The way this used to go wrong is worth stating, because it was silent: a
+/// lambda was handed its OWNER's quoted root, so `Job::ExpandFunctionSource`
+/// happily expanded `main` on the lambda's behalf and `Job::DefineFunction`
+/// derived `main`'s surface and installed it on the lambda. The lambda's id
+/// still said arity 1 while its surface said `main/0`, and only a job that
+/// actually demanded the definition would see it -- so the same program was
+/// green through the interpreter and wrong through the retained product.
+///
+/// Both halves of the law are pinned here: a generated function carries no
+/// declared root to re-derive from, and the producer map names its owner's
+/// lowering rather than a source job it can never satisfy.
+#[test]
+fn compiler2_a_generated_function_is_defined_only_by_its_owners_lowering() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut world = World::new();
+    world.submit_code(
+        Some("generated_has_one_producer.fz".to_string()),
+        "def main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let mut sessions = super::pull::ProductSessions::default();
+    super::product_drive::drive_retained_root_backend_product(&mut world, &tel, &mut sessions, root, None)
+        .expect("the lambda fixture should settle its backend product");
+
+    let main = function_id(&functions, "main", 0);
+    let generated = generated_function_ids(&functions, main);
+    assert_eq!(
+        generated.len(),
+        1,
+        "lowering main's body mints exactly one lambda, got {generated:?}",
+    );
+    let lambda = generated[0];
+    assert_eq!(
+        world.generated_function_owner(lambda),
+        Some(main),
+        "the lambda's source names the function whose lowering minted it",
+    );
+
+    let (source, surface) = world.function_definition(lambda);
+    assert_eq!(
+        surface.arity(),
+        1,
+        "the lambda's published surface is its own, not the surface of the function that minted it",
+    );
+    assert_eq!(
+        source.capture_params,
+        vec!["tag".to_string()],
+        "the lambda's source names the value it captured",
+    );
+    assert!(
+        source.declared_root().is_none(),
+        "a generated function carries no quoted root, so nothing can re-derive its surface from source",
+    );
+
+    let published = (surface.name.clone(), surface.arity());
+
+    // What the producer map offers for the lambda's definition. The owner's
+    // lowering has already run, so the honest answer is that nothing is left
+    // to do -- and in particular no source job is offered a function that has
+    // no source.
+    let offered = std::iter::from_fn(|| world.work_graph.pop()).count();
+    assert_eq!(offered, 0, "the settled product leaves no work on the graph");
+    world.demand_fact_producer(
+        &FactKey::FunctionDefined(lambda),
+        super::scheduler::WorkStartReason::BlockedWaiterExpansion,
+    );
+    let demanded: Vec<Job> = std::iter::from_fn(|| world.work_graph.pop()).collect();
+    assert!(
+        demanded.is_empty(),
+        "the lambda's only producer is its owner's lowering, which has already run, so nothing is offered; got {demanded:?}",
+    );
+
+    // Driving what that demand produced may not disturb the lambda: the way
+    // this failed before was a source job deriving the OWNER's surface and
+    // installing it here.
+    assert!(matches!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+    let (_, surface) = world.function_definition(lambda);
+    assert_eq!(
+        (surface.name.clone(), surface.arity()),
+        published,
+        "demanding the lambda's definition may not replace its surface with its owner's",
     );
 }

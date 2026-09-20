@@ -19245,7 +19245,11 @@ fn record_function_definition(
             .function_source(function_id)
             .and_then(|source| {
                 let source_map = world.source_map();
-                crate::compiler2::quoted_function::derive_function_surface(&source.source, &source_map.borrow()).ok()
+                crate::compiler2::quoted_function::derive_function_surface(
+                    source.declared_root().expect("a declared function carries its root"),
+                    &source_map.borrow(),
+                )
+                .ok()
             })
             .map_or(0, |surface| surface.clauses.len() as u64)
     } else {
@@ -19689,6 +19693,20 @@ pub(crate) fn assert_resolved(outcome: DriveOutcome<Job, DependencyKey>, message
 
 pub(crate) fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> FunctionId {
     capture.id(name, arity)
+}
+
+/// Every generated function the capture saw minted while `owner`'s body was
+/// lowered. `function.defined` carries the owner only for generated functions,
+/// so this is the whole set of lambdas one function owns.
+pub(crate) fn generated_function_ids(capture: &FunctionCapture, owner: FunctionId) -> Vec<FunctionId> {
+    let mut ids: Vec<FunctionId> = capture
+        .all()
+        .into_iter()
+        .filter(|record| record.owner_function_id == Some(owner))
+        .map(|record| record.function_id)
+        .collect();
+    ids.sort();
+    ids
 }
 
 pub(crate) fn module_function_id(capture: &FunctionCapture, module: &str, name: &str, arity: u64) -> FunctionId {
@@ -22836,8 +22854,13 @@ fn quoted_call_retains_the_provider_function_id() {
         .world()
         .expanded_function_source(run)
         .expect("expanded source for the macro caller");
-    let (spelling, retained) =
-        retained_quoted_call(&expanded.source.cursor()).expect("the expanded call retains its callable");
+    let (spelling, retained) = retained_quoted_call(
+        &expanded
+            .declared_root()
+            .expect("a declared function carries its root")
+            .cursor(),
+    )
+    .expect("the expanded call retains its callable");
     assert_eq!(
         retained, helper,
         "the quoted call keeps the callable the provider resolved, not a name to resolve again"

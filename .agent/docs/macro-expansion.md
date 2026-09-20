@@ -101,11 +101,19 @@ It does four macro-relevant jobs:
    `required_remote_macros`. An invocation demands the macro's backend content.
 
 3. Publish raw function source.
-   `define_source_function(...)` writes `FunctionSource { owner, source,
-   required_remote_macros, ... }` without expanding ordinary bodies first. The
-   lexical publisher remains an owner while every returned node carries its own
-   immutable version; see
+   `define_source_function(...)` writes `FunctionSource { owner,
+   body: FunctionBody::Declared(root), required_remote_macros, ... }` without
+   expanding ordinary bodies first. The lexical publisher remains an owner
+   while every returned node carries its own immutable version; see
    [`quoted-source`](quoted-source.md#source-identity-and-provenance).
+
+   `FunctionBody` is the reason source jobs only ever see declared functions.
+   A generated function -- a lambda minted by `World::define_generated_function`
+   while its owner's body is lowered -- carries `FunctionBody::Generated { owner }`
+   instead of a root, so there is nothing for `Job::ExpandFunctionSource` to
+   expand and nothing for `derive_function_surface` to read. `FunctionDefined`
+   for such a function maps to `Job::LowerFunction(owner)` in
+   `World::demand_fact_producer`: its owner's lowering is its one producer.
 
 4. Expand item macros.
    `apply_item_macro_call(...)` expands the call through the same macro runtime

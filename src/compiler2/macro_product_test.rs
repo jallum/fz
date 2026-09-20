@@ -355,8 +355,11 @@ fn macro_expansion_retains_definition_and_caller_source_versions_per_node() {
         .expanded_function_source(main)
         .expect("demanded function retains expanded source");
     let source_map = compiler.world().source_map();
-    let surface = super::quoted_function::derive_function_surface(&expanded.source, &source_map.borrow())
-        .expect("expanded function source remains decodable");
+    let surface = super::quoted_function::derive_function_surface(
+        expanded.declared_root().expect("a declared function carries its root"),
+        &source_map.borrow(),
+    )
+    .expect("expanded function source remains decodable");
     let crate::ast::Expr::BinOp(_, left, right) = &surface.clauses[0].body.node else {
         panic!("macro result should be the quoted addition");
     };
