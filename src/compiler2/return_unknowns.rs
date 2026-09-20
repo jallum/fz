@@ -47,11 +47,28 @@
 //! is an unknown.
 //!
 //! The walk that answers for one function follows that function's own
-//! callees, transitively. A cycle a function's positions sit on runs through
-//! calls it makes and through the arguments it hands them, so it lies inside
-//! that reach; a caller the function cannot itself reach contributes only
-//! extra alternatives to a slot, which can add a guard only where a real
-//! cycle already runs.
+//! callees, transitively, and everything it publishes is a fact about what
+//! THIS body does: whether its own return is being solved, which of its
+//! slots that return is built from, and what each of its own call sites
+//! hands on and takes back. A cycle those positions sit on runs through
+//! calls this body makes and through the arguments it hands them, so it lies
+//! inside that reach.
+//!
+//! What ARRIVES at a slot is deliberately not among them. A slot is written
+//! by CALLERS, and a caller need not lie inside the callee's reach at all:
+//! `wrap(v)` reaches nothing, yet the only value it is ever handed is a
+//! recursive result still climbing. So "is this argument still climbing?" is
+//! answered where the argument is written, by the caller whose own reach
+//! does contain the cycle, and it is published per call site.
+//!
+//! One slot still gets one coordinate rule, so what a call site publishes
+//! is not the shape of the single value it writes but the shape of its
+//! DESTINATION SLOT, folded over every call site this walk can see feeding
+//! it: a seed call handing `[]` and an ascent call handing `[x | acc]` land
+//! in one position and must name it the same way, or the seed keys apart
+//! from every round after it. It is the same fold either side would compute;
+//! only the caller has the reach to compute it, because its reach contains
+//! the callee's and, on top of that, the argument it writes itself.
 //!
 //! A call made THROUGH a value names no callee in any body, so this walk
 //! cannot see past it: its arguments are recorded, and what it yields
@@ -190,20 +207,21 @@ pub(crate) struct FunctionUnknowns {
     /// graph, so it composes across call sites on its own -- a function that
     /// returns `g(x)` inherits whatever `g` does with its parameter.
     pub(crate) returned_inputs: Box<[bool]>,
-    /// One entry per semantic input: where unknown-ness sits inside the
-    /// values that ARRIVE there, joined over every call site that feeds the
-    /// slot. It is published per slot rather than per call site because one
-    /// slot gets one coordinate rule: a seed call handing `[]` and an ascent
-    /// call handing `[x | acc]` must name the position the same way, or the
-    /// seed keys apart from every later round and the ascent is back.
-    pub(crate) input_shapes: Box<[KeyShape]>,
-    /// One entry per call site.
-    pub(crate) callsites: BTreeMap<CallSiteId, CallSiteUnknowns>,
+    /// One entry per call site, by WHERE the call sits in this body.
+    ///
+    /// A `CallSiteId` also carries the span it was lowered from, and a span
+    /// names the version of the source it came from, so re-submitting the
+    /// same text mints ids that are unequal to the ones this answer was
+    /// derived with. The body is what says which call is which, and this
+    /// answer is already about one body, so the position alone identifies
+    /// the site and the answer survives a re-submission that changed
+    /// nothing.
+    pub(crate) callsites: BTreeMap<u32, CallSiteUnknowns>,
 }
 
 impl FunctionUnknowns {
     pub(crate) fn callsite(&self, callsite: CallSiteId) -> Option<&CallSiteUnknowns> {
-        self.callsites.get(&callsite)
+        self.callsites.get(&callsite.as_u32())
     }
 
     /// Whether a value arriving at `slot` can be read back out of what this
@@ -211,28 +229,40 @@ impl FunctionUnknowns {
     pub(crate) fn returns_input(&self, slot: usize) -> bool {
         self.returned_inputs.get(slot).copied().unwrap_or(true)
     }
-
-    /// Where unknown-ness sits inside whatever arrives at `slot`. A slot no
-    /// call site feeds -- a root's parameter, a closure's captured prefix --
-    /// has nothing still being solved in it.
-    pub(crate) fn input_shape(&self, slot: usize) -> &KeyShape {
-        self.input_shapes.get(slot).unwrap_or(&KeyShape::Settled)
-    }
 }
 
-/// What one call site hands on and what it yields.
+/// What one call site hands on, where what it hands on lands, and what it
+/// yields.
 ///
-/// One record, because membership asks a call site one question: does
-/// anything about this call still belong to a solve? An ARGUMENT the
-/// fixpoint is still solving puts the callee's matching slot on the caller's
-/// cycle. A RESULT the fixpoint is still solving puts the callee's whole
-/// return on it and names no slot at all -- that is the case where the cycle
-/// runs through returns only, as it does when a function wraps a constructor
-/// around its own recursive result.
+/// Two questions are asked of a call site and they are not the same
+/// question, so they are not the same answer.
+///
+/// MEMBERSHIP asks: does anything about THIS call still belong to a solve?
+/// An argument the fixpoint is still solving puts the callee's matching slot
+/// on the caller's cycle; a result it is still solving puts the callee's
+/// whole return on it and names no slot at all. Both are facts about the one
+/// value this site writes, so `enter(xs) -> cont(xs, [])` handing a literal
+/// `[]` hands on nothing unsolved and stays outside the cycle it seeds.
+///
+/// KEYING asks: what coordinate does the SLOT this argument lands in get?
+/// One slot gets one rule, so a seed call handing `[]` and an ascent call
+/// handing `[x | acc]` must name the position alike or the seed keys apart
+/// from every round after it. That answer is about the whole slot, folded
+/// over every call site feeding it, and it is the same answer whichever of
+/// them is being resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct CallSiteUnknowns {
-    /// One shape per positional argument.
+    /// One shape per positional argument: where unknown-ness sits inside the
+    /// value THIS site hands on.
     pub(crate) arguments: Vec<KeyShape>,
+    /// One shape per positional argument: where unknown-ness sits inside
+    /// everything that ARRIVES at the slot that argument lands in, this
+    /// site's own value among it. It is published by the caller because only
+    /// a caller has the reach to compute it -- a callee like `wrap(v)`
+    /// reaches nothing and can say nothing about the climbing value its
+    /// caller hands it. An argument that lands in no named slot, because the
+    /// call is made through a value, answers for itself.
+    pub(crate) destinations: Vec<KeyShape>,
     /// What this site yields is itself a position the fixpoint is solving.
     pub(crate) result: bool,
 }
@@ -274,7 +304,7 @@ impl KeyShape {
     /// walked together, so their join is the whole position -- naming more
     /// than a round needs costs an address variable where a concrete key
     /// would also have worked, and never costs termination.
-    fn join(self, other: KeyShape) -> KeyShape {
+    pub(crate) fn join(self, other: KeyShape) -> KeyShape {
         match (self, other) {
             (KeyShape::Settled, shape) | (shape, KeyShape::Settled) => shape,
             (KeyShape::Tuple(left), KeyShape::Tuple(right)) if left.len() == right.len() => KeyShape::Tuple(
@@ -443,6 +473,44 @@ impl<'a> PositionGraph<'a> {
     /// it reaches nothing here.
     fn named_callee(&self, function: FunctionId, callsite: CallSiteId) -> Option<(FunctionId, CallInputMode)> {
         self.skeletons.get(&function)?.callees.get(&callsite).copied()
+    }
+
+    /// Where each of one call site's positional arguments lands. A call made
+    /// through a value names no callee, and a callee outside this reach has
+    /// no slots to name, so in both cases an argument answers for itself.
+    fn destinations(&self, caller: FunctionId, callsite: CallSiteId, arity: usize) -> Vec<Option<(FunctionId, usize)>> {
+        let Some((callee, mode)) = self.named_callee(caller, callsite) else {
+            return vec![None; arity];
+        };
+        let Some(callee_skeleton) = self.skeletons.get(&callee) else {
+            return vec![None; arity];
+        };
+        let input_len = callee_skeleton.input_len;
+        (0..arity)
+            .map(|index| mode.semantic_index(input_len, arity, index).map(|slot| (callee, slot)))
+            .collect()
+    }
+
+    /// Where unknown-ness sits inside everything that ARRIVES at one callee
+    /// slot: the join over every call site this walk can see feeding it.
+    ///
+    /// One slot gets one coordinate rule, so a seed call handing `[]` and an
+    /// ascent call handing `[x | acc]` are folded together here rather than
+    /// each answering for the single value it happens to write. `Settled` is
+    /// the join's identity, so a path that settles everything constrains
+    /// nothing and what another path is still solving decides.
+    ///
+    /// Asking this from the CALLER is what makes the answer available at
+    /// all. A caller's reach contains the callee's, and on top of that it
+    /// contains the argument it writes itself -- the one contribution a
+    /// callee like `wrap(v)`, which reaches nothing, can never see.
+    fn slot_shape(&self, unknown: &HashSet<Position>, callee: FunctionId, slot: usize) -> KeyShape {
+        self.slot_feeds
+            .get(&(callee, slot))
+            .into_iter()
+            .flatten()
+            .map(|(feeder, argument)| key_shape(unknown, *feeder, argument))
+            .fold(KeyShape::Settled, KeyShape::join)
     }
 
     fn node(&mut self, position: Position) -> usize {
@@ -667,6 +735,17 @@ pub(crate) fn derive(skeletons: &HashMap<FunctionId, Rc<FunctionSkeleton>>, func
         return FunctionUnknowns::default();
     };
     let mut graph = PositionGraph::new(skeletons);
+    // The slot each argument lands in is a position this answer has to be
+    // able to ask about, and expanding it is what brings the other call
+    // sites feeding it into the walk. Seeding can only add positions the
+    // walk had not reached: a position reached both ways was already a node,
+    // so nothing the graph already said about `function` moves because of
+    // it.
+    let destinations: BTreeMap<CallSiteId, Vec<Option<(FunctionId, usize)>>> = skeleton
+        .arguments
+        .iter()
+        .map(|(callsite, arguments)| (*callsite, graph.destinations(function, *callsite, arguments.len())))
+        .collect();
     let mut seeds = vec![Position::Return(function)];
     seeds.extend((0..skeleton.input_len).map(|slot| Position::Slot(function, slot)));
     seeds.extend(
@@ -674,6 +753,13 @@ pub(crate) fn derive(skeletons: &HashMap<FunctionId, Rc<FunctionSkeleton>>, func
             .arguments
             .keys()
             .map(|callsite| Position::Result(function, *callsite)),
+    );
+    seeds.extend(
+        destinations
+            .values()
+            .flatten()
+            .flatten()
+            .map(|(callee, slot)| Position::Slot(*callee, *slot)),
     );
     graph.build(seeds);
 
@@ -706,26 +792,26 @@ pub(crate) fn derive(skeletons: &HashMap<FunctionId, Rc<FunctionSkeleton>>, func
                     .iter()
                     .map(|argument| key_shape(&unknown, function, argument))
                     .collect(),
+                destinations: arguments
+                    .iter()
+                    .zip(&destinations[callsite])
+                    .map(|(argument, destination)| match destination {
+                        // A named slot is answered for as a whole, this
+                        // body's own argument among its feeders.
+                        Some((callee, slot)) => graph.slot_shape(&unknown, *callee, *slot),
+                        // Nothing here names a slot, so the value handed
+                        // over answers for itself.
+                        None => key_shape(&unknown, function, argument),
+                    })
+                    .collect(),
                 result: unknown.contains(&Position::Result(function, *callsite)),
             };
-            (*callsite, site)
-        })
-        .collect();
-    let input_shapes = (0..skeleton.input_len)
-        .map(|slot| {
-            graph
-                .slot_feeds
-                .get(&(function, slot))
-                .into_iter()
-                .flatten()
-                .map(|(feeder, argument)| key_shape(&unknown, *feeder, argument))
-                .fold(KeyShape::Settled, KeyShape::join)
+            (callsite.as_u32(), site)
         })
         .collect();
     FunctionUnknowns {
         returns: unknown.contains(&Position::Return(function)),
         returned_inputs: graph.reached_from_return(function, skeleton.input_len),
-        input_shapes,
         callsites,
     }
 }

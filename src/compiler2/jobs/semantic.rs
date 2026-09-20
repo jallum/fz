@@ -1418,17 +1418,8 @@ fn resolve_direct_call(
         .iter()
         .map(|value| value.as_activation_input(none))
         .collect::<Vec<_>>();
-    let (resolution, activations, return_ty) = resolve_function_call(
-        world,
-        tel,
-        caller,
-        function,
-        0,
-        arg_inputs,
-        callsite.span(),
-        reads,
-        waits,
-    )?;
+    let (resolution, activations, return_ty) =
+        resolve_function_call(world, tel, caller, function, 0, arg_inputs, callsite, reads, waits)?;
     Ok((
         Some(CallEmission {
             key: CallSiteKey {
@@ -1552,7 +1543,7 @@ fn resolve_function_call(
     function: FunctionId,
     argument_offset: usize,
     input_evidence: Vec<ActivationInput>,
-    call_span: Span,
+    callsite: CallSiteId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<ResolvedCall, FatalError> {
@@ -1566,7 +1557,7 @@ fn resolve_function_call(
             callback.protocol,
             argument_offset,
             input_evidence,
-            call_span,
+            callsite,
             reads,
             waits,
         );
@@ -1579,7 +1570,7 @@ fn resolve_function_call(
     };
     let caller_owner = world.function_definition(caller.function).0.owner;
     let (input_types, contract_return_ty, callable_surfaces) =
-        refine_function_call_surface(world, tel, function, input_types, caller_owner, call_span)?;
+        refine_function_call_surface(world, tel, function, input_types, caller_owner, callsite.span())?;
     let input_evidence = attach_callable_surface_observations(
         refine_activation_inputs(input_evidence, &input_types),
         &callable_surfaces,
@@ -1605,8 +1596,15 @@ fn resolve_function_call(
             Some(return_ty),
         ));
     }
-    let (activation, return_evidence) =
-        prepare_function_call(world, caller, function, argument_offset, &input_evidence, reads);
+    let (activation, return_evidence) = prepare_function_call(
+        world,
+        caller,
+        callsite,
+        function,
+        argument_offset,
+        &input_evidence,
+        reads,
+    );
     let return_ty = refine_call_return(world, return_evidence, contract_return_ty);
     let activation_inputs = if callee_extern_params(world, function).is_some() {
         boundary_surface_inputs(world, &input_evidence)
@@ -1643,7 +1641,7 @@ fn resolve_protocol_call(
     protocol: ModuleId,
     argument_offset: usize,
     input_evidence: Vec<ActivationInput>,
-    call_span: Span,
+    callsite: CallSiteId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<ResolvedCall, FatalError> {
@@ -1740,8 +1738,14 @@ fn resolve_protocol_call(
         }
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
         let caller_owner = world.function_definition(caller.function).0.owner;
-        let (refined_inputs, contract_return_ty, callable_surfaces) =
-            refine_function_call_surface(world, tel, selected.function, refined_inputs, caller_owner, call_span)?;
+        let (refined_inputs, contract_return_ty, callable_surfaces) = refine_function_call_surface(
+            world,
+            tel,
+            selected.function,
+            refined_inputs,
+            caller_owner,
+            callsite.span(),
+        )?;
         let refined_evidence = attach_callable_surface_observations(
             refine_activation_inputs(input_evidence.clone(), &refined_inputs),
             &callable_surfaces,
@@ -1749,6 +1753,7 @@ fn resolve_protocol_call(
         let (activation, observed_return) = prepare_function_call(
             world,
             caller,
+            callsite,
             selected.function,
             argument_offset,
             &refined_evidence,
@@ -1955,7 +1960,7 @@ fn resolve_closure_call(
             function,
             captures_len,
             input_evidence,
-            callsite.span(),
+            callsite,
             reads,
             waits,
         )?;
@@ -2306,22 +2311,29 @@ fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>)
 }
 /// The key coordinates one call site hands its callee, one per argument.
 ///
-/// This is the one place a key coordinate is decided, and every answer it
-/// gives is a fact about the CALLEE SLOT rather than about this call site.
-/// One slot gets one rule: a seed call handing `[]` and an ascent call
+/// This is the one place a key coordinate is decided, and it is decided from
+/// the CALLER's static answer about the call site being keyed. Whether a
+/// value is still climbing is a property of the value, and the body that
+/// writes the argument is the one that can see where it came from: a callee
+/// like `wrap(v)` reaches nothing and so can say nothing about the recursive
+/// result its only caller hands it.
+///
+/// One slot still gets one rule: a seed call handing `[]` and an ascent call
 /// handing `[x | acc]` must name the position the same way, or the seed keys
-/// apart from every round after it.
+/// apart from every round after it. What the caller publishes per call site
+/// is therefore already the DESTINATION SLOT's shape, folded over every call
+/// site feeding it, so reading it one call at a time still answers for the
+/// slot.
 ///
 /// Two static questions decide a slot, in order.
 ///
 /// The first: is the value that arrives here a position the fixpoint is still
-/// SOLVING? `FunctionUnknowns::input_shape` answers it from the callee's own
-/// return skeleton, joined over every call site that feeds the slot. A
-/// climbing position keys on its address variable, because what the walk
-/// observed there is how far the ascent has got rather than what the program
-/// denotes, and keying on it would mint one activation per round. A value can
-/// be settled at one field and climbing at the one beside it, so the answer
-/// descends.
+/// SOLVING? `CallSiteUnknowns::destinations` answers it, derived from the
+/// caller's own skeletons. A climbing position keys on its address variable,
+/// because what the walk observed there is how far the ascent has got rather
+/// than what the program denotes, and keying on it would mint one activation
+/// per round. A value can be settled at one field and climbing at the one
+/// beside it, so the answer descends.
 ///
 /// The second, asked only where the first has settled everything: can a value
 /// at this slot be OBSERVED from outside the activation at all? Two things
@@ -2358,14 +2370,28 @@ fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>)
 /// `argument_offset` is how many of `arg_inputs` the call site did not
 /// write: a closure call's captures sit ahead of its positional arguments in
 /// the callee's input space, and they are values already closed over, so the
-/// lambda's own activation has already named them.
+/// lambda's own activation has already named them. The caller's answer is
+/// indexed by what it wrote, so the offset is taken off before reading it.
 fn key_inputs_for_call(
     world: &mut World,
+    caller: FunctionId,
+    callsite: CallSiteId,
     callee: FunctionId,
     argument_offset: usize,
     arg_inputs: &[ActivationInput],
+    reads: &mut Vec<FactKey>,
 ) -> Vec<ActivationInput> {
-    let Some(unknowns) = world.return_unknowns(callee).cloned() else {
+    // Every key this walk mints is decided by the caller's own answer, so
+    // that answer is a subscription and not a glance: when it moves, the
+    // keys move with it and this body has to be walked again.
+    // `analyze_activation` waits on the fact before it evaluates anything,
+    // so the answer is there to read.
+    reads.push(FactKey::ReturnUnknowns(caller));
+    let Some(site) = world
+        .return_unknowns(caller)
+        .and_then(|unknowns| unknowns.callsite(callsite))
+        .cloned()
+    else {
         return arg_inputs.to_vec();
     };
     let observable = world.observable_inputs(callee, arg_inputs.len());
@@ -2374,10 +2400,13 @@ fn key_inputs_for_call(
         .iter()
         .enumerate()
         .map(|(slot, input)| {
-            if slot < argument_offset {
+            let Some(argument) = slot
+                .checked_sub(argument_offset)
+                .and_then(|index| site.destinations.get(index))
+            else {
                 return input.clone();
-            }
-            let shape = match (unknowns.input_shape(slot), observable[slot]) {
+            };
+            let shape = match (argument, observable[slot]) {
                 (KeyShape::Settled, false) => &KeyShape::Unknown,
                 (shape, _) => shape,
             };
@@ -2408,12 +2437,21 @@ fn key_inputs_for_call(
 fn prepare_function_call(
     world: &mut World,
     caller: &ActivationKey,
+    callsite: CallSiteId,
     function: FunctionId,
     argument_offset: usize,
     arg_inputs: &[ActivationInput],
     reads: &mut Vec<FactKey>,
 ) -> (ActivationKey, Option<Ty>) {
-    let key_inputs = key_inputs_for_call(world, function, argument_offset, arg_inputs);
+    let key_inputs = key_inputs_for_call(
+        world,
+        caller.function,
+        callsite,
+        function,
+        argument_offset,
+        arg_inputs,
+        reads,
+    );
     let activation = world.activation_key_for_inputs(caller.root, function, &key_inputs);
     // The read is the subscription that re-wakes this caller when the
     // callee's return evidence rises — chaotic iteration needs no wait here,

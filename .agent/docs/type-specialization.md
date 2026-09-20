@@ -122,8 +122,21 @@ mechanisms bound it, both via the activation **key** (`canonical_activation_key`
   two static questions of every call argument, and `KeyShape::coordinate`
   answers both. Is the value that arrives here a position the fixpoint is still
   SOLVING? Then the coordinate is the variable that addresses the slot, which is
-  the same coordinate at every round of the ascent. Can the value be OBSERVED
-  from outside the activation at all — a dispatch question that reads it
+  the same coordinate at every round of the ascent. That answer is read from the
+  CALLER — `CallSiteUnknowns::destinations`, found by where the call sits in the
+  caller's body — because a slot is written by callers and `derive_return_unknowns`
+  walks a function's own CALLEES: `wrap(v)` reaches nothing, yet the only value it
+  is ever handed is a recursive result still climbing, and a callee-side answer
+  folds that slot to "key on what arrived". `destinations` is the DESTINATION
+  SLOT's shape, folded over every call site the caller can see feeding that slot,
+  so one slot still gets one coordinate rule: a seed call handing `[]` and an
+  ascent call handing `[x | acc]` name the position alike. Its sibling
+  `CallSiteUnknowns::arguments` is the shape of the value THIS site hands on, and
+  is a different question with a different consumer: `return_membership` asks it
+  whether this call puts its callee on the caller's cycle, and `enter(xs) ->
+  cont(xs, [])` hands on a settled `[]` and stays outside the cycle it seeds. Can
+  the value be OBSERVED from outside the activation at all — a dispatch question
+  that reads it
   (`InputDemand::forwarded_dispatch`) or a published return built from it
   (`FunctionUnknowns::returns_input`)? A slot neither reaches is FREIGHT and
   keys on its address variable too, which is what keeps a recursive accumulator
