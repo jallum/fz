@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses};
-use super::super::identity::{FunctionId, FunctionSource, ModuleId, ModuleSourceKind};
+use super::super::identity::{FunctionBody, FunctionId, FunctionSource, ModuleId, ModuleSourceKind};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::quoted_expander::{
     ExpandedRoot, ExpandedValue, QuotedExpansionCtx, emit_internal_surface_error, emit_job_diagnostic,
@@ -276,6 +276,15 @@ pub(super) fn define_module_interface(
     })
 }
 
+/// A generated function's definition has exactly one producer: the lowering of
+/// its owner's body, which mints the lambda and publishes
+/// `FactKey::FunctionDefined` for it in the same conclusion.
+/// `World::demand_fact_producer` names that lowering, so neither of the two
+/// jobs below is ever demanded for a lambda. Each says so where it would have
+/// had to invent a root the lambda does not have.
+const GENERATED_FUNCTIONS_ARE_DEFINED_BY_THEIR_OWNER: &str =
+    "a generated function is defined by its owner's lowering, so it never reaches a source job";
+
 pub(super) fn define_function(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -290,10 +299,13 @@ pub(super) fn define_function(
         return Ok(JobEffects::wait_on_current(FactKey::FunctionSource(function_id)));
     };
 
+    let root = expanded_source
+        .body
+        .declared_root()
+        .expect(GENERATED_FUNCTIONS_ARE_DEFINED_BY_THEIR_OWNER);
     let source_map = world.source_map();
-    let surface =
-        crate::compiler2::quoted_function::derive_function_surface(&expanded_source.source, &source_map.borrow())
-            .map_err(|error| emit_surface_read_error(tel, "quoted function decode failed", &error))?;
+    let surface = crate::compiler2::quoted_function::derive_function_surface(root, &source_map.borrow())
+        .map_err(|error| emit_surface_read_error(tel, "quoted function decode failed", &error))?;
     let declares_contract = surface.extern_abi.is_some()
         || surface
             .attrs
@@ -489,19 +501,23 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         // namespace as a splice. The expander resolves it where the body names
         // __ENV__; it is transient — it is never recorded on the function.
         let def_scope = ScopeSnapshot::function(self.current_module, self.namespace, self.function);
-        let builder = source.source.builder();
+        let root = source
+            .body
+            .declared_root()
+            .expect(GENERATED_FUNCTIONS_ARE_DEFINED_BY_THEIR_OWNER);
+        let builder = root.builder();
         let env = self
             .world
             .project_env_value(&builder, def_scope, QuotedLexicalContextKind::Definition)
             .map_err(|error| {
                 emit_internal_surface_error(self.telemetry, format!("__ENV__ projection failed: {error}"))
             })?;
-        let env = source.source.subroot(env);
+        let env = root.subroot(env);
         let namespace = self
             .world
             .bind_namespace(self.namespace, "__ENV__", NamespaceSymbol::Splice(env));
         let scope = ScopeSnapshot::function(self.current_module, namespace, self.function);
-        let expanded = match self.expand_function_root(source.source.clone(), scope, 0)? {
+        let expanded = match self.expand_function_root(root.clone(), scope, 0)? {
             ExpandedRoot::Complete(expanded) => expanded,
             ExpandedRoot::Blocked(effects) => {
                 return Ok(FunctionSourceExpansion::Blocked(Box::new(
@@ -510,7 +526,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             }
         };
         let mut source = source.clone();
-        source.source = expanded;
+        source.body = FunctionBody::Declared(expanded);
         Ok(FunctionSourceExpansion::Complete {
             source,
             reads: self.reads,

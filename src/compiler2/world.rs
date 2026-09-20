@@ -1644,6 +1644,17 @@ impl World {
 
     /// The raw source form a scope walk built for `function`, present from the
     /// moment that walk noted it.
+    /// The function whose body lowering minted this one, when it is generated.
+    /// A declared function answers `None`: it comes from a quoted root, and
+    /// expanding that root is what defines it.
+    pub(crate) fn generated_function_owner(&self, function: FunctionId) -> Option<FunctionId> {
+        match self.functions.get(function) {
+            super::identity::FunctionState::Noted { source }
+            | super::identity::FunctionState::Defined { source, .. } => source.body.generated_owner(),
+            super::identity::FunctionState::Placeholder => None,
+        }
+    }
+
     pub(crate) fn function_source(&self, function: FunctionId) -> Option<FunctionSource> {
         match self.functions.get(function) {
             super::identity::FunctionState::Noted { source }
@@ -3623,9 +3634,12 @@ impl World {
             owner_module: owner_source.owner_module,
             namespace,
             capture_params,
-            required_remote_macros: owner_source.required_remote_macros.clone(),
+            required_remote_macros: owner_source.required_remote_macros,
             variadic: surface.variadic,
-            source: owner_source.source,
+            // A lambda has no declaration of its own. It names the function
+            // whose lowering minted it, so nothing can mistake the owner's
+            // root for the lambda's and re-derive the owner's surface here.
+            body: super::identity::FunctionBody::Generated { owner },
         };
         let changed = self.functions.define(id, fn_source.clone(), fn_source, surface);
         (id, changed)

@@ -672,7 +672,13 @@ impl World {
     pub(crate) fn demand_fact_producer(&mut self, fact: &FactKey, reason: WorkStartReason) -> u64 {
         let job = match fact {
             FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
-            FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
+            // A generated function has no declaration to expand. The lowering
+            // of the body that minted it publishes its definition as a
+            // co-output, so that lowering is its only producer.
+            FactKey::FunctionDefined(function) => Some(match self.generated_function_owner(*function) {
+                Some(owner) => Job::LowerFunction(owner),
+                None => Job::DefineFunction(*function),
+            }),
             FactKey::ModuleDefined(module) => Some(Job::DefineModule(*module)),
             // `StructDefined` publishes as `DefineModule`'s co-output
             // (`source_publish::publish_struct_def`), exactly like
