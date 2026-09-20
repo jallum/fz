@@ -813,10 +813,6 @@ impl CallableSurfaceOps<RegularRef> for RegularCallableSurfaceOps<'_> {
                 .type_var(super::closure_surface_var::closure_ret_var_id(fn_id)),
         )
     }
-
-    fn any(&mut self) -> RegularRef {
-        RegularRef::Published(self.types.any())
-    }
 }
 
 impl TupleCoordinateOps<RegularRef> for RegularTupleOps<'_> {

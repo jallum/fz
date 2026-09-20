@@ -32,10 +32,9 @@ general absorbing property of free vars. A literal whose own capture TYPE is
 empty is empty whatever the rest of the clause says — a closure holds exactly
 one value per capture slot, so `#3closure[none]` denotes nothing. Two literals
 that can name one value MERGE at intern time rather than staying distinct, so
-that is where a `none` capture comes from: one brand met at two capture types,
-or the ANONYMOUS literal (a `ClosureLit` with no `fn_id`, fz-kdt.127, which is
-every brand at once) met with a branded one. (Vars are nominal on their own axis:
-`is_subtype(int, α)` and `is_subtype(α, int)` are both false.) The blind spot
+that is where a `none` capture comes from: one brand met at two capture types.
+(Vars are nominal on their own axis: `is_subtype(int, α)` and
+`is_subtype(α, int)` are both false.) The blind spot
 is structural — a lambda inside a tuple, a list, a resource payload, a map
 field or another arrow's signature is reached the same way.
 
@@ -299,9 +298,9 @@ capture-subset absorption could erase a real one. Literal-bearing axes get
 exact duplicate removal only.
 
 The literal's args and result are not value identity. Before ordering,
-`Types::intern` restores a named literal's deterministic owner template and an
-anonymous literal's arity-only `any` surface. `ActivationInput` carries the
-separate addressed `ActivationSignature`s a contract or call analysis observed.
+`Types::intern` restores the literal owner's deterministic template.
+`ActivationInput` carries the separate addressed `ActivationSignature`s a
+contract or call analysis observed.
 The value and observation therefore have one owner each: observations cannot
 mint a second closure value identity, and normalizing a value cannot erase an
 observed call surface.

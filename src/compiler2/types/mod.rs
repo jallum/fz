@@ -67,8 +67,8 @@ use sigs::{
 };
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
-/// `(brand, captures, args, ret)`, the brand `None` for an anonymous literal.
-pub(crate) type LitArrowShape = (Option<FnId>, Vec<Ty>, Vec<Ty>, Ty);
+/// `(brand, captures, args, ret)`.
+pub(crate) type LitArrowShape = (FnId, Vec<Ty>, Vec<Ty>, Ty);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -187,7 +187,6 @@ pub(super) trait TupleCoordinateOps<R: Clone> {
 pub(super) trait CallableSurfaceOps<R: Clone> {
     fn named_arg(&mut self, fn_id: FnId, position: usize) -> R;
     fn named_ret(&mut self, fn_id: FnId) -> R;
-    fn any(&mut self) -> R;
 }
 
 impl TupleCoordinateOps<Ty> for Types {
@@ -211,10 +210,6 @@ impl CallableSurfaceOps<Ty> for Types {
 
     fn named_ret(&mut self, fn_id: FnId) -> Ty {
         self.type_var(closure_ret_var_id(fn_id))
-    }
-
-    fn any(&mut self) -> Ty {
-        Types::any(self)
     }
 }
 
@@ -262,17 +257,9 @@ fn normalize_literal_callable_surfaces_with<R: Clone>(ops: &mut impl CallableSur
             continue;
         };
         let arity = sig.args.len();
-        match lit.fn_id {
-            Some(fn_id) => {
-                sig.args = (0..arity).map(|position| ops.named_arg(fn_id, position)).collect();
-                sig.ret = ops.named_ret(fn_id);
-            }
-            None => {
-                let any = ops.any();
-                sig.args = vec![any.clone(); arity];
-                sig.ret = any;
-            }
-        }
+        let fn_id = lit.fn_id;
+        sig.args = (0..arity).map(|position| ops.named_arg(fn_id, position)).collect();
+        sig.ret = ops.named_ret(fn_id);
     }
 }
 
@@ -937,8 +924,8 @@ impl Types {
     }
 
     /// Direct callable observations are activation coordinates, not value
-    /// identity. A named literal has one reproducible owner template; an
-    /// anonymous literal keeps only its arity.
+    /// identity. Every literal names a function, and that function has one
+    /// reproducible owner template.
     fn normalize_literal_callable_surfaces(&mut self, d: &mut Structure) {
         normalize_literal_callable_surfaces_with(self, d)
     }
@@ -1103,13 +1090,11 @@ impl Types {
                 .flat_map(|case| case.structure.funcs.iter())
                 .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
             {
-                if let Some(lit) = &sig.lit
-                    && let Some(fn_id) = lit.fn_id
-                {
+                if let Some(lit) = &sig.lit {
                     assert!(
-                        self.callable_origins.contains_key(&fn_id),
+                        self.callable_origins.contains_key(&lit.fn_id),
                         "activation arrow names unregistered callable {}",
-                        fn_id.0
+                        lit.fn_id.0
                     );
                 }
             }
@@ -2373,8 +2358,7 @@ impl Types {
     /// An interned callable clause pins exactly one literal. Equal-target
     /// literals merge at the type boundary; different targets make the clause
     /// empty and the boundary drops it. `callable_identity_literal` refuses
-    /// clauses that name no literal, subtract one, or name an anonymous
-    /// literal.
+    /// clauses that name no literal or subtract one.
     fn runtime_type_predicate_callables(&self, descr: &Descr) -> CallableShapes {
         let mut shapes = Vec::new();
         for clause in descr.cases.iter().flat_map(|case| case.structure.funcs.iter()) {
@@ -2382,10 +2366,7 @@ impl Types {
                 return CallableShapes::any();
             };
             shapes.push(CallableShape {
-                target: ClosureTarget::from(
-                    lit.fn_id
-                        .expect("callable_identity_literal accepted an anonymous literal"),
-                ),
+                target: ClosureTarget::from(lit.fn_id),
                 captures: lit
                     .captures
                     .iter()
@@ -2462,9 +2443,8 @@ impl Types {
     }
 
     /// Every closure-literal arrow reachable from `a`, as
-    /// `(fn_id, captures, args, ret)`, sorted and deduped. The brand is `None`
-    /// for an anonymous literal, which is one shape like any other: two rows
-    /// whose literals differ only in brand are NOT the same shape.
+    /// `(fn_id, captures, args, ret)`, sorted and deduped. Two rows whose
+    /// literals differ only in brand are NOT the same shape.
     ///
     /// `args` and `ret` are in here because subtyping leaves them out:
     /// `emptiness::func_clause_empty` decides a negative closure-literal
@@ -2717,7 +2697,7 @@ impl Types {
             .flat_map(|d| d.cases.iter().flat_map(|case| case.structure.funcs.iter()))
             .flat_map(|c| c.pos.iter().chain(c.neg.iter()))
             .filter_map(|sig| sig.lit.as_ref())
-            .filter_map(|lit| lit.fn_id)
+            .map(|lit| lit.fn_id)
             .filter(|fn_id| !self.callable_origins.contains_key(fn_id))
             .map(|fn_id| fn_id.0)
             .collect()
@@ -2735,7 +2715,7 @@ impl Types {
             ret,
             lit: Some(ClosureLit {
                 kind: CallableValueKind::FnRef,
-                fn_id: Some(fn_id),
+                fn_id,
                 captures: Vec::new(),
             }),
         })];
@@ -2754,7 +2734,7 @@ impl Types {
             ret,
             lit: Some(ClosureLit {
                 kind: CallableValueKind::Closure,
-                fn_id: Some(fn_id),
+                fn_id,
                 captures,
             }),
         })];
@@ -2764,7 +2744,7 @@ impl Types {
     pub fn closure_lit_parts(&self, a: &Ty) -> Option<ClosureLitInfo<Ty>> {
         let lit = self.descr(a).as_closure_lit()?;
         Some(ClosureLitInfo {
-            target: lit.fn_id?.into(),
+            target: lit.fn_id.into(),
             captures: lit.captures.clone(),
             kind: lit.kind,
         })
@@ -3452,12 +3432,10 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
             .map(|arrow| CallableClause {
                 args: arrow.args.clone(),
                 ret: arrow.ret,
-                closure: arrow.lit.as_ref().and_then(|lit| {
-                    lit.fn_id.map(|fn_id| ClosureLitInfo {
-                        target: fn_id.into(),
-                        captures: lit.captures.clone(),
-                        kind: lit.kind,
-                    })
+                closure: arrow.lit.as_ref().map(|lit| ClosureLitInfo {
+                    target: lit.fn_id.into(),
+                    captures: lit.captures.clone(),
+                    kind: lit.kind,
                 }),
             })
             .filter(|clause| clause.args.iter().all(|arg| !cx.descr(arg).is_empty(cx)))
@@ -3595,44 +3573,26 @@ fn has_only_tuple_runtime_roots(descr: &Descr) -> bool {
 /// at the type boundary, while distinct identities made the clause empty and
 /// were dropped. If that invariant breaks, the exact reader below fails rather
 /// than making a runtime predicate for a state the type interner forbids.
-///
-/// An ANONYMOUS literal names no code at all, so it is that same unrestricted
-/// answer -- and this is the ONE place that decides it, for the predicate
-/// projection and for the envelope alike. It never actually arrives: nothing
-/// mints one, and a runtime test is asked of a VALUE's type -- a callsite's
-/// `CallTargetSummary::surface_inputs`, a lane's carrier. The `debug_assert!`
-/// is the gate on that; the `?` behind it keeps the sound unrestricted answer
-/// if the rule is ever broken.
 fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>> {
     let mut targets = BTreeSet::new();
     for clause in funcs {
-        targets.insert(
-            callable_identity_literal(clause)?
-                .fn_id
-                .expect("callable_identity_literal accepted an anonymous literal"),
-        );
+        targets.insert(callable_identity_literal(clause)?.fn_id);
     }
     Some(targets)
 }
 
 /// The one runtime-observable literal of an interned callable clause.
 ///
-/// An anonymous literal names every brand at once, so it asks the caller to
-/// take the unrestricted predicate path. Several literals mean the interner
-/// invariant was violated and must never be recovered into a lossy runtime
-/// test.
+/// `None` says this clause names no literal of its own: it subtracts one, or
+/// it pins none at all. Either way the caller takes the unrestricted predicate
+/// path. Several literals mean the interner invariant was violated and must
+/// never be recovered into a lossy runtime test.
 fn callable_identity_literal(clause: &Conj<ArrowSig>) -> Option<&ClosureLit> {
     if !clause.neg.is_empty() {
         return None;
     }
     let mut literals = clause.pos.iter().filter_map(|sig| sig.lit.as_ref());
     let literal = literals.next()?;
-    debug_assert!(
-        literal.fn_id.is_some(),
-        "an anonymous literal reached a runtime test: brand erasure is not on any \
-         path a runtime test reads from"
-    );
-    literal.fn_id?;
     assert!(
         literals.next().is_none(),
         "Types::intern retained a callable clause with several literal identities"

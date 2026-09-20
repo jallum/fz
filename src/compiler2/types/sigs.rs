@@ -146,13 +146,10 @@ impl<R> ListSigOf<R> {
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct ClosureLitOf<R> {
     pub kind: CallableValueKind,
-    /// The function the value was minted from, or `None` for an ANONYMOUS
-    /// literal: a closure of SOME function closed over exactly these capture
-    /// types. Nothing mints one: the brand erasures that did are gone. An
-    /// anonymous literal contains every branded literal whose captures are
-    /// inside its own, so it is never a singleton and never names a call
-    /// target.
-    pub fn_id: Option<FnId>,
+    /// The function the value was minted from. Every literal names one, so a
+    /// literal is always a singleton over its captures and always names a
+    /// call target.
+    pub fn_id: FnId,
     pub captures: Vec<R>,
 }
 
@@ -270,14 +267,11 @@ impl MergeSig for ArrowSig {
         }
         match (&a.lit, &b.lit) {
             (Some(la), Some(lb)) => {
-                // An anonymous literal is every brand at once, so meeting it
-                // with a branded one keeps the brand; two brands that differ
-                // name disjoint values and stay Distinct.
-                let fn_id = match (la.fn_id, lb.fn_id) {
-                    (Some(a), Some(b)) if a != b => return PosMeet::Distinct,
-                    (Some(a), _) => Some(a),
-                    (None, b) => b,
-                };
+                // Two brands that differ name disjoint values and stay
+                // Distinct.
+                if la.fn_id != lb.fn_id {
+                    return PosMeet::Distinct;
+                }
                 if la.kind != lb.kind || la.captures.len() != lb.captures.len() {
                     return PosMeet::Distinct;
                 }
@@ -293,7 +287,7 @@ impl MergeSig for ArrowSig {
                     ret: types.intersect(a.ret, b.ret),
                     lit: Some(ClosureLit {
                         kind: la.kind,
-                        fn_id,
+                        fn_id: la.fn_id,
                         captures: la
                             .captures
                             .iter()

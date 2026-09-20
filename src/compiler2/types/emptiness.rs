@@ -1,6 +1,5 @@
 //! Per-axis emptiness algorithms for the interned descriptor kernel.
 
-use crate::fz_ir::FnId;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
@@ -453,26 +452,6 @@ fn arrow_input(sig: &ArrowSig) -> Operand {
     Operand::built(Descr::tuple_of(sig.args.clone()))
 }
 
-/// Whether two closure literals can name ONE value: the same brand, or either
-/// one anonymous — an anonymous literal is every brand at once.
-fn closure_brands_meet(a: Option<FnId>, b: Option<FnId>) -> bool {
-    match (a, b) {
-        (Some(a), Some(b)) => a == b,
-        _ => true,
-    }
-}
-
-/// Whether every brand `pos` names, `neg` names too. An anonymous `neg`
-/// subtracts every brand; a branded `neg` subtracts only its own, and never
-/// covers an anonymous `pos`, which names every other brand as well.
-fn closure_brand_inside(pos: Option<FnId>, neg: Option<FnId>) -> bool {
-    match (pos, neg) {
-        (_, None) => true,
-        (Some(pos), Some(neg)) => pos == neg,
-        (None, Some(_)) => false,
-    }
-}
-
 /// Whether one partition of `positives` witnesses a function outside
 /// `input -> output`.
 ///
@@ -511,13 +490,11 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Me
 
     let pos_lits: Vec<&ClosureLit> = p.iter().filter_map(|s| s.lit.as_ref()).collect();
     // A closure holds exactly one value per capture slot, so a literal whose
-    // capture TYPE is empty denotes nothing -- however it got that way. An
-    // anonymous literal is every brand at once, so it MERGES with a branded
-    // one instead of staying distinct from it, and the merged literal's
-    // capture is the two captures' intersection; one brand at two capture
-    // types merges the same way. Asking each literal about its own captures
-    // covers both, where the pairwise loop below can only see pairs that
-    // survived the merge.
+    // capture TYPE is empty denotes nothing -- however it got that way. One
+    // brand met at two capture types MERGES instead of staying distinct, and
+    // the merged literal's capture is the two captures' intersection. Asking
+    // each literal about its own captures sees that, where the pairwise loop
+    // below can only see pairs that survived the merge.
     if pos_lits
         .iter()
         .any(|lit| lit.captures.iter().any(|c| is_empty_memo_ty(*c, cx, memo)))
@@ -526,9 +503,7 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Me
     }
     for i in 0..pos_lits.len() {
         for j in (i + 1)..pos_lits.len() {
-            if !closure_brands_meet(pos_lits[i].fn_id, pos_lits[j].fn_id)
-                || pos_lits[i].captures.len() != pos_lits[j].captures.len()
-            {
+            if pos_lits[i].fn_id != pos_lits[j].fn_id || pos_lits[i].captures.len() != pos_lits[j].captures.len() {
                 return true;
             }
             for (a, b) in pos_lits[i].captures.iter().zip(&pos_lits[j].captures) {
@@ -548,7 +523,7 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>, memo: &mut Me
             let Some(pos_lit) = &posi.lit else {
                 continue;
             };
-            if !closure_brand_inside(pos_lit.fn_id, neg_lit.fn_id) || pos_lit.captures.len() != neg_lit.captures.len() {
+            if pos_lit.fn_id != neg_lit.fn_id || pos_lit.captures.len() != neg_lit.captures.len() {
                 continue;
             }
             found_matching_pos = true;
