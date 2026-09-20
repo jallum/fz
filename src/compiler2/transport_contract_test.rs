@@ -5,6 +5,7 @@ use std::rc::Rc;
 use super::artifact::{AbiValueRepr, BackendTail};
 use super::body::{DeliveredValueSource, delivered_value_joins};
 use super::facts::FactUse;
+use super::product_drive_test::ReturnJobRuns;
 use super::pull::{
     ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, TransportCarrier, TransportLayout,
     TransportShapeFact, WorldProductProducers,
@@ -136,8 +137,17 @@ const TRANSPORT_POSITIONS: &[(&str, &str)] = &[
 const SEAM_FACTS: &[(&str, &str)] = &[];
 // Named operator references are construction edges, so their target keying
 // prerequisites are ordinary causal work. Finality now propagates through
-// their concluded readers, deleting three readiness-only no-op starts.
+// their concluded readers, deleting three readiness-only no-op starts. The
+// count excludes the three return families, which have their own row below:
+// a census that silently absorbs a new family cannot show an explosion in
+// job counts.
 const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 407;
+// The return families' share of the same interp run.
+const EXPECTED_00181_RETURN_JOB_STOPS: ReturnJobRuns = ReturnJobRuns {
+    skeletons: 14,
+    unknowns: 32,
+    component_solves: 0,
+};
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {
@@ -3394,7 +3404,12 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
     let tel = ConfiguredTelemetry::new();
     let finished_producer_pokes = capture_finished_producer_pokes(&tel);
     let (_interp_root, no_dump_jobs) = product_no_dump_interp_job_telemetry(ENUM_REDUCE_OPERATOR_REF_SOURCE);
-    let no_dump_job_fires = no_dump_jobs.total_stops();
+    let return_job_stops = no_dump_jobs.return_job_stops();
+    assert_eq!(
+        return_job_stops, EXPECTED_00181_RETURN_JOB_STOPS,
+        "the return families must stay at their measured share of this interp run",
+    );
+    let no_dump_job_fires = no_dump_jobs.total_stops() - return_job_stops.total() as usize;
     assert_eq!(
         no_dump_job_fires, EXPECTED_00181_NO_DUMP_JOB_STARTS,
         "product no-dump interp must retain only the intentional ordinary arithmetic-helper work; got {no_dump_job_fires}"
@@ -6310,6 +6325,10 @@ impl JobTelemetry {
 
     fn total_stops(&self) -> usize {
         self.stops.borrow().len()
+    }
+
+    fn return_job_stops(&self) -> ReturnJobRuns {
+        ReturnJobRuns::of(self.stops.borrow().iter().cloned())
     }
 }
 

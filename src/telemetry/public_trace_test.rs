@@ -1337,6 +1337,38 @@ const SCENARIOS: [&str; 5] = [
     "callee_replaced",
 ];
 
+/// What the three return families do on each scenario after `cold`, in
+/// `(DeriveReturnSkeleton, DeriveReturnUnknowns, SolveReturnComponent)` order.
+///
+/// An edit must pay only for what it moves, and these rows are where an
+/// explosion in the return jobs would show up as an edit that re-derives the
+/// whole program's returns. An unchanged root and an edit nothing reaches
+/// derive no return facts at all. Editing a reached leaf re-derives that one
+/// leaf's skeleton. Replacing a callee re-derives the new leaf's skeleton and
+/// re-opens the unknowns of the three functions on the path to it.
+const RETURN_WORK_AFTER_COLD: [[FamilyRow; 3]; 4] = [
+    [
+        family_row(0, 0, 0, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+    ],
+    [
+        family_row(0, 0, 0, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+    ],
+    [
+        family_row(1, 1, 1, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+    ],
+    [
+        family_row(1, 1, 1, 0, 0),
+        family_row(3, 3, 3, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+    ],
+];
+
 // fz-5xp.2: the take/drop/split row falls 232 -> 228 reachable executables --
 // `Enum.to_list/1`'s `[a]` clause removes the reduce-and-reverse activations
 // those families used to mint on the way to their list arguments. The
@@ -1577,6 +1609,25 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 runtime_demand.initial + runtime_demand.content_caused,
                 "{fixture} {name}: RuntimeDemand work must be initial or content-caused"
             );
+            // Pinned on the first target fixture. The other two reach a
+            // transport panic before this loop runs for them, so there is no
+            // measurement to pin.
+            if fixture_index == 0
+                && let Some(expected) = scenario
+                    .checked_sub(1)
+                    .map(|after_cold| RETURN_WORK_AFTER_COLD[after_cold])
+            {
+                let measured = [
+                    family_row_of(report, "DeriveReturnSkeleton"),
+                    family_row_of(report, "DeriveReturnUnknowns"),
+                    family_row_of(report, "SolveReturnComponent"),
+                ];
+                assert_return_family_laws(&format!("{fixture} {name}"), measured[0], measured[1]);
+                assert_eq!(
+                    measured, expected,
+                    "{fixture} {name}: an edit must derive return facts only for what it moves"
+                );
+            }
             assert_eq!(
                 (
                     report.final_population.reachable_executables,
@@ -1825,7 +1876,85 @@ struct AnalysisClaimRatchet {
     /// had. fz-kdt.84 is where this column stopped being mostly self-inflicted;
     /// what is left is fz-kdt.85/.86's to explain.
     analyze_zero_change: u64,
+    /// Semantic formula work with `DeriveRuntimeDemand` and the three return
+    /// families taken out -- each of those has its own row, so an explosion in
+    /// one of them shows up where it happens instead of hiding inside a single
+    /// scalar that nobody can attribute.
     total_evaluations: u64,
+    /// `DeriveReturnSkeleton`: one static skeleton per function whose returns
+    /// the walk must name.
+    return_skeleton: FamilyRow,
+    /// `DeriveReturnUnknowns`: the handles a skeleton leaves open.
+    return_unknowns: FamilyRow,
+    /// `SolveReturnComponent`: the least fixed point of a recursive component's
+    /// returns, run only where a component actually closes a cycle.
+    return_component_solve: FamilyRow,
+}
+
+/// One job family's work on one compile. The row exists so that a rise in a
+/// family is charged to that family: an undetected explosion in job counts is
+/// exactly what a summed scalar cannot show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FamilyRow {
+    formulas: u64,
+    evaluations: u64,
+    changed_outputs: u64,
+    unchanged_outputs: u64,
+    blocked_completions: u64,
+}
+
+const fn family_row(
+    formulas: u64,
+    evaluations: u64,
+    changed_outputs: u64,
+    unchanged_outputs: u64,
+    blocked_completions: u64,
+) -> FamilyRow {
+    FamilyRow {
+        formulas,
+        evaluations,
+        changed_outputs,
+        unchanged_outputs,
+        blocked_completions,
+    }
+}
+
+/// The five numbers `FamilyRow` pins, read off a report.
+fn family_row_of(report: &CausalReport, kind: &str) -> FamilyRow {
+    let (formulas, work) = family_work(report, kind);
+    family_row(
+        formulas,
+        work.evaluations,
+        work.changed_outputs,
+        work.unchanged_outputs,
+        work.blocked_completions,
+    )
+}
+
+/// The two shapes the return families hold on every fixture.
+///
+/// A skeleton is a function's static return form: it is derived once per
+/// function that needs one, and the derivation always concludes something new,
+/// so formulas, evaluations and changed outputs are one number and nothing ever
+/// blocks. Unknowns re-run as the handles they name arrive, so they do block --
+/// and every blocked completion is precisely a run that concluded nothing,
+/// which is why the two columns are equal.
+fn assert_return_family_laws(context: &str, skeleton: FamilyRow, unknowns: FamilyRow) {
+    assert_eq!(
+        (skeleton.formulas, skeleton.formulas, 0),
+        (
+            skeleton.evaluations,
+            skeleton.changed_outputs,
+            skeleton.blocked_completions
+        ),
+        "{context}: a return skeleton is derived once per function and always concludes; \
+         row: {skeleton:?}"
+    );
+    assert_eq!(
+        unknowns.unchanged_outputs, unknowns.blocked_completions,
+        "{context}: a return-unknowns run concludes nothing exactly when it blocks on a handle \
+         it cannot yet read; row: {unknowns:?}"
+    );
 }
 
 const fn lifecycle(distinct: u64, first_appearances: u64, retractions: u64) -> FactLifecycle {
@@ -2145,6 +2274,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // evaluations above are the whole of what this total counts for them;
         // causal work stays exact.
         total_evaluations: 1048,
+        return_skeleton: family_row(53, 53, 53, 0, 0),
+        return_unknowns: family_row(42, 69, 43, 26, 26),
+        // No function on this fixture returns through a cycle, so no component
+        // is ever solved.
+        return_component_solve: family_row(0, 0, 0, 0, 0),
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -2232,6 +2366,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `any`/`any` body that calls `compare/2`, and that body brings its own
         // reached formulas to this total.
         total_evaluations: 1425,
+        return_skeleton: family_row(79, 79, 79, 0, 0),
+        return_unknowns: family_row(63, 116, 64, 52, 52),
+        return_component_solve: family_row(0, 0, 0, 0, 0),
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2436,6 +2573,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The ordering families' `any`/`any` clauses contribute four formulas
         // and no `binary` clause analyses; the claim populations stay put.
         total_evaluations: 2372,
+        return_skeleton: family_row(120, 120, 120, 0, 0),
+        return_unknowns: family_row(103, 167, 104, 63, 63),
+        // The one component this fixture closes is solved once and re-run once,
+        // the second run reproducing the fixed point the first reached.
+        return_component_solve: family_row(1, 2, 1, 1, 0),
     },
 ];
 
@@ -2467,6 +2609,9 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
             analyze_evaluations,
             analyze_zero_change,
             total_evaluations,
+            return_skeleton,
+            return_unknowns,
+            return_component_solve,
         } = row;
         let trace = compile_fixture(fixture);
         assert!(
@@ -2515,8 +2660,22 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
             "{fixture}: AnalyzeActivation work moved off its fz-kdt.63/.84 pin. Full row: {analyze:?}"
         );
         let (_, runtime_demand_work) = family_work(&report, "DeriveRuntimeDemand");
+
+        let measured_skeleton = family_row_of(&report, "DeriveReturnSkeleton");
+        let measured_unknowns = family_row_of(&report, "DeriveReturnUnknowns");
+        let measured_solve = family_row_of(&report, "SolveReturnComponent");
+        assert_return_family_laws(fixture, measured_skeleton, measured_unknowns);
         assert_eq!(
-            report.formula_totals().evaluations - runtime_demand_work.evaluations,
+            (measured_skeleton, measured_unknowns, measured_solve),
+            (return_skeleton, return_unknowns, return_component_solve),
+            "{fixture}: the return jobs' work must stay at its measured count -- this row is the \
+             only place an explosion in them is visible"
+        );
+
+        let return_evaluations =
+            measured_skeleton.evaluations + measured_unknowns.evaluations + measured_solve.evaluations;
+        assert_eq!(
+            report.formula_totals().evaluations - runtime_demand_work.evaluations - return_evaluations,
             total_evaluations,
             "{fixture}: semantic formula work must remain at its measured count"
         );
