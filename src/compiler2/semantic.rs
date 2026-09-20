@@ -776,6 +776,41 @@ impl EntryReachability {
     }
 }
 
+/// Whether an activation shares the solve for its return, and with whom.
+///
+/// Membership is read from call-site targets, and a call site that has
+/// named no target yet is a question rather than an answer. "Shares with
+/// nobody" and "not yet knowable" decide different owners for the same
+/// return, so one value carries which of the two this is and no reader can
+/// mistake the second for the first.
+pub(crate) enum ReturnMembership {
+    /// The activation's own `AnalyzeActivation` answers its return.
+    Alone,
+    /// A call site out of this activation has named no target yet, so
+    /// whether its return is shared is still to be said. No job may publish
+    /// the return while this stands: whoever published it would have to
+    /// withdraw it the moment the site named a target that joins a system.
+    Unknown,
+    /// The system this activation's return is solved with, published by the
+    /// component's canonical owner.
+    Shared(ReturnComponent),
+}
+
+impl ReturnMembership {
+    /// The system, when membership is settled and there is one.
+    pub(crate) fn into_component(self) -> Option<ReturnComponent> {
+        match self {
+            Self::Shared(component) => Some(component),
+            Self::Alone | Self::Unknown => None,
+        }
+    }
+
+    /// Whether this activation answers its own return.
+    pub(crate) fn is_alone(&self) -> bool {
+        matches!(self, Self::Alone)
+    }
+}
+
 /// The one producer and complete member set of a recursive-return
 /// component. It is derived from the current `ActivationAnalysis` and
 /// `CallSiteTargets` facts reachable from its seed; it is not a second cache

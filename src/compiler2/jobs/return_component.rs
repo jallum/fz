@@ -1,5 +1,5 @@
 //! Solves every member's `ReturnType` for one recursive-return component at
-//! once. `World::return_component` derives membership and the component's
+//! once. `World::return_membership` derives membership and the component's
 //! canonical owner fresh from `ActivationAnalysis.callsites` and
 //! `CallSiteTargets`; this job trusts a fresh recomputation of that same
 //! query every time it runs, self-abdicating the moment it is no longer
@@ -149,7 +149,7 @@ pub(super) fn solve_return_component(
     tel: &impl crate::telemetry::Telemetry,
     owner: &ActivationKey,
 ) -> Result<JobEffects, FatalError> {
-    let Some(component) = world.return_component(owner) else {
+    let Some(component) = world.return_membership(owner).into_component() else {
         return Ok(JobEffects {
             reads: current_uses(frontier_reads(world, owner)),
             ..JobEffects::default()
@@ -567,7 +567,7 @@ fn names_member_shape(
     }
 }
 
-/// The read set that explains why `world.return_component(owner)` currently
+/// The read set that explains why `world.return_membership(owner)` currently
 /// draws the boundary it does: `FactKey::CallSiteTargets` for every callsite
 /// of every activation `World::return_flow_frontier` visited while
 /// establishing it, member or not. A change to any of these edge facts is

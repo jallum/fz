@@ -67,8 +67,8 @@ use super::semantic::{
     ActivationAnalysis, ActivationInput, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey,
     CallSiteMap, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap,
     CallableConstructionTargetKey, CallerMap, Callers, ContributionMap, ContributionReplace, ExecutableRuntimeDemand,
-    JoinContribution, ReturnArrival, ReturnComponent, RuntimeDemandInputMap, RuntimeDemandTypeProjection, SemanticOrd,
-    TargetDemandContribution,
+    JoinContribution, ReturnArrival, ReturnComponent, ReturnMembership, RuntimeDemandInputMap,
+    RuntimeDemandTypeProjection, SemanticOrd, TargetDemandContribution,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -824,7 +824,7 @@ impl World {
     /// `Activation(key)` publish becomes a standing demand for whichever of
     /// its analysis or its return (`activation_owes_return`) is still
     /// outstanding. A member's return can only be recognized as outstanding
-    /// once its own analysis has already settled (`return_component` reads
+    /// once its own analysis has already settled (`return_membership` reads
     /// `ActivationAnalysis`), so both checks stay live here rather than one
     /// gating the other.
     fn note_activation_frontier(&mut self, key: ActivationKey) {
@@ -992,23 +992,27 @@ impl World {
         self.activations.get(key).and_then(|slot| slot.analysis())
     }
 
-    /// The recursive-return component `seed` belongs to, or `None` when
-    /// `seed`'s own return is settled by its own `AnalyzeActivation` alone.
+    /// Whether `seed` shares the solve for its return, and with whom.
     ///
-    /// Derived fresh from the current `ActivationAnalysis.callsites` and
-    /// `CallSiteTargets` facts reachable from `seed` -- not a second cache
-    /// beside those facts, so membership tracks their revisions without a
-    /// retraction step of its own. A component exists only for a self edge
-    /// or more than one mutually reachable activation, mirroring
-    /// [`World::recursive_type_def_component`]'s rule for `@type` equations.
-    /// An unresolved callsite or a provider-boundary edge contributes no
-    /// neighbor, so it never joins two activations into one component.
-    pub(crate) fn return_component(&self, seed: &ActivationKey) -> Option<ReturnComponent> {
-        let (mut members, unknowns) = super::return_membership::discover(self, seed).component?;
+    /// Derived fresh from the current call-site targets reachable from
+    /// `seed` -- not a second cache beside those facts, so membership tracks
+    /// their revisions without a retraction step of its own. A component
+    /// exists only for a self edge or more than one mutually reachable
+    /// activation, mirroring [`World::recursive_type_def_component`]'s rule
+    /// for `@type` equations. A provider-boundary edge names no activation,
+    /// so it never joins two into one component; an unresolved callsite
+    /// names none YET, and the answer across one is `Unknown` rather than a
+    /// set drawn as far as it goes.
+    pub(crate) fn return_membership(&self, seed: &ActivationKey) -> ReturnMembership {
+        let (mut members, unknowns) = match super::return_membership::discover(self, seed).membership {
+            super::return_membership::Membership::Alone => return ReturnMembership::Alone,
+            super::return_membership::Membership::Unknown => return ReturnMembership::Unknown,
+            super::return_membership::Membership::Shared(members, unknowns) => (members, unknowns),
+        };
         members.sort_by(|a, b| a.semantic_cmp(b, &self.types));
         let mut slots = unknowns.slots();
         slots.sort_by(|a, b| a.0.semantic_cmp(&b.0, &self.types).then(a.1.cmp(&b.1)));
-        Some(ReturnComponent {
+        ReturnMembership::Shared(ReturnComponent {
             owner: members.first().cloned().expect("a return component has a member"),
             members,
             slots,
@@ -1029,20 +1033,23 @@ impl World {
         super::return_membership::discover(self, seed).frontier
     }
 
-    /// Whether `key` currently owes a `ReturnType` that only its recursive-
-    /// return component's `SolveReturnComponent` may publish -- true exactly
-    /// while `key` is a component member (`return_component` derived fresh)
-    /// and that fact has not yet settled. A non-member never owes anything
-    /// here: `analyze_activation` self-publishes its own return as an
-    /// unconditional side effect of its own (frontier-driven) run, the
-    /// moment membership is `None`, so nothing else needs to demand it.
-    /// Component membership can only be discovered once its member
-    /// activations' own `CallSiteTargets` resolve, which can lag several
-    /// reruns behind an activation's first analysis -- this predicate is
+    /// Whether `key` currently owes a `ReturnType` its own walk will not
+    /// publish -- true exactly while membership says something other than
+    /// `Alone` (derived fresh) and that fact has not yet settled. An
+    /// activation that is `Alone` never owes anything here:
+    /// `analyze_activation` self-publishes its own return as an
+    /// unconditional side effect of its own (frontier-driven) run, so
+    /// nothing else needs to demand it. An activation whose membership is
+    /// `Unknown` owes one that nobody can publish yet, which is why the
+    /// obligation is recorded here rather than forgotten: it keeps the key
+    /// on the activation frontier until a call site names its targets and
+    /// an owner exists to demand. Membership can only be discovered once
+    /// member activations' own call-site targets resolve, which can lag
+    /// several reruns behind a first analysis -- this predicate is
     /// re-checked, never cached, so a late discovery is caught the next
     /// time anything re-derives it.
     pub(crate) fn activation_owes_return(&self, key: &ActivationKey) -> bool {
-        self.return_component(key).is_some() && !self.fact_is_settled(&FactKey::ReturnType(key.clone()))
+        !self.return_membership(key).is_alone() && !self.fact_is_settled(&FactKey::ReturnType(key.clone()))
     }
 
     /// The activation's current return EVIDENCE. `None` means the claim is
@@ -3313,11 +3320,13 @@ impl World {
         self.define_activation_return_outcome(derivation, evidence)
     }
 
-    /// The closed `ReturnType` ownership rule: a non-member activation's own
-    /// `AnalyzeActivation` owns its `ReturnType`; a recursive-return
-    /// component member's `ReturnType` is owned by its component's
-    /// `SolveReturnComponent(owner)` instead, one derivation per member.
-    /// `World::return_component` is recomputed fresh here, so a membership
+    /// The closed `ReturnType` ownership rule: an activation that shares the
+    /// solve with nobody owns its `ReturnType` through its own
+    /// `AnalyzeActivation`; a component member's is owned by its component's
+    /// `SolveReturnComponent(owner)` instead, one derivation per member; and
+    /// while membership is still unknown the return is nobody's to publish,
+    /// so neither job offers one.
+    /// `World::return_membership` is recomputed fresh here, so a membership
     /// change moves ownership the moment the derivation offered for it
     /// changes, through the ordinary conclusion/replacement facts already
     /// give every claim -- there is no separate retraction step, and return
@@ -3333,9 +3342,9 @@ impl World {
                     "ReturnType derivation and payload must name one activation"
                 );
                 assert!(
-                    self.return_component(job_key).is_none(),
-                    "ReturnType({job_key:?}) is a recursive-return component member; only its \
-                     component's SolveReturnComponent may publish it"
+                    self.return_membership(job_key).is_alone(),
+                    "ReturnType({job_key:?}) is not this walk's to publish: an activation \
+                     publishes its own return only while it shares the solve with nobody"
                 );
                 // A walk whose ground shifted is re-deriving from facts that
                 // replaced the ones behind the standing value, so its answer
@@ -3352,7 +3361,8 @@ impl World {
                 key: DerivationKey::Activation(member),
             } => {
                 let component = self
-                    .return_component(member)
+                    .return_membership(member)
+                    .into_component()
                     .filter(|component| &component.owner == owner)
                     .unwrap_or_else(|| {
                         panic!(
