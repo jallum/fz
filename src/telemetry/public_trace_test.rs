@@ -1456,7 +1456,6 @@ fn root_session_requests(trace: &PublicTrace) -> Vec<(u64, u64)> {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn target_fixture_reports_exercise_all_five_request_scenarios() {
     for (fixture_index, fixture) in TARGET_FIXTURES.into_iter().enumerate() {
         let (source, edits) = target_edit_sequence(fixture);
@@ -2458,7 +2457,6 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
 /// longer reach it would read as an improvement here while being a
 /// correctness regression.
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
     for row in ANALYSIS_CLAIM_RATCHET {
         let AnalysisClaimRatchet {
