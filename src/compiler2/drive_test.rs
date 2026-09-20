@@ -20074,23 +20074,26 @@ fn compiler2_tuple_return_ladder_settles_via_component_solve() {
     assert_eq!(
         counts_for(&analyses.borrow(), build),
         vec![TUPLE_LADDER_BUILD_ANALYSES],
-        "build/1 has one activation, re-analyzed once per rung of the ladder",
+        "build/1 has one activation, and a component that is solved rather than climbed \
+         re-analyzes it a bounded number of times",
     );
     assert_eq!(
         counts_for(&revisions.borrow(), build),
         vec![TUPLE_LADDER_BUILD_RETURN_REVISIONS],
-        "each rung revises the activation's return with one more level of nesting",
+        "build/1's return is revised fewer times than its activation is analyzed: the solve \
+         names the recursive return, so most re-analyses find it already settled",
     );
-    // The caller pays for the ladder without climbing one. `main/0` sees a new
-    // argument type for `dbg/1` on every rung, so it is re-analyzed as often as
-    // `build/1` is, while its own return — what `dbg/1` gives back — moves
-    // twice. Re-analysis and ascent are separate costs and only one of them is
-    // the ladder.
+    // The caller pays for the callee's work without joining its component.
+    // `main/0` sees `build/1`'s argument and return move, so it is re-analyzed
+    // more often than `build/1` is, while its own return — what `dbg/1` gives
+    // back — moves fewer times still. Re-analysis and ascent are separate
+    // costs, and neither is a ladder here.
     let main = function_id(&functions, "main", 0);
     assert_eq!(
         counts_for(&analyses.borrow(), main),
         vec![TUPLE_LADDER_MAIN_ANALYSES],
-        "main/0 is re-analyzed once per rung, because each rung retypes its argument",
+        "main/0 is re-analyzed as its argument's type moves; the row is what an explosion in \
+         that re-analysis would show up in",
     );
     assert_eq!(
         counts_for(&revisions.borrow(), main),
@@ -20120,17 +20123,17 @@ fn compiler2_tuple_return_ladder_settles_via_component_solve() {
 /// cold compile. `build/1` forms its own recursive-return component (a self
 /// edge), so `SolveReturnComponent` names its return directly instead of
 /// climbing a ladder of ever-deeper approximations: its one activation is
-/// analyzed 7 times and its return revised 4, and `main/0` — which never
-/// joins the component, only reads its settled return — is re-analyzed 10
-/// times for a return that moves 5.
+/// analyzed 4 times and its return revised 2, and `main/0` — which never
+/// joins the component, only reads its settled return — is re-analyzed 8
+/// times for a return that moves 3.
 ///
 /// These are whole-compile totals, not a round counter. Every revision still
 /// fires `return_type.defined`, so a warm or re-driven world counts every
 /// pass together.
-const TUPLE_LADDER_BUILD_ANALYSES: u64 = 7;
-const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 4;
-const TUPLE_LADDER_MAIN_ANALYSES: u64 = 10;
-const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 5;
+const TUPLE_LADDER_BUILD_ANALYSES: u64 = 4;
+const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 2;
+const TUPLE_LADDER_MAIN_ANALYSES: u64 = 8;
+const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 3;
 
 #[test]
 fn compiler2_recursive_typedef_resolves_to_one_mu_identity() {

@@ -234,9 +234,76 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
     );
 }
 
+/// How many times each of the three return jobs ran.
+///
+/// The work-start census counts these jobs like every other job, so a census
+/// row that does not name them absorbs them silently -- and a scalar that can
+/// absorb a whole new family is a row that cannot show an explosion in job
+/// counts. Naming the runs lets the census keep its own measured value while
+/// the new families are expected out loud.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct ReturnJobRuns {
+    pub(super) skeletons: u64,
+    pub(super) unknowns: u64,
+    pub(super) component_solves: u64,
+}
+
+impl ReturnJobRuns {
+    pub(super) fn of(jobs: impl IntoIterator<Item = Job>) -> Self {
+        let mut runs = Self::default();
+        for job in jobs {
+            runs.observe(&job);
+        }
+        runs
+    }
+
+    pub(super) fn total(self) -> u64 {
+        self.skeletons + self.unknowns + self.component_solves
+    }
+
+    fn observe(&mut self, job: &Job) {
+        match job {
+            Job::DeriveReturnSkeleton(_) => self.skeletons += 1,
+            Job::DeriveReturnUnknowns(_) => self.unknowns += 1,
+            Job::SolveReturnComponent(_) => self.component_solves += 1,
+            _ => {}
+        }
+    }
+
+    fn since(self, earlier: Self) -> Self {
+        Self {
+            skeletons: self.skeletons - earlier.skeletons,
+            unknowns: self.unknowns - earlier.unknowns,
+            component_solves: self.component_solves - earlier.component_solves,
+        }
+    }
+
+    /// The work starts these runs are, in the buckets they enter through: a
+    /// function's return skeleton is derived when the function's revision
+    /// reaches it, and the unknowns that skeleton leaves open are expanded as
+    /// a blocked waiter of the handles they name.
+    fn work_starts(self) -> super::WorkStartTally {
+        super::WorkStartTally {
+            changed_revision_wake: self.skeletons,
+            blocked_waiter_expansion: self.unknowns,
+            ..super::WorkStartTally::default()
+        }
+    }
+}
+
 #[test]
 fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let tel = ConfiguredTelemetry::new();
+    let return_runs = std::rc::Rc::new(std::cell::Cell::new(ReturnJobRuns::default()));
+    let observed_return_runs = std::rc::Rc::clone(&return_runs);
+    tel.attach_raw_event2::<super::World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            let mut runs = observed_return_runs.get();
+            runs.observe(&completion.job);
+            observed_return_runs.set(runs);
+        },
+    );
     let evaluations = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(ProductKey, PullOutcome)>::new()));
     let observed_evaluations = std::rc::Rc::clone(&evaluations);
     tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, PullOutcome, _>(
@@ -270,8 +337,19 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let before_cold_work = compiler.world().work_start_tally();
     compiler.compile_root_jit(root).expect("cold native product");
     let cold_work = compiler.world().work_start_tally().delta_since(before_cold_work);
+    let cold_return_runs = return_runs.get();
     assert_eq!(
-        cold_work,
+        cold_return_runs,
+        ReturnJobRuns {
+            skeletons: 2,
+            unknowns: 4,
+            component_solves: 0,
+        },
+        "a cold compile of `main` and its definition macro derives one return skeleton each, \
+         re-reads their unknowns as the handles arrive, and closes no recursive component",
+    );
+    assert_eq!(
+        cold_work.delta_since(cold_return_runs.work_starts()),
         super::WorkStartTally {
             ignition: 0,
             // Publishing a function's source from the walk that scoped it
@@ -366,6 +444,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     assert!(std::rc::Rc::ptr_eq(&cold, &compiler.retained_native_program(root)));
 
     let before_reached_backend_work = compiler.world().work_start_tally();
+    let before_reached_return_runs = return_runs.get();
     compiler.submit_code(CodeSubmission {
         name: Some("native_product_cache.fz".to_string()),
         text: "def main(), do: 8\n".to_string(),
@@ -375,8 +454,18 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         .world()
         .work_start_tally()
         .delta_since(before_reached_backend_work);
+    let reached_return_runs = return_runs.get().since(before_reached_return_runs);
     assert_eq!(
-        reached_backend_work,
+        reached_return_runs,
+        ReturnJobRuns {
+            skeletons: 1,
+            unknowns: 0,
+            component_solves: 0,
+        },
+        "an edit to a reached body re-derives that one body's return skeleton and nothing else's",
+    );
+    assert_eq!(
+        reached_backend_work.delta_since(reached_return_runs.work_starts()),
         super::WorkStartTally {
             ignition: 2,
             // The re-scope publishes the replaced source itself, and finality
