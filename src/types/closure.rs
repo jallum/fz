@@ -50,13 +50,4 @@ pub trait ClosureTypes: Types {
     /// target metadata. `None` means the callable shape is absent or too
     /// broad to drive closure-return narrowing.
     fn callable_clauses(&mut self, a: &Self::Ty) -> Option<Vec<CallableClause<Self::Ty>>>;
-
-    /// Erase a closure literal's BRAND -- which lambda the value was minted
-    /// from -- at every depth, keeping its capture TYPES and the callable
-    /// surface shape. Used for higher-order fixed-point key slots that only
-    /// transport a closure: which lambda arrived must not fork specialization,
-    /// while what it closed over must, because a body keyed at one capture type
-    /// grounds its callees' capture lanes to that type. A capture-free literal
-    /// has nothing left to say once its brand is gone and erases to its arrow.
-    fn erase_closure_identity(&mut self, a: &Self::Ty) -> Self::Ty;
 }
