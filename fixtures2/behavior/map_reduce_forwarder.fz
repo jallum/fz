@@ -1,6 +1,25 @@
 #---
 # purpose: "a map-reduce loop reached through a forwarder: the solve's view of a non-member caller's slot is that caller's evidence, never its key coordinate"
 #---
+#
+# Paper answer.
+#
+# mr_list/3 is the only function here that recurses, so it is a component whose only
+# member is itself. mr/3 forwards to it and main/0 calls mr/3: both are consumers of
+# that component's settled return, not members of it.
+#
+# With xs = [1, 2], acc = 0 and f = fn (x, acc) -> {x + acc, acc + x} end:
+#   f/2[int, int]                -> {int, int}
+#   mr_list/3[list(int), int, f] -> {list(int), int}
+#   mr/3[list(int), int, f]      -> {list(int), int}
+#   main/0[]                     -> {list(int), int}
+# and the value is {[1, 3], 3}.
+#
+# The component publishes one answer, and each of the four activations defines its
+# return once. A consumer's definition count is the number of answers the component
+# published: every published answer reaches the consumers that read it, and each of
+# them republishes its own return on top of it. So more than one definition at main/0
+# is not a defect at main/0 -- it counts the answers mr_list/3 published.
 def mr(xs, acc, f), do: mr_list(xs, acc, f)
 
 def mr_list([], acc, _f), do: {[], acc}

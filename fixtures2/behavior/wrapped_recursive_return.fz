@@ -1,6 +1,31 @@
 #---
 # purpose: "a recursive return handed straight to a wrapper: the wrapper's activation must exist before the component is solved"
 #---
+#
+# Paper answer.
+#
+#   wrap/1[a]       -> [a]
+#   dup/1[[]]       -> []
+#   dup/1[[_ | xs]] -> wrap(dup(xs)) = [dup(xs)]
+#
+# dup/1 calls itself, so the only cycle in the call graph is dup -> dup. wrap/1
+# calls nothing, yet it is a member of dup/1's return component all the same: the
+# argument dup/1 hands it is dup/1's own unsolved result, which puts wrap/1's
+# parameter slot ON the cycle. A function that mentions nothing recursive joins the
+# cycle it is handed. The component is {dup/1, wrap/1}, so wrap/1's activation has to
+# exist before the component is solved -- solving {dup/1} alone answers a system that
+# is not the whole one.
+#
+# dup/1's return satisfies T = [] | [T]. A list type already contains the empty list,
+# so [] | [T] is [T] and the equation is T = [T], whose solution is the regular type
+# mu X. [X]. Each cons discards its head, so no element type survives the recursion:
+#
+#   dup/1[[int]] => mu X. [X]
+#   wrap/1[a0]   => [mu X. [X]]
+#   main/0[]     => mu X. [X]
+#
+# Three activations, one key each, each defining its return once and never having it
+# withdrawn, and one solve over the whole component. Execution: dup([1]) is [[]].
 def wrap(v), do: [v]
 
 def dup([]), do: []
