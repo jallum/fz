@@ -56,7 +56,7 @@ use std::collections::BTreeMap;
 pub(crate) mod demand;
 pub(crate) mod pattern;
 
-use demand::{DemandPathStep, DispatchDemand, demand_at_step};
+use demand::{DispatchDemand, demand_at_projection};
 
 /// The dispatch/pattern constant carrier. `dispatch_matrix` is otherwise
 /// generic over an opaque `TypeHandle` and has no dependency on any concrete
@@ -1111,7 +1111,7 @@ fn subject_demand(
         match &subjects.get(subject.0 as usize)?.source {
             SubjectSource::Input { ordinal } => return Some((*ordinal, demand)),
             SubjectSource::Projection(projection) => {
-                demand = demand_at_step(&DemandPathStep::from(&projection.kind));
+                demand = demand_at_projection(&projection.kind);
                 subject = projection.source;
             }
         }

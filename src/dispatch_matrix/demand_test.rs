@@ -1,4 +1,4 @@
-use super::{DemandPathStep, DispatchDemand, demand_at_step};
+use super::{DispatchDemand, demand_at_projection};
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringExtraction, BitstringFieldKind, BitstringFieldShape, ProjectionKind,
 };
@@ -6,20 +6,45 @@ use crate::ground_value::GroundValue;
 
 /// The lattice records only the kind of structure a dispatch question can
 /// descend into. A tuple field and a list head each name their kind; every
-/// other step is a value the lattice cannot describe, so the demand there is
-/// the whole value. What is asked beyond the step is not carried.
+/// other projection reads a value the lattice cannot describe, so the demand
+/// there is the whole value. What is asked beyond the step is not carried, and
+/// neither is the detail the projection names: two different tuple fields ask
+/// the same question of the tuple.
 #[test]
 fn a_demand_descends_through_tuple_fields_and_list_heads_and_stops_everywhere_else() {
-    assert_eq!(demand_at_step(&DemandPathStep::TupleField), DispatchDemand::TupleFields);
-    assert_eq!(demand_at_step(&DemandPathStep::ListHead), DispatchDemand::ListShape);
+    assert_eq!(
+        demand_at_projection(&ProjectionKind::TupleField(0)),
+        DispatchDemand::TupleFields
+    );
+    assert_eq!(
+        demand_at_projection(&ProjectionKind::TupleField(3)),
+        DispatchDemand::TupleFields
+    );
+    assert_eq!(
+        demand_at_projection(&ProjectionKind::ListHead),
+        DispatchDemand::ListShape
+    );
 
+    let bitstring_field = ProjectionKind::BitstringField(BitstringExtraction {
+        previous: None,
+        spec: BitstringFieldShape {
+            kind: BitstringFieldKind::Integer,
+            size: None,
+            endian: BitstringEndian::Big,
+            signed: false,
+            unit: None,
+        },
+        is_last: true,
+    });
     for collapsing in [
-        DemandPathStep::StructField,
-        DemandPathStep::ListTail,
-        DemandPathStep::MapValue,
-        DemandPathStep::BitstringField,
+        ProjectionKind::StructField("name".to_string()),
+        ProjectionKind::ListTail,
+        ProjectionKind::MapValue {
+            key: GroundValue::Atom("k".to_string()),
+        },
+        bitstring_field,
     ] {
-        assert_eq!(demand_at_step(&collapsing), DispatchDemand::Whole);
+        assert_eq!(demand_at_projection(&collapsing), DispatchDemand::Whole);
     }
 }
 
@@ -44,43 +69,4 @@ fn a_join_of_two_descents_through_different_kinds_is_the_whole_value() {
     let mut top = DispatchDemand::Whole;
     top.join_assign(DispatchDemand::TupleFields);
     assert_eq!(top, DispatchDemand::Whole);
-}
-
-/// A projection names the value it reads in full; the demand step keeps only
-/// the kind of position it is. The index a tuple field carries, and the names,
-/// keys and bit layouts the other projections carry, are not demand and fall
-/// away -- two different tuple fields are one step.
-#[test]
-fn a_projection_kind_names_its_demand_step() {
-    let bitstring_field = ProjectionKind::BitstringField(BitstringExtraction {
-        previous: None,
-        spec: BitstringFieldShape {
-            kind: BitstringFieldKind::Integer,
-            size: None,
-            endian: BitstringEndian::Big,
-            signed: false,
-            unit: None,
-        },
-        is_last: true,
-    });
-    let steps = [
-        (ProjectionKind::TupleField(3), DemandPathStep::TupleField),
-        (ProjectionKind::TupleField(0), DemandPathStep::TupleField),
-        (
-            ProjectionKind::StructField("name".to_string()),
-            DemandPathStep::StructField,
-        ),
-        (ProjectionKind::ListHead, DemandPathStep::ListHead),
-        (ProjectionKind::ListTail, DemandPathStep::ListTail),
-        (
-            ProjectionKind::MapValue {
-                key: GroundValue::Atom("k".to_string()),
-            },
-            DemandPathStep::MapValue,
-        ),
-        (bitstring_field, DemandPathStep::BitstringField),
-    ];
-    for (kind, step) in &steps {
-        assert_eq!(DemandPathStep::from(kind), *step);
-    }
 }

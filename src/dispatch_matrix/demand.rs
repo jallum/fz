@@ -10,13 +10,12 @@
 //! already held and what the new question asks, and two questions that descend
 //! through different kinds meet at `Whole`.
 //!
-//! A `DemandPathStep` is the kind of one step into a value's structure, in the
-//! detail the lattice carries and no finer -- which tuple field, which struct
-//! name, which map key are all dropped on the way in. Only a tuple field and a
-//! list head descend; a struct field, a list tail, a map value and a bitstring
-//! field are positions the lattice cannot name, so a question reached through
-//! one of them collapses to `Whole`. `demand_at_step` turns one step into the
-//! demand on the value the step was taken from.
+//! A projection is one step into a value's structure, and
+//! `demand_at_projection` reads it in the detail the lattice carries and no
+//! finer -- which tuple field, which struct name, which map key all fall away.
+//! Only a tuple field and a list head descend; a struct field, a list tail, a
+//! map value and a bitstring field are positions the lattice cannot name, so a
+//! question reached through one of them collapses to `Whole`.
 
 use super::ProjectionKind;
 
@@ -45,39 +44,16 @@ impl DispatchDemand {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum DemandPathStep {
-    StructField,
-    TupleField,
-    ListHead,
-    ListTail,
-    MapValue,
-    BitstringField,
-}
-
-impl From<&ProjectionKind> for DemandPathStep {
-    fn from(kind: &ProjectionKind) -> Self {
-        match kind {
-            ProjectionKind::TupleField(_) => DemandPathStep::TupleField,
-            ProjectionKind::StructField(_) => DemandPathStep::StructField,
-            ProjectionKind::ListHead => DemandPathStep::ListHead,
-            ProjectionKind::ListTail => DemandPathStep::ListTail,
-            ProjectionKind::MapValue { .. } => DemandPathStep::MapValue,
-            ProjectionKind::BitstringField(_) => DemandPathStep::BitstringField,
-        }
-    }
-}
-
-/// What a question reached through one step asks of the value the step was
-/// taken from.
-pub(crate) fn demand_at_step(step: &DemandPathStep) -> DispatchDemand {
-    match step {
-        DemandPathStep::TupleField => DispatchDemand::TupleFields,
-        DemandPathStep::ListHead => DispatchDemand::ListShape,
-        DemandPathStep::ListTail
-        | DemandPathStep::MapValue
-        | DemandPathStep::StructField
-        | DemandPathStep::BitstringField => DispatchDemand::Whole,
+/// What a question reached through one projection asks of the value the
+/// projection reads from.
+pub(crate) fn demand_at_projection(kind: &ProjectionKind) -> DispatchDemand {
+    match kind {
+        ProjectionKind::TupleField(_) => DispatchDemand::TupleFields,
+        ProjectionKind::ListHead => DispatchDemand::ListShape,
+        ProjectionKind::StructField(_)
+        | ProjectionKind::ListTail
+        | ProjectionKind::MapValue { .. }
+        | ProjectionKind::BitstringField(_) => DispatchDemand::Whole,
     }
 }
 
