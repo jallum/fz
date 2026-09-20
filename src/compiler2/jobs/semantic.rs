@@ -2420,7 +2420,7 @@ fn key_inputs_for_call(
             // are one position of one body. A slot the callee hands back is no
             // exception -- what its users read the refinement out of is the
             // result coordinate, not this one.
-            let asks_list_shape = matches!(world.dispatch_demand(callee, slot), DispatchDemand::ListShape(_));
+            let asks_list_shape = matches!(world.dispatch_demand(callee, slot), DispatchDemand::ListShape);
             let coordinate = if asks_list_shape {
                 world.types_mut().list_family_class(coordinate)
             } else {

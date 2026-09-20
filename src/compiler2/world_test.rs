@@ -857,10 +857,7 @@ fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
     assert!(world.define_body_keying(function, BodyKeying { recursive: true }));
     assert!(world.define_input_demand(
         function,
-        unforwarded_demand(vec![
-            DispatchDemand::ListShape(Box::new(DispatchDemand::Whole)),
-            DispatchDemand::Ignore,
-        ]),
+        unforwarded_demand(vec![DispatchDemand::ListShape, DispatchDemand::Ignore,]),
     ));
 
     let int = world.types_mut().int();

@@ -144,11 +144,14 @@ mechanisms bound it, both via the activation **key** (`canonical_activation_key`
   shapes map to one key (the "balloon"), and the slot's actual type is recovered
   as the union join of the contributing inputs.
 - **The input demand.** The collapse is shaped by `InputDemand::forwarded_dispatch`
-  (`FactKey::InputDemand`, `jobs::keying::derive_input_demand`). `Whole`
-  preserves an input, tuple-field demand preserves only the demanded fields, and
-  a `ListShape` demand preserves the element while folding the arriving type
-  through `Types::list_family_class`: every list it holds, at every depth, is
-  widened to admit the empty list. What a list-shape question distinguishes is
+  (`FactKey::InputDemand`, `jobs::keying::derive_input_demand`). `Ignore` erases
+  the input's type from the key; every other demand preserves the coordinate that
+  arrived. `TupleFields` and `ListShape` record that the question descends into a
+  structural position of that kind and nothing finer — which field, and what is
+  asked beyond it, are not carried, because no fold reads them. A `ListShape`
+  demand additionally folds the arriving type through `Types::list_family_class`:
+  every list it holds, at every depth, is widened to admit the empty list. What a
+  list-shape question distinguishes is
   `[]` against `[h | t]`, and the callee answers that by testing the value it is
   handed, so the empty/non-empty refinement is not a coordinate the key has to
   name. That is what keeps a recursive list walker from splitting the seed's

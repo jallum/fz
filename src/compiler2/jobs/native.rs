@@ -5305,7 +5305,6 @@ mod tests {
     fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         use crate::dispatch_matrix::demand::DispatchDemand;
         use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
-        use std::collections::BTreeMap;
         let mut world = World::new();
         let int = world.types_mut().int();
         let nothing = world.intern_shape(ShapeDescr::Nothing);
@@ -5362,10 +5361,7 @@ mod tests {
         let dispatch = crate::compiler2::ExecutableDispatch::new(Rc::new(plan), vec![0]);
         assert_eq!(
             dispatch.plan().input_demand(),
-            [DispatchDemand::TupleFields(BTreeMap::from([(
-                1,
-                DispatchDemand::Whole
-            )]))],
+            [DispatchDemand::TupleFields],
             "the clause head questions its tuple parameter"
         );
         let materialized = Rc::make_mut(&mut abi.materialized);
