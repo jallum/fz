@@ -302,12 +302,13 @@ one addressed class per position exactly as before.
 
 `InputDemand` publishes ONE dispatch answer per slot. It and the returned axis
 are read together by `World::observable_inputs`, and that one vector shapes both
-halves of the key: `key_inputs_for_call` addresses an unobservable slot, and
-`canonical_activation_key_with_callable_surfaces` erases the closure brand and
-blanks the call surfaces of the same slots. A forwarder that hands its callable
-to a callee that calls it is therefore asked about, so the brand the call site
-named survives to the callee that demands it; a forwarder whose callable nothing
-reachable reads keys one activation for every same-shape lambda.
+halves of the key: `key_inputs_for_call` addresses an unobservable slot as a
+bare variable, and `canonical_activation_key_with_callable_surfaces` blanks the
+observed call surfaces of the same slots from the same vector. A forwarder that
+hands its callable to a callee that calls it is therefore asked about, so what
+the call site named survives to the callee that demands it; a forwarder whose
+callable nothing reachable reads keys one activation for every callable that
+travels through it.
 
 Three limits are known and stated rather than argued away. A `Whole` slot has NO
 collapse, and forwarding can hand a `Whole` up from a callee that tests a

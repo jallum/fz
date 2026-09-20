@@ -1802,40 +1802,6 @@ impl Types {
         })
     }
 
-    /// The transported-callable key collapse: erase closure BRANDS from
-    /// non-dispatch input coordinates, leaving everything else -- data types,
-    /// callable surfaces, CAPTURE TYPES, dispatch-relevant slots -- exactly as
-    /// the evidence stated it. Two closures of the same shape then key one
-    /// activation of a function that only carries them, while a slot the
-    /// function dispatches on keeps brand identity, and two capture types
-    /// through one slot stay two keys because the body a key names grounds its
-    /// callees' capture lanes. No slot becomes an address var here: this
-    /// erasure is value-language throughout, so nothing key-shaped can leak
-    /// into evidence.
-    ///
-    /// The mask is observability, one bool per slot, as `World::observable_inputs`
-    /// answers it for the activation's own function: a brand is freight only
-    /// where nothing the value reaches -- no dispatch question, no published
-    /// return -- can read it. It is the same mask the call site addressed the
-    /// slot with, so a coordinate that names a precise arrow is never erased of
-    /// the brand the callee downstream demands.
-    ///
-    /// Keeping the capture tuple is the conservative context-free rule.
-    /// Whole-tuple or arity-only erasure would also merge one lambda closed
-    /// over one `int` with that lambda closed over one `float`; preserving
-    /// dispatch-free static grounding while erasing more therefore requires a
-    /// flow-sensitive non-observability proof.
-    pub(crate) fn erase_transported_closure_identity_inputs(&mut self, inputs: &[Ty], observable: &[bool]) -> Box<[Ty]> {
-        inputs
-            .iter()
-            .enumerate()
-            .map(|(slot, param)| match observable.get(slot) {
-                Some(false) => self.erase_transported_closure_identity_for_key(param),
-                _ => *param,
-            })
-            .collect()
-    }
-
     pub fn union(&mut self, a: Ty, b: Ty) -> Ty {
         if a == b {
             return self.unchanged(a);
@@ -2847,18 +2813,6 @@ impl Types {
         let d = erase_closure_identity(self, *a);
         self.intern(d)
     }
-
-    /// Key erasure keeps a joined family of one closure target intact: a
-    /// runtime-selected capture layout still needs its construction word to
-    /// discriminate the member. A one-literal forwarding input instead drops
-    /// its target/surface identity and keeps only its capture denotation.
-    fn erase_transported_closure_identity_for_key(&mut self, a: &Ty) -> Ty {
-        if !contains_callable_literal(self, *a) {
-            return self.unchanged(*a);
-        }
-        let d = erase_transported_closure_identity_for_key(self, *a);
-        self.intern(d)
-    }
 }
 
 impl Types {
@@ -3654,19 +3608,14 @@ fn has_only_tuple_runtime_roots(descr: &Descr) -> bool {
 /// were dropped. If that invariant breaks, the exact reader below fails rather
 /// than making a runtime predicate for a state the type interner forbids.
 ///
-/// An ANONYMOUS literal (fz-kdt.127) names no code at all, so it is that same
-/// unrestricted answer -- and this is the ONE place that decides it, for the
-/// predicate projection and for the envelope alike. It never actually arrives.
-/// An anonymous literal is minted in exactly one place,
-/// [`Types::erase_transported_closure_identity_inputs`], which puts it in the
-/// ACTIVATION KEY of a non-recursive body that consumes no callable identity,
-/// and only in the slots the dispatch mask marks
-/// `DispatchDemand::Ignore`; a runtime test is asked of a VALUE's type -- a
-/// callsite's `CallTargetSummary::surface_inputs`, a lane's carrier -- never of
-/// a key. THAT is what makes an erased forwarder key and the construction axis
-/// compose: the keying rule holds the two apart, not any projection here. The
-/// `debug_assert!` is the gate on the rule; the `?` behind it keeps the sound
-/// unrestricted answer if the rule is ever broken.
+/// An ANONYMOUS literal names no code at all, so it is that same unrestricted
+/// answer -- and this is the ONE place that decides it, for the predicate
+/// projection and for the envelope alike. It never actually arrives: the only
+/// thing that mints one is [`Types::erase_closure_identity`], and a runtime
+/// test is asked of a VALUE's type -- a callsite's
+/// `CallTargetSummary::surface_inputs`, a lane's carrier -- which no erasure
+/// stands between. The `debug_assert!` is the gate on that; the `?` behind it
+/// keeps the sound unrestricted answer if the rule is ever broken.
 fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>> {
     let mut targets = BTreeSet::new();
     for clause in funcs {
@@ -3681,10 +3630,10 @@ fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>>
 
 /// The one runtime-observable literal of an interned callable clause.
 ///
-/// An anonymous literal is valid only in a non-runtime activation key, so it
-/// asks the caller to take the unrestricted predicate path. Several literals
-/// mean the interner invariant was violated and must never be recovered into a
-/// lossy runtime test.
+/// An anonymous literal names every brand at once, so it asks the caller to
+/// take the unrestricted predicate path. Several literals mean the interner
+/// invariant was violated and must never be recovered into a lossy runtime
+/// test.
 fn callable_identity_literal(clause: &Conj<ArrowSig>) -> Option<&ClosureLit> {
     if !clause.neg.is_empty() {
         return None;
@@ -3693,8 +3642,8 @@ fn callable_identity_literal(clause: &Conj<ArrowSig>) -> Option<&ClosureLit> {
     let literal = literals.next()?;
     debug_assert!(
         literal.fn_id.is_some(),
-        "an anonymous literal reached a runtime test: it can only have come from an \
-         activation key, and a key is never what a test is asked of (fz-kdt.127)"
+        "an anonymous literal reached a runtime test: brand erasure is not on any \
+         path a runtime test reads from"
     );
     literal.fn_id?;
     assert!(
@@ -4359,63 +4308,6 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
                     fn_id: None,
                     captures,
                 });
-            }
-        }
-    }
-    erased
-}
-
-/// The activation-key form of closure erasure.  A joined value with several
-/// capture layouts of the SAME closure target cannot be selected statically;
-/// its literal target remains the runtime construction discriminator.  A
-/// single arrival, on the other hand, transports only freight through a body
-/// that does not inspect it, so its target and call surface must not fork that
-/// body's key.
-fn erase_transported_closure_identity_for_key(t: &mut Types, a: Ty) -> Descr {
-    let base = t.descr(&a).clone();
-    let mut erased = map_recursive_inputs(t, base, erase_transported_closure_identity_for_key);
-    let literal_targets = erased
-        .cases
-        .iter()
-        .flat_map(|case| case.structure.funcs.iter())
-        .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
-        .filter_map(|sig| sig.lit.as_ref().and_then(|lit| lit.fn_id))
-        .collect::<BTreeSet<_>>();
-    let literal_count = erased
-        .cases
-        .iter()
-        .flat_map(|case| case.structure.funcs.iter())
-        .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
-        .filter(|sig| sig.lit.as_ref().is_some_and(|lit| lit.fn_id.is_some()))
-        .count();
-    if literal_targets.len() == 1 && literal_count > 1 {
-        return erased;
-    }
-
-    let any = t.any();
-    for case in &mut erased.cases {
-        for conj in &mut case.structure.funcs {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                let Some(lit) = sig.lit.take() else {
-                    continue;
-                };
-                sig.args = vec![any; sig.args.len()];
-                sig.ret = any;
-                let captures: Vec<Ty> = lit
-                    .captures
-                    .iter()
-                    .map(|capture| {
-                        let capture = erase_transported_closure_identity_for_key(t, *capture);
-                        t.intern(capture)
-                    })
-                    .collect();
-                if !captures.is_empty() {
-                    sig.lit = Some(ClosureLit {
-                        kind: lit.kind,
-                        fn_id: None,
-                        captures,
-                    });
-                }
             }
         }
     }

@@ -522,64 +522,49 @@ beside that one: a position the body RETURNS, and the recursion does not
 supply, is kept as well, because an activation publishes ONE return and two
 callers sharing a key would share it (fz-kdt.199).
 
-A NON-recursive body is keyed by precise evidence, with one erasure. A body
-that never consumes callable identity -- never calls through a callable, never
-constructs a lambda, and is not itself a capture-holding lambda
-(`BodyKeying::consumes_callable_identity`) -- only TRANSPORTS the closures that
-reach it, so `Types::erase_transported_closure_identity_inputs` erases their
-BRANDS from every slot `World::observable_inputs` says nothing reachable can
-read: a same-shape lambda that travels through a forwarder nothing asks about
-shares one activation of it, instead of dragging a private copy of the whole
-library chain behind it (fz-6gb). A slot some callee calls, tests or hands back
-is asked about, so the brand the call site named survives to the callee that
-demands it -- the key and the erasure read one mask. What the value CLOSED OVER survives
-the erasure, at every depth, brands inside captured closures erased by the same
-rule (`closure[?](int)`, `closure[?](closure[?]((a1_p0) -> a1_r))`). That is
-the whole difference between freight and meaning here: a body keyed at one
-capture type grounds its callees' capture lanes to that type, so one key
-holding two capture types would leave a choice only a runtime test could
-answer, and a forwarder handed one lambda at an int capture and at a float
-capture is a program that knows statically which is which (fz-kdt.127).
+A NON-recursive body is keyed by precise evidence, and one question decides
+each slot. `key_inputs_for_call` asks `World::observable_inputs` whether
+anything reachable can read the slot -- a dispatch question arriving through
+the forwarding graph, or a published return built from it -- and a slot nothing
+reads is addressed as a bare variable, whatever arrived there. A same-shape
+callable that travels through a forwarder nothing asks about therefore shares
+one activation of it, instead of dragging a private copy of the whole library
+chain behind it (fz-6gb). A slot some callee calls, tests or hands back keeps
+the type the call site named, and that callee stays grounded.
 
-So a forwarder SHARES across lambda identity and SPLITS on capture tuple. In
-this tree, over the 597 corpus fixtures and the 469 that reach a backend dump,
-58 dumps differ from what the whole-literal erasure produced: 45 differ in key
-TEXT only, 13 fixtures settle more executables and none settles fewer, five
-lose dispatch nodes -- the key answers what a runtime test used to -- and four
-gain ten between them. The gains are `enum_take_drop_split` and its `00420_`
-twin, whose recursive core asks two real questions (the accumulator tag
-`{:cont, _}` vs `{:cont | :halt, _}`, and which construction the reducer is),
-the dynamic same-lambda witness, whose closure comes out of a `case` no key can
-pin, and `callable_union_capture_containment`, rehomed on that same dynamic
-shape because the key answered its old static body outright (fz-kdt.171).
-Stdout is byte-identical on all three doors on every one of them.
+Observed call SURFACES travel beside the value type rather than inside it, so
+they answer the same question in their own place:
+`World::canonical_activation_key_with_callable_surfaces` blanks the surfaces of
+exactly the slots that one vector calls unobservable. Nothing else collapses a
+key. There is no separate brand erasure over the input types: it was measured
+over the whole lib suite and the fixture matrix to change no key that
+`key_inputs_for_call` had not already addressed, and it was deleted
+(fz-kdt.98.3.17).
 
-Identity-consuming bodies still split into distinct semantic activations. That
-semantic split is not, by itself, a claim that the native machine code must be
-distinct. `NativeProgram` retains an `ExecutableKey -> FnId` entry for every
-activation and shares physical sibling CPS graphs only after native lowering
-has made the observable distinction explicit. In particular, a captured
-callable carried as `ValueRef` and used only as the callee word of an indirect
-call may differ in rich semantic `Ty` while producing the same native graph.
-The graph comparison does not erase direct callees, closure-construction words,
-ABI layouts, effects, captures, or any type attached to another use. Thus
-grounded direct calls remain specialized while boxed calls can share code
-without merging activation or construction identity (fz-kdt.163).
+What a callable CLOSED OVER is not freight. Capture types travel in the type
+the call site named, so a body keyed at one capture type grounds its callees'
+capture lanes to that type; one key holding two capture types would leave a
+choice only a runtime test could answer, and a forwarder handed one lambda at
+an int capture and at a float capture is a program that knows statically which
+is which (fz-kdt.127).
 
-The split is by capture TUPLE, so it separates two lambdas with different
-capture tuples as readily as one lambda at two capture types --
-`spawn/1` keys `closure[?](pid)` apart from `closure[?](pid, int)`, and the
-capture-free `Enum.all?/1` wrapper apart from the capturing `all?/2` one. Six
-of the thirteen fixtures whose inventory moves are the same-lambda shape this
-erasure exists for; the other seven are that different-lambda population.
+Distinct semantic activations are not, by themselves, a claim that the native
+machine code must be distinct. `NativeProgram` retains an `ExecutableKey ->
+FnId` entry for every activation and shares physical sibling CPS graphs only
+after native lowering has made the observable distinction explicit. In
+particular, a captured callable carried as `ValueRef` and used only as the
+callee word of an indirect call may differ in rich semantic `Ty` while
+producing the same native graph. The graph comparison does not erase direct
+callees, closure-construction words, ABI layouts, effects, captures, or any
+type attached to another use. Thus grounded direct calls remain specialized
+while boxed calls can share code without merging activation or construction
+identity (fz-kdt.163).
 
 The context-free key therefore retains the capture tuple unless flow-sensitive
-evidence proves that layout cannot become observable (fz-kdt.169). Whole-tuple
-and arity-only erasure lose dispatch-free static grounding: after brand erasure
-the key cannot know same-lambda from different-lambda values, and the static
+evidence proves that layout cannot become observable (fz-kdt.169). Collapsing
+the tuple to its arity loses dispatch-free static grounding: the static
 same-lambda witness needs one-slot `int` and `float` capture layouts to key
-separately or else leave their choice to runtime. Three-door behavior remains
-correct under the measured alternative. This is a conservative
+separately or else leave their choice to runtime. This is a conservative
 correct-by-construction and performance law, not a proof that every possible
 tuple component is universally necessary.
 

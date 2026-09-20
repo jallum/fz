@@ -6,7 +6,7 @@ use super::*;
 use crate::compiler2::ModuleId;
 use crate::compiler2::return_unknowns::KeyShape;
 use crate::finite_set::FiniteSet;
-use crate::runtime_type_predicate::{CallableShape, ListShape, ListShapes, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{ListShape, ListShapes, RuntimeTypePredicate};
 
 fn module_name(text: &str) -> ModuleName {
     ModuleName::parse_dotted(text).expect("test source module path")
@@ -473,32 +473,6 @@ fn unchanged_instantiation_returns_before_it_probes_or_normalizes() {
         t.instantiate(&template, &matching),
         int,
         "a matching substitution still returns the canonical specialized Ty"
-    );
-}
-
-#[test]
-fn closure_input_erasure_leaves_unignored_inputs_unchanged() {
-    let mut t = Types::new();
-    let int = t.int();
-    let inputs = [int];
-    let before = t.interning_work_stats();
-
-    assert_eq!(
-        t.erase_transported_closure_identity_inputs(&inputs, &[true])
-            .as_ref(),
-        inputs
-    );
-    assert_eq!(
-        t.interning_work_stats(),
-        before,
-        "an input-erasure mask with no unobservable parameter cannot intern a value"
-    );
-
-    let literal = t.closure_lit(ClosureTarget(7), vec![], 0);
-    let erased = t.erase_transported_closure_identity_inputs(&[literal], &[false]);
-    assert_ne!(
-        erased[0], literal,
-        "an unobservable closure input must still erase its construction identity"
     );
 }
 
@@ -2039,68 +2013,6 @@ fn the_envelope_and_the_predicate_agree_on_a_callable_clause() {
         direct, through_envelope,
         "projecting a clause and projecting its envelope must reach the same callable axis",
     );
-}
-
-/// fz-kdt.127 -- WHY the erased forwarder key and the construction axis
-/// compose, stated from the side that actually decides it: the KEYING rule.
-///
-/// `erase_transported_closure_identity_inputs` anonymises only the slots the
-/// observability mask marks unobservable -- the ones nothing reachable reads. A
-/// slot something reads keeps its brand, so it stays shapeable and a test can
-/// still name the construction, while the anonymous literal the erasure mints
-/// lives only in the activation KEY, which no test is ever asked of. Nothing
-/// in the projection has to arrange this; if it ever stops holding, the
-/// `debug_assert!` in `callable_identity_literal` is what fires.
-#[test]
-fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
-    let mut t = Types::new();
-    let int = t.int();
-    let surface = t.arrow(&[int], int);
-    let branded = t.closure_lit(ClosureTarget(3), vec![int], 1);
-    let branded = t.intersect(branded, surface);
-    let erased = t.erase_transported_closure_identity_inputs(&[branded, branded], &[false, true]);
-    let params = erased.as_ref();
-    assert_eq!(params.len(), 2);
-    assert_ne!(
-        params[0], branded,
-        "the unobservable slot is freight: the erasure takes its brand"
-    );
-    assert!(
-        t.display(&params[0]).contains("#?"),
-        "and what it leaves there is the ANONYMOUS literal, got {}",
-        t.display(&params[0])
-    );
-    assert_eq!(
-        params[1], branded,
-        "an observable slot is untouched -- that is why an anonymous literal never reaches a \
-         runtime test"
-    );
-
-    let capturing = CallableShape {
-        target: ClosureTarget(3),
-        captures: vec![t.runtime_type_predicate(&int)],
-    };
-    assert!(
-        t.runtime_type_predicate(&params[1]).callables.admits(&capturing),
-        "and the observable slot still names its construction",
-    );
-}
-
-#[test]
-fn forwarder_erasure_reuses_a_recursive_type_without_callable_literals() {
-    let mut t = Types::new();
-    let recursive = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
-    let before = t.interning_work_stats();
-
-    let erased = t.erase_transported_closure_identity_inputs(&[recursive], &[false]);
-
-    assert_eq!(erased.as_ref(), [recursive]);
-    let after = t.interning_work_stats();
-    assert_eq!(after.identity_shortcuts, before.identity_shortcuts + 1);
-    assert_eq!(after.raw_index_probes, before.raw_index_probes);
-    assert_eq!(after.normalizations, before.normalizations);
-    assert_eq!(after.canonical_index_probes, before.canonical_index_probes);
-    assert_eq!(after.inserted, before.inserted);
 }
 
 /// fz-kdt.127 -- a closure holds exactly one value per capture slot, so a
