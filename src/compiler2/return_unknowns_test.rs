@@ -26,9 +26,27 @@ struct Statics {
 
 impl Statics {
     /// The keying answer given about one callee slot, one per call site that
-    /// feeds it. A slot gets one coordinate rule, so a test can read these
-    /// and say whether the call sites agree.
+    /// feeds it, in caller order: what coordinate each caller says the slot
+    /// gets.
     fn feeding(&self, callee_label: &str, slot: usize) -> Vec<KeyShape> {
+        self.feeds(callee_label, slot)
+            .into_iter()
+            .map(|(site, index)| site.destinations[index].clone())
+            .collect()
+    }
+
+    /// What each of those call sites HANDS the slot, which is a different
+    /// question: unknown-ness inside the one value that site writes.
+    fn handing(&self, callee_label: &str, slot: usize) -> Vec<KeyShape> {
+        self.feeds(callee_label, slot)
+            .into_iter()
+            .map(|(site, index)| site.arguments[index].clone())
+            .collect()
+    }
+
+    /// Every call site feeding one callee slot, paired with the positional
+    /// index that lands there, in caller order.
+    fn feeds(&self, callee_label: &str, slot: usize) -> Vec<(&CallSiteUnknowns, usize)> {
         let callee = *self
             .labels
             .iter()
@@ -38,7 +56,7 @@ impl Statics {
         let input_len = self.skeletons[&callee].input_len;
         let mut callers: Vec<FunctionId> = self.skeletons.keys().copied().collect();
         callers.sort_by_key(|function| function.as_u32());
-        let mut shapes = Vec::new();
+        let mut feeds = Vec::new();
         for caller in callers {
             let skeleton = &self.skeletons[&caller];
             for (callsite, (named, mode)) in &skeleton.callees {
@@ -53,12 +71,12 @@ impl Statics {
                 };
                 for index in 0..arguments.len() {
                     if mode.semantic_index(input_len, arguments.len(), index) == Some(slot) {
-                        shapes.push(site.destinations[index].clone());
+                        feeds.push((site, index));
                     }
                 }
             }
         }
-        shapes
+        feeds
     }
 }
 
@@ -72,7 +90,30 @@ fn unknowns(name: &str, source: &str) -> BTreeMap<String, FunctionUnknowns> {
         .collect()
 }
 
+/// Which skeletons one function's answer is derived from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Universe {
+    /// Every function the program defines, whoever can call it.
+    WholeProgram,
+    /// The function's own static callees, transitively -- what the job that
+    /// publishes the fact hands `derive`. A cycle a position of this function
+    /// sits on runs through calls this function makes, so it lies inside this
+    /// reach; a cycle through a sibling CALLER of a shared helper does not,
+    /// and this function is not on it.
+    OwnReach,
+}
+
 fn statics(name: &str, source: &str) -> Statics {
+    statics_over(name, source, Universe::WholeProgram)
+}
+
+/// The answers each function is given in a running compiler, where nothing it
+/// cannot call is in its universe.
+fn reached_statics(name: &str, source: &str) -> Statics {
+    statics_over(name, source, Universe::OwnReach)
+}
+
+fn statics_over(name: &str, source: &str, universe: Universe) -> Statics {
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: Some(name.to_string()),
@@ -113,13 +154,44 @@ fn statics(name: &str, source: &str) -> Statics {
     // bodies alone decide.
     let answers = labels
         .keys()
-        .map(|function| (*function, derive(&skeletons, *function)))
+        .map(|function| {
+            let within = match universe {
+                Universe::WholeProgram => skeletons.clone(),
+                Universe::OwnReach => reach(&skeletons, *function),
+            };
+            (*function, derive(&within, *function))
+        })
         .collect();
     Statics {
         skeletons,
         labels,
         answers,
     }
+}
+
+/// The skeletons one function can reach through its own static callees,
+/// transitively, itself among them.
+fn reach(
+    skeletons: &HashMap<FunctionId, Rc<FunctionSkeleton>>,
+    function: FunctionId,
+) -> HashMap<FunctionId, Rc<FunctionSkeleton>> {
+    let mut reached = vec![function];
+    let mut next = 0;
+    let mut within = HashMap::new();
+    while next < reached.len() {
+        let reached_function = reached[next];
+        next += 1;
+        let Some(skeleton) = skeletons.get(&reached_function).cloned() else {
+            continue;
+        };
+        for (callee, _) in skeleton.callees.values().copied() {
+            if !reached.contains(&callee) {
+                reached.push(callee);
+            }
+        }
+        within.insert(reached_function, skeleton);
+    }
+    within
 }
 
 const WRAP_NEST: &str = "\
@@ -414,6 +486,56 @@ def dup(n), do: wrap(dup(n - 1))
 
 def main(), do: dbg(dup(1))
 ";
+
+/// Two chains through one shared helper. `climb` hands `hold` the
+/// accumulator it grows by consing -- a value still climbing -- but nothing
+/// `climb` reaches sends `hold`'s return back into `hold`'s slot. `loopy`
+/// does: what it hands `hold` is a list built around `hold`'s own result, so
+/// `hold`'s slot sits on a cycle that crosses that constructor.
+const SHARED_HELPER_ONE_CYCLE: &str = "\
+def hold(v), do: v
+
+def climb([], acc), do: hold(acc)
+def climb([h | t], acc), do: climb(t, [h | acc])
+
+def loopy([]), do: []
+def loopy(l), do: loopy([hold(l)])
+
+def main() do
+  dbg(climb([1, 2], []))
+  dbg(loopy([3]))
+end
+";
+
+/// A slot keys on its own cycle, not on its argument's. The address variable
+/// a slot is named by is ONE coordinate shared by every caller in the
+/// program, so answering it from a climbing ARGUMENT merges chains that have
+/// no cycle in common: `climb`'s integers and `loopy`'s list would become one
+/// activation of `hold` whose input is the union of both, and every consumer
+/// downstream of either chain would be handed the other's type.
+///
+/// So the two questions come apart here, and both answers are read at once:
+/// `climb` HANDS `hold` a value the fixpoint is still solving, and still says
+/// the slot it lands in is settled, because the only cycle `climb` reaches
+/// through that value is its own accumulator's -- `hold` reads it and hands
+/// it back, never round again. `loopy` reaches a cycle through the slot
+/// itself and names it by its address.
+#[test]
+fn a_slot_keys_on_its_own_cycle_not_on_the_climb_that_reaches_it() {
+    let statics = reached_statics("shared_helper_one_cycle.fz", SHARED_HELPER_ONE_CYCLE);
+    assert_eq!(
+        statics.handing("hold/1", 0),
+        vec![KeyShape::Unknown, KeyShape::Unknown],
+        "both callers hand hold a value the fixpoint is still solving: climb's accumulator \
+         and the list loopy builds around hold's own result",
+    );
+    assert_eq!(
+        statics.feeding("hold/1", 0),
+        vec![KeyShape::Settled, KeyShape::Unknown],
+        "but only loopy's walk reaches a cycle through the slot, so only loopy names it by \
+         its address; climb keys on the integers it observed there",
+    );
+}
 
 /// One slot gets one coordinate rule. `main` seeds the accumulator with `[]`
 /// and `build` grows it with `[h | acc]`; both land in slot 1, so if the two

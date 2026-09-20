@@ -522,17 +522,33 @@ The coordinates of an activation key are decided at the CALL SITE, by
 `key_inputs_for_call` (`jobs/semantic.rs`), and `canonical_activation_key`
 receives them already decided. Two static questions name each slot, in order.
 
-The first: is the value arriving here a position the fixpoint is still SOLVING?
+The first: is the DESTINATION SLOT a position the fixpoint is still SOLVING?
 The caller publishes that answer per call site as
-`CallSiteUnknowns::destinations`, a `KeyShape` folded over every call site
-feeding the destination slot, so a seed call handing `[]` and an ascent call
-handing `[x | acc]` name the slot alike. A climbing position keys on the
-variable that ADDRESSES it, because what the walk observed there is how far the
-ascent has got rather than what the program denotes, and keying on it would
-mint one activation per round. The answer descends: an accumulator built by
-consing an unsolved value onto a solved list is `List(Unknown)` and keys as a
-list of the variable at its element address, because only the element is still
-climbing.
+`CallSiteUnknowns::destinations`, and it is a fact about the slot, not about
+the value this site happens to write: the slot answers `Unknown` only when it
+sits on a guarded cycle the caller's own walk reaches, and `Settled`
+otherwise. A climbing slot keys on the variable that ADDRESSES it, because
+what the walk observed there is how far the ascent has got rather than what
+the program denotes, and keying on it would mint one activation per round.
+Where the slot does climb, the call sites feeding it are folded together to
+say where inside the arriving value: an accumulator built by consing an
+unsolved value onto a solved list is `List(Unknown)` and keys as a list of the
+variable at its element address, because only the element is still climbing.
+
+That address variable is ONE coordinate shared by every caller in the program,
+which is why the slot has to earn it. A seed call handing `[]` and an ascent
+call handing `[x | acc]` do name the slot alike, because the cycle they are on
+runs through the callee's own recursion and so lies inside the reach of every
+caller that can get to it. A cycle that runs through a SIBLING caller instead
+-- one helper read by two loops, each climbing in its own -- lies outside the
+reach of a caller not on it, so that caller keys on what it observed and the
+two loops do not share an activation. `destinations` is therefore the
+answering caller's answer: two callers of one slot can differ, and each says
+what its own reach can see. `Enum.chunk_by` and `Enum.sort_by` both end at
+`Enum.reverse_list/1`, and only the sort chain's recursion feeds that slot
+back round through a cons, so the helper keys twice -- `[int]` for the chunk
+chain, the slot's address variable for the sort chain -- and the two chains'
+element types never meet.
 
 The second, asked only where the first settled everything: can a value at this
 slot be OBSERVED from outside the activation at all? `observable_inputs` says
