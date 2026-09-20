@@ -16,16 +16,11 @@ pub(crate) struct FunctionFactMap<T> {
 }
 
 /// The body-shape keying fact `Job::DeriveCallGraphComponent` publishes under
-/// `FactKey::Recursive`: both answers live in one value so a consumer can
-/// never observe one without the other.
+/// `FactKey::Recursive`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BodyKeying {
     /// Reaches itself through the static call graph.
     pub(crate) recursive: bool,
-    /// Calls through a callable, constructs a lambda, or is a capture-holding
-    /// lambda: closure brands are meaning to this body, so its keys stay
-    /// precise. A body with neither treats brands as freight.
-    pub(crate) consumes_callable_identity: bool,
 }
 
 /// What one function's inputs are DEMANDED for, as `Job::DeriveInputDemand`
@@ -37,10 +32,10 @@ pub(crate) struct BodyKeying {
 /// reached, and it includes a closure call -- which asks about the callable and
 /// about everything handed to it, because the body being entered is not known
 /// here. What a body asks by itself is a step in deriving that answer, never a
-/// published one: every consumer -- the coordinate a call site names, the
-/// closure brand an activation key keeps -- is deciding whether something
-/// somewhere can read the slot, and a body that only transports a callable to a
-/// callee that calls it has no say in that.
+/// published one: every consumer -- the coordinate a call site names, the call
+/// surface an activation key keeps -- is deciding whether something somewhere
+/// can read the slot, and a body that only transports a callable to a callee
+/// that calls it has no say in that.
 ///
 /// Dispatch is one of the two ways a value at a slot can be observed from
 /// outside the activation. The other is return flow -- the return IS, CONTAINS,

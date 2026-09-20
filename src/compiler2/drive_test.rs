@@ -14851,7 +14851,6 @@ fn compiler2_recursive_keying_sees_recursion_through_function_references() {
 
     let ping = function_id(&functions, "ping", 1);
     let pong = function_id(&functions, "pong", 1);
-    let reference_only = function_id(&functions, "reference_only", 0);
     for (caller, callee) in [(ping, pong), (pong, ping)] {
         assert_eq!(
             compiler.world().static_callees(caller),
@@ -14871,14 +14870,6 @@ fn compiler2_recursive_keying_sees_recursion_through_function_references() {
         compiler.world().call_graph_component(ping),
         compiler.world().call_graph_component(pong),
         "the function-reference cycle is one strong component"
-    );
-    assert!(
-        !compiler
-            .world()
-            .body_keying(reference_only)
-            .expect("function-reference body keying")
-            .consumes_callable_identity,
-        "a named function reference has no captured identity"
     );
 }
 

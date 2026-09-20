@@ -1,15 +1,16 @@
 use crate::dispatch_matrix::demand::DispatchDemand;
 
+use super::drive_test::{FunctionCapture, function_id};
 use super::facts::FactUse;
 use super::keying::{BodyKeying, InputDemand};
 use super::{
     DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, Ty, TypeName, Types, World,
 };
-use super::drive_test::{FunctionCapture, function_id};
 use crate::ast::Attribute;
 use crate::compiler2::drive::{DependencyKey, JobEffects};
-use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
+use crate::compiler2::identity::ActivationSignature;
 use crate::compiler2::semantic::ActivationInput;
+use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 use std::cell::Cell;
@@ -687,13 +688,7 @@ fn compiler2_activation_inputs_are_published_as_their_own_fact() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: true,
-            consumes_callable_identity: true
-        }
-    ));
+    assert!(world.define_body_keying(function, BodyKeying { recursive: true }));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Ignore])));
 
     let int = world.types_mut().int();
@@ -724,13 +719,7 @@ fn compiler2_activation_input_join_is_quiet_for_absorbed_list_evidence() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "subtract", 1);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: false,
-            consumes_callable_identity: true
-        }
-    ));
+    assert!(world.define_body_keying(function, BodyKeying { recursive: false }));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let int = world.types_mut().int();
@@ -813,21 +802,9 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let caller = world.reference_function(ModuleId::GLOBAL, "caller", 1);
     let callee = world.reference_function(ModuleId::GLOBAL, "callee", 1);
-    assert!(world.define_body_keying(
-        caller,
-        BodyKeying {
-            recursive: true,
-            consumes_callable_identity: true
-        }
-    ));
+    assert!(world.define_body_keying(caller, BodyKeying { recursive: true }));
     assert!(world.define_input_demand(caller, unforwarded_demand(vec![DispatchDemand::Whole])));
-    assert!(world.define_body_keying(
-        callee,
-        BodyKeying {
-            recursive: true,
-            consumes_callable_identity: true
-        }
-    ));
+    assert!(world.define_body_keying(callee, BodyKeying { recursive: true }));
     assert!(world.define_input_demand(callee, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let int = world.types_mut().int();
@@ -877,13 +854,7 @@ fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "delete_first", 2);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: true,
-            consumes_callable_identity: true
-        }
-    ));
+    assert!(world.define_body_keying(function, BodyKeying { recursive: true }));
     assert!(world.define_input_demand(
         function,
         unforwarded_demand(vec![
@@ -911,16 +882,17 @@ fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
 /// `called/2` and `carried/2` are the same body shape -- each forwards both of
 /// its inputs and asks nothing of them itself -- and they differ only in what
 /// their callee does. `twice/2` CALLS the callable it is handed, so the slot is
-/// observable and both halves of the key keep what arrived: two same-shape
-/// lambdas are two activations, each grounded for the callee it reaches.
-/// `ignored/2` merely carries the callable and hands back the other input, so
-/// nothing reachable can tell two same-shape lambdas apart and both halves drop
-/// the brand: every lambda shares one activation.
+/// observable and both halves of the key keep what arrived: two differently
+/// observed callables are two activations, each grounded for the callee it
+/// reaches. `ignored/2` merely carries the callable and hands back the other
+/// input, so nothing reachable can tell two callables apart and both halves
+/// drop what was observed: every callable shares one activation.
 ///
-/// The mask the brand erasure applies IS the vector `key_inputs_for_call`
-/// addresses with, so a slot can never be addressed per brand and erased of it.
+/// The mask the surface blanking applies IS the vector `key_inputs_for_call`
+/// addresses with, so a slot can never be addressed per surface and blanked
+/// of it.
 #[test]
-fn compiler2_the_key_and_the_brand_erasure_ask_one_observability_question() {
+fn compiler2_the_key_and_the_surface_blanking_ask_one_observability_question() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -960,19 +932,27 @@ fn compiler2_the_key_and_the_brand_erasure_ask_one_observability_question() {
     );
 
     let int = world.types_mut().int();
-    let first = world.reference_function(ModuleId::GLOBAL, "brand_a", 1);
-    let second = world.reference_function(ModuleId::GLOBAL, "brand_b", 1);
-    let brand_a = world.closure_ty(first, Vec::new());
-    let brand_b = world.closure_ty(second, Vec::new());
+    let atom = world.types_mut().atom_lit("a");
+    let callable = world.types_mut().arrow(&[int], int);
+    let surface_of = |result: Ty| ActivationSignature {
+        inputs: Box::new([int]),
+        result,
+    };
+    let call_with = |surface: ActivationSignature| {
+        vec![
+            ActivationInput::with_callable_surface(callable, surface),
+            ActivationInput::new(int),
+        ]
+    };
     assert_ne!(
-        world.activation_key(root, called, &[brand_a, int]),
-        world.activation_key(root, called, &[brand_b, int]),
-        "an observable callable slot keys on the brand that arrived, so its callee stays grounded",
+        world.activation_key_for_inputs(root, called, &call_with(surface_of(int))),
+        world.activation_key_for_inputs(root, called, &call_with(surface_of(atom))),
+        "an observable callable slot keys on the surface that was observed, so its callee stays grounded",
     );
     assert_eq!(
-        world.activation_key(root, carried, &[brand_a, int]),
-        world.activation_key(root, carried, &[brand_b, int]),
-        "an unobservable callable slot is freight, brand and all",
+        world.activation_key_for_inputs(root, carried, &call_with(surface_of(int))),
+        world.activation_key_for_inputs(root, carried, &call_with(surface_of(atom))),
+        "an unobservable callable slot is freight, observed surface and all",
     );
 }
 
@@ -982,13 +962,7 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: false,
-            consumes_callable_identity: true
-        }
-    ));
+    assert!(world.define_body_keying(function, BodyKeying { recursive: false }));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let input_a = world.types_mut().atom_lit("a");
@@ -1066,13 +1040,7 @@ fn compiler2_correlated_activation_input_rows_stay_alternatives() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 2);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: false,
-            consumes_callable_identity: true
-        }
-    ));
+    assert!(world.define_body_keying(function, BodyKeying { recursive: false }));
     assert!(world.define_input_demand(
         function,
         unforwarded_demand(vec![DispatchDemand::Whole, DispatchDemand::Whole])
@@ -1140,13 +1108,7 @@ fn compiler2_withdrawing_a_publisher_retracts_only_its_rows() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: false,
-            consumes_callable_identity: true
-        }
-    ));
+    assert!(world.define_body_keying(function, BodyKeying { recursive: false }));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let input_a = world.types_mut().atom_lit("a");
@@ -1197,13 +1159,7 @@ fn compiler2_activation_input_rows_widen_past_the_budget() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: false,
-            consumes_callable_identity: true
-        }
-    ));
+    assert!(world.define_body_keying(function, BodyKeying { recursive: false }));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let inputs = (0..=super::semantic::ACTIVATION_INPUT_ROW_BUDGET)
@@ -1248,13 +1204,7 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: false,
-            consumes_callable_identity: true
-        }
-    ));
+    assert!(world.define_body_keying(function, BodyKeying { recursive: false }));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let input = world.types_mut().int_lit(1);
