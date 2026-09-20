@@ -281,7 +281,14 @@ to (fz-kdt.130).
 
 The other half of the same idea decides what a callable position PHYSICALLY
 carries. `exact_direct_callable_layout` (`jobs/transport.rs`) combines the
-compatible capture requirements of a position's settled targets. Several
+compatible capture requirements of the settled targets the position's own type
+admits. The type brands each closure clause with the lambda the value was
+minted from, and it is a coordinate of the key that addresses the position, so
+it is what says which functions can arrive there. The demand's target set
+answers where each one lives, and it accumulates across every callsite the
+value is joined through, so it can name a lambda this slot's type excludes;
+`targets_the_slot_type_admits` drops that target before the fold sees it.
+Several
 activations of one function can share one physical callable descriptor:
 function, source arity, and ordered capture layouts. An absent capture requires
 nothing; compatible tuple and callable requirements combine recursively.

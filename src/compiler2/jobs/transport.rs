@@ -10,7 +10,9 @@ use super::super::body::{
 use super::super::drive::FactKey;
 use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, TransportOrigin as TransportSource};
 use super::super::facts::FactUse;
-use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::super::identity::{
+    ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, function_id_of_closure_target,
+};
 use super::super::incoming_inputs::InputSlot;
 use super::super::pull::{
     ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
@@ -1083,8 +1085,11 @@ fn exact_direct_callable_layout(
     demand: &RuntimeDemand,
     position: &TransportPosition,
 ) -> Option<RecipeLayout> {
-    let targets = demand.callable.targets.clone();
-    if demand.callable.is_first_class() || targets.is_empty() {
+    if demand.callable.is_first_class() {
+        return None;
+    }
+    let targets = targets_the_slot_type_admits(world, ty, &demand.callable.targets);
+    if targets.is_empty() {
         return None;
     }
     let mut settled: Option<CallableDescr> = None;
@@ -1113,6 +1118,45 @@ fn exact_direct_callable_layout(
         structural: world.intern_shape(ShapeDescr::Callable(callable)),
         carrier: TransportCarrier::Absent,
     }))
+}
+
+/// The targets whose function this slot's type admits.
+///
+/// A callable type brands each of its closure clauses with the lambda the
+/// value was minted from, and that type is a coordinate of the key addressing
+/// this position: it is the position's own statement of which functions can
+/// arrive. The demand's target set answers a different question — where each
+/// reachable target lives, so its captures can be read — and it accumulates
+/// across every callsite the value is joined through, so it can name a lambda
+/// this slot's type excludes. Where the two differ the type decides, because
+/// the key was minted from it.
+///
+/// A type that brands nothing says nothing about which functions arrive and
+/// admits every target it was given.
+pub(super) fn targets_the_slot_type_admits(
+    world: &mut World,
+    ty: Ty,
+    targets: &BTreeSet<CallableTarget>,
+) -> BTreeSet<CallableTarget> {
+    let brands = world
+        .types_mut()
+        .callable_clauses(&ty)
+        .map(|clauses| {
+            clauses
+                .iter()
+                .filter_map(|clause| clause.closure.as_ref())
+                .map(|closure| function_id_of_closure_target(closure.target))
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    if brands.is_empty() {
+        return targets.clone();
+    }
+    targets
+        .iter()
+        .filter(|target| brands.contains(&target.activation.function))
+        .cloned()
+        .collect()
 }
 
 /// What one target contributes to [`exact_direct_callable_layout`].
