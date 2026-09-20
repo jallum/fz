@@ -226,6 +226,12 @@ impl FunctionUnknowns {
 
     /// Whether a value arriving at `slot` can be read back out of what this
     /// function returns.
+    ///
+    /// A function with no lowered definition -- an extern, a runtime
+    /// primitive -- has no skeleton for `derive` to walk, so its answer is the
+    /// empty one while its input demand is still sized from its clauses.
+    /// Nothing is known about such a body, so every slot it has is one the
+    /// return can be read back out of.
     pub(crate) fn returns_input(&self, slot: usize) -> bool {
         self.returned_inputs.get(slot).copied().unwrap_or(true)
     }

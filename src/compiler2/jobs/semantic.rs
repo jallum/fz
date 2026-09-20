@@ -31,7 +31,7 @@ use super::super::semantic::{
     CallSiteTargets, CallTargetSummary, SelectedCallee,
 };
 use super::super::types::{AddrStep, ClosureTarget, MapKey, Ty, Types};
-use super::super::world::World;
+use super::super::world::{ACTIVATION_KEY_FACTS_PROVEN, World};
 
 #[derive(Clone, Copy)]
 struct TupleFieldProjection {
@@ -2387,11 +2387,10 @@ fn key_inputs_for_call(
     // `analyze_activation` waits on the fact before it evaluates anything,
     // so the answer is there to read.
     reads.push(FactKey::ReturnUnknowns(caller));
-    let Some(site) = world
-        .return_unknowns(caller)
-        .and_then(|unknowns| unknowns.callsite(callsite))
-        .cloned()
-    else {
+    let unknowns = world.return_unknowns(caller).expect(ACTIVATION_KEY_FACTS_PROVEN);
+    // A body with no lowered definition has a published answer that names no
+    // call site, and a call from it is keyed on what it hands over.
+    let Some(site) = unknowns.callsite(callsite).cloned() else {
         return arg_inputs.to_vec();
     };
     let observable = world.observable_inputs(callee, arg_inputs.len());

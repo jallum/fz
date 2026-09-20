@@ -26,11 +26,9 @@ pub(super) fn derive(world: &mut World, key: &CallableConstructionTargetKey) -> 
             ..JobEffects::default()
         });
     };
-    let prerequisites = [
-        owner_fact,
-        FactKey::Recursive(producer.function),
-        FactKey::InputDemand(producer.function),
-    ];
+    let prerequisites = std::iter::once(owner_fact)
+        .chain(World::activation_key_facts(producer.function))
+        .collect::<Vec<_>>();
     let waits = prerequisites
         .iter()
         .filter(|fact| !world.fact_is_settled(fact))
@@ -143,7 +141,9 @@ mod tests {
                 FactUse::current(FactKey::ExecutableFacts(key.owner.clone())),
                 FactUse::current(FactKey::Recursive(target.activation.function)),
                 FactUse::current(FactKey::InputDemand(target.activation.function)),
+                FactUse::current(FactKey::ReturnUnknowns(target.activation.function)),
             ]),
+            "the target mints an activation key, so it reads every fact a key is built from",
         );
         assert!(
             world
@@ -369,9 +369,11 @@ mod tests {
 
         assert!(world.fact_is_settled(&FactKey::Recursive(function)));
         assert!(world.fact_is_settled(&FactKey::InputDemand(function)));
+        assert!(world.fact_is_settled(&FactKey::ReturnUnknowns(function)));
         let owner_fact = FactKey::ExecutableFacts(late.owner.clone());
         let recursive_fact = FactKey::Recursive(function);
         let input_fact = FactKey::InputDemand(function);
+        let unknowns_fact = FactKey::ReturnUnknowns(function);
 
         world.complete_job(Job::DeriveCallGraphComponent(function), JobEffects::default());
         if !world.fact_is_settled(&input_fact) {
@@ -394,7 +396,7 @@ mod tests {
         let missing_recursive = derive(&mut world, &late).expect("missing Recursive wait");
         assert_eq!(
             missing_recursive.reads,
-            current_uses([owner_fact.clone(), input_fact.clone()])
+            current_uses([owner_fact.clone(), input_fact.clone(), unknowns_fact.clone()])
         );
         assert_eq!(missing_recursive.waits, settled_uses([recursive_fact.clone()]));
         assert!(missing_recursive.outputs.is_empty());
@@ -416,7 +418,10 @@ mod tests {
         );
         assert!(world.fact_is_settled(&owner_fact));
         let missing_input = derive(&mut world, &late).expect("missing InputDemand wait");
-        assert_eq!(missing_input.reads, current_uses([owner_fact, recursive_fact]));
+        assert_eq!(
+            missing_input.reads,
+            current_uses([owner_fact, recursive_fact, unknowns_fact])
+        );
         assert_eq!(missing_input.waits, settled_uses([input_fact.clone()]));
         assert!(missing_input.outputs.is_empty());
 

@@ -255,10 +255,12 @@ impl Default for World {
     }
 }
 
-/// The demand an absent fact stands for: nothing is proven about the slot, so
-/// everything is asked of it. A coordinate is only ever collapsed on a proven
-/// answer.
-static UNPROVEN_DISPATCH: DispatchDemand = DispatchDemand::Whole;
+/// What a reader of a keying fact says when the fact is missing.
+/// `World::require_activation_key_facts` proves every one of them before a
+/// caller mints a key, so reaching this message means a key was minted
+/// without that proof.
+pub(crate) const ACTIVATION_KEY_FACTS_PROVEN: &str =
+    "require_activation_key_facts proves this fact before any caller mints a key for the function";
 
 impl World {
     pub(crate) fn work_graph_and_types(&mut self) -> (&mut WorkGraph, &Types) {
@@ -2244,16 +2246,24 @@ impl World {
 
     /// What any activation this slot can reach asks about the value that
     /// arrives there.
+    ///
+    /// The demand fact is present by construction:
+    /// `require_activation_key_facts` proves it before any caller mints a key
+    /// for the function, so a coordinate is collapsed on a proven answer.
     pub(crate) fn dispatch_demand(&self, function: FunctionId, slot: usize) -> &DispatchDemand {
         self.input_demand(function)
-            .and_then(|demand| demand.forwarded_dispatch.get(slot))
-            .unwrap_or(&UNPROVEN_DISPATCH)
+            .expect(ACTIVATION_KEY_FACTS_PROVEN)
+            .forwarded_dispatch
+            .get(slot)
+            .unwrap_or(const { &DispatchDemand::Whole })
     }
 
     /// Which of a function's slots hold a value anything can read: one a
     /// dispatch question reaches, or one its published return is built from.
-    /// Absent facts answer "observable", so a slot is only ever collapsed on a
-    /// proven answer.
+    ///
+    /// Both facts are present by construction:
+    /// `require_activation_key_facts` proves them before any caller mints a
+    /// key for the function, so a slot is collapsed on a proven answer.
     ///
     /// This is the ONE observability question. `key_inputs_for_call` asks it to
     /// decide whether a slot keys on the type that arrived or on its bare
@@ -2262,55 +2272,46 @@ impl World {
     /// function, so the coordinate a call site names and the coordinate the key
     /// keeps can never disagree about the same slot.
     pub(crate) fn observable_inputs(&self, function: FunctionId, len: usize) -> Vec<bool> {
-        let unknowns = self.return_unknowns(function);
+        let unknowns = self.return_unknowns(function).expect(ACTIVATION_KEY_FACTS_PROVEN);
         (0..len)
-            .map(|slot| {
-                self.dispatch_demand(function, slot).asks_anything()
-                    || unknowns.is_none_or(|unknowns| unknowns.returns_input(slot))
-            })
+            .map(|slot| self.dispatch_demand(function, slot).asks_anything() || unknowns.returns_input(slot))
             .collect()
     }
 
-    /// The facts keying a callee's activation depends on: the body-shape
-    /// answer (`Recursive`), and the input demand and return unknowns that
-    /// `observable_inputs` reads. They are named in ONE ask so a caller spends
-    /// one block on a callee's keying prerequisites, never a ladder
-    /// (fz-kdt.86; waits are AND-satisfied).
+    /// The facts a key for `function` is built from: the body-shape answer
+    /// (`Recursive`), and the input demand and return unknowns that
+    /// `observable_inputs` reads. Every site that mints a key proves these
+    /// three first, so the readers below index a fact rather than guess at a
+    /// missing one. The return-unknowns answer is derived from static
+    /// skeletons alone, so waiting on it cannot wait on an activation.
+    pub(crate) fn activation_key_facts(function: FunctionId) -> [FactKey; 3] {
+        [
+            FactKey::Recursive(function),
+            FactKey::InputDemand(function),
+            FactKey::ReturnUnknowns(function),
+        ]
+    }
+
+    /// Asks for all three in ONE block, so a caller missing every one of them
+    /// sleeps once instead of learning the next rung only after the first one
+    /// lands (waits are AND-satisfied).
     pub(crate) fn require_activation_key_facts(
         &self,
         function: FunctionId,
         reads: &mut Vec<FactKey>,
         waits: &mut HashSet<FactKey>,
     ) -> bool {
-        let recursive = FactKey::Recursive(function);
-        let recursive_ready = self.has_fact(&recursive);
-        if recursive_ready {
-            reads.push(recursive);
-        } else {
-            waits.insert(recursive);
+        let mut ready = true;
+        for fact in Self::activation_key_facts(function) {
+            match self.has_fact(&fact) {
+                true => reads.push(fact),
+                false => {
+                    ready = false;
+                    waits.insert(fact);
+                }
+            }
         }
-
-        let input_demand = FactKey::InputDemand(function);
-        let input_demand_ready = self.has_fact(&input_demand);
-        if input_demand_ready {
-            reads.push(input_demand);
-        } else {
-            waits.insert(input_demand);
-        }
-
-        // The key asks this callee whether its own return is built from each
-        // slot, so the answer has to be in before any caller mints a key for
-        // it. The fact is derived from static skeletons alone, so waiting on
-        // it cannot wait on an activation.
-        let return_unknowns = FactKey::ReturnUnknowns(function);
-        let return_unknowns_ready = self.has_fact(&return_unknowns);
-        if return_unknowns_ready {
-            reads.push(return_unknowns);
-        } else {
-            waits.insert(return_unknowns);
-        }
-
-        recursive_ready && input_demand_ready && return_unknowns_ready
+        ready
     }
 
     pub(crate) fn lookup_callable_namespace(
@@ -2551,11 +2552,6 @@ impl World {
         inputs: &[Ty],
         callable_surfaces: &[std::collections::BTreeSet<super::identity::ActivationSignature>],
     ) -> super::identity::ActivationKey {
-        // The demand fact is a precondition of keying rather than an option:
-        // `require_activation_key_facts` waits on it before any caller mints a
-        // key, and `observable_inputs` below reads it.
-        self.input_demand(function)
-            .expect("activation keying should wait for input demand facts before activation");
         // The coordinates are PRECISE evidence: address the whole input vector in one
         // pass (fz-hwn.27.6), so two distinct inference vars `[Ty27,Ty28]` address
         // to distinct `[a0,a1]` and never collapse to the phantom `[a0,a0]`.
@@ -2585,7 +2581,7 @@ impl World {
             .iter()
             .enumerate()
             .map(|(slot, surfaces)| {
-                if observable.get(slot).copied().unwrap_or(true) {
+                if observable[slot] {
                     surfaces.clone()
                 } else {
                     Default::default()
