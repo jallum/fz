@@ -215,13 +215,12 @@ chose the clause. Any other demand leaves the coordinate exactly as it arrived,
 and an absent fact reads as `Whole`, so a coordinate is only ever folded on a
 proven answer.
 
-`canonical_activation_key` itself makes one further decision, the one a call
-site cannot make for itself. A body that never consumes callable identity only
-TRANSPORTS the closures that reach it, so
-`Types::erase_transported_closure_identity_inputs` erases their brands from
-every slot this body's own `local_dispatch` leaves at `Ignore`, and those
-slots' observation carriers are cleared with them. What the value CLOSED OVER
-survives.
+`canonical_activation_key_with_callable_surfaces` makes one further decision,
+from the same `World::observable_inputs` vector the call site read: the
+observed call surfaces of every slot that vector calls unobservable are
+blanked, because a surface travels beside the value type rather than inside
+it. Nothing else collapses a key. What the value CLOSED OVER survives in the
+type the call site named.
 
 Key != evidence is intentional. The precise coordinates stay in the
 `ActivationInputs` fact; the collapsed coordinates are the `HashMap` dispatch key.
