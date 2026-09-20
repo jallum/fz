@@ -2346,6 +2346,15 @@ fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>)
 /// whose return-flow touches one field keys the whole slot verbatim, which
 /// costs a key and never a wrong one.
 ///
+/// One collapse then applies to what the key named. Where the dispatch
+/// question that reaches a slot is a list-shape question, the coordinate is
+/// the arriving type's `Types::list_family_class`: what such a question can
+/// distinguish is `[]` against `[h | t]`, which the callee answers by testing
+/// the value it is handed, so the refinement the value arrives with is not a
+/// coordinate. Without it a recursive list walker keys twice -- once for the
+/// seed's cons, once for the tail the recursion hands back -- and the two
+/// activations compile the same body.
+///
 /// `argument_offset` is how many of `arg_inputs` the call site did not
 /// write: a closure call's captures sit ahead of its positional arguments in
 /// the callee's input space, and they are values already closed over, so the
@@ -2375,26 +2384,47 @@ fn key_inputs_for_call(
             path.clear();
             path.push(AddrStep::Param(slot as u16));
             let coordinate = shape.coordinate(world.types_mut(), input.ty(), &mut path);
+            // A list-shape question is `[]` against `[h | t]`, and a runtime
+            // test on the arriving value answers it, so the refinement that
+            // value arrives with is not a coordinate the key has to name: the
+            // seed handing a cons and the recursion handing that cons's tail
+            // are one position of one body. A slot the callee hands back is no
+            // exception -- what its users read the refinement out of is the
+            // result coordinate, not this one.
+            let asks_list_shape = matches!(dispatch_demand(world, callee, slot), DispatchDemand::ListShape(_));
+            let coordinate = if asks_list_shape {
+                world.types_mut().list_family_class(coordinate)
+            } else {
+                coordinate
+            };
             input.clone().with_ty(coordinate)
         })
         .collect()
+}
+
+/// The demand an absent fact stands for: nothing is proven about the slot, so
+/// everything is asked of it. A coordinate is only ever collapsed on a proven
+/// answer.
+static UNPROVEN_DISPATCH: DispatchDemand = DispatchDemand::Whole;
+
+/// What any activation this slot can reach asks about the value that arrives
+/// there.
+fn dispatch_demand(world: &World, callee: FunctionId, slot: usize) -> &DispatchDemand {
+    world
+        .input_demand(callee)
+        .and_then(|demand| demand.forwarded_dispatch.get(slot))
+        .unwrap_or(&UNPROVEN_DISPATCH)
 }
 
 /// Which of a callee's slots hold a value anything can read: one a dispatch
 /// question reaches, or one its published return is built from. Absent facts
 /// answer "observable", so a slot is only ever addressed on a proven answer.
 fn observable_inputs(world: &World, callee: FunctionId, len: usize) -> Vec<bool> {
-    let demand = world.input_demand(callee);
     let unknowns = world.return_unknowns(callee);
     (0..len)
         .map(|slot| {
-            let dispatched = demand.is_none_or(|demand| {
-                demand
-                    .forwarded_dispatch
-                    .get(slot)
-                    .is_none_or(DispatchDemand::asks_anything)
-            });
-            dispatched || unknowns.is_none_or(|unknowns| unknowns.returns_input(slot))
+            dispatch_demand(world, callee, slot).asks_anything()
+                || unknowns.is_none_or(|unknowns| unknowns.returns_input(slot))
         })
         .collect()
 }

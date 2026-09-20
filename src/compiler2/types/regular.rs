@@ -423,6 +423,94 @@ impl axis::TupleRectOps<ComponentRef> for UnionTupleOps<'_, '_> {
     }
 }
 
+/// The list-family class of a type: the same type with every list clause it
+/// holds, at every depth, admitting the empty list.
+///
+/// The class is built the way every other recursive value is: one body per
+/// state the walk opens, a state met a second time closing onto the body
+/// already open for it, and the collected bodies handed to the regular
+/// interner, which ties the knot and assigns identity by rooted automaton.
+/// Rebuilding each state on its own would descend forever through a cycle,
+/// because the fold produces a type the walk has not been asked about yet, so
+/// there is nothing for the interner's memo to recognise. A state that reaches
+/// no cycle never gets that far -- its body names no local sibling, so it is
+/// published as it is finished.
+pub(super) fn list_family_class(types: &mut Types, ty: Ty) -> Ty {
+    let mut walk = ClassWalk {
+        nodes: HashMap::new(),
+        bodies: Vec::new(),
+    };
+    match class_node(types, &mut walk, ty) {
+        ComponentRef::Published(class) => class,
+        // The root is the first node the walk opens, so it is body zero.
+        ComponentRef::Local(_) => {
+            let class = types.intern_regular_bodies(reachable_bodies(walk.bodies))[0];
+            types.list_family_classes.insert(ty, class);
+            class
+        }
+    }
+}
+
+/// The states of one list-family class under construction.
+struct ClassWalk {
+    nodes: HashMap<Ty, ClassNode>,
+    bodies: Vec<DescrOf<ComponentRef>>,
+}
+
+enum ClassNode {
+    /// Still on the walk's own stack. Reaching it again is the back edge that
+    /// makes the class recursive, and this is the body it closes onto.
+    Open(usize),
+    Settled(ComponentRef),
+}
+
+/// The reference standing for one state's class.
+fn class_node(types: &mut Types, walk: &mut ClassWalk, ty: Ty) -> ComponentRef {
+    if let Some(&class) = types.list_family_classes.get(&ty) {
+        return ComponentRef::Published(class);
+    }
+    match walk.nodes.get(&ty) {
+        Some(ClassNode::Settled(reference)) => return *reference,
+        Some(ClassNode::Open(index)) => return ComponentRef::local(*index),
+        None => {}
+    }
+    let index = walk.bodies.len();
+    walk.bodies.push(DescrOf::none());
+    walk.nodes.insert(ty, ClassNode::Open(index));
+    let body = class_body(types, walk, ty);
+    let reference = match types.intern_ground_regular_body(body.clone()) {
+        // A state that closed onto no open body has an identity of its own,
+        // which makes it a derived fact about the type rather than a step of
+        // this walk, so it is remembered for every later question.
+        Some(ground) => {
+            types.list_family_classes.insert(ty, ground);
+            ComponentRef::Published(ground)
+        }
+        None => ComponentRef::local(index),
+    };
+    walk.bodies[index] = body;
+    walk.nodes.insert(ty, ClassNode::Settled(reference));
+    reference
+}
+
+/// One state's body: each child replaced by its own class, and each of this
+/// state's positive list clauses widened to admit the empty list. A negative
+/// clause is left alone -- it says what the type excludes, so widening it
+/// would narrow the type, and `[] | [h | t]` minus `[h | t]` is how the exact
+/// empty list is spelled.
+fn class_body(types: &mut Types, walk: &mut ClassWalk, ty: Ty) -> DescrOf<ComponentRef> {
+    let descr = types.descr(&ty).clone();
+    let mut body = descr.map_children(|child| class_node(types, walk, child));
+    for case in &mut body.cases {
+        for clause in &mut case.structure.lists {
+            for sig in &mut clause.pos {
+                sig.allow_empty();
+            }
+        }
+    }
+    body
+}
+
 fn strongly_connected_components(bodies: &[DescrOf<ComponentRef>]) -> Vec<Vec<usize>> {
     let mut components = super::super::scc::strongly_connected_components(0..bodies.len(), |&node| {
         local_children(&bodies[node])
