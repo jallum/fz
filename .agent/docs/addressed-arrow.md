@@ -163,9 +163,8 @@ the owning input (`a0_p0`, `a0_r`, …) with `Types::address_signature_at_input`
 Thus equal observations share a carrier coordinate and an observation cannot
 accidentally alias the enclosing body parameter. A non-consuming forwarding
 body clears the carrier of every locally-ignored callable slot together with
-the erased closure brand, and a recursive key clears the whole carrier during
-convergence. Precise `ActivationInputs` rows always retain it — and address it
-with that same `address_signature_at_input(input, surface)` call
+the erased closure brand. Precise `ActivationInputs` rows always retain it —
+and address it with that same `address_signature_at_input(input, surface)` call
 (`ActivationInput::addressed_callable_surfaces`, driven from
 `World::normalize_contributions`), nested under the row's own input slot — so
 a self call that reads its own settled row back and an entry call that
@@ -182,44 +181,55 @@ re-derive the address under the current call's frame every time, or a stale
 frame from one call leaks into the next and mints a second key for what is
 otherwise the same activation.
 
-## The dispatch key is a derived collapse, not the evidence
+## The key is a derived collapse, not the evidence
 
-`canonical_activation_key` mints precise input coordinates with `from_inputs`,
-then — for recursive functions only — derives the dispatch key with
-`convergence_collapse_inputs(inputs, demand, returned)`, where `demand` is
-`InputDemand::forwarded_dispatch` — this body's own entry dispatch joined with
-what every callee it forwards a slot to asks of that slot (fz-kdt.183) — and
-`returned` is `InputDemand::returned`, the positions this activation's
-published return is built from and the recursion does not supply (fz-kdt.199).
-`demand` is a
-vector of `DispatchDemand`, not a boolean keep/drop bit: UNDEMANDED subtrees
-collapse to their `convergence_class` (`list(τ)`, `[]`, and `[] | [τ]` all key
-as one addressed list class), while demanded structure can keep only the part
-dispatch observes (for example a tuple tag) and collapse the payload. A
-demanded list keeps its ELEMENT at every depth, because the element decides
-which callee activation the forward reaches; only freight collapses. A RETURNED
-position keeps its addressed convergence class on the second axis — list
-families normalise to `list(elem)` with the element kept, brands still erase —
-because an activation publishes one return and a returned position the key
-erased is a position on which two callers' answers blend. `{:done, acc}` is the
-shape: the tag is the question, the payload is the answer, and each axis keeps
-its own half. A `Whole` slot has no collapse at all, and forwarding can hand a
-`Whole` up; that slot sits outside fz-y6w's termination argument. The returned
-axis does not widen that: it never keeps a slot verbatim.
-`ListShape(elem_demand)` is
-still a recursive convergence key: it preserves the demanded element information
-from the whole list-family descriptor, then converges empty/non-empty shape to
-the all-list class, so a tail-recursive list walk does not fork one activation
-for the initial cons case, another for the possibly-empty tail, or another for
-an already-joined equivalent list family. A recursive ascent therefore settles
-without erasing the discriminator that chose the clause.
+The value coordinates arrive at `canonical_activation_key` already decided.
+`key_inputs_for_call` (`jobs/semantic.rs`) named each slot before the key was
+minted, from two static answers about that slot: whether the value arriving
+there is a position the fixpoint is still SOLVING (the caller's own
+`CallSiteUnknowns::destinations`), and whether anything outside the activation
+can OBSERVE it — a dispatch question that reads it
+(`InputDemand::forwarded_dispatch`, this body's entry dispatch joined with what
+every callee it forwards the slot to asks of that slot) or the callee's
+published return being built from it (`FunctionUnknowns::returns_input`).
+
+Both answers want one coordinate for a whole slot, so they fold into one
+`KeyShape` and one `KeyShape::coordinate` call. `Settled` keys on what arrived.
+`Unknown` — a climbing position, or a slot nothing can observe — keys on the
+variable that ADDRESSES it, and the shape descends, so an accumulator built by
+consing an unsolved value onto a solved list keys as a list of its element's
+address variable: the list constructor survives and only the element is a
+variable. An address is the same coordinate at every round, so the callee gets
+ONE activation whose input evidence simply grows to the solved type.
+
+One fold then applies to what the key named. Where the callee's demand on the
+slot is `DispatchDemand::ListShape`, the coordinate passes through
+`Types::list_family_class`, so `[τ]` and `[] | [τ]` key one activation: such a
+question is `[]` against `[h | t]`, which the callee answers by testing the
+value it is handed, so the refinement the value arrives with is not a
+coordinate. The ELEMENT is untouched at every depth, because the element
+decides which callee activation a forward reaches. A tail-recursive list walk
+therefore does not fork one activation for the initial cons and another for the
+possibly-empty tail, and it settles without erasing the discriminator that
+chose the clause. Any other demand leaves the coordinate exactly as it arrived,
+and an absent fact reads as `Whole`, so a coordinate is only ever folded on a
+proven answer.
+
+`canonical_activation_key` itself makes one further decision, the one a call
+site cannot make for itself. A body that never consumes callable identity only
+TRANSPORTS the closures that reach it, so
+`Types::erase_transported_closure_identity_inputs` erases their brands from
+every slot this body's own `local_dispatch` leaves at `Ignore`, and those
+slots' observation carriers are cleared with them. What the value CLOSED OVER
+survives.
 
 Key != evidence is intentional. The precise coordinates stay in the
 `ActivationInputs` fact; the collapsed coordinates are the `HashMap` dispatch key.
-Recursive activation-input evidence uses the same demand shape, but only widens
-variable-bearing ignored payloads so concrete caller evidence is not lowered by
-key convergence. This is a bounded-specialization control, and it is
-one whole-coordinate operation — not a per-input pre-pass.
+Nothing widens an evidence row to match a key: `insert_row` absorbs a row only
+when it is equivalent to or dominated by a standing one, so concrete caller
+evidence is not lowered by anything the key folded. This is a
+bounded-specialization control, and it is one whole-coordinate operation — not
+a per-input pre-pass.
 
 ## Matching is subsumption — the trichotomy calculator
 

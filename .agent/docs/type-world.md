@@ -184,13 +184,18 @@ returns `none` without a descriptor or a second pass over the fields.
   to their base and merges list shapes (`[] ⊔ nonempty(t) = list(t)`), so a joined
   slot ascends a bounded chain and the fixpoint terminates. This is the join behind
   activation-input facts and return types.
-- **`convergence_class(a)`** — the coarse identity class for an UNDEMANDED slot of
-  a recursive activation key. The whole list family shares one class, including
-  single shapes and joined empty/non-empty shapes; disjoint families (`int` vs a
-  tagged tuple) stay distinct. "Undemanded" is transitive: a slot is freight only
-  when neither this body nor any callee it forwards the slot to asks about it
-  (`InputDemand::forwarded_dispatch`, fz-kdt.183). A demanded list keeps its
-  element instead, at every depth — see
+- **`list_family_class(a)`** — the same type with every list clause it holds, at
+  every depth, widened to admit the empty list, so `[τ]` and `[] | [τ]` are one
+  type here. Elements are untouched and every other constructor is copied
+  through; a negative list clause is left alone, because it says what the type
+  excludes and `[] | [h | t]` minus `[h | t]` is how the exact empty list is
+  spelled. An activation key reads this wherever the callee's dispatch demand on
+  a slot is a list-shape question: such a question is `[]` against `[h | t]`,
+  which the callee answers by testing the value it is handed, so the
+  empty/non-empty refinement the value arrives with is not a coordinate. A
+  recursive type is built one body per state the walk opens and handed to the
+  regular interner, which ties the knot. Memoized in `list_family_classes` — a
+  derived fact about the type, not recomputed per call site. See
   [`type-specialization`](type-specialization.md).
 - **`alpha_normalize_vars(a)`** — canonicalizes type-variable ids. Interning
   canonicalizes structure, not variable names, so inputs are alpha-normalized before

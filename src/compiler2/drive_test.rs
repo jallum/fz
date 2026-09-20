@@ -13911,12 +13911,15 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         "partition/4 should stay keyed on its four inputs"
     );
     let partition_inputs = partition_activations[0].inputs();
-    // fz-f98.14.10.2: the two recursive accumulator slots collapse to their
-    // ADDRESSED convergence class — `[a2_e]` and `[a3_e]` — list-family slots
-    // whose element is a resolvable structural-address var, not the path-blind
-    // `list(any)`. They are distinct BY ADDRESS (param 2 vs param 3), which is
-    // correct: distinct parameter positions must not conflate. The win is that
-    // each slot folds to ONE key (no `[int] | []` over-spec survives).
+    // The two accumulator slots are positions the fixpoint is still solving:
+    // each round conses onto the list the recursion hands back, so the
+    // caller's `destinations` shape for the slot is `List(Unknown)` and
+    // `KeyShape::coordinate` names the element by the variable that addresses
+    // it — `[a2_e]` and `[a3_e]`. The list constructor survives and the
+    // element is a resolvable structural address, not the path-blind
+    // `list(any)`. The two slots stay distinct BY ADDRESS (param 2 vs param
+    // 3), which is correct: distinct parameter positions must not conflate.
+    // Each slot folds to ONE key (no `[int] | []` over-spec survives).
     assert_eq!(types.display(&partition_inputs[2]), "[a2_e]");
     assert_eq!(types.display(&partition_inputs[3]), "[a3_e]");
     let append_activations = activations
