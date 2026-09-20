@@ -177,41 +177,34 @@ So the fact is a least fixpoint over the `DispatchDemand` lattice:
 demand(f, i) = local(f, i) ⊔ ⨆ { demand(g, j) : f forwards i to g@j }
 ```
 
-A second axis rides the same walk. A dispatched position answers "which callee
-activation does this reach"; a RETURNED position answers "what does this
-activation publish", and an activation publishes ONE return, so two callers
-that share a key share one answer. `InputDemand::returned` names the positions
-the body's return IS, CONTAINS, or is a PROJECTION of, solved by the same Kleene
-iteration over the same cone:
+A second question rides beside that fact without belonging to it. A dispatched
+position answers "which callee activation does this reach"; a RETURNED position
+answers "what does this activation publish", and an activation publishes ONE
+return, so two callers that share a key share one answer.
+`FunctionUnknowns::returned_inputs` names the slots whose value the body's
+return IS, CONTAINS, or is a PROJECTION of. It is plain reachability from
+`Return(f)` in the position graph that decides which positions are still
+climbing (`return_unknowns.rs`), so it composes across call sites on its own: a
+function that returns `g(x)` inherits whatever `g` does with its parameter.
 
-```text
-returned(f, i) = ret(f, i) ⊔ ⨆ { returned(g, j) : f forwards i to g@j }
-```
+`key_inputs_for_call` is the single place the two are read together, and it
+reads them as ONE question -- can anything outside the activation observe what
+arrives at this slot? Either answer alone makes it observable, and an
+observable slot keeps the coordinate that arrived, verbatim. A slot NEITHER
+reaches is freight, carried and handed back to no one, so it keys on its bare
+address variable: no code the callee compiles can depend on its type, and every
+value arriving there deserves the same activation.
 
-`ret` reads the lowered body: every tail that RETURNS rather than delivers, the
-constructions its value is assembled from opened, and each leaf traced back
-through projection steps to an input position. A call result is opaque and
-needs no rule -- the forwarding edge above already carries the callee's whole
-demand, this axis included.
-
-The two axes never join into one mask, because they ask for two collapses. On
-the dispatch axis `Whole` means a question reads the value itself and the key
-keeps it VERBATIM. On the returned axis it means the value is the answer, and
-the key keeps its addressed convergence CLASS: list families normalise to
-`list(elem)` with the element kept at every depth, and closure brands still
-erase -- the same bounded collapse fz-kdt.183 gives a demanded list. The depth
-cap applies to LIST families only: `Types::convergence_class_at` checks
-`ADDRESS_COLLAPSE_DEPTH` inside its `is_pure_list_family` branch, so a tuple,
-map or resource nest at a returned position recurses uncapped and is bounded
-only by the type that arrives. Every program built to exercise that already
-fails to terminate at base for fz-kdt.177's reason, so the uncapped case is a
-reading of the code rather than a measured divergence. Folding the two axes
-would have to raise a returned position to `Whole`, which has no collapse at
-all.
+The question is asked at SLOT granularity, not per path. The dispatch half is
+type-shaped and could be read finer, but the return half is a reachability
+answer over static positions, and a body only has positions for the places it
+actually projects. Asking at the slot keeps the two halves the same shape, and
+it over-reads rather than under-reads: a slot whose return-flow touches one
+field keys the whole slot verbatim, which costs a key and never a wrong one.
 
 ### An unsolved return is not evidence to specialize on
 
-Both axes above are properties of the CALLEE's body. A third question belongs
+Both answers above are properties of the CALLEE's body. A third question belongs
 to the call site: is the value this argument carries a value at all, or the
 current rung of an ascent still being solved?
 
@@ -309,9 +302,10 @@ forwarder that reaches the callback.
 One job (`Job::DeriveInputDemand`) walks the forwarding cone, reads every fact
 it consults, and runs the Kleene iteration from the cone's LOCAL masks — never
 from another function's published demand, so there is no wait cycle.
-`convergence_class_at` then keeps the element wherever demand reached the list's
-shape, at every depth; a list demand never reached is freight and collapses to
-one addressed class per position exactly as before.
+`Types::list_family_class` then folds the empty/non-empty refinement out of a
+slot whose demand is a list-shape question, keeping the ELEMENT at every depth;
+a slot that no demand and no return flow reaches is freight and keys on its
+bare address variable.
 
 `InputDemand` publishes ONE dispatch answer per slot. It and the returned axis
 are read together by `World::observable_inputs`, and that one vector shapes both
@@ -384,30 +378,29 @@ to say, and it is deferred: `build/2` keys exactly two activations and the
 recursive one re-analyses without end because its input evidence deepens by a
 tuple each round.
 
-`convergence_class` and `convergence_class_at` share one list-family predicate,
-`Descr::is_pure_list_family` (true whenever a structure is purely lists, no
-matter how many clauses or nesting depths — `axis_free()` plus at least one
-list clause). The distinction is load-bearing: `Descr::as_pure_list`
-additionally demands exactly ONE list clause, so a value that has grown into a
-union of list depths (one clause per depth) does not match it, and a keying
-gate asking that question would key every depth apart instead of folding them
-to one class. `as_pure_list` still exists for its two remaining callers (`refine_widen_uncached`,
-`collect_subst_into_with`), which destructure the concrete `ListSig` and
-therefore genuinely need the single-clause guarantee; that is a different
-question from "is this purely a list family," so it keeps its own predicate.
+`Types::list_family_class` asks no "is this purely a list family" question at
+all. It walks each case's structure and widens every POSITIVE list clause in
+place, at every depth, copying every other constructor through. That is why a
+value grown into a union of list depths, one clause per depth, folds to one
+class rather than keying every depth apart, and why a list sitting beside a
+tuple in the same type folds just the same. `Descr::as_pure_list` asks a
+narrower question and keeps its own form: it demands a structure that is purely
+lists AND exactly ONE list clause, because its two callers
+(`refine_widen_uncached`, `collect_subst_into_with`) destructure the concrete
+`ListSig` and genuinely need that guarantee.
 `behavior/nesting_accumulator.fz` is the list sibling of
 `return_tuple_accumulator.fz`: `def build(n, acc), do: build(n - 1, [acc])`
 nests inside a list argument instead of a tuple, so the list family collapses
 every depth and the shared `build/2` key is reached at once. It is deferred for
 the same reason its tuple sibling is, and that reason is entirely input-side:
 every round contributes a strictly deeper ground input row for `acc` to the
-shared activation, and `Types::convergence_collapse_evidence_inputs` widens an
-ignored slot only when the type carries variables, so no standing row is
-equivalent to or dominates the new one.
+shared activation, and nothing widens an evidence row to meet it: a row is
+absorbed only when it is equivalent to or dominated by a standing one, and a
+strictly deeper type is neither.
 `ActivationInputAlternatives::insert_row` pays one DNF comparison
-(`is_equivalent` / `row_column_dominates`) per standing row over an ever deeper
-type, the row-budget join is a union of depths the next row is not a subtype
-of, and the loop input evidence -> body -> self-call argument -> contribution
+(`Types::is_equivalent` / `Types::row_column_dominates`) per standing row over
+an ever deeper type, the row-budget join is a union of depths the next row is
+not a subtype of, and the loop input evidence -> body -> self-call argument -> contribution
 never closes. `acc(n + 1) = base | list(acc(n))` is the unknown nobody names:
 the static layer answers deepening RETURNS, and nothing yet answers a
 deepening argument.
@@ -415,8 +408,9 @@ deepening argument.
 ```text
 fib(0,0,1), fib(1,0,1), fib(10,0,1), fib(20,0,1)
   n is a dispatch slot (matched 0,1); a,b are accumulators
-  recursive -> a,b undemanded, keyed by convergence_class; n kept precise (already int —
-  numeric literals are not types)
+  a is returned by clause 1 and b by clause 2, so both are observable and key
+  on what arrived; n is kept precise too (already int — numeric literals are
+  not types)
   one activation (root, fib, [int,int,int]); reachable clauses unioned -> int
 ```
 
@@ -495,7 +489,7 @@ cargo test --lib compiler2::drive_test::compiler2_recursive_keying_sees_recursio
 cargo test --lib compiler2::drive_test::compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_need
 cargo test --lib compiler2::drive_test::compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot
 cargo test --lib compiler2::drive_test::compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key
-cargo test --lib compiler2::types     # refine_widen / convergence_class ladders
+cargo test --lib compiler2::types     # refine_widen / list_family_class ladders
 cargo test --test fixture_matrix -- --test-threads=1 users_key_apart_by_element
 cargo test --test fixture_matrix -- --test-threads=1 returned_tuple_field_keys_its_users_apart
 ```

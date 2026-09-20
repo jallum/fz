@@ -508,29 +508,41 @@ callable-owner path treat it as unreachable, the two `bottom_transport_shape`
 arms take it as the shape). An absent fact could never carry that: nothing
 claims it, so it can never settle.
 
-## How recursive convergence works right now
+## How a recursive call is keyed
 
-`canonical_activation_key(function, raw_inputs)` still decides activation
-identity. For recursive functions it collapses UNDEMANDED inputs by
-`convergence_class`, using the `Recursive(fn)` and `InputDemand(fn)` facts to
-decide which slots may balloon. `InputDemand` is transitive: a slot this body
-hands unchanged to a callee carries that callee's demand too, because the value
-that arrives decides which callee activation is reached and therefore what this
-activation publishes (fz-kdt.183,
-[`type-specialization`](type-specialization.md)). It carries a second axis
-beside that one: a position the body RETURNS, and the recursion does not
-supply, is kept as well, because an activation publishes ONE return and two
-callers sharing a key would share it (fz-kdt.199).
+The coordinates of an activation key are decided at the CALL SITE, by
+`key_inputs_for_call` (`jobs/semantic.rs`), and `canonical_activation_key`
+receives them already decided. Two static questions name each slot, in order.
 
-A NON-recursive body is keyed by precise evidence, and one question decides
-each slot. `key_inputs_for_call` asks `World::observable_inputs` whether
-anything reachable can read the slot -- a dispatch question arriving through
-the forwarding graph, or a published return built from it -- and a slot nothing
-reads is addressed as a bare variable, whatever arrived there. A same-shape
-callable that travels through a forwarder nothing asks about therefore shares
-one activation of it, instead of dragging a private copy of the whole library
-chain behind it (fz-6gb). A slot some callee calls, tests or hands back keeps
-the type the call site named, and that callee stays grounded.
+The first: is the value arriving here a position the fixpoint is still SOLVING?
+The caller publishes that answer per call site as
+`CallSiteUnknowns::destinations`, a `KeyShape` folded over every call site
+feeding the destination slot, so a seed call handing `[]` and an ascent call
+handing `[x | acc]` name the slot alike. A climbing position keys on the
+variable that ADDRESSES it, because what the walk observed there is how far the
+ascent has got rather than what the program denotes, and keying on it would
+mint one activation per round. The answer descends: an accumulator built by
+consing an unsolved value onto a solved list is `List(Unknown)` and keys as a
+list of the variable at its element address, because only the element is still
+climbing.
+
+The second, asked only where the first settled everything: can a value at this
+slot be OBSERVED from outside the activation at all? `observable_inputs` says
+yes on either of two proven facts — a dispatch question reaches the slot
+(`InputDemand::forwarded_dispatch`, this body's own entry dispatch joined with
+what every callee it forwards the slot to asks of it), or the callee's
+published return is built from it (`FunctionUnknowns::returns_input`). A slot
+neither reaches is FREIGHT: the value is carried and handed back to no one, so
+no code the callee compiles can depend on its type, and every value arriving
+there deserves the same activation. Freight keys on the slot's bare address
+variable, which is what keeps a recursive accumulator from minting one
+activation per element type it is called with. An absent fact answers
+"observable", so a slot is only ever addressed on a proven answer.
+
+Both questions want the same coordinate for a whole slot, so they fold into one
+`KeyShape` and one `KeyShape::coordinate` call, where `Settled` means "key on
+what arrived".
+
 
 Observed call SURFACES travel beside the value type rather than inside it, so
 they answer the same question in their own place:
@@ -577,18 +589,21 @@ comparison and complete mover classification are recorded in
 The recurring read/join/transform cost is disproportionate, so that component
 was rejected and capture relevance remains implicit in the retained tuple.
 
-List-family convergence is coarse at the key exactly where the slot is
-FREIGHT. On a slot both `InputDemand::forwarded_dispatch` and
-`InputDemand::returned` leave at `Ignore`,
-`Types::convergence_class_at` maps every list family reaching it to one
-addressed class, so `[]` and `list(t)` share one recursive identity there (and
-their union already reuses the `list(t)` identity). On a slot demand REACHES,
-`convergence_collapse_list_shape` keeps the element instead, at every depth, so
-`empty_list()` does not converge with `list(t)` and two callers whose lists
-differ in their element key two activations apart -- which is what stops one
-caller's return from being published as the join of both. The precise caller
-evidence remains in `ActivationInputs(key)`, so clause reachability is decided
-by evidence, not by downstream code rebuilding a more precise key.
+One fold then applies to what the key named. Where the callee's demand on the
+slot is `DispatchDemand::ListShape`, the coordinate passes through
+`Types::list_family_class`, so `[]` and `[t]` key one activation there: such a
+question is `[]` against `[h | t]`, which the callee answers by testing the
+value it is handed, so the refinement the value arrives with is not a
+coordinate. Without it a recursive list walker keys twice, once for the seed's
+cons and once for the tail the recursion hands back, and the two activations
+compile the same body. The ELEMENT is untouched at every depth, so two callers
+whose lists differ in their element key two activations apart -- which is what
+stops one caller's return from being published as the join of both. Any other
+demand leaves the coordinate exactly as it arrived; an absent fact reads as
+`Whole`, so a coordinate is only ever folded on a proven answer. The precise
+caller evidence remains in `ActivationInputs(key)` either way, so clause
+reachability is decided by evidence, not by downstream code rebuilding a more
+precise key.
 
 So today:
 
