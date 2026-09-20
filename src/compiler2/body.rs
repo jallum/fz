@@ -54,7 +54,7 @@ impl CallSiteId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ControlEntryId(u32);
 
 impl ControlEntryId {

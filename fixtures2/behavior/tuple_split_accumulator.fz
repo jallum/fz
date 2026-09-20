@@ -1,0 +1,10 @@
+#---
+# purpose: "one return carries two fields solved apart: loop/2 reverses its accumulator into field 1 and hands back the untouched rest of the input in field 2"
+#---
+def loop([:stop | rest], acc), do: {:ok, rev(acc, []), rest}
+def loop([x | rest], acc), do: loop(rest, [x | acc])
+
+def rev([], out), do: out
+def rev([h | t], out), do: rev(t, [h | out])
+
+def main(), do: dbg(loop([1, 2, :stop, 9], []))

@@ -2,11 +2,12 @@
 //! before any activation exists.
 //!
 //! A *skeleton* is the shape of a value in one function's own vocabulary:
-//! its input slots and the results of its own call sites. It is the
-//! companion an activation's walk carries, minus the specialization -- the
-//! walk's `ReturnExpression` is this same tree with `Input{slot}` bound to
-//! the type that arrived and `Result(callsite)` bound to the activation the
-//! call reached.
+//! its input slots, the results of its own call sites, and the values its
+//! own steps produced. It is the ONE lowering of "what does this return".
+//! The static readers (`return_unknowns`) read it as it stands; a solve
+//! reads the same tree with each leaf bound to what one activation's walk
+//! observed there -- a `Ground` value to its type, a `Result` to the
+//! activations the call site reached.
 //!
 //! Two skeletons are published per function: the one its return is built
 //! from, and one per argument of each call site. Together with the static
@@ -18,9 +19,10 @@
 //!
 //! The lowering is structural and total: every step whose result has a shape
 //! the analysis can name (a constructor, a projection) contributes that
-//! shape, and every other step contributes `Ground` -- a value the fixpoint
-//! never has to solve for, because arithmetic, a bitstring read or a lambda
-//! denotes what it denotes whatever its operands are still climbing towards.
+//! shape, and every other step contributes the `Ground` value itself --
+//! arithmetic, a bitstring read or a lambda denotes what it denotes whatever
+//! its operands are still climbing towards, and an activation's own walk is
+//! what says what that is.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -31,30 +33,48 @@ use super::body::{
     CallInputMode, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody, LoweredStep,
     LoweredTail, SubjectOriginRoot, ValueId, delivered_value_joins,
 };
-use super::identity::FunctionId;
+use super::identity::{FunctionId, ModuleId};
 use super::semantic::ProjectStep;
-use super::types::MapKey;
+use super::types::{MapKey, Ty};
 
 /// One value's shape in its own function's vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub(crate) enum Skeleton {
-    /// A value whose denotation owes nothing to a position being solved.
+    /// No path reaches this position: the join identity, and what a read
+    /// that the shape cannot promise leaves behind.
     #[default]
-    Ground,
+    Bottom,
+    /// A value with no structural history of its own, named by the value
+    /// that carries it. What it denotes is whatever the walk observed
+    /// standing there; a walk that has observed nothing yet leaves it
+    /// unbound, which is an unknown leaf and never `any` or `none`.
+    Ground(ValueId),
     /// The function's `slot`th semantic input.
     Input(usize),
-    /// What one of this function's own call sites yields.
-    Result(CallSiteId),
+    /// What one of this function's own call sites yields. `value` is the
+    /// value the call delivered into the body, which is what the shape
+    /// denotes when the site addressed no activation at all -- a boundary
+    /// edge, or a target nothing has resolved yet.
+    Result {
+        callsite: CallSiteId,
+        value: ValueId,
+    },
     /// The join of several paths: a branch, a dispatch, a delivered resume.
     Union(Vec<Skeleton>),
     Tuple(Vec<Skeleton>),
-    /// A list, by its uniform element. Emptiness is a property of the value
-    /// that arrives, never of the shape: both list constructors guard their
-    /// element the same way, so one form carries both.
-    List(Box<Skeleton>),
-    /// A map or a struct, by its literal-keyed fields. A struct is a map
-    /// whose keys are its field atoms, so it needs no form of its own.
+    /// A list, by its uniform element. `non_empty` records what the
+    /// constructor itself proves: a literal with items and no tail holds at
+    /// least one element whatever arrives, while a cons onto a tail inherits
+    /// the tail's own emptiness.
+    List {
+        element: Box<Skeleton>,
+        non_empty: bool,
+    },
+    /// A map by its literal-keyed fields.
     Map(Vec<(MapKey, Skeleton)>),
+    /// A struct: a map whose keys are its field atoms, carrying the module
+    /// that brands it so the brand survives into the solved type.
+    Struct(ModuleId, Vec<(MapKey, Skeleton)>),
     /// One layer read back out of a value whose own shape is still symbolic.
     /// Built only by [`Skeleton::project`], which reduces the read away
     /// wherever the subject already carries the matching constructor.
@@ -66,54 +86,91 @@ pub(crate) enum Skeleton {
 
 impl Skeleton {
     /// Read one layer out of `of`, reducing structurally wherever `of`
-    /// already carries the constructor being read -- the same reduction
-    /// `ReturnExpression::project` performs, with no `Types` to consult
-    /// because a `Ground` value answers for itself.
+    /// already carries the constructor being read. A read a constructor
+    /// cannot promise -- a tuple index past its arity -- reaches no value at
+    /// all, so it is `Bottom`; a read of a leaf keeps the `Project` node,
+    /// because what that leaf holds is an activation's answer, not a static
+    /// one.
     pub(crate) fn project(of: Skeleton, step: ProjectStep) -> Skeleton {
         match (&of, &step) {
-            // A ground value has no layers to read.
-            (Skeleton::Ground, _) => Skeleton::Ground,
+            (Skeleton::Bottom, _) => Skeleton::Bottom,
             (Skeleton::Union(branches), _) => branches
                 .clone()
                 .into_iter()
                 .map(|branch| Skeleton::project(branch, step.clone()))
-                .fold(Skeleton::Ground, Skeleton::union),
+                .fold(Skeleton::Bottom, Skeleton::union),
             (Skeleton::Tuple(elems), ProjectStep::TupleField(index)) => {
-                elems.get(*index).cloned().unwrap_or(Skeleton::Ground)
+                elems.get(*index).cloned().unwrap_or(Skeleton::Bottom)
             }
-            (Skeleton::List(elem), ProjectStep::ListElement) => (**elem).clone(),
-            (Skeleton::List(_), ProjectStep::ListTail) => of.clone(),
-            (Skeleton::Map(fields), ProjectStep::MapField(wanted)) => fields
-                .iter()
-                .find(|(key, _)| key == wanted)
-                .map(|(_, value)| value.clone())
-                .unwrap_or(Skeleton::Ground),
+            (Skeleton::List { element, .. }, ProjectStep::ListElement) => (**element).clone(),
+            // Removing one element leaves the same uniform shape behind, no
+            // longer proven non-empty.
+            (Skeleton::List { element, .. }, ProjectStep::ListTail) => Skeleton::List {
+                element: element.clone(),
+                non_empty: false,
+            },
+            (Skeleton::Map(fields) | Skeleton::Struct(_, fields), ProjectStep::MapField(wanted))
+                if fields.iter().any(|(key, _)| key == wanted) =>
+            {
+                fields
+                    .iter()
+                    .find(|(key, _)| key == wanted)
+                    .map(|(_, value)| value.clone())
+                    .expect("the guard just proved this field is present")
+            }
             _ => Skeleton::Project { of: Box::new(of), step },
         }
     }
 
-    /// Join two paths. `Ground` is the identity: a path that owes nothing to
-    /// a position being solved constrains nothing about where the others
-    /// still are, so it adds no alternative anyone has to carry. That makes
-    /// it the fold's seed as well as its neutral branch, and a join of
-    /// nothing but settled paths is itself settled.
+    /// Join two paths. `Bottom` is the identity: a path that reaches no
+    /// value adds no alternative anyone has to carry, which makes it the
+    /// fold's seed as well as its neutral branch.
+    ///
+    /// A join is a SET operation, so it is idempotent: joining a skeleton
+    /// with an alternative the flat list already holds is that list
+    /// unchanged. Order is first occurrence first, so the result reads the
+    /// way the lowering found it.
     pub(crate) fn union(a: Skeleton, b: Skeleton) -> Skeleton {
-        match (a, b) {
-            (Skeleton::Ground, other) | (other, Skeleton::Ground) => other,
-            (Skeleton::Union(mut members), Skeleton::Union(more)) => {
-                members.extend(more);
-                Skeleton::Union(members)
-            }
-            (Skeleton::Union(mut members), x) => {
-                members.push(x);
-                Skeleton::Union(members)
-            }
-            (x, Skeleton::Union(mut members)) => {
-                members.insert(0, x);
-                Skeleton::Union(members)
-            }
-            (x, y) => Skeleton::Union(vec![x, y]),
+        let mut members = Vec::new();
+        Skeleton::collect_union_member(&mut members, a);
+        Skeleton::collect_union_member(&mut members, b);
+        match members.len() {
+            0 => Skeleton::Bottom,
+            1 => members.pop().expect("a one-member join is that member"),
+            _ => Skeleton::Union(members),
         }
+    }
+
+    fn collect_union_member(out: &mut Vec<Skeleton>, skeleton: Skeleton) {
+        match skeleton {
+            Skeleton::Bottom => {}
+            Skeleton::Union(members) => members
+                .into_iter()
+                .for_each(|member| Skeleton::collect_union_member(out, member)),
+            member => {
+                if !out.contains(&member) {
+                    out.push(member);
+                }
+            }
+        }
+    }
+}
+
+/// What a function hands back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Returns {
+    /// An extern body has no entries to walk: the source states the return
+    /// outright, and that statement is the whole answer.
+    Declared(Ty),
+    /// One shape per control entry that returns. WHICH of them a given
+    /// activation reaches is a property of that activation, so the entries
+    /// stay apart here and are joined against its `reachable_entries`.
+    Entries(BTreeMap<ControlEntryId, Skeleton>),
+}
+
+impl Default for Returns {
+    fn default() -> Self {
+        Returns::Entries(BTreeMap::new())
     }
 }
 
@@ -121,7 +178,7 @@ impl Skeleton {
 /// call sites passes, all in that function's own vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct FunctionSkeleton {
-    pub(crate) returns: Skeleton,
+    pub(crate) returns: Returns,
     /// One entry per call site, holding that site's positional arguments.
     pub(crate) arguments: BTreeMap<CallSiteId, Vec<Skeleton>>,
     /// The function a call site names in the body itself.
@@ -139,8 +196,18 @@ pub(crate) struct FunctionSkeleton {
 /// values are resolved on demand from that map, so a value defined after its
 /// use in the arena is still resolved from its own definition.
 pub(crate) fn lower(body: &LoweredBody) -> FunctionSkeleton {
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return FunctionSkeleton::default();
+    let (clauses, entries) = match body {
+        LoweredBody::Extern { signature } => {
+            return FunctionSkeleton {
+                returns: Returns::Declared(signature.return_ty),
+                ..FunctionSkeleton::default()
+            };
+        }
+        LoweredBody::Clauses {
+            clauses: body_clauses,
+            entries: body_entries,
+            ..
+        } => (body_clauses, body_entries),
     };
     let mut lowering = Lowering {
         body,
@@ -189,19 +256,21 @@ pub(crate) fn lower(body: &LoweredBody) -> FunctionSkeleton {
         );
     }
 
-    let mut returns = Skeleton::Ground;
+    let mut returns: BTreeMap<ControlEntryId, Skeleton> = BTreeMap::new();
     let mut arguments = BTreeMap::new();
     let mut callees = BTreeMap::new();
-    for entry in entries {
+    for (index, entry) in entries.iter().enumerate() {
+        let owner = ControlEntryId::from_u32(index as u32);
         match &entry.tail {
             LoweredTail::Value {
                 value,
                 dest: ControlDestination::Return,
             } => {
                 let contribution = lowering.resolve(*value);
-                returns = Skeleton::union(returns, contribution);
+                returns.insert(owner, contribution);
             }
             LoweredTail::DirectCall {
+                value,
                 callsite,
                 callee,
                 args,
@@ -214,18 +283,34 @@ pub(crate) fn lower(body: &LoweredBody) -> FunctionSkeleton {
                     args.iter().map(|arg| lowering.resolve(arg.value)).collect::<Vec<_>>(),
                 );
                 if matches!(dest, ControlDestination::Return) {
-                    returns = Skeleton::union(returns, Skeleton::Result(*callsite));
+                    returns.insert(
+                        owner,
+                        Skeleton::Result {
+                            callsite: *callsite,
+                            value: *value,
+                        },
+                    );
                 }
             }
             LoweredTail::ClosureCall {
-                callsite, args, dest, ..
+                value,
+                callsite,
+                args,
+                dest,
+                ..
             } => {
                 arguments.insert(
                     *callsite,
                     args.iter().map(|arg| lowering.resolve(arg.value)).collect::<Vec<_>>(),
                 );
                 if matches!(dest, ControlDestination::Return) {
-                    returns = Skeleton::union(returns, Skeleton::Result(*callsite));
+                    returns.insert(
+                        owner,
+                        Skeleton::Result {
+                            callsite: *callsite,
+                            value: *value,
+                        },
+                    );
                 }
             }
             LoweredTail::Value { .. }
@@ -236,7 +321,7 @@ pub(crate) fn lower(body: &LoweredBody) -> FunctionSkeleton {
         }
     }
     FunctionSkeleton {
-        returns,
+        returns: Returns::Entries(returns),
         arguments,
         callees,
         input_len: clauses.first().map_or(0, |clause| clause.params.len()),
@@ -259,6 +344,7 @@ enum Definition {
         tail: Option<ValueId>,
     },
     Map(Vec<(MapKey, ValueId)>),
+    Struct(ModuleId, Vec<(MapKey, ValueId)>),
     Project(ValueId, ProjectStep),
 }
 
@@ -286,9 +372,10 @@ impl Lowering<'_> {
                 Some(fields) => (*value, Definition::Map(fields)),
                 None => return,
             },
-            LoweredStep::Struct { value, fields, .. } => (
+            LoweredStep::Struct { value, module, fields } => (
                 *value,
-                Definition::Map(
+                Definition::Struct(
+                    *module,
                     fields
                         .iter()
                         .map(|(name, field)| (MapKey::Atom(name.clone()), *field))
@@ -317,7 +404,8 @@ impl Lowering<'_> {
                 (*tail, Definition::Project(*source, ProjectStep::ListTail))
             }
             // A value with no shape of its own: it denotes what it denotes
-            // whatever its operands are still climbing towards.
+            // whatever its operands are still climbing towards, and the
+            // walk that reaches it is what says what that is.
             LoweredStep::Const { .. }
             | LoweredStep::FunctionRef { .. }
             | LoweredStep::Lambda { .. }
@@ -342,43 +430,60 @@ impl Lowering<'_> {
         }
         if !self.visiting.insert(value) {
             // A value can only reach itself through a delivered join that a
-            // later entry feeds; the turn itself carries no shape.
-            return Skeleton::Ground;
+            // later entry feeds; the turn itself reaches no value.
+            return Skeleton::Bottom;
         }
         let definition = self.definitions.get(&value).cloned();
         let skeleton = match definition {
-            None => Skeleton::Ground,
-            Some(definition) => self.resolve_definition(&definition),
+            None => Skeleton::Ground(value),
+            Some(definition) => self.resolve_definition(value, &definition),
         };
         self.visiting.remove(&value);
         self.memo.insert(value, skeleton.clone());
         skeleton
     }
 
-    fn resolve_definition(&mut self, definition: &Definition) -> Skeleton {
+    fn resolve_definition(&mut self, value: ValueId, definition: &Definition) -> Skeleton {
         match definition {
             Definition::Input(slot) => Skeleton::Input(*slot),
-            Definition::Result(callsite) => Skeleton::Result(*callsite),
+            Definition::Result(callsite) => Skeleton::Result {
+                callsite: *callsite,
+                value,
+            },
             Definition::Alias(source) => self.resolve(*source),
             Definition::Subject(owner, subject) => self.resolve_subject(*owner, *subject),
             Definition::Delivered(sources) => sources
                 .iter()
-                .map(|source| self.resolve_definition(&source.clone()))
-                .fold(Skeleton::Ground, Skeleton::union),
+                .map(|source| self.resolve_definition(value, &source.clone()))
+                .fold(Skeleton::Bottom, Skeleton::union),
             Definition::Tuple(items) => Skeleton::Tuple(items.iter().copied().map(|item| self.resolve(item)).collect()),
+            // `[]` describes no element at all, so there is nothing here to
+            // name: what it denotes is exactly what the walk observed
+            // standing at this value.
+            Definition::List { items, tail: None } if items.is_empty() => Skeleton::Ground(value),
             Definition::List { items, tail } => {
                 let mut element = items
                     .iter()
                     .copied()
                     .map(|item| self.resolve(item))
-                    .fold(Skeleton::Ground, Skeleton::union);
+                    .fold(Skeleton::Bottom, Skeleton::union);
                 if let Some(tail) = tail {
                     let tail_element = Skeleton::project(self.resolve(*tail), ProjectStep::ListElement);
                     element = Skeleton::union(element, tail_element);
                 }
-                Skeleton::List(Box::new(element))
+                Skeleton::List {
+                    element: Box::new(element),
+                    non_empty: tail.is_none(),
+                }
             }
             Definition::Map(fields) => Skeleton::Map(
+                fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), self.resolve(*value)))
+                    .collect(),
+            ),
+            Definition::Struct(module, fields) => Skeleton::Struct(
+                *module,
                 fields
                     .iter()
                     .map(|(key, value)| (key.clone(), self.resolve(*value)))
@@ -393,16 +498,18 @@ impl Lowering<'_> {
 
     /// A dispatch outcome binds an entry parameter to a projection path out
     /// of one of the dispatch's own inputs. The path is the same one the
-    /// walk reads, so the skeleton reads it with the same steps.
+    /// walk reads, so the skeleton reads it with the same steps. A path the
+    /// skeleton cannot follow reaches no value here, and the walk's own
+    /// observation is what answers instead.
     fn resolve_subject(&mut self, owner: ControlEntryId, subject: crate::dispatch_matrix::SubjectId) -> Skeleton {
         let (root, path) = self.body.dispatch_subject_origin(owner, subject);
         let SubjectOriginRoot::Value(value) = root else {
-            return Skeleton::Ground;
+            return Skeleton::Bottom;
         };
         let mut skeleton = self.resolve(value);
         for kind in path {
             let Some(step) = projection_step(kind) else {
-                return Skeleton::Ground;
+                return Skeleton::Bottom;
             };
             skeleton = Skeleton::project(skeleton, step);
         }

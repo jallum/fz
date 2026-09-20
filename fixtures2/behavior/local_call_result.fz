@@ -1,0 +1,12 @@
+#---
+# purpose: "a call result bound to a local and returned unchanged: outer's whole return is a bare reference to inner's, the unguarded case the solve inlines away"
+#---
+def outer(list) do
+  r = inner(list)
+  r
+end
+
+def inner([]), do: 0
+def inner([_ | t]), do: [outer(t)]
+
+def main(), do: dbg(outer([1, 2]))
