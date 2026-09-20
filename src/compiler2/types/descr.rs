@@ -588,21 +588,6 @@ impl StructureOf<Ty> {
         })
     }
 
-    /// True when this type is purely the list FAMILY — one or more list
-    /// alternatives (e.g. `[int] | []`) and nothing on any other axis. Unlike
-    /// [`as_pure_list`](Self::as_pure_list) it admits a union of list shapes, so
-    /// the addressed convergence class can collapse a recursive list-family slot
-    /// (`[int] | []`) to one addressed-element list rather than leaving the union
-    /// uncollapsed (fz-f98.14.10.2).
-    pub(super) fn is_pure_list_family(&self) -> bool {
-        self.axis_free()
-            && !self.lists.is_empty()
-            && self.tuples.is_empty()
-            && self.resources.is_empty()
-            && self.funcs.is_empty()
-            && self.maps.is_empty()
-    }
-
     /// The structural alternatives of one already-correlated case.  The outer
     /// descriptor reinstates this case's brand cell around every result; a
     /// structural projection must never turn a branded shape into its
@@ -972,10 +957,6 @@ impl DescrOf<Ty> {
 
     pub(super) fn as_pure_list(&self, any_ty: Ty) -> Option<ListSig> {
         self.common_owned(|structure| structure.as_pure_list(any_ty))
-    }
-
-    pub(super) fn is_pure_list_family(&self) -> bool {
-        !self.cases.is_empty() && self.cases.iter().all(|case| case.structure.is_pure_list_family())
     }
 
     pub(super) fn projection_alternatives(&self) -> Option<Vec<Descr>> {

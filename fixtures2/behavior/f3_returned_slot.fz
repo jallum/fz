@@ -1,0 +1,10 @@
+#---
+# purpose: "a recursive slot the body RETURNS keys on the observed type, so its two callers read two returns rather than one join"
+#---
+def loop(0, junk), do: junk
+def loop(n, junk), do: loop(n - 1, junk)
+
+def main() do
+  dbg(loop(3, [1, 2]))
+  dbg(loop(3, ["a", "b"]))
+end

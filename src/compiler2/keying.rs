@@ -20,12 +20,11 @@ pub(crate) struct FunctionFactMap<T> {
 /// never observe one without the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BodyKeying {
-    /// Reaches itself through the static call graph: its activation keys
-    /// convergence-collapse so the ascent settles (fz-y6w).
+    /// Reaches itself through the static call graph.
     pub(crate) recursive: bool,
     /// Calls through a callable, constructs a lambda, or is a capture-holding
     /// lambda: closure brands are meaning to this body, so its keys stay
-    /// precise. A body with neither treats brands as freight (fz-6gb).
+    /// precise. A body with neither treats brands as freight.
     pub(crate) consumes_callable_identity: bool,
 }
 
@@ -36,46 +35,26 @@ pub(crate) struct BodyKeying {
 ///
 /// The two halves answer two different questions and neither stands in for the
 /// other. `local_dispatch` is "does a clause of THIS body ask about this slot"
-/// -- the question closure-brand erasure has always asked (fz-6gb): a body that
-/// never tests a slot cannot tell two same-shape lambdas apart there.
-/// `forwarded_dispatch` is "does this activation's published RETURN depend on
-/// this slot" -- which includes everything the callees this body hands the slot
-/// to depend on, because the value that arrives decides which callee activation
-/// is reached and therefore what comes back (fz-kdt.183). `returned` is the
-/// other way a return depends on an input: not "which activation is reached"
-/// but "the returned value IS this input position" (fz-kdt.199).
+/// -- the question closure-brand erasure asks: a body that never tests a slot
+/// cannot tell two same-shape lambdas apart there. `forwarded_dispatch` is
+/// "does any activation this slot can reach ask about it", which includes
+/// every callee this body hands the slot on to, because the value that arrives
+/// decides which callee activation is reached.
+///
+/// Dispatch is one of the two ways a value at a slot can be observed from
+/// outside the activation. The other is return flow -- the return IS, CONTAINS,
+/// or is a PROJECTION OF what arrived -- and that answer is published on
+/// `FunctionUnknowns::returned_inputs`, derived from the same position graph
+/// that decides which positions are still climbing. `key_inputs_for_call` is
+/// the single place the two are read together.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct InputDemand {
     /// This body's own entry dispatch, one demand per semantic input.
     pub(crate) local_dispatch: Vec<DispatchDemand>,
     /// `local_dispatch` joined with the demand of every callee this body
-    /// forwards each input to, transitively (fz-kdt.183). Always at least as
-    /// high as `local_dispatch` slot for slot.
+    /// forwards each input to, transitively. Always at least as high as
+    /// `local_dispatch` slot for slot.
     pub(crate) forwarded_dispatch: Vec<DispatchDemand>,
-    /// Where this activation's published RETURN is BUILT FROM: the input
-    /// positions the returned value is, contains, or is a projection of --
-    /// this body's own returns joined with the returns of every callee it
-    /// forwards an input to, transitively (fz-kdt.199), MINUS the positions
-    /// the recursion itself supplies (`recursion_supplied_positions`).
-    ///
-    /// It is the DUAL of `forwarded_dispatch` and it lives on its own axis
-    /// because the two ask for different collapses. A dispatched position is
-    /// a QUESTION, and `Whole` there means "the value itself is the answer",
-    /// so the key keeps it verbatim. A returned position is an ANSWER, and
-    /// `Whole` here means "this value is the return", so the key keeps its
-    /// ground CLASS: list families normalise to `list(elem)` with the element
-    /// kept at every depth, and callable brands still erase.
-    /// `Types::convergence_class_at` caps depth at `ADDRESS_COLLAPSE_DEPTH`
-    /// for LIST families only -- the cap is checked inside its
-    /// `is_pure_list_family` branch, so a tuple, map or resource nest at a
-    /// returned position recurses uncapped and is bounded only by the type
-    /// that arrives. Every program built to exercise that (a self-nesting or
-    /// mutually nesting accumulator) already fails to terminate at base for
-    /// fz-kdt.177's reason, so the uncapped case is a reading of the code, not
-    /// a measured divergence. Joining the two axes into one mask would have to
-    /// raise a returned position to `Whole`, which has no collapse at all
-    /// (fz-kdt.200) -- so they stay two.
-    pub(crate) returned: Vec<DispatchDemand>,
 }
 
 pub(crate) type BodyKeyingMap = FunctionFactMap<BodyKeying>;

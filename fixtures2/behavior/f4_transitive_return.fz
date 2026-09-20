@@ -1,0 +1,12 @@
+#---
+# purpose: "a slot handed back through a helper is observable too: return flow composes across call sites, so neither f nor g addresses it"
+#---
+def g(x), do: x
+
+def f(n, x) when n > 0, do: f(n - 1, x)
+def f(0, x), do: g(x)
+
+def main() do
+  dbg(f(2, [1]))
+  dbg(f(2, ["a"]))
+end

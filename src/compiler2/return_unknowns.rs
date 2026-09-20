@@ -153,6 +153,28 @@ fn collect_held(function: FunctionId, skeleton: &Skeleton, out: &mut Vec<Positio
     }
 }
 
+/// Whether `branch`, standing at `position`, holds `child` only by reading it
+/// straight back out of `position`. `walk({:go, acc}, n)` calling
+/// `walk({:go, acc}, n - 1)` puts `{:go, field 1 of slot 0}` at slot 0: each
+/// turn takes the tuple apart and puts the same layer back, so the cycle it
+/// closes grows nothing and its constructor guards nothing. It is the mirror
+/// of the reduction `expand_node` already does for a projection that reads a
+/// constructor -- there the projection undoes the constructor, here the
+/// constructor undoes the projection.
+///
+/// The test is the reduction itself: project the branch at the step the child
+/// reads, and the answer is the child exactly when the constructor put back
+/// what the projection took. One more layer -- `{:go, [field 1 of slot 0]}` --
+/// reduces to a LIST of the child and is productive, as it should be.
+fn reconstructs(position: &Position, function: FunctionId, branch: &Skeleton, child: &Position) -> bool {
+    let Position::Interior(child_function, projection @ Skeleton::Project { of, step }) = child else {
+        return false;
+    };
+    *child_function == function
+        && position_of(function, of).as_ref() == Some(position)
+        && Skeleton::project(branch.clone(), step.clone()) == *projection
+}
+
 /// What one function's keying needs to know, and nothing else: whether its
 /// own return is being solved, and what each of its call sites hands on and
 /// yields.
@@ -162,6 +184,19 @@ pub(crate) struct FunctionUnknowns {
     /// of it owes its return to a component solve rather than to its own
     /// walk.
     pub(crate) returns: bool,
+    /// One entry per semantic input: whether this function's published
+    /// return IS, CONTAINS, or is a PROJECTION OF the value that arrives
+    /// there. The answer is reachability from `Return(f)` in the position
+    /// graph, so it composes across call sites on its own -- a function that
+    /// returns `g(x)` inherits whatever `g` does with its parameter.
+    pub(crate) returned_inputs: Box<[bool]>,
+    /// One entry per semantic input: where unknown-ness sits inside the
+    /// values that ARRIVE there, joined over every call site that feeds the
+    /// slot. It is published per slot rather than per call site because one
+    /// slot gets one coordinate rule: a seed call handing `[]` and an ascent
+    /// call handing `[x | acc]` must name the position the same way, or the
+    /// seed keys apart from every later round and the ascent is back.
+    pub(crate) input_shapes: Box<[KeyShape]>,
     /// One entry per call site.
     pub(crate) callsites: BTreeMap<CallSiteId, CallSiteUnknowns>,
 }
@@ -171,11 +206,17 @@ impl FunctionUnknowns {
         self.callsites.get(&callsite)
     }
 
-    pub(crate) fn argument(&self, callsite: CallSiteId, slot: usize) -> &KeyShape {
-        self.callsites
-            .get(&callsite)
-            .and_then(|site| site.arguments.get(slot))
-            .unwrap_or(&KeyShape::Settled)
+    /// Whether a value arriving at `slot` can be read back out of what this
+    /// function returns.
+    pub(crate) fn returns_input(&self, slot: usize) -> bool {
+        self.returned_inputs.get(slot).copied().unwrap_or(true)
+    }
+
+    /// Where unknown-ness sits inside whatever arrives at `slot`. A slot no
+    /// call site feeds -- a root's parameter, a closure's captured prefix --
+    /// has nothing still being solved in it.
+    pub(crate) fn input_shape(&self, slot: usize) -> &KeyShape {
+        self.input_shapes.get(slot).unwrap_or(&KeyShape::Settled)
     }
 }
 
@@ -449,10 +490,16 @@ impl<'a> PositionGraph<'a> {
                         }
                     }
                 }
+                let position = self.nodes[next].clone();
                 let children: Vec<Position> = self.branches[next]
                     .iter()
                     .filter(|(_, _, direct)| *direct)
-                    .flat_map(|(function, branch, _)| guarded_positions(*function, branch))
+                    .flat_map(|(function, branch, _)| {
+                        guarded_positions(*function, branch)
+                            .into_iter()
+                            .filter(|child| !reconstructs(&position, *function, branch, child))
+                            .collect::<Vec<_>>()
+                    })
                     .collect();
                 for child in children {
                     let target = self.node(child);
@@ -530,6 +577,43 @@ impl<'a> PositionGraph<'a> {
             Position::Interior(_, _) => {}
         }
         out
+    }
+
+    /// Which of `function`'s input slots its own return is built from.
+    ///
+    /// A return is built from a slot when the slot's position is reachable
+    /// from `Return(function)` over the graph's edges. Both edge kinds count:
+    /// a bare edge means the return IS that position or a projection of it,
+    /// and a guarded edge means it is wrapped inside a constructor the return
+    /// hands out. Reaching the slot either way means a caller can read the
+    /// value back, so its type is observable and the key must keep it.
+    ///
+    /// Composition across call sites needs no second walk. `Return(f)` reaches
+    /// `Result(f, cs)`, which reaches `Return(g)`, which reaches `Slot(g, t)`,
+    /// whose feeds carry `f`'s own argument skeleton and therefore reach
+    /// `Slot(f, s)`. A slot another caller of `g` feeds is reached too, which
+    /// keeps a slot verbatim that a narrower answer could have addressed --
+    /// over-reading here costs a key, never a wrong one.
+    fn reached_from_return(&mut self, function: FunctionId, input_len: usize) -> Box<[bool]> {
+        let start = self.node(Position::Return(function));
+        let mut seen = vec![false; self.nodes.len()];
+        let mut frontier = vec![start];
+        seen[start] = true;
+        while let Some(node) = frontier.pop() {
+            for (target, _) in self.edges[node].clone() {
+                if !seen[target] {
+                    seen[target] = true;
+                    frontier.push(target);
+                }
+            }
+        }
+        (0..input_len)
+            .map(|slot| {
+                self.index
+                    .get(&Position::Slot(function, slot))
+                    .is_some_and(|node| seen[*node])
+            })
+            .collect()
     }
 
     /// Adds what `skeleton` denotes to `out`: a constructor is itself a
@@ -627,8 +711,21 @@ pub(crate) fn derive(skeletons: &HashMap<FunctionId, Rc<FunctionSkeleton>>, func
             (*callsite, site)
         })
         .collect();
+    let input_shapes = (0..skeleton.input_len)
+        .map(|slot| {
+            graph
+                .slot_feeds
+                .get(&(function, slot))
+                .into_iter()
+                .flatten()
+                .map(|(feeder, argument)| key_shape(&unknown, *feeder, argument))
+                .fold(KeyShape::Settled, KeyShape::join)
+        })
+        .collect();
     FunctionUnknowns {
         returns: unknown.contains(&Position::Return(function)),
+        returned_inputs: graph.reached_from_return(function, skeleton.input_len),
+        input_shapes,
         callsites,
     }
 }
