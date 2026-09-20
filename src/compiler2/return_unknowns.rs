@@ -61,14 +61,18 @@
 //! answered where the argument is written, by the caller whose own reach
 //! does contain the cycle, and it is published per call site.
 //!
-//! One slot still gets one coordinate rule, so what a call site publishes
-//! is not the shape of the single value it writes but the shape of its
-//! DESTINATION SLOT, folded over every call site this walk can see feeding
-//! it: a seed call handing `[]` and an ascent call handing `[x | acc]` land
-//! in one position and must name it the same way, or the seed keys apart
-//! from every round after it. It is the same fold either side would compute;
-//! only the caller has the reach to compute it, because its reach contains
-//! the callee's and, on top of that, the argument it writes itself.
+//! What a call site publishes is therefore not the shape of the single value
+//! it writes but the coordinate rule of its DESTINATION SLOT: an address
+//! variable is one coordinate shared by every caller in the program, so the
+//! slot earns it by sitting on a guarded cycle ITSELF, and where it does, the
+//! call sites this walk can see feeding it are folded together to say where
+//! inside the arriving value the climb sits. A seed call handing `[]` and an
+//! ascent call handing `[x | acc]` name that one position the same way,
+//! because the cycle they are on runs through the callee's own recursion and
+//! so lies inside the reach of every caller that can get to it. A cycle that
+//! runs through a sibling CALLER instead -- one helper read by two loops --
+//! lies outside the reach of a caller not on it, and that caller keys on what
+//! it observed, which is what keeps the two loops from sharing an activation.
 //!
 //! A call made THROUGH a value names no callee in any body, so this walk
 //! cannot see past it: its arguments are recorded, and what it yields
@@ -251,18 +255,22 @@ impl FunctionUnknowns {
 /// `[]` hands on nothing unsolved and stays outside the cycle it seeds.
 ///
 /// KEYING asks: what coordinate does the SLOT this argument lands in get?
-/// One slot gets one rule, so a seed call handing `[]` and an ascent call
-/// handing `[x | acc]` must name the position alike or the seed keys apart
-/// from every round after it. That answer is about the whole slot, folded
-/// over every call site feeding it, and it is the same answer whichever of
-/// them is being resolved.
+/// That is a question about the destination position -- whether IT sits on a
+/// guarded cycle -- and not about the value this site happens to write. A
+/// seed call handing `[]` and an ascent call handing `[x | acc]` still name
+/// the position alike, because the cycle they sit on runs through the
+/// callee's own recursion and so lies inside the reach of every caller that
+/// can get to it. A caller that reaches no cycle through the slot is on
+/// none, and keys on what it observed there.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct CallSiteUnknowns {
     /// One shape per positional argument: where unknown-ness sits inside the
     /// value THIS site hands on.
     pub(crate) arguments: Vec<KeyShape>,
-    /// One shape per positional argument: where unknown-ness sits inside
-    /// everything that ARRIVES at the slot that argument lands in, this
+    /// One shape per positional argument: the coordinate rule of the slot
+    /// that argument lands in. It is `Settled` unless the slot itself sits on
+    /// a guarded cycle this caller's walk can see, and where it does, it says
+    /// where inside everything ARRIVING at the slot the climb sits, this
     /// site's own value among it. It is published by the caller because only
     /// a caller has the reach to compute it -- a callee like `wrap(v)`
     /// reaches nothing and can say nothing about the climbing value its
@@ -497,20 +505,33 @@ impl<'a> PositionGraph<'a> {
             .collect()
     }
 
-    /// Where unknown-ness sits inside everything that ARRIVES at one callee
-    /// slot: the join over every call site this walk can see feeding it.
+    /// What coordinate one callee slot gets, and where inside the arriving
+    /// value that coordinate stops being what the walk observed.
     ///
-    /// One slot gets one coordinate rule, so a seed call handing `[]` and an
-    /// ascent call handing `[x | acc]` are folded together here rather than
-    /// each answering for the single value it happens to write. `Settled` is
-    /// the join's identity, so a path that settles everything constrains
-    /// nothing and what another path is still solving decides.
+    /// The slot answers first. An address variable is one coordinate shared
+    /// by every caller in the program, so a slot earns it only by sitting on
+    /// a guarded cycle itself: that is what makes the value arriving there an
+    /// iterate rather than a denotation. A caller whose own argument is still
+    /// climbing while the slot it writes to is on no cycle keys on what
+    /// arrived, which is what keeps two chains that share a helper -- each
+    /// climbing in its own loop, neither on the other's -- keyed apart.
+    ///
+    /// Once the slot is on such a cycle the feeders say where the climb sits
+    /// inside it, joined over every call site this walk can see: a seed call
+    /// handing `[]` and an ascent call handing `[x | acc]` name the slot
+    /// `List(Unknown)` together rather than each answering for the single
+    /// value it writes. `Settled` is the join's identity, so a path that
+    /// settles everything constrains nothing and what another path is still
+    /// solving decides.
     ///
     /// Asking this from the CALLER is what makes the answer available at
     /// all. A caller's reach contains the callee's, and on top of that it
     /// contains the argument it writes itself -- the one contribution a
     /// callee like `wrap(v)`, which reaches nothing, can never see.
     fn slot_shape(&self, unknown: &HashSet<Position>, callee: FunctionId, slot: usize) -> KeyShape {
+        if !unknown.contains(&Position::Slot(callee, slot)) {
+            return KeyShape::Settled;
+        }
         self.slot_feeds
             .get(&(callee, slot))
             .into_iter()

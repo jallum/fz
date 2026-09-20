@@ -120,17 +120,24 @@ mechanisms bound it, both via the activation **key** (`canonical_activation_key`
 
 - **The observability collapse.** `key_inputs_for_call` (`jobs::semantic`) asks
   two static questions of every call argument, and `KeyShape::coordinate`
-  answers both. Is the value that arrives here a position the fixpoint is still
+  answers both. Is the DESTINATION SLOT a position the fixpoint is still
   SOLVING? Then the coordinate is the variable that addresses the slot, which is
   the same coordinate at every round of the ascent. That answer is read from the
   CALLER — `CallSiteUnknowns::destinations`, found by where the call sits in the
   caller's body — because a slot is written by callers and `derive_return_unknowns`
   walks a function's own CALLEES: `wrap(v)` reaches nothing, yet the only value it
   is ever handed is a recursive result still climbing, and a callee-side answer
-  folds that slot to "key on what arrived". `destinations` is the DESTINATION
-  SLOT's shape, folded over every call site the caller can see feeding that slot,
-  so one slot still gets one coordinate rule: a seed call handing `[]` and an
-  ascent call handing `[x | acc]` name the position alike. Its sibling
+  folds that slot to "key on what arrived". What the caller publishes is a fact
+  about the SLOT and not about the value this site writes: the slot answers
+  `Unknown` only when it sits on a guarded cycle this caller's walk reaches, and
+  where it does, the call sites feeding it are folded together to say where
+  inside the arriving value the climb sits. A seed call handing `[]` and an
+  ascent call handing `[x | acc]` name the position alike, because the cycle they
+  are on runs through the callee's own recursion and lies inside every caller's
+  reach; a cycle through a SIBLING caller — one helper read by two loops — does
+  not, so a caller not on it keys on what it observed and the two loops keep
+  their own activations ([`semantic-fixpoint`](semantic-fixpoint.md), *How a
+  recursive call is keyed*). Its sibling
   `CallSiteUnknowns::arguments` is the shape of the value THIS site hands on, and
   is a different question with a different consumer: `return_membership` asks it
   whether this call puts its callee on the caller's cycle, and `enter(xs) ->

@@ -2313,22 +2313,23 @@ fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>)
 ///
 /// This is the one place a key coordinate is decided, and it is decided from
 /// the CALLER's static answer about the call site being keyed. Whether a
-/// value is still climbing is a property of the value, and the body that
-/// writes the argument is the one that can see where it came from: a callee
-/// like `wrap(v)` reaches nothing and so can say nothing about the recursive
-/// result its only caller hands it.
+/// position is still climbing is decided by the cycles around it, and the
+/// body that writes the argument is the one whose reach contains them: a
+/// callee like `wrap(v)` reaches nothing and so can say nothing about the
+/// recursive result its only caller hands it.
 ///
-/// One slot still gets one rule: a seed call handing `[]` and an ascent call
-/// handing `[x | acc]` must name the position the same way, or the seed keys
-/// apart from every round after it. What the caller publishes per call site
-/// is therefore already the DESTINATION SLOT's shape, folded over every call
-/// site feeding it, so reading it one call at a time still answers for the
-/// slot.
+/// What the caller publishes per call site is a fact about the DESTINATION
+/// SLOT rather than about the one value this site writes, so reading it one
+/// call at a time still answers for the slot. A seed call handing `[]` and an
+/// ascent call handing `[x | acc]` name the position the same way, because
+/// the cycle they sit on runs through the callee's own recursion and lies
+/// inside every caller's reach; a cycle through a SIBLING caller does not, so
+/// a caller not on it keys on what arrived.
 ///
 /// Two static questions decide a slot, in order.
 ///
-/// The first: is the value that arrives here a position the fixpoint is still
-/// SOLVING? `CallSiteUnknowns::destinations` answers it, derived from the
+/// The first: is the slot this argument lands in a position the fixpoint is
+/// still SOLVING? `CallSiteUnknowns::destinations` answers it, derived from the
 /// caller's own skeletons. A climbing position keys on its address variable,
 /// because what the walk observed there is how far the ascent has got rather
 /// than what the program denotes, and keying on it would mint one activation

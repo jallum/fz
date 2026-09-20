@@ -22626,6 +22626,86 @@ fn compiler2_keys_one_activation_where_nothing_can_observe_the_slot() {
     );
 }
 
+/// The same law where the cycle is a SIBLING's, not the callee's own.
+///
+/// Both stdlib chains here end at `Enum.reverse_list/1`. `Enum.chunk_by` gets
+/// there carrying an accumulator it grows by consing, and `Enum.sort_by` gets
+/// there through a sort whose own recursion feeds that helper's slot back
+/// round through a cons -- so the slot sits on a guarded cycle the sort walk
+/// reaches and the chunk walk does not.
+///
+/// The slot's coordinate is decided by the slot, so only the sort chain names
+/// it by its address variable and the chunk chain keys on the integer list it
+/// observed. Deciding it from the climbing ARGUMENT instead names both chains
+/// with the one address variable every caller in the program shares: the two
+/// calls become one activation whose return is `[int | binary]`, that union
+/// rides the sort back into the mapper, and `String.length/1` is asked to
+/// accept an integer -- which its `@spec` refuses, so the program does not
+/// compile at all.
+#[test]
+fn compiler2_two_chains_through_one_helper_key_on_their_own_cycles() {
+    let tel = ConfiguredTelemetry::new();
+    let activations = ActivationAnalysisCapture::new();
+    activations.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("two_chains_one_helper.fz".to_string()),
+        text: concat!(
+            "def main() do\n",
+            "  Enum.chunk_by([1], fn (x) -> x end)\n",
+            "  Enum.sort_by([\"bbb\"], fn (s) -> String.length(s) end)\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root_id);
+    assert_resolved(
+        compiler.drive(),
+        "two chains through one shared helper must settle to a backend product",
+    );
+
+    let keys = activations.keys_for_root(root_id);
+    let world = compiler.world();
+    let census = |label: &str| -> Vec<String> {
+        let mut keyed: Vec<String> = keys
+            .iter()
+            .filter(|key| crate::compiler2::canon::function_label(world, key.function) == label)
+            .map(|key| {
+                key.inputs()
+                    .iter()
+                    .map(|input| world.types().display(input))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            })
+            .collect();
+        keyed.sort();
+        keyed.dedup();
+        keyed
+    };
+    assert_eq!(
+        census("Enum.reverse_list/1"),
+        vec!["[int]".to_string(), "a0".to_string()],
+        "the shared helper keys twice: the chunk chain on the list it was handed, the sort \
+         chain -- whose own recursion feeds this slot back round -- on the slot's address",
+    );
+    assert_eq!(
+        census("main/0#lambda@1/1"),
+        vec!["binary".to_string()],
+        "so the sort_by mapper is only ever handed a string",
+    );
+    assert_eq!(
+        census("String.length/1"),
+        vec!["binary".to_string()],
+        "and the length call it makes stays inside its @spec",
+    );
+}
+
 /// A producer that refuses a program says why, once. `Enum.count(:atom)` has
 /// no `Enumerable` implementation for an atom, so materializing the call edge
 /// reports `Protocol.UndefinedError` in the reader's terms and fails. The
