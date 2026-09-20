@@ -225,7 +225,8 @@ facts agree.
 A call to a named function needs two things about the CALLEE before it can
 resolve: the `FunctionContract` that refines the surface (only for a function
 that declares one — `World::function_declares_contract`) and the facts its
-activation key is built from (`Recursive`, `InputDemand`, via
+activation key is built from (`Recursive`, `InputDemand`, `ReturnUnknowns`,
+named once by `World::activation_key_facts` and proven by
 `World::require_activation_key_facts`). `require_callee_prerequisites`
 registers both in one pass at each of the three resolve sites, before either
 is consumed, so a caller that holds neither blocks once rather than a rung at

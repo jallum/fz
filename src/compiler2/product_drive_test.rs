@@ -2196,10 +2196,10 @@ fn string_error_end_to_end_did_not_settle_on_a_real_drive() {
 /// `job_failed`: a runtime root submitted against a `defmacro` entry.
 /// `jobs::root::seed_root` rejects a `RootKind::Runtime` root whose function
 /// `is_macro` before it publishes anything, returning `Err(FatalError)`
-/// straight from `jobs::run`. `SeedRoot` is the sole producer named by every
-/// one of `produce_root_backend_product`'s keying waits
-/// (`RootEntry`/`InputDemand`/`Recursive`) and is already agenda-queued
-/// from the root's own ignition, so it runs -- and fails -- inside
+/// straight from `jobs::run`. `SeedRoot` is the sole ready producer for every
+/// one of `produce_root_backend_product`'s keying waits (`RootEntry` plus the
+/// three facts a key is built from) and is already agenda-queued from the
+/// root's own ignition, so it runs -- and fails -- inside
 /// `drive_product_fact_wait`'s own job loop while satisfying the first of
 /// those waits, not somewhere else in the pipeline: a genuine, minimal
 /// construction of the seam under test, not a fabricated one.
@@ -2229,15 +2229,16 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
         .expect_err("a runtime root targeting a macro entry must fail, not silently succeed");
 
     // `produce_root_backend_product`'s keying waits are all still unsettled
-    // (`RootEntry`, `InputDemand`, `Recursive`), and `SeedRoot` -- the only
-    // producer any of the three names -- is already agenda-queued from the
-    // root's own ignition, so it runs while satisfying the *first* wait the
-    // pull-drive tries. That order is pinned deterministically (a
-    // multi-wait `PullOutcome` is sorted before processing), not an
-    // accident of hash iteration: `RootEntry`, not `Recursive`, even though
-    // `SeedRoot` never gets far enough to publish either fact on this
-    // rejecting run.
-    let fact = FactUse::settled(FactKey::RootEntry(root));
+    // (`RootEntry`, and the `Recursive`/`InputDemand`/`ReturnUnknowns` a key
+    // is built from), and `SeedRoot` -- the only producer any of the four
+    // names -- is already agenda-queued from the root's own ignition, so it
+    // runs while satisfying the *first* wait the pull-drive tries. That order
+    // is pinned deterministically (a multi-wait `PullOutcome` is sorted
+    // before processing and its fact prefix is walked in reverse), not an
+    // accident of hash iteration: the highest-ranked of the four,
+    // `ReturnUnknowns`, even though `SeedRoot` never gets far enough to
+    // publish any of them on this rejecting run.
+    let fact = FactUse::settled(FactKey::ReturnUnknowns(compiler.world().root_entry(root).function));
     let job = Job::SeedRoot(root);
     assert_eq!(
         error,
@@ -2247,7 +2248,7 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
             fact,
             job
         ),
-        "the String path should report the RootEntry fact-wait's SeedRoot job failure, got: {error}"
+        "the String path should report the first keying fact-wait's SeedRoot job failure, got: {error}"
     );
     let mut finished_work = super::WorkStartTally::default();
     for work in finished.borrow().iter().copied() {

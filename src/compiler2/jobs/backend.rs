@@ -142,13 +142,9 @@ pub(crate) fn produce_root_backend_product(
     root: RootId,
 ) -> PullOutcome {
     let root_entry = world.root_entry(root);
-    let keying_facts = [
-        FactKey::RootEntry(root),
-        FactKey::InputDemand(root_entry.function),
-        FactKey::Recursive(root_entry.function),
-    ];
+    let keying_facts =
+        std::iter::once(FactKey::RootEntry(root)).chain(World::activation_key_facts(root_entry.function));
     let keying_waits = keying_facts
-        .into_iter()
         .filter(|fact| !context.read_fact(world, FactUse::settled(fact.clone())))
         .map(|fact| PullWait::Fact(FactUse::settled(fact)))
         .collect::<Vec<_>>();
