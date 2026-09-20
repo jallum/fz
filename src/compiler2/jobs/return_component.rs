@@ -375,6 +375,17 @@ fn gather(
         }
     }
 
+    // Membership is discovered, not declared: an activation minted after this
+    // solve concludes can call a member and join the component. Every other
+    // fact here is read for its VALUE and names only the members already
+    // known, so none of them can move on a newcomer's account. This one is
+    // read for its MOVEMENT -- a member gaining a caller re-wakes this solve,
+    // which then rediscovers membership and answers for the newcomer too. It
+    // is a read, never a wait: a member no one has called yet is not a stall.
+    for member in members {
+        reads.push(FactKey::Callers(member.clone()));
+    }
+
     // The evidence already standing at a member's slot is the base case of
     // its equation: every caller outside the component contributed it, and
     // a closure member's captured slots -- which no call site's arguments

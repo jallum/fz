@@ -189,11 +189,12 @@ Both axes above are properties of the CALLEE's body. A third question belongs
 to the call site: is the value this argument carries a value at all, or the
 current rung of an ascent still being solved?
 
-The walk answers it from the companion it already carries beside every value
-(`ReturnExpression`, [`semantic-fixpoint`](semantic-fixpoint.md)). An argument
-whose companion names `Local(k)` for a member `k` of the caller's own
-recursive-return component is an ITERATE: what the walk observed is how far the
-solve has climbed, not what the program denotes. `nest([_ | rest]), do:
+It is answered statically, off the return skeletons
+(`return_unknowns::FunctionUnknowns`, [`semantic-fixpoint`](semantic-fixpoint.md)):
+an argument position that rests on a call whose return sits on a guarded cycle
+is an ITERATE, whatever the walk happens to have observed there, because what
+it observed is how far the solve has climbed and not what the program
+denotes. `nest([_ | rest]), do:
 wrap(nest(rest))` hands `wrap` `int`, then `int | [int]`, then one more layer
 every round, and keying on that mints a `wrap/1` activation per rung, none of
 which is the answer.
@@ -210,9 +211,9 @@ so its evidence is the key's own meaning and stays verbatim. A clause reading
 one tuple field says nothing about the fields beside it, which is why the
 contest is settled per position rather than per slot -- `item/2` matching
 `{:ok, v, rest}` keeps its tag and abstracts what the tag does not name.
-Structure the companion itself exposes survives too: an accumulator built by
-consing an unsolved value onto a solved list keys as a LIST of the variable at
-its element address (`items/2[_, [a1_e]]`), never as a bare variable, because
+Structure the static shape itself exposes survives too: an accumulator built
+by consing an unsolved value onto a solved list keys as a LIST of the variable
+at its element address (`items/2[_, [a1_e]]`), never as a bare variable, because
 only the element is still climbing.
 
 That argument dependency is also a return dependency, so it is an edge of the
@@ -324,7 +325,7 @@ rather than climbing towards it, and each prints its exact expected output.
 genuinely heterogeneous value type -- and it terminates with its exact output
 and no budget anywhere in the path.
 
-Two companions come at the same shape from the other side.
+Two more fixtures come at the same shape from the other side.
 `behavior/recursive_typedef.fz` declares the type outright,
 `@type t :: :start | {integer, t}`. Its declaration commits one finite regular
 component before its ordinary consumers run; re-driving the unchanged

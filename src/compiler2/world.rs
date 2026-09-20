@@ -10,7 +10,7 @@ use std::any::Any;
 #[cfg(test)]
 use std::cell::Cell;
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, HashMap, HashSet, hash_map};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
@@ -64,9 +64,9 @@ use super::scheduler::ExternalDependencyStates;
 use super::scheduler::{CompletionEffects, FatalError, WorkStartReason, WorkStartTally};
 use super::scope::ScopeSnapshot;
 use super::semantic::{
-    ActivationAnalysis, ActivationInput, ActivationInputAlternatives, ActivationInputMap, ActivationMap, ArgumentFlow,
-    ArgumentFlowMap, CallSiteKey, CallSiteMap, CallSiteResolution, CallSiteSummary, CallSiteTargets,
-    CallSiteTargetsMap, CallableConstructionTargetKey, ContributionMap, ContributionReplace, ExecutableRuntimeDemand,
+    ActivationAnalysis, ActivationInput, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey,
+    CallSiteMap, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap,
+    CallableConstructionTargetKey, CallerMap, Callers, ContributionMap, ContributionReplace, ExecutableRuntimeDemand,
     JoinContribution, ReturnArrival, ReturnComponent, RuntimeDemandInputMap, RuntimeDemandTypeProjection, SemanticOrd,
     TargetDemandContribution,
 };
@@ -161,7 +161,7 @@ pub struct World {
     protocol_impl_providers: ProtocolImplProviderMap,
     activations: ActivationMap,
     activation_inputs: ActivationInputMap<Job>,
-    argument_flow: ArgumentFlowMap<Job>,
+    callers: CallerMap<Job>,
     callsites: CallSiteMap,
     callsite_targets: CallSiteTargetsMap,
     executable_facts: HashMap<ExecutableKey, std::rc::Rc<super::executable_facts::ExecutableFacts>>,
@@ -300,7 +300,7 @@ impl World {
             protocol_impl_providers: ProtocolImplProviderMap::new(),
             activations: ActivationMap::new(),
             activation_inputs: ActivationInputMap::new(),
-            argument_flow: ArgumentFlowMap::new(),
+            callers: CallerMap::new(),
             callsites: CallSiteMap::new(),
             callsite_targets: CallSiteTargetsMap::new(),
             executable_facts: HashMap::new(),
@@ -602,17 +602,17 @@ impl World {
                 _ => None,
             })
             .collect::<HashSet<_>>();
+        let previous_caller_outputs = previous_output_keys
+            .iter()
+            .filter_map(|fact| match fact {
+                FactKey::Callers(key) => Some(key.clone()),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
         let previous_runtime_demand_input_outputs = previous_output_keys
             .iter()
             .filter_map(|fact| match fact {
                 FactKey::RuntimeDemandInput(key) => Some(key.clone()),
-                _ => None,
-            })
-            .collect::<HashSet<_>>();
-        let previous_argument_flow_outputs = previous_output_keys
-            .iter()
-            .filter_map(|fact| match fact {
-                FactKey::ArgumentFlow(key) => Some(key.clone()),
                 _ => None,
             })
             .collect::<HashSet<_>>();
@@ -629,37 +629,30 @@ impl World {
         } else {
             self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
         };
-        // Argument-flow evidence is cumulative caller evidence, exactly like
-        // activation-input evidence above: a rerun can add or widen a slot's
-        // evidence, but a temporarily unreachable call site cannot retract a
-        // contribution another still-standing call site made. One job can
-        // reach the same callee from more than one call site (recursion, or
-        // two clauses both calling the same helper), so contributions with
-        // the same key join here -- the same per-slot union
-        // `ArgumentFlow::join_assign` performs once installed.
-        let mut argument_flow_next: HashMap<ActivationKey, ArgumentFlow> = HashMap::new();
-        for (key, slots) in effects.argument_flow_contributions {
-            let incoming = ArgumentFlow::from_slots(slots);
-            match argument_flow_next.entry(key) {
-                hash_map::Entry::Occupied(mut entry) => entry.get_mut().join_assign(&incoming, &mut self.types),
-                hash_map::Entry::Vacant(entry) => {
-                    entry.insert(incoming);
-                }
-            }
+        // A call edge is cumulative caller evidence, exactly like the input
+        // evidence above: one analysis can reach the same callee from several
+        // call sites, and a rerun that stops reaching one of them cannot
+        // unsay the edges another still-standing site published. Repeats of
+        // one key join here through `Callers::join_assign`.
+        let mut callers_next: HashMap<ActivationKey, Callers> = HashMap::new();
+        for (callee, site) in effects.caller_contributions {
+            callers_next
+                .entry(callee)
+                .or_insert_with(<Callers as JoinContribution>::bottom)
+                .join_assign(&Callers::of(site), &mut self.types);
         }
         let ContributionReplace {
-            output_keys: argument_flow_outputs,
-            changed_keys: argument_flow_changed,
+            output_keys: caller_outputs,
+            changed_keys: caller_changed,
         } = if waits.is_empty() {
-            self.argument_flow.conclude_preserving_frontier(
+            self.callers.conclude_preserving_frontier(
                 &mut self.types,
                 job.clone(),
-                previous_argument_flow_outputs,
-                argument_flow_next,
+                previous_caller_outputs,
+                callers_next,
             )
         } else {
-            self.argument_flow
-                .extend(&mut self.types, job.clone(), argument_flow_next)
+            self.callers.extend(&mut self.types, job.clone(), callers_next)
         };
         let runtime_demand_input_contributions = effects
             .runtime_demand_input_contributions
@@ -703,7 +696,7 @@ impl World {
         let mut outputs = effects.outputs;
         outputs.extend(incoming.output_keys.into_iter().map(FactKey::IncomingInputSlot));
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
-        outputs.extend(argument_flow_outputs.into_iter().map(FactKey::ArgumentFlow));
+        outputs.extend(caller_outputs.into_iter().map(FactKey::Callers));
         outputs.extend(
             runtime_demand_input_outputs
                 .into_iter()
@@ -716,7 +709,7 @@ impl World {
         let mut changed = effects.changed;
         changed.extend(incoming.changed_keys.into_iter().map(FactKey::IncomingInputSlot));
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
-        changed.extend(argument_flow_changed.into_iter().map(FactKey::ArgumentFlow));
+        changed.extend(caller_changed.into_iter().map(FactKey::Callers));
         changed.extend(
             runtime_demand_input_changed
                 .iter()
