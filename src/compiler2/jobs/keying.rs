@@ -278,8 +278,8 @@ struct ForwardEdge {
 /// least fixpoint, computed by Kleene iteration over the forwarding graph one walk
 /// discovers -- the same shape `derive_call_graph_component` uses for the
 /// strong component, and terminating for the same reason: the join is monotone
-/// and no join deepens a demand tree past the deepest local mask in the graph,
-/// which is a fixed finite depth once the graph is fixed.
+/// and the lattice has four elements and height two, so a slot rises at most
+/// twice -- from `Ignore` through one descent kind to `Whole`.
 ///
 /// The body's OWN demand is more than its entry dispatch, because a closure
 /// call is a question too: the callable decides which body runs and that body

@@ -712,7 +712,6 @@ fn entry_dispatch_does_not_materialize_unneeded_structural_inputs() {
 fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
     use crate::dispatch_matrix::demand::DispatchDemand;
     use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
-    use std::collections::BTreeMap;
     let mut world = crate::compiler2::World::new();
     let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "unwrap_tuple", 1);
     let ty = world.types_mut().any();
@@ -760,10 +759,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
     let dispatch = ExecutableDispatch::new(Rc::new(plan), vec![0]);
     assert_eq!(
         dispatch.plan().input_demand(),
-        [DispatchDemand::TupleFields(BTreeMap::from([(
-            1,
-            DispatchDemand::Whole
-        )]))],
+        [DispatchDemand::TupleFields],
         "the clause head questions its tuple parameter"
     );
     Rc::make_mut(&mut abi.materialized).entry_dispatch = Some(dispatch);

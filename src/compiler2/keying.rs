@@ -1,10 +1,10 @@
 //! Stable facts used to canonicalize activation keys.
 //!
 //! Every vector in [`InputDemand`] holds [`DispatchDemand`]: what a body asks
-//! about one input, shaped like the type it asks about. A slot is asked about
-//! from more than one place -- two clauses of one body, and every callee this
-//! body hands the slot on to -- so what is published here is the join of all
-//! of them over that lattice.
+//! about one input -- nothing, the whole value, or a descent into a tuple field
+//! or a list head. A slot is asked about from more than one place -- two
+//! clauses of one body, and every callee this body hands the slot on to -- so
+//! what is published here is the join of all of them over that lattice.
 
 use crate::dispatch_matrix::demand::DispatchDemand;
 
