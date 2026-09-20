@@ -323,6 +323,12 @@ struct ForwardEdge {
 /// and no join deepens a demand tree past the deepest local mask in the graph,
 /// which is a fixed finite depth once the graph is fixed.
 ///
+/// The body's OWN demand is more than its entry dispatch, because a closure
+/// call is a question too: the callable decides which body runs and that body
+/// decides what it asks of the arguments, so a slot a closure call touches --
+/// and a slot a lambda captures -- is demanded `Whole` before any forwarding
+/// is joined in ([`join_closure_observations`]).
+///
 /// A slot NOT reached this way is freight: the body neither asks about it nor
 /// hands it to anyone who does. It stays collapsed, which is what keeps one
 /// activation for `loop(n, junk)` and one for `partition/4`'s two accumulators.
@@ -408,10 +414,14 @@ fn collect_input_forwarding_graph(
     }
     reads.push(dispatch);
     reads.push(lowered);
-    // The plan states what it reads of its inputs; this walk only joins that
-    // across the bodies a value is forwarded to.
-    let local = world.entry_dispatch(function).input_demand().to_vec();
-    let forwards = forwarded_inputs(world, function, local.len());
+    // The plan states what it reads of its inputs; this walk raises that with
+    // the questions a closure call asks, then joins it across the bodies a
+    // value is forwarded to.
+    let body = world.lowered_body(function);
+    let mut local = world.entry_dispatch(function).input_demand().to_vec();
+    let slots_of = direct_input_slots(&body, local.len());
+    join_closure_observations(&body, &slots_of, &mut local);
+    let forwards = forwarded_inputs(world, &body, &slots_of);
     let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
     graph.insert(function, DemandNode { local, forwards });
     for callee in next {
@@ -498,23 +508,10 @@ fn collect_protocol_callback_node(
 /// argument IS a parameter exactly when its value is one of them. A direct
 /// call's args are its callee's inputs one-for-one (`CallInputMode::Direct`),
 /// which is why the callee slot is the argument index.
-fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> Vec<ForwardEdge> {
-    let body = world.lowered_body(function);
-    let LoweredBody::Clauses { entries, .. } = &*body else {
+fn forwarded_inputs(world: &World, body: &LoweredBody, slots_of: &HashMap<ValueId, Vec<usize>>) -> Vec<ForwardEdge> {
+    let LoweredBody::Clauses { entries, .. } = body else {
         return Vec::new();
     };
-    let slots_of = input_positions(&body, input_count)
-        .into_iter()
-        .map(|(value, positions)| {
-            (
-                value,
-                positions
-                    .into_iter()
-                    .filter_map(|(slot, path)| path.is_empty().then_some(slot))
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
     let mut edges = Vec::new();
     for entry in entries {
         let LoweredTail::DirectCall { callee, args, .. } = &entry.tail else {
@@ -537,6 +534,75 @@ fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> 
     edges.sort_unstable();
     edges.dedup();
     edges
+}
+
+/// Every input slot a value names DIRECTLY -- the parameter itself, not a
+/// piece of it. A projection reaches a slot at a non-empty path, so the value
+/// standing there is no longer what the slot names, and neither forwarding nor
+/// observation of the slot can be read off it.
+fn direct_input_slots(body: &LoweredBody, input_count: usize) -> HashMap<ValueId, Vec<usize>> {
+    input_positions(body, input_count)
+        .into_iter()
+        .map(|(value, positions)| {
+            (
+                value,
+                positions
+                    .into_iter()
+                    .filter_map(|(slot, path)| path.is_empty().then_some(slot))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+/// Raises this body's own demand to `Whole` on every input a closure call
+/// touches, and on every input a lambda closes over.
+///
+/// A closure call is a dispatch question about all of them. Which callable
+/// arrived decides which body runs, so the called slot is asked about; and
+/// that body -- which this one cannot know statically -- decides what it asks
+/// of the arguments handed to it, so the honest answer for each argument is
+/// the whole value. A lambda bakes the identity of what it captures into the
+/// closure it builds, and that closure's consumers depend on the correlation,
+/// so a captured input is asked about too.
+///
+/// `ClosureCall` only occurs as an entry tail and `Lambda` only as a step, so
+/// the flat scan covers every dispatch arm, branch and receive clause -- the
+/// same reason [`body_consumes_callable_identity`] scans the same two places.
+fn join_closure_observations(
+    body: &LoweredBody,
+    slots_of: &HashMap<ValueId, Vec<usize>>,
+    local: &mut [DispatchDemand],
+) {
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return;
+    };
+    let mut touched = Vec::new();
+    for entry in entries {
+        if let LoweredTail::ClosureCall { callee, args, .. } = &entry.tail {
+            touched.push(*callee);
+            touched.extend(args.iter().map(|arg| arg.value));
+        }
+        touched.extend(entry.steps.iter().flat_map(lambda_captures).copied());
+    }
+    for clause in clauses {
+        touched.extend(clause.projections.iter().flat_map(lambda_captures).copied());
+    }
+    for value in touched {
+        for slot in slots_of.get(&value).into_iter().flatten().copied() {
+            if let Some(demand) = local.get_mut(slot) {
+                demand.join_assign(DispatchDemand::Whole);
+            }
+        }
+    }
+}
+
+/// What a step closes over, which is nothing unless the step builds a lambda.
+fn lambda_captures(step: &LoweredStep) -> &[ValueId] {
+    match step {
+        LoweredStep::Lambda { captures, .. } => captures,
+        _ => &[],
+    }
 }
 
 /// Every value that names an input position, and which position(s) it names.
@@ -913,3 +979,7 @@ pub(super) fn derive_return_unknowns(world: &mut World, function: FunctionId) ->
         ..JobEffects::default()
     })
 }
+
+#[cfg(test)]
+#[path = "keying_test.rs"]
+mod keying_test;

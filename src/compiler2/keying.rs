@@ -34,9 +34,11 @@ pub(crate) struct BodyKeying {
 /// [`BodyKeying`] carries two answers behind `FactKey::Recursive`.
 ///
 /// The two halves answer two different questions and neither stands in for the
-/// other. `local_dispatch` is "does a clause of THIS body ask about this slot"
-/// -- the question closure-brand erasure asks: a body that never tests a slot
-/// cannot tell two same-shape lambdas apart there. `forwarded_dispatch` is
+/// other. `local_dispatch` is "does THIS body ask about this slot" -- the
+/// question closure-brand erasure asks: a body that never tests a slot, never
+/// calls it, and never captures it cannot tell two same-shape lambdas apart
+/// there. Calling a value through a closure call asks about it and about
+/// everything handed to it, because the body being entered is not known here. `forwarded_dispatch` is
 /// "does any activation this slot can reach ask about it", which includes
 /// every callee this body hands the slot on to, because the value that arrives
 /// decides which callee activation is reached.
@@ -49,7 +51,9 @@ pub(crate) struct BodyKeying {
 /// the single place the two are read together.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct InputDemand {
-    /// This body's own entry dispatch, one demand per semantic input.
+    /// This body's own questions, one demand per semantic input: its entry
+    /// dispatch, raised to `Whole` wherever a closure call touches a slot or
+    /// a lambda captures one.
     pub(crate) local_dispatch: Vec<DispatchDemand>,
     /// `local_dispatch` joined with the demand of every callee this body
     /// forwards each input to, transitively. Always at least as high as

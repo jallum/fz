@@ -22452,8 +22452,13 @@ fn split_top_level(text: &str) -> Vec<&str> {
 /// onto it, so its position sits on a cycle crossing a constructor and is
 /// `KeyShape::Unknown`. Keying it on the arriving type would mint one
 /// activation per ascent state (measured: three), and the seed still publishes
-/// the join, so the split buys nothing. `split3/5` and `split4/6` say the same
-/// for three and four accumulators at once.
+/// the join, so the split buys nothing. The row holds the CALLABLE fixed --
+/// one lambda, bound once, handed to both calls -- because `tag/3` calls what
+/// it is given, and a called slot is a question this body asks: two different
+/// lambdas there are two activations by the very rule under test, which would
+/// answer for the accumulator without ever asking about it. The two calls
+/// differ in their list alone. `split3/5` and `split4/6` say the same for
+/// three and four accumulators at once, with no callable in sight.
 ///
 /// `fwd/2` is why `InputDemand` carries two dispatch halves. `fwd/2` only
 /// TRANSPORTS its callable: no clause of `fwd/2` tests it, so two same-shape
@@ -22493,8 +22498,9 @@ const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
         "tag/3",
         "def tag(_f, [], acc), do: acc\n\
          def tag(f, [h | t], acc), do: tag(f, t, [f.(h) | acc])\n\
-         def main() do\n  dbg(tag(fn (_x) -> \"n\" end, [1, 2], []))\n\
-         \x20 dbg(tag(fn (x) -> x + 1 end, [1, 2], []))\nend\n",
+         def main() do\n  f = fn (x) -> x + 1 end\n\
+         \x20 dbg(tag(f, [1, 2], []))\n\
+         \x20 dbg(tag(f, [3, 4, 5], []))\nend\n",
         1,
     ),
     (
