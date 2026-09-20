@@ -29,7 +29,7 @@ defmodule WorkCensus do
     {opts, [door, target], _} =
       OptionParser.parse(args, strict: [top: :integer, csv: :string, bin: :string, by: :string])
 
-    bin = Keyword.get(opts, :bin, "target/debug/fz2")
+    bin = Path.expand(Keyword.get(opts, :bin) || default_bin())
     top = Keyword.get(opts, :top, 25)
     by = Keyword.get(opts, :by, "j/fn")
 
@@ -58,6 +58,14 @@ defmodule WorkCensus do
   # One program, one trace, one row. A program the door cannot compile is
   # reported rather than skipped silently: a crash is work too, and an
   # unbounded one is the loudest signal there is.
+  # Timings taken from an unoptimized build say nothing about where a release
+  # compile spends its time, so the release binary is preferred and the choice
+  # is printed. Neither present is a stop, not a silent fallback.
+  defp default_bin do
+    Enum.find(["target/release/fz2", "target/debug/fz2"], &File.exists?/1) ||
+      raise("no fz2 binary: build one (cargo build --release) or pass --bin <path>")
+  end
+
   defp measure(file, door, bin) do
     trace = Path.join(System.tmp_dir!(), "work-census-#{:erlang.phash2(file)}.jsonl")
     File.rm(trace)
@@ -132,7 +140,9 @@ defmodule WorkCensus do
     cells =
       Enum.map(rows, fn r ->
         [
-          r.fixture,
+          # A program that did not exit 0 still has work worth ranking, but it
+          # must not read as a clean measurement.
+          if(r.status == 0, do: r.fixture, else: "! " <> r.fixture),
           Integer.to_string(r.bytes),
           Integer.to_string(r.fns),
           Integer.to_string(r.jobs),
