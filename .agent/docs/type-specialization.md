@@ -267,7 +267,23 @@ rebuilt tuple hands on unchanged (fz-kdt.199).
 "Forwards" is narrow on purpose: a direct-call tail argument that IS a clause
 parameter. A projection (`[head | tail]`), a construction (`[head | acc]`), a
 closure call and a lambda capture are all opaque, because the value that arrives
-at the callee is not the value the slot names. That is why `partition/4`'s two
+at the callee is not the value the slot names.
+
+Opaque as an EDGE is not the same as unobserved. A closure call is a question
+this body asks about every value it touches: which callable arrived decides
+which body runs, and that body -- not knowable here -- decides what it asks of
+the arguments handed to it. A lambda bakes the identity of what it captures
+into the closure it builds, and that closure's consumers depend on the
+correlation. So `jobs::keying::join_closure_observations` raises this body's
+own demand to `Whole` on a slot a closure call calls, on every slot handed to
+one as an argument, and on every slot a lambda captures, before the forwarding
+fixpoint runs. The raise then rides the direct-call edges like any other
+demand, so a function that hands its parameter to a callee that calls it sees
+`Whole` with no second walk. `Enum.reduce/3` captures its reducer into the
+`fn (entry, inner_acc) -> {:cont, reducer.(entry, inner_acc)} end` it builds,
+so the reducer slot is demanded and two users with different lambdas key two
+activations; its accumulator is wrapped as `{:cont, acc}` -- a construction --
+so nothing forwards it and it stays freight. That is why `partition/4`'s two
 consed accumulators stay ONE activation while `List.reduce_step/3` splits.
 The returned axis inherits this narrowness: a reconstructed or projected
 forwarding argument is not an edge for it either, and neither is a
@@ -286,16 +302,19 @@ one addressed class per position exactly as before.
 
 `InputDemand` carries all three. The forwarded demand and the returned axis
 shape the key collapse; the LOCAL mask is what closure-brand erasure reads
-(fz-6gb), because "does a clause of THIS body test this slot" is a different
-question from "does anything downstream read it", and a forwarder that only
-transports a callable must still key one activation for two same-shape lambdas.
+(fz-6gb), because "does THIS body test, call or capture this slot" is a
+different question from "does anything downstream read it", and a forwarder
+that only transports a callable must still key one activation for two
+same-shape lambdas.
 
 Three limits are known and stated rather than argued away. A `Whole` slot has NO
 collapse, and forwarding can hand a `Whole` up from a callee that tests a
 literal, so fz-y6w's termination argument does not cover such a slot
 (measured: 344 rows over 174 functions gain a forwarding-introduced `Whole`).
 The returned axis does not widen that exposure: it never produces a verbatim
-slot, only an addressed class. The CALLABLE slot is still blind. And the
+slot, only an addressed class. A callable slot is blind only while it is merely
+TRANSPORTED: a body that calls it demands it `Whole`, and that answer forwards,
+so the blindness is the forwarder's and brand erasure is what covers it. And the
 recursion-supplied subtraction reads SELF calls only: a mutually recursive pair
 rebuilds across the cycle rather than inside one body, and a recursion routed
 through a generated lambda (`00032_lambda_recursion`) is not local either, so
