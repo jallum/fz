@@ -140,7 +140,7 @@ fn statics_over(name: &str, source: &str, universe: Universe) -> Statics {
         if !world.has_fact(&FactKey::LoweredBody(function)) || !world.has_fact(&FactKey::StaticCallees(function)) {
             continue;
         }
-        let skeleton = Rc::new(lower(&world.lowered_body(function)));
+        let skeleton = Rc::new(lower(&world.lowered_body(function), world.types()));
         labels.insert(function, function_label(world, function));
         skeletons.insert(function, skeleton);
         for callee in world.static_callees(function).iter().copied() {

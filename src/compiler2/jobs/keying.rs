@@ -838,7 +838,10 @@ pub(super) fn derive_return_skeleton(world: &mut World, function: FunctionId) ->
         // `LoweredBody`'s sole producer arm is `Job::LowerFunction`.
         return Ok(JobEffects::wait_on_current(lowered));
     }
-    let skeleton = Rc::new(super::super::return_skeleton::lower(&world.lowered_body(function)));
+    let skeleton = Rc::new(super::super::return_skeleton::lower(
+        &world.lowered_body(function),
+        world.types(),
+    ));
     let changed = world.define_return_skeleton(function, skeleton);
     Ok(JobEffects {
         reads: current_uses([lowered]),

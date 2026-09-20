@@ -1,0 +1,49 @@
+#---
+# purpose: "an extern's declared return carries the caller's argument type through a bound variable, not the extern's own body"
+#---
+#
+# # extern_return_binds_to_caller
+#
+# `dbg/1` forwards to `fz_dbg_value(t) :: t when t: any`, a prelude extern
+# with no fz body of its own. An ordinary function's return picks up its
+# argument's type because the BODY carries it there; an extern has no body,
+# so the same relation has to come from unifying the declared parameter
+# against each activation's own input and instantiating the declared return
+# through the resulting substitution.
+#
+# `ascending/0` and `descending/0` are the same two calls in each order. Each
+# call keys its own activation of `dbg/1` -- `inputs=[int]` and
+# `inputs=[float]` -- and each activation now defines its own return instead
+# of both sharing whichever type happened to be interned first, which is what
+# made the un-substituted declaration order-dependent.
+#
+# Paper answer.
+#
+#   ascending/0   dbg(11); dbg(10.5)   => float
+#   descending/0  dbg(10.5); dbg(11)   => int
+#
+# A function's return is the type of its last expression, so each of these is
+# the return of its own final `dbg` call: `dbg(10.5)` for `ascending/0` and
+# `dbg(11)` for `descending/0`. The two differ only because each call site's
+# activation of the extern instantiates the declared return against its own
+# argument. Without that substitution both read the same type and the answer
+# depends on which was interned first.
+#
+# `--dump types` names the program's own functions, so the two lines above are
+# what it shows and what this fixture is measured against; the prelude
+# activations behind them are not in that view. Execution prints the boxed
+# values dbg always prints, in call order.
+def ascending() do
+  dbg(11)
+  dbg(10.5)
+end
+
+def descending() do
+  dbg(10.5)
+  dbg(11)
+end
+
+def main() do
+  ascending()
+  descending()
+end

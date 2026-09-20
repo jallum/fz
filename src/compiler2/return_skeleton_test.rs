@@ -45,7 +45,8 @@ fn skeletons(name: &str, source: &str) -> Skeletons {
         }
         let label = function_label(world, function);
         out.labels.insert(function, label.clone());
-        out.by_label.insert(label, lower(&world.lowered_body(function)));
+        out.by_label
+            .insert(label, lower(&world.lowered_body(function), world.types()));
         for callee in world.static_callees(function).iter().copied() {
             if !reached.contains(&callee) {
                 reached.push(callee);

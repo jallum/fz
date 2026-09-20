@@ -30,12 +30,12 @@ use crate::dispatch_matrix::ProjectionKind;
 use crate::ground_value::GroundValue;
 
 use super::body::{
-    CallInputMode, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody, LoweredStep,
-    LoweredTail, SubjectOriginRoot, ValueId, delivered_value_joins,
+    CallInputMode, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody, LoweredExtern,
+    LoweredStep, LoweredTail, SubjectOriginRoot, ValueId, delivered_value_joins,
 };
 use super::identity::{FunctionId, ModuleId};
 use super::semantic::ProjectStep;
-use super::types::{MapKey, Ty};
+use super::types::{MapKey, Ty, Types};
 
 /// One value's shape in its own function's vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -195,14 +195,9 @@ pub(crate) struct FunctionSkeleton {
 /// `body::callsite_input_modes` for the invariant that makes it sound), and
 /// values are resolved on demand from that map, so a value defined after its
 /// use in the arena is still resolved from its own definition.
-pub(crate) fn lower(body: &LoweredBody) -> FunctionSkeleton {
+pub(crate) fn lower(body: &LoweredBody, types: &Types) -> FunctionSkeleton {
     let (clauses, entries) = match body {
-        LoweredBody::Extern { signature } => {
-            return FunctionSkeleton {
-                returns: Returns::Declared(signature.return_ty),
-                ..FunctionSkeleton::default()
-            };
-        }
+        LoweredBody::Extern { signature } => return extern_skeleton(signature, types),
         LoweredBody::Clauses {
             clauses: body_clauses,
             entries: body_entries,
@@ -325,6 +320,46 @@ pub(crate) fn lower(body: &LoweredBody) -> FunctionSkeleton {
         arguments,
         callees,
         input_len: clauses.first().map_or(0, |clause| clause.params.len()),
+    }
+}
+
+/// An extern body has no steps to walk, so its return is stated outright by
+/// the declaration -- but the declaration is not always a leaf: `fz_send`
+/// hands its second argument straight back, and its `t` names one and the
+/// same type variable in both places. Wherever a parameter's own type is, or
+/// contains, a variable the declared return is or contains too, that
+/// parameter's value IS the answer, so the skeleton says so with
+/// `Skeleton::Input`, which is the only way a caller's own walk can read the
+/// relation back out. A return with no such variable stays `Declared`,
+/// exactly as before.
+///
+/// `input_len` travels with the derived arm alone, because it is the length
+/// of the answer and not the arity of the function. `returns_input` reads a
+/// slot past the end as `true` -- nothing is known about this body, so assume
+/// the return can be read back out of every slot -- and that fallback is what
+/// keeps a variable-free extern's inputs in its activation key. Sizing the
+/// vector here would replace "nothing is known" with "known, and the answer
+/// is no slot", erasing those inputs to type variables.
+fn extern_skeleton(signature: &LoweredExtern, types: &Types) -> FunctionSkeleton {
+    let return_vars = types.free_var_ids(&signature.return_ty);
+    let mut returned_params = Skeleton::Bottom;
+    if !return_vars.is_empty() {
+        for (slot, param_ty) in signature.semantic_contract.params.iter().enumerate() {
+            if !types.free_var_ids(param_ty).is_disjoint(&return_vars) {
+                returned_params = Skeleton::union(returned_params, Skeleton::Input(slot));
+            }
+        }
+    }
+    match returned_params {
+        Skeleton::Bottom => FunctionSkeleton {
+            returns: Returns::Declared(signature.return_ty),
+            ..FunctionSkeleton::default()
+        },
+        skeleton => FunctionSkeleton {
+            returns: Returns::Entries(BTreeMap::from([(ControlEntryId::from_u32(0), skeleton)])),
+            input_len: signature.semantic_contract.params.len(),
+            ..FunctionSkeleton::default()
+        },
     }
 }
 
