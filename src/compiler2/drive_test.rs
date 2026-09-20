@@ -3,6 +3,7 @@ use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendRet
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::{DependencyKey, JobEffects};
 use crate::compiler2::pull::{ProductKey, ProductSettlement, ProductValue, TransportCarrier};
+use crate::compiler2::types::DescrOf;
 use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
     CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
@@ -22,7 +23,7 @@ use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::telemetry::handler::{Event, EventKind};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -19951,18 +19952,16 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
 #[test]
 fn compiler2_unproductive_deepening_settles_at_bottom() {
     // def deep(x), do: [deep(x)] — the inner call must produce a value before
-    // the list ever exists, so this function NEVER returns: its least
-    // fixpoint is bottom. Under the old absent-reads-as-none lie this very
-    // program manufactured a divergent ascent (list(none), list(list(none)),
-    // …); honest paths never start the chain, and nothing here ever revises a
-    // return.
+    // the list ever exists, so no branch of deep/1 ever escapes the cycle.
+    // That is the middle of the solver's three states: branches, none of
+    // which escape. Its least fixed point is the empty type, and the solve
+    // publishes that — `none` is a computed fact, not an absence, and
+    // publishing it once is what lets the compile quiesce. Under the old
+    // absent-reads-as-none lie this very program manufactured a divergent
+    // ascent (list(none), list(list(none)), …); here the second solve finds
+    // bottom already standing and changes nothing.
     let tel = ConfiguredTelemetry::new();
-    let defined = Rc::new(Cell::new(false));
-    let defined_sink = Rc::clone(&defined);
-    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-        &["fz", "compiler2", "return_type", "defined"],
-        move |_, _, _, _, _| defined_sink.set(true),
-    );
+    let succession = Succession::record(&tel);
     let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("deep_unproductive.fz".to_string()),
@@ -19973,9 +19972,43 @@ fn compiler2_unproductive_deepening_settles_at_bottom() {
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "an unproductive deepening program quiesces at bottom",
     );
-    assert!(
-        !defined.get(),
-        "no branch ever produces a value, so no return type is ever defined",
+
+    let table = succession.render(&world);
+    let one_member = ("deep/1".to_string(), vec!["deep/1".to_string()]);
+    assert_eq!(
+        succession.components(&world),
+        vec![one_member.clone(), one_member],
+        "deep/1's self edge makes it a one-member component, and both solves run over it{table}",
+    );
+    let row = succession
+        .rows(&world)
+        .get("deep/1")
+        .cloned()
+        .unwrap_or_else(|| panic!("deep/1 should have been analysed{table}"));
+    assert_eq!(
+        row,
+        SuccessionRow {
+            keys: 1,
+            walks: 2,
+            solves: 2,
+            definitions: 1,
+            clears: 0,
+        },
+        "one activation, one published return, no withdrawal: the first solve names bottom \
+         and the second recomputes it and changes nothing, which is the quiescence{table}",
+    );
+
+    let key = succession.sole_key(&world, "deep/1");
+    let published = world
+        .activation_return(&key)
+        .expect("the unproductive component publishes its least fixed point");
+    let t = world.types_mut();
+    let none = t.none();
+    assert_eq!(
+        published,
+        none,
+        "the least fixed point of a productive cycle with no base case is the empty type: {}",
+        t.display(&published),
     );
 }
 
@@ -19984,10 +20017,14 @@ fn compiler2_productive_deepening_converges_by_component_solve() {
     // def deep(0), do: []
     // def deep(n), do: [deep(n - 1)]
     // deep/1 calls itself, so it forms its own recursive-return component
-    // (a self edge). The component solver names its true return directly —
-    // the regular equirecursive type mu t.([] | list(t)) — from deep/1's own
-    // flattened branches, on its own evidence. There is no approximation to
-    // fall back on: the answer below IS the fixpoint, named in one step.
+    // (a self edge). The component solver names its true return directly
+    // from deep/1's own flattened branches, on its own evidence: the least
+    // fixed point of `X = [] | nonempty(X)`. Interning folds that pair of
+    // clauses into the one normal form the regular bodies admit — a single
+    // list clause carrying `empty` — so the answer IS the regular component
+    // `X = list(X)`, which is what the test asks the calculator for. Asking
+    // for a spelling instead would demand a string the interner can never
+    // hand back, and the display renders `list(X)` and `nonempty(X)` alike.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -20011,16 +20048,27 @@ fn compiler2_productive_deepening_converges_by_component_solve() {
         .activation_keys()
         .into_iter()
         .filter(|key| key.function == deep)
-        .map(|key| {
-            world
-                .types()
-                .display(&world.activation_return(&key).expect("deep/1 returns"))
-        })
+        .map(|key| world.activation_return(&key).expect("deep/1 returns"))
         .collect::<Vec<_>>();
+    assert_eq!(returns.len(), 1, "deep/1 is reached at exactly one activation");
+    let solved = returns[0];
+
+    let t = world.types_mut();
+    let list_of_itself = t.intern_regular_component(1, |nodes| vec![DescrOf::list_of(nodes[0])])[0];
+    let empty = t.empty_list();
     assert_eq!(
-        returns,
-        vec!["μX. [] | [X]".to_string()],
-        "the component solver names deep/1's recursive return exactly, with no approximation",
+        solved,
+        list_of_itself,
+        "the component solver names deep/1's recursive return exactly, with no approximation: \
+         the solved type IS the component `X = list(X)` (solved {}, component {})",
+        t.display(&solved),
+        t.display(&list_of_itself),
+    );
+    assert!(
+        t.is_subtype(&empty, &solved),
+        "the base clause's `[]` is inside the solved return, carried by the surviving list \
+         clause's empty flag: {}",
+        t.display(&solved),
     );
 }
 
@@ -23066,7 +23114,7 @@ enum SuccessionJob {
 
 /// One function's line of a [`Succession`]: every activation key minted for
 /// it, and the work those keys attracted.
-#[derive(Default, Clone, PartialEq, Eq)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 struct SuccessionRow {
     keys: usize,
     walks: u64,
