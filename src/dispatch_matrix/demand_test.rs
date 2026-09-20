@@ -7,19 +7,10 @@ use crate::ground_value::GroundValue;
 /// The lattice records only the kind of structure a dispatch question can
 /// descend into. A tuple field and a list head each name their kind; every
 /// other step is a value the lattice cannot describe, so the demand there is
-/// the whole value. Which field, and what is asked beyond the step, are not
-/// carried -- no reader of a demand tells one tuple field from another.
+/// the whole value. What is asked beyond the step is not carried.
 #[test]
 fn a_demand_descends_through_tuple_fields_and_list_heads_and_stops_everywhere_else() {
-    assert_eq!(
-        demand_at_step(&DemandPathStep::TupleField(1)),
-        DispatchDemand::TupleFields
-    );
-    assert_eq!(
-        demand_at_step(&DemandPathStep::TupleField(0)),
-        demand_at_step(&DemandPathStep::TupleField(1)),
-        "the position within the tuple is not part of the demand"
-    );
+    assert_eq!(demand_at_step(&DemandPathStep::TupleField), DispatchDemand::TupleFields);
     assert_eq!(demand_at_step(&DemandPathStep::ListHead), DispatchDemand::ListShape);
 
     for collapsing in [
@@ -56,8 +47,9 @@ fn a_join_of_two_descents_through_different_kinds_is_the_whole_value() {
 }
 
 /// A projection names the value it reads in full; the demand step keeps only
-/// the kind of position it is, plus a tuple field's index. The names, keys and
-/// bit layouts the other projections carry are not demand and fall away.
+/// the kind of position it is. The index a tuple field carries, and the names,
+/// keys and bit layouts the other projections carry, are not demand and fall
+/// away -- two different tuple fields are one step.
 #[test]
 fn a_projection_kind_names_its_demand_step() {
     let bitstring_field = ProjectionKind::BitstringField(BitstringExtraction {
@@ -72,7 +64,8 @@ fn a_projection_kind_names_its_demand_step() {
         is_last: true,
     });
     let steps = [
-        (ProjectionKind::TupleField(3), DemandPathStep::TupleField(3)),
+        (ProjectionKind::TupleField(3), DemandPathStep::TupleField),
+        (ProjectionKind::TupleField(0), DemandPathStep::TupleField),
         (
             ProjectionKind::StructField("name".to_string()),
             DemandPathStep::StructField,

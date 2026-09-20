@@ -10,12 +10,13 @@
 //! already held and what the new question asks, and two questions that descend
 //! through different kinds meet at `Whole`.
 //!
-//! A `DemandPathStep` is one step into a value's structure in the detail the
-//! lattice carries. Only a tuple field and a list head descend; a struct field,
-//! a list tail, a map value and a bitstring field are positions the lattice
-//! cannot name, so a question reached through one of them collapses to `Whole`.
-//! `demand_at_step` turns one step into the demand on the value the step was
-//! taken from.
+//! A `DemandPathStep` is the kind of one step into a value's structure, in the
+//! detail the lattice carries and no finer -- which tuple field, which struct
+//! name, which map key are all dropped on the way in. Only a tuple field and a
+//! list head descend; a struct field, a list tail, a map value and a bitstring
+//! field are positions the lattice cannot name, so a question reached through
+//! one of them collapses to `Whole`. `demand_at_step` turns one step into the
+//! demand on the value the step was taken from.
 
 use super::ProjectionKind;
 
@@ -47,7 +48,7 @@ impl DispatchDemand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum DemandPathStep {
     StructField,
-    TupleField(u32),
+    TupleField,
     ListHead,
     ListTail,
     MapValue,
@@ -57,7 +58,7 @@ pub(crate) enum DemandPathStep {
 impl From<&ProjectionKind> for DemandPathStep {
     fn from(kind: &ProjectionKind) -> Self {
         match kind {
-            ProjectionKind::TupleField(index) => DemandPathStep::TupleField(*index),
+            ProjectionKind::TupleField(_) => DemandPathStep::TupleField,
             ProjectionKind::StructField(_) => DemandPathStep::StructField,
             ProjectionKind::ListHead => DemandPathStep::ListHead,
             ProjectionKind::ListTail => DemandPathStep::ListTail,
@@ -71,7 +72,7 @@ impl From<&ProjectionKind> for DemandPathStep {
 /// taken from.
 pub(crate) fn demand_at_step(step: &DemandPathStep) -> DispatchDemand {
     match step {
-        DemandPathStep::TupleField(_) => DispatchDemand::TupleFields,
+        DemandPathStep::TupleField => DispatchDemand::TupleFields,
         DemandPathStep::ListHead => DispatchDemand::ListShape,
         DemandPathStep::ListTail
         | DemandPathStep::MapValue

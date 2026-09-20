@@ -2,10 +2,11 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand};
+use crate::dispatch_matrix::demand::DispatchDemand;
 
 use super::super::body::{CallInputMode, LoweredBody, LoweredStep, LoweredTail, ValueId};
 use super::super::drive::{FactKey, JobEffects, current_uses};
+use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
 use super::super::identity::FunctionId;
 use std::rc::Rc;
 
@@ -495,22 +496,34 @@ fn forwarded_inputs(world: &World, body: &LoweredBody, slots_of: &HashMap<ValueI
 }
 
 /// Every input slot a value names DIRECTLY -- the parameter itself, not a
-/// piece of it. A projection reaches a slot at a non-empty path, so the value
-/// standing there is no longer what the slot names, and neither forwarding nor
-/// observation of the slot can be read off it.
+/// piece of it.
+///
+/// A clause binds each of the function's semantic inputs to one `ValueId`, and
+/// that value names its slot. So does anything that only RENAMES it: an alias,
+/// a join of aliases, a dispatch subject read straight off the input. A
+/// projection does not -- the value standing there is a piece of the input, so
+/// neither forwarding nor observation of the slot can be read off it, and
+/// nothing reached through a projection names a slot at all.
+///
+/// One value can name more than one slot: `f(x, x)` binds one `ValueId` to two.
 fn direct_input_slots(body: &LoweredBody, input_count: usize) -> HashMap<ValueId, Vec<usize>> {
-    input_positions(body, input_count)
-        .into_iter()
-        .map(|(value, positions)| {
-            (
-                value,
-                positions
-                    .into_iter()
-                    .filter_map(|(slot, path)| path.is_empty().then_some(slot))
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect()
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        return HashMap::new();
+    };
+    let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
+    let mut slots = HashMap::<ValueId, Vec<usize>>::new();
+    for clause in clauses {
+        for (slot, value) in clause.params.iter().copied().enumerate().take(input_count) {
+            let named = slots.entry(value).or_default();
+            if !named.contains(&slot) {
+                named.push(slot);
+            }
+        }
+    }
+    for value in origins.keys() {
+        resolve_direct_slots(body, *value, &origins, &mut slots, &mut HashSet::new());
+    }
+    slots
 }
 
 /// Raises this body's own demand to `Whole` on every input a closure call
@@ -562,78 +575,57 @@ fn lambda_captures(step: &LoweredStep) -> &[ValueId] {
     }
 }
 
-/// Every value that names an input position, and which position(s) it names.
-///
-/// A clause parameter names its own slot at the empty path; a projection step
-/// names its source's position one step deeper. One value can name more than
-/// one position -- `f(x, x)` binds one `ValueId` to two slots -- exactly as
-/// `forwarded_inputs` records.
-fn input_positions(body: &LoweredBody, input_count: usize) -> HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>> {
-    use super::super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
-    let LoweredBody::Clauses { clauses, .. } = body else {
-        return HashMap::new();
-    };
-    let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
-    let mut positions = HashMap::<ValueId, Vec<(usize, Vec<DemandPathStep>)>>::new();
-    for clause in clauses {
-        for (slot, value) in clause.params.iter().copied().enumerate().take(input_count) {
-            let known = positions.entry(value).or_default();
-            let position = (slot, Vec::new());
-            if !known.contains(&position) {
-                known.push(position);
-            }
-        }
-    }
-    for value in origins.keys() {
-        resolve_input_positions(body, *value, &origins, &mut positions, &mut HashSet::new());
-    }
-    positions
-}
-
-fn resolve_input_positions(
+/// The slots `value` names directly, memoized in `slots` as it goes. A cyclic
+/// origin chain names nothing, which `visiting` detects.
+fn resolve_direct_slots(
     body: &LoweredBody,
     value: ValueId,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
-    positions: &mut HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
+    origins: &HashMap<ValueId, TransportOrigin>,
+    slots: &mut HashMap<ValueId, Vec<usize>>,
     visiting: &mut HashSet<ValueId>,
-) -> Vec<(usize, Vec<DemandPathStep>)> {
-    if let Some(known) = positions.get(&value) {
-        return known.clone();
+) -> Vec<usize> {
+    if let Some(named) = slots.get(&value) {
+        return named.clone();
     }
     if !visiting.insert(value) {
         return Vec::new();
     }
     let found = origins
         .get(&value)
-        .map(|origin| input_origin_positions(body, origin, origins, positions, visiting))
+        .map(|origin| direct_slots_of_origin(body, origin, origins, slots, visiting))
         .unwrap_or_default();
     visiting.remove(&value);
-    positions.insert(value, found.clone());
+    slots.insert(value, found.clone());
     found
 }
 
-fn input_origin_positions(
+/// The slots an origin names directly. A rename passes its source's slots
+/// through and a join passes every child's; every other origin -- a projection,
+/// a dispatch subject that reads a projection, a call return, a constructed
+/// value -- stands for a value that is not an input, so it names no slot.
+fn direct_slots_of_origin(
     body: &LoweredBody,
-    origin: &super::super::executable_facts::TransportOrigin,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
-    positions: &mut HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
+    origin: &TransportOrigin,
+    origins: &HashMap<ValueId, TransportOrigin>,
+    slots: &mut HashMap<ValueId, Vec<usize>>,
     visiting: &mut HashSet<ValueId>,
-) -> Vec<(usize, Vec<DemandPathStep>)> {
-    use super::super::executable_facts::TransportOrigin;
-    let (source, path) = match origin {
-        TransportOrigin::LocalValue(value) => (*value, Vec::new()),
-        TransportOrigin::Projection { source, kind } => (*source, vec![kind]),
+) -> Vec<usize> {
+    let renamed = match origin {
+        TransportOrigin::LocalValue(value) => *value,
         TransportOrigin::OutcomeSubject { owner, subject } => {
             let (root, path) = body.dispatch_subject_origin(*owner, *subject);
             let super::super::body::SubjectOriginRoot::Value(value) = root else {
                 return Vec::new();
             };
-            (value, path)
+            if !path.is_empty() {
+                return Vec::new();
+            }
+            value
         }
         TransportOrigin::Join(children) => {
             let mut all = children
                 .iter()
-                .flat_map(|child| input_origin_positions(body, child, origins, positions, visiting))
+                .flat_map(|child| direct_slots_of_origin(body, child, origins, slots, visiting))
                 .collect::<Vec<_>>();
             all.sort_unstable();
             all.dedup();
@@ -641,11 +633,7 @@ fn input_origin_positions(
         }
         _ => return Vec::new(),
     };
-    let mut found = resolve_input_positions(body, source, origins, positions, visiting);
-    for (_, steps) in &mut found {
-        steps.extend(path.iter().copied().map(DemandPathStep::from));
-    }
-    found
+    resolve_direct_slots(body, renamed, origins, slots, visiting)
 }
 
 /// The least fixpoint of the input-forwarding graph, projected onto `function`.
