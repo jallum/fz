@@ -2368,7 +2368,7 @@ fn key_inputs_for_call(
     let Some(unknowns) = world.return_unknowns(callee).cloned() else {
         return arg_inputs.to_vec();
     };
-    let observable = observable_inputs(world, callee, arg_inputs.len());
+    let observable = world.observable_inputs(callee, arg_inputs.len());
     let mut path = Vec::new();
     arg_inputs
         .iter()
@@ -2391,40 +2391,13 @@ fn key_inputs_for_call(
             // are one position of one body. A slot the callee hands back is no
             // exception -- what its users read the refinement out of is the
             // result coordinate, not this one.
-            let asks_list_shape = matches!(dispatch_demand(world, callee, slot), DispatchDemand::ListShape(_));
+            let asks_list_shape = matches!(world.dispatch_demand(callee, slot), DispatchDemand::ListShape(_));
             let coordinate = if asks_list_shape {
                 world.types_mut().list_family_class(coordinate)
             } else {
                 coordinate
             };
             input.clone().with_ty(coordinate)
-        })
-        .collect()
-}
-
-/// The demand an absent fact stands for: nothing is proven about the slot, so
-/// everything is asked of it. A coordinate is only ever collapsed on a proven
-/// answer.
-static UNPROVEN_DISPATCH: DispatchDemand = DispatchDemand::Whole;
-
-/// What any activation this slot can reach asks about the value that arrives
-/// there.
-fn dispatch_demand(world: &World, callee: FunctionId, slot: usize) -> &DispatchDemand {
-    world
-        .input_demand(callee)
-        .and_then(|demand| demand.forwarded_dispatch.get(slot))
-        .unwrap_or(&UNPROVEN_DISPATCH)
-}
-
-/// Which of a callee's slots hold a value anything can read: one a dispatch
-/// question reaches, or one its published return is built from. Absent facts
-/// answer "observable", so a slot is only ever addressed on a proven answer.
-fn observable_inputs(world: &World, callee: FunctionId, len: usize) -> Vec<bool> {
-    let unknowns = world.return_unknowns(callee);
-    (0..len)
-        .map(|slot| {
-            dispatch_demand(world, callee, slot).asks_anything()
-                || unknowns.is_none_or(|unknowns| unknowns.returns_input(slot))
         })
         .collect()
 }

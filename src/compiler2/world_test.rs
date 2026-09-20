@@ -5,8 +5,10 @@ use super::keying::{BodyKeying, InputDemand};
 use super::{
     DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, Ty, TypeName, Types, World,
 };
+use super::drive_test::{FunctionCapture, function_id};
 use crate::ast::Attribute;
 use crate::compiler2::drive::{DependencyKey, JobEffects};
+use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
 use crate::compiler2::semantic::ActivationInput;
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
@@ -189,11 +191,9 @@ fn withdrawing_an_activation_return_derivation_clears_its_payload() {
 }
 
 /// The demand fact a body that forwards NOTHING publishes: what its own
-/// clauses ask about its inputs is the whole of what anything asks about them,
-/// so both halves of `InputDemand` carry the same mask.
+/// clauses ask about its inputs is the whole of what anything asks about them.
 fn unforwarded_demand(mask: Vec<DispatchDemand>) -> InputDemand {
     InputDemand {
-        local_dispatch: mask.clone(),
         forwarded_dispatch: mask,
     }
 }
@@ -902,6 +902,77 @@ fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
     assert_eq!(
         direct, joined,
         "recursive list-shape keys should not split when upstream evidence is an equivalent joined list family",
+    );
+}
+
+/// The coordinate a call site names and the brand the key keeps come from ONE
+/// question: can anything the arriving value reaches read this slot.
+///
+/// `called/2` and `carried/2` are the same body shape -- each forwards both of
+/// its inputs and asks nothing of them itself -- and they differ only in what
+/// their callee does. `twice/2` CALLS the callable it is handed, so the slot is
+/// observable and both halves of the key keep what arrived: two same-shape
+/// lambdas are two activations, each grounded for the callee it reaches.
+/// `ignored/2` merely carries the callable and hands back the other input, so
+/// nothing reachable can tell two same-shape lambdas apart and both halves drop
+/// the brand: every lambda shares one activation.
+///
+/// The mask the brand erasure applies IS the vector `key_inputs_for_call`
+/// addresses with, so a slot can never be addressed per brand and erased of it.
+#[test]
+fn compiler2_the_key_and_the_brand_erasure_ask_one_observability_question() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("one_observability_question.fz".into()),
+        text: "def twice(f, x), do: f.(f.(x))\n\
+               def called(f, x), do: twice(f, x)\n\
+               def ignored(_f, x), do: x\n\
+               def carried(f, x), do: ignored(f, x)\n\
+               def main() do\n\
+               \x20 dbg(called(fn (a) -> a + 1 end, 1))\n\
+               \x20 carried(fn (a) -> a * 2 end, 1)\n\
+               end\n"
+            .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(1));
+
+    let called = function_id(&functions, "called", 2);
+    let carried = function_id(&functions, "carried", 2);
+    let world = compiler.world_mut();
+    assert_eq!(
+        world.observable_inputs(called, 2),
+        vec![true, true],
+        "both of called/2's inputs reach twice/2, which calls one and hands it the other",
+    );
+    assert_eq!(
+        world.observable_inputs(carried, 2),
+        vec![false, true],
+        "nothing carried/2 reaches asks about its callable; the other input is handed back",
+    );
+
+    let int = world.types_mut().int();
+    let first = world.reference_function(ModuleId::GLOBAL, "brand_a", 1);
+    let second = world.reference_function(ModuleId::GLOBAL, "brand_b", 1);
+    let brand_a = world.closure_ty(first, Vec::new());
+    let brand_b = world.closure_ty(second, Vec::new());
+    assert_ne!(
+        world.activation_key(root, called, &[brand_a, int]),
+        world.activation_key(root, called, &[brand_b, int]),
+        "an observable callable slot keys on the brand that arrived, so its callee stays grounded",
+    );
+    assert_eq!(
+        world.activation_key(root, carried, &[brand_a, int]),
+        world.activation_key(root, carried, &[brand_b, int]),
+        "an unobservable callable slot is freight, brand and all",
     );
 }
 

@@ -25,7 +25,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::FnId;
 use crate::runtime_type_predicate::{
@@ -1814,26 +1813,24 @@ impl Types {
     /// erasure is value-language throughout, so nothing key-shaped can leak
     /// into evidence.
     ///
-    /// The mask is `InputDemand::local_dispatch`, never the forwarded half: the
-    /// question is "does a clause of THIS body test this slot", and a body that
-    /// merely hands a callable to a callee that tests it still cannot tell two
-    /// same-shape lambdas apart itself.
+    /// The mask is observability, one bool per slot, as `World::observable_inputs`
+    /// answers it for the activation's own function: a brand is freight only
+    /// where nothing the value reaches -- no dispatch question, no published
+    /// return -- can read it. It is the same mask the call site addressed the
+    /// slot with, so a coordinate that names a precise arrow is never erased of
+    /// the brand the callee downstream demands.
     ///
     /// Keeping the capture tuple is the conservative context-free rule.
     /// Whole-tuple or arity-only erasure would also merge one lambda closed
     /// over one `int` with that lambda closed over one `float`; preserving
     /// dispatch-free static grounding while erasing more therefore requires a
     /// flow-sensitive non-observability proof.
-    pub(crate) fn erase_transported_closure_identity_inputs(
-        &mut self,
-        inputs: &[Ty],
-        mask: &[DispatchDemand],
-    ) -> Box<[Ty]> {
+    pub(crate) fn erase_transported_closure_identity_inputs(&mut self, inputs: &[Ty], observable: &[bool]) -> Box<[Ty]> {
         inputs
             .iter()
             .enumerate()
-            .map(|(slot, param)| match mask.get(slot).unwrap_or(&DispatchDemand::Whole) {
-                DispatchDemand::Ignore => self.erase_transported_closure_identity_for_key(param),
+            .map(|(slot, param)| match observable.get(slot) {
+                Some(false) => self.erase_transported_closure_identity_for_key(param),
                 _ => *param,
             })
             .collect()

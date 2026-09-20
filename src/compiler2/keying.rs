@@ -29,35 +29,31 @@ pub(crate) struct BodyKeying {
 }
 
 /// What one function's inputs are DEMANDED for, as `Job::DeriveInputDemand`
-/// publishes it under `FactKey::InputDemand`: both halves live in one value so
-/// a consumer can never observe one without the other, exactly as
-/// [`BodyKeying`] carries two answers behind `FactKey::Recursive`.
+/// publishes it under `FactKey::InputDemand`.
 ///
-/// The two halves answer two different questions and neither stands in for the
-/// other. `local_dispatch` is "does THIS body ask about this slot" -- the
-/// question closure-brand erasure asks: a body that never tests a slot, never
-/// calls it, and never captures it cannot tell two same-shape lambdas apart
-/// there. Calling a value through a closure call asks about it and about
-/// everything handed to it, because the body being entered is not known here. `forwarded_dispatch` is
-/// "does any activation this slot can reach ask about it", which includes
-/// every callee this body hands the slot on to, because the value that arrives
-/// decides which callee activation is reached.
+/// There is ONE dispatch question per slot: "does any activation this slot can
+/// reach ask about it". It includes every callee this body hands the slot on
+/// to, because the value that arrives decides which callee activation is
+/// reached, and it includes a closure call -- which asks about the callable and
+/// about everything handed to it, because the body being entered is not known
+/// here. What a body asks by itself is a step in deriving that answer, never a
+/// published one: every consumer -- the coordinate a call site names, the
+/// closure brand an activation key keeps -- is deciding whether something
+/// somewhere can read the slot, and a body that only transports a callable to a
+/// callee that calls it has no say in that.
 ///
 /// Dispatch is one of the two ways a value at a slot can be observed from
 /// outside the activation. The other is return flow -- the return IS, CONTAINS,
 /// or is a PROJECTION OF what arrived -- and that answer is published on
 /// `FunctionUnknowns::returned_inputs`, derived from the same position graph
-/// that decides which positions are still climbing. `key_inputs_for_call` is
-/// the single place the two are read together.
+/// that decides which positions are still climbing. `World::observable_inputs`
+/// is the single place the two are read together.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct InputDemand {
-    /// This body's own questions, one demand per semantic input: its entry
-    /// dispatch, raised to `Whole` wherever a closure call touches a slot or
-    /// a lambda captures one.
-    pub(crate) local_dispatch: Vec<DispatchDemand>,
-    /// `local_dispatch` joined with the demand of every callee this body
-    /// forwards each input to, transitively. Always at least as high as
-    /// `local_dispatch` slot for slot.
+    /// One demand per semantic input: this body's own entry dispatch, raised to
+    /// `Whole` wherever a closure call touches a slot or a lambda captures one,
+    /// joined with the demand of every callee this body forwards the input to,
+    /// transitively.
     pub(crate) forwarded_dispatch: Vec<DispatchDemand>,
 }
 

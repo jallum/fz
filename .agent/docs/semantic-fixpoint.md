@@ -526,10 +526,13 @@ A NON-recursive body is keyed by precise evidence, with one erasure. A body
 that never consumes callable identity -- never calls through a callable, never
 constructs a lambda, and is not itself a capture-holding lambda
 (`BodyKeying::consumes_callable_identity`) -- only TRANSPORTS the closures that
-reach it, so `Types::erase_transported_closure_identities` erases their BRANDS
-from every non-dispatch slot: every same-shape lambda that travels through a
-forwarder shares one activation of it, instead of dragging a private copy of
-the whole library chain behind it (fz-6gb). What the value CLOSED OVER survives
+reach it, so `Types::erase_transported_closure_identity_inputs` erases their
+BRANDS from every slot `World::observable_inputs` says nothing reachable can
+read: a same-shape lambda that travels through a forwarder nothing asks about
+shares one activation of it, instead of dragging a private copy of the whole
+library chain behind it (fz-6gb). A slot some callee calls, tests or hands back
+is asked about, so the brand the call site named survives to the callee that
+demands it -- the key and the erasure read one mask. What the value CLOSED OVER survives
 the erasure, at every depth, brands inside captured closures erased by the same
 rule (`closure[?](int)`, `closure[?](closure[?]((a1_p0) -> a1_r))`). That is
 the whole difference between freight and meaning here: a body keyed at one

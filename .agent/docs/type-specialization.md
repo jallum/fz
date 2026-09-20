@@ -300,12 +300,14 @@ from another function's published demand, so there is no wait cycle.
 shape, at every depth; a list demand never reached is freight and collapses to
 one addressed class per position exactly as before.
 
-`InputDemand` carries all three. The forwarded demand and the returned axis
-shape the key collapse; the LOCAL mask is what closure-brand erasure reads
-(fz-6gb), because "does THIS body test, call or capture this slot" is a
-different question from "does anything downstream read it", and a forwarder
-that only transports a callable must still key one activation for two
-same-shape lambdas.
+`InputDemand` publishes ONE dispatch answer per slot. It and the returned axis
+are read together by `World::observable_inputs`, and that one vector shapes both
+halves of the key: `key_inputs_for_call` addresses an unobservable slot, and
+`canonical_activation_key_with_callable_surfaces` erases the closure brand and
+blanks the call surfaces of the same slots. A forwarder that hands its callable
+to a callee that calls it is therefore asked about, so the brand the call site
+named survives to the callee that demands it; a forwarder whose callable nothing
+reachable reads keys one activation for every same-shape lambda.
 
 Three limits are known and stated rather than argued away. A `Whole` slot has NO
 collapse, and forwarding can hand a `Whole` up from a callee that tests a
@@ -314,7 +316,8 @@ literal, so fz-y6w's termination argument does not cover such a slot
 The returned axis does not widen that exposure: it never produces a verbatim
 slot, only an addressed class. A callable slot is blind only while it is merely
 TRANSPORTED: a body that calls it demands it `Whole`, and that answer forwards,
-so the blindness is the forwarder's and brand erasure is what covers it. And the
+so a callable that reaches any call is never blind at any slot it passes
+through. And the
 recursion-supplied subtraction reads SELF calls only: a mutually recursive pair
 rebuilds across the cycle rather than inside one body, and a recursion routed
 through a generated lambda (`00032_lambda_recursion`) is not local either, so

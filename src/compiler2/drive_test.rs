@@ -16991,7 +16991,7 @@ fn compiler2_nested_guard_demand_names_only_caller_arguments() {
             .world()
             .input_demand(function_id(&functions, "choose", 3))
             .unwrap()
-            .local_dispatch,
+            .forwarded_dispatch,
         [
             crate::dispatch_matrix::demand::DispatchDemand::Ignore,
             crate::dispatch_matrix::demand::DispatchDemand::Ignore,

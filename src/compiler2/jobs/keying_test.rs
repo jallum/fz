@@ -2,8 +2,8 @@
 //!
 //! The demand fact is what activation keying asks before it decides whether a
 //! slot's arriving type is meaning or freight, so the statements here are
-//! about the two halves of `InputDemand` for one body, not about the keys any
-//! later job derives from them.
+//! about the demand one body publishes, not about the keys any later job
+//! derives from it.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -74,9 +74,8 @@ fn demand_of(demands: &BTreeMap<String, InputDemand>, label: &str) -> InputDeman
 /// A closure call cannot be answered statically, so every value it touches is
 /// a question this body asks: which callable arrived decides which body runs,
 /// and that body decides what it makes of the arguments handed to it. Both the
-/// called slot and the argument slot therefore carry `Whole` LOCAL demand --
-/// local, because this body is the one that can tell two same-shape callables
-/// apart here.
+/// called slot and the argument slot therefore carry `Whole` demand, raised
+/// where the call is, before any forwarding is joined in.
 #[test]
 fn a_closure_call_asks_a_whole_question_of_the_callable_and_of_what_it_is_handed() {
     let demands = input_demands(
@@ -87,24 +86,19 @@ fn a_closure_call_asks_a_whole_question_of_the_callable_and_of_what_it_is_handed
 
     let call2 = demand_of(&demands, "call2/2");
     assert_eq!(
-        call2.local_dispatch,
-        vec![DispatchDemand::Whole, DispatchDemand::Whole],
-        "calling slot 1 and handing it slot 0 is a question about both slots",
-    );
-    assert_eq!(
         call2.forwarded_dispatch,
         vec![DispatchDemand::Whole, DispatchDemand::Whole],
-        "the forwarded half is never below the local one",
+        "calling slot 1 and handing it slot 0 is a question about both slots",
     );
 }
 
 /// A body that only TRANSPORTS a value asks nothing of it itself; what it
-/// depends on is what the callee it hands the value to asks. So the local half
-/// stays `Ignore` -- brand erasure, which asks the local question, still erases
-/// two same-shape callables here -- while the forwarded half inherits the
-/// callee's `Whole` through the forwarding fixpoint, with no second walk.
+/// depends on is what the callee it hands the value to asks. The published
+/// demand is that callee's, inherited through the forwarding fixpoint with no
+/// second walk -- which is why a forwarder's callable slot is asked about here
+/// and its brand survives to the callee that calls it.
 #[test]
-fn a_forwarder_asks_nothing_itself_and_inherits_what_its_callee_asks() {
+fn a_forwarder_inherits_what_its_callee_asks() {
     let demands = input_demands(
         "forwarded closure call demand",
         "def call2(x, f), do: f.(x)\n\
@@ -113,11 +107,6 @@ fn a_forwarder_asks_nothing_itself_and_inherits_what_its_callee_asks() {
     );
 
     let fwd = demand_of(&demands, "fwd/2");
-    assert_eq!(
-        fwd.local_dispatch,
-        vec![DispatchDemand::Ignore, DispatchDemand::Ignore],
-        "no clause of fwd/2 asks anything about either of its inputs",
-    );
     assert_eq!(
         fwd.forwarded_dispatch,
         vec![DispatchDemand::Whole, DispatchDemand::Whole],
