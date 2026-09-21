@@ -90,6 +90,15 @@ guard; it does not own `when` precedence. The `when` following an `extern`
 return type remains a different production: it introduces type-variable
 constraints, not a guard expression.
 
+Anonymous-function clause heads own the boundary immediately before that
+guard. `fn -> body end`, `fn pattern -> body end`, and `fn left, right -> body
+end` are one parameter-list family; parenthesized heads remain valid. A bare
+list continues through commas and stops before clause-level `when` or `->`, so
+`fn left, right when left < right -> left end` wraps one guard around both
+parameters. This boundary is deliberately distinct from unparenthesized call
+arguments, whose ordinary Pratt expression reader may consume `when` as an
+infix operator.
+
 A trailing `do ... end` block belongs to the outermost unparenthesized call.
 While the parser reads that call's no-parens arguments, nested unmatched calls
 may not consume the block; after the arguments are complete, the outer call

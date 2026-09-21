@@ -1177,7 +1177,7 @@ impl FrontDoorParser {
                 self.expect(&Tok::RParen, "`)`")?;
                 params
             } else {
-                vec![self.parse_expr(module_path, scope)?.root]
+                self.parse_bare_lambda_params(module_path, scope)?
             };
             let patterns = if self.eat(&Tok::When) {
                 let guard = self.parse_expr(module_path, scope)?;
@@ -1205,6 +1205,30 @@ impl FrontDoorParser {
         let span = start.merge(self.prev_span());
         let meta = self.meta(module_path, scope, span)?;
         Ok(ParsedExpr::plain(self.builder.call("fn", &meta, &clauses)?, span))
+    }
+
+    fn parse_bare_lambda_params(
+        &mut self,
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<Vec<AnyValueRef>, FrontDoorError> {
+        if self.peek_is(&Tok::Arrow) {
+            return Ok(Vec::new());
+        }
+
+        let mut params = Vec::new();
+        loop {
+            // `when` belongs to the clause, not its final parameter. Its
+            // binding power is lower than every parameter expression form,
+            // so parsing at 5 leaves it for `parse_lambda_expr` to package
+            // around the complete parameter list.
+            params.push(self.parse_bp(5, module_path, scope)?.root);
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+            self.skip_newlines();
+        }
+        Ok(params)
     }
 
     fn parse_capture_expr(
