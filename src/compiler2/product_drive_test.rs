@@ -345,12 +345,6 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             unknowns: 4,
             component_solves: 0,
         },
-        // fz-kdt.98.3.17.7: 2 -> 3. d6377c6cf unified `World::activation_key_facts`
-        // to require `ReturnUnknowns` alongside `Recursive`/`InputDemand`. Minting
-        // `def/1`'s own key (needed to compile-time-expand `main`'s declaration) now
-        // correctly blocks on and re-derives its ReturnUnknowns/ReturnSkeleton pair
-        // before `def/1`'s body lowers, instead of the old unsound default of
-        // treating a missing ReturnUnknowns fact as "observable."
         "a cold compile of `main` and its definition macro derives one return skeleton each, \
          re-reads their unknowns as the handles arrive, and closes no recursive component",
     );
