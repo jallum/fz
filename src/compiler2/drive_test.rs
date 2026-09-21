@@ -12569,9 +12569,11 @@ fn compiler2_dispatch_answers_the_same_under_a_permuted_arm_order() {
 /// now, so the settled order reads 0 as well -- but identical answers still are
 /// not the same claim as safe routing, and
 /// `compiler2_no_value_reaches_a_construction_member_that_never_named_it` holds
-/// the other half;
-/// `compiler2_a_permuted_wrapper_order_reseats_the_construction_members` is
-/// what proves the perturbation still lands.
+/// the other half. `enum_take_drop_split` itself no longer carries a wrapper
+/// surface: every callable target it reaches is known, so
+/// `compiler2_static_callable_fixture_has_no_wrapper_order_to_perturb` holds
+/// its collapse directly rather than treating its unchanged answer as evidence
+/// about a live selection.
 #[test]
 fn compiler2_dispatch_answers_the_same_under_a_permuted_wrapper_order() {
     assert_no_answer_moves(&WRAPPER_MEMBER_CENSUS, &WRAPPER_MEMBER_STRESSES);
@@ -12800,49 +12802,28 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
     ("fixtures2/behavior/dispatch_list_head_separates.fz", "", 4, 0),
 ];
 
-/// fz-kdt.141 / fz-kdt.136: the wrapper half of the stress has teeth.
+/// fz-kdt.98.3.17.7: static callable resolution removes this fixture's
+/// wrapper-order surface.
 ///
-/// A gate that asserts invariance is worth exactly what its perturbation
-/// reaches, and the instrument this replaces reached the construction wrappers
-/// not at all. So assert the perturbation lands: the same fixture, compiled to
-/// the same stage, renders a DIFFERENT canonical backend program under a
-/// permuted wrapper order -- and an identical one under no setting, which is
-/// the inertness claim on the same comparand.
+/// `enum_take_drop_split` used to be the fz-kdt.141/fz-kdt.136 witness that a
+/// wrapper-order permutation landed. Its reducer and generated-lambda targets
+/// now resolve to known activations, so lowering emits no callable construction
+/// wrappers at all. The old `assert_ne!` therefore printed two equal whole
+/// backend artifacts, not evidence that types had recursed.
 ///
-/// `enum_take_drop_split` is the subject because its wrappers carry members
-/// keyed on accumulator tuples that differ only at a list position -- pairs
-/// the tuple test COULD not separate before fz-kdt.138 (whichever the mint
-/// order put first took every value) and now separates by shape and head.
-/// Which member the mint order lists first is what this perturbation moves.
-/// On this fixture that choice is no longer a hazard -- fz-kdt.132 minted the
-/// covering rung every one of its members needed, and the tripwire reads 0 here
-/// at every setting -- but it is still a choice nothing but the interner makes,
-/// which is what this gate holds to one answer. Where a wrapper's members are
-/// NOT all covering, the mint order used to decide a routing (00277 read 12
-/// surface-membership escapes at the settled order before fz-kdt.179); member
-/// selection runs the drop and the covering seat now, so that no longer depends
-/// on the interner, and `compiler2_no_value_reaches_a_construction_member_that_never_named_it`
-/// holds it at 0 under every setting.
+/// The empty wrapper surface is the new fact. The construction wrapper is the
+/// only place `wrappers:1` can act, so no second complete compilation is needed
+/// to infer that this fixture contributes no wrapper-order signal. A fixture
+/// that regains a wrapper fails the compact structural assertion immediately.
 #[test]
-fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
-    use crate::compiler2::callsite_dispatch::dispatch_stress::{DispatchStressed, setting};
-
+fn compiler2_static_callable_fixture_has_no_wrapper_order_to_perturb() {
     let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
-    let settled = backend_canon(fixture);
-    assert_eq!(
-        backend_canon(fixture),
-        settled,
-        "the same fixture compiled twice with no setting must render the same artifact, or this \
-         gate's comparand is noise",
-    );
-    let permuted = {
-        let _stress = DispatchStressed::install(setting("wrappers:1"));
-        backend_canon(fixture)
-    };
-    assert_ne!(
-        permuted, settled,
-        "a permuted wrapper order must reseat the construction members it was built to perturb; \
-         a stress that cannot move them proves nothing about the order they arrived in",
+    let (_compiler, program) = driven_backend_program(fixture);
+    assert!(
+        program.construction_wrappers().is_empty(),
+        "every callable target in {fixture} resolves to a known activation, so no construction \
+         wrapper survives for a wrapper-order stress to perturb: {:?}",
+        program.construction_wrappers(),
     );
 }
 
