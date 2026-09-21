@@ -2,7 +2,7 @@
 # purpose: closure keys retain complete lexical environments across specialization and nested callable transport
 #---
 def first({value, _}), do: value
-def make(pair), do: fn () -> first(pair) end
+def make(pair), do: fn -> first(pair) end
 def hold(value), do: fn (_) -> value end
 
 def main() do
