@@ -603,7 +603,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
             // Exact caller rows retain four specializations hidden by blended evidence.
-            174,
+            230,
         ),
         (
             "fixtures2/behavior/enum_take_drop_split.fz",
@@ -617,12 +617,12 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // reach their list arguments through `Enum.to_list/1`'s `[a]`
             // clause, so the reduce-and-reverse activations they used to mint
             // on the way in are never specialized.
-            230,
+            355,
         ),
         (
             "fixtures2/00420_enum_take_drop_split.fz",
             include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
-            230,
+            355,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);
