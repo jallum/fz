@@ -1375,7 +1375,10 @@ const RETURN_WORK_AFTER_COLD: [[FamilyRow; 3]; 4] = [
 // construction-wrapper column is unchanged.
 // fz-5xp.30: each fixture reaches four ordinary generic arithmetic
 // result/status executable bodies; wrapper populations stay flat.
-const POPULATION_BASELINES: [(u64, u64); 3] = [(66, 0), (176, 32), (232, 38)];
+// fz-kdt.98.3.17.7: range-map's cold frontier falls 66 -> 65 with its
+// runtime-demand body-work pin (237 -> 235): direct callable observation
+// removes the one now-unneeded synthetic callable-contract executable.
+const POPULATION_BASELINES: [(u64, u64); 3] = [(65, 0), (176, 32), (232, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1588,7 +1591,12 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // beside the closure value, rather than materializing a
                 // synthetic callable value for the contract. That removes
                 // redundant demand body walks on the callable lenses.
-                [[237, 0, 0, 1, 5], [592, 0, 0, 1, 6], [1117, 0, 0, 1, 6]][fixture_index][scenario],
+                // fz-kdt.98.3.17.7: 237 -> 235 on the range-map cold path.
+                // Known callable targets no longer re-walk the two synthetic
+                // callable-contract positions they formerly needed. The
+                // zero-uncaused assertion below proves the drop is work
+                // removed by a causal refinement, not a lost wake.
+                [[235, 0, 0, 1, 5], [592, 0, 0, 1, 6], [1117, 0, 0, 1, 6]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1765,7 +1773,11 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // result/status helpers are ordinary generic calls.
     // The typed `==` clauses this fixture's predicates reach add one
     // component evaluation and their StaticCallees work.
-    ("fixtures2/behavior/enum_take_drop_split.fz", 129, 26, 274, 141),
+    // fz-kdt.98.3.17.7: 274/141 -> 273/140. Resolving one reducer
+    // callable directly removes one blocked static-callee re-derivation;
+    // the test below still proves every non-publishing evaluation blocked on
+    // the body it needed, so this is less work rather than a lost dependency.
+    ("fixtures2/behavior/enum_take_drop_split.fz", 129, 26, 273, 140),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
