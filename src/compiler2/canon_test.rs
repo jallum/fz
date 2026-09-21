@@ -596,12 +596,26 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/mailbox_closure_each.fz",
             include_str!("../../fixtures2/behavior/mailbox_closure_each.fz"),
-            36,
+            // fz-kdt.98.3.17.7: 36 -> 34, in two steps. 6805636e7's call-argument
+            // observability unification (local_dispatch/forwarded_dispatch merge
+            // into one composed question) folds one pair of specializations
+            // (36 -> 35). 5342e1e41 ("a list's empty/non-empty refinement is not
+            // a key coordinate") stops a list's empty/non-empty shape from
+            // forking the activation key, collapsing a second pair (35 -> 34).
+            // Bisected directly; stable through HEAD.
+            34,
         ),
         (
             "fixtures2/behavior/mailbox_closure_reduce.fz",
             include_str!("../../fixtures2/behavior/mailbox_closure_reduce.fz"),
-            46,
+            // fz-kdt.98.3.17.7: 46 -> 45, net -1 through three moves that partly
+            // offset. 6805636e7's observability unification folds four
+            // specializations this fixture no longer needs split (46 -> 42).
+            // 2806f65c7 (closure-called argument now observed, same mechanism as
+            // enum_count_member_reduce's raise above) re-splits two of them
+            // (42 -> 44). 09255ae17 (the key/brand-erasure unification) splits
+            // one more (44 -> 45). Bisected directly; stable through HEAD.
+            45,
         ),
         (
             "fixtures2/behavior/actor_ring.fz",
@@ -609,7 +623,11 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // The ring's `got == 5` compares a mailbox value, so all three
             // reachable `==` clauses emit: `fz_op_eq_ii`, `fz_op_eq_fi` and
             // the `any`/`any` `fz_op_eq`.
-            31,
+            //
+            // fz-kdt.98.3.17.7: 31 -> 27. Entire delta lands at 6805636e7's
+            // call-argument observability unification; flat through every later
+            // commit. Bisected directly; stable through HEAD.
+            27,
         ),
         (
             "fixtures2/behavior/enum_predicate_search.fz",
