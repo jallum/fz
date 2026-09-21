@@ -562,12 +562,24 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-5xp.22: 26 -> 27. `List.member?` asks `===` for identity where
             // it used to spell that `==` in a guard and rely on guards being
             // strict, so the strict operator becomes an executable of its own.
-            31,
+            // fz-kdt.98.3.17.7: 31 -> 33. 2806f65c7 makes a closure-called
+            // argument count as observed rather than erased freight. Enum.reduce/3
+            // and Enumerable.reduce/3 both route into the same shared List helpers
+            // with structurally different accumulator lambdas; those now key apart
+            // (2 helpers x 1 -> 2 executables each = +2).
+            33,
         ),
         (
             "fixtures2/behavior/fz_f98_range_map_converges.fz",
             include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
-            64,
+            // fz-kdt.98.3.17.7: 64 -> 63. Same mechanism as enum_count_member_reduce's
+            // raise above (2806f65c7, a closure-called argument now counts as
+            // observed): here the more precise observation lets this fixture's
+            // reduce-family call sites resolve through shared slots that used to
+            // read as distinct freight, collapsing one executable. Bisected directly
+            // (6805636e7 dipped to an admitted transitional 48; 2806f65c7 settled
+            // at 63, stable through HEAD).
+            63,
         ),
         (
             "fixtures2/behavior/enum_map_family.fz",
