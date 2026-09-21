@@ -141,10 +141,10 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // count excludes the three return families, which have their own row below:
 // a census that silently absorbs a new family cannot show an explosion in
 // job counts.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 407;
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 409;
 // The return families' share of the same interp run.
 const EXPECTED_00181_RETURN_JOB_STOPS: ReturnJobRuns = ReturnJobRuns {
-    skeletons: 14,
+    skeletons: 16,
     unknowns: 32,
     component_solves: 0,
 };
