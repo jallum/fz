@@ -13912,8 +13912,16 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     // fz-5xp.30: 17 -> 22. The three additions that total the observable heap
     // statistics now traverse ordinary Kernel arithmetic and its generic
     // result/status helper; all five extra activations are rooted and reached.
+    //
+    // fz-kdt.98.3.17.2: 22 -> 24. `dbg` and its extern, `fz_dbg_value`, stop
+    // sharing one erased activation across every call site: the extern's
+    // return now carries the caller's argument type (its declaration is
+    // `(t) :: t when t: any`), so the three `dbg` calls this program makes --
+    // on the sorted list, the stats, the heap byte count -- key on their
+    // three distinct types instead of one `any`. One generic activation each
+    // for `dbg` and `fz_dbg_value` becomes three plus two: +5, -1, net +4.
     assert!(
-        activations.len() <= 22,
+        activations.len() <= 24,
         "quicksort should settle within its bounded rooted activation frontier (main + the collapsed \
          qsort/partition/append keys + reached runtime helpers): {activations:?}"
     );
@@ -20176,7 +20184,7 @@ fn compiler2_tuple_return_ladder_settles_via_component_solve() {
 /// pass together.
 const TUPLE_LADDER_BUILD_ANALYSES: u64 = 4;
 const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 2;
-const TUPLE_LADDER_MAIN_ANALYSES: u64 = 8;
+const TUPLE_LADDER_MAIN_ANALYSES: u64 = 7;
 const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 3;
 
 #[test]
@@ -20905,8 +20913,12 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
                 && names.contains("append")
         );
         assert!(!names.contains("foo"));
+        // fz-kdt.98.3.17.2: 22 -> 24, same cause as the sibling bound in
+        // `compiler2_quicksort_root_closes_with_a_finite_recursive_frontier` --
+        // `dbg`/`fz_dbg_value` stop sharing one erased activation, so this
+        // program's three `dbg` calls key on their three distinct types.
         assert!(
-            frontier.len() <= 22,
+            frontier.len() <= 24,
             "quicksort frontier exceeded the proven bound: {frontier:?}"
         );
         shapes.push((*jobs_ran.borrow(), normalized));
