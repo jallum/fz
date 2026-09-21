@@ -562,23 +562,11 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-5xp.22: 26 -> 27. `List.member?` asks `===` for identity where
             // it used to spell that `==` in a guard and rely on guards being
             // strict, so the strict operator becomes an executable of its own.
-            // fz-kdt.98.3.17.7: 31 -> 33. 2806f65c7 makes a closure-called
-            // argument count as observed rather than erased freight. Enum.reduce/3
-            // and Enumerable.reduce/3 both route into the same shared List helpers
-            // with structurally different accumulator lambdas; those now key apart
-            // (2 helpers x 1 -> 2 executables each = +2).
             33,
         ),
         (
             "fixtures2/behavior/fz_f98_range_map_converges.fz",
             include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
-            // fz-kdt.98.3.17.7: 64 -> 63. Same mechanism as enum_count_member_reduce's
-            // raise above (2806f65c7, a closure-called argument now counts as
-            // observed): here the more precise observation lets this fixture's
-            // reduce-family call sites resolve through shared slots that used to
-            // read as distinct freight, collapsing one executable. Bisected directly
-            // (6805636e7 dipped to an admitted transitional 48; 2806f65c7 settled
-            // at 63, stable through HEAD).
             63,
         ),
         (
@@ -596,25 +584,11 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/mailbox_closure_each.fz",
             include_str!("../../fixtures2/behavior/mailbox_closure_each.fz"),
-            // fz-kdt.98.3.17.7: 36 -> 34, in two steps. 6805636e7's call-argument
-            // observability unification (local_dispatch/forwarded_dispatch merge
-            // into one composed question) folds one pair of specializations
-            // (36 -> 35). 5342e1e41 ("a list's empty/non-empty refinement is not
-            // a key coordinate") stops a list's empty/non-empty shape from
-            // forking the activation key, collapsing a second pair (35 -> 34).
-            // Bisected directly; stable through HEAD.
             34,
         ),
         (
             "fixtures2/behavior/mailbox_closure_reduce.fz",
             include_str!("../../fixtures2/behavior/mailbox_closure_reduce.fz"),
-            // fz-kdt.98.3.17.7: 46 -> 45, net -1 through three moves that partly
-            // offset. 6805636e7's observability unification folds four
-            // specializations this fixture no longer needs split (46 -> 42).
-            // 2806f65c7 (closure-called argument now observed, same mechanism as
-            // enum_count_member_reduce's raise above) re-splits two of them
-            // (42 -> 44). 09255ae17 (the key/brand-erasure unification) splits
-            // one more (44 -> 45). Bisected directly; stable through HEAD.
             45,
         ),
         (
@@ -623,10 +597,6 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // The ring's `got == 5` compares a mailbox value, so all three
             // reachable `==` clauses emit: `fz_op_eq_ii`, `fz_op_eq_fi` and
             // the `any`/`any` `fz_op_eq`.
-            //
-            // fz-kdt.98.3.17.7: 31 -> 27. Entire delta lands at 6805636e7's
-            // call-argument observability unification; flat through every later
-            // commit. Bisected directly; stable through HEAD.
             27,
         ),
         (
