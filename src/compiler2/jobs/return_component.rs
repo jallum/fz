@@ -70,11 +70,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::modules::identity::ModuleName;
 
 use super::super::body::{CallInputMode, CallSiteId, ValueId};
-use super::super::drive::{Derivation, DerivationKey, FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{Derivation, DerivationKey, EvidenceSource, FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{ActivationKey, ActivationSignature, ModuleId};
 use super::super::return_skeleton::{Returns, Skeleton};
 use super::super::scheduler::FatalError;
-use super::super::semantic::{ActivationInput, CallSiteKey, ProjectStep, SemanticOrd as _};
+use super::super::semantic::{
+    ActivationInput, ActivationInputAlternatives, CallSiteKey, ProjectStep, SemanticOrd as _, join_contributions,
+};
 use super::super::types::{ComponentRef, DescrOf, MapKey, Ty, Types, union_regular_bodies};
 use super::super::world::World;
 
@@ -232,6 +234,16 @@ pub(super) fn solve_return_component(
     // the member's own walk could equally have published, and the ordinary
     // evidence join recognises it as the row already standing rather than
     // adding an alternative beside it.
+    //
+    // Contributed through the ordinary `activation_input_contributions`
+    // field, the same one every other publisher uses: this job's own
+    // `EvidenceSource` is `Settled` (`World::complete_job`, via
+    // `evidence_source_for`), so its cell lands at the `Settled` edge and
+    // nothing subscribes there. `gather` below reads the `Seed` cell and
+    // each non-member `Call` cell for a member, never `Settled` and never a
+    // member's own `Call` cell (already modeled structurally as a
+    // `Term::Shape` binding) -- that is what keeps this solve from waking on
+    // its own publish.
     let mut activation_input_contributions = Vec::new();
     for member in &members {
         let row: Option<Vec<ActivationInput>> = (0..member.input_len())
@@ -269,7 +281,7 @@ fn dedup(reads: Vec<FactKey>) -> Vec<FactKey> {
 
 /// Reads every binding the members' skeletons name.
 fn gather(
-    world: &World,
+    world: &mut World,
     members: &[ActivationKey],
     member_set: &HashSet<ActivationKey>,
     reads: &mut Vec<FactKey>,
@@ -392,18 +404,53 @@ fn gather(
     }
 
     // The evidence already standing at a member's slot is the base case of
-    // its equation: every caller outside the component contributed it, and
-    // a closure member's captured slots -- which no call site's arguments
-    // reach -- have no other source at all.
+    // its equation: a `Seed` cell is the member's own root/activation seed
+    // (nonempty only for a closure's captured slots, which no call site's
+    // arguments reach), and a `Call` cell is one caller's own contribution,
+    // read only for callers OUTSIDE the component -- a member calling
+    // itself or another member is never read here at all, because `gather`
+    // already models that edge structurally, as the `Term::Shape` bindings
+    // the loop above built from `CallSiteTargets`. Reading a member's own
+    // `Call` cell too would represent that edge twice, the second copy a
+    // function of the solve's own answer. The `Settled` cell -- this
+    // solve's own row, from "The same solve settles each member's own INPUT
+    // evidence" above -- is likewise never read: it is the edge nothing
+    // subscribes to.
+    let mut member_evidence: Vec<(ActivationKey, Vec<ActivationInputAlternatives>)> = Vec::new();
     for member in members {
         if member.input_len() == 0 {
             continue;
         }
-        reads.push(FactKey::ActivationInputs(member.clone()));
-        let standing = world
-            .activation_input_alternatives(member)
-            .map(|alternatives| alternatives.joined().to_vec())
-            .unwrap_or_default();
+        let mut cells: Vec<ActivationInputAlternatives> = Vec::new();
+        reads.push(FactKey::ActivationCallEvidence {
+            callee: member.clone(),
+            from: EvidenceSource::Seed,
+        });
+        if let Some(seed) = world.activation_call_evidence(member, &EvidenceSource::Seed) {
+            cells.push(seed.clone());
+        }
+        if let Some(callers) = world.callers(member) {
+            for site in callers.sites() {
+                if member_set.contains(&site.activation) {
+                    continue;
+                }
+                let from = EvidenceSource::Call(site.activation.clone());
+                reads.push(FactKey::ActivationCallEvidence {
+                    callee: member.clone(),
+                    from: from.clone(),
+                });
+                if let Some(cell) = world.activation_call_evidence(member, &from) {
+                    cells.push(cell.clone());
+                }
+            }
+        }
+        if !cells.is_empty() {
+            member_evidence.push((member.clone(), cells));
+        }
+    }
+    let types = world.types_mut();
+    for (member, cells) in member_evidence {
+        let standing = join_contributions(types, cells.iter()).joined().to_vec();
         for (slot, input) in standing.into_iter().enumerate() {
             bindings.evidence.insert((member.clone(), slot), input);
             bindings

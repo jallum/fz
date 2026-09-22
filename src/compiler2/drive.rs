@@ -286,6 +286,35 @@ fn job_order_rank(job: &Job) -> u8 {
     }
 }
 
+/// Which kind of publisher wrote one `ActivationCallEvidence` cell. A callee's
+/// evidence rows partition by this, not by the raw `Job` that wrote them: a
+/// seed mints the callee's own row, a caller's walk contributes what IT
+/// observed calling the callee, and the callee's own return solve contributes
+/// its closed-form answer back through the same join. `Seed` and `Settled`
+/// are singletons; `Call` carries the calling activation, since a callee can
+/// have many callers, each with its own cell.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EvidenceSource {
+    Seed,
+    Call(ActivationKey),
+    Settled,
+}
+
+/// The call-evidence source a publisher writes under, one-to-one with the
+/// three jobs that ever publish an `activation_input_contributions` row:
+/// `SeedRoot`/`SeedActivation` mint an activation's own seed row, an
+/// `AnalyzeActivation` walk contributes what IT observed calling the callee,
+/// and `SolveReturnComponent` contributes its own settled answer -- the edge
+/// nothing subscribes to.
+pub(crate) fn evidence_source_for(job: &Job) -> Option<EvidenceSource> {
+    match job {
+        Job::SeedRoot(_) | Job::SeedActivation(_) => Some(EvidenceSource::Seed),
+        Job::AnalyzeActivation(activation) => Some(EvidenceSource::Call(activation.clone())),
+        Job::SolveReturnComponent(_) => Some(EvidenceSource::Settled),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FactKey {
     CodeIndexed(SourceOwner),
@@ -314,6 +343,16 @@ pub enum FactKey {
     RootEntry(RootId),
     Activation(ActivationKey),
     ActivationInputs(ActivationKey),
+    /// One publisher's own cell in `ActivationInputs`' join, not the joined
+    /// aggregate: `callee` names the activation, `from` names which publisher
+    /// wrote it (`EvidenceSource`). A return solve reads the `Seed` cell and
+    /// each non-member `Call` cell for a member, so its own `Settled` publish
+    /// -- and a member's own `Call` cell, already modeled structurally as a
+    /// `Term::Shape` binding -- never wakes it back.
+    ActivationCallEvidence {
+        callee: ActivationKey,
+        from: EvidenceSource,
+    },
     ActivationAnalyzed(ActivationKey),
     /// The part of `ActivationAnalyzed` a return solve reads: which entries
     /// the activation returns through, and the types standing at its
@@ -377,6 +416,18 @@ impl FactKey {
             | (FactKey::ReturnSolveInputs(left), FactKey::ReturnSolveInputs(right))
             | (FactKey::Callers(left), FactKey::Callers(right))
             | (FactKey::ReturnType(left), FactKey::ReturnType(right)) => left.semantic_cmp(right, types),
+            (
+                FactKey::ActivationCallEvidence {
+                    callee: left_callee,
+                    from: left_from,
+                },
+                FactKey::ActivationCallEvidence {
+                    callee: right_callee,
+                    from: right_from,
+                },
+            ) => left_callee
+                .semantic_cmp(right_callee, types)
+                .then_with(|| left_from.cmp(right_from)),
             (FactKey::CallSiteTargets(left), FactKey::CallSiteTargets(right))
             | (FactKey::CallSiteSummary(left), FactKey::CallSiteSummary(right)) => left.semantic_cmp(right, types),
             (FactKey::CallableConstructionTarget(left), FactKey::CallableConstructionTarget(right)) => {
@@ -435,6 +486,7 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::IncomingInputSlot(_) => 37,
         FactKey::Callers(_) => 38,
         FactKey::ReturnSolveInputs(_) => 41,
+        FactKey::ActivationCallEvidence { .. } => 42,
     }
 }
 
@@ -448,6 +500,7 @@ impl ClaimShape for FactKey {
             self,
             FactKey::ReturnType(_)
                 | FactKey::ActivationInputs(_)
+                | FactKey::ActivationCallEvidence { .. }
                 | FactKey::Callers(_)
                 | FactKey::RuntimeDemandInput(_)
                 | FactKey::IncomingInputSlot(_)
@@ -626,6 +679,12 @@ pub(crate) struct JobEffects {
     pub(crate) product_waits: Vec<ProductAddress>,
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
+    /// One row per activation this job's own analysis correlated. Every
+    /// publisher -- a root/activation seed, an ordinary walk's call evidence,
+    /// or a return solve's own settled answer -- contributes through this
+    /// same field; `World::complete_job` derives which `EvidenceSource` cell
+    /// each row lands in from the publishing job itself
+    /// (`evidence_source_for`), so nothing here distinguishes them by shape.
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::semantic::ActivationInput>)>,
     /// One call edge per entry, keyed by the CALLEE: the channel that keeps a
     /// recursive-return component's owner subscribed to its members gaining
@@ -743,9 +802,9 @@ impl World {
                     .sum();
             }
             FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),
-            FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
-                self.seed_activation_producer(activation)
-            }
+            FactKey::Activation(activation)
+            | FactKey::ActivationInputs(activation)
+            | FactKey::ActivationCallEvidence { callee: activation, .. } => self.seed_activation_producer(activation),
             FactKey::ActivationAnalyzed(activation)
             | FactKey::ReturnSolveInputs(activation)
             | FactKey::CallSiteTargets(CallSiteKey { activation, .. })

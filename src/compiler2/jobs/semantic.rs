@@ -19,7 +19,7 @@ use super::super::body::{
 };
 use super::super::contract::FunctionContract;
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
-use super::super::drive::{Derivation, FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{Derivation, EvidenceSource, FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{
     ActivationKey, ActivationSignature, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
 };
@@ -517,6 +517,10 @@ fn commit_activation_evaluation(
             if emitted_activations.insert(callee_activation.key.clone()) {
                 outputs.push(FactKey::Activation(callee_activation.key.clone()));
                 outputs.push(FactKey::ActivationInputs(callee_activation.key.clone()));
+                outputs.push(FactKey::ActivationCallEvidence {
+                    callee: callee_activation.key.clone(),
+                    from: EvidenceSource::Call(activation.clone()),
+                });
             }
             // One analysis is one publisher. The same exact evidence reached
             // through several rows or arms is therefore one contribution,

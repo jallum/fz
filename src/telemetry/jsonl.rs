@@ -2214,6 +2214,25 @@ fn write_callsite_key_identity(out: &mut String, key: &crate::compiler2::CallSit
     write_activation_key(out, &key.activation);
 }
 
+/// Which publisher wrote an `ActivationCallEvidence` cell: `Seed` and
+/// `Settled` are singleton tags, `Call` carries the calling activation so a
+/// trace reader can tell one caller's edge from another's.
+fn write_evidence_source(out: &mut String, source: &crate::compiler2::EvidenceSource) {
+    use crate::compiler2::EvidenceSource;
+    out.push(',');
+    write_str_lit(out, "from");
+    out.push(':');
+    match source {
+        EvidenceSource::Seed => write_str_lit(out, "seed"),
+        EvidenceSource::Settled => write_str_lit(out, "settled"),
+        EvidenceSource::Call(activation) => {
+            out.push_str("{\"kind\":\"call\"");
+            write_activation_key(out, activation);
+            out.push('}');
+        }
+    }
+}
+
 /// `TransportPosition`'s variant kind — analogous to `job_kind`/`fact_kind`,
 /// kept alongside `write_transport_position_body` since both are driven by
 /// the same match.
@@ -2366,6 +2385,10 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::ActivationAnalyzed(key)
         | FactKey::ReturnSolveInputs(key)
         | FactKey::ReturnType(key) => write_activation_key(out, key),
+        FactKey::ActivationCallEvidence { callee, from } => {
+            write_activation_key(out, callee);
+            write_evidence_source(out, from);
+        }
         FactKey::CallSiteTargets(key) | FactKey::CallSiteSummary(key) => write_callsite_key_identity(out, key),
         FactKey::CallableConstructionTarget(key) => write_callable_construction_target_key(out, key),
         FactKey::Executable(key)
@@ -2592,6 +2615,7 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::RootEntry(_) => "RootEntry",
         FactKey::Activation(_) => "Activation",
         FactKey::ActivationInputs(_) => "ActivationInputs",
+        FactKey::ActivationCallEvidence { .. } => "ActivationCallEvidence",
         FactKey::Callers(_) => "Callers",
         FactKey::ActivationAnalyzed(_) => "ActivationAnalyzed",
         FactKey::ReturnSolveInputs(_) => "ReturnSolveInputs",

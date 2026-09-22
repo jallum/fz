@@ -23143,20 +23143,14 @@ impl Succession {
     fn record(telemetry: &ConfiguredTelemetry) -> Self {
         let recorder = Self::default();
         let walks = Rc::clone(&recorder.walks);
-        let solves = Rc::clone(&recorder.solves);
         let timeline = Rc::clone(&recorder.timeline);
         telemetry.attach_raw_span1_0::<Job, _, _, _>(
             &["fz", "compiler2", "job"],
-            move |_, _, _, job| match job {
-                Job::AnalyzeActivation(key) => {
+            move |_, _, _, job| {
+                if let Job::AnalyzeActivation(key) = job {
                     *walks.borrow_mut().entry(key.clone()).or_default() += 1;
                     timeline.borrow_mut().push((SuccessionJob::Walk, key.clone()));
                 }
-                Job::SolveReturnComponent(key) => {
-                    *solves.borrow_mut().entry(key.clone()).or_default() += 1;
-                    timeline.borrow_mut().push((SuccessionJob::Solve, key.clone()));
-                }
-                _ => {}
             },
             |_, _, _, _| {},
             |_, _, _, _| {},
@@ -23171,6 +23165,8 @@ impl Succession {
             &["fz", "compiler2", "return_type", "cleared"],
             move |_, _, _, _, activation| *clears.borrow_mut().entry(activation.clone()).or_default() += 1,
         );
+        let solves = Rc::clone(&recorder.solves);
+        let solve_timeline = Rc::clone(&recorder.timeline);
         let components = Rc::clone(&recorder.components);
         telemetry.attach(
             &["fz", "compiler2", "return_component", "solved"],
@@ -23187,6 +23183,8 @@ impl Succession {
                 ) else {
                     return;
                 };
+                *solves.borrow_mut().entry(owner.clone()).or_default() += 1;
+                solve_timeline.borrow_mut().push((SuccessionJob::Solve, owner.clone()));
                 components.borrow_mut().push((owner.clone(), members.clone()));
             }),
         );
@@ -23234,9 +23232,12 @@ impl Succession {
         keys.pop().expect("one key")
     }
 
-    /// Whether `label` was walked before any `SolveReturnComponent` ran. A
-    /// solve can only answer the members the walks had already discovered, so
-    /// this is how a test says "the component was whole when it was solved".
+    /// Whether `label` was walked before the first component actually
+    /// concluded (a `return_component.solved` event, not merely a dispatch
+    /// of the `SolveReturnComponent` job — a blocked gather never fires the
+    /// event and so never counts as a solve). A solve can only answer the
+    /// members the walks had already discovered, so this is how a test says
+    /// "the component was whole when it was solved".
     fn walked_before_the_first_solve(&self, world: &World, label: &str) -> bool {
         self.timeline
             .borrow()
@@ -23343,32 +23344,32 @@ fn compiler2_a_wrapped_recursive_return_is_solved_as_one_component() {
 
 /// The succession the same two fixtures have: each activation walked an
 /// exact number of times, no return ever withdrawn, and the component solved
-/// in as few dispatches as its ownership order allows.
+/// in one dispatch regardless of ownership order.
 ///
 /// `main/0` walks five times and `dup/1` four on both fixtures -- that comes
 /// from `AnalyzeActivation` reading back its own `ActivationInputs` row, a
 /// separate self-read this file does not narrow.
 ///
-/// The solve count differs between the two fixtures because ownership does:
-/// a component's owner is whichever member's `FunctionId` sorts first, and
-/// an owner's first gather can only run once every member has an activation.
-/// `wrapped_recursive_return.fz` declares `wrap/1` first; by the time
-/// `dup/1`'s recursion has minted `wrap/1`'s activation, `wrap/1` (the
-/// owner) already has everything it needs and never blocks. The permuted
-/// fixture declares `dup/1` first, so `dup/1` owns the component and its
-/// first gather blocks once, waiting on `wrap/1`'s not-yet-minted
-/// activation -- a real, unavoidable dispatch, not a redundant wake. From
-/// there both fixtures take the same two further dispatches: one ignition
-/// that publishes the real answer, and one rebase that survives on the
-/// solve's own just-published `ActivationInputs` row (also not narrowed
-/// here). What both fixtures no longer pay for is a THIRD dispatch, woken by
-/// a member's return analysis moving somewhere its own return skeleton never
-/// reads -- that whole-fact wake is what this file's solve now avoids.
+/// `solves` here counts `return_component.solved` events, not raw
+/// `SolveReturnComponent` dispatches, so a gather that blocks and publishes
+/// nothing is not a solve. Ownership still differs between the two
+/// fixtures -- a component's owner is whichever member's `FunctionId` sorts
+/// first, and an owner's first gather can only run once every member has an
+/// activation. `wrapped_recursive_return.fz` declares `wrap/1` first; by the
+/// time `dup/1`'s recursion has minted `wrap/1`'s activation, `wrap/1` (the
+/// owner) already has everything it needs and solves immediately. The
+/// permuted fixture declares `dup/1` first, so `dup/1` owns the component
+/// and its first gather blocks once, waiting on `wrap/1`'s not-yet-minted
+/// activation -- a real dispatch, but not a solve, since it concludes
+/// nothing. Once `wrap/1` exists, the one dispatch that follows gathers a
+/// whole component and settles it: the solve reads each member's call
+/// evidence at the granularity of its publishing edge, so a member's own
+/// walk republishing that same evidence never wakes the solve again.
 #[test]
 fn compiler2_a_wrapped_recursive_return_solves_its_component_once() {
     for (fixture, solves) in [
-        ("fixtures2/behavior/wrapped_recursive_return.fz", 2),
-        ("fixtures2/behavior/wrapped_recursive_return_permuted.fz", 3),
+        ("fixtures2/behavior/wrapped_recursive_return.fz", 1),
+        ("fixtures2/behavior/wrapped_recursive_return_permuted.fz", 1),
     ] {
         let (compiler, succession) = succession_of_fixture(fixture);
         let world = compiler.world();

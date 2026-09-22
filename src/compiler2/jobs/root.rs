@@ -5,7 +5,7 @@ use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::source::Span;
 
-use super::super::drive::{FactKey, JobEffects, settled_uses};
+use super::super::drive::{EvidenceSource, FactKey, JobEffects, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, RootId, RootKind};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationInput, RuntimeDemand, TargetDemandContribution};
@@ -79,6 +79,10 @@ pub(super) fn seed_root(
     let activation_fact = FactKey::Activation(entry_activation.clone());
     outputs.push(activation_fact);
     outputs.push(FactKey::ActivationInputs(entry_activation.clone()));
+    outputs.push(FactKey::ActivationCallEvidence {
+        callee: entry_activation.clone(),
+        from: EvidenceSource::Seed,
+    });
     let entry_executable = ExecutableKey {
         activation: entry_activation.clone(),
         need: root.need,
@@ -145,6 +149,10 @@ pub(super) fn seed_activation(activation: &ActivationKey) -> Result<JobEffects, 
         outputs: vec![
             FactKey::Activation(activation.clone()),
             FactKey::ActivationInputs(activation.clone()),
+            FactKey::ActivationCallEvidence {
+                callee: activation.clone(),
+                from: EvidenceSource::Seed,
+            },
         ],
         activation_input_contributions: vec![(
             activation.clone(),

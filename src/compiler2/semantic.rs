@@ -991,11 +991,15 @@ impl<K, P, V> Default for ContributionMap<K, P, V> {
 }
 
 /// A conclusion/extension's effect: the publisher's new output-key frontier and
-/// the keys whose joined aggregate moved.
+/// the keys whose joined aggregate moved, and the keys whose publisher's OWN
+/// cell moved -- a narrower fact than the aggregate, useful to a reader who
+/// subscribes to one contributor's row rather than the whole join (e.g.
+/// `FactKey::ActivationCallEvidence`'s per-`EvidenceSource` cell).
 #[derive(Debug)]
 pub struct ContributionReplace<K> {
     pub output_keys: HashSet<K>,
     pub changed_keys: HashSet<K>,
+    pub cell_changed_keys: HashSet<K>,
 }
 
 impl<K> Default for ContributionReplace<K> {
@@ -1003,6 +1007,7 @@ impl<K> Default for ContributionReplace<K> {
         Self {
             output_keys: HashSet::new(),
             changed_keys: HashSet::new(),
+            cell_changed_keys: HashSet::new(),
         }
     }
 }
@@ -1031,6 +1036,13 @@ pub struct Callers(BTreeSet<CallSiteKey>);
 impl Callers {
     pub fn of(site: CallSiteKey) -> Self {
         Self(BTreeSet::from([site]))
+    }
+
+    /// The call sites this activation is reached by. A member's evidence
+    /// gather walks these to find which callers sit outside its own
+    /// recursive-return component.
+    pub fn sites(&self) -> impl Iterator<Item = &CallSiteKey> {
+        self.0.iter()
     }
 }
 
@@ -1530,6 +1542,21 @@ where
         self.slots.get(key).map(|slot| &slot.joined)
     }
 
+    /// One contributor's own cell for a key -- not the joined aggregate --
+    /// found by the publisher it satisfies `matches`. A reader that only
+    /// knows a coarser identity than the raw publisher (e.g.
+    /// `EvidenceSource`, which groups several possible `Job`s into one of
+    /// three buckets) finds its cell this way instead of reaching into the
+    /// contributor table directly.
+    pub fn contributor_cell(&self, key: &K, matches: impl Fn(&P) -> bool) -> Option<&V> {
+        self.slots
+            .get(key)?
+            .contributors
+            .iter()
+            .find(|(publisher, _)| matches(publisher))
+            .map(|(_, value)| value)
+    }
+
     /// The concluding-completion arm for facts whose publisher's silence about
     /// a key really is knowledge: a key in `previous_output_keys` but absent
     /// from `next` is withdrawn, and every listed value replaces the
@@ -1557,18 +1584,24 @@ where
             .collect::<Vec<_>>();
         touched.sort_by(|left, right| left.semantic_cmp(right, &*ctx));
         let mut changed_keys = HashSet::new();
+        let mut cell_changed_keys = HashSet::new();
         for key in touched {
             let entry = match next.get(&key) {
                 Some(value) => SlotEntry::Upsert(value.clone()),
                 None => SlotEntry::Withdraw,
             };
-            if self.apply(ctx, &key, &publisher, entry, false) {
-                changed_keys.insert(key);
+            let (moved, cell_moved) = self.apply(ctx, &key, &publisher, entry, false);
+            if moved {
+                changed_keys.insert(key.clone());
+            }
+            if cell_moved {
+                cell_changed_keys.insert(key);
             }
         }
         ContributionReplace {
             output_keys: next_output_keys,
             changed_keys,
+            cell_changed_keys,
         }
     }
 
@@ -1588,14 +1621,20 @@ where
         let mut output_keys = previous_output_keys;
         output_keys.extend(ordered_next.iter().map(|(key, _)| key.clone()));
         let mut changed_keys = HashSet::new();
+        let mut cell_changed_keys = HashSet::new();
         for (key, value) in ordered_next {
-            if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
-                changed_keys.insert(key);
+            let (moved, cell_moved) = self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true);
+            if moved {
+                changed_keys.insert(key.clone());
+            }
+            if cell_moved {
+                cell_changed_keys.insert(key);
             }
         }
         ContributionReplace {
             output_keys,
             changed_keys,
+            cell_changed_keys,
         }
     }
 
@@ -1610,28 +1649,37 @@ where
         let mut ordered_next = next.into_iter().collect::<Vec<_>>();
         ordered_next.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let mut changed_keys = HashSet::new();
+        let mut cell_changed_keys = HashSet::new();
         for (key, value) in ordered_next {
-            if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
-                changed_keys.insert(key);
+            let (moved, cell_moved) = self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true);
+            if moved {
+                changed_keys.insert(key.clone());
+            }
+            if cell_moved {
+                cell_changed_keys.insert(key);
             }
         }
         ContributionReplace {
             output_keys: next_output_keys,
             changed_keys,
+            cell_changed_keys,
         }
     }
 
-    /// Apply one publisher's entry (or withdrawal) to one key and report whether
-    /// the joined aggregate moved. An emptied slot is dropped, and its move to
-    /// bottom is reported so a multi-publisher retraction is observed; a sole
-    /// publisher's retraction is reported too, though the fact table neutralizes
-    /// it through the vanished publisher set.
-    fn apply(&mut self, ctx: &mut V::Ctx, key: &K, publisher: &P, entry: SlotEntry<V>, join: bool) -> bool {
+    /// Apply one publisher's entry (or withdrawal) to one key and report
+    /// whether the joined aggregate moved, and separately whether this
+    /// publisher's OWN cell moved (old cell value vs new, by `equivalent`).
+    /// An emptied slot is dropped, and its move to bottom is reported so a
+    /// multi-publisher retraction is observed; a sole publisher's retraction
+    /// is reported too, though the fact table neutralizes it through the
+    /// vanished publisher set.
+    fn apply(&mut self, ctx: &mut V::Ctx, key: &K, publisher: &P, entry: SlotEntry<V>, join: bool) -> (bool, bool) {
         let mut slot = self.slots.remove(key).unwrap_or_else(|| ContributionSlot {
             contributors: HashMap::new(),
             joined: V::bottom(),
         });
         let old_joined = (!slot.contributors.is_empty()).then(|| slot.joined.clone());
+        let old_cell = slot.contributors.get(publisher).cloned();
         match entry {
             SlotEntry::Upsert(value) => {
                 upsert_contribution(ctx, &mut slot.contributors, publisher, value, join);
@@ -1640,6 +1688,12 @@ where
                 slot.contributors.remove(publisher);
             }
         }
+        let new_cell = slot.contributors.get(publisher).cloned();
+        let cell_moved = match (&old_cell, &new_cell) {
+            (None, None) => false,
+            (None, Some(_)) | (Some(_), None) => true,
+            (Some(old), Some(new)) => !old.equivalent(new, ctx),
+        };
         // `slot.contributors` is a `HashMap<P, V>`: folding `.values()` in its
         // native order makes the joined aggregate a function of `RandomState`
         // iteration, not of which publishers contributed. `V::join_assign`
@@ -1662,7 +1716,7 @@ where
             }
             self.slots.insert(key.clone(), slot);
         }
-        moved
+        (moved, cell_moved)
     }
 }
 
@@ -1809,8 +1863,10 @@ where
 }
 
 /// Join every contributor into the key's aggregate. The join of zero
-/// contributors is `V::bottom`.
-fn join_contributions<'a, V>(ctx: &mut V::Ctx, contributors: impl Iterator<Item = &'a V>) -> V
+/// contributors is `V::bottom`. `pub(crate)` because a reader that subscribes
+/// to individual edge-fact cells (rather than the map's own whole-key join)
+/// still needs to fold the cells it selects the same way the map does.
+pub(crate) fn join_contributions<'a, V>(ctx: &mut V::Ctx, contributors: impl Iterator<Item = &'a V>) -> V
 where
     V: JoinContribution + 'a,
 {
