@@ -154,6 +154,39 @@ impl Skeleton {
             }
         }
     }
+
+    /// Every value a return solve reads out of `Bindings::observed`, which is
+    /// called at exactly two positions: every `Ground` leaf, and a `Result`
+    /// leaf whose call site this walk left unaddressed -- no target it
+    /// resolved to named an activation. An addressed `Result` leaf is instead
+    /// answered by the component's equations (`Term::Return`), never by
+    /// `value_types`, so its observed value is not in this set: including it
+    /// would wake a solve on a value the solve does not read.
+    fn collect_solved_leaves(&self, addressed: &HashSet<CallSiteId>, out: &mut HashSet<ValueId>) {
+        match self {
+            Skeleton::Bottom | Skeleton::Input(_) => {}
+            Skeleton::Ground(value) => {
+                out.insert(*value);
+            }
+            Skeleton::Result { callsite, value } => {
+                if !addressed.contains(callsite) {
+                    out.insert(*value);
+                }
+            }
+            Skeleton::Union(branches) | Skeleton::Tuple(branches) => {
+                for branch in branches {
+                    branch.collect_solved_leaves(addressed, out);
+                }
+            }
+            Skeleton::List { element, .. } => element.collect_solved_leaves(addressed, out),
+            Skeleton::Map(fields) | Skeleton::Struct(_, fields) => {
+                for (_, value) in fields {
+                    value.collect_solved_leaves(addressed, out);
+                }
+            }
+            Skeleton::Project { of, .. } => of.collect_solved_leaves(addressed, out),
+        }
+    }
 }
 
 /// What a function hands back.
@@ -186,6 +219,41 @@ pub(crate) struct FunctionSkeleton {
     /// How many semantic inputs the function has, which is what a call
     /// site's positional arguments are mapped onto.
     pub(crate) input_len: usize,
+}
+
+impl FunctionSkeleton {
+    /// The slice of an activation's `value_types` a return solve actually
+    /// reads: the types standing at this function's `Ground` leaves and its
+    /// unaddressed `Result` leaves, across both its return shapes and every
+    /// call site's argument shapes. `addressed_callsites` is this walk's own
+    /// answer to which call sites it resolved to an activation -- the same
+    /// value it publishes as `CallSiteTargets` -- so a `Result` leaf whose
+    /// call site the component's equations already answer is excluded here
+    /// too. Everything else `value_types` carries is not a value the solve
+    /// reads, so a solve subscribed to only this slice sees the same answer a
+    /// whole-fact subscription would, without waking on the rest.
+    pub(crate) fn return_solve_inputs(
+        &self,
+        value_types: &HashMap<ValueId, Ty>,
+        addressed_callsites: &HashSet<CallSiteId>,
+    ) -> HashMap<ValueId, Ty> {
+        let mut leaves = HashSet::new();
+        if let Returns::Entries(entries) = &self.returns {
+            for shape in entries.values() {
+                shape.collect_solved_leaves(addressed_callsites, &mut leaves);
+            }
+        }
+        for shapes in self.arguments.values() {
+            for shape in shapes {
+                shape.collect_solved_leaves(addressed_callsites, &mut leaves);
+            }
+        }
+        value_types
+            .iter()
+            .filter(|(value, _)| leaves.contains(value))
+            .map(|(value, ty)| (*value, *ty))
+            .collect()
+    }
 }
 
 /// Lowers one body to its skeleton.

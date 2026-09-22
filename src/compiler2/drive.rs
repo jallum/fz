@@ -315,6 +315,12 @@ pub enum FactKey {
     Activation(ActivationKey),
     ActivationInputs(ActivationKey),
     ActivationAnalyzed(ActivationKey),
+    /// The part of `ActivationAnalyzed` a return solve reads: which entries
+    /// the activation returns through, and the types standing at its
+    /// function's `Ground` leaves and its unaddressed `Result` leaves. Same
+    /// stored `ActivationAnalysis`, narrower subscription -- moves only when
+    /// that part does.
+    ReturnSolveInputs(ActivationKey),
     /// Every call site that addresses this activation (`semantic::Callers`).
     Callers(ActivationKey),
     ReturnType(ActivationKey),
@@ -368,6 +374,7 @@ impl FactKey {
             (FactKey::Activation(left), FactKey::Activation(right))
             | (FactKey::ActivationInputs(left), FactKey::ActivationInputs(right))
             | (FactKey::ActivationAnalyzed(left), FactKey::ActivationAnalyzed(right))
+            | (FactKey::ReturnSolveInputs(left), FactKey::ReturnSolveInputs(right))
             | (FactKey::Callers(left), FactKey::Callers(right))
             | (FactKey::ReturnType(left), FactKey::ReturnType(right)) => left.semantic_cmp(right, types),
             (FactKey::CallSiteTargets(left), FactKey::CallSiteTargets(right))
@@ -427,6 +434,7 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::TypeDeclared(_) => 35,
         FactKey::IncomingInputSlot(_) => 37,
         FactKey::Callers(_) => 38,
+        FactKey::ReturnSolveInputs(_) => 41,
     }
 }
 
@@ -739,6 +747,7 @@ impl World {
                 self.seed_activation_producer(activation)
             }
             FactKey::ActivationAnalyzed(activation)
+            | FactKey::ReturnSolveInputs(activation)
             | FactKey::CallSiteTargets(CallSiteKey { activation, .. })
             | FactKey::CallSiteSummary(CallSiteKey { activation, .. }) => {
                 let activation = activation.clone();

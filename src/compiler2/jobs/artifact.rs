@@ -2184,6 +2184,7 @@ mod tests {
             reachable_entries: Vec::new(),
             callsites: Vec::new(),
             value_types: call_returns.then_some((result_value, int)).into_iter().collect(),
+            addressed_callsites: HashSet::new(),
         };
         let positions = if call_returns {
             let caller_symbol = ExecutableSymbol::from_key(&caller);

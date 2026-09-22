@@ -281,12 +281,18 @@ fn gather(
     let mut frames: Vec<(ActivationKey, Vec<Skeleton>)> = Vec::new();
 
     for member in members {
-        reads.push(FactKey::ActivationAnalyzed(member.clone()));
+        // Not the whole analysis: only the part this solve reads out of it --
+        // which entries the activation returns through, and the types
+        // standing at its function's `Ground` leaves and its unaddressed
+        // `Result` leaves (an addressed `Result` leaf is answered by the
+        // component's own equations below, never by this read). A publisher
+        // moving some other part of its analysis does not wake this solve.
+        reads.push(FactKey::ReturnSolveInputs(member.clone()));
         reads.push(FactKey::ReturnSkeleton(member.function));
         let analysis = world.activation_analysis(member);
         let skeleton = world.return_skeleton(member.function);
         if analysis.is_none() {
-            waits.push(FactKey::ActivationAnalyzed(member.clone()));
+            waits.push(FactKey::ReturnSolveInputs(member.clone()));
         }
         if skeleton.is_none() {
             waits.push(FactKey::ReturnSkeleton(member.function));
@@ -329,22 +335,21 @@ fn gather(
     // settled value, which the walk already recorded in the slot's own input
     // evidence.
     for caller in members {
-        let Some(analysis) = world.activation_analysis(caller) else {
-            continue;
-        };
         let Some(skeleton) = world.return_skeleton(caller.function) else {
             continue;
         };
-        for callsite in &analysis.callsites {
+        // Every call site the function's own skeleton names, not just the
+        // ones a walk has resolved so far: a still-unresolved site's
+        // `CallSiteTargets` is read (and so subscribed) here directly, which
+        // is what wakes this solve the moment it resolves, without needing
+        // `ActivationAnalysis.callsites` to restate the same set.
+        for (callsite, arguments) in &skeleton.arguments {
             let key = CallSiteKey {
                 activation: caller.clone(),
                 callsite: *callsite,
             };
             reads.push(FactKey::CallSiteTargets(key.clone()));
             let Some(targets) = world.callsite_targets(&key) else {
-                continue;
-            };
-            let Some(arguments) = skeleton.arguments.get(callsite) else {
                 continue;
             };
             for edge in &targets.targets {

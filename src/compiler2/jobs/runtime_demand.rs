@@ -2569,6 +2569,7 @@ mod tests {
                 reachable_entries: Vec::new(),
                 callsites: Vec::new(),
                 value_types: HashMap::new(),
+                addressed_callsites: HashSet::new(),
             },
             body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
             entry_dispatch: None,
