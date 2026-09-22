@@ -270,9 +270,11 @@ KNOWLEDGE. For `analyze_activation`'s callee `Activation` claims it is not: a
 callsite whose target evidence is still climbing names no callee, and reading
 that silence as a withdrawal retracts a fact that is still true. A NON-rebased
 `AnalyzeActivation` conclusion therefore keeps every `Activation` claim it did
-not re-emit (`World::preserved_analysis_claims`), exactly as its
-`ActivationInputs` contributions ride
-`ContributionMap::conclude_preserving_frontier`. Its `CallSiteSummary` and
+not re-emit (`World::preserved_analysis_claims`). Every publisher's
+`ActivationInputs` contributions ride the same preserving arm,
+`ContributionMap::conclude_preserving_frontier`, rebased or not: a
+publisher's silence about a key never withdraws the row it once contributed.
+Its `CallSiteSummary` and
 `CallSiteTargets` claims are on the other side of the line: the walk publishes
 an edge for EVERY callsite it reaches, unresolved and all
 (`CallSiteResolution`, [`semantic-fixpoint`](semantic-fixpoint.md)), so silence
@@ -398,8 +400,9 @@ An activation's existence facts have exactly one producer, and which job that
 is depends on how the key was reached. A root entry is `SeedRoot`'s: it
 publishes `Activation`/`ActivationInputs` for its entry from the root's own
 input. A callee reached over a call edge is its CALLER's: `analyze_activation`
-publishes `Activation(callee)` and contributes the callee's input row, and
-withdraws both only on a rebased conclusion. `Job::SeedActivation` owns the
+publishes `Activation(callee)` and contributes the callee's input row.
+A rebased conclusion withdraws the `Activation` claim it does not re-emit; the
+input contribution is never withdrawn, rebased or not. `Job::SeedActivation` owns the
 third case and only the third case -- an activation the runtime-demand
 frontier minted from a callable surface (`jobs::runtime_demand`), which no
 analysis ever walked and no caller ever claimed. It reconstructs the inputs

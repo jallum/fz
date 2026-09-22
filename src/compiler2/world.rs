@@ -631,7 +631,6 @@ impl World {
                 &job,
                 previous_activation_input_outputs,
                 effects.activation_input_contributions,
-                rebased,
             )
         } else {
             self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
@@ -1073,21 +1072,10 @@ impl World {
         job: &Job,
         previous_output_keys: HashSet<ActivationKey>,
         contributions: Vec<(ActivationKey, Vec<super::semantic::ActivationInput>)>,
-        rebased: bool,
     ) -> ContributionReplace<ActivationKey> {
         let next = self.normalize_contributions(contributions);
-        let preserve_frontier = rebased || matches!(job, Job::AnalyzeActivation(_));
-        if preserve_frontier {
-            self.activation_inputs.conclude_preserving_frontier(
-                &mut self.types,
-                job.clone(),
-                previous_output_keys,
-                next,
-            )
-        } else {
-            self.activation_inputs
-                .conclude(&mut self.types, job.clone(), previous_output_keys, next, false)
-        }
+        self.activation_inputs
+            .conclude_preserving_frontier(&mut self.types, job.clone(), previous_output_keys, next)
     }
 
     fn extend_activation_input_contributions(

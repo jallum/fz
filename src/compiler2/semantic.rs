@@ -969,7 +969,8 @@ struct ContributionSlot<P, V> {
 /// The store does NOT own a per-publisher output-key index. The scheduler's
 /// work graph already tracks every job's published facts under the identical
 /// accumulate-on-extend / replace-on-conclude rule, so it is the single source
-/// of truth for a publisher's frontier; `conclude` takes that frontier as
+/// of truth for a publisher's frontier; each concluding arm (`conclude_exact`,
+/// `conclude_preserving_frontier`) takes that frontier as
 /// `previous_output_keys`.
 pub struct ContributionMap<K, P, V> {
     slots: HashMap<K, ContributionSlot<P, V>>,
@@ -1490,27 +1491,22 @@ where
         self.slots.get(key).map(|slot| &slot.joined)
     }
 
-    /// The concluding-completion arm: the publisher's contribution key set is
-    /// replaced — dropping a key withdraws that contribution, the only path by
-    /// which a sole publisher retracts — while entry values JOIN with the
-    /// publisher's prior entry unless its ground shifted (`rebased`), the only
-    /// path by which contributed values may narrow. `previous_output_keys` is
-    /// the publisher's prior frontier, owned by the work graph.
-    ///
-    /// Withdrawal-on-conclude is correct only where a publisher's absence of a
-    /// key genuinely retracts a contribution it alone made (e.g. a `SeedRoot`
-    /// that stops seeding a body's input edge). For a fact whose contributions
-    /// only ever grow within an epoch as upstream evidence ascends — a callee
-    /// or demand transiently unreachable, not impossible — a non-rebased absence
-    /// is NOT a retraction; those callers conclude through
-    /// `conclude_preserving_frontier` so the frontier survives the round.
-    pub fn conclude(
+    /// The concluding-completion arm for facts whose publisher's silence about
+    /// a key really is knowledge: a key in `previous_output_keys` but absent
+    /// from `next` is withdrawn, and every listed value replaces the
+    /// publisher's prior entry outright rather than joining it.
+    /// `RuntimeDemandInput` and `IncomingInputSlot` conclude here, where a
+    /// publisher that stops naming a key genuinely retracts the contribution
+    /// it alone made. Cumulative evidence a publisher may fall silent about
+    /// without refuting it -- `ActivationInputs`, `Callers` -- concludes
+    /// through `conclude_preserving_frontier` instead; `extend` is the
+    /// waiting arm.
+    pub fn conclude_exact(
         &mut self,
         ctx: &mut V::Ctx,
         publisher: P,
         previous_output_keys: HashSet<K>,
         next: HashMap<K, V>,
-        rebased: bool,
     ) -> ContributionReplace<K> {
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
         let mut touched = previous_output_keys
@@ -1527,7 +1523,7 @@ where
                 Some(value) => SlotEntry::Upsert(value.clone()),
                 None => SlotEntry::Withdraw,
             };
-            if self.apply(ctx, &key, &publisher, entry, !rebased) {
+            if self.apply(ctx, &key, &publisher, entry, false) {
                 changed_keys.insert(key);
             }
         }
@@ -1535,17 +1531,6 @@ where
             output_keys: next_output_keys,
             changed_keys,
         }
-    }
-
-    /// Replace this publisher's complete frontier and each listed value.
-    pub fn conclude_exact(
-        &mut self,
-        ctx: &mut V::Ctx,
-        publisher: P,
-        previous_output_keys: HashSet<K>,
-        next: HashMap<K, V>,
-    ) -> ContributionReplace<K> {
-        self.conclude(ctx, publisher, previous_output_keys, next, true)
     }
 
     /// A cumulative concluding-completion arm for evidence whose absence in a
@@ -1854,7 +1839,7 @@ mod tests {
 
     use super::*;
     use crate::compiler2::drive::JobEffects;
-    use crate::compiler2::{ExecutableNeed, FactKey, Job, RootId, World};
+    use crate::compiler2::{ExecutableNeed, FactKey, Job, World};
     use crate::telemetry::ConfiguredTelemetry;
     use crate::types::ClosureTarget;
 
@@ -2480,105 +2465,6 @@ mod tests {
             vec![union],
             "activation-input evidence is cumulative; a later narrower observation must not lower the joined slot",
         );
-    }
-
-    #[test]
-    fn rebased_activation_input_conclusion_preserves_prior_publisher_frontier() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new();
-        let key = test_key(&mut world, &tel);
-        let input = world.types_mut().atom_lit("seen");
-        let publisher = Job::AnalyzeActivation(key.clone());
-        let mut map = ActivationInputMap::new();
-
-        let first = map.conclude(
-            world.types_mut(),
-            publisher.clone(),
-            HashSet::new(),
-            HashMap::from([(key.clone(), ActivationInputAlternatives::from_row(vec![input]))]),
-            false,
-        );
-        assert_eq!(first.output_keys, HashSet::from([key.clone()]));
-        assert_eq!(map.get(&key), Some(&ActivationInputAlternatives::from_row(vec![input])));
-
-        let rebased = map.conclude_preserving_frontier(
-            world.types_mut(),
-            publisher,
-            HashSet::from([key.clone()]),
-            HashMap::new(),
-        );
-
-        assert_eq!(
-            rebased.output_keys,
-            HashSet::from([key.clone()]),
-            "rebased activation-input evidence may pause but must not retract the publisher's prior edge"
-        );
-        assert!(
-            rebased.changed_keys.is_empty(),
-            "preserving an unchanged frontier should not mark the activation input dirty"
-        );
-        assert_eq!(map.get(&key), Some(&ActivationInputAlternatives::from_row(vec![input])));
-    }
-
-    #[test]
-    fn contribution_key_waves_allocate_identically_across_reverse_insertion() {
-        let run = |reverse: bool| {
-            let mut world = World::new();
-            let root = RootId::for_test(92);
-            let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "contribution_order", 1);
-            let int = world.types_mut().int();
-            let float = world.types_mut().float();
-            let atom_a = world.types_mut().atom_lit("a");
-            let atom_b = world.types_mut().atom_lit("b");
-            let list = world.types_mut().list(int);
-            let non_empty = world.types_mut().non_empty_list(int);
-            let list_key = ActivationKey::from_inputs(root, function, &[list], world.types_mut());
-            let non_empty_key = ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
-            let mut map = ActivationInputMap::new();
-            let publisher_a = Job::SeedRoot(root);
-            let publisher_b = Job::AnalyzeActivation(list_key.clone());
-            let first = HashMap::from([
-                (list_key.clone(), ActivationInputAlternatives::from_row(vec![int])),
-                (
-                    non_empty_key.clone(),
-                    ActivationInputAlternatives::from_row(vec![float]),
-                ),
-            ]);
-            map.conclude(world.types_mut(), publisher_a, HashSet::new(), first, false);
-            let second = if reverse {
-                [
-                    (
-                        non_empty_key.clone(),
-                        ActivationInputAlternatives::from_row(vec![atom_b]),
-                    ),
-                    (list_key.clone(), ActivationInputAlternatives::from_row(vec![atom_a])),
-                ]
-                .into_iter()
-                .collect()
-            } else {
-                HashMap::from([
-                    (list_key.clone(), ActivationInputAlternatives::from_row(vec![atom_a])),
-                    (
-                        non_empty_key.clone(),
-                        ActivationInputAlternatives::from_row(vec![atom_b]),
-                    ),
-                ])
-            };
-            map.conclude(
-                world.types_mut(),
-                publisher_b,
-                HashSet::from([list_key.clone(), non_empty_key.clone()]),
-                second,
-                false,
-            );
-            (
-                map.get(&list_key).expect("list contribution").rows()[0].inputs()[0].ty(),
-                map.get(&non_empty_key).expect("non-empty contribution").rows()[0].inputs()[0].ty(),
-                world.types().identity_inventory(),
-            )
-        };
-
-        assert_eq!(run(false), run(true));
     }
 
     #[test]

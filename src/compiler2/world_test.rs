@@ -978,80 +978,6 @@ fn compiler2_the_key_and_the_surface_blanking_ask_one_observability_question() {
     );
 }
 
-#[test]
-fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
-    let _tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
-    let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    define_activation_key_facts(&mut world, function, false, vec![DispatchDemand::Whole]);
-
-    let input_a = world.types_mut().atom_lit("a");
-    let input_b = world.types_mut().atom_lit("b");
-    let key = world.activation_key(root, function, &[input_a]);
-
-    world.complete_job(
-        Job::SeedRoot(root),
-        JobEffects {
-            activation_input_contributions: vec![(key.clone(), activation_inputs([input_a]))],
-            ..JobEffects::default()
-        },
-    );
-    world.complete_job(
-        Job::AnalyzeActivation(key.clone()),
-        JobEffects {
-            activation_input_contributions: vec![(key.clone(), activation_inputs([input_b]))],
-            ..JobEffects::default()
-        },
-    );
-
-    let fact = FactKey::ActivationInputs(key.clone());
-    let dependency = DependencyKey::Fact(fact.clone());
-    let reader = Job::LowerFunction(function);
-    world.complete_job(
-        reader.clone(),
-        JobEffects {
-            reads: vec![FactUse::current(fact)],
-            ..JobEffects::default()
-        },
-    );
-    while world.work_graph.pop().is_some() {}
-
-    let step = world.complete_job(Job::SeedRoot(root), JobEffects::default());
-    assert!(
-        step.changed.iter().any(|change| {
-            change.key == DependencyKey::Fact(FactKey::ActivationInputs(key.clone()))
-                && change.old_revision.is_some()
-                && change.new_revision.is_some()
-                && change.new_revision > change.old_revision
-        }),
-        "retracting one publisher should republish the still-present activation-input fact when the joined body evidence changes",
-    );
-    assert_eq!(
-        world.activation_inputs_joined(&key),
-        Some(vec![input_b]),
-        "the surviving publisher's input should remain as the body evidence after the stale contribution retracts",
-    );
-    let wakes = step
-        .wakes
-        .iter()
-        .filter(|wake| wake.job == reader && wake.cause == FactUse::current(dependency.clone()))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        wakes.len(),
-        1,
-        "the narrowed aggregate should wake its exact reader once"
-    );
-    assert!(
-        wakes[0].shift,
-        "the authoritative contribution withdrawal must reach the reader as a ground shift",
-    );
-    assert!(
-        world.work_graph.rebased(&reader),
-        "the reader must replace evidence derived from the removed input row",
-    );
-}
-
 /// fz-9i4.7.10.2: two correlated publications stay two whole rows. No row is
 /// ever synthesized by pairing one publication's column with another's — the
 /// Cartesian combination the pointwise join used to invent.
@@ -1119,55 +1045,6 @@ fn compiler2_correlated_activation_input_rows_stay_alternatives() {
     assert!(
         equivalent,
         "the joined projection should be the column-wise union across rows",
-    );
-}
-
-/// fz-9i4.7.10.2: dropping one publisher's contribution retracts its rows and
-/// only its rows; the surviving publisher's correlation stands untouched.
-#[test]
-fn compiler2_withdrawing_a_publisher_retracts_only_its_rows() {
-    let _tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
-    let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    define_activation_key_facts(&mut world, function, false, vec![DispatchDemand::Whole]);
-
-    let input_a = world.types_mut().atom_lit("a");
-    let input_b = world.types_mut().atom_lit("b");
-    let key = world.activation_key(root, function, &[input_a]);
-
-    world.complete_job(
-        Job::SeedRoot(root),
-        JobEffects {
-            activation_input_contributions: vec![(key.clone(), activation_inputs([input_a]))],
-            ..JobEffects::default()
-        },
-    );
-    world.complete_job(
-        Job::AnalyzeActivation(key.clone()),
-        JobEffects {
-            activation_input_contributions: vec![(key.clone(), activation_inputs([input_b]))],
-            ..JobEffects::default()
-        },
-    );
-    assert_eq!(
-        world.activation_input_alternatives(&key).map(|alts| alts.rows().len()),
-        Some(2),
-        "distinct publisher rows should coexist as alternatives",
-    );
-
-    world.complete_job(Job::SeedRoot(root), JobEffects::default());
-    let rows = world
-        .activation_input_alternatives(&key)
-        .expect("the surviving publisher's fact should remain")
-        .rows()
-        .iter()
-        .map(|row| row.tys())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        rows,
-        vec![vec![input_b]],
-        "withdrawing one publisher should retract exactly its row",
     );
 }
 

@@ -333,21 +333,15 @@ itself never schedules the callee directly: `prepare_function_call` only
 `reads` the callee's `ReturnType` (so mutual recursion cannot deadlock), so
 nothing about discovering a callee blocks on its analysis, and the frontier is
 the ignition path for that caller-discovered callee's first analysis pass.
-`ActivationInputs(a)` is cumulative for semantic-analysis
-publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
-the publisher keeps its prior activation-input frontier and only adds/widens new
-entries. Source/root publishers still use ordinary replacement so real external
-changes can withdraw stale contributions. If another publisher remains, the
-store reports whether that withdrawal actually narrowed the joined input rows;
-a changed withdrawal travels as a ground shift, while an equal withdrawal is
-quiet. The `Activation` CLAIM rides a
+`ActivationInputs(a)` is cumulative for every publisher: a rerun that
+temporarily stops seeing a callsite, or names no row at all, keeps the
+publisher's prior activation-input frontier and can only add or widen entries
+(`ContributionMap::conclude_preserving_frontier`). No publisher withdraws an
+input contribution within a drive, rebased or not — the arm is unconditional
+for every publisher. The `Activation` CLAIM rides a
 stricter rule than the inputs do: a non-rebased conclusion keeps every
 `Activation` it did not re-emit, and only a rebased one — whose ground actually
-shifted — withdraws. The
-`ActivationInputs` contributions themselves never withdraw, rebase or not
-(`preserve_frontier` is unconditional for `AnalyzeActivation`, so after a
-rebased withdrawal of a claim the input evidence that fed it stays published
-and joined — see fz-kdt.64 for the recorded asymmetry) (`World::preserved_analysis_claims`;
+shifted — withdraws (`World::preserved_analysis_claims`;
 [`fact-engine`](fact-engine.md), *Absence is bottom; rebasing is the narrowing
 path*). This keeps fixpoint evidence from descending just because an
 intermediate clause-reachability approximation changed. The row set is compared by per-column type equivalence, not raw `Ty`
