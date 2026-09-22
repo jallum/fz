@@ -485,6 +485,11 @@ fn commit_activation_evaluation(
     let mut emitted_activation_inputs = HashSet::new();
     let mut activation_input_contributions = Vec::new();
     let mut caller_contributions = Vec::new();
+    // Which call sites this walk addressed -- resolved to at least one
+    // activation -- computed from the exact same resolution that publishes
+    // `CallSiteTargets` below, so the return solve's narrow projection and
+    // the published fact never disagree about which sites are addressed.
+    let mut addressed_callsites = HashSet::new();
     for call in &analysis_calls {
         // EVERY reached callsite publishes its edge, resolved or not: the
         // unresolved answer is a value, so the analysis's silence about a
@@ -502,6 +507,11 @@ fn commit_activation_evaluation(
         outputs.push(targets_fact.clone());
         if targets_changed {
             changed.push(targets_fact);
+        }
+        if let CallSiteResolution::Resolved(summary) = &call.resolution
+            && summary.targets.iter().any(|target| target.activation.is_some())
+        {
+            addressed_callsites.insert(call.key.callsite);
         }
         for callee_activation in &call.activations {
             if emitted_activations.insert(callee_activation.key.clone()) {
@@ -561,27 +571,34 @@ fn commit_activation_evaluation(
         }
     }
 
-    let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
-        &activation,
-        ActivationAnalysis {
-            input_rows,
-            entry_reachability,
-            reachable_entries,
-            // The callsites this analysis RESOLVED. An unresolved edge names
-            // no targets, so the products keyed off this list -- materialized
-            // call edges, runtime demand, the canonical call-edge snapshot --
-            // see exactly what they always saw.
-            callsites: analysis_calls
-                .iter()
-                .filter_map(|call| call.resolution.resolved().map(|_| call.key.callsite))
-                .collect(),
-            value_types,
-        },
-    );
-    let analyzed_fact = FactKey::ActivationAnalyzed(activation);
+    let (analysis_changed, return_part_changed) = super::super::drive::ExecutionContext::new(world, tel)
+        .define_activation_analysis(
+            &activation,
+            ActivationAnalysis {
+                input_rows,
+                entry_reachability,
+                reachable_entries,
+                // The callsites this analysis RESOLVED. An unresolved edge names
+                // no targets, so the products keyed off this list -- materialized
+                // call edges, runtime demand, the canonical call-edge snapshot --
+                // see exactly what they always saw.
+                callsites: analysis_calls
+                    .iter()
+                    .filter_map(|call| call.resolution.resolved().map(|_| call.key.callsite))
+                    .collect(),
+                value_types,
+                addressed_callsites,
+            },
+        );
+    let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
     outputs.push(analyzed_fact.clone());
     if analysis_changed {
         changed.push(analyzed_fact);
+    }
+    let solve_inputs_fact = FactKey::ReturnSolveInputs(activation);
+    outputs.push(solve_inputs_fact.clone());
+    if return_part_changed {
+        changed.push(solve_inputs_fact);
     }
 
     JobEffects {

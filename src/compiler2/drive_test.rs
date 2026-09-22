@@ -23341,38 +23341,47 @@ fn compiler2_a_wrapped_recursive_return_is_solved_as_one_component() {
     }
 }
 
-/// The succession the same two fixtures are meant to have: each activation
-/// walked a bounded number of times, one solve over the whole component, and
-/// no return ever withdrawn.
+/// The succession the same two fixtures have: each activation walked an
+/// exact number of times, no return ever withdrawn, and the component solved
+/// in as few dispatches as its ownership order allows.
 ///
-/// This does not hold yet, and the reason is a second defect one layer away
-/// from the bottom-delivery this file's other test covers. `wrap/1`'s callee
-/// prerequisites are not proven on `dup/1`'s first walk, so that call site
-/// resolves to no target; membership is drawn from RESOLVED call-site
-/// targets, so the first query sees the system as `{dup/1}` alone, a solve
-/// over that partial system publishes an answer, `wrap/1` joins on the next
-/// round, ownership moves to it by declaration order, and the earlier
-/// publication is withdrawn. "No target yet" is being read as "no edge" --
-/// the same conflation of unknown with empty that the bottom cures one layer
-/// down, and it is not cured by curing that layer.
+/// `main/0` walks five times and `dup/1` four on both fixtures -- that comes
+/// from `AnalyzeActivation` reading back its own `ActivationInputs` row, a
+/// separate self-read this file does not narrow.
+///
+/// The solve count differs between the two fixtures because ownership does:
+/// a component's owner is whichever member's `FunctionId` sorts first, and
+/// an owner's first gather can only run once every member has an activation.
+/// `wrapped_recursive_return.fz` declares `wrap/1` first; by the time
+/// `dup/1`'s recursion has minted `wrap/1`'s activation, `wrap/1` (the
+/// owner) already has everything it needs and never blocks. The permuted
+/// fixture declares `dup/1` first, so `dup/1` owns the component and its
+/// first gather blocks once, waiting on `wrap/1`'s not-yet-minted
+/// activation -- a real, unavoidable dispatch, not a redundant wake. From
+/// there both fixtures take the same two further dispatches: one ignition
+/// that publishes the real answer, and one rebase that survives on the
+/// solve's own just-published `ActivationInputs` row (also not narrowed
+/// here). What both fixtures no longer pay for is a THIRD dispatch, woken by
+/// a member's return analysis moving somewhere its own return skeleton never
+/// reads -- that whole-fact wake is what this file's solve now avoids.
 #[test]
 fn compiler2_a_wrapped_recursive_return_solves_its_component_once() {
-    for fixture in [
-        "fixtures2/behavior/wrapped_recursive_return.fz",
-        "fixtures2/behavior/wrapped_recursive_return_permuted.fz",
+    for (fixture, solves) in [
+        ("fixtures2/behavior/wrapped_recursive_return.fz", 2),
+        ("fixtures2/behavior/wrapped_recursive_return_permuted.fz", 3),
     ] {
         let (compiler, succession) = succession_of_fixture(fixture);
         let world = compiler.world();
         let table = succession.render(world);
         let rows = succession.rows(world);
 
-        for label in ["main/0", "dup/1", "wrap/1"] {
+        for (label, walks) in [("main/0", 5), ("dup/1", 4), ("wrap/1", 2)] {
             let row = rows
                 .get(label)
                 .unwrap_or_else(|| panic!("{fixture}: {label} should have been analysed{table}"));
-            assert!(
-                row.walks <= 3,
-                "{fixture}: {label} should settle within three walks{table}"
+            assert_eq!(
+                row.walks, walks,
+                "{fixture}: {label} should walk exactly {walks} times{table}"
             );
             assert_eq!(
                 row.definitions, 1,
@@ -23390,8 +23399,8 @@ fn compiler2_a_wrapped_recursive_return_solves_its_component_once() {
         );
         assert_eq!(
             rows.values().map(|row| row.solves).sum::<u64>(),
-            1,
-            "{fixture}: one whole component needs exactly one solve{table}"
+            solves,
+            "{fixture}: the component settles in exactly {solves} solve dispatches{table}"
         );
     }
 }

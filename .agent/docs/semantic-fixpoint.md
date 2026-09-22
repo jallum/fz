@@ -436,9 +436,16 @@ conclusion atomically replaces that publisher's exact target contributions, so
 omission retracts only that publisher. A blocked run extends without recanting
 prior evidence. Exact target activation keys retain capture/surface correlation;
 there is no callable-row aggregate or contribution store. Ordinary fact
-movement wakes the exact registered readers, including self and mutual cycles,
-until the scheduler reaches finality; an equal answer moves no content and
-wakes no current reader.
+movement wakes the exact registered readers, self and mutual cycles included --
+but only for the part of a fact a reader actually subscribes to. The law a
+publisher follows is: subscribe to the part of a fact you do not yourself
+produce, never the whole of it for the sake of catching a self-cycle.
+`SolveReturnComponent` and `DeriveRuntimeDemand` both answer a self- or
+mutually-recursive system this way: a member's own contribution to the cycle
+arrives as an input value the walk publishes (`ActivationInputs`'s self row;
+`dup`'s own `wrap(dup(xs))` call site), never as an echo of the reader's own
+conclusion filtered back out. Movement in a part a reader never reads passes
+it by unread; an equal answer moves no content and wakes no current reader.
 
 A first-class callable edge contributes the target's exact `ExecutableNeed`
 return contract through that same ordinary map. Observed return demand remains
@@ -695,7 +702,7 @@ Ownership of each member's `ReturnType` follows that query directly (see
 component, keyed by its owner -- solves and publishes every member's
 `ReturnType` at once. It evaluates each member's static return skeleton
 under that member's own bindings, and every one of those bindings is a fact
-the walk already publishes: `ActivationAnalysis` (waiting only if one is
+the walk already publishes: `ReturnSolveInputs` (waiting only if one is
 still missing entirely; a component cannot be solved from a partial
 membership) binds a `Ground` leaf through `value_types` and says which
 entries the activation returns through via `reachable_entries`;
@@ -704,6 +711,23 @@ addressed; `ActivationInputs` binds an `Input` slot to the evidence already
 standing at it, beside the arguments the member's callers hand it. It never
 invents a fact to carry a shape, and there is no second tree to keep in
 step.
+
+`ReturnSolveInputs` is a second, narrower `FactKey` over the same stored
+`ActivationAnalysis` a member's `AnalyzeActivation` walk already computes and
+publishes as `ActivationAnalyzed` -- one stored value, two keys, mirroring
+`RuntimeDemand`/`RuntimeDemandInputs`. It carries `reachable_entries` and
+`value_types` at exactly the leaves the solve's equations read: every
+`Ground` leaf, and a `Result` leaf only when its call site is still
+unaddressed (`Unresolved`, or `Resolved` with no edge naming an activation).
+A `Result` leaf whose call site IS addressed is answered by the solve's own
+equations (`Term::Return`, one flattened branch per addressed call), never by
+a value read -- so its observed type is not part of the projection, and a
+member's own call site resolving (or its callee's value shifting under an
+already-resolved call) moves `ActivationAnalyzed` without moving
+`ReturnSolveInputs`, and wakes no solve. The walk computes the addressed set
+once, from the same call resolutions it publishes as `CallSiteTargets`, so
+consumption and subscription come from one value rather than two computed
+separately and left to agree by convention.
 
 One more fact is read, and it carries no shape at all. Membership is
 discovered, not declared: an activation minted after the solve concludes can
@@ -753,9 +777,13 @@ dependency: its `ReturnType` is `reads`, never `waits`, mirroring
 solve's bottom so far, not a block; the read is what re-wakes the solve once
 that external's evidence rises. Waiting on it instead would deadlock the
 moment two components' owners depended on each other's members. The solve
-therefore only ever `waits` on a member's own `ActivationAnalyzed`, and
-publishes every member's `ReturnType` in one atomic conclusion, so a reader
-waiting on any one member sees the whole component settle together.
+therefore only ever `waits` on a member's own `ReturnSolveInputs`, the part
+of that member's analysis its equations actually read, rather than the whole
+`ActivationAnalyzed` -- a member's analysis moving somewhere the skeleton
+never observes (an addressed call site's result type, an unreachable entry)
+does not wake this solve. It publishes every member's `ReturnType` in one
+atomic conclusion, so a reader waiting on any one member sees the whole
+component settle together.
 
 The same solve settles each member's own INPUT evidence: a member's slot
 equation is the join of every call site's argument skeleton, evaluated in

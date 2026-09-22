@@ -3300,8 +3300,14 @@ impl World {
         std::mem::take(&mut self.warning_diagnostics)
     }
 
-    pub fn define_activation_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> bool {
-        self.activations.define_analysis(key, analysis)
+    /// Stores one activation's analysis and reports `(changed, return_part_changed)`:
+    /// whether the whole fact moved, and whether the narrower part
+    /// `FactKey::ReturnSolveInputs` carries -- what a return solve
+    /// actually reads -- moved with it. Mirrors `define_runtime_demand`'s
+    /// `(changed, inputs_changed)` split.
+    pub fn define_activation_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> (bool, bool) {
+        let skeleton = self.return_skeleton(key.function).cloned();
+        self.activations.define_analysis(key, analysis, skeleton.as_deref())
     }
 
     pub fn define_activation_return(&mut self, derivation: &Derivation, evidence: Option<Ty>) -> bool {
@@ -3815,17 +3821,17 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         }
     }
 
-    pub fn define_activation_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> bool {
+    pub fn define_activation_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> (bool, bool) {
         // value_types are already in the activation's addressed frame: params bind
         // to the addressed key inputs (`analyze_activation`), so a value at param i
         // carries address a{i}. No re-canonicalization — the old per-type encounter
         // pass (alpha_normalize_vars) re-numbered them into a frame that DIVERGED
         // from the key (fz-hwn.27.8); addressing at the binder is the canonical form.
-        let changed = self.world.define_activation_analysis(key, analysis);
+        let (changed, return_part_changed) = self.world.define_activation_analysis(key, analysis);
         if changed {
             self.emit_world_key(&["fz", "compiler2", "activation_analysis", "defined"], key);
         }
-        changed
+        (changed, return_part_changed)
     }
 
     pub fn define_activation_return(&mut self, derivation: &Derivation, evidence: Option<Ty>) -> bool {

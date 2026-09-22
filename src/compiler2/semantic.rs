@@ -11,6 +11,7 @@ use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::facts::FactUse;
 use super::identity::{ActivationKey, ActivationSignature, ExecutableKey, ExecutableNeed, FunctionId};
 use super::return_membership::ComponentUnknowns;
+use super::return_skeleton::FunctionSkeleton;
 use super::types::{MapKey, Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -872,6 +873,13 @@ pub struct ActivationAnalysis {
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
     pub value_types: HashMap<ValueId, Ty>,
+    /// The call sites this walk resolved to at least one activation --
+    /// exactly the callsites `CallSiteTargets` would report addressed, from
+    /// the same resolutions that publish it. A return solve answers an
+    /// addressed call site's `Result` leaf from the component's equations,
+    /// never from `value_types`, so this set is what tells the narrow return
+    /// solve projection which `Result` leaves to leave out.
+    pub addressed_callsites: HashSet<CallSiteId>,
 }
 
 #[derive(Debug, Clone)]
@@ -1464,14 +1472,45 @@ impl ActivationMap {
         slot.return_ty = None;
     }
 
-    pub fn define_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> bool {
+    /// Stores one activation's analysis and reports two things a caller may
+    /// need separately: whether the whole fact moved, and whether the part a
+    /// return solve reads -- `reachable_entries`, and `value_types` at the
+    /// function's `Ground` leaves and its unaddressed `Result` leaves --
+    /// moved with it. A publisher changing something the solve never reads
+    /// should not wake the solve; that is the whole reason this second
+    /// answer exists.
+    pub(crate) fn define_analysis(
+        &mut self,
+        key: &ActivationKey,
+        analysis: ActivationAnalysis,
+        skeleton: Option<&FunctionSkeleton>,
+    ) -> (bool, bool) {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
+        let previous_solve_inputs = return_solve_inputs(slot.analysis.as_ref(), skeleton);
         let changed = slot.analysis.as_ref() != Some(&analysis);
         if changed {
             slot.analysis = Some(analysis);
         }
-        changed
+        let return_part_changed = return_solve_inputs(slot.analysis.as_ref(), skeleton) != previous_solve_inputs;
+        (changed, return_part_changed)
     }
+}
+
+/// The part of an activation's analysis a return solve actually reads. `None`
+/// -- no analysis published yet, or the function's skeleton not published yet
+/// -- reads as empty, the same as any other contribution that has not
+/// arrived.
+fn return_solve_inputs(
+    analysis: Option<&ActivationAnalysis>,
+    skeleton: Option<&FunctionSkeleton>,
+) -> (Vec<ControlEntryId>, HashMap<ValueId, Ty>) {
+    let (Some(analysis), Some(skeleton)) = (analysis, skeleton) else {
+        return (Vec::new(), HashMap::new());
+    };
+    (
+        analysis.reachable_entries.clone(),
+        skeleton.return_solve_inputs(&analysis.value_types, &analysis.addressed_callsites),
+    )
 }
 
 impl<K, P, V> ContributionMap<K, P, V>

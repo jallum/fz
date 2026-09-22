@@ -2364,6 +2364,7 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::ActivationInputs(key)
         | FactKey::Callers(key)
         | FactKey::ActivationAnalyzed(key)
+        | FactKey::ReturnSolveInputs(key)
         | FactKey::ReturnType(key) => write_activation_key(out, key),
         FactKey::CallSiteTargets(key) | FactKey::CallSiteSummary(key) => write_callsite_key_identity(out, key),
         FactKey::CallableConstructionTarget(key) => write_callable_construction_target_key(out, key),
@@ -2593,6 +2594,7 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::ActivationInputs(_) => "ActivationInputs",
         FactKey::Callers(_) => "Callers",
         FactKey::ActivationAnalyzed(_) => "ActivationAnalyzed",
+        FactKey::ReturnSolveInputs(_) => "ReturnSolveInputs",
         FactKey::ReturnType(_) => "ReturnType",
         FactKey::CallSiteTargets(_) => "CallSiteTargets",
         FactKey::CallSiteSummary(_) => "CallSiteSummary",
