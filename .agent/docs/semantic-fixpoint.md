@@ -442,9 +442,11 @@ publisher follows is: subscribe to the part of a fact you do not yourself
 produce, never the whole of it for the sake of catching a self-cycle.
 `SolveReturnComponent` and `DeriveRuntimeDemand` both answer a self- or
 mutually-recursive system this way: a member's own contribution to the cycle
-arrives as an input value the walk publishes (`ActivationInputs`'s self row;
-`dup`'s own `wrap(dup(xs))` call site), never as an echo of the reader's own
-conclusion filtered back out. Movement in a part a reader never reads passes
+arrives as an input value the walk publishes (`dup`'s own `wrap(dup(xs))`
+call site lands at its `ActivationCallEvidence{wrap, Call(dup)}` edge cell,
+one of many cells the whole `ActivationInputs` join folds together), never as
+an echo of the reader's own conclusion filtered back out. Movement in a part
+a reader never reads passes
 it by unread; an equal answer moves no content and wakes no current reader.
 
 A first-class callable edge contributes the target's exact `ExecutableNeed`
@@ -707,10 +709,12 @@ still missing entirely; a component cannot be solved from a partial
 membership) binds a `Ground` leaf through `value_types` and says which
 entries the activation returns through via `reachable_entries`;
 `CallSiteTargets` binds a `Result` leaf to the activations that site
-addressed; `ActivationInputs` binds an `Input` slot to the evidence already
-standing at it, beside the arguments the member's callers hand it. It never
-invents a fact to carry a shape, and there is no second tree to keep in
-step.
+addressed; `ActivationCallEvidence` binds an `Input` slot to the evidence
+already standing at each of the member's caller edges -- a member's `Seed`
+cell and every non-member caller's `Call` cell, joined the same way the whole
+`ActivationInputs` map joins its rows -- beside the arguments the member's
+callers hand it. It never invents a fact to carry a shape, and there is no
+second tree to keep in step.
 
 `ReturnSolveInputs` is a second, narrower `FactKey` over the same stored
 `ActivationAnalysis` a member's `AnalyzeActivation` walk already computes and
@@ -802,6 +806,30 @@ names a position rather than describing one, and a row that mixed a solved
 type with the member's own key surfaces would offer a callable the walk never
 saw, leaving the call it feeds with no clauses to match and an `any` result
 that every callee keyed off the row inherits.
+
+Every publisher into that join writes its own cell, not the joined row:
+`FactKey::ActivationCallEvidence { callee, from: EvidenceSource }`, where
+`EvidenceSource` is `Seed` (`SeedRoot`/`SeedActivation`, the callee's own seed
+row), `Call(caller)` (one cell per calling activation, written by that
+caller's own `AnalyzeActivation`), or `Settled` (this solve's own
+contribution). `evidence_source_for(job)` is the one-to-one map from the
+three jobs that ever publish an `activation_input_contributions` row to the
+source they write under; `World::activation_call_evidence(callee, from)`
+reads exactly one such cell, gated on that edge's own revision, never the
+aggregate. `gather` reads a member's `Seed` cell always, and its
+`Call(caller)` cell for every caller OUTSIDE the member set -- never a
+member's own `Call` cell, because that edge is already modeled structurally
+as a `Term::Shape` binding inside the solve's own equations, and never the
+`Settled` cell, which is the solve's own answer and has no reader. This is
+the edge-fact law applied one level below `ReturnSolveInputs`: a publisher
+subscribes to the part of a fact it does not itself produce, by construction,
+down to the one cell each individual publisher writes, decided by which
+`JobEffects` field a job fills rather than by comparing job kinds at read or
+dispatch time. A member's own walk republishing the same call evidence it
+published before writes to the same `Call(that member)` cell `gather` never
+reads, so it cannot re-wake the solve that already answered it -- the
+component settles in the one dispatch its membership and evidence allow,
+never a second one spent re-confirming a fact the solve already produced.
 
 `SolveReturnComponent` schedules no follow-up job of its own, exactly like
 `AnalyzeActivation`. Nothing ever `waits` on a member's `ReturnType`

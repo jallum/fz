@@ -82,7 +82,7 @@ pub use deps::{DependencyIndex, UnresolvedWait};
 pub(crate) use drive::JobEffects;
 #[cfg(test)]
 mod macro_product_test;
-pub use drive::{DependencyKey, FactKey, Job, ProductAddress, WorkGraph};
+pub use drive::{DependencyKey, EvidenceSource, FactKey, Job, ProductAddress, WorkGraph};
 pub use facts::{FactChange, FactMovement, FactReadiness, FactReplace, FactState, FactTable, FactUse};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{

@@ -20,6 +20,7 @@ use crate::compiler2::dump::DumpStage;
 use crate::compiler2::identity::ModuleId;
 use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, FunctionId, RootId, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
+use crate::telemetry::handler::Event;
 
 /// The set of activations one `drive_fixture` telemetry hook accumulates --
 /// shared shape for both the settled-`ReturnType` and the ever-analyzed hook.
@@ -633,5 +634,141 @@ fn a_member_that_gains_a_caller_after_the_solve_still_gets_its_return() {
         stranded.is_empty(),
         "every activation on a return component is some owner's obligation, so none may finish \
          the drive unanswered; these did: {stranded:?}",
+    );
+}
+
+/// The solve settles a member's own INPUT evidence back through the ordinary
+/// `ActivationInputs` join (see return_component.rs's "The same solve
+/// settles each member's own INPUT evidence"), under its OWN derivation. Its
+/// next gather then reads that same fact back -- and must not read its own
+/// row as if some other, external caller had contributed it: the row IS the
+/// solve's own closed-form answer, computed from every other publisher, so
+/// folding it back into itself is idempotent, and a solve that fails to
+/// exclude it wakes a second time for nothing.
+///
+/// `wrap/1` here never calls anything, so every input it will ever have
+/// comes from `dup/1`'s recursive call to it -- itself a member of the SAME
+/// return component. The whole component (`dup/1`, `wrap/1`) is therefore
+/// solved in exactly one dispatch: the ignition that publishes the real
+/// answer. A second dispatch, caused solely by the solve reading its own
+/// just-published `ActivationInputs` row back as new evidence, is the defect
+/// this test rules out.
+#[test]
+fn the_solve_never_rereads_its_own_just_published_activation_input_row() {
+    let tel = ConfiguredTelemetry::new();
+    let solves: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+    let solves_sink = Rc::clone(&solves);
+    tel.attach(
+        &["fz", "compiler2", "return_component", "solved"],
+        Box::new(move |_event: &Event<'_, '_, '_>| {
+            *solves_sink.borrow_mut() += 1;
+        }),
+    );
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("min.fz".to_string()),
+        text: concat!(
+            "def wrap(v), do: [v]\n",
+            "def dup([]), do: []\n",
+            "def dup([_ | xs]), do: wrap(dup(xs))\n",
+            "def main(), do: dup([1])\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Backend)
+        .unwrap_or_else(|error| panic!("min.fz should reach a backend program: {error}"));
+
+    assert_eq!(
+        *solves.borrow(),
+        1,
+        "dup/1's and wrap/1's shared component should be solved in exactly one dispatch -- its \
+         ignition -- with no second dispatch caused by the solve reading back its own \
+         just-published ActivationInputs row",
+    );
+}
+
+/// `gather` models every member-to-member call edge twice unless the read is
+/// scoped by publisher, not just by callee: structurally, as the
+/// `Term::Shape` binding `CallSiteTargets` already builds, and, if it also
+/// read the whole `ActivationInputs` join per member, a second time as
+/// evidence -- a copy that is a function of the solve's own output, since a
+/// member's walk is what the solve's own answer feeds. The edge-fact cure
+/// (`FactKey::ActivationCallEvidence { callee, from: EvidenceSource }`) makes
+/// each publisher's contribution its own fact, so this asks the question the
+/// whole-join fact could never separate out: across an entire drive, is any
+/// `SolveReturnComponent` dispatch ever woken by a `Call` cell whose
+/// publisher sits inside the very component being solved?
+///
+/// `dup/1` and `wrap/1` share one component. `wrap/1`'s only caller is
+/// `dup/1`, a member of that same component, so `wrap/1`'s `Call(dup/1)`
+/// cell is exactly the edge this test rules out as a wake cause.
+#[test]
+fn the_solve_is_never_woken_by_a_members_own_call_evidence() {
+    let tel = ConfiguredTelemetry::new();
+    let violations: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let violations_sink = Rc::clone(&violations);
+    tel.attach_raw_event2::<World, crate::compiler2::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, world, completion| {
+            for wake in &completion.wakes {
+                let Job::SolveReturnComponent(owner) = &wake.job else {
+                    continue;
+                };
+                let Some(FactKey::ActivationCallEvidence {
+                    callee,
+                    from: EvidenceSource::Call(publisher),
+                }) = wake.cause.fact().fact()
+                else {
+                    continue;
+                };
+                let Some(component) = world.return_membership(owner).into_component() else {
+                    continue;
+                };
+                if component.members.contains(publisher) {
+                    violations_sink.borrow_mut().push(format!(
+                        "SolveReturnComponent({owner:?}) was woken by ActivationCallEvidence \
+                         {{ callee: {callee:?}, from: Call({publisher:?}) }}, but {publisher:?} is a \
+                         member of the very component being solved: {:?}",
+                        component.members,
+                    ));
+                }
+            }
+        },
+    );
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("min.fz".to_string()),
+        text: concat!(
+            "def wrap(v), do: [v]\n",
+            "def dup([]), do: []\n",
+            "def dup([_ | xs]), do: wrap(dup(xs))\n",
+            "def main(), do: dup([1])\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Backend)
+        .unwrap_or_else(|error| panic!("min.fz should reach a backend program: {error}"));
+
+    assert!(
+        violations.borrow().is_empty(),
+        "no SolveReturnComponent dispatch may be woken by a fact whose publisher is a member of the \
+         component it solves:\n{}",
+        violations.borrow().join("\n"),
     );
 }

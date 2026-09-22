@@ -33,7 +33,7 @@ use super::contract::{FunctionContract, FunctionContractMap};
 use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{DependencyKey, fact_dependency};
-use super::drive::{Derivation, DerivationKey, ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
+use super::drive::{Derivation, DerivationKey, EvidenceSource, ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
 use super::facts::FactUse;
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
@@ -623,18 +623,53 @@ impl World {
                 _ => None,
             })
             .collect::<HashSet<_>>();
+        // Every publisher -- a seed, a walk's call evidence, or a return
+        // solve's own settled answer -- contributes through this one join.
+        // `ContributionReplace::cell_changed_keys` names the publisher's OWN
+        // moved cells, not the joined aggregate's; below, that becomes the
+        // `ActivationCallEvidence` edge fact keyed by this job's own
+        // `EvidenceSource`, so a reader can subscribe to one contributor's
+        // row without ever seeing another publisher's -- least of all its
+        // own.
+        let activation_input_contributions = effects.activation_input_contributions;
         let ContributionReplace {
             output_keys: activation_input_outputs,
             changed_keys: activation_input_changed,
+            cell_changed_keys: activation_input_cell_changed,
         } = if waits.is_empty() {
             self.conclude_activation_input_contributions(
                 &job,
                 previous_activation_input_outputs,
-                effects.activation_input_contributions,
+                activation_input_contributions,
             )
         } else {
-            self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
+            self.extend_activation_input_contributions(&job, activation_input_contributions)
         };
+        let evidence_source = super::drive::evidence_source_for(&job);
+        let call_evidence_outputs: Vec<FactKey> = evidence_source
+            .as_ref()
+            .map(|source| {
+                activation_input_outputs
+                    .iter()
+                    .map(|callee| FactKey::ActivationCallEvidence {
+                        callee: callee.clone(),
+                        from: source.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let call_evidence_changed: Vec<FactKey> = evidence_source
+            .as_ref()
+            .map(|source| {
+                activation_input_cell_changed
+                    .iter()
+                    .map(|callee| FactKey::ActivationCallEvidence {
+                        callee: callee.clone(),
+                        from: source.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         // A call edge is cumulative caller evidence, exactly like the input
         // evidence above: one analysis can reach the same callee from several
         // call sites, and a rerun that stops reaching one of them cannot
@@ -650,6 +685,7 @@ impl World {
         let ContributionReplace {
             output_keys: caller_outputs,
             changed_keys: caller_changed,
+            ..
         } = if waits.is_empty() {
             self.callers.conclude_preserving_frontier(
                 &mut self.types,
@@ -667,6 +703,7 @@ impl World {
         let ContributionReplace {
             output_keys: runtime_demand_input_outputs,
             changed_keys: runtime_demand_input_changed,
+            ..
         } = if waits.is_empty() {
             self.runtime_demand_input_contributions.conclude_exact(
                 &mut self.types,
@@ -702,6 +739,7 @@ impl World {
         let mut outputs = effects.outputs;
         outputs.extend(incoming.output_keys.into_iter().map(FactKey::IncomingInputSlot));
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
+        outputs.extend(call_evidence_outputs);
         outputs.extend(caller_outputs.into_iter().map(FactKey::Callers));
         outputs.extend(
             runtime_demand_input_outputs
@@ -715,6 +753,7 @@ impl World {
         let mut changed = effects.changed;
         changed.extend(incoming.changed_keys.into_iter().map(FactKey::IncomingInputSlot));
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
+        changed.extend(call_evidence_changed);
         changed.extend(caller_changed.into_iter().map(FactKey::Callers));
         changed.extend(
             runtime_demand_input_changed
@@ -968,6 +1007,35 @@ impl World {
         self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
         self.fact_revision(&FactKey::ActivationInputs(key.clone()))?;
         self.activation_inputs.get(key)
+    }
+
+    /// One publisher's own cell in the `ActivationInputs` join, found by
+    /// which `EvidenceSource` it writes under -- not the joined aggregate.
+    /// `SolveReturnComponent`'s `gather` reads the `Seed` cell and each
+    /// non-member `Call` cell here instead of `activation_input_alternatives`,
+    /// so its own `Settled` publish, and a member's own `Call` cell (already
+    /// modeled structurally as a `Term::Shape` binding), never wake it back.
+    pub(crate) fn activation_call_evidence(
+        &self,
+        callee: &ActivationKey,
+        from: &EvidenceSource,
+    ) -> Option<&ActivationInputAlternatives> {
+        #[cfg(test)]
+        self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
+        self.fact_revision(&FactKey::ActivationCallEvidence {
+            callee: callee.clone(),
+            from: from.clone(),
+        })?;
+        self.activation_inputs.contributor_cell(callee, |job| {
+            super::drive::evidence_source_for(job).as_ref() == Some(from)
+        })
+    }
+
+    /// Every call site that addresses this activation. `gather` walks this
+    /// to find a member's callers outside its own component.
+    pub(crate) fn callers(&self, key: &ActivationKey) -> Option<&Callers> {
+        self.fact_revision(&FactKey::Callers(key.clone()))?;
+        self.callers.get(key)
     }
 
     /// The column-wise joined projection of the activation's input rows —
