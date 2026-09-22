@@ -635,6 +635,43 @@ fn compiler2_frontdoor_keeps_anonymous_clause_packaging_outside_when_precedence(
 }
 
 #[test]
+fn compiler2_frontdoor_accepts_zero_argument_anonymous_function_clauses() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "anonymous_zero_arity.fz",
+        "probe fn -> :ok end\nprobe fn () -> :ok end\n",
+        &tel,
+    )
+    .expect("zero-argument anonymous functions should parse with and without parentheses");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        ["probe(fn(->([], :ok)))", "probe(fn(->([], :ok)))"],
+        "bare and parenthesized zero-argument clause heads should quote identically",
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_accepts_bare_multi_parameter_anonymous_function_clauses() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "anonymous_bare_parameters.fz",
+        "probe fn x, y -> x + y end\nprobe fn x, y when x < y -> x end\n",
+        &tel,
+    )
+    .expect("bare anonymous-function parameter lists should parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        [
+            "probe(fn(->([$x, $y], +($x, $y))))",
+            "probe(fn(->([when($x, $y, <($x, $y))], $x)))",
+        ],
+        "bare parameter lists should retain every parameter and package one guard around the whole list",
+    );
+}
+
+#[test]
 fn compiler2_frontdoor_general_when_feeds_each_guarded_clause_shape() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(

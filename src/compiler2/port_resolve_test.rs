@@ -1103,7 +1103,7 @@ fn malformed_type_alias_in_second_file_points_at_that_files_span() {
     );
 
     // The second file arrives once a root is already active, so it is
-    // auto-scoped (fz-f98.14.5) -- exercising exactly the multi-file shape
+    // auto-scoped -- exercising exactly the multi-file shape
     // this bug hid behind: a real second source version whose decoded tokens
     // must retain that version rather than the first submission's.
     let second_source = "@type bad :: ,\n";

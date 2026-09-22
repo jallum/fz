@@ -45,10 +45,7 @@ fn private_extern_is_lexically_callable_but_absent_from_module_interface() {
         .find(|callable| callable.matches_name_arity("call_abs", 1))
         .expect("public wrapper")
         .function;
-    let namespace = world
-        .pending_function_source(wrapper)
-        .expect("wrapper source")
-        .namespace;
+    let namespace = world.function_source(wrapper).expect("wrapper source").namespace;
     let NamespaceSymbol::Function(private) = world
         .lookup_namespace(namespace, "abs")
         .expect("lexical private extern")
@@ -57,7 +54,7 @@ fn private_extern_is_lexically_callable_but_absent_from_module_interface() {
     };
     assert_eq!(world.function_ref(private).name(), "abs");
     assert_eq!(world.function_ref(private).arity, 1);
-    assert!(world.pending_function_source(private).is_some());
+    assert!(world.function_source(private).is_some());
     let _ = owner;
 }
 
@@ -86,8 +83,11 @@ fn completion_claims_belong_directly_to_the_job_that_read_their_ground() {
             .publishers(&DependencyKey::Fact(fact))
             .cloned()
             .collect::<Vec<_>>(),
-        vec![job],
-        "the production completion has one owning job, shared by its reads and claims"
+        vec![crate::compiler2::drive::Derivation::of(
+            job,
+            crate::compiler2::drive::DerivationKey::Job
+        )],
+        "the production completion has one owning answer, shared by its reads and claims"
     );
 }
 
@@ -255,7 +255,7 @@ fn compiler2_execution_context_emits_after_mutation_with_an_immutable_world_borr
     let tel = ConfiguredTelemetry::new();
     let saw_post_mutation = Rc::new(Cell::new(false));
     let saw_activation_inputs = Rc::new(Cell::new(false));
-    let saw_stashed_source = Rc::new(Cell::new(false));
+    let saw_noted_source = Rc::new(Cell::new(false));
     let applied_sink = Rc::clone(&saw_post_mutation);
     let activation_sink = Rc::clone(&saw_activation_inputs);
     tel.attach_raw_event2::<World, super::JobCompletion, _>(
@@ -280,12 +280,12 @@ fn compiler2_execution_context_emits_after_mutation_with_an_immutable_world_borr
             }
         },
     );
-    let stashed_sink = Rc::clone(&saw_stashed_source);
+    let noted_sink = Rc::clone(&saw_noted_source);
     tel.attach_raw_event2::<World, super::FunctionId, _>(
-        &["fz", "compiler2", "function", "source", "stashed"],
+        &["fz", "compiler2", "function", "source", "noted"],
         move |_, _, _, world, function| {
-            assert!(world.pending_function_source(*function).is_some());
-            stashed_sink.set(true);
+            assert!(world.function_source(*function).is_some());
+            noted_sink.set(true);
         },
     );
 
@@ -309,8 +309,8 @@ fn compiler2_execution_context_emits_after_mutation_with_an_immutable_world_borr
         "activation-input telemetry should expose the published fact and revision"
     );
     assert!(
-        saw_stashed_source.get(),
-        "source-stash telemetry should expose the source already stored in World"
+        saw_noted_source.get(),
+        "source-note telemetry should expose the source already stored in World"
     );
 }
 
@@ -448,11 +448,11 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
         world.demand(Job::DefineFunction(function)),
         "defined function materialization should be demandable when a caller actually needs it",
     );
-    // Scope stashes the raw source eagerly; the body fact is noted only when the
-    // demand above is driven (fz-f98.14.5), so read the stash before drive.
+    // The scope walk published the grouped quoted source; the surface below is
+    // what the demand above still has to derive.
     assert!(
-        world.pending_function_source(function).is_some(),
-        "scoping should stash the grouped quoted function source before define",
+        world.function_source(function).is_some(),
+        "scoping should publish the grouped quoted function source before define",
     );
     let outcome = super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive();
     assert!(
@@ -547,12 +547,11 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
     );
 
     let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
-    // Raw source lives in the eager stash until demand (fz-f98.14.5); clone it so
-    // it survives the later define drive.
+    // The walk published the raw source; keep it so it can be compared against
+    // what the later define drive derives.
     let raw = world
-        .pending_function_source(main)
-        .expect("scoping should stash raw function source")
-        .clone();
+        .function_source(main)
+        .expect("scoping should publish raw function source");
     assert!(
         world.fact_revision(&FactKey::ExpandedFunctionSource(main)).is_none(),
         "scoping alone should not yet stage expanded function source",
@@ -1636,13 +1635,39 @@ fn compiler2_protocol_impl_discovered_after_first_pass_rewakes_the_callsite() {
     );
 }
 
+/// A scope walk publishes the source of every function it scopes. The source
+/// fact is that walk's own conclusion, so it stands the moment the scope is
+/// walked, with nothing else demanded and no separate job to copy it.
+#[test]
+fn compiler2_scoping_publishes_each_function_source_it_walks() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let owner = world.submit_code(
+        Some("two_functions.fz".to_string()),
+        "def first(), do: 1\ndef second(), do: 2\n".to_string(),
+    );
+    assert!(world.demand(Job::ScopeCode(owner)), "code scoping should be demandable");
+    super::drive_test::assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "scoping two top-level functions should settle",
+    );
+
+    for name in ["first", "second"] {
+        let function = world.reference_function(ModuleId::GLOBAL, name, 0);
+        assert!(
+            world.has_fact(&FactKey::FunctionSource(function)),
+            "the walk that scoped `{name}/0` should have published its source fact"
+        );
+    }
+}
+
 /// `demand_function_scope`'s global-module branch must never return empty
-/// while a candidate home code is still `Pending` — that emptiness is exactly
-/// the shape `PublishFunctionSource` cannot recover from (its only other wait,
-/// `FunctionSourceStash`, has no producer arm). This exercises all three
-/// shapes: unresolved candidate (names `CodeIndexed`, an arm-covered fact
-/// that pulls indexing), found home (names `CodeScoped`), and the genuinely
-/// terminal case (every code indexed, none is the home).
+/// while a candidate home code is still `Pending` — that emptiness leaves a
+/// consumer of the function's source waiting on `FunctionSource` itself, which
+/// nothing is yet producing. This exercises all three shapes: unresolved
+/// candidate (names `CodeIndexed`, an arm-covered fact that pulls indexing),
+/// found home (names `CodeScoped`), and the genuinely terminal case (every
+/// code indexed, none is the home).
 #[test]
 fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
     let tel = ConfiguredTelemetry::new();
@@ -1699,8 +1724,8 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
     );
 
     // A function no code publishes is the terminal dangling case: every code
-    // is Indexed and none is the home, so the wait is legitimately empty
-    // (`PublishFunctionSource` falls back to its `FunctionSourceStash` wait).
+    // is Indexed and none is the home, so the wait is legitimately empty and
+    // the consumer falls back to waiting on `FunctionSource` itself.
     let dangling = world.reference_function(ModuleId::GLOBAL, "nope", 0);
     let waits = world
         .demand_function_scope(dangling)
@@ -1711,32 +1736,32 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
     );
 }
 
-/// Drives the actual deadlock: `PublishFunctionSource` runs while its
-/// global-module home code is still `Pending`, so its first execution records
-/// the `CodeIndexed(home)` wait. The pure `demand_function_scope` test proves
-/// that wait is named; this proves the WAKE closes — indexing the home must
-/// re-run the job, which re-derives the now-`Indexed` home, waits on
-/// `CodeScoped`, pulls `ScopeCode`, and publishes `FunctionSource`.
+/// Drives the actual deadlock: a consumer of a function's source runs while
+/// the global-module home code is still `Pending`, so its first execution
+/// records the `CodeIndexed(home)` wait. The pure `demand_function_scope` test
+/// proves that wait is named; this proves the WAKE closes — indexing the home
+/// must re-run the consumer, which re-derives the now-`Indexed` home, waits on
+/// `CodeScoped`, pulls `ScopeCode`, and finds the source that walk published.
 ///
 /// The pending-first schedule is reached through production paths alone:
-/// demanding `PublishFunctionSource(function)` BEFORE `submit_code` puts it on
+/// demanding `ExpandFunctionSource(function)` BEFORE `submit_code` puts it on
 /// the agenda ahead of the `IndexCode` that submission enqueues, so its first
 /// run genuinely sees the `Pending` home. This is why the arm-covered
-/// `CodeIndexed` wait (never bundled with the arm-less `FunctionSourceStash`)
-/// matters: the scheduler wakes a waiter only when ALL its waits are satisfied,
-/// so a `{CodeIndexed, FunctionSourceStash}` pair would AND-block forever.
+/// `CodeIndexed` wait is never bundled with the terminal `FunctionSource`
+/// wait: the scheduler wakes a waiter only when ALL its waits are satisfied,
+/// so pairing the two would AND-block forever.
 #[test]
-fn compiler2_publish_function_source_wakes_when_a_pending_global_home_indexes() {
+fn compiler2_function_source_consumer_wakes_when_a_pending_global_home_indexes() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
 
-    // Reference the function and demand its source BEFORE the code exists, so
-    // the job is agenda-ahead of the submission's IndexCode and runs first
+    // Reference the function and demand its expansion BEFORE the code exists,
+    // so the job is agenda-ahead of the submission's IndexCode and runs first
     // against the still-Pending home.
     let function = world.reference_function(ModuleId::GLOBAL, "greet", 1);
     assert!(
-        world.demand(Job::PublishFunctionSource(function)),
-        "publishing the function source should be demandable before its home code exists"
+        world.demand(Job::ExpandFunctionSource(function)),
+        "expanding the function source should be demandable before its home code exists"
     );
     world.submit_code(
         Some("global_fn.fz".to_string()),
@@ -1745,11 +1770,11 @@ fn compiler2_publish_function_source_wakes_when_a_pending_global_home_indexes() 
 
     super::drive_test::assert_resolved(
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),
-        "indexing the pending home must wake PublishFunctionSource and settle, not relocate the deadlock",
+        "indexing the pending home must wake the waiting consumer and settle, not relocate the deadlock",
     );
     assert!(
         world.has_fact(&FactKey::FunctionSource(function)),
-        "the woken job must publish the function's source once its home is indexed and scoped"
+        "the woken scope walk must publish the function's source once its home is indexed and scoped"
     );
 }
 
@@ -2057,5 +2082,31 @@ fn resolving_a_published_unresolved_edge_wakes_its_readers() {
         wake.step.wakes.iter().any(|wake| wake.job == reader),
         "and it must reach the readers subscribed to the edge: {:?}",
         wake.step.wakes,
+    );
+}
+
+#[test]
+fn lowered_body_reads_share_one_allocation_not_a_fresh_clone() {
+    use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("lowered_body_sharing.fz".into()),
+        text: "def main(), do: 42\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+
+    let main = compiler.root_function(root);
+    let first = compiler.world().lowered_body(main);
+    let second = compiler.world().lowered_body(main);
+    assert!(
+        Rc::ptr_eq(&first, &second),
+        "two reads of one function's lowered body must share the producer's allocation, not each deep-clone it",
     );
 }

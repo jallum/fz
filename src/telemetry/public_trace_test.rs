@@ -1534,7 +1534,7 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             // reached.
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                [[240, 0, 0, 9, 155], [614, 0, 0, 64, 392], [1130, 0, 0, 70, 643]][fixture_index][scenario],
+                [[237, 0, 0, 9, 5], [592, 0, 0, 64, 6], [1117, 0, 0, 70, 6]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1692,7 +1692,10 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // result/status helpers are ordinary generic calls.
     // The typed `==` clauses this fixture's predicates reach add one
     // component evaluation and their StaticCallees work.
-    ("fixtures2/behavior/enum_take_drop_split.fz", 129, 26, 273, 140),
+    // Publishing a function's source one round earlier leaves it
+    // present-but-dirty while the scope walk that published it is still
+    // blocked; one extraction blocks once more on that earlier-visible body.
+    ("fixtures2/behavior/enum_take_drop_split.fz", 129, 26, 274, 141),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -2122,7 +2125,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The ordering families carry no `binary` clause, so the StaticCallees
         // evaluations above are the whole of what this total counts for them;
         // causal work stays exact.
-        total_evaluations: 1156,
+        // Deleting the source-copy job removes one semantic evaluation per
+        // reached function.
+        total_evaluations: 1048,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -2209,7 +2214,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The ordering families this fixture's predicates reach each end in an
         // `any`/`any` body that calls `compare/2`, and that body brings its own
         // reached formulas to this total.
-        total_evaluations: 1537,
+        // Deleting the source-copy job removes one semantic evaluation per
+        // reached function.
+        total_evaluations: 1425,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2326,7 +2333,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The ordering families this fixture's predicates reach end in an
         // `any`/`any` clause through `compare/2`; three of the rebased
         // completions are standing completions of those families.
-        shifts: shifts(26, 80),
+        // Publishing a function's source one round earlier leaves it
+        // present-but-dirty while the scope walk that published it is still
+        // blocked, where before it was absent; five more DeriveInputDemand
+        // completions rebase on that earlier-visible, still-moving ground.
+        shifts: shifts(26, 85),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
         // the same change bought: the accumulator that used to widen to
@@ -2393,7 +2404,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // predicates reach.
         // The ordering families carry no `binary` clause, so no analysis of
         // one is counted here; equal reproductions stay at 15.
-        analyze_evaluations: 902,
+        // Two analyses fewer: their inputs settle without the intermediate
+        // source-copy conclusion between them.
+        analyze_evaluations: 900,
         analyze_zero_change: 16,
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
@@ -2410,7 +2423,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // activation and callsite populations do not see them.
         // The ordering families' `any`/`any` clauses contribute four formulas
         // and no `binary` clause analyses; the claim populations stay put.
-        total_evaluations: 2553,
+        // Deleting the source-copy job removes one semantic evaluation per
+        // reached function.
+        total_evaluations: 2360,
     },
 ];
 

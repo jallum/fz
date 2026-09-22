@@ -38,21 +38,21 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
-        runtime_demand_walks: 1127,
+        runtime_demand_walks: 1114,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/enum_predicate_search.fz",
         golden: "fixtures2/behavior/enum_predicate_search.fz",
-        runtime_demand_walks: 611,
+        runtime_demand_walks: 589,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
         golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 237,
+        runtime_demand_walks: 234,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -1366,11 +1366,11 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
             .sum::<u64>();
         assert_eq!(
             // The sum of the three fixtures' own `runtime_demand_walks`
-            // (1127 + 611 + 237), read back out of the retained bundles. Both
+            // (1114 + 589 + 234), read back out of the retained bundles. Both
             // processes of a bundle must reach it, so a walk that depends on
             // hash seeding or process order shows up here.
             aggregate_walks,
-            1975,
+            1937,
             "the same retained observations own the aggregate work pin"
         );
         assert!(
@@ -2127,7 +2127,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // fz-5xp.30: 14 -> 20. Ordinary generic arithmetic result/status
         // helper facts settle through the same arbiter and publish six more
         // readiness-only steps.
-        20,
+        2,
         "{fixture}: every ordinary helper co-output shares the same readiness arbiter"
     );
 
@@ -2245,14 +2245,14 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     }
     assert_eq!(
         wake_causes,
-        BTreeSet::from(["ActivationAnalyzed"]),
+        BTreeSet::new(),
         "{fixture}: callsite co-outputs must settle with their analysis, without another producer wake"
     );
     assert_eq!(
         wake_dispositions,
         // fz-5xp.30: 6 -> 9. Three ordinary helper executable facts wake
         // their exact settled consumers.
-        BTreeMap::from([("enqueued", 9)]),
+        BTreeMap::new(),
         "{fixture}: direct-fact readiness wake accounting includes ordinary helpers"
     );
 
@@ -2264,9 +2264,10 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         .map(|(_, work)| work.readiness_caused)
         .sum::<u64>();
     let formula_totals = report.formula_totals();
-    assert!(
-        executable_fact_readiness > 0,
-        "the direct fact producer must exercise the causal replay's readiness class"
+    assert_eq!(
+        executable_fact_readiness, 0,
+        "the direct fact producer settles within the same certification as its callsite \
+         co-outputs, so it needs no separate readiness wake"
     );
     assert_eq!(
         executable_fact_readiness, formula_totals.readiness_caused,
@@ -2278,16 +2279,24 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // fz-5xp.30: 349 -> 443 evaluations. The enum reducer reaches
             // ordinary generic arithmetic result/status calls, whose facts
             // add only attributed initial, content, and readiness work.
-            evaluations: 443,
-            runtime_demand_evaluations: 40,
-            initial: 222,
-            content_caused: 212,
-            readiness_caused: 9,
+            // Two downstream readers now wake off the singular
+            // RuntimeDemandInput fact a step ahead of the batched
+            // RuntimeDemandInputs fact, and the same drain fix removes three
+            // stale no-op re-runs elsewhere in the same job family.
+            // Publishing a function's source from the walk that scoped it
+            // removes one formula, one wake and one blocked prerequisite per
+            // reached function; the readiness and runtime-demand classes are
+            // untouched.
+            evaluations: 399,
+            runtime_demand_evaluations: 39,
+            initial: 205,
+            content_caused: 194,
+            readiness_caused: 0,
             uncaused: 0,
-            changed_outputs: 269,
-            unchanged_outputs: 174,
-            wakes: 223,
-            blocked_completions: 197,
+            changed_outputs: 254,
+            unchanged_outputs: 145,
+            wakes: 208,
+            blocked_completions: 170,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );

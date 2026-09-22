@@ -16,7 +16,7 @@ use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
 
 use super::code::SourceOwner;
-use super::drive::{FactKey, JobEffects, current_uses};
+use super::drive::{DerivationKey, FactKey, JobDerivation, JobEffects, current_uses};
 use super::identity::{
     DeclaredCallableKind, FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource, TypeName,
 };
@@ -50,6 +50,9 @@ pub(crate) enum ScopePublication {
         revision_floor: u64,
         reads: Vec<FactKey>,
         product_reads: Vec<ProductAddress>,
+        /// One answer per function the walk reached, each standing on the
+        /// ground above it.
+        derivations: Vec<JobDerivation>,
         outputs: Outputs,
         changed: Changed,
         interface: ModuleInterface,
@@ -115,6 +118,9 @@ struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     pending_types: Vec<PendingType>,
     required_remote_macros: HashSet<FunctionId>,
     reads: Vec<FactKey>,
+    /// One answer per function the walk has reached, each carrying the ground
+    /// that stood above it at that point.
+    derivations: Vec<JobDerivation>,
     outputs: Outputs,
     changed: Changed,
     callables: Vec<ModuleInterfaceCallable>,
@@ -247,9 +253,9 @@ pub(crate) fn publish_protocol_surface(
         true,
         Vec::new(),
     );
-    outputs.push(FactKey::FunctionSourceStash(publication.function));
-    if publication.stashed_changed {
-        changed.push(FactKey::FunctionSourceStash(publication.function));
+    outputs.push(FactKey::FunctionSource(publication.function));
+    if publication.source_changed {
+        changed.push(FactKey::FunctionSource(publication.function));
     }
     if let Some(callable) = publication.callable {
         callables.push(callable);
@@ -264,6 +270,7 @@ pub(crate) fn publish_protocol_surface(
         revision_floor: 0,
         reads: Vec::new(),
         product_reads: Vec::new(),
+        derivations: Vec::new(),
         outputs,
         changed,
         interface: ModuleInterface::new(callables),
@@ -521,6 +528,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             pending_types: Vec::new(),
             required_remote_macros: HashSet::new(),
             reads: Vec::new(),
+            derivations: Vec::new(),
             outputs: Vec::new(),
             changed: Vec::new(),
             callables: Vec::new(),
@@ -844,10 +852,20 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             context.export_public,
             required_remote_macro_list(&self.required_remote_macros),
         );
-        self.outputs.push(FactKey::FunctionSourceStash(publication.function));
-        if publication.stashed_changed {
-            self.changed.push(FactKey::FunctionSourceStash(publication.function));
-        }
+        // Reaching this definition is one answer of the walk: whatever the
+        // rest of the scope turns out to need, this function's source follows
+        // from the ground the walk has read so far and nothing below it.
+        self.derivations.push(JobDerivation {
+            key: DerivationKey::Function(publication.function),
+            reads: current_uses(self.reads.clone()),
+            product_reads: self.product_reads.clone(),
+            outputs: vec![FactKey::FunctionSource(publication.function)],
+            changed: publication
+                .source_changed
+                .then_some(FactKey::FunctionSource(publication.function))
+                .into_iter()
+                .collect(),
+        });
         Ok(publication)
     }
 
@@ -1103,6 +1121,10 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {
         effects.reads.extend(current_uses(self.reads.clone()));
         effects.product_reads.extend(self.product_reads.clone());
+        // The answers the walk reached before it blocked are complete, and each
+        // stands on the ground above it, so they are published as their own
+        // derivations rather than left dirty behind the wait.
+        effects.derivations.extend(self.derivations.iter().cloned());
         effects.outputs.extend(self.outputs.clone());
         effects.changed.extend(self.changed.clone());
         effects
@@ -1499,6 +1521,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             revision_floor: self.revision_floor,
             reads: self.reads,
             product_reads: self.product_reads,
+            derivations: self.derivations,
             outputs: self.outputs,
             changed: self.changed,
             interface: ModuleInterface::new(self.callables),
@@ -1607,12 +1630,11 @@ fn required_remote_macro_list(required_remote_macros: &HashSet<FunctionId>) -> V
 struct FunctionPublication {
     function: FunctionId,
     callable: Option<ModuleInterfaceCallable>,
-    /// Whether this scope's stash changed `function`'s pending source. Callers
-    /// fold this into their job's `FactKey::FunctionSourceStash(function)`
-    /// output/changed pair so a (re)scope wakes `PublishFunctionSource` through
-    /// the standing changed-revision path rather than a manual enqueue
-    /// (fz-go4.38).
-    stashed_changed: bool,
+    /// Whether this walk changed `function`'s source. Callers fold this into
+    /// their job's `FactKey::FunctionSource(function)` output/changed pair, so
+    /// a re-scope that supersedes a body reaches every consumer through the
+    /// standing changed-revision path rather than a manual enqueue.
+    source_changed: bool,
 }
 
 fn publish_function_source(
@@ -1632,12 +1654,10 @@ fn publish_function_source(
         function.arity,
         declared_callable_kind(function.is_macro),
     );
-    // Stash the body eagerly but leave it cold: the consumable `FunctionSource`
-    // fact is minted only when a reached consumer pulls it through
-    // `PublishFunctionSource` (fz-f98.14.5). The interface — the callable below,
-    // the `function_id` itself, and the namespace bindings reserve_local_forms
-    // already made — is what every reference and protocol dispatch resolves
-    // against, so it stays eager.
+    // The walk notes the source as it reaches the definition, so the fact is
+    // this walk's own conclusion. Noting a source is not body work: the
+    // expansion, surface and lowering below it stay pulled by consumers, and a
+    // function the program never reaches goes no further than here.
     let source = FunctionSource {
         owner: source_owner,
         owner_module,
@@ -1647,9 +1667,9 @@ fn publish_function_source(
         variadic: function.variadic,
         source: function.source.clone(),
     };
-    let stashed_changed =
-        super::drive::ExecutionContext::new(world, tel).stash_function_source(function_id, source.clone());
-    if stashed_changed {
+    let source_changed =
+        super::drive::ExecutionContext::new(world, tel).note_function_source(function_id, source.clone());
+    if source_changed {
         emit_compiler_service_define(world, tel, &function_id, &source);
     }
 
@@ -1666,7 +1686,7 @@ fn publish_function_source(
     FunctionPublication {
         function: function_id,
         callable,
-        stashed_changed,
+        source_changed,
     }
 }
 

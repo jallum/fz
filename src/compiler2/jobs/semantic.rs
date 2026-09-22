@@ -212,15 +212,11 @@ pub(super) fn analyze_activation(
     // two coincide; mid-climb only readers of settled facts may conflate
     // them, and the settled gate keeps everyone else out.
     let mut return_evidence: Option<Ty> = None;
-    match lowered_body {
-        LoweredBody::Extern { ref signature } => {
+    match &*lowered_body {
+        LoweredBody::Extern { signature } => {
             return_evidence = Some(signature.return_ty);
         }
-        LoweredBody::Clauses {
-            ref clauses,
-            ref entries,
-            ..
-        } => {
+        LoweredBody::Clauses { clauses, entries, .. } => {
             for (clause_id, clause_inputs) in row_clause_inputs.iter().flatten() {
                 let clause = &clauses[*clause_id as usize];
                 // Input evidence that has not caught up to the clause's
@@ -1887,9 +1883,9 @@ fn wait_for_unresolved_function_module(world: &mut World, function: FunctionId, 
         return false;
     }
     // This site needs the function's module DEFINED (its scope walked), not its
-    // body published: a protocol callback has no body of its own, so pulling
-    // `PublishFunctionSource` here would chase a source that never exists
-    // (fz-f98.14.5). The wait names `ModuleDefined(module)` directly — its
+    // body expanded: a protocol callback has no body of its own, so pulling
+    // `ExpandFunctionSource` here would chase a source that never exists. The
+    // wait names `ModuleDefined(module)` directly — its
     // producer arm is `Job::DefineModule`, which bootstraps a runtime
     // module's code (`World::ensure_runtime_module`) itself when it runs, so
     // this site does not need to call `demand_function_scope` for that side
@@ -1995,7 +1991,7 @@ fn call_target_summary(
 }
 
 fn callee_extern_params(world: &World, function: FunctionId) -> Option<usize> {
-    match world.lowered_body(function) {
+    match &*world.lowered_body(function) {
         LoweredBody::Extern { signature } => Some(signature.params.len()),
         LoweredBody::Clauses { .. } => None,
     }
@@ -2365,7 +2361,7 @@ end
             entries,
             generated,
             ..
-        } = world.lowered_body(first)
+        } = (*world.lowered_body(first)).clone()
         else {
             panic!("the source fixture should lower first/0 to clauses");
         };

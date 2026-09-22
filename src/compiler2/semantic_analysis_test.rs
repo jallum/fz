@@ -668,7 +668,7 @@ fn a_reached_callsite_that_names_no_target_publishes_an_unresolved_edge() {
     let entry = super::identity::ActivationKey::from_inputs(root, entry_function, &[], world.types_mut());
     // `CallSiteId` carries its span, so the identity comes from the body, not
     // from a raw index.
-    let super::body::LoweredBody::Clauses { entries, .. } = world.lowered_body(entry_function) else {
+    let super::body::LoweredBody::Clauses { entries, .. } = &*world.lowered_body(entry_function) else {
         panic!("main should lower to clauses");
     };
     let callsite = entries

@@ -1013,7 +1013,7 @@ pub enum LoweredStep {
 #[derive(Debug, Clone)]
 pub enum BodyState {
     Placeholder,
-    Lowered(LoweredBody),
+    Lowered(Rc<LoweredBody>),
 }
 
 #[derive(Debug, Default)]
@@ -1029,7 +1029,7 @@ impl LoweredBodyMap {
     pub fn define(&mut self, id: FunctionId, body: LoweredBody) -> bool {
         self.ensure(id);
         let slot = &mut self.slots[id.as_u32() as usize];
-        let next = BodyState::Lowered(body);
+        let next = BodyState::Lowered(Rc::new(body));
         let changed = !slot.same_state(&next);
         *slot = next;
         changed

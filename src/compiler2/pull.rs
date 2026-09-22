@@ -1928,9 +1928,6 @@ impl ProductSessions {
 }
 
 impl super::scheduler::ExternalDependencyStates<DependencyKey> for ProductSessions {
-    fn has_unsettled_dependencies(&self) -> bool {
-        !self.requested.is_empty()
-    }
     fn external_state(&self, key: &DependencyKey) -> Option<FactState> {
         match key {
             DependencyKey::Fact(_) => None,
@@ -2666,12 +2663,16 @@ mod tests {
         let mut scheduler = Scheduler::new();
         scheduler.complete_ordered_with_external(
             &super::super::Job::SeedRoot(root),
-            crate::compiler2::scheduler::CompletionEffects {
-                reads: HashSet::new(),
-                waits: HashSet::from([FactUse::current(DependencyKey::Product(address.clone()))]),
-                outputs: Vec::new(),
-                changed: Vec::new(),
-            },
+            crate::compiler2::scheduler::CompletionEffects::single(
+                crate::compiler2::drive::Derivation::of(
+                    super::super::Job::SeedRoot(root),
+                    crate::compiler2::drive::DerivationKey::Job,
+                ),
+                HashSet::new(),
+                HashSet::from([FactUse::current(DependencyKey::Product(address.clone()))]),
+                Vec::new(),
+                Vec::new(),
+            ),
             &sessions,
             &types,
         );

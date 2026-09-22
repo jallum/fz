@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
-use super::facts::FactUse;
+use super::facts::{FactUse, Publisher};
 use super::ordered_set::OrderedSet;
 use super::semantic::SemanticOrd;
 
@@ -11,17 +11,23 @@ pub struct UnresolvedWait<J, F> {
     pub jobs: Vec<J>,
 }
 
-/// Exact reads, waits, and output claims owned by each job.
+/// Exact reads and output claims owned by each publisher, and the standing
+/// waits owned by each job. Reads and claims are per answer; a wait is what
+/// stopped a run, so it belongs to the job that will re-run.
 #[derive(Debug)]
-pub struct DependencyIndex<J, F> {
-    reads: HashMap<J, HashSet<FactUse<F>>>,
-    subscribers: HashMap<FactUse<F>, OrderedSet<J>>,
-    waits: HashMap<J, HashSet<FactUse<F>>>,
-    waiters: HashMap<FactUse<F>, OrderedSet<J>>,
-    outputs: HashMap<J, OrderedSet<F>>,
+pub struct DependencyIndex<P: Publisher, F> {
+    reads: HashMap<P, HashSet<FactUse<F>>>,
+    subscribers: HashMap<FactUse<F>, OrderedSet<P>>,
+    waits: HashMap<P::Run, HashSet<FactUse<F>>>,
+    waiters: HashMap<FactUse<F>, OrderedSet<P::Run>>,
+    outputs: HashMap<P, OrderedSet<F>>,
+    /// Every publisher each job currently owns, in emission order. A
+    /// conclusion replaces this set, so the publishers a re-run no longer
+    /// reaches are the ones it retracts.
+    derivations: HashMap<P::Run, OrderedSet<P>>,
 }
 
-impl<J, F> Default for DependencyIndex<J, F> {
+impl<P: Publisher, F> Default for DependencyIndex<P, F> {
     fn default() -> Self {
         Self {
             reads: HashMap::new(),
@@ -29,13 +35,14 @@ impl<J, F> Default for DependencyIndex<J, F> {
             waits: HashMap::new(),
             waiters: HashMap::new(),
             outputs: HashMap::new(),
+            derivations: HashMap::new(),
         }
     }
 }
 
-impl<J, F> DependencyIndex<J, F>
+impl<P, F> DependencyIndex<P, F>
 where
-    J: Clone + Eq + Hash,
+    P: Publisher,
     F: Clone + Eq + Hash,
 {
     pub fn new() -> Self {
@@ -51,23 +58,15 @@ where
             })
     }
 
-    pub fn reads(&self, publisher: &J) -> Option<&HashSet<FactUse<F>>> {
+    pub fn reads(&self, publisher: &P) -> Option<&HashSet<FactUse<F>>> {
         self.reads.get(publisher)
-    }
-
-    pub(crate) fn dependency_uses(&self, job: &J) -> impl Iterator<Item = &FactUse<F>> {
-        self.reads
-            .get(job)
-            .into_iter()
-            .flatten()
-            .chain(self.waits.get(job).into_iter().flatten())
     }
 
     /// Add reads without dropping existing subscriptions. A job that
     /// did not reach its conclusion reads less than its last full conclusion
     /// did, but its standing claims still depend on those earlier reads —
     /// replacing would unsubscribe it from facts that can invalidate them.
-    pub fn union_reads(&mut self, publisher: J, mut next_reads: HashSet<FactUse<F>>) {
+    pub fn union_reads(&mut self, publisher: P, mut next_reads: HashSet<FactUse<F>>) {
         if let Some(previous) = self.reads.get(&publisher) {
             next_reads.retain(|key| !previous.contains(key));
         }
@@ -83,7 +82,7 @@ where
         self.reads.entry(publisher).or_default().extend(next_reads);
     }
 
-    pub fn replace_reads(&mut self, publisher: J, next_reads: HashSet<FactUse<F>>) {
+    pub fn replace_reads(&mut self, publisher: P, next_reads: HashSet<FactUse<F>>) {
         if let Some(previous_reads) = self.reads.insert(publisher.clone(), next_reads.clone()) {
             for key in previous_reads {
                 if let Some(publishers) = self.subscribers.get_mut(&key) {
@@ -100,7 +99,7 @@ where
         }
     }
 
-    pub fn replace_waits(&mut self, job: J, next_waits: HashSet<FactUse<F>>) {
+    pub fn replace_waits(&mut self, job: P::Run, next_waits: HashSet<FactUse<F>>) {
         if let Some(previous_waits) = self.waits.insert(job.clone(), next_waits.clone()) {
             for fact in previous_waits {
                 if let Some(jobs) = self.waiters.get_mut(&fact) {
@@ -117,7 +116,7 @@ where
         }
     }
 
-    pub fn replace_outputs(&mut self, publisher: J, next_outputs: OrderedSet<F>) {
+    pub fn replace_outputs(&mut self, publisher: P, next_outputs: OrderedSet<F>) {
         if next_outputs.is_empty() {
             self.outputs.remove(&publisher);
         } else {
@@ -125,13 +124,13 @@ where
         }
     }
 
-    pub fn output_keys(&self, publisher: &J) -> OrderedSet<F> {
+    pub fn output_keys(&self, publisher: &P) -> OrderedSet<F> {
         self.outputs.get(publisher).cloned().unwrap_or_default()
     }
 
-    pub fn subscribers<Ctx>(&self, fact_use: &FactUse<F>, ctx: &Ctx) -> Vec<J>
+    pub fn subscribers<Ctx>(&self, fact_use: &FactUse<F>, ctx: &Ctx) -> Vec<P>
     where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
     {
         let mut publishers: Vec<_> = self
             .subscribers
@@ -142,9 +141,9 @@ where
         publishers
     }
 
-    pub fn waiters<Ctx>(&self, fact_use: &FactUse<F>, ctx: &Ctx) -> Vec<J>
+    pub fn waiters<Ctx>(&self, fact_use: &FactUse<F>, ctx: &Ctx) -> Vec<P::Run>
     where
-        J: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
     {
         let mut jobs: Vec<_> = self
             .waiters
@@ -161,9 +160,9 @@ where
 
     /// Every job subscribed to `fact`, in typed publisher order.
     /// Multiplicity across use variants is preserved.
-    pub fn readers_of<Ctx>(&self, fact: &F, ctx: &Ctx) -> Vec<J>
+    pub fn readers_of<Ctx>(&self, fact: &F, ctx: &Ctx) -> Vec<P>
     where
-        J: SemanticOrd<Ctx>,
+        P: SemanticOrd<Ctx>,
     {
         let mut readers = [FactUse::current(fact.clone()), FactUse::settled(fact.clone())]
             .into_iter()
@@ -173,17 +172,17 @@ where
         readers
     }
 
-    pub fn waits_for(&self, job: &J) -> HashSet<FactUse<F>> {
+    pub fn waits_for(&self, job: &P::Run) -> HashSet<FactUse<F>> {
         self.waits.get(job).cloned().unwrap_or_default()
     }
 
     /// Whether `job`'s most recent completion left waits standing.
-    pub fn blocked(&self, job: &J) -> bool {
+    pub fn blocked(&self, job: &P::Run) -> bool {
         self.waits.get(job).is_some_and(|waits| !waits.is_empty())
     }
 
     /// Every completion records its wait set, including an empty conclusion.
-    pub fn has_run(&self, job: &J) -> bool {
+    pub fn has_run(&self, job: &P::Run) -> bool {
         self.waits.contains_key(job)
     }
 
@@ -206,9 +205,9 @@ where
     /// Every standing wait in caller-defined semantic fact/use order. This
     /// inventory is a terminal diagnostic view; generic dependency storage
     /// cannot interpret owner-specific identities such as World-local types.
-    pub fn unresolved<Ctx>(&self, ctx: &Ctx) -> Vec<UnresolvedWait<J, F>>
+    pub fn unresolved<Ctx>(&self, ctx: &Ctx) -> Vec<UnresolvedWait<P::Run, F>>
     where
-        J: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
         F: SemanticOrd<Ctx>,
     {
         let mut waits = self
@@ -224,5 +223,36 @@ where
             wait.jobs.sort_by(|left, right| left.semantic_cmp(right, ctx));
         }
         waits
+    }
+
+    /// Every publisher `job` currently owns, in emission order.
+    pub fn derivations_of(&self, job: &P::Run) -> OrderedSet<P> {
+        self.derivations.get(job).cloned().unwrap_or_default()
+    }
+
+    /// Records the publishers `job` owns after a run. Emission order is the
+    /// wake order downstream, so the set keeps it.
+    pub fn replace_derivations(&mut self, job: P::Run, next: OrderedSet<P>) {
+        if next.is_empty() {
+            self.derivations.remove(&job);
+        } else {
+            self.derivations.insert(job, next);
+        }
+    }
+
+    /// Drops one publisher's reads and claims entirely: nothing derives it any
+    /// more, so it subscribes to nothing and owns nothing.
+    pub fn forget(&mut self, publisher: &P) {
+        if let Some(previous) = self.reads.remove(publisher) {
+            for fact in previous {
+                if let Some(publishers) = self.subscribers.get_mut(&fact) {
+                    publishers.remove(publisher);
+                    if publishers.is_empty() {
+                        self.subscribers.remove(&fact);
+                    }
+                }
+            }
+        }
+        self.outputs.remove(publisher);
     }
 }

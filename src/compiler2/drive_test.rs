@@ -2515,11 +2515,9 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
 // fz-go4.53's adversarial audit found `demand_function_scope`'s global-module
 // branch (`World::demand_function_scope`) scans every submitted code for a
 // `Certain` surface match and, via `certain_home.get_or_insert`, keeps only
-// the FIRST code whose surface names the wanted top-level name+arity. Before
-// .53 that scan raced (whichever `ScopeCode` job ran last won the single-slot
-// pending-source stash); .53 made the choice deterministic (submission-order
-// first-wins) but never added a diagnostic for the case that choice is
-// papering over: two SEPARATE source files (codes) both defining the same
+// the FIRST code whose surface names the wanted top-level name+arity. That
+// choice is deterministic (submission-order first-wins), but determinism alone
+// papers over the case it is choosing between: two SEPARATE source files (codes) both defining the same
 // top-level `name/arity` for real. Elixir raises `CompileError` ("... is
 // already defined") on exactly this shape, so fz must diagnose it too instead
 // of silently keeping one definition and dropping the other with no signal.
@@ -4221,12 +4219,10 @@ fn compiler2_resolving_a_global_name_does_not_scope_unrelated_opaque_macro_calls
 #[test]
 fn compiler2_root_source_publication_is_once_per_code_fact() {
     let tel = ConfiguredTelemetry::new();
-    // Scope publication is demand-addressed (fz-f98.14.5): the per-code-fact,
-    // once-each identity surface is the eager `stashed` event; `noted` now only
-    // fires for bodies that are actually pulled. This test asserts the
-    // per-code-fact publication identity, so it observes `stashed`.
-    let stashed_event: &'static [&'static str] = &["fz", "compiler2", "function", "source", "stashed"];
-    let source_notes = SourceNoteCapture::for_event(stashed_event);
+    // A scope walk notes each function's source as it reaches the definition,
+    // so `noted` is the per-code-fact, once-each publication identity this
+    // test asserts.
+    let source_notes = SourceNoteCapture::new();
     source_notes.install(&tel);
     let outputs = OutputCapture::new();
     outputs.install(&tel);
@@ -4276,13 +4272,13 @@ fn compiler2_root_source_publication_is_once_per_code_fact() {
         assert_eq!(
             source_notes.count(name, arity),
             1,
-            "prelude macro source {name}/{arity} should be stashed exactly once per code fact"
+            "prelude macro source {name}/{arity} should be noted exactly once per code fact"
         );
     }
     assert_eq!(
         source_notes.count("main", 0),
         1,
-        "user entry source should be stashed exactly once per code fact"
+        "user entry source should be noted exactly once per code fact"
     );
 }
 
@@ -14317,10 +14313,9 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     let scope_outputs = outputs
         .take(Job::ScopeCode(late_source_owner))
         .expect("late code ScopeCode job effects");
-    // Scope publication is demand-addressed (fz-f98.14.5): the late ScopeCode
-    // publishes CodeScoped and eagerly stashes foo/0's source, but does NOT
-    // output FunctionSource for the uncalled foo. The auto-scope is proven by the
-    // CodeScoped output plus foo/0's eager `stashed` capture.
+    // The late ScopeCode publishes CodeScoped and foo/0's source, because the
+    // walk reached foo's definition. Nothing calls foo, so the walk stops
+    // there: no expansion, no surface, no body.
     assert!(
         scope_outputs
             .iter()
@@ -14329,10 +14324,14 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     );
     let foo_id = function_id(&functions, "foo", 0);
     assert!(
-        !scope_outputs
+        scope_outputs
             .iter()
             .any(|(fact, _)| *fact == FactKey::FunctionSource(foo_id)),
-        "an uncalled late foo/0 should be stashed, not body-published, by auto-scope"
+        "the auto-scope walk should publish the source of the foo/0 it walked past"
+    );
+    assert!(
+        !compiler.world().has_fact(&FactKey::ExpandedFunctionSource(foo_id)),
+        "an uncalled late foo/0 should keep its body cold"
     );
     assert_eq!(
         outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len(),
@@ -18674,7 +18673,7 @@ impl FunctionCapture {
             move |name, _, _, world, function| {
                 let from_source = match name {
                     ["fz", "compiler2", "function", "defined"] => false,
-                    ["fz", "compiler2", "function", "source", "stashed"] => true,
+                    ["fz", "compiler2", "function", "source", "noted"] => true,
                     _ => return,
                 };
                 record_function_definition(&defs, world, *function, None, from_source);
@@ -18731,18 +18730,13 @@ impl FunctionCapture {
 
 impl SourceNoteCapture {
     fn new() -> Self {
-        Self::for_event(&["fz", "compiler2", "function", "source", "noted"])
-    }
-
-    fn for_event(event: &'static [&'static str]) -> Self {
         Self {
             notes: Rc::new(RefCell::new(Vec::new())),
-            event,
         }
     }
 
     fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let event = self.event;
+        let event: &'static [&'static str] = &["fz", "compiler2", "function", "source", "noted"];
         let notes = Rc::clone(&self.notes);
         telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
             event,
@@ -19125,7 +19119,7 @@ impl LoweredBodyCapture {
                     .borrow_mut()
                     .entry(*function)
                     .or_default()
-                    .push(world.lowered_body(*function));
+                    .push((*world.lowered_body(*function)).clone());
             },
         );
     }
@@ -19143,10 +19137,6 @@ impl LoweredBodyCapture {
 
 struct SourceNoteCapture {
     notes: SourceNotes,
-    // The source-publication event this capture observes. `noted` is the
-    // body-pull signal; `stashed` is the eager per-code-fact interface signal
-    // (fz-f98.14.5). Tests pick the tier whose intent they assert.
-    event: &'static [&'static str],
 }
 
 fn record_function_definition(
@@ -19160,7 +19150,7 @@ fn record_function_definition(
     let module_id = function_ref.module;
     let clauses = if from_source {
         world
-            .pending_function_source(function_id)
+            .function_source(function_id)
             .and_then(|source| {
                 let source_map = world.source_map();
                 crate::compiler2::quoted_function::derive_function_surface(&source.source, &source_map.borrow()).ok()
@@ -21607,6 +21597,7 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
 
 #[test]
 fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
+    use crate::compiler2::drive::{Derivation, DerivationKey};
     use crate::compiler2::scheduler::{CompletionEffects, Scheduler};
     use crate::compiler2::semantic::SemanticOrd;
 
@@ -21624,7 +21615,7 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
     let shared = FactKey::CodeIndexed(crate::compiler2::SourceOwner::for_test(0));
     let writer = Job::IndexCode(crate::compiler2::SourceOwner::for_test(0));
 
-    let complete = |scheduler: &mut Scheduler<Job, FactKey>,
+    let complete = |scheduler: &mut Scheduler<Derivation, FactKey>,
                     job: &Job,
                     reads: HashSet<FactUse<FactKey>>,
                     waits: HashSet<FactUse<FactKey>>,
@@ -21632,12 +21623,13 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
                     changed: Vec<FactKey>| {
         scheduler.complete_ordered(
             job,
-            CompletionEffects {
+            CompletionEffects::single(
+                Derivation::of(job.clone(), DerivationKey::Job),
                 reads,
                 waits,
                 outputs,
                 changed,
-            },
+            ),
             &types,
         )
     };

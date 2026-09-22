@@ -128,14 +128,13 @@ fn compiler_service_define_publishes_function_source_and_threads_namespace_forwa
     let _ = &outputs;
     let foo_id = world.reference_function(ModuleId::GLOBAL, "foo", 0);
     let bar_id = world.reference_function(ModuleId::GLOBAL, "bar", 0);
-    // Scope publication now stashes source eagerly without outputting the body
-    // fact (fz-f98.14.5); the identity is present as a pending stash.
+    // The walk publishes each function's source as it reaches the definition.
     assert!(
-        world.pending_function_source(foo_id).is_some(),
+        world.function_source(foo_id).is_some(),
         "Fz.Compiler.define should be the source-publication point for foo/0",
     );
     assert!(
-        world.pending_function_source(bar_id).is_some(),
+        world.function_source(bar_id).is_some(),
         "literal function forms should also publish through the compiler-service path",
     );
     assert_eq!(
@@ -143,8 +142,8 @@ fn compiler_service_define_publishes_function_source_and_threads_namespace_forwa
         2,
         "both the explicit service form and the literal function form should cross the compiler-service boundary",
     );
-    let bar_source = world.pending_function_source(bar_id).expect("bar source").clone();
-    let foo_source = world.pending_function_source(foo_id).expect("foo source").clone();
+    let bar_source = world.function_source(bar_id).expect("bar source");
+    let foo_source = world.function_source(foo_id).expect("foo source");
     assert_eq!(
         world.lookup_namespace(foo_source.namespace, "foo"),
         Some(NamespaceSymbol::Function(foo_id)),
@@ -201,16 +200,12 @@ fn compiler_service_define_and_direct_source_publish_identical_raw_function_fact
         "direct source and compiler-service publication should emit the same fact keys",
     );
 
-    // Raw source now lives in the eager stash until demand (fz-f98.14.5); these
-    // functions are never demanded, so read the stash to compare raw facts.
-    let direct_source = direct_world
-        .pending_function_source(direct_id)
-        .expect("direct function source")
-        .clone();
+    // These functions are never demanded, so the raw source each scope walk
+    // published is what the comparison reads.
+    let direct_source = direct_world.function_source(direct_id).expect("direct function source");
     let service_source = service_world
-        .pending_function_source(service_id)
-        .expect("service function source")
-        .clone();
+        .function_source(service_id)
+        .expect("service function source");
     assert_eq!(direct_source.owner_module, service_source.owner_module);
     assert_eq!(direct_source.namespace, service_source.namespace);
     assert_eq!(
@@ -346,15 +341,15 @@ fn compiler_service_define_inside_a_function_body_has_no_source_publication_auth
     let _ = &outputs;
     let main_id = world.reference_function(ModuleId::GLOBAL, "main", 0);
     let sneaky_id = world.reference_function(ModuleId::GLOBAL, "sneaky", 0);
-    // Scope publication stashes the source eagerly without outputting the body
-    // fact (fz-f98.14.5); presence/absence of a pending stash stands in for the
+    // The walk publishes each function's source as it reaches the definition,
+    // so presence/absence of that source stands in for the
     // old FunctionSource output assertion.
     assert!(
-        world.pending_function_source(main_id).is_some(),
+        world.function_source(main_id).is_some(),
         "the containing function should publish normally",
     );
     assert!(
-        world.pending_function_source(sneaky_id).is_none(),
+        world.function_source(sneaky_id).is_none(),
         "compiler-service-shaped calls inside runtime bodies must not publish source facts",
     );
     assert!(
@@ -409,18 +404,18 @@ def main(), do: answer()
     let answer = world.reference_function(ModuleId::GLOBAL, "answer", 0);
     let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
     let make_answer = world.reference_function(ModuleId::GLOBAL, "make_answer", 0);
-    // Scope publication stashes the published source eagerly without noting the
-    // body fact until demand (fz-f98.14.5); the stash proves the item macro's
+    // The walk publishes the source of every definition it reaches, including
+    // spliced ones; that source proves the item macro's
     // returned source was published.
     let answer_source = world
-        .pending_function_source(answer)
+        .function_source(answer)
         .expect("item macro should publish the function source it returned");
     assert_eq!(
         answer_source.owner, code,
         "the returned function must retain the item macro call's lexical publishing owner"
     );
     assert!(
-        world.pending_function_source(main).is_some(),
+        world.function_source(main).is_some(),
         "later source forms should publish after item macro expansion updates the namespace",
     );
     assert_eq!(
@@ -463,14 +458,14 @@ def main(), do: answer()
 
     let answer = world.reference_function(ModuleId::GLOBAL, "answer", 0);
     let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
-    // Scope publication stashes the published source eagerly without noting the
-    // body fact until demand (fz-f98.14.5).
+    // The walk publishes the source of every definition it reaches, including
+    // the ones a raw compiler fragment spliced into the scope.
     assert!(
-        world.pending_function_source(answer).is_some(),
+        world.function_source(answer).is_some(),
         "raw compiler fragments returned from item macros should publish answer/0",
     );
     assert!(
-        world.pending_function_source(main).is_some(),
+        world.function_source(main).is_some(),
         "later source forms should still see names introduced by the raw fragment",
     );
 }
@@ -505,21 +500,19 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
     let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
     let inc = world.reference_function(ModuleId::GLOBAL, "inc", 1);
     let double = world.reference_function(ModuleId::GLOBAL, "double", 1);
-    // Scope publication stashes the raw source eagerly but does not publish the
-    // body fact (fz-f98.14.5); read the stash to prove the raw form is retained
-    // before demand.
+    // The walk publishes the raw source as it reaches the definition, with the
+    // body-local macro calls still unexpanded.
     let source = world
-        .pending_function_source(main)
-        .expect("main source should be stashed at scope time")
-        .clone();
+        .function_source(main)
+        .expect("main source should be published at scope time");
     let tokens = quoted_tokens(&source.source);
     assert!(
         tokens.iter().any(|token| token == "inc") && tokens.iter().any(|token| token == "double"),
         "raw function source should retain macro calls until the function is demanded; tokens={tokens:?}",
     );
     assert!(
-        world.function_source(main).is_none(),
-        "an undemanded function publishes no body fact, only the eager stash",
+        world.expanded_function_source(main).is_none(),
+        "an undemanded function publishes no expanded body, only its raw source",
     );
     let body_macro_expanded_before = macro_expansions
         .all()
@@ -625,12 +618,11 @@ end
     );
 
     let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
-    // The raw, unrewritten source lives in the eager stash until demand
-    // (fz-f98.14.5).
+    // The walk publishes the raw, unrewritten source; the sugar rewrite waits
+    // for a consumer to demand the body.
     let source = world
-        .pending_function_source(main)
-        .expect("main source should be stashed at scope time")
-        .clone();
+        .function_source(main)
+        .expect("main source should be published at scope time");
     let tokens = quoted_tokens(&source.source);
     for sugar in ["|>", "&", "++", "--", "<>", "..", "//"] {
         assert!(
