@@ -7,6 +7,9 @@ noise.
 The loop starts from the desired output contract and works backwards from one
 small example until the source of the mistake is obvious.
 
+When correct output alone can hide excess work or competing authorities, extend
+this loop with [Predict, Measure, Collapse](predict-measure-collapse.md).
+
 ## Goal
 
 Produce the correct externally-visible result with a design that is:
