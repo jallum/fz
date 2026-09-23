@@ -14,9 +14,9 @@ subsystem model.
   root cause backwards, then repair the data model from the bottom up.
 
 - [Predict, Measure, Collapse](strategies/predict-measure-collapse.md)
-  When a repair must explain its work or collapse competing mechanisms, hold a
-  prediction on a reduced fixture, separate diagnosis from building, measure
-  complete deletions, and account for every divergence before landing.
+  Derive the answer for a small fixture, predict the work needed to produce it,
+  and compare both with a trace. Use the evidence to give each decision one
+  owner and verify that its replacement makes the old mechanism removable.
 
 - [Red-Test Worklist](strategies/red-test-worklist.md)
   When a branch carries many failing/hanging tests, disable them all behind a
