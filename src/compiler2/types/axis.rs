@@ -349,18 +349,24 @@ pub(super) const LISTS: AxisView<ListSig> = AxisView {
 /// second spelling of one fact; a clause that keeps no non-empty list is `[]`
 /// itself.
 ///
-/// `intern` is injected because the fragment and the subtractions are
-/// descriptors that this rewrite computes: giving them identity is the
-/// interner's job, and only the boundary is holding it.
+/// `intern` is injected because a subtraction, and a `Built` element, are
+/// descriptors this rewrite computes: giving them identity is the interner's
+/// job, and only the boundary is holding it. An element the fold never had
+/// to build already IS a `Ty` -- re-interning its own descriptor would only
+/// walk back to the same id, so that case is returned as is.
 pub(super) fn list_clause_of(denotation: ListDenotation, intern: &mut dyn FnMut(Descr) -> Ty) -> Conj<ListSig> {
     let ListDenotation { holds_empty, non_empty } = denotation;
     let Some(NonEmptyLists { elem, minus }) = non_empty else {
         return Conj::pos_of(ListSig::empty());
     };
+    let elem = match elem {
+        Operand::Ty(t) => t,
+        Operand::Built(d) => intern((*d).clone()),
+    };
     Conj {
         pos: vec![ListSig {
             empty: holds_empty,
-            elem: Some(intern(elem)),
+            elem: Some(elem),
         }],
         neg: minus
             .into_iter()

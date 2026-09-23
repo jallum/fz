@@ -117,8 +117,13 @@ reused as if it were a closed form.
 Completed regular components can point back to themselves. Both `Types::display`
 and `TyCanon` carry a per-render stack of active `Ty`s: a path that re-enters an
 active type is spelled with a binder, such as `μX. :start | {X}`, rather than
-followed again. `TyCanon` applies the same binding when list denotation builds a
-temporary descriptor equal to an active type's descriptor. The binding is only a
+followed again. A list denotation's element is the operand the positive fold
+met to, kept as the `Ty` it already was whenever the fold never had to build
+anything, so an element reached only through a list clause — never through the
+type's own axes directly — still walks the same active-`Ty` stack and gets the
+same binder. Only a fold that had to synthesize new content, intersecting two
+operands that name no single `Ty`, falls back to comparing that built
+descriptor against the stack's descriptors instead. The binding is only a
 finite serialization of the already-completed component. It never compares types,
 changes the interner, or grants a temporary descriptor an identity.
 

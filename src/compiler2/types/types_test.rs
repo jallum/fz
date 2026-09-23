@@ -663,6 +663,65 @@ fn canon_distinguishes_recursive_denotations_without_ids() {
     assert!(!list.contains("Ty("));
 }
 
+/// `X`'s only path back to itself runs through a list clause's element:
+/// `X = :true | list(atoms) | list(X)`. Unlike `recursive_list_body` above,
+/// where the element happens to equal the whole active type, here the
+/// element is one factor of a union whose OTHER factor is the recursion.
+fn recursive_list_element_body(atoms: Ty, reference: ComponentRef) -> DescrOf<ComponentRef> {
+    let mut descr = DescrOf::atom_lit("true");
+    descr.cases[0]
+        .structure
+        .lists
+        .push(Conj::pos_of(ListSigOf::possibly_empty(ComponentRef::Published(atoms))));
+    descr.cases[0]
+        .structure
+        .lists
+        .push(Conj::pos_of(ListSigOf::possibly_empty(reference)));
+    descr
+}
+
+/// f8.fz's overflow, reduced to one interned shape. `X`'s recursion is
+/// reachable only as the element of `outer`'s list clause, never through `X`'s
+/// own axes directly, so the render must bind it exactly where the element is
+/// read, not only where a type is entered through `body()` on its own account.
+///
+/// Runs on a spawned thread with a small stack: the flattening this test
+/// exists to catch turns the render into an infinite loop, and on the test
+/// harness's default stack that takes real time to overflow. A small stack
+/// makes the wrong behavior fail fast, as a panic rather than a hang.
+#[test]
+fn canon_binds_a_recursive_element_reached_only_through_a_list_clause() {
+    let handle = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let mut t = Types::new();
+            let close = t.atom_lit("close");
+            let comma = t.atom_lit("comma");
+            let open = t.atom_lit("open");
+            let tok_t = t.atom_lit("t");
+            let atoms = t.union(close, comma);
+            let atoms = t.union(atoms, open);
+            let atoms = t.union(atoms, tok_t);
+
+            let x = t.intern_regular_component(1, |nodes| vec![recursive_list_element_body(atoms, nodes[0])])[0];
+            let outer = t.list(x);
+
+            let labels = |_: FnId| String::new();
+            let mut canon = TyCanon::new(&labels);
+            let rendered = canon.render(&t, outer);
+            assert_eq!(
+                rendered.as_ref(),
+                "fp[L] list(μX. :true | list(:close | :comma | :open | :t) | list(X))",
+                "the element's own recursion back to X must be spelled with X's binder, \
+                 not re-entered forever"
+            );
+        })
+        .expect("spawn probe thread");
+    handle
+        .join()
+        .expect("canon render must terminate without overflowing the probe stack");
+}
+
 /// A key that tells `[h | t]` from `[] | [h | t]` mints one activation for a
 /// recursive walker's seed and a second for the tail the walker hands itself,
 /// and the two compile the same body. The class is what makes those one
@@ -5569,6 +5628,50 @@ mod list_normal_form {
     /// canonical form, so the oracle counts this as one denotation holding two
     /// ids -- the finding -- instead of two renderings, which would hide it.
     /// Fix the meet and this test flips: the two become one id.
+    /// A clause the boundary stores as built keeps whatever factors it was
+    /// built from, and a POSITIVE intersection is one route to two of them: a
+    /// raw diff-of-double-negation (this module's `stacked_pos` idea,
+    /// inlined here for the list axis) stacks `non_empty_list(α0)` and
+    /// `non_empty_list(α0 | :b)` as two factors of one clause instead of
+    /// merging them, because α0 is a variable and the merge the kernel would
+    /// need reads a variable as disjoint from everything
+    /// (`.agent/docs/set-theoretic-types.md`). The element evidence's second
+    /// fold then intersects two operands that name no single `Ty`, so it
+    /// synthesizes one -- content whose own structure happens to equal α0's,
+    /// which is what proves the render reads a BUILT fragment's content
+    /// rather than assuming every element is a `Ty` to bind.
+    #[test]
+    fn a_built_intersection_element_renders_its_content() {
+        let mut t = Types::new();
+        let var = t.type_var(TypeVarId(0));
+        let atom_b = t.atom_lit("b");
+        let union_elem = t.union(var, atom_b);
+        let narrow = t.non_empty_list(var);
+        let wide = t.non_empty_list(union_elem);
+        let any = t.any();
+        let not_wide = t.difference(any, wide);
+        let intersected = t.difference(narrow, not_wide);
+
+        assert_ne!(
+            intersected, narrow,
+            "the raw stack keeps its own id, distinct from either operand it was built from"
+        );
+        assert_eq!(
+            t.descr(&intersected).cases[0].structure.lists[0].pos.len(),
+            2,
+            "two positive factors survive unmerged: this is what forces the element evidence \
+             to synthesize rather than name a Ty"
+        );
+
+        let labels = |_: FnId| String::new();
+        let mut canon = TyCanon::new(&labels);
+        assert_eq!(
+            canon.render(&t, intersected).as_ref(),
+            "fp[L] non_empty_list(α0)",
+            "the built fragment's own content renders, the same text α0 renders as when it names a Ty"
+        );
+    }
+
     #[test]
     fn a_var_bearing_list_difference_is_one_denotation_with_two_ids() {
         let mut t = Types::new();
