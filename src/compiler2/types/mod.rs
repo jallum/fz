@@ -1343,27 +1343,6 @@ impl Types {
             .collect()
     }
 
-    #[cfg(test)]
-    pub(crate) fn activation_order_evidence_for_test(&self, left: Ty, right: Ty) -> String {
-        format!(
-            "left={left:?} right={right:?}; left_descr={:?}; right_descr={:?}; \
-             activation=({:?}, {:?}); storage=({:?}, {:?}); address_paths={:?}; callable_origins={:?}",
-            self.descr(&left),
-            self.descr(&right),
-            self.cmp_activation_ty(left, right),
-            self.cmp_activation_ty(right, left),
-            self.cmp_ty(left, right),
-            self.cmp_ty(right, left),
-            self.address_paths,
-            self.callable_origins,
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn activation_reachable_tys(&self, root: Ty) -> HashSet<Ty> {
-        self.activation_reachable(root, |_| {})
-    }
-
     /// The two identity inventories demand-formula evaluation must leave
     /// untouched: interned type descriptors and interned structural addresses.
     #[cfg(test)]

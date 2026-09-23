@@ -10,9 +10,11 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use super::*;
+use crate::compiler2::body::{CallInputMode, CallSiteId, ControlEntryId, ValueId};
 use crate::compiler2::canon::function_label;
 use crate::compiler2::drive::{FactKey, Job};
-use crate::compiler2::return_skeleton::{FunctionSkeleton, lower};
+use crate::compiler2::return_skeleton::{FunctionSkeleton, Returns, Skeleton, lower};
+use crate::compiler2::types::Types;
 use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -192,6 +194,213 @@ fn reach(
         within.insert(reached_function, skeleton);
     }
     within
+}
+
+/// The generic missing-body question behind the protocol symptom. A missing
+/// callee cannot prove that it discards the caller's input, whereas a known
+/// body that returns a ground constant can. This evaluates conservative
+/// missing-body flow independently of protocols.
+#[test]
+fn a_missing_static_callee_return_is_conservative_but_a_known_discard_is_not() {
+    let caller = FunctionId::from_coordinate(11);
+    let callee = FunctionId::from_coordinate(12);
+    let callsite = CallSiteId::from_u32(30);
+    let entry = ControlEntryId::from_u32(0);
+    let caller_skeleton = FunctionSkeleton {
+        returns: Returns::Entries(BTreeMap::from([(
+            entry,
+            Skeleton::Result {
+                callsite,
+                value: ValueId::from_u32(0),
+            },
+        )])),
+        arguments: BTreeMap::from([(callsite, vec![Skeleton::Input(0)])]),
+        callees: BTreeMap::from([(callsite, (callee, CallInputMode::Direct))]),
+        input_len: 2,
+    };
+    let known_discard = FunctionSkeleton {
+        returns: Returns::Entries(BTreeMap::from([(entry, Skeleton::Ground(ValueId::from_u32(1)))])),
+        input_len: 1,
+        ..FunctionSkeleton::default()
+    };
+    let known = HashMap::from([
+        (caller, Rc::new(caller_skeleton.clone())),
+        (callee, Rc::new(known_discard)),
+    ]);
+    assert!(
+        !derive(&known, caller).returns_input(0),
+        "a known constant-returning body proves the argument is not observable",
+    );
+    assert!(
+        !derive(&known, caller).returns_input(1),
+        "a caller input it never passes is not observable through a known discard",
+    );
+
+    let missing = HashMap::from([(caller, Rc::new(caller_skeleton))]);
+    assert!(
+        derive(&missing, caller).returns_input(0),
+        "a missing static callee cannot prove that the caller's argument is unobservable",
+    );
+    assert!(
+        !derive(&missing, caller).returns_input(1),
+        "conservative missing-callee flow is limited to the argument actually passed",
+    );
+}
+
+#[test]
+fn opaque_return_may_flow_is_precise_and_not_a_known_empty_or_declared_return() {
+    let caller = FunctionId::from_coordinate(31);
+    let callee = FunctionId::from_coordinate(32);
+    let callsite = CallSiteId::from_u32(50);
+    let entry = ControlEntryId::from_u32(0);
+    let caller_skeleton = FunctionSkeleton {
+        returns: Returns::Entries(BTreeMap::from([(
+            entry,
+            Skeleton::Result {
+                callsite,
+                value: ValueId::from_u32(0),
+            },
+        )])),
+        arguments: BTreeMap::from([(callsite, vec![Skeleton::Tuple(vec![Skeleton::Input(0)])])]),
+        callees: BTreeMap::from([(callsite, (callee, CallInputMode::Direct))]),
+        input_len: 2,
+    };
+    let opaque = FunctionSkeleton {
+        returns: Returns::Opaque,
+        input_len: 1,
+        ..FunctionSkeleton::default()
+    };
+    let opaque_graph = HashMap::from([(caller, Rc::new(caller_skeleton.clone())), (callee, Rc::new(opaque))]);
+    assert!(derive(&opaque_graph, callee).returns_input(0));
+    let opaque_answer = derive(&opaque_graph, caller);
+    assert!(opaque_answer.returns_input(0));
+    assert!(
+        !opaque_answer.returns_input(1),
+        "opaque flow reaches only positions referenced by an actual argument"
+    );
+
+    let known_empty = FunctionSkeleton {
+        returns: Returns::Entries(BTreeMap::new()),
+        input_len: 1,
+        ..FunctionSkeleton::default()
+    };
+    let empty_graph = HashMap::from([
+        (caller, Rc::new(caller_skeleton.clone())),
+        (callee, Rc::new(known_empty)),
+    ]);
+    assert!(!derive(&empty_graph, caller).returns_input(0));
+
+    let mut types = Types::new();
+    let declared = FunctionSkeleton {
+        returns: Returns::Declared(types.int()),
+        input_len: 1,
+        ..FunctionSkeleton::default()
+    };
+    let declared_graph = HashMap::from([(caller, Rc::new(caller_skeleton)), (callee, Rc::new(declared))]);
+    assert!(!derive(&declared_graph, caller).returns_input(0));
+}
+
+/// A broad `Input(0)` missing-body fallback is not a safe replacement for a
+/// real return skeleton. On paper this is
+/// `loop(0, acc) = acc; loop(n, acc) = loop(n - 1, [opaque(acc)])`, where
+/// `opaque(_) = :fixed`. The real opaque return keeps the recursive
+/// accumulator settled. Pretending it returns its input manufactures a
+/// guarded cycle through `[opaque(acc)]` and changes the recursive call's
+/// destination key to `List(Unknown)`.
+#[test]
+fn an_input_fallback_for_a_missing_body_can_manufacture_a_productive_cycle() {
+    let loop_function = FunctionId::from_coordinate(21);
+    let opaque = FunctionId::from_coordinate(22);
+    let recurse = CallSiteId::from_u32(40);
+    let opaque_call = CallSiteId::from_u32(41);
+    let base_entry = ControlEntryId::from_u32(0);
+    let recursive_entry = ControlEntryId::from_u32(1);
+    let loop_skeleton = FunctionSkeleton {
+        returns: Returns::Entries(BTreeMap::from([
+            (base_entry, Skeleton::Input(1)),
+            (
+                recursive_entry,
+                Skeleton::Result {
+                    callsite: recurse,
+                    value: ValueId::from_u32(0),
+                },
+            ),
+        ])),
+        arguments: BTreeMap::from([
+            (
+                recurse,
+                vec![
+                    Skeleton::Ground(ValueId::from_u32(1)),
+                    Skeleton::List {
+                        element: Box::new(Skeleton::Result {
+                            callsite: opaque_call,
+                            value: ValueId::from_u32(2),
+                        }),
+                        non_empty: true,
+                    },
+                ],
+            ),
+            (opaque_call, vec![Skeleton::Input(1)]),
+        ]),
+        callees: BTreeMap::from([
+            (recurse, (loop_function, CallInputMode::Direct)),
+            (opaque_call, (opaque, CallInputMode::Direct)),
+        ]),
+        input_len: 2,
+    };
+    let actual_constant = FunctionSkeleton {
+        returns: Returns::Entries(BTreeMap::from([(base_entry, Skeleton::Ground(ValueId::from_u32(3)))])),
+        input_len: 1,
+        ..FunctionSkeleton::default()
+    };
+    let actual = HashMap::from([
+        (loop_function, Rc::new(loop_skeleton.clone())),
+        (opaque, Rc::new(actual_constant)),
+    ]);
+    assert_eq!(
+        derive(&actual, loop_function)
+            .callsite(recurse)
+            .expect("recursive callsite is described")
+            .destinations[1],
+        KeyShape::Settled,
+        "the actual constant return breaks the accumulator cycle",
+    );
+
+    let opaque_boundary = FunctionSkeleton {
+        returns: Returns::Opaque,
+        input_len: 1,
+        ..FunctionSkeleton::default()
+    };
+    let opaque_graph = HashMap::from([
+        (loop_function, Rc::new(loop_skeleton.clone())),
+        (opaque, Rc::new(opaque_boundary)),
+    ]);
+    assert_eq!(
+        derive(&opaque_graph, loop_function)
+            .callsite(recurse)
+            .expect("recursive callsite is described")
+            .destinations[1],
+        KeyShape::Settled,
+        "opaque may-flow does not participate in the recursive constructor equation",
+    );
+
+    let input_fallback = FunctionSkeleton {
+        returns: Returns::Entries(BTreeMap::from([(base_entry, Skeleton::Input(0))])),
+        input_len: 1,
+        ..FunctionSkeleton::default()
+    };
+    let fabricated = HashMap::from([
+        (loop_function, Rc::new(loop_skeleton)),
+        (opaque, Rc::new(input_fallback)),
+    ]);
+    assert_eq!(
+        derive(&fabricated, loop_function)
+            .callsite(recurse)
+            .expect("recursive callsite is described")
+            .destinations[1],
+        KeyShape::List(Box::new(KeyShape::Unknown)),
+        "an input fallback would invent a productive list cycle the actual opaque body does not have",
+    );
 }
 
 const WRAP_NEST: &str = "\

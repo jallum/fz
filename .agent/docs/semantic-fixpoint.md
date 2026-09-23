@@ -554,17 +554,20 @@ chain, the slot's address variable for the sort chain -- and the two chains'
 element types never meet.
 
 The second, asked only where the first settled everything: can a value at this
-slot be OBSERVED from outside the activation at all? `observable_inputs` says
-yes on either of two proven facts — a dispatch question reaches the slot
+slot be observed from outside the activation at all? `observable_inputs` says
+yes when a dispatch question reaches the slot
 (`InputDemand::forwarded_dispatch`, this body's own entry dispatch joined with
-what every callee it forwards the slot to asks of it), or the callee's
-published return is built from it (`FunctionUnknowns::returns_input`). A slot
-neither reaches is FREIGHT: the value is carried and handed back to no one, so
-no code the callee compiles can depend on its type, and every value arriving
-there deserves the same activation. Freight keys on the slot's bare address
-variable, which is what keeps a recursive accumulator from minting one
-activation per element type it is called with. An absent fact answers
-"observable", so a slot is only ever addressed on a proven answer.
+what every callee it forwards the slot to asks of it), or its return may depend
+on the slot (`FunctionUnknowns::returns_input`). Return observability includes
+opaque calls: `forward(x) = Protocol.pick(1, {:tag, x})` cannot discard `x`'s
+type merely because the protocol callback has no body. Its result may carry
+`x` back out. An unused second parameter stays irrelevant; the dependency
+comes from the arguments actually passed, not every input of `forward`.
+
+Only a slot that neither question can reach is freight: its arriving type
+does not distinguish the compiled activation, so it keys on its bare address
+variable. Both keying facts must exist before this question is asked. Missing
+return knowledge is conservative evidence, never a proof of no dependency.
 
 Both questions want the same coordinate for a whole slot, so they fold into one
 `KeyShape` and one `KeyShape::coordinate` call, where `Settled` means "key on
@@ -657,19 +660,46 @@ computation only one place can do once, for every member together.
 `seed` solves its return with. It is built in two layers, and the split
 between them is what makes the answer settle.
 
-The STATIC layer decides which POSITIONS of a return system are still being
-solved, from the lowered bodies alone (`return_skeleton.rs`,
+The static layer decides which positions of a return system are still being
+solved, from the function skeletons (`return_skeleton.rs`,
 `return_unknowns.rs`). A position is a function's whole return, one of its
 parameter slots, one of its own call sites' results, or an interior place
-inside a skeleton. A *bare* edge between positions is an alias or a
-projection; a *guarded* edge crosses a constructor. A position is UNKNOWN
-when it sits on a cycle that carries at least one guarded edge -- such a
-cycle wraps another layer each turn, so its solution is a recursive type. A
-cycle of bare edges alone is settled by the ordinary join: the least solution
-of `rest = tail(rest) | [int]` is `[int]`, reached in one step. The skeletons
-are the only thing there is to ask: a function's return has ONE lowering, and
-it is written before any activation of that function exists, which is what
-lets keying have the answer in its first round.
+inside a skeleton. One graph carries three kinds of edge:
+
+- `Alias`: a structural reference or projection.
+- `Constructor`: a structural dependency held inside a constructor.
+- `OpaqueMayFlow`: possible return dependence without a known return shape.
+
+Return-input observability follows all three kinds. Productive-cycle detection
+follows only structural edges and requires a `Constructor` edge within the
+cycle. Such a cycle wraps another layer each turn, so its solution is a
+recursive type. A cycle of aliases alone settles by the ordinary join: the
+least solution of `rest = tail(rest) | [int]` is `[int]`.
+
+An opaque edge contributes no structural branch. If `opaque(_)` actually
+returns a constant, `loop(n - 1, [opaque(acc)])` does not grow another layer
+around `acc`. Pretending the opaque result equals `acc` would invent that
+growth. Possible dependence keeps the argument observable without asserting
+such an equation.
+
+Return descriptions distinguish absence from a known empty answer.
+`Returns::Entries` contains known control-entry shapes; an empty set names
+no returning entry. `Returns::Declared` carries a declared result type.
+`Returns::Opaque` describes a bodyless provider: its inputs may flow to its
+return, but it supplies no structural equation. An unavailable named callee
+conservatively connects its call result to the positions referenced by the
+actual arguments. A protocol callback uses this boundary without enumerating
+or loading unrelated implementations. Provider boundaries name no local
+activation and cannot enter a concrete return-component equation.
+
+The function whose local keying answer is requested waits for its own return
+skeleton through the normal producer chain. A transitively named function
+without a definition is read rather than eagerly demanded; discovery reads
+its `FunctionDefined` fact as well as its missing `ReturnSkeleton`, so a
+definition arriving later makes the walk demand the real skeleton. Bodyless
+protocol callbacks and provider boundaries do not wait for impossible local
+bodies. There is one lowering of each real body's return, shared by the
+static questions and the activation solver.
 
 A call made THROUGH a value names no callee in any body, so this walk cannot
 see past it: the arguments such a call hands on are recorded, and what it

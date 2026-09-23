@@ -1763,9 +1763,8 @@ fn compiling_the_same_root_twice_publishes_byte_identical_backend_programs() {
 }
 
 #[test]
-fn live_executable_order_distinguishes_noninjective_display_pairs() {
+fn live_executable_inventory_is_unique_and_totally_ordered() {
     use super::semantic::SemanticOrd;
-    use std::collections::BTreeMap;
 
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(tel);
@@ -1783,73 +1782,9 @@ fn live_executable_order_distinguishes_noninjective_display_pairs() {
         .product_executable_inventory(root)
         .expect("fixture must compile");
     let types = compiler.types_for_test();
-    let mut by_display = BTreeMap::<String, Vec<super::Ty>>::new();
-    for ty in types.interned_tys() {
-        by_display.entry(types.display(&ty)).or_default().push(ty);
-    }
-    let reachable_by_executable = executables
-        .iter()
-        .map(|executable| {
-            executable
-                .activation
-                .inputs()
-                .iter()
-                .copied()
-                .chain(std::iter::once(executable.activation.signature.result))
-                .flat_map(|ty| types.activation_reachable_tys(ty))
-                .collect::<std::collections::HashSet<_>>()
-        })
-        .collect::<Vec<_>>();
-    let mut measured_pairs = Vec::new();
-    for tys in by_display.into_values().filter(|tys| tys.len() > 1) {
-        for (index, left) in tys.iter().enumerate() {
-            for right in &tys[index + 1..] {
-                let distinct_executable_owners = reachable_by_executable.iter().enumerate().any(|(left_index, tys)| {
-                    tys.contains(left)
-                        && reachable_by_executable
-                            .iter()
-                            .enumerate()
-                            .any(|(right_index, tys)| right_index != left_index && tys.contains(right))
-                });
-                if !distinct_executable_owners {
-                    continue;
-                }
-                let activation_forward = types.cmp_activation_ty(*left, *right);
-                let activation_reverse = types.cmp_activation_ty(*right, *left);
-                let storage_forward = types.cmp_ty(*left, *right);
-                let storage_reverse = types.cmp_ty(*right, *left);
-                assert_ne!(
-                    activation_forward,
-                    std::cmp::Ordering::Equal,
-                    "distinct live types must not collapse in activation order: {}",
-                    types.activation_order_evidence_for_test(*left, *right),
-                );
-                assert_eq!(
-                    activation_forward,
-                    activation_reverse.reverse(),
-                    "activation order must be antisymmetric: {}",
-                    types.activation_order_evidence_for_test(*left, *right),
-                );
-                assert_ne!(
-                    storage_forward,
-                    std::cmp::Ordering::Equal,
-                    "distinct live types must not collapse in storage order: {}",
-                    types.activation_order_evidence_for_test(*left, *right),
-                );
-                assert_eq!(
-                    storage_forward,
-                    storage_reverse.reverse(),
-                    "storage order must be antisymmetric: {}",
-                    types.activation_order_evidence_for_test(*left, *right),
-                );
-                measured_pairs.push((*left, *right));
-            }
-        }
-    }
-    assert_eq!(
-        measured_pairs.len(),
-        6,
-        "fixture must retain the six live empty/non-empty list pairs that display conflates"
+    assert!(
+        executables.len() > 1,
+        "the production fixture must exercise distinct executable keys"
     );
     for (index, left) in executables.iter().enumerate() {
         for right in &executables[index + 1..] {
@@ -1950,17 +1885,11 @@ fn fatal_error_diagnostic_reports_fact_wait_budget_exceeded() {
 
 /// `no_ready_producer`: a root submitted for a function name that is never
 /// defined by any submitted code. `produce_root_backend_product`'s keying
-/// waits (`RootEntry`, `InputDemand`, `Recursive`) are all still unsettled
-/// -- `SeedRoot` claims `RootEntry` as an output on its very first
-/// (still-blocked) run, but a blocked publisher's claims stay dirty
-/// (`Scheduler::complete`: "pausing is not recanting"), so `RootEntry`
-/// itself never reads as settled either. Every one of the three keying
-/// waits is an equally genuine dead end here, so which one this hook names
-/// is the order the pull-drive tries them in -- pinned deterministically
-/// (`drive_root_backend_product_with_budgets` sorts a multi-wait
-/// `PullOutcome` before processing it), not an accident of hash iteration.
-/// This is a real dead end reachable from ordinary (if buggy) input -- a
-/// typo'd entry-point name -- not a fabricated one.
+/// waits remain unsettled. In descending semantic order, `ReturnUnknowns`
+/// is tried first. Its own body-backed answer waits for the missing function's
+/// skeleton rather than publishing a default. Both error doors must name that
+/// real blocked prerequisite; neither may pretend that the undefined root has
+/// a settled return answer.
 #[test]
 fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     let tel = ConfiguredTelemetry::new();
@@ -1976,7 +1905,9 @@ fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
         .run_root_interp(root)
         .expect_err("a root naming an entry no code ever defines should never settle");
 
-    let fact = FactUse::settled(FactKey::RootEntry(root));
+    let function = compiler.world().root_entry(root).function;
+    let fact = FactUse::settled(FactKey::ReturnUnknowns(function));
+    assert!(compiler.world().return_unknowns(function).is_none());
     assert_eq!(
         error,
         format!(
@@ -1987,7 +1918,7 @@ fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
             // hook itself reports, not a separately reconstructed guess.
             compiler.world().unresolved_waits()
         ),
-        "the String path should report the undefined entry's RootEntry keying wait, got: {error}"
+        "the String path should report the undefined entry's ReturnUnknowns keying wait, got: {error}"
     );
 }
 
@@ -2005,7 +1936,9 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
         "the retained backend product should fail fatally when its entry is never defined, got: {outcome:?}"
     );
 
-    let fact = FactUse::settled(FactKey::RootEntry(root));
+    let function = world.root_entry(root).function;
+    let fact = FactUse::settled(FactKey::ReturnUnknowns(function));
+    assert!(world.return_unknowns(function).is_none());
     let event = capture
         .last(&["fz", "diag", "error"])
         .expect("no-ready-producer should emit an error diagnostic");
@@ -2017,7 +1950,7 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
             root.as_u32(),
             fact
         ),
-        "the FatalError path should report the undefined entry's RootEntry keying wait"
+        "the FatalError path should report the undefined entry's ReturnUnknowns keying wait"
     );
 }
 

@@ -11,7 +11,7 @@ use super::super::identity::FunctionId;
 use std::rc::Rc;
 
 use super::super::keying::{BodyKeying, InputDemand};
-use super::super::return_skeleton::FunctionSkeleton;
+use super::super::return_skeleton::{FunctionSkeleton, Returns};
 use super::super::scheduler::FatalError;
 use super::super::world::World;
 use crate::telemetry::TelemetryExt as _;
@@ -814,17 +814,25 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
 pub(super) fn derive_return_skeleton(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
     let lowered = FactKey::LoweredBody(function);
     if !world.has_fact(&lowered) {
-        if world.function_is_provider_boundary(function) {
-            // No body in this program: it returns nothing this compilation
-            // can name and hands nobody anything. Every fact that conclusion
-            // rests on is READ, so a definition landing later re-derives it.
+        if world.function_is_provider_boundary(function) || world.protocol_callback(function).is_some() {
+            // This boundary has no lowered body in this program: its return
+            // may flow from values it is handed, but it names no structural
+            // return equation. Every fact that conclusion rests on is READ,
+            // so a real definition landing later re-derives it.
             let module = world.function_module(function);
             let reads = current_uses([
                 FactKey::FunctionDefined(function),
                 FactKey::ModuleDefined(module),
                 lowered,
             ]);
-            let changed = world.define_return_skeleton(function, Rc::new(FunctionSkeleton::default()));
+            let changed = world.define_return_skeleton(
+                function,
+                Rc::new(FunctionSkeleton {
+                    returns: Returns::Opaque,
+                    input_len: world.function_arity(function),
+                    ..FunctionSkeleton::default()
+                }),
+            );
             return Ok(JobEffects {
                 reads,
                 outputs: vec![FactKey::ReturnSkeleton(function)],
@@ -876,28 +884,30 @@ pub(super) fn derive_return_unknowns(world: &mut World, function: FunctionId) ->
     while next < reached.len() {
         let reached_function = reached[next];
         next += 1;
-        // A DEFINED function's skeleton is waited on: keying must be decided
-        // in its first round, and an answer published before a callee's shape
-        // is visible would key that callee verbatim and mint the very ascent
-        // this fact exists to prevent.
+        // A requested local function has a body-backed keying path, so its
+        // skeleton is waited on before any answer is published. A
+        // transitive defined function gets the same wait; its producer chain
+        // already has a real body to derive.
         //
-        // A function this program has not defined is READ instead. Waiting on
-        // one would demand a body for every function the static graph can
-        // name -- including ones no activation ever reaches -- and a body
-        // whose own definition chain never completes would wedge every caller
-        // behind it. No call is keyed against such a function either: a caller
-        // cannot resolve a call to a function it has no definition for, so by
-        // the time the answer is asked for, the definition is there and this
-        // read has already re-derived it.
+        // A transitively named undefined function is an opaque boundary for
+        // now. Waiting would demand every body the static graph can name;
+        // reading both its absent skeleton and definedness instead re-runs
+        // this answer if a real definition later arrives.
         let fact = FactKey::ReturnSkeleton(reached_function);
         let Some(skeleton) = world.return_skeleton(reached_function).cloned() else {
-            match world.function_defined_revision(reached_function).is_some() {
-                true => waits.insert(fact),
-                false => {
-                    reads.push(fact);
-                    continue;
-                }
-            };
+            if reached_function == function
+                && !world.function_is_provider_boundary(reached_function)
+                && world.protocol_callback(reached_function).is_none()
+            {
+                waits.insert(fact);
+                continue;
+            }
+            if world.function_defined_revision(reached_function).is_some() {
+                waits.insert(fact);
+                continue;
+            }
+            reads.push(fact);
+            reads.push(FactKey::FunctionDefined(reached_function));
             continue;
         };
         reads.push(fact);

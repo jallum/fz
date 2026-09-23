@@ -347,20 +347,21 @@ fn gather(
         // WHICH entries an activation returns through is a property of that
         // activation, so the static shapes are joined against its own
         // reachability rather than folded flat in the skeleton.
-        let shapes: Vec<Skeleton> = match &skeleton.returns {
-            Returns::Declared(_) => Vec::new(),
-            Returns::Entries(entries) => analysis
-                .reachable_entries
-                .iter()
-                .filter_map(|entry| entries.get(entry).cloned())
-                .collect(),
-        };
-        let terms = match &skeleton.returns {
-            Returns::Declared(ty) => vec![Term::Settled(*ty)],
-            Returns::Entries(_) => shapes
-                .iter()
-                .map(|shape| Term::Shape(member.clone(), shape.clone()))
-                .collect(),
+        let (shapes, terms) = match &skeleton.returns {
+            Returns::Declared(ty) => (Vec::new(), vec![Term::Settled(*ty)]),
+            Returns::Opaque => panic!("opaque provider return entered a compiler-owned return component"),
+            Returns::Entries(entries) => {
+                let shapes = analysis
+                    .reachable_entries
+                    .iter()
+                    .filter_map(|entry| entries.get(entry).cloned())
+                    .collect::<Vec<_>>();
+                let terms = shapes
+                    .iter()
+                    .map(|shape| Term::Shape(member.clone(), shape.clone()))
+                    .collect();
+                (shapes, terms)
+            }
         };
         bindings.returns.insert(member.clone(), terms);
         bindings

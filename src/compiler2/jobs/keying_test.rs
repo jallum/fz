@@ -9,8 +9,13 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use crate::compiler2::body::{CallInputMode, CallSiteId, ControlEntryId, ValueId};
 use crate::compiler2::dump::DumpStage;
-use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, FunctionId, InputDemand, RootSubmission};
+use crate::compiler2::facts::FactUse;
+use crate::compiler2::return_skeleton::{FunctionSkeleton, Returns, Skeleton};
+use crate::compiler2::{
+    CodeSubmission, Compiler2, ExecutableNeed, FactKey, FunctionId, InputDemand, ModuleId, RootSubmission, World,
+};
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -69,6 +74,77 @@ fn demand_of(demands: &BTreeMap<String, InputDemand>, label: &str) -> InputDeman
             )
         })
         .clone()
+}
+
+#[test]
+fn an_absent_transitive_return_reads_its_definition_for_rediscovery() {
+    use crate::compiler2::drive::{ExecutionContext, Job, JobEffects};
+    use crate::compiler2::pull::ProductSessions;
+    use crate::compiler2::scheduler::DriveOutcome;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let mut sessions = ProductSessions::default();
+    let source = world.submit_code(Some("late_return_body.fz".into()), "def later(_value), do: 0\n".into());
+    world.demand(Job::ScopeCode(source));
+    assert!(matches!(
+        ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved
+    ));
+    let caller = world.reference_function(ModuleId::GLOBAL, "caller", 1);
+    let later = world.reference_function(ModuleId::GLOBAL, "later", 1);
+    assert!(world.function_defined_revision(later).is_none());
+    let callsite = CallSiteId::from_u32(0);
+    let entry = ControlEntryId::from_u32(0);
+    assert!(world.define_return_skeleton(
+        caller,
+        Rc::new(FunctionSkeleton {
+            returns: Returns::Entries(BTreeMap::from([(
+                entry,
+                Skeleton::Result {
+                    callsite,
+                    value: ValueId::from_u32(0),
+                },
+            )])),
+            arguments: BTreeMap::from([(callsite, vec![Skeleton::Input(0)])]),
+            callees: BTreeMap::from([(callsite, (later, CallInputMode::Direct))]),
+            input_len: 1,
+        }),
+    ));
+    // Supply only the caller's static description so definition discovery can
+    // be staged independently of lowering a source-level direct call.
+    world.complete_job(
+        Job::DeriveReturnSkeleton(caller),
+        JobEffects {
+            outputs: vec![FactKey::ReturnSkeleton(caller)],
+            changed: vec![FactKey::ReturnSkeleton(caller)],
+            ..JobEffects::default()
+        },
+    );
+    world.demand(Job::DeriveReturnUnknowns(caller));
+    assert!(matches!(
+        ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved
+    ));
+    assert!(world.return_unknowns(caller).unwrap().returns_input(0));
+    assert!(world.return_skeleton(later).is_none());
+    let reads = world.job_reads(&Job::DeriveReturnUnknowns(caller));
+    assert!(reads.contains(&FactUse::current(FactKey::ReturnSkeleton(later))));
+    assert!(reads.contains(&FactUse::current(FactKey::FunctionDefined(later))));
+
+    world.demand(Job::DefineFunction(later));
+    assert!(matches!(
+        ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved
+    ));
+    assert!(
+        world.return_skeleton(later).is_some(),
+        "definition arrival must demand the real return skeleton"
+    );
+    assert!(
+        !world.return_unknowns(caller).unwrap().returns_input(0),
+        "the definition's arrival must refine possible flow to the constant body's proven non-dependence"
+    );
 }
 
 /// A closure call cannot be answered statically, so every value it touches is

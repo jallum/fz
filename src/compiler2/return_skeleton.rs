@@ -195,6 +195,9 @@ pub(crate) enum Returns {
     /// An extern body has no entries to walk: the source states the return
     /// outright, and that statement is the whole answer.
     Declared(Ty),
+    /// A provider boundary has no body in this compilation. Its return may
+    /// depend on any value it is handed, but names no structural equation.
+    Opaque,
     /// One shape per control entry that returns. WHICH of them a given
     /// activation reaches is a property of that activation, so the entries
     /// stay apart here and are joined against its `reachable_entries`.
