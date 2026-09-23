@@ -670,11 +670,27 @@ tell "the return never moved" from "the return was published and then
 retracted" -- the signature of a component whose ownership flickers.
 `return_component.solved` carries the solve's `owner` beside the `members` it
 answered, which is the membership a test asserts rather than re-deriving.
+`return_membership.discovered` fires once per `SolveReturnComponent`
+dispatch, from `jobs/return_component.rs::solve_return_component` itself --
+`World::return_membership` is a pure query with no telemetry parameter, so
+the dispatch carries the one `ReturnDiscovery` the solve already computed for
+its own answer, never a second walk asked just to report on the first.
+It carries `visited` (how many activations the walk touched) and `members`
+(how many belong to the seed's component) as measurements, plus the `seed`
+activation as metadata. `visited` is `members` plus every `Callers`
+candidate the walk examined and ruled back out -- a stale entry whose site
+has since moved on, or now names someone else -- since that read happens
+whether or not the candidate turns out to belong, and so is part of what the
+walk cost. Discovery's cost tracking the component and its immediate callers
+instead of the world is a north-star property, and `visited` is what lets a
+test hold it to that: a walk over a two-member component with one caller
+outside it should never visit a fourth activation.
 These are public (allowlisted in `is_public_compiler2_trace_event`), as are
 `activation_analysis.defined` and `callsite.defined`; the JSONL projection
-gives `activation_analysis.defined`, `callsite.defined` and the return
-publication a `semantic` object, and for a return publication that object
-carries the standing return.
+gives `activation_analysis.defined`, `callsite.defined`, the return
+publication and `return_membership.discovered` a `semantic` object -- the
+return publication's carries the standing return, and
+`return_membership.discovered`'s carries the seed.
 
 `root.submitted` carries raw `World` and `RootId`. `code.submitted` carries raw
 `World` with the submitted `SourceOwner` or runtime registration. Protocol callback

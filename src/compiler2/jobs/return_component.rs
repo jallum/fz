@@ -1,16 +1,17 @@
 //! Solves every member's `ReturnType` for one recursive-return component at
 //! once. `World::return_membership` derives membership and the component's
-//! canonical owner fresh from `ActivationAnalysis.callsites` and
-//! `CallSiteTargets`; this job trusts a fresh recomputation of that same
-//! query every time it runs, self-abdicating the moment it is no longer
-//! that owner. Unlike `DeriveTypeDef`'s abdication (a `@type` equation's
-//! component never reshapes once parsed, so it never needs to be woken
-//! again), a return component's boundary genuinely moves as call targets
-//! resolve, so abdication here still declares [`frontier_reads`]: the EDGE
-//! facts (never a forward-cone node's whole `ActivationAnalyzed`) that
-//! could redraw the boundary `World::return_flow_frontier` walked to find
-//! it. That subscription is what attributes the abdication to a real cause
-//! and lets this job be re-woken if ownership ever returns.
+//! canonical owner fresh from `ReturnUnknowns` and `CallSiteTargets`; this
+//! job trusts a fresh recomputation of that same query every time it runs,
+//! self-abdicating the moment it is no longer that owner. Unlike
+//! `DeriveTypeDef`'s abdication (a `@type` equation's component never
+//! reshapes once parsed, so it never needs to be woken again), a return
+//! component's boundary genuinely moves as call targets resolve, so
+//! abdication here still declares the read set the discovery's `reads`
+//! hands back alongside the answer: the EDGE facts (never a forward-cone
+//! node's whole `ActivationAnalyzed`) that could redraw the boundary the
+//! same walk found it across. That subscription is what attributes the
+//! abdication to a real cause and lets this job be re-woken if ownership
+//! ever returns.
 //!
 //! # What the solve reads
 //!
@@ -151,9 +152,19 @@ pub(super) fn solve_return_component(
     tel: &impl crate::telemetry::Telemetry,
     owner: &ActivationKey,
 ) -> Result<JobEffects, FatalError> {
-    let Some(component) = world.return_membership(owner).into_component() else {
+    let discovery = world.return_membership(owner);
+    let discovered_reads = discovery.reads(world);
+    // One event per dispatch, by construction: `discovery` is this call's
+    // one walk, and every exit below shares the same `discovered_reads` it
+    // already found rather than asking a second walk for them.
+    tel.dispatch(
+        &["fz", "compiler2", "return_membership", "discovered"],
+        &crate::measurements! { visited: discovery.visited(), members: discovery.members_len() },
+        &crate::metadata! { seed: crate::telemetry::opaque(owner) },
+    );
+    let Some(component) = discovery.into_component() else {
         return Ok(JobEffects {
-            reads: current_uses(frontier_reads(world, owner)),
+            reads: current_uses(discovered_reads),
             ..JobEffects::default()
         });
     };
@@ -164,20 +175,22 @@ pub(super) fn solve_return_component(
         // read set) is what makes this abdication itself a caused event,
         // and what lets this job be woken again if ownership ever returns.
         return Ok(JobEffects {
-            reads: current_uses(frontier_reads(world, owner)),
+            reads: current_uses(discovered_reads),
             ..JobEffects::default()
         });
     }
     let members = component.members;
     let member_set: HashSet<ActivationKey> = members.iter().cloned().collect();
 
-    // `World::return_component`'s SCC walk can visit activations beyond
-    // `members` on its way to (or past) `owner`'s component -- any of their
-    // out-edges (`CallSiteTargets`, keyed off their function's STATIC
-    // callsite set) moving can redraw the boundary the walk finds, so the
-    // subscription has to cover the whole frontier, not just the settled
-    // members.
-    let mut reads: Vec<FactKey> = frontier_reads(world, owner);
+    // `discovered_reads` names three kinds of fact: each member's own
+    // unsettled out-edges, each member's `Callers` set (so a newcomer
+    // joining the component wakes this solve), and the `CallSiteTargets` of
+    // any non-member call site that already addresses a member. Any of
+    // those moving can redraw the boundary this solve is trusting, so the
+    // subscription is a real, attributable cause rather than an empty read
+    // set standing in for one. It comes from the SAME walk that just
+    // answered `component` above, not a second one.
+    let mut reads: Vec<FactKey> = discovered_reads;
     let (bindings, slot_order) = match gather(world, &members, &member_set, &mut reads) {
         Gathered::Waiting(waits) => {
             return Ok(JobEffects {
@@ -393,15 +406,13 @@ fn gather(
     }
 
     // Membership is discovered, not declared: an activation minted after this
-    // solve concludes can call a member and join the component. Every other
-    // fact here is read for its VALUE and names only the members already
-    // known, so none of them can move on a newcomer's account. This one is
-    // read for its MOVEMENT -- a member gaining a caller re-wakes this solve,
-    // which then rediscovers membership and answers for the newcomer too. It
-    // is a read, never a wait: a member no one has called yet is not a stall.
-    for member in members {
-        reads.push(FactKey::Callers(member.clone()));
-    }
+    // solve concludes can call a member and join the component. A member
+    // gaining a caller is exactly what re-wakes this solve to rediscover
+    // membership and answer for the newcomer too -- but that subscription is
+    // already in `discovered_reads`, pushed once per member by
+    // `return_membership::reads_of` from the same walk that found `members`
+    // above. Reading it a second time here would name the same fact for the
+    // same reason from two places, which is what `dedup` was papering over.
 
     // The evidence already standing at a member's slot is the base case of
     // its equation: a `Seed` cell is the member's own root/activation seed
@@ -617,56 +628,6 @@ fn names_member_shape(
         Skeleton::Map(fields) | Skeleton::Struct(_, fields) => fields.iter().any(|(_, value)| names(value)),
         Skeleton::Project { of, .. } => names(of),
     }
-}
-
-/// The read set that explains why `world.return_membership(owner)` currently
-/// draws the boundary it does: `FactKey::CallSiteTargets` for every callsite
-/// of every activation `World::return_flow_frontier` visited while
-/// establishing it, member or not. A change to any of these edge facts is
-/// what could redraw the boundary (grow it, shrink it, hand ownership to a
-/// different member), so it is a real, attributable cause instead of an
-/// empty read set masquerading as one. A cone node's own
-/// `ActivationAnalyzed` is deliberately NOT read here — its analysis moving
-/// for reasons that leave its callsite targets untouched has no bearing on
-/// this boundary, and reading it anyway is exactly the excess-churn source
-/// this function replaces (see [`static_callsite_reads`]).
-fn frontier_reads(world: &World, owner: &ActivationKey) -> Vec<FactKey> {
-    world
-        .return_flow_frontier(owner)
-        .into_iter()
-        .flat_map(|key| static_callsite_reads(world, &key))
-        .collect()
-}
-
-/// `FactKey::CallSiteTargets` for every callsite named by the STATIC lowered
-/// body of `activation`'s function (`body::callsite_input_modes`, a pure
-/// scan over the function's `LoweredBody` entries) — the edge facts whose
-/// movement could actually grow, shrink, or retarget the SCC walk through
-/// this node. This is deliberately the function's whole structural callsite
-/// set, not `activation`'s own dynamic `ActivationAnalysis.callsites` (which
-/// is filtered down to whatever that one activation's analysis happened to
-/// resolve): the static set is activation-independent, so it never needs
-/// `activation`'s `ActivationAnalyzed` fact to enumerate, which is the whole
-/// point — a non-member cone node's analysis moving is not itself a cause
-/// this job needs to track. Falls back to a `FactKey::LoweredBody` read when
-/// the function has not been lowered yet: the callsite set is undefined
-/// until then, and that absence is itself an ordinary read of an absent
-/// fact, waking this job once lowering completes.
-fn static_callsite_reads(world: &World, activation: &ActivationKey) -> Vec<FactKey> {
-    let lowered_fact = FactKey::LoweredBody(activation.function);
-    if !world.has_fact(&lowered_fact) {
-        return vec![lowered_fact];
-    }
-    let body = world.lowered_body(activation.function);
-    super::super::body::callsite_input_modes(&body)
-        .into_keys()
-        .map(|callsite| {
-            FactKey::CallSiteTargets(super::super::semantic::CallSiteKey {
-                activation: activation.clone(),
-                callsite,
-            })
-        })
-        .collect()
 }
 
 /// One unknown of the component's equation system. A member's whole return

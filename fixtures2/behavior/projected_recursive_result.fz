@@ -1,0 +1,35 @@
+#---
+# purpose: "decode/1's activation is not yet registered when the recursive component reaching it first walks, so a whole-world membership scan cannot see it; decode/1's ReturnType must never be published by its own AnalyzeActivation walk, only by the solve"
+#---
+#
+# skip_ws/1 is self-recursive. val/1, array/1, and item/1 are a guarded,
+# mutually-recursive component (shaped like lib/json.fz's own value parser)
+# that each call skip_ws/1 before recursing, and decode_done/2 calls
+# skip_ws/1 too, when it forwards to decode_trailing/3. decode/1 hands val/1
+# its own input and returns whatever decode_done/2 returns, so decode/1's
+# return is itself one more position on skip_ws/1's still-unsettled return --
+# a member of that component, not a bystander -- even though decode/1 never
+# calls skip_ws/1 directly. decode/1's activation does not exist yet the
+# first time the component's own walk runs. A membership answer that scans
+# every activation the world currently holds never sees a call site aimed at
+# an activation that has not been minted; a local walk starting from the
+# component's own facts sees the unresolved call directly and answers
+# Unknown until decode/1 exists to be walked, never Alone. Getting this
+# wrong makes decode/1 self-publish a ReturnType that a later solve then has
+# to clear and republish -- extra work, though every final ReturnType is
+# bit-identical either way.
+defp skip_ws([:ws | r]), do: skip_ws(r)
+defp skip_ws(b), do: b
+defp val([:t | r]), do: {:ok, true, r}
+defp val([:open | r]), do: array(skip_ws(r))
+defp val(b), do: {:error, b}
+defp array([:close | r]), do: {:ok, [], r}
+defp array(b), do: item(val(b))
+defp item({:ok, _v, r}), do: array(skip_ws(r))
+defp item(other), do: other
+defp decode(input), do: decode_done(val(input), input)
+defp decode_done({:ok, v, r}, input), do: decode_trailing(skip_ws(r), v, input)
+defp decode_done({:error, b}, input), do: {:error, input, b}
+defp decode_trailing([], v, _input), do: {:ok, v}
+defp decode_trailing(raw, v, input), do: {:error, input, raw}
+def main(), do: dbg(decode([:open, :t, :t, :close]))
