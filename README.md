@@ -549,7 +549,15 @@ Run the whole test suite:
 cargo test --workspace
 ```
 
-For quieter output, use [cargo-nextest](https://nexte.st/docs/installation/)
+The repository's Cargo configuration defaults to compact output: passing tests
+print progress characters instead of individual names, followed by each test
+binary's summary. Failure diagnostics and compiler warnings remain visible.
+Existing test commands work unchanged, including fixture tests and doctests.
+Use `cargo --config term.quiet=false test --workspace -- --format pretty` to
+restore individual test names (the custom fixture harness also defaults to terse);
+`-- --nocapture` still exposes test output when investigating a test.
+
+To suppress passing-test progress too, use [cargo-nextest](https://nexte.st/docs/installation/)
 and run doctests separately:
 
 ```sh

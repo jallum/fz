@@ -61,7 +61,7 @@ use fz_fixture_metadata::{
     FixtureExpect as Fixture2Expect, FixtureKind as Fixture2Kind, FixtureMatrixPath, FixtureMetadata,
     fixture_matrix_paths_from_filename, parse_fixture_metadata,
 };
-use libtest_mimic::{Arguments, Failed, Trial};
+use libtest_mimic::{Arguments, Failed, FormatSetting, Trial};
 use std::collections::BTreeSet;
 use std::env::{temp_dir, var};
 use std::fs::{self, File, remove_file};
@@ -87,6 +87,7 @@ static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 // the harness is uniform.
 fn main() {
     let mut args = Arguments::from_args();
+    args.format.get_or_insert(FormatSetting::Terse);
     if args.test_threads.is_none() {
         args.test_threads = var("RUST_TEST_THREADS").ok().and_then(|raw| raw.parse::<usize>().ok());
     }
