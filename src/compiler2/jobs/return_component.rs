@@ -11,7 +11,11 @@
 //! node's whole `ActivationAnalyzed`) that could redraw the boundary the
 //! same walk found it across. That subscription is what attributes the
 //! abdication to a real cause and lets this job be re-woken if ownership
-//! ever returns.
+//! ever returns. An `Unknown` membership is a different exit entirely, not a
+//! third kind of abdication: nobody owns the component yet, so this job
+//! waits on the reached-but-Unresolved edges instead of concluding, and
+//! every `ReturnType` it already published stays standing until they settle
+//! (see `solve_return_component`'s own comment at that exit).
 //!
 //! # What the solve reads
 //!
@@ -71,7 +75,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::modules::identity::ModuleName;
 
 use super::super::body::{CallInputMode, CallSiteId, ValueId};
-use super::super::drive::{Derivation, DerivationKey, EvidenceSource, FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{
+    Derivation, DerivationKey, EvidenceSource, FactKey, Job, JobEffects, current_uses, settled_uses,
+};
 use super::super::identity::{ActivationKey, ActivationSignature, ModuleId};
 use super::super::return_skeleton::{Returns, Skeleton};
 use super::super::scheduler::FatalError;
@@ -162,9 +168,22 @@ pub(super) fn solve_return_component(
         &crate::measurements! { visited: discovery.visited(), members: discovery.members_len() },
         &crate::metadata! { seed: crate::telemetry::opaque(owner) },
     );
+    // An `Unknown` membership is not a conclusion: some out-edge this walk
+    // reached is still Unresolved, and what it turns out to reach may
+    // enlarge the component, so nobody may publish this answer yet. Waiting
+    // on these edges' own SETTLED movement (never their Current reading --
+    // each already carries one, the Unresolved verdict itself, so a Current
+    // wait would fire immediately with nothing new to say) is what keeps
+    // this a blocked run rather than a wait-free one: `World::complete_job`
+    // extends a blocked run's prior contributions instead of replacing them,
+    // so every `ReturnType` this job already published for this component
+    // stays standing until the edge resolves, rather than being retracted
+    // and republished (or left unpublished) on every intervening revision.
+    let unresolved = discovery.unresolved_out_edges();
     let Some(component) = discovery.into_component() else {
         return Ok(JobEffects {
             reads: current_uses(discovered_reads),
+            waits: settled_uses(unresolved),
             ..JobEffects::default()
         });
     };

@@ -265,11 +265,13 @@ pub(crate) const ACTIVATION_KEY_FACTS_PROVEN: &str =
 /// `World::return_membership`'s whole answer: the settled membership, plus
 /// what the local walk behind it measured. `is_alone`/`into_component`
 /// forward to `membership` so the five callers that want only that stay
-/// one-line; `visited` and `reads` are for the sixth, `SolveReturnComponent`,
-/// which both attributes the walk's cost to its own telemetry handle and
-/// subscribes to the reads that explain the answer's boundary. `reads` is a
-/// method, not a field: it is the one read set every exit of the solve uses,
-/// computed once from the walk's members, never from a second walk.
+/// one-line; `visited`, `reads`, and `unresolved_out_edges` are for the
+/// sixth, `SolveReturnComponent`, which attributes the walk's cost to its
+/// own telemetry handle, subscribes to the reads that explain the answer's
+/// boundary, and -- while membership is `Unknown` -- waits on the edges
+/// that still owe it an answer instead of concluding wait-free. `reads` and
+/// `unresolved_out_edges` are methods, not fields: each is computed once
+/// from the walk's members/membership, never from a second walk.
 pub(crate) struct ReturnDiscovery {
     pub(crate) membership: ReturnMembership,
     visited: u64,
@@ -294,7 +296,7 @@ impl ReturnDiscovery {
     pub(crate) fn members_len(&self) -> u64 {
         match &self.membership {
             ReturnMembership::Shared(component) => component.members.len() as u64,
-            ReturnMembership::Alone | ReturnMembership::Unknown => 0,
+            ReturnMembership::Alone | ReturnMembership::Unknown(_) => 0,
         }
     }
 
@@ -302,6 +304,21 @@ impl ReturnDiscovery {
     /// walk that found `membership` -- never a second walk.
     pub(crate) fn reads(&self, world: &World) -> Vec<FactKey> {
         super::return_membership::reads_of(world, &self.members)
+    }
+
+    /// The `CallSiteTargets` keys of every reached-but-Unresolved call site
+    /// this walk found, when membership settled to `Unknown`; empty
+    /// otherwise. An `Unknown` membership is not an answer, so the solve
+    /// that already owns this component waits on these edges' own SETTLED
+    /// movement rather than concluding wait-free -- each already carries a
+    /// revision (the Unresolved verdict itself), so waiting on their next
+    /// Current reading would be satisfied immediately and never actually
+    /// block.
+    pub(crate) fn unresolved_out_edges(&self) -> Vec<FactKey> {
+        match &self.membership {
+            ReturnMembership::Unknown(sites) => sites.iter().cloned().map(FactKey::CallSiteTargets).collect(),
+            ReturnMembership::Alone | ReturnMembership::Shared(_) => Vec::new(),
+        }
     }
 }
 
@@ -1149,7 +1166,7 @@ impl World {
     fn settle_return_membership(&self, membership: super::return_membership::Membership) -> ReturnMembership {
         let (mut members, unknowns) = match membership {
             super::return_membership::Membership::Alone => return ReturnMembership::Alone,
-            super::return_membership::Membership::Unknown => return ReturnMembership::Unknown,
+            super::return_membership::Membership::Unknown(sites) => return ReturnMembership::Unknown(sites),
             super::return_membership::Membership::Shared(members, unknowns) => (members, unknowns),
         };
         let owner = members
