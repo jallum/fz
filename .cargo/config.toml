@@ -1,0 +1,3 @@
+[term]
+# Cargo forwards quiet mode to the standard Rust test and doctest harnesses.
+quiet = true

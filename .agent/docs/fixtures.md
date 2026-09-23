@@ -81,6 +81,12 @@ Most fixtures are frontmatter-only.
 
 ## The compiler2 matrix
 
+The custom `libtest-mimic` harness defaults to terse output, matching the
+repository's `.cargo/config.toml` default for standard Rust tests. Cargo does
+not forward its quiet setting to `harness = false` targets, so the fixture
+harness sets its own default. Pass `-- --format pretty` to show individual trial
+names again. Failures retain their names and diagnostics in either format.
+
 Each applicable path becomes its own `cargo test` trial named
 `matrix::<fixture>::<path>`. `cargo test add1` filters to one fixture;
 `cargo test ::build` filters to one leg across all fixtures. `run_path` drives
