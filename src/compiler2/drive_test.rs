@@ -707,6 +707,241 @@ fn compiler2_inline_forwarding_preserves_return_flow() {
     );
 }
 
+/// A protocol callback has no lowered body of its own, but its return can be
+/// observed through the implementation selected at a real callsite. The
+/// static return graph must therefore carry this relation before the caller
+/// keys the implementation activation.
+#[test]
+fn compiler2_protocol_callback_return_flow_marks_constructed_argument_observable() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("protocol_callback_return_flow.fz".into()),
+        text: concat!(
+            "defprotocol ReturnThrough do\n",
+            "  def pick(value, fallback)\n",
+            "end\n\n",
+            "defimpl ReturnThrough, for: Integer do\n",
+            "  def pick(_value, fallback), do: fallback\n",
+            "end\n\n",
+            "def caller(x), do: ReturnThrough.pick(1, {:tag, x})\n",
+            "def main(), do: caller(3)\n",
+        )
+        .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(
+        compiler.drive(),
+        "the protocol implementation should resolve before observing caller return flow",
+    );
+
+    let caller = function_id(&functions, "caller", 1);
+    assert!(
+        compiler
+            .world()
+            .return_unknowns(caller)
+            .expect("caller return unknowns should settle")
+            .returns_input(0),
+        "the implementation returns a tuple containing caller/1's only input, so the callback return path must keep it observable",
+    );
+    let _ = root;
+}
+
+/// A provider may be known at scope time while its implementation module stays
+/// cold. That must not erase the return flow through the selected
+/// implementation, and explicitly loading the unrelated provider must leave
+/// that proven observability intact.
+#[test]
+fn compiler2_protocol_callback_return_flow_is_observable_with_known_or_loaded_impls() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    let root = world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
+    world.submit_code(
+        Some("protocol_callback_return_flow_sequencing.fz".into()),
+        concat!(
+            "defprotocol ReturnThrough do\n",
+            "  def pick(value, fallback)\n",
+            "end\n\n",
+            "defimpl ReturnThrough, for: Integer do\n",
+            "  def pick(_value, fallback), do: fallback\n",
+            "end\n\n",
+            "defimpl ReturnThrough, for: List do\n",
+            "  def pick(_value, _fallback), do: :discarded\n",
+            "end\n\n",
+            "def caller(x), do: ReturnThrough.pick(1, {:tag, x})\n",
+            "def main(), do: caller(3)\n",
+        )
+        .into(),
+    );
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "the Integer call should load only its selected implementation",
+    );
+
+    let protocol = world.reference_module(module_name("ReturnThrough"));
+    let integer = world.reference_module(module_name("Integer"));
+    let list = world.reference_module(module_name("List"));
+    let integer_impl = world.reference_protocol_impl_module(protocol, integer);
+    let list_impl = world.reference_protocol_impl_module(protocol, list);
+    assert!(
+        world.module_defined_revision(integer_impl).is_some(),
+        "the Integer receiver must load the selected implementation",
+    );
+    assert!(
+        world.protocol_impl_providers(protocol).contains(&(list, list_impl)),
+        "the List implementation should be known through the provider index before its body is demanded",
+    );
+    assert!(
+        world.module_defined_revision(list_impl).is_none(),
+        "an unrelated List implementation must remain unloaded",
+    );
+
+    let caller = world.reference_function(ModuleId::GLOBAL, "caller", 1);
+    assert!(
+        world
+            .return_unknowns(caller)
+            .expect("caller return unknowns should settle")
+            .returns_input(0),
+        "the selected Integer implementation returns the constructed fallback, even while the unrelated List provider stays cold",
+    );
+
+    assert!(
+        world.demand(Job::DefineModule(list_impl)),
+        "the known List implementation should be independently demandable"
+    );
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "loading the unrelated implementation should settle through the normal dispatch revision",
+    );
+    assert!(
+        world
+            .return_unknowns(caller)
+            .expect("caller return unknowns should remain settled")
+            .returns_input(0),
+        "loading a known unrelated provider cannot erase the selected implementation's return flow",
+    );
+    let _ = root;
+}
+
+/// The function whose own static return answer is requested is a body-backed
+/// program function, not an arbitrary transitive reference. Its first answer
+/// must therefore pull the ordinary body/skeleton chain before it can decide
+/// whether the constant return observes an input.
+#[test]
+fn compiler2_requested_return_skeleton_waits_for_its_body() {
+    let tel = ConfiguredTelemetry::new();
+    let publications = Rc::new(RefCell::new(Vec::<FactKey>::new()));
+    let observed_publications = Rc::clone(&publications);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, world, completion| {
+            if matches!(
+                completion.job,
+                Job::DeriveReturnSkeleton(_) | Job::DeriveReturnUnknowns(_)
+            ) {
+                observed_publications
+                    .borrow_mut()
+                    .extend(world.job_outputs(&completion.job));
+            }
+        },
+    );
+    let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    world.submit_code(
+        Some("late_discard_body.fz".into()),
+        "def discard(_value), do: 0\n".into(),
+    );
+    let discard = world.reference_function(ModuleId::GLOBAL, "discard", 1);
+
+    assert!(
+        world.demand(Job::DeriveReturnUnknowns(discard)),
+        "static return discovery should be demandable before a body"
+    );
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "the requested function's body and static return answer should settle together",
+    );
+    assert!(
+        world.return_skeleton(discard).is_some(),
+        "the requested answer must demand the known function's return skeleton",
+    );
+    assert!(
+        !world
+            .return_unknowns(discard)
+            .expect("the body-backed answer should settle")
+            .returns_input(0),
+        "the known constant-returning body proves its input is not observable",
+    );
+    let publications = publications.borrow();
+    let skeleton = publications
+        .iter()
+        .position(|fact| *fact == FactKey::ReturnSkeleton(discard))
+        .expect("the body chain must publish the requested return skeleton");
+    let unknowns = publications
+        .iter()
+        .position(|fact| *fact == FactKey::ReturnUnknowns(discard))
+        .expect("return unknowns must publish after the body chain");
+    assert!(
+        skeleton < unknowns,
+        "the first return answer cannot precede its skeleton"
+    );
+}
+
+#[test]
+fn compiler2_protocol_callback_return_skeleton_is_opaque_without_a_body_wait() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    let source = world.submit_code(
+        Some("bodyless_protocol_callback.fz".into()),
+        "defprotocol Bodyless do\n  def pass(value)\nend\n".into(),
+    );
+    assert!(world.demand(Job::ScopeCode(source)));
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "the protocol surface must register its bodyless callback before return discovery",
+    );
+    let protocol = world.reference_module(module_name("Bodyless"));
+    assert!(world.demand(Job::DefineModule(protocol)));
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "the defined protocol must publish its callback boundary",
+    );
+    let callback = world.reference_function(protocol, "pass", 1);
+    assert!(world.demand(Job::DeriveReturnUnknowns(callback)));
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "a protocol callback has no local body to wait for",
+    );
+    assert!(world.return_skeleton(callback).is_none());
+    assert!(
+        world
+            .return_unknowns(callback)
+            .expect("callback return answer should settle without a body")
+            .returns_input(0),
+    );
+    assert!(world.demand(Job::DeriveReturnSkeleton(callback)));
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "an explicitly requested callback skeleton is opaque rather than a body wait",
+    );
+    assert!(matches!(
+        world
+            .return_skeleton(callback)
+            .expect("callback return skeleton should settle")
+            .returns,
+        super::return_skeleton::Returns::Opaque
+    ));
+}
+
 #[test]
 fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
     let tel = ConfiguredTelemetry::new();
@@ -22095,7 +22330,7 @@ fn compiler2_native_program_publishes_construction_owned_callable_wrappers() {
 }
 
 #[test]
-fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_mint_histories() {
+fn activation_executables_jobs_facts_and_uses_share_one_order_across_display_collisions_and_mint_histories() {
     use crate::compiler2::semantic::SemanticOrd;
 
     let ordered = |non_empty_first: bool| {
@@ -22119,6 +22354,16 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
         assert_eq!(types.display(&list), types.display(&non_empty));
         let raw_order = list_key.signature < non_empty_key.signature;
 
+        let executables = [
+            ExecutableKey {
+                activation: list_key.clone(),
+                need: ExecutableNeed::Value,
+            },
+            ExecutableKey {
+                activation: non_empty_key.clone(),
+                need: ExecutableNeed::Value,
+            },
+        ];
         let jobs = [
             Job::AnalyzeActivation(list_key.clone()),
             Job::AnalyzeActivation(non_empty_key.clone()),
@@ -22151,7 +22396,20 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
         assert_ne!(job_order, std::cmp::Ordering::Equal);
         assert_ne!(fact_order, std::cmp::Ordering::Equal);
         assert_ne!(use_order, std::cmp::Ordering::Equal);
-        (raw_order, job_order, fact_order, use_order)
+        let executable_order = executables[0].semantic_cmp(&executables[1], &types);
+        assert_ne!(executable_order, std::cmp::Ordering::Equal);
+        assert_eq!(
+            executable_order,
+            executables[1].semantic_cmp(&executables[0], &types).reverse()
+        );
+        assert_eq!(executable_order, job_order);
+        let storage_order = types.cmp_ty(list, non_empty);
+        assert_ne!(storage_order, std::cmp::Ordering::Equal);
+        assert_eq!(storage_order, types.cmp_ty(non_empty, list).reverse());
+        (
+            raw_order,
+            [job_order, fact_order, use_order, executable_order, storage_order],
+        )
     };
 
     let list_first = ordered(false);
@@ -22161,9 +22419,8 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
         "the fixture must reverse raw activation-arrow order"
     );
     assert_eq!(
-        (list_first.1, list_first.2, list_first.3),
-        (non_empty_first.1, non_empty_first.2, non_empty_first.3),
-        "Job, FactKey, and FactUse must retain one semantic order"
+        list_first.1, non_empty_first.1,
+        "typed executable, job, fact, use, and storage orders must survive reversed mint histories"
     );
 }
 

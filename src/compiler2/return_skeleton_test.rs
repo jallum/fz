@@ -118,6 +118,7 @@ fn entry_shapes(skeleton: &FunctionSkeleton) -> Vec<Skeleton> {
     match &skeleton.returns {
         Returns::Entries(entries) => entries.values().cloned().collect(),
         Returns::Declared(ty) => panic!("expected walked entries, found a declared return {ty:?}"),
+        Returns::Opaque => panic!("expected walked entries, found an opaque provider return"),
     }
 }
 

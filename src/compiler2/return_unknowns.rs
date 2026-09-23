@@ -21,8 +21,9 @@
 //! A *position* is a function's whole return, one of its parameter slots,
 //! one of its own call sites' results, or an interior place inside a
 //! skeleton -- a layer read back out of a value whose own shape is still
-//! symbolic. Two kinds of edge connect them, and the difference between them
-//! is the whole discrimination:
+//! symbolic. Two structural kinds of edge connect them, and a third opaque
+//! may-flow edge records conservative observability without becoming part of
+//! the structural equation:
 //!
 //! * a *bare* edge is an alias or a projection -- `x = y`, `x = field 2 of
 //!   y`. A cycle of bare edges alone denotes a value entirely determined by
@@ -33,6 +34,9 @@
 //!   A cycle through one of those is productive: each turn wraps another
 //!   layer, so the solution is a recursive type and the position genuinely
 //!   is being solved.
+//! * an *opaque may-flow* edge crosses a bodyless or unavailable named call.
+//!   It reaches only positions referenced by actual arguments. It keeps those
+//!   inputs observable, but never supplies a branch or an SCC edge.
 //!
 //! So an UNKNOWN is a position on a cycle that crosses at least one
 //! constructor. That is how a helper joins a cycle it is not itself part of
@@ -89,6 +93,15 @@ use super::identity::FunctionId;
 use super::return_skeleton::{FunctionSkeleton, Returns, Skeleton};
 use super::semantic::ProjectStep;
 use super::types::{AddrStep, MapKey, Ty, Types};
+
+/// How one static position depends on another. Opaque flow preserves return
+/// observability without asserting a structural equation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PositionEdge {
+    Alias,
+    Constructor,
+    OpaqueMayFlow,
+}
 
 /// One position of the static system.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -174,6 +187,15 @@ fn collect_held(function: FunctionId, skeleton: &Skeleton, out: &mut Vec<Positio
     }
 }
 
+/// Every referenced position an opaque return may carry through one actual
+/// argument. Constructors only locate their held references here; they do not
+/// make the opaque boundary a structural constructor edge.
+fn held_positions(function: FunctionId, skeleton: &Skeleton) -> Vec<Position> {
+    let mut out = Vec::new();
+    collect_held(function, skeleton, &mut out);
+    out
+}
+
 /// Whether `branch`, standing at `position`, holds `child` only by reading it
 /// straight back out of `position`. `walk({:go, acc}, n)` calling
 /// `walk({:go, acc}, n - 1)` puts `{:go, field 1 of slot 0}` at slot 0: each
@@ -206,10 +228,11 @@ pub(crate) struct FunctionUnknowns {
     /// walk.
     pub(crate) returns: bool,
     /// One entry per semantic input: whether this function's published
-    /// return IS, CONTAINS, or is a PROJECTION OF the value that arrives
-    /// there. The answer is reachability from `Return(f)` in the position
-    /// graph, so it composes across call sites on its own -- a function that
-    /// returns `g(x)` inherits whatever `g` does with its parameter.
+    /// return is structurally built from, or may flow from, the value that
+    /// arrives there. The answer is reachability from `Return(f)` in the
+    /// position graph, so it composes across call sites on its own -- a
+    /// function that returns `g(x)` inherits whatever `g` does with its
+    /// parameter, including an opaque `g` boundary's actual arguments.
     pub(crate) returned_inputs: Box<[bool]>,
     /// One entry per call site, by WHERE the call sits in this body.
     ///
@@ -231,11 +254,9 @@ impl FunctionUnknowns {
     /// Whether a value arriving at `slot` can be read back out of what this
     /// function returns.
     ///
-    /// A function with no lowered definition -- an extern, a runtime
-    /// primitive -- has no skeleton for `derive` to walk, so its answer is the
-    /// empty one while its input demand is still sized from its clauses.
-    /// Nothing is known about such a body, so every slot it has is one the
-    /// return can be read back out of.
+    /// An answer with no coordinate is unavailable rather than a proven empty
+    /// return, so its caller keeps the input conservatively. Explicit opaque
+    /// boundaries instead publish their arity and opaque may-flow edges.
     pub(crate) fn returns_input(&self, slot: usize) -> bool {
         self.returned_inputs.get(slot).copied().unwrap_or(true)
     }
@@ -433,8 +454,9 @@ struct PositionGraph<'a> {
     /// it guards an edge out of the neighbour that built it, never one out
     /// of `n`.
     branches: Vec<Vec<(FunctionId, Skeleton, bool)>>,
-    /// `edges[n]` holds `(target, guarded)` for every position `n` depends on.
-    edges: Vec<Vec<(usize, bool)>>,
+    /// `edges[n]` holds every position `n` depends on and the evidence for
+    /// that dependency.
+    edges: Vec<Vec<(usize, PositionEdge)>>,
 }
 
 impl<'a> PositionGraph<'a> {
@@ -598,7 +620,7 @@ impl<'a> PositionGraph<'a> {
                     .collect();
                 for child in children {
                     let target = self.node(child);
-                    self.edge(next, target, true);
+                    self.edge(next, target, PositionEdge::Constructor);
                 }
                 next += 1;
             }
@@ -608,9 +630,9 @@ impl<'a> PositionGraph<'a> {
         }
     }
 
-    fn edge(&mut self, from: usize, to: usize, guarded: bool) {
-        if !self.edges[from].contains(&(to, guarded)) {
-            self.edges[from].push((to, guarded));
+    fn edge(&mut self, from: usize, to: usize, kind: PositionEdge) {
+        if !self.edges[from].contains(&(to, kind)) {
+            self.edges[from].push((to, kind));
         }
     }
 
@@ -638,10 +660,19 @@ impl<'a> PositionGraph<'a> {
                 // entries stay apart in the skeleton; the static question is
                 // asked of all of them at once, because which ones an
                 // activation reaches is not a static fact.
-                if let Returns::Entries(entries) = &skeleton.returns {
-                    for entry in entries.values() {
-                        self.expand_into(from, *function, entry, &mut out, &mut seen);
+                match &skeleton.returns {
+                    Returns::Entries(entries) => {
+                        for entry in entries.values() {
+                            self.expand_into(from, *function, entry, &mut out, &mut seen);
+                        }
                     }
+                    Returns::Opaque => {
+                        for slot in 0..skeleton.input_len {
+                            let target = self.node(Position::Slot(*function, slot));
+                            self.edge(from, target, PositionEdge::OpaqueMayFlow);
+                        }
+                    }
+                    Returns::Declared(_) => {}
                 }
             }
             Position::Slot(function, slot) => {
@@ -651,14 +682,29 @@ impl<'a> PositionGraph<'a> {
                 }
             }
             Position::Result(function, callsite) => {
-                // What a call site yields is what its callee returns: one
-                // bare edge, and no shape of its own.
-                if let Some((callee, _)) = self.named_callee(*function, *callsite) {
+                // A present return description aliases the callee return. An
+                // unavailable callee instead may flow from positions its
+                // actual arguments reference. That evidence is deliberately
+                // not an alias or constructor in the return equation system.
+                let Some((callee, _)) = self.named_callee(*function, *callsite) else {
+                    return out;
+                };
+                if self.skeletons.contains_key(&callee) {
                     let target = self.node(Position::Return(callee));
-                    self.edge(from, target, false);
+                    self.edge(from, target, PositionEdge::Alias);
                     for (branch_function, branch, _) in self.branches[target].clone() {
                         if seen.insert((branch_function, branch.clone())) {
                             out.push((branch_function, branch, false));
+                        }
+                    }
+                } else {
+                    let Some(arguments) = self.skeletons[function].arguments.get(callsite) else {
+                        return out;
+                    };
+                    for argument in arguments {
+                        for position in held_positions(*function, argument) {
+                            let target = self.node(position);
+                            self.edge(from, target, PositionEdge::OpaqueMayFlow);
                         }
                     }
                 }
@@ -682,14 +728,13 @@ impl<'a> PositionGraph<'a> {
         out
     }
 
-    /// Which of `function`'s input slots its own return is built from.
+    /// Which of `function`'s input slots its own return may depend on.
     ///
-    /// A return is built from a slot when the slot's position is reachable
-    /// from `Return(function)` over the graph's edges. Both edge kinds count:
-    /// a bare edge means the return IS that position or a projection of it,
-    /// and a guarded edge means it is wrapped inside a constructor the return
-    /// hands out. Reaching the slot either way means a caller can read the
-    /// value back, so its type is observable and the key must keep it.
+    /// All three edge kinds count for reachability from `Return(function)`:
+    /// an alias names a position or projection, a constructor holds a
+    /// position, and opaque may-flow preserves a possibility without proving
+    /// either structural relation. If a caller might recover the input from
+    /// the return, the key must preserve its type.
     ///
     /// Composition across call sites needs no second walk. `Return(f)` reaches
     /// `Result(f, cs)`, which reaches `Return(g)`, which reaches `Slot(g, t)`,
@@ -746,7 +791,7 @@ impl<'a> PositionGraph<'a> {
                     return;
                 };
                 let target = self.node(position);
-                self.edge(from, target, false);
+                self.edge(from, target, PositionEdge::Alias);
                 for (branch_function, branch, _) in self.branches[target].clone() {
                     if seen.insert((branch_function, branch.clone())) {
                         out.push((branch_function, branch, false));
@@ -799,7 +844,11 @@ pub(crate) fn derive(skeletons: &HashMap<FunctionId, Rc<FunctionSkeleton>>, func
     graph.build(seeds);
 
     let components = super::scc::strongly_connected_components((0..graph.nodes.len()).collect::<Vec<_>>(), |node| {
-        graph.edges[*node].iter().map(|(target, _)| *target).collect::<Vec<_>>()
+        graph.edges[*node]
+            .iter()
+            .filter(|(_, kind)| *kind != PositionEdge::OpaqueMayFlow)
+            .map(|(target, _)| *target)
+            .collect::<Vec<_>>()
     });
     let mut unknown: HashSet<Position> = HashSet::new();
     for members in components {
@@ -810,7 +859,7 @@ pub(crate) fn derive(skeletons: &HashMap<FunctionId, Rc<FunctionSkeleton>>, func
         let productive = members.iter().any(|node| {
             graph.edges[*node]
                 .iter()
-                .any(|(target, guarded)| *guarded && nodes.contains(target))
+                .any(|(target, kind)| *kind == PositionEdge::Constructor && nodes.contains(target))
         });
         if !productive {
             continue;

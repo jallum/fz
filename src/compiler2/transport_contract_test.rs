@@ -136,16 +136,16 @@ const TRANSPORT_POSITIONS: &[(&str, &str)] = &[
 
 const SEAM_FACTS: &[(&str, &str)] = &[];
 // Named operator references are construction edges, so their target keying
-// prerequisites are ordinary causal work. Finality now propagates through
-// their concluded readers, deleting three readiness-only no-op starts. The
-// count excludes the three return families, which have their own row below:
+// prerequisites are ordinary causal work. The count excludes the three
+// return families, which have their own row below:
 // a census that silently absorbs a new family cannot show an explosion in
 // job counts.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 409;
-// The return families' share of the same interp run.
+const EXPECTED_00181_ORDINARY_JOB_COMPLETIONS: usize = 407;
+// Body-backed return discovery includes blocked skeleton attempts and replays
+// as transitively named definitions arrive; it does not count only publications.
 const EXPECTED_00181_RETURN_JOB_STOPS: ReturnJobRuns = ReturnJobRuns {
-    skeletons: 16,
-    unknowns: 32,
+    skeletons: 22,
+    unknowns: 40,
     component_solves: 0,
 };
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
@@ -3409,10 +3409,10 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         return_job_stops, EXPECTED_00181_RETURN_JOB_STOPS,
         "the return families must stay at their measured share of this interp run",
     );
-    let no_dump_job_fires = no_dump_jobs.total_stops() - return_job_stops.total() as usize;
+    let ordinary_job_completions = no_dump_jobs.total_stops() - return_job_stops.total() as usize;
     assert_eq!(
-        no_dump_job_fires, EXPECTED_00181_NO_DUMP_JOB_STARTS,
-        "product no-dump interp must retain only the intentional ordinary arithmetic-helper work; got {no_dump_job_fires}"
+        ordinary_job_completions, EXPECTED_00181_ORDINARY_JOB_COMPLETIONS,
+        "product no-dump interp must retain only the intentional ordinary arithmetic-helper completions; got {ordinary_job_completions}"
     );
 
     let mut world = World::new();
@@ -3467,7 +3467,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
     assert_eq!(*finished_producer_pokes.borrow(), Some(executable_fact_pokes));
 
     assert!(
-        no_dump_job_fires > 0,
+        ordinary_job_completions > 0,
         "public no-dump interp proof should exercise the product-built BackendProgram"
     );
 }
