@@ -549,6 +549,19 @@ Run the whole test suite:
 cargo test --workspace
 ```
 
+For quieter output, use [cargo-nextest](https://nexte.st/docs/installation/)
+and run doctests separately:
+
+```sh
+cargo nextest run --workspace --show-progress none --color never
+cargo test --workspace --doc
+```
+
+The repository's nextest defaults suppress individual passing results and
+successful-test output. Failed tests print their captured diagnostics immediately,
+once, and the final summary lists failures. Avoid `--nocapture` when keeping
+output compact. Add `--no-fail-fast` to finish the suite after a failure.
+
 Fixture tests run small `.fz` programs and compare their output
 across every execution path that applies (JIT, interpreter, AOT
 executable, REPL script mode). A fixture is more than a sample file
