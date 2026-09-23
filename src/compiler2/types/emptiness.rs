@@ -358,11 +358,16 @@ pub(crate) struct ListDenotation {
 /// removes nothing recognizable: it survives only when it removes some of
 /// `elem` and not all of it.
 ///
-/// `elem` and `minus` are plain descriptors, materialized once here: unlike
-/// the recursion above, this is the rendering boundary the canonical display
-/// reads from, so what it needs is content, not identity.
+/// `elem` keeps the operand the positive fold met to: a `Ty` when a single
+/// positive factor supplies the whole fragment, so the renderer that reads
+/// this denotation can bind a `Ty` that re-enters an active type the same way
+/// any other reference to it would. A second positive factor always forces
+/// the fold to intersect, which always synthesizes -- even two factors
+/// naming the same type produce a built descriptor once a second one has to
+/// meet the first. `minus` is always plain descriptors: a subtraction is
+/// never one of the fold's own operands, only a cut computed from them.
 pub(crate) struct NonEmptyLists {
-    pub(crate) elem: Descr,
+    pub(crate) elem: Operand,
     pub(crate) minus: Vec<Descr>,
 }
 
@@ -416,10 +421,7 @@ pub(crate) fn list_denotation(cx: TyCtx<'_>, c: &Conj<ListSig>, memo: &mut Memo)
     }
     Some(ListDenotation {
         holds_empty,
-        non_empty: Some(NonEmptyLists {
-            elem: elem.as_descr(cx).clone(),
-            minus,
-        }),
+        non_empty: Some(NonEmptyLists { elem, minus }),
     })
 }
 

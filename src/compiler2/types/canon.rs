@@ -37,7 +37,7 @@ use super::axis;
 use super::bits::{BASIC_NAMES, BasicBits};
 use super::conj::Conj;
 use super::descr::{Descr, Structure};
-use super::emptiness::{self, Memo, NonEmptyLists};
+use super::emptiness::{self, Memo, NonEmptyLists, Operand};
 use super::format::brand_refinement;
 use super::render_bindings::{BindingVisit, RenderBindings};
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, TupleSig};
@@ -172,6 +172,9 @@ impl<'a> TyCanon<'a> {
     /// built itself — a list clause's intersected element fragment — never
     /// reached the interner, so it gets them here, from the same functions.
     fn descr_body(&mut self, cx: TyCtx<'_>, d: &Descr, provenance: Provenance) -> String {
+        // A list clause's `Operand::Built` element carries no `Ty` of its own
+        // to bind, so this lookup is the only thing that catches one equal to
+        // an active type's descriptor and binds it instead of re-entering it.
         if matches!(provenance, Provenance::Synthesized)
             && let Some(ty) = self.active_descriptors.get(d)
         {
@@ -276,10 +279,11 @@ impl<'a> TyCanon<'a> {
         } else {
             "non_empty_list"
         };
-        let mut factors = vec![format!(
-            "{head}({})",
-            self.descr_body(cx, &elem, Provenance::Synthesized)
-        )];
+        let elem_rendered = match elem {
+            Operand::Ty(t) => self.body(cx, t),
+            Operand::Built(d) => self.descr_body(cx, &d, Provenance::Synthesized),
+        };
+        let mut factors = vec![format!("{head}({elem_rendered})")];
         for cut in &minus {
             let rendered = self.descr_body(cx, cut, Provenance::Synthesized);
             factors.push(format!("not(non_empty_list({rendered}))"));
