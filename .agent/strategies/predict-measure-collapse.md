@@ -1,174 +1,179 @@
 # Predict, Measure, Collapse
 
-A repair needs to explain two things: why the result is correct, and why the
-system does exactly the work it does. A compiler can produce the right type
-while repeatedly computing and discarding intermediate answers. Checking only
-its final output misses that defect.
+Use this strategy when the compiler produces an incorrect answer, performs
+unexplained work, or has several mechanisms answering the same question.
 
-Use this strategy when work is unexplained or several mechanisms appear to
-answer the same question. It extends the
-[Output Contract Loop](output-contract-loop.md): reduce the problem, derive the
-answer, predict the work, and compare both with a measurement. Collapse means
-moving each decision to one owner and removing the mechanisms it replaces.
+The loop extends the [Output Contract Loop](output-contract-loop.md): solve a
+small example, predict the work needed to produce its answer, then measure both.
+Collapse the competing mechanisms into one owner for each decision.
 
-## Start with an answer you can derive
+## Goal and signal
 
-Reduce the failing program until you can solve it by hand. Keep the feature
-that causes the failure; remove unrelated computation. The original program
-remains a later check that the repair works in context.
+Produce the correct answer with every step of work accounted for.
 
-Write the intended answer beside the reduced fixture. For compiler work, include
-which activations exist, what distinguishes their keys, and what each returns.
-An activation is a function specialized for a particular argument key. These
-identities matter: two activations with the same return type can still represent
-unnecessary duplication.
+The signal includes:
 
-For example, suppose a function returns either an integer or a list containing
-its recursive result. Its return satisfies:
+- which activations exist, what keys distinguish them, and what each returns
+- which jobs run, in what order, and how often per function
+- which facts change, what values they publish, and which jobs they wake
 
-```text
-R = int | [R]
-```
+A correct final type can hide repeated intermediate answers. A low job count can
+hide work that never ran. Check the answer and the work together.
 
-The answer is a recursive type: an integer, or a list whose elements have that
-same type. The notation `μX. int | [X]` gives this infinite family a finite
-name. Successive approximations such as `int`, `int | [int]`, and
-`int | [int | [int]]` each describe only part of it.
+## The Loop
 
-This paper answer is the specification. If the intended model cannot express
-it, record that limitation. Replacing it with a broader answer merely to make
-the computation stop leaves the original requirement unmet.
+1. Reduce the failure.
 
-## Predict the work before changing the implementation
+Cut the program down until it can be solved by hand. Preserve the decision that
+fails; remove unrelated computation. Keep the original program for checking
+that the eventual repair works in context.
 
-Starting from the paper answer, work backwards through its prerequisites.
-Identify the component that owns each decision, the facts it needs, and the
-components that consume its answer. Examine existing code that already answers
-the question before introducing another mechanism.
+2. Solve it on paper.
 
-For the reduced fixture, write the expected sequence of jobs and publications,
-including counts per function. Account for waits and reruns: what is missing,
-who supplies it, and what change makes the waiting job run again? Record the
-values published as well as their counts.
+Write the equations and their solution beside the fixture. State which
+activations exist, their keys, and their returns. This is the specification.
 
-For example, a design might say that a solver publishes a return only after it
-has the complete recursive equation. Predict how the equation becomes complete
-and which publication follows. If a trace contains two earlier return
-publications, the final correct type does not explain them. Find their owners
-and the inputs each owner used.
+If the intended model cannot represent the answer, record that limit. Broadening
+the answer to make the computation stop does not meet the specification.
 
-Keep the prediction unchanged during the comparison. It can be wrong, but a
-revision needs a written reason supported by evidence. Copying measured counts
-into the expectation would remove the independent check.
+3. Predict the succession.
 
-## Measure, then distinguish the explanations
+Before building, write the expected jobs and publications in order, with counts
+per function. Work backwards from the answer through its prerequisites.
 
-Run the fixture through the production boundary. Capture telemetry and the
-relevant dumps, along with the revision and commands needed to reproduce them.
-[Profile a Compilation](profile-a-compilation.md) explains how to trace work to
-the events that caused it.
+For each decision, name:
 
-Compare the result and the sequence of work with the prediction. For every
-mismatch, identify the first decision that differs. Extra work can expose a
-second owner, an incomplete set of dependencies, or a job started before its
-inputs are ready. Missing work can mean that a replacement was never connected
-to its consumers.
+- the component that owns it
+- the facts it needs and who supplies them
+- the consumers of its answer
+- any wait or rerun, and the change that causes it
 
-When two explanations fit, design a probe that distinguishes them. Suppose a
-job runs twice. One explanation is that it first waits for a missing input;
-another is that an unchanged input unnecessarily wakes it. Record the inputs
-available on each run and the revision that caused the wake. Those observations
-separate the explanations; the count alone cannot.
+Examine existing authorities and analogous code before introducing a new one.
+Keep the prediction fixed during the comparison. If it proves wrong, revise it
+with a written explanation supported by evidence.
 
-Apply the same standard to a rejected idea. If a combined change fails, test
-the base, each change alone, and both together. Run the failing fixture alone
-and check the other configurations' logs. A failure present under both designs
-cannot distinguish them. Preserve the evidence, then revert temporary probe
-edits.
+4. Measure the fixture.
 
-## Turn diagnoses into bounded repairs
+Run through the production boundary with telemetry and the relevant dumps.
+Record the revision, commands, and results. Use
+[Profile a Compilation](profile-a-compilation.md) to trace work to its cause.
 
-Separate diagnosis from implementation. Give each reduced case a fresh reader
-who establishes the paper answer and tests competing explanations. The report
-states what was observed, what is inferred, and what remains unmeasured.
+Compare the answer and each step of work with the prediction. Include published
+values: a count of two return definitions does not say whether they agreed.
 
-Combine the reports by the decision that needs repair. Several failing tests
-may expose one missing distinction in the data model. That is one repair group,
-with one builder and a prediction held by the person coordinating the work.
-Each builder targets the group's reduced fixture; one builder does not take on
-all remediation groups at once.
+5. Explain every divergence.
 
-For example, a missing graph edge and a consumer that treats a missing answer
-as “definitely absent” may require one change. Recording the edge while leaving
-that interpretation intact can move the defect to the next layer. Changes that
-need each other to preserve the contract belong in the same group.
+Find the first decision that differs. Check for a second owner, missing
+dependencies, an unused replacement, or work begun before its inputs are ready.
 
-The handoff brief contains:
+When two explanations fit, run a probe that separates them. A job running twice
+might have waited for a missing input, or been woken by an unchanged one. Record
+the inputs on each run and the revision that caused the wake; the count alone
+cannot distinguish these causes.
 
-- The reduced fixture and its paper answer.
-- The base revision, reproduction commands, measurements, and separating probes.
-- The decision's owner, the data carrying its answer, and its consumers.
-- The predicted result and work, the mechanisms to remove, and acceptance tests.
-- Any unresolved question, explicitly marked as unmeasured.
+Apply the same test to a refutation. Split combined edits, run the failure alone,
+and compare the base, each edit alone, and both together. Check the other
+configurations' logs before blaming a design. Preserve the evidence and revert
+the temporary probes.
 
-Represent the groups as `bw` tickets with dependencies. Each atomic change has
-one ticket, one commit, and one close. The builder first writes a failing test
-of the paper answer, then repairs the data model so that answer follows from it.
+6. Group the repairs, then build.
 
-Every new fact needs a production consumer. Every new subscription needs an
-account of what can wake it. For example, reading a shared fact contributed by
-many callers may cause an edit to one caller to rerun work for unrelated callers.
-Test that effect as well as the reduced fixture's correctness.
+Keep diagnosis separate from implementation. Give each reduced case a fresh
+reader who establishes the paper answer and tests competing explanations. The
+report separates observations, inferences, and unmeasured claims.
 
-## Measure the deletion itself
+Combine reports that point to the same decision into one repair group. For
+example, adding a missing graph edge may also require changing a consumer that
+reads missing evidence as “definitely absent.” If those changes need each other
+to preserve the contract, they are one group.
 
-A replacement is complete when it carries the responsibilities of the old
-mechanism and the old mechanism is gone. Calling a new helper while the old
-analysis still runs does not establish that the analysis can be removed.
+Give each group one builder and its reduced fixture as the target. The
+coordinator holds the prediction. The brief includes:
 
-Keep a removal ledger in the working ticket or brief. For each mechanism, record
-its question, the surviving owner and consumers, the full deletion to measure,
-the result, and the ticket responsible for finishing it. A row closes when the
-code and stale documentation are gone.
+- the fixture and paper answer
+- the base revision, reproduction commands, and probe results
+- the surviving owner, the data carrying its answer, and its consumers
+- the predicted work, removals, acceptance tests, and unresolved questions
 
-To discover dependents, temporarily rename a definition without updating its
-callers—for example, prefix its name with an underscore—and compile. The errors
-identify references that need attention. Search source, tests, and agent guidance
-with `rg` as well. Remove the temporary rename before committing. No remaining
-references establishes that the named mechanism is gone; behavioral tests
-establish that its necessary responsibilities survived.
+Use `bw` tickets in dependency order: one atomic change, one commit, one close.
+The builder first writes a failing test of the paper answer, then repairs the
+data model so the answer follows from it.
 
-If the full deletion makes a test fail, reduce that failure and determine which
-responsibility was lost. Move it to the correct owner. Keeping the old mechanism
-behind a flag leaves the two owners in place.
+7. Measure the full deletion.
 
-Preserve each test's intent. A test that only requires a deleted implementation
-detail can go; a test of valid behavior needs to remain or be restated. A work
-count with an obsolete name may only need renaming. Update the documentation
-with the deletion so it describes the implementation a reader will actually find.
+Remove the mechanism the design replaces and run the fixture. Swapping one leaf
+while the old analysis keeps running does not prove that analysis is redundant.
 
-## Close the gap, then widen the checks
+Keep a removal ledger in the ticket or brief. Each row names the mechanism, its
+question, the surviving owner and consumers, the measured deletion result, and
+the ticket responsible for finishing it.
 
-First reproduce the predicted answer and work on the reduced fixture. Then run
-neighboring cases, the original program, and the required suite through the
-relevant execution paths. Compare against the actual base revision using test
-names, not just totals: fixing one test and breaking another leaves the total
-unchanged. Record hangs and assertions hidden behind earlier failures separately.
-An interrupted run does not establish a passing result.
+To find dependents, temporarily rename a definition without updating callers
+—for example, prefix it with an underscore—and compile. The errors form a
+worklist. Search source, tests, and agent guidance with `rg` as well. Remove the
+rename probe before committing.
 
-If a measurement remains unexplained, preserve the trace and return to diagnosis.
-Increasing a budget, adding a retry, or broadening the answer cannot explain the
-mismatch. A lower work count also needs scrutiny: the intended computation may
-have stopped running. Change an expected count only with a causal explanation;
-a raised count requires authorization.
+A failing deletion exposes a responsibility to investigate and place with the
+correct owner. Keeping the old path behind a flag leaves the repair unfinished.
+Close the ledger row when the code and stale documentation are gone and tests
+prove the necessary behavior survived.
 
-Completion means the result and work match the justified prediction, each
-replacement has real consumers, obsolete mechanisms are removed, and required
-checks pass. Remove temporary probes and scaffolding. Any authorized scaffolding
-that remains needs a removal ticket. Documentation states the built behavior.
+8. Widen the checks.
+
+After the reduced fixture matches, run neighboring cases, the original program,
+and the required suite across relevant execution paths. Compare exact failing
+test names against the actual base revision. Fixing one test and breaking another
+leaves the total unchanged.
+
+Record hangs and checks hidden behind earlier assertions separately. An
+interrupted run is incomplete evidence. Test effects on unrelated work too: a
+shared fact with many publishers can wake readers when an unrelated caller edits.
+
+## Tiny Walkthrough
+
+Suppose a function returns an integer or a list containing its recursive result.
+
+1. Paper answer: `R = int | [R]`, written finitely as `μX. int | [X]`. The `X`
+   refers back to the same type.
+2. Prediction: for a design where one solver owns the complete equation, write
+   how its inputs become ready and which return publication follows.
+3. Measurement: the final type agrees, but the trace also publishes `int` and
+   then `int | [int]` before reaching it.
+4. Probe: record who published each answer and which inputs it used. Determine
+   whether another publisher remains or the solver saw an incomplete equation.
+5. Repair: establish the intended owner and its prerequisites; measure with the
+   displaced mechanism deleted.
+6. Test: assert the recursive answer and the justified work counts together.
+
+## Heuristics
+
+- Every derived fact names a production consumer. A fact nobody reads has not
+  replaced the mechanism still doing the work.
+- A failed implementation does not by itself disprove its design. Isolate the
+  failure before rejecting the idea.
+- Preserve test intent. Delete tests of obsolete behavior; restate valid tests
+  around the surviving model. An obsolete name may only need renaming.
+- An unexpectedly lower count needs explanation too. The intended work may have
+  stopped running.
+- If the trace cannot explain a mismatch, preserve it and return to diagnosis.
+  A wider answer, larger budget, retry, or changed golden cannot explain it.
+
+## Gates
+
+The strategy is being followed well when:
+
+- the paper answer and work prediction precede implementation
+- every mismatch has a measured cause or a documented correction to the prediction
+- replacements have production consumers and displaced mechanisms are absent
+- tests prove both the result and the work through the production boundary
+- required checks pass and documentation describes the built behavior
+- temporary probes are removed; authorized retained scaffolding has removal tickets
 
 Nothing lands newly failing against a green base. Partial progress on a failing
 base requires prior authorization, a strictly shorter failure list, no newly
-failing tests, and every remaining failure named verbatim in the commit. Record
-new defects as tickets: handle blockers first and place other discoveries at the
-end of the epic. Unmeasured work remains visible until it is measured.
+failing tests, and every remaining failure named verbatim in the commit. A raised
+work pin requires a causal explanation and authorization; changing the expected
+count to match a run is not evidence.
+
+New defects get tickets: blockers first, other discoveries at the end of the
+epic. Unmeasured claims remain explicitly unmeasured.
