@@ -103,17 +103,19 @@ pub(crate) enum Membership {
     Alone,
     /// A call site out of this activation has named no target yet. What it
     /// reaches may join a system, so whether this return is shared is still
-    /// to be said and nobody may publish it meanwhile.
-    Unknown,
+    /// to be said and nobody may publish it meanwhile. Carries every such
+    /// call site the walk found reached but unresolved: this is not a
+    /// conclusion, it is what a solve still owed this answer waits on.
+    Unknown(Vec<CallSiteKey>),
     /// The activations this one solves its return with, and the positions
     /// that solve is over.
     Shared(Vec<ActivationKey>, ComponentUnknowns),
 }
 
 /// The result of one local walk: every activation that JOINED the
-/// component (`members`), the slots found along the way, whether it met a
-/// call site that has reached but not yet named a target (`unknown_edge`)
-/// or a call that returns to an activation already on the walk
+/// component (`members`), the slots found along the way, every call site
+/// that has reached but not yet named a target (`unresolved`), whether it
+/// met a call that returns to an activation already on the walk
 /// (`self_edge`), and every activation the walk TOUCHED regardless of
 /// whether it joined (`visited`). `visited` is `members` plus the `Callers`
 /// candidates `walk_in_edges` examined and ruled back out -- a stale entry
@@ -125,7 +127,7 @@ struct Walk {
     members: Vec<ActivationKey>,
     visited: Vec<ActivationKey>,
     slots: Vec<(ActivationKey, usize)>,
-    unknown_edge: bool,
+    unresolved: Vec<CallSiteKey>,
     self_edge: bool,
 }
 
@@ -218,10 +220,11 @@ fn membership_of(world: &World, seed: &ActivationKey, walk: Walk) -> Membership 
     // says so rather than reporting the set as far as it goes: a partial
     // system that was published would have to be withdrawn when the edge
     // named what it reaches.
-    match (walk.unknown_edge, owes || walk.members.len() > 1 || walk.self_edge) {
-        (true, _) => Membership::Unknown,
-        (false, true) => Membership::Shared(walk.members, ComponentUnknowns { slots: walk.slots }),
-        (false, false) => Membership::Alone,
+    let shared = owes || walk.members.len() > 1 || walk.self_edge;
+    match (walk.unresolved.is_empty(), shared) {
+        (false, _) => Membership::Unknown(walk.unresolved),
+        (true, true) => Membership::Shared(walk.members, ComponentUnknowns { slots: walk.slots }),
+        (true, false) => Membership::Alone,
     }
 }
 
@@ -233,7 +236,7 @@ fn membership_of(world: &World, seed: &ActivationKey, walk: Walk) -> Membership 
 fn walk(world: &World, seed: &ActivationKey) -> Walk {
     let mut members = vec![seed.clone()];
     let mut slots: Vec<(ActivationKey, usize)> = Vec::new();
-    let mut unknown_edge = false;
+    let mut unresolved: Vec<CallSiteKey> = Vec::new();
     let mut self_edge = false;
     let mut rejected: Vec<ActivationKey> = Vec::new();
     let mut next = 0;
@@ -245,7 +248,7 @@ fn walk(world: &World, seed: &ActivationKey) -> Walk {
             &member,
             &mut members,
             &mut slots,
-            &mut unknown_edge,
+            &mut unresolved,
             &mut self_edge,
         );
         walk_in_edges(world, &member, &mut members, &mut slots, &mut self_edge, &mut rejected);
@@ -260,7 +263,7 @@ fn walk(world: &World, seed: &ActivationKey) -> Walk {
         members,
         visited,
         slots,
-        unknown_edge,
+        unresolved,
         self_edge,
     }
 }
@@ -286,13 +289,14 @@ fn static_callsites(world: &World, activation: &ActivationKey) -> Vec<CallSiteId
 /// Every call `member` itself makes that still owes its result or an
 /// argument to a solve: for each of its own unsettled static call sites,
 /// its current `CallSiteTargets` says whether the far end is unnamed
-/// (`unknown_edge`) or named (an edge into whichever activation it names).
+/// (recorded into `unresolved`) or named (an edge into whichever activation
+/// it names).
 fn walk_out_edges(
     world: &World,
     member: &ActivationKey,
     members: &mut Vec<ActivationKey>,
     slots: &mut Vec<(ActivationKey, usize)>,
-    unknown_edge: &mut bool,
+    unresolved: &mut Vec<CallSiteKey>,
     self_edge: &mut bool,
 ) {
     let Some(unknowns) = world.return_unknowns(member.function) else {
@@ -316,7 +320,7 @@ fn walk_out_edges(
         let targets = match world.callsite_target_resolution(&key) {
             None => continue,
             Some(CallSiteResolution::Unresolved) => {
-                *unknown_edge = true;
+                unresolved.push(key);
                 continue;
             }
             Some(CallSiteResolution::Resolved(targets)) => targets,

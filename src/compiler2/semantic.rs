@@ -791,7 +791,10 @@ pub(crate) enum ReturnMembership {
     /// whether its return is shared is still to be said. No job may publish
     /// the return while this stands: whoever published it would have to
     /// withdraw it the moment the site named a target that joins a system.
-    Unknown,
+    /// Carries every reached-but-unresolved call site the walk found -- what
+    /// a job already holding this component owed must wait on, rather than
+    /// concluding wait-free and retracting what it already published.
+    Unknown(Vec<CallSiteKey>),
     /// The system this activation's return is solved with, published by the
     /// component's canonical owner.
     Shared(ReturnComponent),
@@ -802,7 +805,7 @@ impl ReturnMembership {
     pub(crate) fn into_component(self) -> Option<ReturnComponent> {
         match self {
             Self::Shared(component) => Some(component),
-            Self::Alone | Self::Unknown => None,
+            Self::Alone | Self::Unknown(_) => None,
         }
     }
 

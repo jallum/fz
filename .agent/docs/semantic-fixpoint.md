@@ -834,13 +834,26 @@ dependency: its `ReturnType` is `reads`, never `waits`, mirroring
 solve's bottom so far, not a block; the read is what re-wakes the solve once
 that external's evidence rises. Waiting on it instead would deadlock the
 moment two components' owners depended on each other's members. The solve
-therefore only ever `waits` on a member's own `ReturnSolveInputs`, the part
-of that member's analysis its equations actually read, rather than the whole
-`ActivationAnalyzed` -- a member's analysis moving somewhere the skeleton
-never observes (an addressed call site's result type, an unreachable entry)
-does not wake this solve. It publishes every member's `ReturnType` in one
-atomic conclusion, so a reader waiting on any one member sees the whole
-component settle together.
+`waits` on two things, never more. One is a member's own `ReturnSolveInputs`,
+the part of that member's analysis its equations actually read, rather than
+the whole `ActivationAnalyzed` -- a member's analysis moving somewhere the
+skeleton never observes (an addressed call site's result type, an
+unreachable entry) does not wake this solve. The other is, when
+`World::return_membership` answers `Unknown` rather than naming a component,
+the reached-but-Unresolved `CallSiteTargets` edges the walk found -- on
+their own SETTLED movement, never their next Current reading, since each
+already carries one revision (the Unresolved verdict itself) and a Current
+wait would be satisfied immediately with nothing new to say. An `Unknown`
+membership is not a conclusion: this exit declares no outputs and no
+`changed` set, so the wait-free/blocked-run rule above (*Each formula
+conclusion...*) keeps every `ReturnType` this job already published for the
+component standing rather than retracting it, exactly as any other blocked
+run would. Ownership reverts to a member's own `AnalyzeActivation` only once
+membership actually settles to `Alone` -- a real transfer, not a block --
+and that exit stays wait-free, because a different job now owns the return
+and will republish it. A settled component publishes every member's
+`ReturnType` in one atomic conclusion, so a reader waiting on any one member
+sees the whole component settle together.
 
 The same solve settles each member's own INPUT evidence: a member's slot
 equation is the join of every call site's argument skeleton, evaluated in

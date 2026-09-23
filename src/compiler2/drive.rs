@@ -1043,9 +1043,10 @@ impl World {
                 }
                 // An activation whose membership is still unknown owes a
                 // return nobody can publish yet, so there is no owner to
-                // poke. Its own walk is already subscribed to the call-site
-                // targets that will settle the question, and the key stays
-                // on the frontier until they do.
+                // poke: `SolveReturnComponent` (once some run has made it
+                // this component's owner) is the one waiting on the
+                // unresolved edges' own SETTLED movement, keeping every
+                // member's `ReturnType` standing until they resolve.
                 if let Some(owner) = self.return_membership(&key).into_component().map(|c| c.owner) {
                     // Poke exactly once per distinct owner identity, mirroring
                     // the `has_run(AnalyzeActivation)` gate above: a

@@ -772,3 +772,78 @@ fn the_solve_is_never_woken_by_a_members_own_call_evidence() {
         violations.borrow().join("\n"),
     );
 }
+
+/// `main/0` calls `List.reverse/2` twice and `My.rev/2` -- a user-defined
+/// twin of the same accumulator shape -- twice. Each component's second call
+/// site is `Unresolved` on first discovery, which used to settle that
+/// already-solved component's membership as `Unknown`. The pre-fix code
+/// treated that as a conclusion (`waits: []`), which `World::complete_job`
+/// treats as REPLACING the solve's prior contribution set, retracting every
+/// member's already-published `ReturnType` -- including `List.reverse/2`'s,
+/// though nothing about ITS component ever went `Unresolved`. Waiting on the
+/// unresolved edge's own SETTLED movement instead (see return_component.rs's
+/// "An `Unknown` membership is not a conclusion") keeps a blocked run's prior
+/// contributions standing, so this drive must never retract `List.reverse/2`
+/// at all, and must never retract `main/0` more than the one ordinary
+/// revise-in-place a second gather over its own body performs.
+#[test]
+fn an_unknown_membership_waits_instead_of_retracting_published_returns() {
+    let tel = ConfiguredTelemetry::new();
+    let cleared: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+    let cleared_sink = Rc::clone(&cleared);
+    tel.attach_raw_event2::<World, ActivationKey, _>(
+        &["fz", "compiler2", "return_type", "cleared"],
+        move |_, _, _, _, activation| *cleared_sink.borrow_mut().entry(activation.clone()).or_default() += 1,
+    );
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("g4.fz".to_string()),
+        text: concat!(
+            "defmodule My do\n",
+            "  @spec rev([a], [a]) :: [a]\n",
+            "  def rev([], tail), do: tail\n",
+            "  def rev([h | t], acc), do: rev(t, [h | acc])\n",
+            "end\n",
+            "def main() do\n",
+            "  acc = List.reverse([1, 2, 3], [])\n",
+            "  dbg(List.reverse(acc, []))\n",
+            "  mine = My.rev([1, 2, 3], [])\n",
+            "  dbg(My.rev(mine, []))\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Backend)
+        .unwrap_or_else(|error| panic!("g4.fz should reach a backend program: {error}"));
+
+    let world = compiler.world_mut();
+    let cleared = cleared.borrow();
+    let clears_for = |label: &str| -> u64 {
+        cleared
+            .iter()
+            .filter(|(activation, _)| crate::compiler2::canon::function_label(world, activation.function) == label)
+            .map(|(_, count)| *count)
+            .sum()
+    };
+
+    assert_eq!(
+        clears_for("List.reverse/2"),
+        0,
+        "List.reverse/2's own component never has an Unresolved out-edge in this fixture, so an \
+         unrelated component's Unknown membership must never retract it",
+    );
+    assert!(
+        clears_for("main/0") <= 1,
+        "main/0 may be revised once in the ordinary course of gathering more of its body, but the \
+         Unknown-membership defect retracted it repeatedly; got {} clears",
+        clears_for("main/0"),
+    );
+}
