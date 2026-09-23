@@ -13,6 +13,11 @@ subsystem model.
   paper, make the signal loud with telemetry, pin it with tests, trace the
   root cause backwards, then repair the data model from the bottom up.
 
+- [Predict, Measure, Collapse](strategies/predict-measure-collapse.md)
+  Derive the answer for a small fixture, predict the work needed to produce it,
+  and compare both with a trace. Use the evidence to give each decision one
+  owner and verify that its replacement makes the old mechanism removable.
+
 - [Red-Test Worklist](strategies/red-test-worklist.md)
   When a branch carries many failing/hanging tests, disable them all behind a
   greppable marker to make the suite green, then re-enable one at a time --
