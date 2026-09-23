@@ -693,11 +693,64 @@ return the static layer says it owes is a member even when its call sites
 resolved nothing -- a system of one -- which is what makes the owner known
 from an activation's first walk. An activation on neither side of that
 relation returns `None` and is answered by its own `AnalyzeActivation` as
-always. Members sort by the existing semantic activation order
-(`SemanticOrd`), and the first member is the component's canonical owner.
-Because this is a live query over current facts rather than a cached one, a
-membership change is visible on the very next call -- there is no separate
-component fact to retract.
+always. The membership itself is found by `return_membership::discover`, a
+local bidirectional worklist walk from the seed rather than a scan of every
+activation the world holds: at each member it queued, the OUT direction
+reads that member's own unsettled call sites the way the edge rule above
+does, and the IN direction reads `Callers(member)` -- every call site that
+has ever addressed it. `Callers` is cumulative and never withdrawn, so a
+listed site is a CANDIDATE, not a live edge on its own; the walk re-verifies
+each one fresh, checking that its own function's `ReturnUnknowns` still
+calls it unsettled AND its current `CallSiteTargets` still resolves back to
+`member`, and silently drops any candidate that fails either check. Both
+directions run for every member the walk finds, so the same neighbour is
+reached once from the caller's side and once from the callee's `Callers`
+entry, and the two never disagree; the walk's cost is proportional to the
+component and its immediate callers, never to the size of the world. Owner
+selection is a fold over the discovered members, not a sort-and-take-first:
+`owner` is the semantic minimum (`SemanticOrd`) over the member set,
+computed once membership is known, while `members` is separately sorted
+into semantic order for iteration and display. `World::return_membership` is
+the one entry point onto all of this, and it is pure: no telemetry
+parameter, no event of its own. It returns a `ReturnDiscovery` carrying the
+settled `ReturnMembership` alongside what the walk measured -- `visited`
+(every activation the walk touched, members and rejected `Callers`
+candidates alike) and the member set the reads below are drawn from.
+Callers that only want the settled answer call `.is_alone()` or
+`.into_component()`, both forwarding to `membership`, so they read exactly
+as they did before this type existed.
+
+`SolveReturnComponent`'s own subscription reads the same relation `discover`
+walked to reach its answer (`ReturnDiscovery::reads`, wrapping
+`return_membership::reads_of`): each member's own unsettled out-edges, so a
+target naming itself wakes the solve; each member's `Callers` set, so a
+newcomer's arriving candidate wakes it too; and `CallSiteTargets` for any
+non-member site `Callers` lists that already addresses a member, the same
+candidate-verification check discovery makes, so a candidate resolving away
+is caught without waiting on a member's own facts to move. `reads` is
+computed once, off the same walk that found `membership`, and the solve
+reuses that one `Vec` at every exit rather than asking a second walk for it.
+Discovery and the solve's subscription read the one relation this way on
+purpose: a subscription drawn independently could drift from what the walk
+actually depended on, and either miss a wake or attribute one to a read that
+was never load-bearing. Because this is a live query over current facts
+rather than a cached one, a membership change is visible on the very next
+call -- there is no separate component fact to retract.
+
+The `return_membership.discovered` telemetry event belongs to the solve, not
+to this query: `solve_return_component` dispatches it itself, once per
+dispatch, from the one `ReturnDiscovery` it already computed. A whole-world
+scan cannot see a call site aimed at an activation that has not been minted
+yet, so it would answer such a seed `Alone` and self-publish a `ReturnType`
+that a later solve then has to clear and republish; the local walk instead
+reads the unresolved call directly off the facts that exist and answers
+`Unknown` until the callee exists to be walked. `decode/1` in
+`fixtures2/behavior/projected_recursive_result.fz` is built to hit exactly
+this window -- its own activation does not exist the first time the
+component reaching it walks -- and `return_membership_test.rs` proves the
+window closes: production telemetry (`work_graph.applied`) shows `decode/1`'s
+`ReturnType` published only by `SolveReturnComponent`, never by its own
+`AnalyzeActivation`.
 
 Ownership of each member's `ReturnType` follows that query directly (see
 *Ownership boundaries* below): `SolveReturnComponent(owner)` -- one job per

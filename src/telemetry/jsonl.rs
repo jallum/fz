@@ -1230,6 +1230,11 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             // pair above, for the recursive-return components that settle
             // together instead of one activation's own analysis alone.
             | ["fz", "compiler2", "return_component", "solved"]
+            // Fires once per local membership walk, carrying the seed it
+            // was asked about and how many activations the walk visited --
+            // the north-star signal that a component's discovery cost
+            // tracks the component, not the world.
+            | ["fz", "compiler2", "return_membership", "discovered"]
             | ["fz", "compiler2", "drive", "stalled"]
             | ["fz", "compiler2", "drive", "timed_out"]
             | ["fz", "compiler2", "drive", "demand_on_stall"]
@@ -1337,6 +1342,23 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
             out.push('}');
         }
         out.push_str("]}");
+        return;
+    }
+    if ev.name == ["fz", "compiler2", "return_membership", "discovered"] {
+        // The activation the walk was asked about, not one it necessarily
+        // owns -- a discovery can be reported from any member's seed, and
+        // the point of the event is to show the walk's cost from wherever
+        // it started.
+        let Some(seed) = ev
+            .metadata
+            .get("seed")
+            .and_then(Value::downcast_ref::<crate::compiler2::ActivationKey>)
+        else {
+            return;
+        };
+        out.push_str(",\"semantic\":{\"seed\":");
+        write_activation_key_object(out, seed);
+        out.push('}');
         return;
     }
     if ev.name == ["fz", "compiler2", "work_graph", "applied"] {

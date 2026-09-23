@@ -815,9 +815,9 @@ impl ReturnMembership {
 /// The one producer and complete member set of a recursive-return
 /// component. It is derived from the current `ActivationAnalysis` and
 /// `CallSiteTargets` facts reachable from its seed; it is not a second cache
-/// beside those facts. `members` is sorted into semantic activation order,
-/// and `owner` is always `members[0]` -- the single canonical key every
-/// member's `ReturnType` is published under while membership holds.
+/// beside those facts. `members` is sorted into semantic activation order;
+/// `owner` is the semantic minimum over them -- the single canonical key
+/// every member's `ReturnType` is published under while membership holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReturnComponent {
     pub(crate) owner: ActivationKey,

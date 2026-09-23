@@ -262,6 +262,49 @@ impl Default for World {
 pub(crate) const ACTIVATION_KEY_FACTS_PROVEN: &str =
     "require_activation_key_facts proves this fact before any caller mints a key for the function";
 
+/// `World::return_membership`'s whole answer: the settled membership, plus
+/// what the local walk behind it measured. `is_alone`/`into_component`
+/// forward to `membership` so the five callers that want only that stay
+/// one-line; `visited` and `reads` are for the sixth, `SolveReturnComponent`,
+/// which both attributes the walk's cost to its own telemetry handle and
+/// subscribes to the reads that explain the answer's boundary. `reads` is a
+/// method, not a field: it is the one read set every exit of the solve uses,
+/// computed once from the walk's members, never from a second walk.
+pub(crate) struct ReturnDiscovery {
+    pub(crate) membership: ReturnMembership,
+    visited: u64,
+    members: Vec<ActivationKey>,
+}
+
+impl ReturnDiscovery {
+    pub(crate) fn is_alone(&self) -> bool {
+        self.membership.is_alone()
+    }
+
+    pub(crate) fn into_component(self) -> Option<ReturnComponent> {
+        self.membership.into_component()
+    }
+
+    /// Every activation the walk touched while finding this answer.
+    pub(crate) fn visited(&self) -> u64 {
+        self.visited
+    }
+
+    /// The component's member count, when membership settled to `Shared`.
+    pub(crate) fn members_len(&self) -> u64 {
+        match &self.membership {
+            ReturnMembership::Shared(component) => component.members.len() as u64,
+            ReturnMembership::Alone | ReturnMembership::Unknown => 0,
+        }
+    }
+
+    /// The fact reads that explain this discovery's boundary, off the same
+    /// walk that found `membership` -- never a second walk.
+    pub(crate) fn reads(&self, world: &World) -> Vec<FactKey> {
+        super::return_membership::reads_of(world, &self.members)
+    }
+}
+
 impl World {
     pub(crate) fn work_graph_and_types(&mut self) -> (&mut WorkGraph, &Types) {
         (&mut self.work_graph, &self.types)
@@ -995,9 +1038,11 @@ impl World {
     /// The correlated body-input evidence of an activation, once its fact
     /// exists: the canonical antichain of publisher rows. Semantic analysis
     /// reads THIS — each row is analyzed independently, never a column mix.
-    /// Every activation key this world holds, in arbitrary order. The
-    /// membership walk reads it because a component is a connected set and a
-    /// helper has to be able to find the caller that handed it the cycle.
+    /// Every activation key this world holds, in arbitrary order. Test-only:
+    /// production code finds an activation through its own call graph
+    /// (`return_membership`'s local walk, `Callers`) rather than by
+    /// enumerating every activation the world has ever minted.
+    #[cfg(test)]
     pub(crate) fn activation_keys(&self) -> Vec<ActivationKey> {
         self.activations.keys().cloned().collect()
     }
@@ -1070,34 +1115,57 @@ impl World {
     /// so it never joins two into one component; an unresolved callsite
     /// names none YET, and the answer across one is `Unknown` rather than a
     /// set drawn as far as it goes.
-    pub(crate) fn return_membership(&self, seed: &ActivationKey) -> ReturnMembership {
-        let (mut members, unknowns) = match super::return_membership::discover(self, seed).membership {
+    ///
+    /// This is the one membership question `World` answers, and it is pure:
+    /// no telemetry parameter, no event, so every caller -- routing, the
+    /// frontier scan, the self-publish check, and the solve alike -- reads
+    /// the same entry rather than choosing between two. The
+    /// [`ReturnDiscovery`] it returns forwards `is_alone`/`into_component`
+    /// for callers that want only the membership, and separately carries
+    /// what the walk measured (`visited`) and, lazily, the read set that
+    /// explains the answer's boundary (`reads`) -- the solve is the one
+    /// caller that needs both of those, and it is also the one place this
+    /// walk's cost is worth attributing to a job run via its own telemetry
+    /// handle, so the `return_membership.discovered` event is dispatched
+    /// there, not here.
+    pub(crate) fn return_membership(&self, seed: &ActivationKey) -> ReturnDiscovery {
+        let discovery = super::return_membership::discover(self, seed);
+        let visited = discovery.visited as u64;
+        let membership = self.settle_return_membership(discovery.membership);
+        ReturnDiscovery {
+            membership,
+            visited,
+            members: discovery.members,
+        }
+    }
+
+    /// The owner and slot order of one discovered membership. `owner` is the
+    /// semantic minimum over the members -- a fold, not a sort, since
+    /// nothing else needs the members in that order. `members` is still
+    /// sorted into semantic order beneath it: `return_membership_test`'s
+    /// `wrapped_recursive_return` case pins that order (`wrap/1` before
+    /// `dup/1`, though the walk finds `dup/1` first from a `dup/1` seed), so
+    /// the sort stays even though ownership no longer depends on it.
+    fn settle_return_membership(&self, membership: super::return_membership::Membership) -> ReturnMembership {
+        let (mut members, unknowns) = match membership {
             super::return_membership::Membership::Alone => return ReturnMembership::Alone,
             super::return_membership::Membership::Unknown => return ReturnMembership::Unknown,
             super::return_membership::Membership::Shared(members, unknowns) => (members, unknowns),
         };
+        let owner = members
+            .iter()
+            .min_by(|a, b| a.semantic_cmp(b, &self.types))
+            .cloned()
+            .expect("a return component has a member");
         members.sort_by(|a, b| a.semantic_cmp(b, &self.types));
         let mut slots = unknowns.slots();
         slots.sort_by(|a, b| a.0.semantic_cmp(&b.0, &self.types).then(a.1.cmp(&b.1)));
         ReturnMembership::Shared(ReturnComponent {
-            owner: members.first().cloned().expect("a return component has a member"),
+            owner,
             members,
             slots,
             unknowns,
         })
-    }
-
-    /// Every activation the membership walk touched while establishing
-    /// `seed`'s component -- always a superset of the eventual
-    /// [`ReturnComponent::members`], since the walk passes through the
-    /// activations whose returns and slots the component's own positions are
-    /// built from. Any of these activations' `ActivationAnalyzed` or
-    /// `CallSiteTargets` facts moving can redraw the boundary, membership
-    /// included, so a caller that wants a real, attributable cause for a
-    /// membership change reads all of these, not only `seed`'s own
-    /// component.
-    pub(crate) fn return_flow_frontier(&self, seed: &ActivationKey) -> Vec<ActivationKey> {
-        super::return_membership::discover(self, seed).frontier
     }
 
     /// Whether `key` currently owes a `ReturnType` its own walk will not
