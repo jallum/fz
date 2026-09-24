@@ -218,13 +218,16 @@
         a submitted root actually reaches.
       </p>
       <p class="rule">
-        There is one fact engine and one retained product session per requested root. Joined activation inputs, return types,
-        direct-call summaries, and recursive keying facts settle as direct facts. Backend artifacts
-        are root-local products that wait on exact facts or products; they do not begin from a
-        root-wide collection pass. Interp, native, and macro consumers project the retained answer through one
-        boundary that keeps the World backend value and backend fact movement in lockstep. Struct
-        schemas follow the same rule: pruned executable products carry typed module identities, and
-        root assembly reads only those exact <code>StructDefined</code> facts.
+        There is one fact engine and one retained product session per requested root. Activation
+        inputs, return types, callsite summaries, and keying facts settle as direct facts. Backend
+        artifacts are root-local products that wait on exact facts or products; they never begin
+        from a root-wide collection pass. Interpreter, native, and macro consumers project the
+        retained answer through one boundary, so the backend value and the fact movement that
+        produced it move in lockstep.
+      </p>
+      <p class="small">
+        This page is the world model in one sitting. The subsystem detail lives in
+        <code>.agent/docs</code>; each section below names the doc that owns its detail.
       </p>
     </header>
 
@@ -236,7 +239,7 @@
           <p>
             Submit code, submit a root, and derive exactly one backend-owned answer from the
             smallest executable product set demanded by that root. Unused user functions and unused
-            runtime library functions stay cold.
+            runtime library functions stay cold. Compile work is proportional to the input.
           </p>
         </div>
         <div class="card">
@@ -244,14 +247,16 @@
           <p>
             Tests assert both presence and absence: which modules were defined, which activations
             existed, which callsites were selected, which product keys were requested, and which
-            functions never warmed.
+            functions never warmed. The telemetry stream is the evidence: which jobs ran and why
+            they started, which facts moved revision, and how many times each activation's return
+            was defined or widened.
           </p>
         </div>
         <div class="card">
           <h3>Strategy</h3>
           <p>
-            Keep stores small and facts honest. One logical fact gets one fact key. Slot revisions
-            bump only when the aggregate value changes. Everything else is a consequence of that.
+            Keep stores small and facts honest. One logical fact gets one fact key. A revision
+            moves only when the published answer changes. Everything else is a consequence of that.
           </p>
         </div>
       </div>
@@ -260,52 +265,35 @@
     <section>
       <h2>Core Shape</h2>
       <p>
-        The world owns all durable identity domains. Definitions live in stores. Recomputable
-        answers live in the work graph. Types are not an external service; they are one more
-        compiler-owned store.
+        The world owns all durable identity domains. Definitions live in typed stores.
+        Recomputable answers live in the work graph, which is one field of the world, not a
+        service beside it. Types are not an external service either; they are one more
+        compiler-owned store. The stores are many and specific, one per fact family, so a fact
+        key names exactly one store entry and nothing is looked up twice.
       </p>
-      <pre><code>struct World {
-    tel: Telemetry,
-
-    code: CodeMap,
-    modules: ModuleMap,
-    functions: FunctionMap,
-    namespaces: NamespaceStore,
-    types: Types,
-    roots: RootMap,
-
-    bodies: LoweredBodyMap,
-    guard_dispatches: GuardDispatchMap,
-    entry_dispatches: EntryDispatchMap,
-    recursive: RecursiveMap,
-    input_demands: InputDemandMap,
-
-    activations: ActivationMap,
-    callsites: CallSiteMap,
-    work_graph: Scheduler&lt;Job, DependencyKey&gt;,
-}</code></pre>
       <div class="grid">
         <div class="card">
           <h3>Stable ids first</h3>
           <p>
-            <code>CodeId</code>, <code>ModuleId</code>, <code>FunctionId</code>, and
-            <code>RootId</code> are minted immediately. Referencing a module or MFA before
-            definition creates a placeholder instead of a failure.
+            Source owners, modules, functions, type names, and roots are minted the moment they are
+            referenced. Referencing a module or MFA before its definition creates a placeholder,
+            never a failure. Definition arrives later as a fact.
           </p>
         </div>
         <div class="card">
           <h3>Local type world</h3>
           <p>
-            <code>World.types</code> owns one compiler-local <code>Types</code> store. Every
-            <code>Ty</code> is an interned <code>u32</code> handle meaningful only inside that one
-            world. Shared helper modules talk to it through trait compatibility at the seam.
+            The world owns one interner. Every <code>Ty</code> is a u32 handle meaningful only
+            inside that world, and interning is canonical by construction: two descriptors that
+            denote the same set mint one id. Facts detect change by comparing ids, so no fact
+            ever hashes a type structurally.
           </p>
         </div>
         <div class="card">
           <h3>No parallel phase graph</h3>
           <p>
             The only scheduler abstraction is the work graph. The loop reaches a fixpoint because
-            job keys coalesce, fact slots join contributions, and changed revisions wake exactly the
+            job keys coalesce, cumulative facts join contributions, and changed revisions wake exactly the
             jobs that read or waited on those slots.
           </p>
           <p>
@@ -317,108 +305,76 @@
           </p>
         </div>
       </div>
-      <p>
-        Runtime demand is an ordinary reactive fact. The artifact boundary is product-keyed:
-        <code>MaterializedExecutable(E)</code> then <code>AbiExecutable(E)</code> then
-        <code>BackendExecutable(E)</code>, with settled <code>RuntimeDemand(E)</code> facts and
-        <code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, and
-        <code>CallableConstruction(position)</code> pulled only when a demanded executable names
-        them. The final
-        <code>RootBackendProduct(root)</code> owns one shared <code>BackendProgram</code> and
-        applies exact rooted executable, wrapper, atom, and schema contribution changes.
-        <code>Compiler2</code> retains user and macro root sessions in
-        <code>ProductSessions</code>; each session's <code>ProductMemo</code> owns these
-        artifact answers. Transport metadata stays with its exact positioned and ABI owners.
-        Source jobs read the root backend product
-        directly when invoking macros, through the same scheduler dependency mechanism
-        used for World facts.
+      <p class="small">
+        Detail: <code>fact-engine.md</code>, <code>type-world.md</code>.
       </p>
     </section>
 
     <section>
       <h2>Source, Scope, And Runtime Bootstrap</h2>
       <p>
+        Every job is a rule: it reads some facts, waits on the ones it cannot read yet, and
+        publishes the facts it owns. Jobs come in tiers that only ever read downward. The
+        <em>source</em> tier indexes a submission, scopes it, and defines modules, module
+        interfaces, functions, type names, struct layouts, and function contracts; macro
+        expansion sits inside it, one expanded source per function. The <em>lowering</em> tier
+        turns one function into a lowered body, its guard and entry dispatch plans, its static
+        callees, its call-graph component, and its input demand. The <em>semantic</em> tier seeds
+        roots and activations and analyzes one activation at a time. The <em>executable</em> tier
+        derives per-executable facts and runtime demand. Artifacts are pulled separately by
+        product key and are not jobs at all.
+      </p>
+      <p>
         Parsing and top-level discovery are eager only at the code-contribution boundary.
-        <code>IndexCode</code> parses one code submission, stores top-level items on the code
-        record, and discovers nested module ids. It does not define functions, lower bodies, or
-        pull imports.
-      </p>
-      <pre><code>enum Job {
-    IndexCode(CodeId),
-    ScopeCode(CodeId),
-    DefineModule(ModuleId),
-    LowerFunction(FunctionId),
-    ReifyGuardDispatch(FunctionId),
-    PlanEntryDispatch(FunctionId),
-    DeriveRecursive(FunctionId),
-    DeriveInputDemand(FunctionId),
-    SeedRoot(RootId),
-    AnalyzeActivation(ActivationKey),
-}</code></pre>
-      <p>
-        These jobs publish semantic facts. Backend artifacts are pulled separately by
-        <code>ProductKey</code> and exact settled fact waits.
-      </p>
-      <p>
-        <code>ScopeCode</code> then walks the parsed items in source order. The first pass reserves
-        local functions and child modules so later definitions can reference them. The second pass
-        applies order-dependent items: aliases, imports, function definitions, protocol surfaces,
+        Indexing one submission parses it, stores its top-level items on the source record, and
+        discovers nested module ids. It does not define functions, lower bodies, or pull imports.
+        Scoping then walks the parsed items in source order twice: the first pass reserves local
+        functions and child modules so later definitions can reference them; the second applies
+        order-dependent items, which are aliases, imports, function definitions, protocol surfaces,
         and child-module scope points.
       </p>
       <p>
-        The runtime prelude is ordinary code, not a mode. <code>World::new</code> stores
-        <code>runtime:runtime.fz</code> as compiler-owned code text and creates named runtime module
-        placeholders. No lexing or parsing happens yet. The first non-runtime <code>ScopeCode</code>
-        waits on <code>CodeScoped(runtime_prelude)</code>, scopes that source into a namespace head,
-        saves the resulting <code>prelude_head</code>, and then scopes user code against it.
+        The runtime prelude is ordinary code, not a mode. Constructing a world stores the prelude
+        source as compiler-owned text and creates named runtime module placeholders; no lexing or
+        parsing happens yet. The first user submission waits on the prelude being scoped, scopes
+        it into a namespace head, saves that head, and scopes user code against it. Further
+        preludes, such as the one that defines the test item macro, scope in over the runtime
+        prelude by the same rule.
       </p>
-      <pre><code>runtime.fz stored in CodeMap
+      <pre><code>prelude source stored on its source owner
             │
             ├─ no lexer/parser work at construction time
             │
-first user ScopeCode(code)
+first user ScopeCode(source)
             │
-            ├─ wait on CodeScoped(runtime_prelude)
-            ├─ ScopeCode(runtime_prelude)
-            ├─ save NamespaceStore.prelude_head()
-            └─ ScopeCode(user_code) with that head as the base namespace</code></pre>
+            ├─ wait on CodeScoped(runtime prelude)
+            ├─ ScopeCode(runtime prelude)
+            ├─ save the prelude namespace head
+            └─ ScopeCode(user source) with that head as the base namespace</code></pre>
       <p>
         Runtime modules warm lazily too. Referencing <code>Enum.reduce/3</code> allocates ids
-        immediately. The runtime source containing <code>Enum</code> is only submitted and indexed
-        if a demanded scope, import, protocol edge, or call edge requires it.
+        immediately. The library source that owns <code>Enum</code> is submitted and indexed only
+        when a demanded scope, import, protocol edge, or call edge requires it.
+      </p>
+      <p class="small">
+        Detail: <code>modules.md</code>, <code>macro-expansion.md</code>, <code>quoted-source.md</code>.
       </p>
     </section>
 
     <section>
       <h2>Namespace Model</h2>
       <p>
-        A namespace is a linked list with integer savepoints. <code>BindingId(0)</code> is the end
-        sentinel. Pushing a binding returns a new head. Leaving a scope means restoring an older
-        head. Lookup walks backward and the first matching binding wins.
+        A namespace is a linked list with integer savepoints. Binding zero is the end sentinel.
+        Pushing a binding returns a new head. Leaving a scope means restoring an older head.
+        Lookup walks backward and the first matching binding wins. A binding names one of six
+        symbol kinds: a module, a function, a macro, a callable that may be either, a type name,
+        or a quoted splice that macro expansion substitutes in place.
       </p>
-      <pre><code>type Namespace = BindingId;
-
-struct NamespaceStore {
-    bindings: Vec&lt;Binding&gt;,
-    prelude_head: Namespace,
-}
-
-struct Binding {
-    name: String,
-    symbol: NamespaceSymbol,
-    prev: Namespace,
-}
-
-enum NamespaceSymbol {
-    Module(ModuleId),
-    Function(FunctionId),
-    Macro(FunctionId),
-}</code></pre>
       <p>
         Imports and aliases are therefore ordinary scope mutations. Exact
         <code>import ..., only:</code> clauses bind module/function references immediately without
-        forcing the provider surface. Plain <code>import</code> waits until the provider module is
-        actually defined so exports can be copied correctly and missing imports can surface as
+        forcing the provider surface. Plain <code>import</code> waits until the provider module's
+        interface is defined so exports can be copied correctly and missing imports can surface as
         diagnostics when the drive goes quiet.
       </p>
     </section>
@@ -426,98 +382,83 @@ enum NamespaceSymbol {
     <section>
       <h2>Facts And Revisions</h2>
       <p>
-        A job owns contributions. A fact slot owns the current aggregate value plus a revision.
-        The revision is the wake-up signal. There is no separate fingerprint layer.
+        A fact slot records who claims the fact and a revision. It holds no value: the typed value
+        lives in the world store the key names, and the slot gates its visibility. The revision is
+        the wake-up signal. There is no separate fingerprint layer. A publisher is one job's
+        derivation, so a job that concludes several answers in one run owns each of them
+        separately and a later run can retract one without disturbing the others.
       </p>
-      <pre><code>struct FactSlot&lt;Job&gt; {
-    value: Option&lt;FactValue&gt;,
-    revision: u64,
-    contributions: HashMap&lt;Job, FactValue&gt;,
-}
-
-enum FactValue {
-    Presence(u64),
-    Inputs(Vec&lt;Ty&gt;),
-}</code></pre>
       <p>
-        <code>Presence</code> joins by <code>max</code>. <code>Inputs</code> joins pointwise with
-        <code>Types::refine_widen</code>, then alpha-normalizes through the world-owned type store.
-        This is the whole trick: activation inputs settle by the same mechanism that tracks all
-        other fact replacement.
+        Facts come in two shapes. A <em>replacing</em> fact has one answer that a fresh run
+        overwrites. A <em>cumulative</em> fact joins the contributions of every publisher, and
+        absence is bottom: a claim at bottom is a real claim with revision zero, so "nobody has
+        said anything yet" is readable and distinct from "the answer is empty". Activation inputs
+        are the model case: each call contributes a whole input row, rows join as a set of
+        alternatives, and a wider row covers the rows it dominates. Joining columns across rows
+        would invent calls that never happened, so it never happens.
       </p>
       <table>
         <thead>
           <tr>
             <th>Family</th>
-            <th>Current facts</th>
+            <th>Facts</th>
             <th>Meaning</th>
           </tr>
         </thead>
         <tbody>
           <tr>
             <td>Source surface</td>
-            <td><code>CodeIndexed</code>, <code>CodeScoped</code>, <code>ModuleIndexed</code>, <code>ModuleDefined</code>, <code>FunctionDefined</code></td>
-            <td>Discovery and scope are separate. Indexing finds ids. Scoping/definition publishes the usable surface.</td>
+            <td><code>CodeIndexed</code>, <code>CodeScoped</code>, <code>ModuleIndexed</code>, <code>ModuleDefined</code>, <code>ModuleInterface</code>, <code>FunctionSource</code>, <code>ExpandedFunctionSource</code>, <code>FunctionDefined</code>, <code>FunctionContract</code>, <code>TypeDefined</code>, <code>StructDefined</code>, <code>ProtocolDispatch</code>, <code>ProtocolImplProviders</code></td>
+            <td>Discovery and scope are separate. Indexing finds ids. Scoping and definition publish the usable surface, one fact per function, type name, struct, and protocol.</td>
           </tr>
           <tr>
             <td>Lowering and dispatch</td>
-            <td><code>LoweredBody</code>, <code>GuardDispatch</code>, <code>EntryDispatch</code>, <code>Recursive</code>, <code>InputDemand</code></td>
-            <td>Reusable function facts that make semantic keying and activation analysis deterministic.</td>
+            <td><code>LoweredBody</code>, <code>GuardDispatch</code>, <code>EntryDispatch</code>, <code>StaticCallees</code>, <code>CallGraphComponent</code>, <code>Recursive</code>, <code>InputDemand</code></td>
+            <td>Reusable per-function facts that make keying and activation analysis deterministic. The compiled entry dispatch carries its own input demand; the call graph's edges and strong components are facts of their own.</td>
           </tr>
           <tr>
             <td>Root seed</td>
-            <td><code>RootEntry</code>, <code>Activation</code>, <code>Executable</code></td>
-            <td>The root grows a frontier of demanded activations and demanded executable shapes.</td>
+            <td><code>RootEntry</code>, <code>Activation</code>, <code>ActivationInputs</code>, <code>Executable</code></td>
+            <td>The root grows a frontier of demanded activations and demanded executable shapes. Existence and evidence are separate facts.</td>
           </tr>
           <tr>
             <td>Semantic</td>
-            <td><code>ActivationAnalyzed</code>, <code>ReturnType</code>, <code>CallSiteSummary</code>, <code>RuntimeDemand(E)</code></td>
-            <td>Type and plan facts are one family. Runtime demand is one replacing World fact per executable, derived from exact caller, direct-callee, and locally produced function cells.</td>
+            <td><code>ActivationAnalyzed</code>, <code>ReturnType</code>, <code>CallSiteSummary</code>, <code>CallSiteTargets</code></td>
+            <td>Type and plan facts are one family. A callsite publishes one whole summary; its targets fact is a membership projection of the same answer.</td>
           </tr>
           <tr>
-            <td>Product root</td>
-            <td><code>RootBackendProduct(root)</code></td>
-            <td>The demanded root answer. It keys the entry executable, follows exact backend products through typed edges and positioned callable owners, and retains their transport plan beside shared runtime-ready members.</td>
+            <td>Executable</td>
+            <td><code>ExecutableFacts</code>, <code>RuntimeDemand</code>, <code>RuntimeDemandInput</code>, <code>RuntimeDemandInputs</code>, <code>IncomingInputSlot</code>, <code>CallableConstructionTarget</code></td>
+            <td>Per-executable facts derived from settled analysis. Runtime demand is one replacing fact per executable; its input vector and incoming slots are exact sub-facts that callers contribute to.</td>
           </tr>
           <tr>
-            <td>Executable products</td>
-            <td><code>MaterializedExecutable(E)</code>, <code>AbiExecutable(E)</code>, <code>BackendExecutable(E)</code></td>
-            <td>Per-executable artifact products. Each producer waits on exact local facts or product keys and never schedules unrelated work.</td>
-          </tr>
-          <tr>
-            <td>Representation products</td>
-            <td><code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, <code>CallableConstruction(position)</code></td>
-            <td>Request-local representation answers pulled only for positions named by demanded executables. Recursive position products publish cyclic groups atomically, so no mid-ascent layout is observable.</td>
+            <td>Products</td>
+            <td><code>RootBackendProduct</code>, <code>NativeProgram</code>, <code>BackendExecutable</code>, <code>AbiExecutable</code>, <code>MaterializedExecutable</code>, <code>ExecutableEffects</code>, <code>TransportShape</code>, <code>CallableConstruction</code>, <code>StructSchema</code></td>
+            <td>Pulled by key, not scheduled. Each producer waits on exact local facts or product keys and never schedules unrelated work. Recursive position products publish cyclic groups atomically, so no mid-ascent layout is observable.</td>
           </tr>
         </tbody>
       </table>
       <p>
-        One logical fact gets one key. There is no split <code>SelectedCallee</code> /
-        <code>ReturnNeed</code> pair anymore. Consumers read one <code>CallSiteSummary</code>
-        surface and react when that one revision changes.
+        One logical fact gets one key. A callsite's callee, argument types, return need, and
+        return type are one summary that consumers read whole and react to when that one revision
+        changes.
+      </p>
+      <p class="small">
+        Detail: <code>fact-engine.md</code>, <code>semantic-fixpoint.md</code>, <code>pipeline.md</code>.
       </p>
     </section>
 
     <section>
       <h2>Work Graph</h2>
       <p>
-        The work graph is one agenda, one fact table, and one dependency index. Jobs record what
-        they read, what they could not read yet, and what they output. No job enqueues a
-        follow-up job of its own; a job that cannot proceed records a bare wait, and the
-        fact-&gt;producer map (<code>World::demand_fact_producer</code>) is the sole path that
-        restarts blocked work.
+        The work graph is one agenda, one fact table, and one dependency index. The agenda is
+        deduplicated: a job queued ten times while pending runs once, and a job whose facts move
+        after it ran is queued again. Jobs record what they read, what they could not read yet,
+        and what they output. No job enqueues a follow-up job of its own; a job that cannot
+        proceed records a bare wait, and the fact-to-producer map is the sole path that restarts
+        blocked work. Every work start carries its reason, so the trace can say why a job ran.
       </p>
-      <pre><code>struct Scheduler&lt;Job, Fact&gt; {
-    agenda: Agenda&lt;Job&gt;,
-    facts: FactTable&lt;Job, Fact&gt;,
-    deps: DependencyIndex&lt;Job, Fact&gt;,
-}
-
-struct Agenda&lt;Job&gt; {
-    queue: VecDeque&lt;Job&gt;,
-    queued: HashSet&lt;Job&gt;,
-}</code></pre>
-      <pre><code>while let Some(job) = work_graph.pop() {
+      <pre><code>while let Some(job) = agenda.pop() {
     let effects = run(job)?;
     let step = work_graph.complete(job, effects);
 
@@ -526,50 +467,43 @@ struct Agenda&lt;Job&gt; {
       - waiters that previously blocked on them
 }</code></pre>
       <p>
-        The outer drive loop has only three outcomes:
+        A drive ends only when nothing more can be demanded. It resolves when the agenda is empty
+        and no wait remains. It is unresolved when exact waits remain with no producer to map them
+        to, and world-derived diagnostics are emitted from that frontier. A failed product
+        dependency, a job error, and an exhausted deadline each end the drive on their own terms,
+        and none of them is a fact: errors are loud, never joined into the table.
       </p>
-      <div class="grid">
-        <div class="card">
-          <h3><span class="ok">Resolved</span></h3>
-          <p>The agenda is empty and there are no unresolved waits.</p>
-        </div>
-        <div class="card">
-          <h3><span class="warn">Unresolved</span></h3>
-          <p>The agenda is empty but the dependency index still has exact waits. World-derived diagnostics are emitted from that frontier.</p>
-        </div>
-        <div class="card">
-          <h3><span class="warn">Fatal</span></h3>
-          <p>A job hit a coarse failure. Diagnostics already flowed through telemetry. The drive stops immediately.</p>
-        </div>
-      </div>
+      <p class="small">
+        Detail: <code>fact-engine.md</code>, <code>performance-instrumentation.md</code>.
+      </p>
     </section>
 
     <section>
       <h2>Activation Keys And The Local Type World</h2>
       <p>
-        <code>Ty</code> is an interned <code>u32</code> id inside <code>World.types</code>. Equal
-        structure inside one world means equal ids. That lets activation keys, callsite summaries,
+        An activation is one function specialized for one root at one canonical input shape.
+        Its key holds the root, the function, and one interned arrow whose parameter side is the
+        canonical inputs and whose result side is an address variable, the return not yet known.
+        Equal structure inside one world means equal ids, so activation keys, callsite summaries,
         and fact joins lean on exact id equality instead of deep structural hashing.
       </p>
-      <pre><code>#[repr(transparent)]
-struct Ty(u32);
-
-struct Types {
-    interner: TypeInterner,
-    comparisons: ComparisonCache,
-}</code></pre>
       <p>
-        Activation keying waits for two function facts:
+        Keying waits for two function facts, named in one ask:
       </p>
       <ul>
-        <li><code>Recursive(function)</code> tells keying whether recursive non-dispatch inputs should collapse by convergence class.</li>
-        <li><code>InputDemand(function)</code> tells keying which inputs the activation's published return depends on, over three axes solved by one Kleene iteration on one forwarding cone. <code>local_dispatch</code> is this body's own entry dispatch — the question closure-brand erasure reads. <code>forwarded_dispatch</code> joins it with the demand of every callee this body hands an input to unchanged, because the value that arrives decides which callee activation is reached (fz-kdt.183). <code>returned</code> is the other way a return depends on an input: not which activation is reached, but that the returned value IS, CONTAINS, or is a PROJECTION of that input position — minus the positions the recursion itself supplies, computed as a least fixpoint over the body's own self-calls (fz-kdt.199). A slot no axis reaches is FREIGHT and collapses, so two callers key one activation there.</li>
+        <li><code>Recursive(function)</code> says whether the function sits on a cycle of the static call graph, and whether its body consumes the identity of a callable it is handed. It is a projection of the same walk that publishes the function's call-graph component.</li>
+        <li><code>InputDemand(function)</code> says which inputs the activation's published return can depend on, over three axes. <em>Local dispatch</em> is what this body's own entry dispatch asks of a slot. <em>Forwarded dispatch</em> joins that with the demand of every callee this body hands the slot to unchanged, because the value that arrives decides which callee activation is reached. <em>Returned</em> is the other way a return depends on an input: the returned value is, contains, or projects that slot, minus the positions the recursion itself supplies. A slot no axis reaches is freight and collapses, so two callers key one activation there.</li>
       </ul>
       <p>
-        Only after both exist does <code>World::activation_key</code> canonicalize inputs through:
-        <code>widen_for_recursive_spec_key</code>, optional convergence-class collapse, and final
-        <code>alpha_normalize_vars</code>. That is what keeps recursion finite without a second
-        hidden type loop.
+        Each demand axis is one least fixpoint over the body's forwarding cone. Only after both
+        facts exist does the world canonicalize a call's inputs: address the whole input vector
+        once, then either erase transported closure identities on the slots no dispatch reads, or,
+        on a recursive function, collapse the arrow by the forwarded and returned axes so the
+        specialization stays finite. That is what keeps recursion bounded without a second hidden
+        type loop.
+      </p>
+      <p class="small">
+        Detail: <code>semantic-fixpoint.md</code>, <code>addressed-arrow.md</code>, <code>type-specialization.md</code>.
       </p>
     </section>
 
@@ -640,312 +574,83 @@ surface: DeriveTypeDef -> TypeDefined(SomeModule,"t",1) = hard Ty
         <code>Range</code> impl, and only the callbacks actually called are lowered.
       </p>
     </section>
-
     <section>
       <h2>Product Pulls And Artifact Projection</h2>
       <p>
-        <code>AnalyzeActivation</code> publishes direct-call summaries, reached callee activations,
-        executable needs, a joined return type, and atomic entry reachability (reachable clauses
-        plus whether dispatch failure remains possible) for one rooted activation. Artifact products
-        consume those local facts directly: if a prerequisite is not settled, the producer returns
-        an exact <code>PullWait::Fact</code>; if another artifact is needed, it returns
-        <code>PullWait::Product</code>.
+        Activation analysis publishes callsite summaries, reached callee activations, executable
+        needs, a joined return type, and atomic entry reachability, which is the reachable clauses
+        plus whether dispatch failure remains possible, for one rooted activation. Artifact
+        producers consume the settled facts derived from that analysis directly: if a prerequisite
+        is not settled, the producer returns an exact fact wait; if another artifact is needed, it
+        returns a product wait.
       </p>
       <pre><code>RootBackendProduct(root)
   waits on RootEntry(root), Recursive(entry), InputDemand(entry)
   pulls BackendExecutable(entry E)
 
 BackendExecutable(E)
-  pulls AbiExecutable(E)
+  pulls AbiExecutable(E) and the AbiExecutables its call edges reach
 
 AbiExecutable(E)
   pulls MaterializedExecutable(E)
   pulls ExecutableEffects(E)
-  pulls TransportShape(EntryCapture / input / return / resume / value positions)
+  pulls TransportShape(entry capture / input / return / resume / value positions)
   pulls CallableConstruction(callable positions)
 
 MaterializedExecutable(E)
-  waits on ActivationAnalyzed(E.activation), ReturnType(E.activation), CallSiteSummary(...)
-  waits on settled RuntimeDemand(E)
+  waits on settled ExecutableFacts(E), ReturnType(E.activation), RuntimeDemand(E)
   pulls TransportShape(ExecutableReturn(E))</code></pre>
       <p>
-        Product materialization clones one executable body, enters a sole reachable clause directly
-        only when failure is unreachable, prunes unreachable clauses, rewrites
-        semantically cold local-control entries into explicit halt stubs, and freezes each live
-        callsite to selected typed callee executable keys. Each backend producer records membership
-        edges for its local calls, positioned callable targets, and reachable schemas. The memo
-        maintains root membership over those committed edges and supplies changed keys to packaging.
-        Persistent ordered inventories share untouched branches and payloads with older snapshots.
-        Each backend body extracts its atoms once; <code>StructSchema(module)</code> reads one
-        exact <code>StructDefined(module)</code> fact. Root assembly does not traverse all retained
-        bodies or inventory historical memo entries to rediscover membership.
+        Materialization takes the shared lowered body, enters a sole reachable clause directly
+        only when failure is unreachable, prunes unreachable clauses, rewrites semantically cold
+        local-control entries into explicit halt stubs, and freezes each live callsite to its
+        selected typed callee executable keys. Each backend producer records membership edges for
+        its local calls, positioned callable targets, and reachable schemas. The memo maintains
+        root membership over those committed edges and supplies changed keys to packaging, and
+        persistent ordered inventories share untouched branches with older snapshots. Root
+        assembly never traverses all retained bodies to rediscover membership.
       </p>
       <p>
-        Product freshness is revisioned by exact product generations and exact fact uses. A producer
-        records each dependency at the read site; a wait only names that already-recorded dependency.
-        The scheduler passes one final fact movement per moved key to a Compiler2-owned reverse
-        index. Only retained roots that read that fact receive its final state, including dormant
-        roots and roots suspended around a nested macro drive. The memo's reader index emits
-        subscription changes as its first or last reader appears, so delivery scans neither roots
-        nor dependencies. Reconciliation therefore relies on neither transition order nor a World
-        scan. Input-source ownership is root-local and exact:
-        each runtime-demand formula contributes its call arguments and captures
-        to the destination <code>IncomingInputSlot(slot)</code> fact. The scheduler
-        owns replacement and withdrawal; the target formula claims its empty own
-        slots so no incoming edges is a readable answer. Callable construction
-        names the exact settled slot and shape prerequisites together, then
-        consumes the fact's typed-sorted source allocation directly.
-        Equal reproduction preserves allocations and revisions.
+        Product freshness is revisioned by exact product generations and exact fact uses. A
+        producer records each dependency at the read site; a wait only names a dependency already
+        recorded. The scheduler passes one final fact movement per moved key to a reverse index,
+        and only the retained roots that read that fact receive it, including dormant roots and
+        roots suspended around a nested macro drive. The memo's reader index emits a subscription
+        change only as a fact's first reader appears or its last reader leaves, so delivery scans
+        neither roots nor dependencies. The world retains one product session per root, user or
+        macro; the session's memo owns the artifact answers, and retiring the root releases both.
       </p>
       <p>
-        Position-owned tuple layouts may retain different fields of the same
-        value for different consumers. At the runtime and native encoding seam,
-        same-arity tuple layouts are reprojected positionally: source field spans
-        supply the lanes, destination <code>Nothing</code> fields discard theirs,
-        and every required field is encoded recursively. This leaves both
-        layouts unchanged and never reads an erased sibling merely to rebuild
-        the outer tuple. A required absent field remains an error, while an
-        explicit outer <code>ValueRef</code> carrier still requires a whole
-        materializable tuple.
+        Physical layout is owned by positions, not by types. Each transport position owns one
+        layout answer, derived from settled runtime demand, the executable's facts, and exact
+        upstream position products; recursive positions settle as one atomic group from their
+        external anchors. A layout is structural shape plus carrier presence, and encoders obey
+        the carrier before inspecting the shape: a carrier consumes one typed value lane, an
+        absent carrier walks the recursive layout. A field's carrier and its parent tuple's
+        carrier are separate, so an unboxed tuple stays decomposed even when one child is boxed.
+        Where a value's layout puts its fold is unobservable to the program, and no test asserts
+        on it.
       </p>
       <p>
-        A field's carrier and its parent tuple's carrier are separate,
-        self-contained layouts. <code>ValueRef(LaneId)</code> records the typed
-        physical lane beside its structural shape; tuple fields and callable
-        captures retain that whole layout recursively. A carried child stays
-        one lane without losing the callable or nested-tuple contract needed to
-        interpret it, and it does not make the parent tuple boxed. A whole
-        demand retains every field layout without boxing; a public, opaque, or
-        first-class boundary attaches the outer carrier separately.
+        Callables keep the same discipline. A positioned construction owner separates direct
+        callable facts from first-class wrapper authority; direct-only positions carry no
+        construction. Private callable targets keep their exact return layouts, and a first-class
+        wrapper publishes one uniform contract, diverges, absent, or one value reference, for every
+        nonempty returning result. Callers never infer a return contract by scanning targets,
+        types, or the semantic world. A caller owns its return payload position; the callee
+        independently owns its executable return.
       </p>
       <p>
-        Encoders and decoders obey the carrier before inspecting the shape: a
-        carrier consumes one typed value lane, while an absent carrier walks
-        the recursive layout. An unboxed tuple therefore stays decomposed even
-        when one child is boxed, and field projection interprets that child
-        later without rebuilding the parent. ABI physical-layout contracts preserve the same
-        provenance: carrier lanes are always <code>ValueRef</code>; only
-        structural scalar lanes may use a raw representation. Callable
-        boundaries retain surface argument layouts and obtain capture layouts
-        from their callable descriptor. Construction wrappers consume those exact layouts
-        and semantic input mappings, without a separate seam-lane inventory.
+        The root product owns one shared backend program and applies exact rooted executable,
+        wrapper, atom, and schema contribution changes. The native program is the last
+        compiler-owned artifact before JIT and AOT; shared native codegen asks it only
+        backend-consumption questions, and any semantic, reachability, or type answer it still
+        needs after materialization becomes a named fact or product, never an adapter-side query
+        back into the semantic world. The interpreter consumes the backend program, the JIT and
+        AOT doors consume the native program, and one command-line front door serves all three.
       </p>
-      <p>
-        Backend-required transport positions wait for produced
-        <code>TransportShape(position)</code> values, not just demanded position membership.
-        Each position owns one layout answer derived from settled <code>RuntimeDemand(E)</code>,
-        the World-owned <code>ExecutableFacts(E)</code> fact, and exact upstream position products. One
-        <code>DeriveExecutableFacts(E)</code> scheduler job reads the exact settled activation analysis,
-        lowered body, entry dispatch, and analyzed callsite summaries. The
-        <code>DeriveRuntimeDemand(E)</code> job waits for that fact once, then reads its Current content,
-        the Current exact caller contribution, and exact <code>RuntimeDemandInputs(target)</code>
-        sub-facts. Direct edges name their target; first-class surfaces use exact
-        <code>CallableConstructionTarget(owner, value, surface)</code> facts. The formula follows only
-        newly named targets until its local read set stops growing. Absence is bottom: an owned formula
-        publishes provisional demand and caller-local return contributions while peer-dependent
-        capture/input contributions wait only for absent non-self targets. The input sub-fact owns a
-        revision, not another value: it addresses the input vector of the one stored runtime demand.
-        <code>RuntimeDemand</code>, <code>TransportShape</code>,
-        <code>CallableConstruction</code>, and <code>MaterializedExecutable</code> record that fact as an
-        ordinary dependency; materialization additionally waits on its activation's <code>ReturnType</code>.
-        There is no product, producer bridge, reader, driver branch, or memo identity for executable facts
-        or runtime demand. Direct-call
-        and public-callable return origins are distinguished before transport. Recursive position
-        dependencies settle as one atomic product group from their external anchors; there is no
-        root transport solve, component inventory, or absence-provenance side channel. Exact fact
-        and product generations invalidate only recorded readers, while equal reproduction and
-        unrelated positions remain standing.
-      </p>
-      <p>
-        A positioned <code>CallableConstruction</code> owner separates direct callable facts from
-        first-class wrapper authority. Direct-only positions carry their exact callable layout and
-        direct edges with no construction. A first-class producer carries one nonempty construction
-        with its captures, members, boundaries, and selection. Root packaging consumes those owners
-        directly; it does not rejoin boundary publications to decide which constructions exist.
-        The ABI uses the same local-flow selector as the construction producer. Generic positions
-        whose structural layouts contain no callable nodes request no callable owner; their
-        positioned layout remains an exact dependency. Ignored physical-and-callable input demand
-        requests no input product. Lexical captures retain their own source value layouts, including
-        zero-lane metadata needed by wrappers, independently of omitted parameter inputs.
-        Closure-call materialization reads the callee's positioned transport carrier. A
-        <code>ValueRef</code> carrier keeps the call on its public wrapper even when semantic
-        resolution has one target, while an <code>Absent</code> carrier leaves one exact target
-        eligible for direct invocation. Target cardinality does not redefine whether an
-        already-transported callable is private. Callable-construction ownership remains the
-        authority for wrapper construction and packaging, not invocation-carrier discovery.
-      </p>
-      <p>
-        Private callable targets keep their exact return layouts. A first-class callable wrapper
-        publishes <code>Diverges</code>, <code>Absent</code>, or one <code>ValueRef</code> for every
-        nonempty returning result. The wrapper decodes the selected target layout and materializes
-        that public word once. Callers never infer a return contract by scanning targets, types, or
-        the semantic world. A caller owns its <code>ReturnPayload</code>; the callee independently
-        owns its <code>ExecutableReturn</code>. Public non-tail delivery uses that return payload as
-        its source and refines it into the caller's separate resume destination.
-      </p>
-    </section>
-
-    <section>
-      <h2>Product Inventory And Fact Taxonomy</h2>
-      <p>
-        The backend handoff is a product inventory, not one giant catch-all structure. Each product
-        owns one narrower question, and each product is derived only from the exact facts and
-        products it names.
-      </p>
-      <div class="grid">
-        <div class="card">
-          <h3><code>MaterializedExecutable</code></h3>
-          <p>
-            The first backend-owned executable product. It carries one pruned lowered body,
-            selected call edges, return type, per-value types, local transport positions, and frozen
-            extern marshal classes.
-          </p>
-        </div>
-        <div class="card">
-          <h3><code>AbiExecutable</code></h3>
-          <p>
-            The ABI projection for one executable. It derives value/param/return reprs, call-edge
-            ABI, explicit return delivery, <code>EntryCapture</code> transport, resume transport,
-            and callable-boundary obligations from materialized and transport products.
-          </p>
-        </div>
-        <div class="card">
-          <h3><code>BackendExecutable</code></h3>
-          <p>
-            The immutable interpreter-ready body for one executable. Calls name
-            <code>ExecutableKey</code>s and constructions name <code>TransportPosition</code>s,
-            independent of root inventory order. Its shared ABI handle retains layouts and the
-            materialized input rather than copying their metadata into another body representation.
-          </p>
-        </div>
-        <div class="card">
-          <h3><code>RootBackendProduct</code></h3>
-          <p>
-            The final product answer owns a shared <code>BackendProgram</code>. The memo supplies
-            exact rooted contribution changes; persistent ordered inventories share untouched
-            executable, wrapper, atom, and schema state. Consumer boundaries project ordinals
-            where needed, while interpreter continuations and parked receives retain their body
-            allocation. Neither representation replaces typed body references.
-          </p>
-        </div>
-        <div class="card">
-          <h3><code>NativeProgram</code></h3>
-          <p>
-            The native-specific handoff above <code>BackendProgram</code>. It carries a
-            Compiler2-owned CPS/codegen-ready projection: direct executable bodies, clause helpers,
-            continuations, callable-constructor metadata, and extern-marshal facts shared native
-            codegen actually consumes, instead of rebuilding <code>ModulePlan</code>,
-            <code>PlannedProgram</code>, or <code>AbiFacts</code> on the side.
-          </p>
-        </div>
-      </div>
-      <p>
-        Durable Compiler2 artifact answers carry:
-      </p>
-      <ul>
-        <li>selected call edges</li>
-        <li>return delivery carried by <code>ExecutableNeed</code></li>
-        <li>extern marshal classes</li>
-        <li>effect summaries</li>
-        <li>callable-boundary obligations</li>
-        <li>settled clause-entry dispatch</li>
-        <li>stable emission inventory</li>
-        <li>backend-ready structured bodies with settled executable targets</li>
-        <li>the memo-owned <code>NativeProgram</code> derived from <code>RootBackendProduct</code></li>
-      </ul>
-      <p>
-        Rejected baggage stays out of Compiler2 facts:
-      </p>
-      <ul>
-        <li><code>SpecPlan</code> as a backend artifact surface</li>
-        <li><code>SpecRegistry</code> or <code>SpecId</code> as semantic identity</li>
-        <li>old <code>AbiFacts</code> sets such as <code>native_fns</code>, <code>cont_fns</code>, <code>cont_target_fns</code>, and <code>cont_extras_count</code></li>
-        <li>callable wrapper signatures as compiler facts instead of backend-local lowering details</li>
-        <li>formatted telemetry payloads instead of raw ids, facts, and opaque structures</li>
-      </ul>
-      <p>
-        Interpreter work should consume <code>RootBackendProduct(root)</code>, and native work
-        should consume <code>NativeProgram</code>, not invent old planner/codegen state while wiring
-        JIT or AOT.
-        If a backend consumer needs semantic, reachability, or type answers after
-        <code>MaterializedExecutable(E)</code>, that missing information belongs as a named fact or
-        product instead of an adapter-side query back into the semantic world.
-      </p>
-      <h3>Native Codegen Contract</h3>
-      <p>
-        <code>NativeProgram(root)</code> is the last Compiler2-owned artifact before JIT and AOT.
-        Shared native codegen is allowed to ask only backend-consumption questions at that rung:
-      </p>
-      <table>
-        <thead>
-          <tr>
-            <th>Old shared-native input</th>
-            <th>Compiler2-native answer</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>prepared <code>Module</code></td>
-            <td><code>NativeProgram.module</code></td>
-          </tr>
-          <tr>
-            <td>executable / helper inventory</td>
-            <td><code>NativeProgram.entry</code> plus <code>NativeProgram.bodies[*].fn_id</code> and <code>origin</code></td>
-          </tr>
-          <tr>
-            <td><code>ModulePlan.effective_returns</code> and <code>fn_effects</code></td>
-            <td><code>NativeBody.return_ty</code>, <code>return_abi</code>, and <code>effects</code></td>
-          </tr>
-          <tr>
-            <td><code>SpecPlan.vars</code> type queries</td>
-            <td><code>NativeBody.value_types</code></td>
-          </tr>
-          <tr>
-            <td><code>PlannedProgram.callable_entries</code></td>
-            <td><code>NativeProgram.callable_entries</code></td>
-          </tr>
-          <tr>
-            <td>callable-constructor lookup through planner state</td>
-            <td><code>NativeBody.callable_constructors</code></td>
-          </tr>
-          <tr>
-            <td>extern decls plus wire classes</td>
-            <td><code>NativeProgram.module.externs</code> plus <code>NativeBody.extern_marshals</code></td>
-          </tr>
-          <tr>
-            <td>continuation / entry ABI classification</td>
-            <td><code>NativeBody.entry_abi</code> and <code>NativeBodyOrigin::Continuation</code></td>
-          </tr>
-          <tr>
-            <td>runtime type-membership questions</td>
-            <td>explicit <code>RuntimeTypePredicate</code> facts</td>
-          </tr>
-        </tbody>
-      </table>
-      <p>
-        Illegal questions after <code>NativeProgram(root)</code>:
-      </p>
-      <ul>
-        <li>reading <code>ModulePlan</code>, <code>PlannedProgram</code>, <code>SpecPlan</code>, <code>SpecRegistry</code>, or <code>AbiFacts</code></li>
-        <li>asking reachability, callee-selection, or semantic-closure questions</li>
-        <li>re-deriving callable-entry obligations, return lanes, or extern marshal classes from old-world planner state</li>
-      </ul>
-      <p>
-        Rich semantic <code>Ty</code> facts stay above this seam. Direct runtime
-        tests and cached receive dispatch cross it through
-        <code>RuntimeTypePredicate</code>, the first-class runtime-observable
-        predicate layer shared by compiler2 native codegen, legacy receive
-        dispatch, and the interpreter.
-      </p>
-      <p>
-        Current conclusion from the code: no missing closed fact has been identified for the
-        current shared native codegen inputs. <code>Compiler2::compile_root_jit</code>,
-        <code>run_root_jit</code>, and <code>compile_root_aot</code> now consume
-        <code>NativeProgram(root)</code> through the shared backend without
-        <code>prepare_preplanned_native</code>. <code>fz2</code> is the side-by-side outer shell
-        for those front doors. The remaining work above this seam is cutover:
-        switch or retire the old <code>fz</code> surface and remove the fallback plumbing once
-        parity is proven.
+      <p class="small">
+        Detail: <code>pipeline.md</code> (product inventory, native codegen contract, front doors), <code>externs.md</code>, <code>any-value.md</code>.
       </p>
     </section>
 
@@ -953,9 +658,7 @@ MaterializedExecutable(E)
       <h2>Worked Example: Quicksort Plus <code>foo/0</code></h2>
 
       <p>
-        One local design change matters for the next wave of control work:
-        a function body is no longer "a list of steps plus a final result."
-        It is a small entry graph.
+        A function body is not a list of steps plus a final result. It is a small entry graph.
       </p>
       <ul>
         <li><code>LoweredClause</code> owns head projections and points at the <code>ControlEntryId</code> where its body starts.</li>
@@ -964,28 +667,25 @@ MaterializedExecutable(E)
         <li><code>ControlDestination</code> says whether a value returns from the executable or is delivered into another local entry.</li>
       </ul>
       <p>
-        That sounds abstract, but it removes the old weakness directly. A
-        non-tail call no longer needs hidden "finish the rest of the block"
-        machinery. It simply names the resume entry that receives the result:
+        A non-tail call needs no hidden "finish the rest of the block" machinery. It names the
+        resume entry that receives the result:
       </p>
       <pre><code>entry N:
   steps...
   tail = DirectCall { ..., dest: Deliver(resume_k) }
 
 entry resume_k:
-  origin = CallResume { value: v }
+  origin = DeliveredResume { value: v }
   captures = [...]
   steps...
   tail = ...</code></pre>
       <p>
-        Clause bodies use <code>ControlEntryOrigin::Clause</code>. Compiler-made
-        joins and branch arms use <code>Branch</code>. Non-tail calls deliver
-        into <code>CallResume { value }</code>. Local control that moves a value
-        without crossing a callable boundary, like <code>receive</code> arms,
-        delivers into <code>LocalResume { value }</code>. The important part is
-        that backend and native lowering now consume this explicit control graph
-        mechanically instead of trying to recover it later from positional
-        tailness. The backend interpreter preserves the same model: a direct
+        Clause bodies originate as <code>Clause</code>. Compiler-made joins and branch arms
+        originate as <code>Branch</code>. A <code>receive</code> arm originates as
+        <code>ReceiveOutcome</code>. Any entry that receives a delivered value, whether from a
+        non-tail call or from local control that never crosses a callable boundary, originates as
+        <code>DeliveredResume { value }</code>. Backend and native lowering consume this explicit
+        control graph mechanically instead of recovering it later from positional tailness. The backend interpreter preserves the same model: a direct
         tail call may park on <code>receive</code>, and the blocked task keeps a
         backend continuation stack so the eventual wake can still deliver back
         into the caller's resume entry.
@@ -994,6 +694,7 @@ entry resume_k:
       <div class="step">
         <h3><span class="num">01</span>Discovery is cheap</h3>
         <p>
+          The bracketed inputs below are shorthand for the key's interned arrow.
           Submit quicksort plus an extra top-level <code>def foo(), do: 42</code>. The first drive
           only runs <code>IndexCode</code>. It parses the source, stores the top-level items, and
           publishes <code>CodeIndexed(code)</code>. No functions are defined yet. No bodies are
@@ -1023,18 +724,20 @@ RootEntry(root)</code></pre>
       <div class="step">
         <h3><span class="num">03</span>The root seed starts the first activation</h3>
         <p>
-          <code>SeedRoot(root)</code> waits until <code>Recursive(main)</code> and
-          <code>InputDemand(main)</code> exist, then publishes the entry demand facts:
+          <code>SeedRoot(root)</code> waits until <code>FunctionDefined(main/0)</code>,
+          <code>Recursive(main/0)</code>, and <code>InputDemand(main/0)</code> exist, then
+          publishes the entry demand facts and contributes the root's own runtime demand for the
+          entry executable:
         </p>
-        <pre><code>Activation(root, main/0, []) = Inputs([])
+        <pre><code>Activation(root, main/0, [])
+ActivationInputs(root, main/0, []) = { [] }
 Executable(root, main/0, [], Value)</code></pre>
         <p>
           The artifact path does not rely on self-scheduled follow-up work. When the interpreter
           asks for <code>RootBackendProduct(root)</code>, the product driver waits on the exact facts
           needed to key the entry executable and then pulls <code>BackendExecutable(main/0[])</code>.
-          Same-root artifact jobs already in the agenda remain owned there but are parked while this
-          retained request reconciles semantic work. The projection consumes the exact backend job,
-          then unparks native or macro consumers; scoped cleanup does the same on every failure.
+          A second request for a root whose session is already active is parked and re-enqueued
+          when that session restores, on success and on failure alike.
         </p>
       </div>
 
@@ -1042,55 +745,60 @@ Executable(root, main/0, [], Value)</code></pre>
         <h3><span class="num">04</span>Activation analysis co-derives types and plans</h3>
         <p>
           <code>AnalyzeActivation(root, main/0, [])</code> lowers nothing new beyond
-          <code>main/0</code>'s own body and follows only dispatch-reachable clauses. It publishes one
-          direct-call summary:
+          <code>main/0</code>'s own body and follows only dispatch-reachable clauses. It publishes
+          one whole summary per callsite. The summary names each selected callee, the surface
+          inputs the call sends, the exact activation it reached, and the return it has seen:
         </p>
-        <pre><code>CallSiteSummary(root, main, qsort_call) =
-  { callee: qsort/1,
-    input_types: [nonempty_list(int)],
-    need: Value,
-    return_ty: list(int) }</code></pre>
+        <pre><code>CallSiteSummary(root, main/0[], qsort_call) =
+  { targets: [ { callee: qsort/1,
+                 surface_inputs: [non_empty_list(int)],
+                 activation: qsort/1[[int]],
+                 return: [int] } ],
+    return: [int] }</code></pre>
         <p>
-          That same job also contributes:
+          The same body's calls to <code>Kernel.dbg/1</code>, <code>Process.heap_alloc_stats/0</code>,
+          and <code>Kernel.+/2</code> publish summaries of the same shape; they are ordinary runtime
+          functions reached by ordinary call edges. That same job also contributes:
         </p>
-        <pre><code>Activation(root, qsort/1, [nonempty_list(int)])
-Executable(root, qsort/1, [nonempty_list(int)], Value)
-ReturnType(root, main/0, []) = list(int)
+        <pre><code>Activation(root, qsort/1, [[int]])
+Executable(root, qsort/1, [[int]], Value)
+ReturnType(root, main/0, []) = int | float
 ActivationAnalyzed(root, main/0, [])</code></pre>
       </div>
 
       <div class="step">
-        <h3><span class="num">05</span>Recursive inputs settle by joined activation facts</h3>
+        <h3><span class="num">05</span>Recursive inputs settle by keying, then by joined rows</h3>
         <p>
-          Later analyses of <code>qsort/1</code>, <code>partition/4</code>, and
-          <code>append/2</code> may re-contribute to an existing activation with different but
-          compatible input types. Each call contributes a whole input row to
-          <code>ActivationInputs</code> for the selected activation:
+          <code>main/0</code> hands <code>qsort/1</code> a non-empty literal list, but
+          <code>qsort/1</code> is recursive, so keying collapses its arrow to the shape the
+          recursion converges on. The entry call and both recursive calls key one activation,
+          <code>qsort/1[[int]]</code>. <code>partition/4</code> shows the other collapse: no
+          dispatch reads its two accumulator slots and the recursion itself supplies what it
+          returns in them, so those slots are freight and key as variables.
         </p>
-        <pre><code>qsort input row: [non_empty_list(int)]   -- first contribution
-qsort input row: [list(int)]             -- later recursive contribution
-retained row:   [list(int)]              -- covers the earlier whole row</code></pre>
+        <pre><code>partition/4[int, [int], [a2_e], [a3_e]]
+  from qsort/1:      partition/4(int, [int], [], [])       -- first row
+  from partition/4:  partition/4(int, [int], [int], [int]) -- recursive rows
+  retained rows:     one activation, one joined ActivationInputs</code></pre>
         <p>
-          Arguments that arrived together stay together. If two calls share an activation but
-          supply different pairs, both pairs remain alternatives; combining their callsite
-          summaries does not invent a third call containing every mixture of those arguments.
-          Changed input evidence wakes the analysis through the same fact graph.
+          Each call contributes a whole input row to <code>ActivationInputs</code> for the
+          selected activation. Arguments that arrived together stay together. If two calls share
+          an activation but supply different pairs, both pairs remain alternatives; combining
+          their callsite summaries does not invent a third call containing every mixture of those
+          arguments. Changed input evidence wakes the analysis through the same fact graph.
         </p>
       </div>
 
       <div class="step">
-        <h3><span class="num">06</span>Tuple-field need rides on the same callsite fact</h3>
+        <h3><span class="num">06</span>Tuple-field need rides on the executable key</h3>
         <p>
-          The call from <code>qsort/1</code> to <code>partition/4</code> needs tuple-field
-          projection, so its summary carries that need directly:
+          The call from <code>qsort/1</code> to <code>partition/4</code> destructures the result,
+          so the executable it demands carries that need in its key:
         </p>
-        <pre><code>CallSiteSummary(root, qsort, partition_call) =
-  { callee: partition/4,
-    input_types: [list(int), int, list(int), list(int)],
-    need: TupleFields(2),
-    return_ty: tuple([list(int), list(int)]) }</code></pre>
+        <pre><code>Executable(root, partition/4, [int, [int], [a2_e], [a3_e]], TupleFields(2))</code></pre>
         <p>
-          There is no separate <code>ReturnNeed</code> fact to keep in sync.
+          The need is part of the executable's identity and of the runtime demand callers
+          contribute to it. There is no separate <code>ReturnNeed</code> fact to keep in sync.
         </p>
       </div>
 
@@ -1103,7 +811,9 @@ retained row:   [list(int)]              -- covers the earlier whole row</code><
         <pre><code>RootBackendProduct(root)
   entry: main/0[]
   products: BackendExecutable(main), BackendExecutable(qsort), BackendExecutable(partition),
-            BackendExecutable(append), ...runtime helpers named by call edges...</code></pre>
+            BackendExecutable(append),
+            ...the Kernel and Process executables named by main/0's call edges,
+            and the runtime helpers those name in turn...</code></pre>
         <p>
           <code>foo/0</code> is absent because no reached callsite ever referenced it, so no product
           key asks for its body or backend executable.
@@ -1113,14 +823,19 @@ retained row:   [list(int)]              -- covers the earlier whole row</code><
       <div class="step">
         <h3><span class="num">08</span>Products freeze and package only demanded executables</h3>
         <p>
-          <code>MaterializedExecutable(E)</code> clones one body, prunes unreachable clauses, rewrites
+          <code>MaterializedExecutable(E)</code> takes the shared lowered body, prunes unreachable clauses, rewrites
           semantically cold local-control entries into explicit halt stubs, and records symbolic call
-          edges. <code>AbiExecutable(E)</code> then makes return delivery, ABI lanes,
-          <code>EntryCapture</code> positions, resumes, and callable entries explicit without asking new
-          semantic questions. <code>BackendExecutable(E)</code> reads the exact ABI prerequisites
-          named by return endpoints and construction members/captures, then lowers one retained body. Finally,
-          <code>RootBackendProduct(root)</code> follows exact reachable backend product values, retains
-          their positioned transport plan, and shares their allocations in <code>BackendProgram</code>.
+          edges. <code>AbiExecutable(E)</code> then settles the parameter representations, the
+          semantic input layouts, the return layout and every return endpoint, the transport plan,
+          per-value layouts, effects, ABI-ready call edges, and positioned callable construction
+          owners, without asking new semantic questions. <code>BackendExecutable(E)</code> reads
+          its own ABI product and the ABI products its call edges name, then lowers one retained
+          body and records its callee and schema membership. Finally,
+          <code>RootBackendProduct(root)</code> applies exact executable and schema changes,
+          retains their positioned transport plan, and shares their allocations in
+          <code>BackendProgram</code>.
+        </p>
+        <p>
           The session and its dependency graph remain owned by <code>Compiler2</code> after the
           request. Asking again without a movement cache-hits this exact root answer and evaluates
           no producer. Redefining uncalled <code>foo/0</code> later does not change that root product.
@@ -1148,28 +863,36 @@ retained row:   [list(int)]              -- covers the earlier whole row</code><
           When <code>main/0</code> calls <code>Enum.reduce/3</code>,
           <code>AnalyzeActivation(root, main/0, [])</code> publishes:
         </p>
-        <pre><code>CallSiteSummary(root, main, enum_reduce_call) =
-  { callee: Enum.reduce/3,
-    input_types: [list(int), int, reducer_closure],
-    need: Value,
-    return_ty: int }</code></pre>
+        <pre><code>CallSiteSummary(root, main/0[], enum_reduce_call) =
+  { targets: [ { callee: Enum.reduce/3,
+                 surface_inputs: [[int], int, (int, int) -> int],
+                 activation: Enum.reduce/3[non_empty_list(int), int, closure[main/0#lambda@0/2]],
+                 return: int } ],
+    return: int }</code></pre>
         <p>
-          That summary contributes a rooted activation for <code>Enum.reduce/3</code>. Only then
-          does the engine submit and define the runtime module surface that owns that function.
+          <code>Enum.reduce/3</code> is not recursive, so nothing collapses the literal's non-empty
+          shape, and its body constructs a lambda, which makes it consume callable identity, so the
+          exact closure stays in the key. That summary contributes the rooted activation, and only
+          then does the engine submit and define the runtime module surface that owns the function.
         </p>
       </div>
 
       <div class="step">
         <h3><span class="num">03</span>Protocol dispatch is still ordinary fact work</h3>
         <p>
-          The runtime implementation can call the protocol callback
-          <code>Enumerable.reduce/3</code>, which then resolves to the concrete
-          <code>Enumerable.List.reduce/3</code> implementation because the receiver type is a list.
-          Each hop publishes one whole callsite summary and one callee activation:
+          <code>Enum.reduce/3</code> wraps the accumulator as <code>{:cont, acc}</code>, mints a
+          bridge lambda that calls the user's reducer and rewraps its result, and calls the
+          protocol callback <code>Enumerable.reduce/3</code>. The receiver type is a list, so that
+          callsite devirtualizes to <code>Enumerable.List.reduce/3</code> directly. No activation
+          exists for the protocol callback itself, and its placeholder body is never lowered.
+          Each reached hop publishes one whole callsite summary and one callee activation:
         </p>
-        <pre><code>CallSiteSummary(root, Enum.reduce, protocol_call) = Enumerable.reduce/3
-CallSiteSummary(root, Enumerable.reduce, impl_call) = Enumerable.List.reduce/3
-Activation(root, Enumerable.List.reduce/3, [...])</code></pre>
+        <pre><code>CallSiteSummary(root, Enum.reduce/3[...], protocol_call)
+  => Enumerable.List.reduce/3[non_empty_list(int), {:cont, int}, closure[Enum.reduce/3#lambda@0/2]]
+  => List.reduce/3                       -- the impl delegates
+  => List.reduce_step/3, List.reduce_cont/3
+ReturnType(root, Enum.reduce/3#lambda@0/2, [...]) = {:cont, int}
+ReturnType(root, Enum.reduce_finish/1, [{:done, int}]) = int</code></pre>
       </div>
 
       <div class="step">
@@ -1179,19 +902,20 @@ Activation(root, Enumerable.List.reduce/3, [...])</code></pre>
           function. Its activation and return type live in the same fact families as named
           functions:
         </p>
-        <pre><code>FunctionDefined(lambda#reduce_sum/2)
-LoweredBody(lambda#reduce_sum/2)
-Activation(root, lambda#reduce_sum/2, [int, int])
-ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
+        <pre><code>FunctionDefined(main/0#lambda@0/2)
+LoweredBody(main/0#lambda@0/2)
+Activation(root, main/0#lambda@0/2, [int, int])
+ReturnType(root, main/0#lambda@0/2, [int, int]) = int</code></pre>
       </div>
 
       <div class="step">
         <h3><span class="num">05</span>Unreached runtime code stays cold</h3>
         <p>
           The final root product contains only the user function, the reducer lambda, and the
-          reached runtime/protocol helpers. Unrelated runtime modules such as <code>Utf8</code> or
-          unreached <code>Enum</code> helpers never get product keys and therefore never reach
-          materialization.
+          reached runtime and protocol helpers. <code>Enum.map/2</code> and
+          <code>Enum.reverse/1</code> are defined but never analyzed, and the <code>Map</code> and
+          <code>Range</code> implementation modules are never defined at all, so none of them get
+          product keys and none reach materialization.
         </p>
       </div>
     </section>
@@ -1200,12 +924,20 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
       <h2>Observability And Guideposts</h2>
       <p>
         Telemetry carries raw ids, facts, and opaque structures. Formatting belongs in handlers.
-        The compiler surface emits spans for <code>drive</code> and each <code>job</code>, plus
-        state-defining events such as <code>function.defined</code>,
-        <code>callsite.defined</code>, retained artifact settlements through
+        The compiler surface emits spans for the drive and each job, each carrying the reason the
+        work started, plus state-defining events such as <code>function.defined</code>,
+        <code>callsite.defined</code>, <code>return_type.defined</code> and
+        <code>return_type.widened</code>, retained artifact settlements through
         <code>pull.product.settled</code>, product dependency movements through
         <code>work_graph.dependencies_moved</code>, and <code>pull.session.finished</code>. Tests
         observe those events instead of poking through world internals.
+      </p>
+      <p>
+        Every presentation keeps three answers apart. <em>Unknown</em> is a return not yet
+        published; it is bottom, the join identity, and it is rendered as unpublished.
+        <em>None</em> is a computed empty type. <em>Any</em> is a computed top. A dump or trace
+        that prints one of these with another's word has lost the distinction the fixpoint
+        exists to make.
       </p>
       <div class="grid">
         <div class="card">
@@ -1213,33 +945,38 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
           <p>
             <code>src/compiler2/drive_test.rs</code> is the fast contract surface. The quicksort,
             <code>Enum.reduce</code>, and variadic-extern tests assert finite closure size, exact
-	            reached callsites, absence of cold helpers, and the pulled backend/native products.
+            reached callsites, absence of cold helpers, and the pulled backend and native products.
           </p>
           <p class="small">
-            Useful rerun: <code>cargo test --lib compiler2_ -- --nocapture</code>
+            Useful rerun: <code>cargo test --lib compiler2_</code>
           </p>
         </div>
         <div class="card">
-          <h3>Deep trace</h3>
+          <h3>Trace and distill</h3>
           <p>
-            <code>src/compiler2/telemetry_dump_test.rs</code> is an ignored one-off harness that
-            writes the full quicksort event stream to
-            <code>/tmp/fz-compiler2-quicksort.jsonl</code> through a JSONL handler. The handler does
-            any debug formatting; emit sites do not.
+            <code>fz2 --log-telemetry &lt;path&gt;</code> appends the JSONL stream for one run;
+            <code>--emit=stats</code> prints the settle counts on exit. The distiller sums inclusive
+            and self time by span, by job kind, and by the function served, and counts return
+            definitions and widenings per activation.
           </p>
           <p class="small">
-            Useful rerun: <code>cargo test --lib compiler2::telemetry_dump_test::dump_quicksort_compiler2_telemetry_to_jsonl -- --ignored --exact --nocapture</code>
+            Useful rerun: <code>elixir tools/distill-telemetry.exs trace.jsonl</code>
           </p>
         </div>
         <div class="card">
           <h3>What to watch</h3>
           <p>
             The important numbers are not raw event counts in isolation. They are: which jobs were
-            coalesced, which facts changed revision, which waits remained unresolved, and which
-            roots reclosed after a redefinition.
+            coalesced, which facts changed revision, which waits remained unresolved, how many
+            times a return was defined, and which roots reclosed after a redefinition. On a
+            trivial fixture, a slow compile is a correctness signal, not a performance one.
           </p>
         </div>
       </div>
+      <p class="small">
+        Detail: <code>telemetry.md</code>, <code>performance-instrumentation.md</code>, <code>canonical-form.md</code>, <code>fixtures.md</code>.
+        The activation dump does not yet render an unpublished return as unpublished; that repair is fz-kdt.177.19.
+      </p>
     </section>
 
     <section>
@@ -1247,13 +984,16 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
       <ul>
         <li><strong>Stable ids before meaning:</strong> modules and MFAs can be referenced before they are defined.</li>
         <li><strong>One local type world:</strong> <code>Ty</code> is compiler-owned and never compared across worlds.</li>
+        <li><strong>One id per denotation:</strong> interning is canonical by construction, so equal sets are equal ids and a canonical rendering is for display only.</li>
         <li><strong>Represent, don't name:</strong> <code>Types</code> carries no naming duty; a type name is an identity defined by <code>TypeDefined</code>, settled at the surface tier before any semantic question is asked.</li>
         <li><strong>One logical fact, one key:</strong> whole callsite summaries replace split partial facts.</li>
-        <li><strong>No separate type loop:</strong> activation-input joins are ordinary fact replacement.</li>
-        <li><strong>Lazy runtime bootstrap:</strong> <code>runtime.fz</code> and runtime modules warm only when demanded.</li>
-        <li><strong>Product-keyed artifacts:</strong> artifact producers return exact fact/product waits; they do not self-schedule follow-up work.</li>
+        <li><strong>No separate type loop:</strong> activation-input joins are ordinary cumulative facts.</li>
+        <li><strong>Unknown, none, and any stay apart:</strong> bottom is a readable claim, never the empty type, in every fact and every presentation.</li>
+        <li><strong>Lazy runtime bootstrap:</strong> the prelude and the runtime library warm only when demanded.</li>
+        <li><strong>Product-keyed artifacts:</strong> artifact producers return exact fact and product waits; nothing self-schedules follow-up work.</li>
         <li><strong>Artifact isolation:</strong> materialization consumes settled local facts and named products, then final root packaging follows and shares only exact reachable backend product values.</li>
         <li><strong>Blast radius by revision:</strong> redefinition propagates only as far as fact revisions actually change.</li>
+        <li><strong>Work proportional to input:</strong> the trace says why every job started; excess work is a defect, not a cost.</li>
       </ul>
     </section>
   </main>
