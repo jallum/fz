@@ -18,6 +18,7 @@ Read:
 - [set-theoretic types](docs/set-theoretic-types.md) — types as sets of values: axes/DNF, the two `Types` implementations behind one trait, schemes, brands/opaques, and the typing-vs-runtime predicate split.
 - [addressed arrow](docs/addressed-arrow.md) — the one interned arrow language for every function surface: variables as structural addresses, addressing+interning as canonical-by-construction, the two binders, the dispatch-key collapse vs. evidence split, and the `match_arrow` trichotomy calculator.
 - [type specialization](docs/type-specialization.md) — how compiler2 types one activation (value-flow over lowered steps, return as a union over reachable clauses) and why specialization stays finite.
+- [source equation bindings](docs/source-equation-bindings.md) — .10's paper contracts, measured recursive-binding limits, and the joint-row solver capability required before moving inference ownership; not yet implemented.
 - [specs](docs/specs.md) — the `@spec` contract engine: overload sets, scheme matching, application with overlap witnesses, higher-order callback evidence, and the upper-bound coverage check.
 - [protocols](docs/protocols.md) — protocols as owned facts: callback surface + domain type, impl registration, and receiver-subtype dispatch (`resolve_protocol_call`) with lazy runtime-impl loading.
 - [modules](docs/modules.md) — modules and namespaces: identity-on-reference, the Placeholder→Indexed→Scoped→Defined lifecycle, the namespace savepoint chain, two-pass scoping, and lazy runtime-library/prelude loading.
