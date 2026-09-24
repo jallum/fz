@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
 
 env:
@@ -31,7 +31,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         if: github.event_name == 'pull_request'
       - uses: dtolnay/rust-toolchain@stable
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push'
         with:
           components: llvm-tools-preview
       - uses: erlef/setup-beam@v1
@@ -44,7 +44,7 @@ jobs:
         with:
           tool: cargo-audit
       - uses: taiki-e/install-action@v2
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push'
         with:
           tool: cargo-llvm-cov
       - run: cargo audit
@@ -53,7 +53,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: cargo test --workspace --all-features
       - name: Generate coverage report
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push'
         run: |
           cargo llvm-cov \
             --all-features \
@@ -62,7 +62,7 @@ jobs:
             --json --summary-only \
             --output-path coverage.json
       - uses: actions/upload-artifact@v4
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push'
         with:
           name: coverage-json
           path: coverage.json

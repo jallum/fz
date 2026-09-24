@@ -581,6 +581,10 @@ fixture conventions — how each fixture pins its claim, and the compiler
 dump-budget mechanism — are explained in
 [fixtures/GOLDEN.md](fixtures/GOLDEN.md).
 
+CI runs lint, security audit, doctests, and workspace tests for pull requests
+and pushes to `main` and `develop`. Pushes to either branch also enforce the
+coverage threshold; only `main` updates the published coverage badge.
+
 ### Pre-commit hook
 
 A tracked pre-commit hook lives in [`.githooks/`](.githooks/). It formats
