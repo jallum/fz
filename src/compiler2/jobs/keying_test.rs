@@ -37,6 +37,7 @@ fn input_demands(name: &str, source: &str) -> BTreeMap<String, InputDemand> {
     );
 
     let mut compiler = Compiler2::new(tel);
+    compiler.set_drive_timeout(std::time::Duration::from_secs(30));
     compiler.submit_code(CodeSubmission {
         name: Some(name.to_string()),
         text: source.to_string(),
@@ -187,5 +188,143 @@ fn a_forwarder_inherits_what_its_callee_asks() {
         fwd.forwarded_dispatch,
         vec![DispatchDemand::Whole, DispatchDemand::Whole],
         "both inputs reach call2/2, which calls one and hands it the other",
+    );
+}
+
+#[test]
+fn inline_dispatch_observes_its_input_and_its_forwarders() {
+    let demands = input_demands(
+        "inline dispatch demand",
+        "def choose(x) do\n case x do\n :a -> 1\n _ -> 2\n end\nend\n\
+         def forward(x), do: choose(x)\ndef main(), do: forward(:a)\n",
+    );
+    for name in ["choose/1", "forward/1"] {
+        assert_eq!(
+            demand_of(&demands, name).forwarded_dispatch,
+            vec![DispatchDemand::Whole]
+        );
+    }
+}
+
+#[test]
+fn inline_dispatch_pulls_a_projected_observation_back_to_its_input() {
+    let demands = input_demands(
+        "projected inline dispatch demand",
+        "def choose(pair) do\n {x, _} = pair\n case x do\n :a -> 1\n _ -> 2\n end\nend\n\
+         def main(), do: choose({:a, :freight})\n",
+    );
+    assert_eq!(
+        demand_of(&demands, "choose/1").forwarded_dispatch,
+        vec![DispatchDemand::TupleFields]
+    );
+}
+
+#[test]
+fn an_inline_condition_observes_the_operands_of_its_computation() {
+    let demands = input_demands(
+        "computed condition demand",
+        "def choose(x, freight), do: if x == :a, do: freight, else: :no\n\
+         def main(), do: choose(:a, :ok)\n",
+    );
+    assert_eq!(
+        demand_of(&demands, "choose/2").forwarded_dispatch,
+        vec![DispatchDemand::Whole, DispatchDemand::Ignore]
+    );
+}
+
+#[test]
+fn a_closure_call_observes_a_projected_argument() {
+    let demands = input_demands(
+        "projected closure argument demand",
+        "def apply(pair, f) do\n {x, _} = pair\n f.(x)\nend\n\
+         def main(), do: apply({1, :freight}, fn (x) -> x + 1 end)\n",
+    );
+    assert_eq!(
+        demand_of(&demands, "apply/2").forwarded_dispatch,
+        vec![DispatchDemand::TupleFields, DispatchDemand::Whole]
+    );
+}
+
+#[test]
+fn an_observed_call_result_pulls_demand_back_to_its_arguments() {
+    let demands = input_demands(
+        "observed call result demand",
+        "def identity(x), do: x\n\
+         def choose(x) do\n case identity(x) do\n :a -> 1\n _ -> 2\n end\nend\n\
+         def main(), do: choose(:a)\n",
+    );
+    assert_eq!(
+        demand_of(&demands, "choose/1").forwarded_dispatch,
+        vec![DispatchDemand::Whole]
+    );
+}
+
+#[test]
+fn a_recursive_list_tail_preserves_list_shape_demand() {
+    let demands = input_demands(
+        "recursive list tail demand",
+        "def walk([]), do: :ok\ndef walk([_ | tail]), do: walk(tail)\n\
+         def main(), do: walk([1, 2, 3])\n",
+    );
+    assert_eq!(
+        demand_of(&demands, "walk/1").forwarded_dispatch,
+        vec![DispatchDemand::ListShape]
+    );
+}
+
+#[test]
+fn replacing_an_inline_question_rederives_its_forwarders_demand() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.set_drive_timeout(std::time::Duration::from_secs(30));
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let forward = compiler.world_mut().reference_function(ModuleId::GLOBAL, "forward", 1);
+    for (body, expected) in [
+        ("1", DispatchDemand::Ignore),
+        ("case x do\n :a -> 1\n _ -> 2\nend", DispatchDemand::Whole),
+        ("1", DispatchDemand::Ignore),
+    ] {
+        compiler.submit_code(CodeSubmission {
+            name: Some("inline-demand-replacement.fz".into()),
+            text: format!("def choose(x), do: {body}\ndef forward(x), do: choose(x)\ndef main(), do: forward(:a)\n"),
+        });
+        compiler.drive_root_to_dump_stage(root, DumpStage::Backend).unwrap();
+        assert_eq!(
+            compiler.world().input_demand(forward).unwrap().forwarded_dispatch,
+            vec![expected],
+            "adding or removing a source observation must replace the forwarder's demand"
+        );
+    }
+}
+
+#[test]
+fn an_observed_join_keeps_each_call_results_input_dependencies() {
+    let demands = input_demands(
+        "observed joined call result demand",
+        "def identity(x), do: x\n\
+         def choose(flag, x) do\n y = if flag, do: identity(x), else: :fixed\n\
+         case y do\n :a -> 1\n _ -> 2\n end\nend\n\
+         def main(), do: choose(true, :a)\n",
+    );
+    assert_eq!(
+        demand_of(&demands, "choose/2").forwarded_dispatch,
+        vec![DispatchDemand::Whole, DispatchDemand::Whole]
+    );
+}
+
+#[test]
+fn an_inline_case_on_a_list_tail_preserves_shape_demand() {
+    let demands = input_demands(
+        "inline list tail shape demand",
+        "def last?([_ | tail]) do\n case tail do\n [] -> true\n _ -> false\n end\nend\n\
+         def main(), do: last?([1, 2])\n",
+    );
+    assert_eq!(
+        demand_of(&demands, "last?/1").forwarded_dispatch,
+        vec![DispatchDemand::ListShape]
     );
 }

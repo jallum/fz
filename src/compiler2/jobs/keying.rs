@@ -2,9 +2,12 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::dispatch_matrix::demand::DispatchDemand;
+use crate::dispatch_matrix::demand::{DispatchDemand, demand_at_projection};
 
-use super::super::body::{CallInputMode, LoweredBody, LoweredStep, LoweredTail, ValueId};
+use super::super::body::{
+    CallInputMode, LoweredBody, LoweredStep, LoweredTail, SubjectOriginRoot, ValueId, step_used_values,
+    tail_used_values,
+};
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
 use super::super::identity::FunctionId;
@@ -237,8 +240,7 @@ fn publish_call_graph_node(
     }
 }
 
-/// One node of the input-demand graph: a body's OWN dispatch demand, and the
-/// parameters it hands on unchanged.
+/// One body's own observations and the source dependencies of its calls.
 #[derive(Debug, Clone, Default)]
 struct DemandNode {
     local: Vec<DispatchDemand>,
@@ -256,45 +258,16 @@ struct ForwardEdge {
     callee_slot: usize,
 }
 
-/// Derives which function inputs are DEMANDED -- by this body's own entry
-/// dispatch, or by a callee this body forwards them to, transitively.
+/// Derive the questions that can distinguish a function's input slots.
+/// Entry/inline dispatch and callable observations seed local
+/// demand. Pull those questions back through source dependencies, then join
+/// callee questions through unchanged-input forwarding.
 ///
-/// Dispatch demand alone answers "what does this body ASK about its inputs",
-/// and that was never the question activation keying needs. The question is
-/// "what does this activation's published return DEPEND on", and a body that
-/// hands a parameter straight to a callee depends on everything that callee's
-/// KEY names at that position: the element decides which callee activation is
-/// reached, and therefore what comes back. `List.reduce_step/3` forwards its
-/// list to `List.reduce_cont/3`, whose key is ground in the element, so the
-/// element is part of `reduce_step/3`'s meaning even though `reduce_step/3`
-/// dispatches only on its accumulator tag -- and without it two `Enum.reduce/3`
-/// users share one activation and one JOINED return (fz-kdt.183, fz-kdt.122).
-///
-/// So the published demand is a JOIN over the `DispatchDemand` lattice
-/// (`Ignore` < `ListShape`/`TupleFields` < `Whole`, `DispatchDemand::join_assign`):
-/// the demand on slot `i` of `f` is `f`'s own local demand on `i` joined with
-/// the demand on every position `g@j` that `f` forwards `i` to.
-///
-/// Forwarding is cyclic (`reduce_cont/3` <-> `reduce_step/3`), so this is a
-/// least fixpoint, computed by Kleene iteration over the forwarding graph one walk
-/// discovers -- the same shape `derive_call_graph_component` uses for the
-/// strong component, and terminating for the same reason: the join is monotone
-/// and the lattice has four elements and height two, so a slot rises at most
-/// twice -- from `Ignore` through one descent kind to `Whole`.
-///
-/// The body's OWN demand is more than its entry dispatch, because a closure
-/// call is a question too: the callable decides which body runs and that body
-/// decides what it asks of the arguments, so a slot a closure call touches --
-/// and a slot a lambda captures -- is demanded `Whole` before any forwarding
-/// is joined in ([`join_closure_observations`]).
-///
-/// A slot NOT reached this way is freight: the body neither asks about it nor
-/// hands it to anyone who does. It stays collapsed, which is what keeps one
-/// activation for `loop(n, junk)` and one for `partition/4`'s two accumulators.
-///
-/// What a body asks of a slot by itself is an intermediate of this walk, not a
-/// published answer: every consumer wants the question the whole reachable set
-/// asks (see [`InputDemand`]).
+/// Both walks use Ignore < ListShape/TupleFields < Whole. A value or input
+/// slot rises at most twice. Forwarding carries the same value unchanged,
+/// so recursive calls cannot grow projection paths or prevent convergence.
+/// An input untouched by these questions remains freight. Return flow is the
+/// other source of observability, combined by World::observable_inputs.
 pub(super) fn derive_input_demand(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -325,10 +298,9 @@ pub(super) fn derive_input_demand(
     })
 }
 
-/// Walks the input FORWARDING graph from `function`: only a callee that receives
-/// one of this body's parameters unchanged is entered, so the graph is a fraction
-/// of the call graph and a body that forwards nothing reads exactly the facts
-/// the local mask always needed.
+/// Visit callees receiving an unchanged input of this body. Read every
+/// visited source even when its current demand is Ignore: later edits can add
+/// observations and must invalidate the callers' answers.
 fn collect_input_forwarding_graph(
     world: &World,
     function: FunctionId,
@@ -373,13 +345,13 @@ fn collect_input_forwarding_graph(
     }
     reads.push(dispatch);
     reads.push(lowered);
-    // The plan states what it reads of its inputs; this walk raises that with
-    // the questions a closure call asks, then joins it across the bodies a
-    // value is forwarded to.
+    // Entry and inline plans own their questions; origins pull those
+    // questions back to the semantic inputs before callee propagation.
     let body = world.lowered_body(function);
     let mut local = world.entry_dispatch(function).input_demand().to_vec();
-    let slots_of = direct_input_slots(&body, local.len());
-    join_closure_observations(&body, &slots_of, &mut local);
+    let observations = SourceObservations::new(&body);
+    join_source_observations(&observations, &mut local);
+    let slots_of = direct_input_slots(&observations, local.len());
     let forwards = forwarded_inputs(world, &body, &slots_of);
     let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
     graph.insert(function, DemandNode { local, forwards });
@@ -502,77 +474,202 @@ fn forwarded_inputs(world: &World, body: &LoweredBody, slots_of: &HashMap<ValueI
 /// that value names its slot. So does anything that only RENAMES it: an alias,
 /// a join of aliases, a dispatch subject read straight off the input. A
 /// projection does not -- the value standing there is a piece of the input, so
-/// neither forwarding nor observation of the slot can be read off it, and
-/// nothing reached through a projection names a slot at all.
+/// it is not unchanged forwarding. Local observations use the separate
+/// projection-aware pullback below.
 ///
 /// One value can name more than one slot: `f(x, x)` binds one `ValueId` to two.
-fn direct_input_slots(body: &LoweredBody, input_count: usize) -> HashMap<ValueId, Vec<usize>> {
-    let LoweredBody::Clauses { clauses, .. } = body else {
-        return HashMap::new();
-    };
-    let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
-    let mut slots = HashMap::<ValueId, Vec<usize>>::new();
-    for clause in clauses {
-        for (slot, value) in clause.params.iter().copied().enumerate().take(input_count) {
-            let named = slots.entry(value).or_default();
-            if !named.contains(&slot) {
-                named.push(slot);
-            }
-        }
+fn direct_input_slots(observations: &SourceObservations<'_>, input_count: usize) -> HashMap<ValueId, Vec<usize>> {
+    let mut slots = observations.inputs.clone();
+    for named in slots.values_mut() {
+        named.retain(|slot| *slot < input_count);
     }
-    for value in origins.keys() {
-        resolve_direct_slots(body, *value, &origins, &mut slots, &mut HashSet::new());
+    for value in observations.origins.keys() {
+        resolve_direct_slots(
+            observations.body,
+            *value,
+            &observations.origins,
+            &mut slots,
+            &mut HashSet::new(),
+        );
     }
     slots
 }
 
-/// Raises this body's own demand to `Whole` on every input a closure call
-/// touches, and on every input a lambda closes over.
-///
-/// A closure call is a dispatch question about all of them. Which callable
-/// arrived decides which body runs, so the called slot is asked about; and
-/// that body -- which this one cannot know statically -- decides what it asks
-/// of the arguments handed to it, so the honest answer for each argument is
-/// the whole value. A lambda bakes the identity of what it captures into the
-/// closure it builds, and that closure's consumers depend on the correlation,
-/// so a captured input is asked about too.
-///
-/// `ClosureCall` only occurs as an entry tail and `Lambda` only as a step, so
-/// the flat scan covers every dispatch arm, branch and receive clause.
-fn join_closure_observations(
-    body: &LoweredBody,
-    slots_of: &HashMap<ValueId, Vec<usize>>,
-    local: &mut [DispatchDemand],
-) {
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return;
-    };
-    let mut touched = Vec::new();
-    for entry in entries {
-        if let LoweredTail::ClosureCall { callee, args, .. } = &entry.tail {
-            touched.push(*callee);
-            touched.extend(args.iter().map(|arg| arg.value));
+/// Pull source observations through the same aliases and projections used by
+/// transport. Computed values conservatively ask about their operands; this is
+/// a dependency walk, not a second implementation of operation semantics.
+struct SourceObservations<'a> {
+    body: &'a LoweredBody,
+    origins: HashMap<ValueId, TransportOrigin>,
+    call_operands: HashMap<super::super::body::CallSiteId, Vec<ValueId>>,
+    inputs: HashMap<ValueId, Vec<usize>>,
+}
+
+impl<'a> SourceObservations<'a> {
+    fn new(body: &'a LoweredBody) -> Self {
+        let mut call_operands = HashMap::new();
+        let mut inputs = HashMap::<ValueId, Vec<usize>>::new();
+        if let LoweredBody::Clauses { clauses, entries, .. } = body {
+            for clause in clauses {
+                for (slot, value) in clause.params.iter().enumerate() {
+                    inputs.entry(*value).or_default().push(slot);
+                }
+            }
+            for entry in entries {
+                if let LoweredTail::DirectCall { callsite, .. } | LoweredTail::ClosureCall { callsite, .. } =
+                    &entry.tail
+                {
+                    let mut used = Vec::new();
+                    tail_used_values(&entry.tail, &mut used);
+                    call_operands.insert(*callsite, used);
+                }
+            }
         }
-        touched.extend(entry.steps.iter().flat_map(lambda_captures).copied());
+        Self {
+            body,
+            origins: collect_value_origins(body, &collect_callsite_return_origins(body)),
+            call_operands,
+            inputs,
+        }
     }
-    for clause in clauses {
-        touched.extend(clause.projections.iter().flat_map(lambda_captures).copied());
+
+    fn pull(&self, seeds: Vec<(ValueId, DispatchDemand)>, local: &mut [DispatchDemand]) {
+        let mut pending = seeds;
+        let mut seen = HashMap::<ValueId, DispatchDemand>::new();
+        while let Some((value, demand)) = pending.pop() {
+            let prior = seen.entry(value).or_default();
+            let before = prior.clone();
+            prior.join_assign(demand);
+            if *prior == before {
+                continue;
+            }
+            let demand = prior.clone();
+            if let Some(slots) = self.inputs.get(&value) {
+                for slot in slots {
+                    if let Some(local) = local.get_mut(*slot) {
+                        local.join_assign(demand.clone());
+                    }
+                }
+                continue;
+            }
+            if let Some(origin) = self.origins.get(&value) {
+                self.pull_origin(origin, &demand, local, &mut pending);
+                continue;
+            }
+            if let Some(step) = self.body.value_definition(value) {
+                let mut operands = Vec::new();
+                step_used_values(step, &mut operands);
+                pending.extend(operands.into_iter().map(|operand| (operand, DispatchDemand::Whole)));
+            }
+        }
     }
-    for value in touched {
-        for slot in slots_of.get(&value).into_iter().flatten().copied() {
-            if let Some(demand) = local.get_mut(slot) {
-                demand.join_assign(DispatchDemand::Whole);
+
+    fn pull_origin(
+        &self,
+        origin: &TransportOrigin,
+        demand: &DispatchDemand,
+        local: &mut [DispatchDemand],
+        pending: &mut Vec<(ValueId, DispatchDemand)>,
+    ) {
+        match origin {
+            TransportOrigin::ExecutableInput(slot) => {
+                if let Some(local) = local.get_mut(*slot) {
+                    local.join_assign(demand.clone());
+                }
+            }
+            TransportOrigin::LocalValue(value) => pending.push((*value, demand.clone())),
+            TransportOrigin::Projection { source, kind } => pending.push((*source, pull_projection(kind, demand))),
+            TransportOrigin::OutcomeSubject { owner, subject } => {
+                let (root, path) = self.body.dispatch_subject_origin(*owner, *subject);
+                if let SubjectOriginRoot::Value(value) = root {
+                    let demand = path
+                        .iter()
+                        .rev()
+                        .fold(demand.clone(), |demand, kind| pull_projection(kind, &demand));
+                    pending.push((value, demand));
+                }
+            }
+            TransportOrigin::Join(children) => {
+                for child in children {
+                    self.pull_origin(child, demand, local, pending);
+                }
+            }
+            TransportOrigin::TupleValue(items) => {
+                pending.extend(items.iter().map(|item| (*item, DispatchDemand::Whole)))
+            }
+            TransportOrigin::CallableValue(producer) => pending.extend(
+                producer
+                    .captures
+                    .iter()
+                    .map(|capture| (*capture, DispatchDemand::Whole)),
+            ),
+            TransportOrigin::CallsiteReturn(callsite) | TransportOrigin::ClosureCallReturn { callsite, .. } => {
+                pending.extend(
+                    self.call_operands
+                        .get(callsite)
+                        .into_iter()
+                        .flatten()
+                        .map(|value| (*value, DispatchDemand::Whole)),
+                );
             }
         }
     }
 }
 
-/// What a step closes over, which is nothing unless the step builds a lambda.
-fn lambda_captures(step: &LoweredStep) -> &[ValueId] {
-    match step {
-        LoweredStep::Lambda { captures, .. } => captures,
-        _ => &[],
+fn pull_projection(kind: &crate::dispatch_matrix::ProjectionKind, demand: &DispatchDemand) -> DispatchDemand {
+    if matches!(
+        (kind, demand),
+        (
+            crate::dispatch_matrix::ProjectionKind::ListTail,
+            DispatchDemand::ListShape
+        )
+    ) {
+        DispatchDemand::ListShape
+    } else {
+        demand_at_projection(kind)
     }
+}
+
+fn join_source_observations(observations: &SourceObservations<'_>, local: &mut [DispatchDemand]) {
+    let body = observations.body;
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return;
+    };
+    let mut seeds = Vec::new();
+    for entry in entries {
+        match &entry.tail {
+            LoweredTail::Dispatch {
+                inputs,
+                bindings,
+                dispatch,
+            } => {
+                seeds.extend(inputs.iter().copied().zip(dispatch.plan.input_demand().iter().cloned()));
+                seeds.extend(
+                    bindings
+                        .pinned
+                        .iter()
+                        .chain(&bindings.prepared)
+                        .map(|value| (*value, DispatchDemand::Whole)),
+                );
+            }
+            LoweredTail::ClosureCall { .. } | LoweredTail::If { .. } | LoweredTail::Receive(_) => {
+                let mut used = Vec::new();
+                tail_used_values(&entry.tail, &mut used);
+                seeds.extend(used.into_iter().map(|value| (value, DispatchDemand::Whole)));
+            }
+            _ => {}
+        }
+    }
+    for step in clauses
+        .iter()
+        .flat_map(|clause| &clause.projections)
+        .chain(entries.iter().flat_map(|entry| &entry.steps))
+    {
+        if let LoweredStep::Lambda { captures, .. } = step {
+            seeds.extend(captures.iter().map(|value| (*value, DispatchDemand::Whole)));
+        }
+    }
+    observations.pull(seeds, local);
 }
 
 /// The slots `value` names directly, memoized in `slots` as it goes. A cyclic

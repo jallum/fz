@@ -35,7 +35,7 @@ use super::super::semantic::{
 use super::super::types::{AddrStep, ClosureTarget, MapKey, Sigma, Ty, Types};
 use super::super::world::{ACTIVATION_KEY_FACTS_PROVEN, World};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct TupleFieldProjection {
     source: ValueId,
     index: usize,
@@ -44,7 +44,7 @@ struct TupleFieldProjection {
 
 /// One value the walk has reached: what was observed, which may be nothing
 /// yet, beside the callable surfaces it carries.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct SemanticValue {
     /// What the walk observed here. `None` is the ascent's BOTTOM -- this
     /// position's value is owed to a fixpoint that has not answered yet --
@@ -167,6 +167,22 @@ impl SemanticValues {
             tuple_arities: self.tuple_arities.clone(),
             tuple_fields: self.tuple_fields.clone(),
         }
+    }
+
+    fn delta_from(mut self, inputs: &Self) -> Self {
+        self.types
+            .retain(|value, observed| inputs.types.get(value) != Some(observed));
+        self.tuple_arities
+            .retain(|value, arity| inputs.tuple_arities.get(value) != Some(arity));
+        self.tuple_fields
+            .retain(|value, field| inputs.tuple_fields.get(value) != Some(field));
+        self
+    }
+
+    fn apply_delta(&mut self, delta: Self) {
+        self.types.extend(delta.types);
+        self.tuple_arities.extend(delta.tuple_arities);
+        self.tuple_fields.extend(delta.tuple_fields);
     }
 }
 
@@ -419,7 +435,6 @@ fn evaluate_activation(
                         index,
                     },
                     &mut values,
-                    &mut analysis_calls,
                     activation,
                     &mut reads,
                     &mut waits,
@@ -657,7 +672,6 @@ fn analyze_entry(
         &entry.steps,
         |index| StepSite::Entry { entry: entry_id, index },
         &mut local,
-        calls,
         activation,
         reads,
         waits,
@@ -691,7 +705,6 @@ fn apply_steps(
     steps: &[LoweredStep],
     site: impl Fn(u32) -> StepSite,
     values: &mut SemanticValues,
-    calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
@@ -703,17 +716,126 @@ fn apply_steps(
             &site(index as u32),
             step,
         );
-        apply_step(world, step, values, calls, activation, reads, waits)?;
+        evaluate_step(world, step, values, reads, waits)?;
     }
     Ok(())
+}
+
+/// A step reads its operands, plus the tuple ancestors an assertion can
+/// refine. Runtime-only dependencies and unrelated path values are not inputs
+/// to this semantic transfer.
+fn step_inputs(step: &LoweredStep, scope: &SemanticValues) -> SemanticValues {
+    let mut used = Vec::new();
+    let mut type_only_operands = HashSet::new();
+    match step {
+        LoweredStep::Bitstring { .. } | LoweredStep::AssertBitstringDone { .. } => {}
+        LoweredStep::BitstringRead { reader, .. } => used.push(*reader),
+        LoweredStep::Map { entries, .. } | LoweredStep::MapUpdate { entries, .. } => {
+            if let LoweredStep::MapUpdate { base, .. } = step {
+                used.push(*base);
+            }
+            for (key, value) in entries {
+                if key.literal.is_none() {
+                    used.push(key.value);
+                    type_only_operands.insert(key.value);
+                }
+                used.push(*value);
+            }
+            // One slot can be both a key and a carried value. The latter
+            // use still reads its callable surfaces.
+            for (_, value) in entries {
+                type_only_operands.remove(value);
+            }
+            if let LoweredStep::MapUpdate { base, .. } = step {
+                type_only_operands.remove(base);
+            }
+        }
+        LoweredStep::MapIndex { base, key, .. } => {
+            used.push(*base);
+            if key.literal.is_none() {
+                used.push(key.value);
+            }
+        }
+        _ => super::super::body::step_used_values(step, &mut used),
+    }
+    let refines = matches!(
+        step,
+        LoweredStep::AssertLiteral { .. }
+            | LoweredStep::AssertStruct { .. }
+            | LoweredStep::AssertTuple { .. }
+            | LoweredStep::AssertEmptyList { .. }
+            | LoweredStep::AssertSame { .. }
+            | LoweredStep::SplitList { .. }
+    );
+    let type_only = matches!(
+        step,
+        LoweredStep::BinaryOp { .. }
+            | LoweredStep::UnaryOp { .. }
+            | LoweredStep::MapIndex { .. }
+            | LoweredStep::FieldAccess { .. }
+            | LoweredStep::RequireMapValue { .. }
+            | LoweredStep::TupleField { .. }
+            | LoweredStep::BitstringInit { .. }
+            | LoweredStep::BitstringRead { .. }
+    );
+    let mut inputs = SemanticValues::default();
+    let mut seen = HashSet::new();
+    while let Some(value) = used.pop() {
+        if !seen.insert(value) {
+            continue;
+        }
+        if let Some(observed) = scope.get(&value) {
+            let mut observed = observed.clone();
+            if type_only || type_only_operands.contains(&value) {
+                observed.callable_surfaces.clear();
+            }
+            inputs.insert_value(value, observed);
+        }
+        if (refines || matches!(step, LoweredStep::TupleField { .. }))
+            && let Some(&arity) = scope.tuple_arities.get(&value)
+        {
+            inputs.assert_tuple(value, arity);
+        }
+        if refines && let Some(projection) = scope.tuple_field(value) {
+            inputs.tuple_fields.insert(value, projection);
+            used.push(projection.source);
+        }
+    }
+    inputs
+}
+
+fn evaluate_step(
+    world: &mut World,
+    step: &LoweredStep,
+    scope: &mut SemanticValues,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+) -> Result<(), FatalError> {
+    let inputs = step_inputs(step, scope);
+    let delta = step_delta(world, step, &inputs, reads, waits)?;
+    scope.apply_delta(delta);
+    Ok(())
+}
+
+/// Run the existing evaluator against only its inputs. The caller receives
+/// produced values, operand refinements and tuple metadata, never a scope
+/// snapshot that could overwrite unrelated values.
+fn step_delta(
+    world: &mut World,
+    step: &LoweredStep,
+    inputs: &SemanticValues,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+) -> Result<SemanticValues, FatalError> {
+    let mut outputs = inputs.clone();
+    apply_step(world, step, &mut outputs, reads, waits)?;
+    Ok(outputs.delta_from(inputs))
 }
 
 fn apply_step(
     world: &mut World,
     step: &LoweredStep,
     values: &mut SemanticValues,
-    _calls: &mut Vec<CallEmission>,
-    _activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(), FatalError> {
@@ -2993,6 +3115,10 @@ fn any_ty(world: &mut World) -> Ty {
 fn none_ty(world: &mut World) -> Ty {
     world.types_mut().none()
 }
+
+#[cfg(test)]
+#[path = "step_transfer_test.rs"]
+mod step_transfer_test;
 
 #[cfg(test)]
 mod tests {

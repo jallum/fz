@@ -4044,7 +4044,7 @@ fn any_later_ownership_use(
             return true;
         }
         let block = &entries[block_id.as_u32() as usize];
-        pending.extend(child_entries(&block.tail).into_iter().map(|child| (child, 0)));
+        pending.extend(block.tail.child_entries().into_iter().map(|child| (child, 0)));
     }
     false
 }
@@ -4435,7 +4435,7 @@ fn entry_captures(
     } else {
         tables.entry_uses_from(entry_id, 0).collect::<HashSet<_>>()
     };
-    for child in child_entries(&entry.tail) {
+    for child in entry.tail.child_entries() {
         for capture in entry_captures(entries, tables, clause_bounds, child, physical, memo) {
             if !bound.contains(&capture) {
                 needed.insert(capture);
@@ -4487,33 +4487,6 @@ pub(super) fn retained_value_ids(body: &LoweredBody) -> HashSet<ValueId> {
         retained.extend(tables.entry_uses_from(entry_id, 0));
     }
     retained
-}
-
-fn child_entries(tail: &LoweredTail) -> Vec<ControlEntryId> {
-    match tail {
-        LoweredTail::Value { dest, .. }
-        | LoweredTail::DirectCall { dest, .. }
-        | LoweredTail::ClosureCall { dest, .. } => match dest {
-            ControlDestination::Return => Vec::new(),
-            ControlDestination::Deliver(entry) => vec![*entry],
-        },
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => vec![*then_entry, *else_entry],
-        LoweredTail::Dispatch { dispatch, .. } => {
-            let mut children = dispatch.outcomes.iter().map(|edge| edge.target).collect::<Vec<_>>();
-            children.push(dispatch.miss_entry);
-            children
-        }
-        LoweredTail::Receive(receive) => {
-            let mut children = receive.outcomes.iter().map(|edge| edge.target).collect::<Vec<_>>();
-            if let Some(after) = &receive.after {
-                children.push(after.entry);
-            }
-            children
-        }
-        LoweredTail::Halt { .. } => Vec::new(),
-    }
 }
 
 fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<String> {

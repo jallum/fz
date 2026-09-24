@@ -45,10 +45,9 @@ pub(crate) struct BodyKeying {
 /// is the single place the two are read together.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct InputDemand {
-    /// One demand per semantic input: this body's own entry dispatch, raised to
-    /// `Whole` wherever a closure call touches a slot or a lambda captures one,
-    /// joined with the demand of every callee this body forwards the input to,
-    /// transitively.
+    /// One demand per semantic input: entry/inline dispatch and callable
+    /// observations pulled back through source dependencies, joined
+    /// with the questions of callees receiving an unchanged input.
     pub(crate) forwarded_dispatch: Vec<DispatchDemand>,
 }
 

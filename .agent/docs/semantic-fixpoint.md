@@ -111,6 +111,29 @@ one list position's observation into another's type. The result names sorted
 reachable outcomes and whether graph failure remains reachable; it does not
 publish a fact or consult `World`.
 
+## Source positions and step transfers
+
+A `StepSite` identifies a clause projection or entry step within one lowered
+body revision. `BodyTables` indexes definitions; `value_definition_site` and
+`step_at` expose that same index. Tails use their `ControlEntryId`. The body
+owns ordered use/definition lists and `LoweredTail::child_entries`; a closure
+callee is an operand, repeated arguments stay repeated, and control targets
+include dispatch misses and receive timeouts. Coordinates belong to their
+owning body, so a replacement body supplies replacement operations.
+
+The activation walker evaluates a step through `step_inputs` and `step_delta`.
+The input scope contains the operands that `apply_step` reads, including tuple
+ancestors needed by an assertion's refinement. A primitive arithmetic operation
+reads operand types without carrying unrelated callable surfaces. A tuple or
+lambda construction retains the constituent evidence it actually uses.
+
+`apply_step` remains the evaluator. Its delta contains produced values, changed
+operand types, and changed tuple projection metadata. Applying it leaves the
+rest of the walker's scope intact. For example, asserting a projected field's
+type can narrow both the field and its containing tuple. The transfer forwards
+its fact reads and waits to the walker; it retains no result across calls.
+An empty delta reports no changed evidence, not successful execution.
+
 ## Executable demand is local semantic output
 
 `AnalyzeActivation(a)` follows `a`'s reachable clauses, infers value and return
@@ -556,13 +579,28 @@ element types never meet.
 The second, asked only where the first settled everything: can a value at this
 slot be observed from outside the activation at all? `observable_inputs` says
 yes when a dispatch question reaches the slot
-(`InputDemand::forwarded_dispatch`, this body's own entry dispatch joined with
-what every callee it forwards the slot to asks of it), or its return may depend
+(`InputDemand::forwarded_dispatch`, source observations joined with what
+every callee receiving an unchanged input asks of it), or its return may depend
 on the slot (`FunctionUnknowns::returns_input`). Return observability includes
 opaque calls: `forward(x) = Protocol.pick(1, {:tag, x})` cannot discard `x`'s
 type merely because the protocol callback has no body. Its result may carry
 `x` back out. An unused second parameter stays irrelevant; the dependency
 comes from the arguments actually passed, not every input of `forward`.
+
+Source observations include entry and inline dispatch, branch
+conditions, closure calls and captures, and receive's outer bindings and timeout.
+`SourceObservations` pulls these questions backward through existing transport
+origins. For `case x`, the input is demanded `Whole`; for a case on a field of
+`pair`, the tuple input is demanded `TupleFields`. Aliases and joined values
+carry the question to each source. Observed computations and call results
+conservatively ask about their actual operands; this dependency walk does not
+evaluate those operations or infer precise callee return dependence.
+
+The local worklist and unchanged-input forwarding use the four-state
+`DispatchDemand` lattice. Each value or input slot can rise only twice, so
+recursive source dependencies terminate. Callee bodies and entry plans remain
+fact subscriptions even when their current demand is `Ignore`: adding or
+removing a source question rederives the callers' demand.
 
 Only a slot that neither question can reach is freight: its arriving type
 does not distinguish the compiled activation, so it keys on its bare address
