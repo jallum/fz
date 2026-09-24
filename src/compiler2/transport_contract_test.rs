@@ -143,9 +143,12 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 const EXPECTED_00181_ORDINARY_JOB_COMPLETIONS: usize = 407;
 // Body-backed return discovery includes blocked skeleton attempts and replays
 // as transitively named definitions arrive; it does not count only publications.
+// Equation-backed callee readiness supplies Enum.reduce's lambda body before
+// its unknowns run, removing the prior ReturnUnknowns attempt that waited
+// for that skeleton.
 const EXPECTED_00181_RETURN_JOB_STOPS: ReturnJobRuns = ReturnJobRuns {
     skeletons: 22,
-    unknowns: 40,
+    unknowns: 39,
     component_solves: 0,
 };
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"

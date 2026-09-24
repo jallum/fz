@@ -1,8 +1,8 @@
 //! Compiler2 semantic-analysis jobs.
 //!
-//! This module walks lowered function bodies through already-planned entry
-//! dispatch, derives direct-call summaries, and settles per-activation return
-//! types without calling the legacy whole-program pipeline.
+//! This module walks bodies retained by definition equations through planned
+//! entry dispatch, derives direct-call summaries, and settles per-activation
+//! return types without calling the legacy whole-program pipeline.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry};
 
@@ -237,9 +237,9 @@ struct ActivationEvaluation {
     waits: HashSet<FactKey>,
 }
 
-/// Analyzes one rooted function activation against its lowered body.
+/// Analyzes one rooted function activation against its definition equation.
 ///
-/// The job waits until the activation, lowered body, and entry dispatch all
+/// The job waits until the activation, definition equation, and entry dispatch all
 /// exist. It then walks only the dispatch-reachable clauses, publishes direct
 /// callsite summaries, and settles the activation's current return type.
 pub(super) fn analyze_activation(
@@ -283,11 +283,15 @@ pub(super) fn analyze_activation(
         return Ok(world.wait_for_function_definition(function));
     };
 
-    let lowered_fact = FactKey::LoweredBody(function);
-    if !world.has_fact(&lowered_fact) {
-        // `LoweredBody`'s sole producer arm is `Job::LowerFunction`
-        // (`World::demand_fact_producer`).
-        return Ok(JobEffects::wait_on_current(lowered_fact));
+    let equation_fact = FactKey::ReturnSkeleton(function);
+    if !world.has_fact(&equation_fact)
+        || world
+            .return_skeleton(function)
+            .is_none_or(|equation| equation.body.is_none())
+    {
+        // A former provider equation can still stand while its arriving local
+        // definition is lowering. Only its body-backed replacement can run.
+        return Ok(JobEffects::wait_on_current(equation_fact));
     }
 
     let dispatch_fact = FactKey::EntryDispatch(function);
@@ -331,14 +335,17 @@ fn evaluate_activation(
         FactKey::Activation(activation.clone()),
         FactKey::ActivationInputs(activation.clone()),
         FactKey::FunctionDefined(function),
-        FactKey::LoweredBody(function),
+        FactKey::ReturnSkeleton(function),
         FactKey::EntryDispatch(function),
         FactKey::ReturnUnknowns(function),
     ];
     let mut waits = HashSet::new();
 
     let entry_dispatch = world.entry_dispatch(function);
-    let lowered_body = world.lowered_body(function);
+    let lowered_body = world
+        .return_skeleton(function)
+        .and_then(|equation| equation.body.clone())
+        .expect("an analyzed definition equation must retain its executable source body");
     // Each correlated row is dispatched and analyzed on its own
     // (fz-9i4.7.10.2): a row's columns arrived together and only ever bind a
     // clause together. Only post-analysis results merge — reachable clauses
@@ -2263,8 +2270,8 @@ fn require_function_contract(
 }
 
 /// Everything a callee must already have before this caller can resolve the
-/// call: its contract, and the facts that key its activation. Both halves
-/// register in ONE pass — waits are AND-satisfied, so a caller missing all
+/// call: its contract, activation-key facts, and executable source definition.
+/// All register in one pass — waits are AND-satisfied, so a caller missing all
 /// three sleeps once instead of learning the next rung only after the first
 /// one lands.
 fn require_callee_prerequisites(
@@ -2275,14 +2282,17 @@ fn require_callee_prerequisites(
 ) -> bool {
     let contract_ready = require_function_contract(world, function, reads, waits);
     let keying_ready = world.require_activation_key_facts(function, reads, waits);
-    let lowered = FactKey::LoweredBody(function);
-    let lowered_ready = world.has_fact(&lowered);
-    if lowered_ready {
-        reads.push(lowered);
+    let equation = FactKey::ReturnSkeleton(function);
+    let equation_ready = world.has_fact(&equation)
+        && world
+            .return_skeleton(function)
+            .is_some_and(|equation| equation.body.is_some());
+    if equation_ready {
+        reads.push(equation);
     } else {
-        waits.insert(lowered);
+        waits.insert(equation);
     }
-    contract_ready && keying_ready && lowered_ready
+    contract_ready && keying_ready && equation_ready
 }
 
 /// Which call a named callee becomes once its prerequisites are in.
@@ -2847,7 +2857,11 @@ fn boundary_surface_inputs(world: &mut World, inputs: &[ActivationInput]) -> Vec
 }
 
 fn callee_extern_params(world: &World, function: FunctionId) -> Option<usize> {
-    match &*world.lowered_body(function) {
+    let body = world
+        .return_skeleton(function)
+        .and_then(|equation| equation.body.as_deref())
+        .expect("a compiler-owned callee equation must retain its source body");
+    match body {
         LoweredBody::Extern { signature } => Some(signature.params.len()),
         LoweredBody::Clauses { .. } => None,
     }
@@ -3128,6 +3142,158 @@ mod tests {
     use crate::telemetry::ConfiguredTelemetry;
 
     #[test]
+    fn a_standing_opaque_equation_waits_for_the_arriving_local_body() {
+        use crate::compiler2::facts::FactUse;
+        use crate::compiler2::pull::ProductSessions;
+        use crate::compiler2::return_skeleton::Returns;
+        use crate::compiler2::{InterfaceCallableKind, ModuleInterface, ModuleInterfaceCallable};
+        use crate::modules::identity::ModuleName;
+
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let mut sessions = ProductSessions::default();
+        let module = world.reference_module(ModuleName::parse_dotted("Arriving").unwrap());
+        let function = world.reference_function(module, "value", 0);
+        let reference = world.function_ref(function).clone();
+        world.submit_module_interface(
+            "Arriving".into(),
+            ModuleInterface::new(vec![ModuleInterfaceCallable {
+                function,
+                reference,
+                kind: InterfaceCallableKind::PublicFunction,
+                variadic: false,
+            }]),
+        );
+        world.demand(Job::DeriveReturnSkeleton(function));
+        assert!(matches!(
+            ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+            DriveOutcome::Resolved
+        ));
+        assert!(matches!(
+            world.return_skeleton(function).unwrap().returns,
+            Returns::Opaque
+        ));
+
+        world.submit_code(
+            Some("arriving-local-body.fz".into()),
+            "defmodule Arriving do\n def value(), do: 42\nend\n".into(),
+        );
+        world.demand(Job::DefineFunction(function));
+        // Stop at the real publication boundary: the new definition exists,
+        // while the previously published provider relation is still standing.
+        for _ in 0..10000 {
+            if world.function_defined_revision(function).is_some() {
+                break;
+            }
+            if let Some(job) = world.next_ready_job(Some(&sessions)) {
+                let mut context = ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions);
+                let effects = super::super::run(&mut context, &job).expect("definition jobs should run");
+                context.complete_job(job, effects);
+            } else {
+                assert!(
+                    ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions)
+                        .drive_product_requests()
+                        .expect("definition expansion should run")
+                );
+            }
+        }
+        assert!(world.function_defined_revision(function).is_some());
+        assert!(world.has_fact(&FactKey::ReturnSkeleton(function)));
+        assert!(world.return_skeleton(function).unwrap().body.is_none());
+        assert!(!world.function_is_provider_boundary(function));
+
+        let root = world.submit_root(Some("Arriving".into()), "value".into(), 0, ExecutableNeed::Value);
+        let activation = ActivationKey::from_inputs(root, function, &[], world.types_mut());
+        world.complete_job(
+            Job::SeedActivation(activation.clone()),
+            super::super::root::seed_activation(&activation).unwrap(),
+        );
+        let effects =
+            analyze_activation(&mut world, &tel, &activation).expect("an incomplete local equation must wait");
+        assert_eq!(effects.waits, vec![FactUse::current(FactKey::ReturnSkeleton(function))]);
+        world.complete_job(Job::AnalyzeActivation(activation.clone()), effects);
+        let mut reads = Vec::new();
+        let mut waits = HashSet::new();
+        assert!(!require_callee_prerequisites(
+            &mut world, function, &mut reads, &mut waits
+        ));
+        assert!(waits.contains(&FactKey::ReturnSkeleton(function)));
+
+        assert!(matches!(
+            ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+            DriveOutcome::Resolved
+        ));
+        assert!(world.return_skeleton(function).unwrap().body.is_some());
+        let int = world.types_mut().int();
+        assert_eq!(world.activation_return(&activation), Some(int));
+    }
+
+    #[test]
+    fn analyze_activation_reads_the_definition_equation_and_refreshes_after_replacement() {
+        use crate::compiler2::facts::FactUse;
+        use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
+
+        let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        let mut previous_equation = None;
+        for (returned, expected_output) in [("1", 11), (":ok", 22)] {
+            compiler.submit_code(CodeSubmission {
+                name: Some("activation-equation-replacement.fz".into()),
+                text: format!(
+                    "def first(_x, _y), do: {returned}\ndef main(), do: if first(11, :ok) == :ok, do: 22, else: 11\n"
+                ),
+            });
+            assert_eq!(compiler.run_root_interp(root), Ok(expected_output));
+            let world = compiler.world_mut();
+            let first = world.reference_function(ModuleId::GLOBAL, "first", 2);
+            let int = world.types_mut().int();
+            let atom = world.types_mut().atom_lit("ok");
+            let activations = world
+                .activation_keys()
+                .into_iter()
+                .filter(|key| key.function == first && world.has_fact(&FactKey::Activation(key.clone())))
+                .collect::<Vec<_>>();
+            assert_eq!(activations.len(), 1, "the one reached call supplies its binding");
+            let activation = activations[0].clone();
+            assert_eq!(
+                world.activation_return(&activation),
+                Some(if returned == "1" { int } else { atom }),
+                "each definition must refresh the bound return and executable through the normal fact pipeline"
+            );
+            let reads = world.job_reads(&Job::AnalyzeActivation(activation));
+            assert!(
+                reads.contains(&FactUse::current(FactKey::ReturnSkeleton(first))),
+                "activation evaluation must subscribe to its definition equation"
+            );
+            assert!(
+                !reads.contains(&FactUse::current(FactKey::LoweredBody(first))),
+                "the retained definition equation must supply the executable source body"
+            );
+            assert!(reads.contains(&FactUse::current(FactKey::EntryDispatch(first))));
+            let equation = world
+                .return_skeleton(first)
+                .expect("the definition is published")
+                .clone();
+            if let Some(previous) = previous_equation.replace(equation.clone()) {
+                assert_eq!(
+                    previous.returns, equation.returns,
+                    "both literals occupy the same ground return position"
+                );
+                assert_eq!(previous.invocations, equation.invocations);
+                assert_ne!(
+                    previous, equation,
+                    "the retained literal operation changes the definition equation"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn analyze_activation_preserves_real_rows_without_publishing_their_cartesian_blend() {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new();
@@ -3288,9 +3454,12 @@ end
                 ..JobEffects::default()
             },
         );
+        let equation_effects = super::super::keying::derive_return_skeleton(&mut world, &tel, first)
+            .expect("replacement lowering must refresh its definition equation");
+        world.complete_job(Job::DeriveReturnSkeleton(first), equation_effects);
         assert!(
             world.work_graph.rebased(&first_job),
-            "a shifted body should rebase its AnalyzeActivation publisher",
+            "a shifted definition equation should rebase its AnalyzeActivation publisher",
         );
         let withdrawn_effects = analyze_activation(&mut world, &tel, &first_activation)
             .expect("the rebased AnalyzeActivation job should conclude from its replacement body");

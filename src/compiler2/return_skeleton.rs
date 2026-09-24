@@ -9,7 +9,10 @@
 //! observed there -- a `Ground` value to its type, a `Result` to the
 //! activations the call site reached.
 //!
-//! One definition-owned relationship records its returns and invocations.
+//! One definition-owned relationship retains its existing lowered body and
+//! records structural views of its returns and invocations. The body owns
+//! operations, ordered execution prerequisites, and control/dispatch plans;
+//! a value shape alone does not prove that execution can reach that value.
 //! Each invocation retains its named or value callee, ordered argument
 //! skeletons, result, source entry, and control destination. Together with
 //! the static call graph they close: an argument skeleton feeds the callee's
@@ -20,12 +23,13 @@
 //!
 //! The lowering is structural and total: every step whose result has a shape
 //! the analysis can name (a constructor, a projection) contributes that
-//! shape, and every other step contributes the `Ground` value itself --
-//! arithmetic, a bitstring read or a lambda denotes what it denotes whatever
-//! its operands are still climbing towards, and an activation's own walk is
-//! what says what that is.
+//! shape, and every other step contributes a `Ground` value address. Its
+//! operation and operands remain in the retained body, accessible through
+//! BodyTables. The existing activation evaluator reads that same body; the
+//! return solver still binds these leaves to its observed types.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::dispatch_matrix::ProjectionKind;
 use crate::ground_value::GroundValue;
@@ -45,8 +49,9 @@ pub(crate) enum Skeleton {
     /// that the shape cannot promise leaves behind.
     #[default]
     Bottom,
-    /// A value with no structural history of its own, named by the value
-    /// that carries it. What it denotes is whatever the walk observed
+    /// A local value not expanded by the structural view. Its defining
+    /// operation, if any, remains in the source body. What the current return
+    /// solver binds here is whatever the activation walk observed
     /// standing there; a walk that has observed nothing yet leaves it
     /// unbound, which is an unknown leaf and never `any` or `none`.
     Ground(ValueId),
@@ -241,10 +246,17 @@ pub(crate) struct Invocation {
     pub(crate) destination: ControlDestination,
 }
 
-/// One function's whole static shape: what it returns and what each of its
-/// call sites invokes, all in that function's own vocabulary.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// One function's source definition, with structural views of its returns and
+/// invocations. Equality includes the body: changing an operation or control
+/// prerequisite at the same coordinates must invalidate readers too.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct FunctionSkeleton {
+    /// The definition's existing operation and control graph. Coordinates in
+    /// the shapes below belong to this body; retaining it keeps both their
+    /// meaning and their execution prerequisites across definition replacement.
+    /// Opaque boundaries have no local body. Ordinary and extern definitions
+    /// share the exact body published by lowering, without copying its IR.
+    pub(crate) body: Option<Rc<LoweredBody>>,
     pub(crate) returns: Returns,
     pub(crate) invocations: BTreeMap<CallSiteId, Invocation>,
     /// How many semantic inputs the function has, which is what a call
@@ -297,9 +309,14 @@ impl FunctionSkeleton {
 /// `body::callsite_input_modes` for the invariant that makes it sound), and
 /// values are resolved on demand from that map, so a value defined after its
 /// use in the arena is still resolved from its own definition.
-pub(crate) fn lower(body: &LoweredBody, types: &Types) -> FunctionSkeleton {
-    let (clauses, entries) = match body {
-        LoweredBody::Extern { signature } => return extern_skeleton(signature, types),
+pub(crate) fn lower(body: &Rc<LoweredBody>, types: &Types) -> FunctionSkeleton {
+    let (clauses, entries) = match &**body {
+        LoweredBody::Extern { signature } => {
+            return FunctionSkeleton {
+                body: Some(Rc::clone(body)),
+                ..extern_skeleton(signature, types)
+            };
+        }
         LoweredBody::Clauses {
             clauses: body_clauses,
             entries: body_entries,
@@ -429,6 +446,7 @@ pub(crate) fn lower(body: &LoweredBody, types: &Types) -> FunctionSkeleton {
         }
     }
     FunctionSkeleton {
+        body: Some(Rc::clone(body)),
         returns: Returns::Entries(returns),
         invocations,
         input_len: clauses.first().map_or(0, |clause| clause.params.len()),

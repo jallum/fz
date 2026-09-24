@@ -50,12 +50,18 @@ keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveInputDemand
             decides (more than one member, or f's own edges name f)
             DeriveReturnSkeleton publishes a definition-owned relationship:
             returns plus invocation callee/arguments/result/control destination.
+            It retains the existing lowered body for operation operands,
+            ordered steps, assertions, and control/inline dispatch plans.
+            Body content changes invalidate this relationship even when
+            structural return shapes and source coordinates stay the same.
             FunctionId exists before this definition; missing local bodies wait.
             DeriveReturnUnknowns walks named invocation references to decide
             which positions of the return system are still being solved.
             Value callees remain recorded, but this static walk does not yet
             resolve their targets or follow their result into a callee.
 semantic  SeedRoot, SeedActivation, AnalyzeActivation
+            AnalyzeActivation reads the source relationship's retained body;
+            EntryDispatch remains its separate dispatch prerequisite.
             root entry facts, activation evidence, return types, callsite targets,
             callsite summaries, and executable demand
           DeriveExecutableFacts(E)

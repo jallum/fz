@@ -278,11 +278,10 @@ impl ReturnJobRuns {
         }
     }
 
-    /// The work starts these runs are, in the buckets they enter through: a
-    /// function's return skeleton is derived when the function's revision
-    /// reaches it, and the unknowns that skeleton leaves open are expanded as
-    /// a blocked waiter of the handles they name.
-    fn work_starts(self) -> super::WorkStartTally {
+    /// In this cold fixture, skeletons start on source revisions and unknowns
+    /// expand as blocked waiters. Replacing an existing equation instead wakes
+    /// its unknowns through a changed revision, so this mapping is cold-only.
+    fn cold_work_starts(self) -> super::WorkStartTally {
         super::WorkStartTally {
             changed_revision_wake: self.skeletons,
             blocked_waiter_expansion: self.unknowns,
@@ -349,7 +348,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
          re-reads their unknowns as the handles arrive, and closes no recursive component",
     );
     assert_eq!(
-        cold_work.delta_since(cold_return_runs.work_starts()),
+        cold_work.delta_since(cold_return_runs.cold_work_starts()),
         super::WorkStartTally {
             ignition: 0,
             // Publishing a function's source from the walk that scoped it
@@ -459,19 +458,25 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         reached_return_runs,
         ReturnJobRuns {
             skeletons: 1,
-            unknowns: 0,
+            unknowns: 1,
             component_solves: 0,
         },
-        "an edit to a reached body re-derives that one body's return skeleton and nothing else's",
+        "a reached body edit changes its retained source equation and rederives that equation's unknowns once",
     );
     assert_eq!(
-        reached_backend_work.delta_since(reached_return_runs.work_starts()),
+        reached_backend_work.delta_since(super::WorkStartTally {
+            // Both existing return jobs wake on changed revisions: lowering
+            // changes the equation, which wakes its unknowns subscriber.
+            changed_revision_wake: reached_return_runs.total(),
+            ..super::WorkStartTally::default()
+        }),
         super::WorkStartTally {
             ignition: 2,
-            // The re-scope publishes the replaced source itself, and finality
-            // now propagates through concluded readers instead of re-running
-            // five equal readiness-only derivations.
-            changed_revision_wake: 14,
+            // The equation change reopens activation finality. The existing
+            // executable-facts reader waits once for that analysis to settle,
+            // then publishes its replacement; neither analysis nor native
+            // lowering gains a duplicate evaluation.
+            changed_revision_wake: 15,
             ..super::WorkStartTally::default()
         },
         "a reached edit starts source ingestion and only exact changed-revision readers",

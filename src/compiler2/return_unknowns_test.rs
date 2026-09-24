@@ -227,6 +227,7 @@ fn a_missing_static_callee_return_is_conservative_but_a_known_discard_is_not() {
             },
         )]),
         input_len: 2,
+        ..FunctionSkeleton::default()
     };
     let known_discard = FunctionSkeleton {
         returns: Returns::Entries(BTreeMap::from([(entry, Skeleton::Ground(ValueId::from_u32(1)))])),
@@ -282,6 +283,7 @@ fn opaque_return_may_flow_is_precise_and_not_a_known_empty_or_declared_return() 
             },
         )]),
         input_len: 2,
+        ..FunctionSkeleton::default()
     };
     let opaque = FunctionSkeleton {
         returns: Returns::Opaque,
@@ -376,6 +378,7 @@ fn an_input_fallback_for_a_missing_body_can_manufacture_a_productive_cycle() {
             ),
         ]),
         input_len: 2,
+        ..FunctionSkeleton::default()
     };
     let actual_constant = FunctionSkeleton {
         returns: Returns::Entries(BTreeMap::from([(base_entry, Skeleton::Ground(ValueId::from_u32(3)))])),

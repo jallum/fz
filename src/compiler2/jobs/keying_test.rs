@@ -151,6 +151,159 @@ fn a_referenced_source_equation_waits_for_definition_and_tracks_replacement() {
 }
 
 #[test]
+fn replacing_a_source_operation_changes_the_equation_at_the_same_result_position() {
+    use crate::compiler2::drive::{ExecutionContext, Job};
+    use crate::compiler2::pull::ProductSessions;
+    use crate::compiler2::scheduler::DriveOutcome;
+
+    let tel = ConfiguredTelemetry::new();
+    let runs = Rc::new(RefCell::new(Vec::<Job>::new()));
+    let sink = Rc::clone(&runs);
+    tel.attach_raw_event2::<World, crate::compiler2::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| sink.borrow_mut().push(completion.job.clone()),
+    );
+    let mut world = World::new();
+    let mut sessions = ProductSessions::default();
+    let invert = world.reference_function(ModuleId::GLOBAL, "invert", 2);
+    world.demand(Job::DeriveReturnSkeleton(invert));
+    let mut previous = None::<Rc<FunctionSkeleton>>;
+    let mut previous_revision = None;
+    for (operand, slot) in [("x", 0), ("y", 1)] {
+        let source = world.submit_code(
+            Some("source-operation-replacement.fz".into()),
+            format!("def invert(x, y), do: not {operand}\n"),
+        );
+        world.demand(Job::ScopeCode(source));
+        assert!(matches!(
+            ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+            DriveOutcome::Resolved
+        ));
+        assert_eq!(world.reference_function(ModuleId::GLOBAL, "invert", 2), invert);
+        let next = world
+            .return_skeleton(invert)
+            .expect("the source equation must be published");
+        let body = next
+            .body
+            .as_ref()
+            .expect("a defined equation must retain its source operations");
+        assert!(Rc::ptr_eq(body, &world.lowered_body(invert)));
+        let crate::compiler2::body::LoweredBody::Clauses { clauses, .. } = &**body else {
+            panic!("invert/2 must have a source body");
+        };
+        let Returns::Entries(returns) = &next.returns else {
+            panic!("invert/2 must return from its source entry");
+        };
+        assert_eq!(returns.len(), 1);
+        let Skeleton::Ground(result) = returns.values().next().unwrap() else {
+            panic!("the result must refer to its source operation");
+        };
+        let site = body
+            .value_definition_site(*result)
+            .expect("the operation must define its result");
+        let crate::compiler2::body::LoweredStep::UnaryOp { op, input, .. } = body.step_at(site) else {
+            panic!("the result must retain the not operation");
+        };
+        assert_eq!(*op, crate::ast::UnOp::Not);
+        assert_eq!(*input, clauses[0].params[slot]);
+        let revision = world.fact_revision(&FactKey::ReturnSkeleton(invert));
+        if let Some(previous) = previous {
+            assert_eq!(previous.returns, next.returns, "the result position did not move");
+            assert_eq!(
+                previous.invocations, next.invocations,
+                "neither definition invokes a function"
+            );
+            assert_ne!(
+                previous_revision, revision,
+                "equation subscribers must see the changed operation"
+            );
+            let previous_body = previous.body.as_ref().unwrap();
+            assert_eq!(previous_body.value_definition_site(*result), Some(site));
+            let crate::compiler2::body::LoweredStep::UnaryOp { input: prior_input, .. } = previous_body.step_at(site)
+            else {
+                panic!("the prior equation must retain its own operation");
+            };
+            assert_eq!(
+                *prior_input, clauses[0].params[0],
+                "replacement must not mutate the prior equation"
+            );
+            assert_ne!(
+                &previous, next,
+                "changing an operation's operand must change the source equation even at the same result position"
+            );
+        }
+        previous = Some(Rc::clone(next));
+        previous_revision = revision;
+    }
+    assert!(
+        runs.borrow()
+            .iter()
+            .all(|job| !matches!(job, Job::AnalyzeActivation(key) if key.function == invert)),
+        "an operation's definition must be available before analyzing invert/2"
+    );
+}
+
+#[test]
+fn replacing_a_source_condition_changes_the_equation_without_changing_its_returns() {
+    use crate::compiler2::body::{LoweredBody, LoweredTail};
+    use crate::compiler2::drive::{ExecutionContext, Job};
+    use crate::compiler2::pull::ProductSessions;
+    use crate::compiler2::scheduler::DriveOutcome;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let mut sessions = ProductSessions::default();
+    let choose = world.reference_function(ModuleId::GLOBAL, "choose", 4);
+    world.demand(Job::DeriveReturnSkeleton(choose));
+    let mut previous = None::<Rc<FunctionSkeleton>>;
+    for (condition, slot) in [("x", 0), ("y", 1)] {
+        let source = world.submit_code(
+            Some("source-condition-replacement.fz".into()),
+            format!("def choose(x, y, a, b), do: if {condition}, do: a, else: b\n"),
+        );
+        world.demand(Job::ScopeCode(source));
+        assert!(matches!(
+            ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+            DriveOutcome::Resolved
+        ));
+        let next = world
+            .return_skeleton(choose)
+            .expect("the source equation must be published");
+        let body = next
+            .body
+            .as_ref()
+            .expect("the equation must retain return prerequisites");
+        assert!(Rc::ptr_eq(body, &world.lowered_body(choose)));
+        let LoweredBody::Clauses { clauses, entries, .. } = &**body else {
+            panic!("choose/4 must have a source body");
+        };
+        let LoweredTail::If {
+            cond,
+            then_entry,
+            else_entry,
+        } = entries[clauses[0].entry.as_u32() as usize].tail
+        else {
+            panic!("the return alternatives must retain their source condition");
+        };
+        assert_eq!(cond, clauses[0].params[slot]);
+        let Returns::Entries(returns) = &next.returns else {
+            panic!("choose/4 must retain its returning entries");
+        };
+        assert_eq!(returns.get(&then_entry), Some(&Skeleton::Input(2)));
+        assert_eq!(returns.get(&else_entry), Some(&Skeleton::Input(3)));
+        if let Some(previous) = previous {
+            assert_eq!(previous.returns, next.returns);
+            assert_eq!(previous.invocations, next.invocations);
+            assert_ne!(
+                &previous, next,
+                "which input controls the returning entry is part of the equation"
+            );
+        }
+        previous = Some(Rc::clone(next));
+    }
+}
+
+#[test]
 fn an_absent_transitive_return_reads_its_definition_for_rediscovery() {
     use crate::compiler2::drive::{ExecutionContext, Job, JobEffects};
     use crate::compiler2::pull::ProductSessions;
@@ -173,6 +326,7 @@ fn an_absent_transitive_return_reads_its_definition_for_rediscovery() {
     assert!(world.define_return_skeleton(
         caller,
         Rc::new(FunctionSkeleton {
+            body: None,
             returns: Returns::Entries(BTreeMap::from([(
                 entry,
                 Skeleton::Result {

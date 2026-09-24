@@ -1884,9 +1884,9 @@ impl World {
         self.input_demands.get(function)
     }
 
-    /// One function's static shape, behind `FactKey::ReturnSkeleton`: what
-    /// it returns and what it hands each of its call sites, written over its
-    /// own inputs and its own call results.
+    /// One function's source relationship, behind `FactKey::ReturnSkeleton`:
+    /// its retained operation/control body and structural return/invocation
+    /// views, written over its own inputs and call results.
     pub(crate) fn define_return_skeleton(&mut self, function: FunctionId, skeleton: Rc<FunctionSkeleton>) -> bool {
         self.return_skeletons.define(function, skeleton)
     }

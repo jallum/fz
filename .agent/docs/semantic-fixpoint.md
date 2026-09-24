@@ -701,6 +701,33 @@ For `first(x, y) = x`, its return is `Input(0)`; replacing the body with `y`
 changes that to `Input(1)` without analyzing an activation of `first/2`.
 Compile-time definition macros may themselves execute during source lowering.
 
+The relationship retains the exact `Rc<LoweredBody>` published by lowering.
+That body is the operation/control graph: ordered clause projections and entry
+steps, lambda capture operands, multi-output operations, assertion-only steps,
+tails, and inline dispatch plans. `LoweredBody::value_definition_site` (backed by `BodyTables`) and
+`LoweredBody::step_at` address these operations without a second instruction
+vocabulary or definition index. A `Ground(ValueId)` remains an address into
+this definition even when the structural return view does not expand it.
+
+Relationship equality includes the retained body, not just return shapes and
+invocations. Replacing `not x` with `not y` can preserve the result ValueId;
+replacing `if x` with `if y` can preserve both returning alternatives. Both
+must publish a changed relationship. Old readers retain their immutable prior
+body. Ordinary and extern definitions carry a body; opaque provider/protocol
+relationships have no local body.
+When a provider gains a local definition, its old opaque equation may still
+stand while lowering runs. Local execution and callee prerequisites require
+the replacement equation to contain a body; fact presence alone is insufficient.
+They wait on the existing `ReturnSkeleton` producer until it publishes that body.
+
+`AnalyzeActivation` consumes this published relationship's body and subscribes
+to `ReturnSkeleton`, as do its local callee prerequisites. Its independent
+`EntryDispatch` read remains: source relationship discovery does not require
+planning entry dispatch. The evaluator and sparse step transfers are unchanged.
+Keeping an assertion or discarded call in the source graph preserves its
+execution prerequisite; it does not yet teach the return solver to solve that
+prerequisite independently of activation reachability.
+
 `FunctionSkeleton::invocations` contains one complete record per `CallSiteId`:
 a named function or a value-callee skeleton, ordered argument skeletons, the
 result `ValueId`, owning control entry, and return/deliver destination. The

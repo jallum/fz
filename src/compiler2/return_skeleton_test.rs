@@ -138,11 +138,150 @@ fn a_discarded_invocation_keeps_its_result_and_control_destination() {
     };
     assert!(returns.contains_key(&successor));
     assert!(!returns.contains_key(&invocation.entry));
+    let LoweredBody::Clauses { entries, .. } = discarded.body.as_deref().unwrap() else {
+        panic!("the relation retains its source control graph");
+    };
+    assert_eq!(
+        entries[invocation.entry.as_u32() as usize].tail.child_entries(),
+        [successor],
+        "the suffix is reached through the discarded call's completion edge"
+    );
 }
 
-/// Submits one source and drives only far enough for every reachable body to
-/// be lowered: no activation is ever analysed, so this harness answers the
-/// static question with none of the fixpoint's machinery running.
+#[test]
+fn source_operations_keep_computed_arguments_and_lambda_capture_producers() {
+    let all = skeletons(
+        "source_operations.fz",
+        "def apply_not(f, x), do: f.(not x)\n\
+         def wrap(f), do: fn x -> f.(x) end\n\
+         def main() do\n apply_not(fn x -> x end, true)\n wrap(fn x -> x end)\nend\n",
+    );
+    let applied = all.get("apply_not/2");
+    let body = applied
+        .body
+        .as_deref()
+        .expect("a definition owns its source operations");
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        panic!("apply_not has source clauses");
+    };
+    let call = applied.invocations.values().next().unwrap();
+    let [Skeleton::Ground(argument)] = call.arguments.as_slice() else {
+        panic!("the structural view addresses the computed argument by its result value");
+    };
+    let site = body.value_definition_site(*argument).unwrap();
+    assert_eq!(
+        body.step_at(site),
+        &LoweredStep::UnaryOp {
+            value: *argument,
+            op: crate::ast::UnOp::Not,
+            input: clauses[0].params[1],
+        },
+        "the address must retain its operation and connection to the input, before observing a type"
+    );
+
+    let wrapped = all.get("wrap/1");
+    let body = wrapped.body.as_deref().unwrap();
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        panic!("wrap has source clauses");
+    };
+    let Skeleton::Ground(result) = joined(wrapped) else {
+        panic!("the returned lambda has a local construction position");
+    };
+    let LoweredStep::Lambda { function, captures, .. } = body.value_definition(result).unwrap() else {
+        panic!("the returned value must retain its lambda construction");
+    };
+    assert_eq!(captures, &clauses[0].params);
+    assert!(
+        all.labels.contains_key(function),
+        "the construction keeps its generated definition reference"
+    );
+}
+
+#[test]
+fn a_source_assertion_remains_a_prerequisite_without_defining_a_value() {
+    let all = skeletons(
+        "source_assertion.fz",
+        "def same(first, second) do\n ^first = second\n :ok\nend\n\
+         def main(), do: same(1, :other)\n",
+    );
+    let equation = all.get("same/2");
+    let LoweredBody::Clauses { clauses, entries, .. } = equation.body.as_deref().unwrap() else {
+        panic!("same has source clauses");
+    };
+    let entry = &entries[clauses[0].entry.as_u32() as usize];
+    let assertion = entry
+        .steps
+        .iter()
+        .position(|step| matches!(step, LoweredStep::AssertSame { .. }))
+        .unwrap();
+    let step = &entry.steps[assertion];
+    assert_eq!(crate::compiler2::body::step_defined_values(step).count(), 0);
+    let mut operands = Vec::new();
+    crate::compiler2::body::step_used_values(step, &mut operands);
+    assert_eq!(operands.len(), 2);
+    assert!(clauses[0].params.iter().all(|input| operands.contains(input)));
+    let suffix = entry
+        .steps
+        .iter()
+        .position(|step| {
+            matches!(step,
+                LoweredStep::Const { literal: GroundValue::Atom(atom), .. } if atom == "ok"
+            )
+        })
+        .unwrap();
+    assert!(
+        assertion < suffix,
+        "the assertion must precede the literal even though no value depends on it"
+    );
+    assert!(matches!(
+        entry.tail,
+        LoweredTail::Value {
+            dest: ControlDestination::Return,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn source_destructuring_keeps_every_output_of_one_operation() {
+    let all = skeletons(
+        "source_destructuring.fz",
+        "def list_parts(xs) do\n [head | tail] = xs\n {head, tail}\nend\n\
+         def binary_parts(xs) do\n <<head, rest :: binary>> = xs\n {head, rest}\nend\n\
+         def main() do\n list_parts([1, 2])\n binary_parts(<<1, 2>>)\nend\n",
+    );
+    for (label, output_count) in [("list_parts/1", 2), ("binary_parts/1", 3)] {
+        let body = all.get(label).body.as_deref().unwrap();
+        let LoweredBody::Clauses { clauses, entries, .. } = body else {
+            panic!("destructuring has source clauses");
+        };
+        let operations = clauses
+            .iter()
+            .flat_map(|clause| &clause.projections)
+            .chain(entries.iter().flat_map(|entry| &entry.steps))
+            .filter(|step| {
+                matches!(
+                    (output_count, step),
+                    (2, LoweredStep::SplitList { .. }) | (3, LoweredStep::BitstringRead { .. })
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(!operations.is_empty(), "{label} must exercise a multi-output operation");
+        for operation in operations {
+            let outputs = crate::compiler2::body::step_defined_values(operation).collect::<Vec<_>>();
+            assert_eq!(outputs.len(), output_count);
+            let site = body.value_definition_site(outputs[0]).unwrap();
+            for output in outputs {
+                assert_eq!(body.value_definition_site(output), Some(site));
+                assert!(std::ptr::eq(body.value_definition(output).unwrap(), operation));
+            }
+        }
+    }
+}
+
+/// Submits one source and requests its reachable definition facts without
+/// requesting runtime activation analysis. Definition macros may execute
+/// during lowering; the examined functions need no concrete call bindings.
 fn skeletons(name: &str, source: &str) -> Skeletons {
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
@@ -164,6 +303,7 @@ fn skeletons(name: &str, source: &str) -> Skeletons {
         next += 1;
         compiler.demand(Job::LowerFunction(function));
         compiler.demand(Job::DeriveStaticCallees(function));
+        compiler.demand(Job::DeriveReturnSkeleton(function));
         compiler.drive();
         let world: &World = compiler.world();
         if !world.has_fact(&FactKey::LoweredBody(function)) || !world.has_fact(&FactKey::StaticCallees(function)) {
@@ -171,8 +311,14 @@ fn skeletons(name: &str, source: &str) -> Skeletons {
         }
         let label = function_label(world, function);
         out.labels.insert(function, label.clone());
-        out.by_label
-            .insert(label, lower(&world.lowered_body(function), world.types()));
+        out.by_label.insert(
+            label,
+            world
+                .return_skeleton(function)
+                .expect("a lowered definition publishes its source relationship")
+                .as_ref()
+                .clone(),
+        );
         for callee in world.static_callees(function).iter().copied() {
             if !reached.contains(&callee) {
                 reached.push(callee);
