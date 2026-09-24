@@ -811,7 +811,11 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
 /// closure below cheap: the walk that spans the call graph reads one
 /// published skeleton per function instead of re-lowering every body it can
 /// reach.
-pub(super) fn derive_return_skeleton(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
+pub(super) fn derive_return_skeleton(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+) -> Result<JobEffects, FatalError> {
     let lowered = FactKey::LoweredBody(function);
     if !world.has_fact(&lowered) {
         if world.function_is_provider_boundary(function) || world.protocol_callback(function).is_some() {
@@ -850,6 +854,11 @@ pub(super) fn derive_return_skeleton(world: &mut World, function: FunctionId) ->
         &world.lowered_body(function),
         world.types(),
     ));
+    tel.raw_event2(
+        &["fz", "compiler2", "inference_work", "skeleton_lowered"],
+        &function,
+        &*skeleton,
+    );
     let changed = world.define_return_skeleton(function, skeleton);
     Ok(JobEffects {
         reads: current_uses([lowered]),

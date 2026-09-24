@@ -60,7 +60,7 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::DeriveStaticCallees(function_id) => keying::derive_static_callees(world, tel, *function_id),
         Job::DeriveCallGraphComponent(function_id) => keying::derive_call_graph_component(world, *function_id),
         Job::DeriveInputDemand(function_id) => keying::derive_input_demand(world, tel, *function_id),
-        Job::DeriveReturnSkeleton(function_id) => keying::derive_return_skeleton(world, *function_id),
+        Job::DeriveReturnSkeleton(function_id) => keying::derive_return_skeleton(world, tel, *function_id),
         Job::DeriveReturnUnknowns(function_id) => keying::derive_return_unknowns(world, *function_id),
         Job::SeedRoot(root_id) => root::seed_root(world, tel, *root_id),
         Job::SeedActivation(activation) => root::seed_activation(activation),

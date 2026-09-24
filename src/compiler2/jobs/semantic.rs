@@ -12,10 +12,12 @@ use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::ground_value::GroundValue;
 use crate::source::Span;
+use crate::telemetry::TelemetryExt as _;
 
 use super::super::SourceOwner;
 use super::super::body::{
-    CallSiteId, ControlDestination, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, ValueId,
+    CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail,
+    StepSite, ValueId,
 };
 use super::super::contract::FunctionContract;
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
@@ -303,6 +305,11 @@ fn evaluate_activation(
     activation: &ActivationKey,
     alternatives: &ActivationInputAlternatives,
 ) -> Result<ActivationEvaluation, FatalError> {
+    tel.raw_event2(
+        &["fz", "compiler2", "inference_work", "activation_walk"],
+        activation,
+        alternatives,
+    );
     let function = activation.function;
     let mut reads = vec![
         FactKey::Activation(activation.clone()),
@@ -326,6 +333,7 @@ fn evaluate_activation(
     let mut fail_reachable = false;
     let mut row_clause_inputs = Vec::new();
     for row in alternatives.rows() {
+        tel.raw_event2(&["fz", "compiler2", "inference_work", "input_row"], activation, row);
         let row_types = row.tys();
         let dispatch_reachability = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, &row_types);
         fail_reachable |= dispatch_reachability.fail_reachable;
@@ -392,13 +400,24 @@ fn evaluate_activation(
                 if clause.params.len() > clause_inputs.len() {
                     continue;
                 }
+                tel.raw_event3(
+                    &["fz", "compiler2", "inference_work", "clause_walk"],
+                    activation,
+                    clause_id,
+                    clause_inputs,
+                );
                 let mut values = SemanticValues::default();
                 for (value, input) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
                     values.insert_value(value, SemanticValue::from_activation_input(input));
                 }
                 apply_steps(
                     world,
+                    tel,
                     &clause.projections,
+                    |index| StepSite::Projection {
+                        clause: *clause_id,
+                        index,
+                    },
                     &mut values,
                     &mut analysis_calls,
                     activation,
@@ -620,7 +639,7 @@ fn analyze_entry(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     entries: &[LoweredEntry],
-    entry_id: super::super::body::ControlEntryId,
+    entry_id: ControlEntryId,
     values: &SemanticValues,
     reachable_entries: &mut HashSet<super::super::body::ControlEntryId>,
     value_types: &mut ValueTypes,
@@ -632,8 +651,24 @@ fn analyze_entry(
     reachable_entries.insert(entry_id);
     let entry = &entries[entry_id.as_u32() as usize];
     let mut local = values.clone();
-    apply_steps(world, &entry.steps, &mut local, calls, activation, reads, waits)?;
+    apply_steps(
+        world,
+        tel,
+        &entry.steps,
+        |index| StepSite::Entry { entry: entry_id, index },
+        &mut local,
+        calls,
+        activation,
+        reads,
+        waits,
+    )?;
     merge_value_types(world, value_types, &local);
+    tel.raw_event3(
+        &["fz", "compiler2", "inference_work", "tail_transfer_attempt"],
+        activation,
+        &entry_id,
+        &entry.tail,
+    );
     analyze_tail(
         world,
         tel,
@@ -649,16 +684,25 @@ fn analyze_entry(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_steps(
     world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     steps: &[LoweredStep],
+    site: impl Fn(u32) -> StepSite,
     values: &mut SemanticValues,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(), FatalError> {
-    for step in steps {
+    for (index, step) in steps.iter().enumerate() {
+        tel.raw_event3(
+            &["fz", "compiler2", "inference_work", "step_transfer_attempt"],
+            activation,
+            &site(index as u32),
+            step,
+        );
         apply_step(world, step, values, calls, activation, reads, waits)?;
     }
     Ok(())
@@ -1641,6 +1685,7 @@ fn resolve_function_call(
     }
     let (activation, return_evidence) = prepare_function_call(
         world,
+        tel,
         caller,
         callsite,
         function,
@@ -1795,6 +1840,7 @@ fn resolve_protocol_call(
         );
         let (activation, observed_return) = prepare_function_call(
             world,
+            tel,
             caller,
             callsite,
             selected.function,
@@ -2477,8 +2523,10 @@ fn key_inputs_for_call(
 /// Keys the callee's activation and reads its return evidence. The facts the
 /// key is built from were asked for and proven by
 /// `require_callee_prerequisites`, so this cannot block.
+#[allow(clippy::too_many_arguments)]
 fn prepare_function_call(
     world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     caller: &ActivationKey,
     callsite: CallSiteId,
     function: FunctionId,
@@ -2496,6 +2544,12 @@ fn prepare_function_call(
         reads,
     );
     let activation = world.activation_key_for_inputs(caller.root, function, &key_inputs);
+    tel.raw_event3(
+        &["fz", "compiler2", "inference_work", "invocation_target_attempt"],
+        caller,
+        &callsite,
+        &activation,
+    );
     // The read is the subscription that re-wakes this caller when the
     // callee's return evidence rises — chaotic iteration needs no wait here,
     // so mutual recursion cannot deadlock. Absent evidence stays absent: it

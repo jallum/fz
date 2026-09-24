@@ -1,0 +1,8 @@
+#---
+# purpose: "distinct int-to-int callbacks retain their results through the same higher-order function"
+#---
+def apply_one(f, x), do: f.(x)
+def main() do
+  dbg(apply_one(fn x -> x + 1 end, 2))
+  dbg(apply_one(fn x -> x * 2 end, 2))
+end

@@ -824,6 +824,71 @@ fn an_unresolved_callsite_edge_renders_as_itself() {
 const ASCENDING_RETURN_SOURCE: &str =
     "def build(0), do: :start\ndef build(n), do: {n, build(n - 1)}\ndef main(), do: build(3)\n";
 
+#[test]
+fn jsonl_inference_work_counts_evaluator_work_separately_from_owners() {
+    let trace = crate::telemetry::public_trace::PublicTrace::compile_requests(ASCENDING_RETURN_SOURCE, &[]);
+    let events = |kind| trace.events_named(&["fz", "compiler2", "inference_work", kind]);
+    let walks = events("activation_walk");
+    let rows = events("input_row");
+    assert!(!walks.is_empty());
+    assert_eq!(
+        walks
+            .iter()
+            .map(|event| event.metadata["rows"].as_u64().unwrap())
+            .sum::<u64>(),
+        rows.len() as u64,
+        "each admitted activation walk dispatches each correlated row exactly once"
+    );
+    assert!(rows.iter().all(|event| event.metadata["inputs"]["columns"].is_array()));
+    assert!(
+        events("clause_walk")
+            .iter()
+            .all(|event| { event.metadata["clause"].is_u64() && event.metadata["inputs"]["columns"].is_array() })
+    );
+    let names = canon_function_names(&trace);
+    for event in events("skeleton_lowered") {
+        let id = event.metadata["function"]["function_id"].as_u64().unwrap();
+        assert!(
+            names.contains_key(&id),
+            "source work names a function defined in the public trace"
+        );
+        assert!(event.metadata["inputs"].is_u64() && event.metadata["callsites"].is_u64());
+    }
+    let steps = events("step_transfer_attempt");
+    assert!(steps.iter().any(|event| event.metadata["operation"] == "tuple"));
+    assert!(steps.iter().all(|event| {
+        let site = &event.metadata["site"];
+        site["index"].is_u64() && (site["entry"].is_u64() || site["clause"].is_u64())
+    }));
+    let tails = events("tail_transfer_attempt");
+    assert!(tails.iter().any(|event| event.metadata["operation"] == "direct_call"));
+    assert!(tails.iter().all(|event| event.metadata["entry"].is_u64()));
+    let targets = events("invocation_target_attempt");
+    assert!(!targets.is_empty());
+    assert!(targets.iter().all(|event| {
+        event.metadata["activation"]["function_id"].is_u64()
+            && event.metadata["callsite"].is_u64()
+            && event.metadata["target"]["function_id"].is_u64()
+    }));
+    let solves = events("return_solve");
+    assert!(
+        !solves.is_empty(),
+        "the recursive backend request actually enters the component solver"
+    );
+    for phase in [
+        "return_branches_iteration",
+        "return_escapes_iteration",
+        "return_pending_iteration",
+    ] {
+        let iterations = events(phase);
+        assert!(
+            iterations.len() >= solves.len(),
+            "every solve performs at least a stable-check pass for {phase}"
+        );
+        assert!(iterations.iter().all(|event| event.metadata["nodes"].is_u64()));
+    }
+}
+
 /// Names every function the trace canonicalized, so an assertion can talk
 /// about `build/1` rather than about whatever id it drew this run.
 fn canon_function_names(trace: &crate::telemetry::public_trace::PublicTrace) -> std::collections::HashMap<u64, String> {

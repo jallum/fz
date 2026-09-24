@@ -73,6 +73,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::modules::identity::ModuleName;
+use crate::telemetry::TelemetryExt as _;
 
 use super::super::body::{CallInputMode, CallSiteId, ValueId};
 use super::super::drive::{
@@ -222,7 +223,8 @@ pub(super) fn solve_return_component(
     };
 
     let types = world.types_mut();
-    let solved = solve(&members, &member_set, &bindings, &slot_order, types);
+    tel.raw_event2(&["fz", "compiler2", "inference_work", "return_solve"], owner, &members);
+    let solved = solve(&members, &member_set, &bindings, &slot_order, types, tel, owner);
 
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
@@ -769,11 +771,22 @@ impl<'a> Equations<'a> {
     /// each round keeps every branch set a function of its inputs alone, so
     /// the whole system is deterministic; branch sets only ever grow, over a
     /// finite universe of subterms, so the rounds are finite.
-    fn build(&mut self, seeds: Vec<Unknown>, types: &mut Types) {
+    fn build(
+        &mut self,
+        seeds: Vec<Unknown>,
+        types: &mut Types,
+        tel: &impl crate::telemetry::Telemetry,
+        owner: &ActivationKey,
+    ) {
         for seed in seeds {
             self.node(seed);
         }
         loop {
+            tel.raw_event2(
+                &["fz", "compiler2", "inference_work", "return_branches_iteration"],
+                owner,
+                &self.nodes.len(),
+            );
             let mut moved = false;
             let mut next = 0;
             while next < self.nodes.len() {
@@ -981,8 +994,13 @@ impl<'a> Equations<'a> {
     /// never escapes is a productive cycle with no base case -- its value is
     /// the empty type. A node with no branches at all has no evidence yet,
     /// which is a different state entirely.
-    fn escapes(&self) -> Vec<bool> {
-        self.least_fixed_point(|equations, branch, reached| equations.branch_escapes(branch, reached))
+    fn escapes(&self, tel: &impl crate::telemetry::Telemetry, owner: &ActivationKey) -> Vec<bool> {
+        self.least_fixed_point(
+            |equations, branch, reached| equations.branch_escapes(branch, reached),
+            tel,
+            owner,
+            &["fz", "compiler2", "inference_work", "return_escapes_iteration"],
+        )
     }
 
     /// The least fixed point of "this node is still waiting on something
@@ -990,13 +1008,25 @@ impl<'a> Equations<'a> {
     /// answer yet -- as distinct from a branch no value reaches, which
     /// answers the empty type -- so the member holding it publishes nothing
     /// and keeps whatever its own climb has already reached.
-    fn pending(&self) -> Vec<bool> {
-        self.least_fixed_point(|equations, branch, reached| equations.branch_pending(branch, reached))
+    fn pending(&self, tel: &impl crate::telemetry::Telemetry, owner: &ActivationKey) -> Vec<bool> {
+        self.least_fixed_point(
+            |equations, branch, reached| equations.branch_pending(branch, reached),
+            tel,
+            owner,
+            &["fz", "compiler2", "inference_work", "return_pending_iteration"],
+        )
     }
 
-    fn least_fixed_point(&self, holds: impl Fn(&Self, &Term, &[bool]) -> bool) -> Vec<bool> {
+    fn least_fixed_point(
+        &self,
+        holds: impl Fn(&Self, &Term, &[bool]) -> bool,
+        tel: &impl crate::telemetry::Telemetry,
+        owner: &ActivationKey,
+        event: &[&'static str],
+    ) -> Vec<bool> {
         let mut reached = vec![false; self.nodes.len()];
         loop {
+            tel.raw_event2(event, owner, &self.nodes.len());
             let mut advanced = false;
             for node in 0..self.nodes.len() {
                 if reached[node] {
@@ -1125,6 +1155,8 @@ fn solve(
     bindings: &Bindings,
     member_slots: &[(ActivationKey, usize)],
     types: &mut Types,
+    tel: &impl crate::telemetry::Telemetry,
+    owner: &ActivationKey,
 ) -> Solved {
     let mut equations = Equations::new(member_set, bindings);
     let seeds: Vec<Unknown> = members
@@ -1136,9 +1168,9 @@ fn solve(
                 .map(|(activation, slot)| Unknown::Slot(activation.clone(), *slot)),
         )
         .collect();
-    equations.build(seeds, types);
-    let escapes = equations.escapes();
-    let pending = equations.pending();
+    equations.build(seeds, types, tel, owner);
+    let escapes = equations.escapes(tel, owner);
+    let pending = equations.pending(tel, owner);
 
     // Only escaping nodes get a body, so only they take a slot in the vector
     // handed to the interner; every other reference resolves to a concrete
@@ -1348,3 +1380,7 @@ impl Solver<'_> {
 #[cfg(test)]
 #[path = "return_component_test.rs"]
 mod return_component_test;
+
+#[cfg(test)]
+#[path = "interface10_return_component_test.rs"]
+mod interface10_return_component_test;

@@ -2,7 +2,7 @@ mod agenda;
 mod artifact;
 mod backend_program;
 mod body;
-pub(crate) use body::OutcomeEdge;
+pub(crate) use body::{OutcomeEdge, StepSite};
 pub(crate) mod callsite_dispatch;
 mod canon;
 mod cli;
@@ -97,6 +97,7 @@ pub use module_interface::{
 };
 pub use namespace::{BindingId, CallableQualifier, Namespace, NamespaceStore, NamespaceSymbol};
 pub(crate) use pull::{ProductKey, PullSession};
+pub(crate) use return_skeleton::FunctionSkeleton;
 pub use scheduler::{
     AppliedStep, DriveOutcome, FatalError, Scheduler, Wake, WakeDisposition, WorkStartReason, WorkStartTally,
 };
@@ -106,7 +107,9 @@ pub use semantic::{
     CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, ContributionMap, ContributionReplace,
     EntryReachability, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, ShapeDemand,
 };
-pub(crate) use semantic::{CallableConstructionTargetKey, SemanticOrd};
+pub(crate) use semantic::{
+    ActivationInput, ActivationInputAlternatives, ActivationInputRow, CallableConstructionTargetKey, SemanticOrd,
+};
 pub use source::{
     Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
     QuotedSourceError, QuotedSourceHeap, QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot,
@@ -148,6 +151,12 @@ mod fixture_facts_test;
 mod frontdoor_test;
 #[cfg(test)]
 mod identity_test;
+#[cfg(test)]
+mod interface10_higher_order_test;
+#[cfg(test)]
+mod interface10_semantic_test;
+#[cfg(test)]
+mod interface10_work_test;
 #[cfg(test)]
 mod namespace_test;
 #[cfg(test)]

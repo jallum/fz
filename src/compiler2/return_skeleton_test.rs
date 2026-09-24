@@ -14,6 +14,31 @@ use crate::compiler2::world::World;
 use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 
+#[test]
+fn invocation_equation_distinguishes_which_input_is_called() {
+    let all = skeletons(
+        "invocation_operand.fz",
+        "def first(f, g, x), do: f.(x)\n\
+         def second(f, g, x), do: g.(x)\n\
+         def main() do\n\
+           first(fn (x) -> x end, fn (x) -> :other end, 1)\n\
+           second(fn (x) -> x end, fn (x) -> :other end, 1)\n\
+         end\n",
+    );
+    let first = all.get("first/3");
+    let second = all.get("second/3");
+    assert_eq!(first.arguments[&sole_result(&joined(first))], vec![Skeleton::Input(2)]);
+    assert_eq!(
+        second.arguments[&sole_result(&joined(second))],
+        vec![Skeleton::Input(2)]
+    );
+    assert_ne!(
+        first.callees.values().collect::<Vec<_>>(),
+        second.callees.values().collect::<Vec<_>>(),
+        "f.(x) and g.(x) are different equations: the callable operand must survive source lowering"
+    );
+}
+
 /// Submits one source and drives only far enough for every reachable body to
 /// be lowered: no activation is ever analysed, so this harness answers the
 /// static question with none of the fixpoint's machinery running.

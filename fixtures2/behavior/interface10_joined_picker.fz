@@ -1,0 +1,15 @@
+#---
+# purpose: "a joined callable chooses between distinct callback implementations"
+#---
+def choose(n) do
+  if n > 0 do
+    fn x -> x + 1 end
+  else
+    fn x -> x * 2 end
+  end
+end
+def apply_one(f, x), do: f.(x)
+def main() do
+  dbg(apply_one(choose(1), 2))
+  dbg(apply_one(choose(0), 2))
+end

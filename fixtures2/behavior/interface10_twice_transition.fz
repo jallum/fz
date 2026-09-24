@@ -1,0 +1,7 @@
+#---
+# purpose: "repeated invocation feeds the first callback result into a different second domain"
+#---
+def twice(f, x), do: f.(f.(x))
+def transition(_x :: integer), do: :middle
+def transition(:middle), do: "done"
+def main(), do: dbg(twice(&transition/1, 7))

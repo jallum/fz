@@ -1,0 +1,28 @@
+#---
+# purpose: "compatible and joined callbacks add no closure, scalar-box, or frame allocations beyond eight dbg results"
+#---
+# The snapshot precedes construction of the stats map and its printed tuple.
+# Eight dbg calls intentionally box their eight integer results. Callback
+# arguments, results, and captured scales should add no further boxing.
+def apply_one(f, x), do: f.(x)
+def scaled(scale), do: fn (x, acc) -> acc + x * scale end
+def pick(flag) do
+  if flag do
+    fn x -> x + 1 end
+  else
+    fn x -> x * 2 end
+  end
+end
+
+def main() do
+  dbg(apply_one(fn x -> x + 1 end, 2))
+  dbg(apply_one(fn x -> x * 2 end, 2))
+  dbg(Enum.reduce([1, 2, 3], 1, fn (x, acc) -> acc + x end))
+  dbg(Enum.reduce([1, 2, 3], 1, fn (x, acc) -> acc * x end))
+  dbg(Enum.reduce([1, 2, 3], 0, scaled(1)))
+  dbg(Enum.reduce([1, 2, 3], 0, scaled(10)))
+  dbg(apply_one(pick(true), 2))
+  dbg(apply_one(pick(false), 2))
+  stats = Process.heap_alloc_stats()
+  dbg({stats[:closure_allocs], stats[:scalar_box_allocs], stats[:frame_allocs]})
+end

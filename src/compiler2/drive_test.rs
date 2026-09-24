@@ -31,6 +31,51 @@ use std::sync::Arc;
 type OutputFacts = Vec<(FactKey, bool)>;
 
 #[test]
+fn compiler2_compatible_callbacks_share_apply_inference_and_body() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let analyses = ActivationAnalysisCapture::new();
+    analyses.install(&tel);
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("compatible_apply_callbacks.fz".into()),
+        text: "def apply_one(f, x), do: f.(x)\n\
+               def main() do\n\
+                 {apply_one(fn (x) -> x + 1 end, 2), apply_one(fn (x) -> x * 2 end, 2)}\n\
+               end\n"
+            .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "the real backend must receive the shared apply body");
+    let apply = function_id(&functions, "apply_one", 2);
+    let owners: HashSet<_> = analyses
+        .keys_for_root(root)
+        .into_iter()
+        .filter(|key| key.function == apply && compiler.world().activation_analysis(key).is_some())
+        .collect();
+    let program = backend.last(root).program;
+    let bodies = program
+        .executables()
+        .iter()
+        .filter(|body| body.key.activation.function == apply)
+        .count();
+    assert_eq!(
+        (owners.len(), bodies),
+        (1, 1),
+        "distinct int -> int callbacks need their own callback analysis, not duplicate apply inference or bodies"
+    );
+}
+
+#[test]
 fn compiler2_inline_dispatch_plan_is_shared_from_lowering_to_backend() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();

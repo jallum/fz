@@ -1,0 +1,9 @@
+#---
+# purpose: "compatible integer callback results remain distinct from an incompatible atom result"
+#---
+def apply_one(f, x), do: f.(x)
+def main() do
+  dbg(apply_one(fn x -> x + 1 end, 2))
+  dbg(apply_one(fn x -> x * 2 end, 2))
+  dbg(apply_one(fn _x -> :ok end, 2))
+end

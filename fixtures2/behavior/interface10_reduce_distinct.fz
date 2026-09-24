@@ -1,0 +1,7 @@
+#---
+# purpose: "addition and multiplication reducers preserve distinct results through the fold chain"
+#---
+def main() do
+  dbg(Enum.reduce([1, 2, 3], 1, fn (x, acc) -> acc + x end))
+  dbg(Enum.reduce([1, 2, 3], 1, fn (x, acc) -> acc * x end))
+end

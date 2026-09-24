@@ -1,0 +1,12 @@
+#---
+# purpose: "repeated compatible callback admissions preserve each invocation result"
+#---
+def apply_one(f, x), do: f.(x)
+def main() do
+  increment = fn x -> x + 1 end
+  double = fn x -> x * 2 end
+  dbg(apply_one(increment, 2))
+  dbg(apply_one(double, 2))
+  dbg(apply_one(increment, 4))
+  dbg(apply_one(double, 4))
+end

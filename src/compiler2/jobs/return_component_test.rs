@@ -335,7 +335,29 @@ fn productive_cycle_with_no_base_case_publishes_none() {
         ..Bindings::default()
     };
 
-    let solved = solve(&members, &member_set, &bindings, &[], &mut types);
+    let tel = ConfiguredTelemetry::new();
+    let iterations = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&iterations);
+    tel.attach_raw_event2::<ActivationKey, usize, _>(
+        &["fz", "compiler2", "inference_work"],
+        move |name, _, _, owner, nodes| {
+            sink.borrow_mut()
+                .push((name.last().copied().unwrap(), owner.clone(), *nodes));
+        },
+    );
+    let solved = solve(&members, &member_set, &bindings, &[], &mut types, &tel, &a);
+    let iterations = iterations.borrow();
+    assert!(iterations.iter().all(|(_, owner, nodes)| *owner == a && *nodes == 2));
+    assert_eq!(
+        iterations.iter().map(|(phase, _, _)| *phase).collect::<Vec<_>>(),
+        [
+            "return_branches_iteration",
+            "return_branches_iteration",
+            "return_escapes_iteration",
+            "return_pending_iteration",
+        ],
+        "two constructor equations need one discovery pass and one stable pass; neither escapes or is pending"
+    );
 
     assert_eq!(
         solved.returns.len(),

@@ -126,6 +126,41 @@ span.stop0()
 
 ## Policy Choices
 
+### Compiler2 inference work
+
+Events under `fz.compiler2.inference_work` count execution of the current
+inference machinery, separately from job starts, published facts, distinct
+activation keys, and emitted bodies. They use typed raw callbacks and are
+included in the public JSONL trace. Projection and rendering happen only in
+the listening handler; the compiler does not build a second counter store.
+
+| Event suffix | Raw borrowed arguments | Counted boundary |
+| --- | --- | --- |
+| `skeleton_lowered` | `FunctionId`, `FunctionSkeleton` | Each completed call to source skeleton lowering; excludes provider-only opaque publication and waits |
+| `activation_walk` | `ActivationKey`, `ActivationInputAlternatives` | Entry to an admitted activation evaluation, after its readiness gates |
+| `input_row` | `ActivationKey`, `ActivationInputRow` | Each correlated row dispatched by that evaluation |
+| `clause_walk` | `ActivationKey`, `u32`, `Vec<ActivationInput>` | Each reachable row/clause pair with enough inputs to bind its parameters |
+| `step_transfer_attempt` | `ActivationKey`, `StepSite`, `LoweredStep` | Each invocation of the step evaluator by the body walk |
+| `tail_transfer_attempt` | `ActivationKey`, `ControlEntryId`, `LoweredTail` | Each invocation of the tail evaluator by the body walk |
+| `invocation_target_attempt` | caller `ActivationKey`, `CallSiteId`, target `ActivationKey` | Each selected compiler-owned target keyed before reading its return evidence |
+| `return_solve` | owner `ActivationKey`, `Vec<ActivationKey>` | Each component solve after successful membership discovery and binding gathering |
+| `return_branches_iteration` | owner `ActivationKey`, `usize` node count | Each branch-expansion pass |
+| `return_escapes_iteration` | owner `ActivationKey`, `usize` node count | Each escaping-value fixed-point pass |
+| `return_pending_iteration` | owner `ActivationKey`, `usize` node count | Each pending-dependency fixed-point pass |
+
+Transfer attempts include invocations that find a pending operand and produce
+no observation. Target attempts include repeated admission of the same target;
+they are not counts of new keys or published edges. Consumers may separately
+deduplicate the complete caller/site/target identities. Component iteration
+counts include the final pass that detects stability, and do not count the
+regular-type interner's internal partition refinement. The branch pass's node
+count is its starting size; that pass may discover more nodes.
+
+JSONL retains activation identities, correlated row columns and callable
+surfaces, clause/entry/step positions, operation kinds, target identities, and
+component sizes. These events report the existing activation-owned work; they
+do not claim that higher-order inference sharing has been implemented.
+
 **Fatal vs telemetry.** A failure that must stop compilation returns
 `Err(FatalError)`. Everything observational — including diagnostics that get
 rendered as user errors — is an event. So the trait has no fallible method: a
