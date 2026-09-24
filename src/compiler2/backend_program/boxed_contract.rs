@@ -34,13 +34,7 @@ impl BoxedApplyRequirement {
         entries
             .iter()
             .filter_map(|entry| {
-                let BackendTail::ClosureCall {
-                    edge,
-                    args,
-                    return_flow,
-                    ..
-                } = &entry.tail
-                else {
+                let BackendTail::ClosureCall { edge, args, target, .. } = &entry.tail else {
                     return None;
                 };
                 // The call form carries the decision. A direct edge calls its
@@ -50,20 +44,20 @@ impl BoxedApplyRequirement {
                 if !matches!(edge, ClosureCallEdge::Seam) {
                     return None;
                 }
+                let crate::compiler2::artifact::CallEdge::Indirect(return_flow) = target else {
+                    panic!("boxed seam has an indirect call edge");
+                };
                 let delivered = match return_flow {
                     // A delivered or continued result lands in a destination
                     // whose lanes are stated outright.
-                    Some(BackendReturnFlow::Deliver { source, .. } | BackendReturnFlow::Continue { source }) => {
+                    BackendReturnFlow::Deliver { source, .. } | BackendReturnFlow::Continue { source } => {
                         source.layout.reprs.clone()
                     }
                     // A tail call hands the seam's result straight on to this
                     // body's own caller without touching it, so this body's own
                     // return form is what the seam has to produce. `NoReturn`
-                    // and a missing flow lower to the same tail term, so they
-                    // read the same way.
-                    Some(BackendReturnFlow::Tail | BackendReturnFlow::NoReturn) | None => {
-                        abi.return_layout.layout.reprs.clone()
-                    }
+                    // also lowers to that tail term.
+                    BackendReturnFlow::Tail | BackendReturnFlow::NoReturn => abi.return_layout.layout.reprs.clone(),
                 };
                 Some(Self {
                     arity: args.len(),

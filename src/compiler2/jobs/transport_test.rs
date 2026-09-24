@@ -25,7 +25,7 @@ fn one_target(world: &mut World, name: &str, surface_arity: usize, captures: usi
             callee: SelectedCallee::Function(function),
             surface_inputs: vec![int; surface_arity],
             activation: Some(activation),
-            activation_inputs: None,
+            activation_inputs: Some(inputs),
             extern_params: None,
             return_ty: Some(int),
         }],
@@ -42,10 +42,16 @@ fn callable_layout(world: &mut World, function: Option<FunctionId>, captures: us
         class: TransportClass::Value,
     });
     let capture = TransportLayout::structural(world.intern_shape(ShapeDescr::Lane(lane)));
-    let callable = world.intern_callable(CallableDescr {
-        function,
-        arity: 0,
-        capture_layouts: vec![capture; captures].into_boxed_slice(),
+    let callable = world.intern_callable(match function {
+        Some(function) => CallableDescr::Direct {
+            alternative: crate::compiler2::transport::CallableAlternative {
+                function,
+                arity: world.function_ref(function).arity as u16,
+                capture_tys: vec![int; captures].into_boxed_slice(),
+                capture_layouts: vec![capture; captures].into_boxed_slice(),
+            },
+        },
+        None => CallableDescr::Opaque,
     });
     TransportLayout::structural(world.intern_shape(ShapeDescr::Callable(callable)))
 }

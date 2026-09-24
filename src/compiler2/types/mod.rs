@@ -2757,6 +2757,35 @@ impl Types {
         callable_clauses(self.ctx(), self.descr(a))
     }
 
+    /// Exhaustive alternatives of a value whose callable identities are
+    /// closed. Unlike `callable_clauses`, this rejects other runtime axes and
+    /// reads one literal per canonical DNF clause, rather than flattening an
+    /// overloaded conjunction into apparently independent alternatives.
+    pub(crate) fn closed_callable_clauses(&self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
+        let descr = self.descr(a);
+        if !descr.is_pure_callable() {
+            return None;
+        }
+        descr
+            .cases
+            .iter()
+            .flat_map(|case| &case.structure.funcs)
+            .map(|clause| {
+                let literal = callable_identity_literal(clause)?;
+                let arrow = clause.pos.iter().find(|arrow| arrow.lit.as_ref() == Some(literal))?;
+                Some(CallableClause {
+                    args: arrow.args.clone(),
+                    ret: arrow.ret,
+                    closure: Some(ClosureLitInfo {
+                        target: literal.fn_id.into(),
+                        captures: literal.captures.clone(),
+                        kind: literal.kind,
+                    }),
+                })
+            })
+            .collect()
+    }
+
     pub fn callable_value_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
         // Call observations are carried beside the value by `ActivationInput`.
         // This compatibility accessor therefore has no literal-specialization

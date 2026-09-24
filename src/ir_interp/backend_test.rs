@@ -449,11 +449,7 @@ fn generic_callable_input_retains_structure_without_demanding_a_box() {
     let mut transport = TransportStore::new();
     let callable = transport
         .interners_mut()
-        .intern_callable(crate::compiler2::transport::CallableDescr {
-            function: None,
-            arity: 0,
-            capture_layouts: Box::default(),
-        });
+        .intern_callable(crate::compiler2::transport::CallableDescr::Opaque);
     let shape = transport.interners_mut().intern_shape(ShapeDescr::Callable(callable));
     let value = decode_transport_layout(&transport, &[], TransportLayout::structural(shape), &mut 0)
         .expect("an unused structural callable input requires no runtime allocation");
@@ -471,10 +467,13 @@ fn zero_lane_inputs_preserve_tuple_structure_without_inventing_absence() {
     let zero_capture = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "zero_capture", 0);
     let callable = transport
         .interners_mut()
-        .intern_callable(crate::compiler2::transport::CallableDescr {
-            function: Some(zero_capture),
-            arity: 0,
-            capture_layouts: Box::default(),
+        .intern_callable(crate::compiler2::transport::CallableDescr::Direct {
+            alternative: crate::compiler2::transport::CallableAlternative {
+                function: zero_capture,
+                capture_tys: Box::default(),
+                arity: 0,
+                capture_layouts: Box::default(),
+            },
         });
     let callable = transport.interners_mut().intern_shape(ShapeDescr::Callable(callable));
     let empty_tuple = tuple_shape(&mut transport, &[]);
@@ -934,6 +933,118 @@ fn encode_with_layout(
     Ok(encoded)
 }
 
+#[test]
+fn closed_callable_coercions_remap_selectors_and_preserve_nested_duplicate_captures() {
+    use crate::compiler2::transport::{CallableAlternative, CallableDescr};
+    let mut transport = TransportStore::new();
+    let mut types = crate::compiler2::Types::new();
+    let int = types.int();
+    let atom = types.atom();
+    let float = types.float();
+    let int_lane = transport.interners_mut().intern_lane(LaneDescr {
+        ty: int,
+        class: TransportClass::Value,
+    });
+    let atom_lane = transport.interners_mut().intern_lane(LaneDescr {
+        ty: atom,
+        class: TransportClass::Value,
+    });
+    let float_lane = transport.interners_mut().intern_lane(LaneDescr {
+        ty: float,
+        class: TransportClass::Value,
+    });
+    let integer = transport.interners_mut().intern_shape(ShapeDescr::Lane(int_lane));
+    let atom_shape = transport.interners_mut().intern_shape(ShapeDescr::Lane(atom_lane));
+    let float_shape = transport.interners_mut().intern_shape(ShapeDescr::Lane(float_lane));
+    let alternative = |function, capture_tys: Vec<Ty>, capture_shapes: Vec<ShapeId>| CallableAlternative {
+        function: FunctionId::from_coordinate(function),
+        arity: 0,
+        capture_tys: capture_tys.into_boxed_slice(),
+        capture_layouts: capture_shapes.into_iter().map(TransportLayout::structural).collect(),
+    };
+    let nested_id = transport.interners_mut().intern_callable(CallableDescr::Closed {
+        selector: int_lane,
+        alternatives: vec![
+            alternative(4, vec![int], vec![integer]),
+            alternative(5, vec![int], vec![integer]),
+        ]
+        .into_boxed_slice(),
+    });
+    let nested = transport.interners_mut().intern_shape(ShapeDescr::Callable(nested_id));
+    let nested_left = types.closure_lit(crate::types::ClosureTarget(4), vec![int], 0);
+    let nested_right = types.closure_lit(crate::types::ClosureTarget(5), vec![int], 0);
+    let nested_ty = types.union(nested_left, nested_right);
+    let a = alternative(1, vec![atom], vec![atom_shape]);
+    let b = alternative(2, vec![int, int, nested_ty], vec![integer, integer, nested]);
+    let c = alternative(3, vec![float], vec![float_shape]);
+    let source_id = transport.interners_mut().intern_callable(CallableDescr::Closed {
+        selector: int_lane,
+        alternatives: vec![b.clone(), c.clone()].into_boxed_slice(),
+    });
+    let destination_id = transport.interners_mut().intern_callable(CallableDescr::Closed {
+        selector: int_lane,
+        alternatives: vec![a, b.clone(), c].into_boxed_slice(),
+    });
+    let direct_id = transport
+        .interners_mut()
+        .intern_callable(CallableDescr::Direct { alternative: b });
+    let source = transport.interners_mut().intern_shape(ShapeDescr::Callable(source_id));
+    let destination = transport
+        .interners_mut()
+        .intern_shape(ShapeDescr::Callable(destination_id));
+    let direct = transport.interners_mut().intern_shape(ShapeDescr::Callable(direct_id));
+    let nil = interp_nil_value();
+    let original = BackendBoundValue::Transport {
+        shape: source,
+        lanes: vec![
+            AnyValue::Int(0),
+            AnyValue::Int(7),
+            AnyValue::Int(7),
+            AnyValue::Int(1),
+            nil,
+            AnyValue::Int(99),
+            nil,
+        ],
+    };
+    let assert_lanes = |actual: &[AnyValue], expected: &[Option<i64>]| {
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            match expected {
+                Some(value) => assert_eq!(actual.as_i64(), Some(*value)),
+                None => assert!(
+                    matches!((actual, nil), (AnyValue::Atom(actual), AnyValue::Atom(expected)) if *actual == expected),
+                    "inactive lanes contain valid nil: {actual:?}"
+                ),
+            }
+        }
+    };
+    let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
+    let mut process = runtime.take_process(1).expect("test process");
+    let process = &mut process as *mut Process;
+    let expanded = encode_for_layout(&transport, process, &original, destination).expect("subset to superset");
+    assert_lanes(
+        &expanded,
+        &[Some(1), None, Some(7), Some(7), Some(1), None, Some(99), None],
+    );
+    let expanded_value = BackendBoundValue::Transport {
+        shape: destination,
+        lanes: expanded,
+    };
+    let round_trip = encode_for_layout(&transport, process, &expanded_value, source).expect("superset to subset");
+    assert_lanes(&round_trip, &[Some(0), Some(7), Some(7), Some(1), None, Some(99), None]);
+    let compact = encode_for_layout(&transport, process, &expanded_value, direct).expect("closed to selected direct");
+    assert_lanes(&compact, &[Some(7), Some(7), Some(1), None, Some(99)]);
+    let direct_value = BackendBoundValue::Transport {
+        shape: direct,
+        lanes: compact,
+    };
+    let expanded = encode_for_layout(&transport, process, &direct_value, destination).expect("direct to closed");
+    assert_lanes(
+        &expanded,
+        &[Some(1), None, Some(7), Some(7), Some(1), None, Some(99), None],
+    );
+}
+
 fn tuple_shape(transport: &mut TransportStore, fields: &[ShapeId]) -> ShapeId {
     transport.interners_mut().intern_shape(ShapeDescr::Tuple(
         fields
@@ -1148,14 +1259,19 @@ fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
 
 #[test]
 fn direct_callable_lanes_cannot_be_published_as_a_runtime_environment() {
+    let mut types = crate::compiler2::Types::new();
+    let any = types.any();
     let mut transport = TransportStore::new();
     let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
     let callable = transport
         .interners_mut()
-        .intern_callable(crate::compiler2::transport::CallableDescr {
-            function: Some(FunctionId::from_fn_id(FnId(123))),
-            arity: 0,
-            capture_layouts: Box::new([TransportLayout::structural(nothing)]),
+        .intern_callable(crate::compiler2::transport::CallableDescr::Direct {
+            alternative: crate::compiler2::transport::CallableAlternative {
+                function: FunctionId::from_fn_id(FnId(123)),
+                capture_tys: Box::new([any]),
+                arity: 0,
+                capture_layouts: Box::new([TransportLayout::structural(nothing)]),
+            },
         });
     let shape = transport.interners_mut().intern_shape(ShapeDescr::Callable(callable));
     let mut process = IrInterpRuntime::fresh_with_atoms(Vec::new()).take_process(1).unwrap();
@@ -1290,7 +1406,11 @@ impl DirectClosureEdge {
                 },
                 args: Vec::new(),
                 dest: ControlDestination::Return,
-                return_flow: None,
+                target: crate::compiler2::CallEdge::Direct(crate::compiler2::DirectCallEdge {
+                    callee: crate::compiler2::CallTarget::Local(key.clone()),
+                    return_flow: crate::compiler2::BackendReturnFlow::Tail,
+                    extern_marshals: None,
+                }),
             },
         }];
         let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());

@@ -1,5 +1,7 @@
 mod agenda;
 mod artifact;
+#[cfg(test)]
+pub(crate) use artifact::BackendReturnFlow;
 mod backend_program;
 mod body;
 pub(crate) use body::{OutcomeEdge, StepSite};
@@ -62,9 +64,9 @@ pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
     BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
     BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReceive, BackendReturnLayout,
-    BackendSemanticInputLayout, BackendStep, BackendTail, BackendValueLayout, CallEdge, CallTarget, ClosureCallEdge,
-    DirectCallEdge, DispatchCallArm, DispatchCallEdge, ExecutableDispatch, MaterializedCallEdge,
-    MaterializedExecutable,
+    BackendSemanticInputLayout, BackendStep, BackendTail, BackendValueLayout, CallEdge, CallTarget,
+    ClosedClosureCallArm, ClosureCallEdge, DirectCallEdge, DispatchCallArm, DispatchCallEdge, ExecutableDispatch,
+    MaterializedCallEdge, MaterializedExecutable,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{

@@ -23,9 +23,9 @@ use super::super::semantic::{
     ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, SemanticOrd, ShapeDemand,
 };
 use super::super::transport::{
-    BoundaryDescr, BoundaryFacts, BoundaryId, CallableConstructionCapture, CallableConstructionFact,
-    CallableConstructionMember, CallableConstructionOwner, CallableDescr, CallableDirectEdge, CallableFacts,
-    CallableId, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPosition,
+    BoundaryDescr, BoundaryFacts, BoundaryId, CallableAlternative, CallableConstructionCapture,
+    CallableConstructionFact, CallableConstructionMember, CallableConstructionOwner, CallableDescr, CallableDirectEdge,
+    CallableFacts, CallableId, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPosition,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
@@ -629,7 +629,7 @@ fn project_generic_owner_node(
             if let Some(draft) = projected.callables.get_mut(&callable) {
                 extend_unique(&mut draft.resolutions, resolutions);
             }
-            if world.callable(callable).function.is_some()
+            if world.callable(callable).direct().is_some()
                 && demand.callable.is_first_class()
                 && let Some(owner) = source.callables.get(&callable)
             {
@@ -783,92 +783,90 @@ fn layout_is_one_public_word(world: &mut World, layout: TransportLayout) -> bool
     AbiValueRepr::for_ty(world, ty) == AbiValueRepr::ValueRef
 }
 
-/// Whether a caller holding `callee` can invoke `target` directly, rather than
-/// through the boxed apply seam: it must be able to supply every capture input
-/// the target declares.
-///
-/// The caller supplies captures out of the lanes it holds. A public word holds
-/// none -- only the seam opens it. An uncarried callable naming the target
-/// holds one layout per capture that target declares, so counting them answers
-/// whether the caller can fill every one. Three places build a descriptor that
-/// names a function, and each keeps that one-to-one:
-///
-/// - `direct_callable_descr` reads the target's own
-///   `TransportPosition::ExecutableInput` capture positions, in order;
-/// - `produce_local_callable_construction` reads the producing lambda's own
-///   capture value positions, and a lambda's captures are exactly its
-///   activation's capture inputs, in the same order;
-/// - `combine_callable_requirements` keeps the function of the descriptor it
-///   combines into and refuses two whose capture-layout lengths differ, so
-///   combining moves neither.
-///
-/// The layouts themselves are not compared here. The target's capture input
-/// positions are another executable's transport products, and the artifact
-/// layer that mints the edge holds only its own; reading them would make the
-/// question a product read at a layer that does none.
-///
-/// A callable naming a DIFFERENT function carries another function's
-/// environment and is never direct to this target. Any other uncarried value
-/// holds no captures, which is all a target that declares none asks for.
-///
-/// This is the single authority. `closure_call_form` mints the recorded call
-/// form from it, the closure-call return claim grounds on it, and the native
-/// and interpreter lowerings emit the captures that one answer promised.
-fn callee_supplies_target_captures(world: &mut World, callee: TransportLayout, target: &ActivationKey) -> bool {
-    if layout_is_one_public_word(world, callee) {
-        return false;
+/// Match the carried construction alternatives to the callsite's owned rows.
+/// Both return grounding and emitted call forms use this decision. A selector
+/// names a construction; argument dispatch may still choose several executable
+/// specializations within that construction.
+fn closed_call_arms(
+    world: &mut World,
+    callee: TransportLayout,
+    targets: &[CallTargetSummary],
+) -> Option<Vec<(usize, CallTargetSummary)>> {
+    if layout_is_one_public_word(world, callee) || targets.is_empty() {
+        return None;
     }
-    let held = match world.shape(callee.structural) {
-        ShapeDescr::Callable(callable) => {
-            let descr = world.callable(*callable);
-            match descr.function {
-                Some(function) if function != target.function => return false,
-                _ => descr.capture_layouts.len(),
-            }
-        }
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Tuple(_) => 0,
+    let alternatives = match world.shape(callee.structural) {
+        ShapeDescr::Callable(callable) => world.callable(*callable).alternatives().to_vec(),
+        _ => Vec::new(),
     };
-    held == world.activation_capture_count(target)
+    // An erased, capture-free singleton still has one statically known target.
+    if alternatives.is_empty() {
+        return (targets.len() == 1
+            && matches!(targets[0].callee, SelectedCallee::Function(_))
+            && targets[0]
+                .activation
+                .as_ref()
+                .is_some_and(|target| world.activation_capture_count(target) == 0))
+        .then(|| vec![(0, targets[0].clone())]);
+    }
+    let mut arms = Vec::new();
+    for (index, alternative) in alternatives.iter().enumerate() {
+        let before = arms.len();
+        for target in targets {
+            let Some(activation) = &target.activation else { continue };
+            if target.callee != SelectedCallee::Function(alternative.function)
+                || activation.function != alternative.function
+                || usize::from(alternative.arity) != target.surface_inputs.len()
+                || alternative.capture_layouts.len() != alternative.capture_tys.len()
+                || alternative.capture_layouts.len() != world.activation_capture_count(activation)
+            {
+                continue;
+            }
+            {
+                let inputs = target.activation_inputs.as_ref()?;
+                let count = inputs.len().checked_sub(target.surface_inputs.len())?;
+                // Captures identify a construction specialization. Subtyping
+                // would also route a precise environment into a different
+                // alternative's broader capture row.
+                if count != alternative.capture_tys.len() || alternative.capture_tys.as_ref() != &inputs[..count] {
+                    continue;
+                }
+            }
+            arms.push((index, target.clone()));
+        }
+        if arms.len() == before {
+            return None;
+        }
+    }
+    // No row may silently disappear: a missing capture view contradicts a
+    // summary which promises that row is reachable.
+    if targets.iter().any(|target| !arms.iter().any(|(_, arm)| arm == target)) {
+        return None;
+    }
+    Some(arms)
 }
 
-/// Which of the three call forms this closure callsite has, from the callee's
-/// positioned layout and what the callsite summary names.
-///
-/// This is the whole decision, made once. A caller that can supply the one
-/// target's captures calls it directly; a caller holding one public word calls
-/// through the boxed apply seam; a callee that is neither -- no captures to
-/// hand over and no word to call through -- reaches nothing, and only a
-/// callsite that names nothing either can be in that state.
-///
-/// A callsite that DOES name a target while its callee carries neither form is
-/// two authorities contradicting each other about one value: the summary says
-/// a function with captures, transport says a value that holds none. No source
-/// program produces that, so it stops the compiler here rather than picking
-/// half of one convention.
-///
-/// The transport recipe for a closure-call result asks the same question
-/// through `callee_supplies_target_captures` instead of reading this answer,
-/// because it runs first: the recipe produces the callee's return layout, and
-/// the edge this mints is made from the layouts the recipe settled.
 pub(super) fn closure_call_form(
     world: &mut World,
     callee_layout: TransportLayout,
     summary: Option<&CallSiteSummary>,
     need: ExecutableNeed,
 ) -> ClosureCallForm {
-    let direct = summary
-        .and_then(CallSiteSummary::single_owned_target)
-        .filter(|(_, activation)| callee_supplies_target_captures(world, callee_layout, activation));
-    if let Some((target, activation)) = direct {
-        let (target, activation) = (target.clone(), activation.clone());
-        let capture_count = world.activation_capture_count(&activation);
-        return ClosureCallForm::Direct {
-            edge: ClosureCallEdge::Direct {
-                target: ExecutableKey { activation, need },
-                capture_count,
-            },
-            target,
-        };
+    if let Some(arms) = summary.and_then(|summary| closed_call_arms(world, callee_layout, &summary.targets)) {
+        let has_selector = matches!(world.shape(callee_layout.structural), ShapeDescr::Callable(id)
+            if world.callable(*id).selector().is_some());
+        if arms.len() == 1 && !has_selector {
+            let (_, target) = arms.into_iter().next().unwrap();
+            let activation = target.activation.clone().expect("owned target");
+            return ClosureCallForm::Direct {
+                edge: ClosureCallEdge::Direct {
+                    capture_count: world.activation_capture_count(&activation),
+                    target: ExecutableKey { activation, need },
+                },
+                target,
+            };
+        }
+        return ClosureCallForm::Closed { arms };
     }
     if layout_is_one_public_word(world, callee_layout) {
         return ClosureCallForm::Seam;
@@ -892,6 +890,9 @@ pub(super) enum ClosureCallForm {
         edge: ClosureCallEdge,
         target: CallTargetSummary,
     },
+    Closed {
+        arms: Vec<(usize, CallTargetSummary)>,
+    },
     Seam,
     Dead,
 }
@@ -900,12 +901,11 @@ pub(super) enum ClosureCallForm {
 enum TransportRecipe {
     Terminal,
     PublicCallableReturn,
-    /// A closure-call result: grounded to the singleton target's return fact
-    /// when the caller can call that target directly, public boxed when the
-    /// call has to go through the construction wrapper.
+    /// A closure-call result grounds in each owned arm's return fact when
+    /// the carrier supplies those arms' captures; a public call stays boxed.
     ClosureCallReturn {
         callee: TransportPosition,
-        grounded: Option<Box<DirectClosureTarget>>,
+        grounded: Vec<DirectClosureTarget>,
     },
     Alias(TransportPosition),
     /// A recursion edge cut at construction: a child whose transport layout can
@@ -920,11 +920,10 @@ enum TransportRecipe {
     },
 }
 
-/// The one target a closure callsite could call directly, and the recipe its
-/// result would then alias.
+/// One owned callback arm and the executable return it contributes.
 #[derive(Clone)]
 struct DirectClosureTarget {
-    target: ActivationKey,
+    target: CallTargetSummary,
     return_recipe: TransportRecipe,
 }
 
@@ -957,32 +956,19 @@ fn evaluate_transport_recipe(
             RecipeLayout::Exact(with_value_ref_carrier(world, ty, layout))
         }
         TransportRecipe::ClosureCallReturn { callee, grounded } => {
-            // One authority: `closure_call_form` mints a direct edge only when
-            // the caller can supply the target's captures, and the claim
-            // grounds on exactly that condition. It asks
-            // `callee_supplies_target_captures` here rather than reading the
-            // recorded form, because this runs first: the edge is minted from
-            // the layout this recipe settles.
             let callee_key = ProductKey::TransportShape(callee.clone());
             let callee_layout = match context.read_product(tel, callee_key.clone(), world.types()) {
                 Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => *layout,
                 Some(value) => panic!("closure callee shape produced unexpected value {value:?}"),
                 None => return RecipeLayout::Waiting(callee_key),
             };
-            match grounded {
-                Some(grounded) if callee_supplies_target_captures(world, callee_layout, &grounded.target) => {
-                    evaluate_transport_recipe(world, tel, context, &grounded.return_recipe, ty, demand, position)
-                }
-                _ => evaluate_transport_recipe(
-                    world,
-                    tel,
-                    context,
-                    &TransportRecipe::PublicCallableReturn,
-                    ty,
-                    demand,
-                    position,
-                ),
-            }
+            let targets = grounded.iter().map(|ground| ground.target.clone()).collect::<Vec<_>>();
+            let recipe = if closed_call_arms(world, callee_layout, &targets).is_some() {
+                TransportRecipe::Alternatives(grounded.iter().map(|ground| ground.return_recipe.clone()).collect())
+            } else {
+                TransportRecipe::PublicCallableReturn
+            };
+            evaluate_transport_recipe(world, tel, context, &recipe, ty, demand, position)
         }
         TransportRecipe::CutEdge => RecipeLayout::Cut(Vec::new()),
         TransportRecipe::Alias(child) => {
@@ -1066,17 +1052,11 @@ fn tuple_layout(world: &mut World, fields: &[TransportLayout]) -> TransportLayou
     }
 }
 
-/// The physical callable layout covering this position's settled target
-/// requirements, when they describe one source function. A transport layout is pure physics, so the
-/// question is never "how many targets" but "how many LAYOUTS": several
-/// activations of one function — specializations reached at different argument
-/// types — may retain different parts of the same capture environment. Their
-/// compatible requirements combine slot by slot. Which activation a callsite reaches is decided
-/// there, from the argument types it holds (fz-kdt.132), so that choice never
-/// has to travel with the value.
-///
-/// `None` means no single layout covers the set — the position falls back to
-/// the generic joined layout, which boxes whenever anything needs the identity.
+/// Closed construction alternatives, with each capture carrying the combined
+/// requirements of the executable interfaces that can consume it. Selection
+/// identifies the lexical function and capture schema, never an executable.
+/// Target layouts are products: an unread capture waits, and a capture cycle
+/// retains the existing public cut instead of inventing a finite environment.
 fn exact_direct_callable_layout(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -1092,25 +1072,42 @@ fn exact_direct_callable_layout(
     if targets.is_empty() {
         return None;
     }
+    let clauses = world.types().closed_callable_clauses(&ty)?;
     let mut settled: Option<CallableDescr> = None;
-    for target in &targets {
-        match direct_callable_descr(world, tel, context, ty, demand, position, target) {
-            DirectCallableDescr::Descr(descr) => {
-                settled = Some(match &settled {
-                    Some(first) => combine_callable_requirements(world, first, &descr)?,
-                    None => descr,
-                });
+    for clause in clauses {
+        let closure = clause.closure.expect("closed clause has a literal");
+        let function = function_id_of_closure_target(closure.target);
+        let mut covered = false;
+        for target in &targets {
+            let count = target
+                .activation_inputs
+                .len()
+                .checked_sub(target.surface.inputs.len())?;
+            // Invocation keying preserves captures verbatim; only argument
+            // interfaces may differ within this construction's requirements.
+            if target.activation.function != function
+                || count != closure.captures.len()
+                || clause.args.len() != target.surface.inputs.len()
+                || closure.captures.as_slice() != &target.activation_inputs[..count]
+            {
+                continue;
             }
-            // A cut or a not-yet-readable capture answers for the whole
-            // position: the Cut LAYOUT is target-independent (built from
-            // position/ty/demand alone); a Waiting KEY is that target's own
-            // capture position, but waiting on any unread key converges, so
-            // which target raised it is behaviorally moot. Where a position
-            // could hold BOTH a cycle and a disagreement, BTreeSet order
-            // deterministically reaches one first; Cut(ValueRef) is the
-            // safer of the two answers.
-            DirectCallableDescr::Position(layout) => return Some(layout),
-            DirectCallableDescr::Unavailable => return None,
+            covered = true;
+            match direct_callable_descr(world, tel, context, ty, demand, position, target) {
+                DirectCallableDescr::Descr(mut alternative) => {
+                    alternative.capture_tys = closure.captures.clone().into_boxed_slice();
+                    let descr = CallableDescr::Direct { alternative };
+                    settled = Some(match &settled {
+                        Some(first) => combine_callable_requirements(world, first, &descr)?,
+                        None => descr,
+                    });
+                }
+                DirectCallableDescr::Position(layout) => return Some(layout),
+                DirectCallableDescr::Unavailable => return None,
+            }
+        }
+        if !covered {
+            return None;
         }
     }
     let callable = world.intern_callable(settled?);
@@ -1162,7 +1159,7 @@ pub(super) fn targets_the_slot_type_admits(
 /// What one target contributes to [`exact_direct_callable_layout`].
 enum DirectCallableDescr {
     /// The callable layout this target names.
-    Descr(CallableDescr),
+    Descr(CallableAlternative),
     /// An answer for the whole position, reached before any layout could be
     /// named: a capture cycle's cut, or a capture layout not yet readable.
     Position(RecipeLayout),
@@ -1175,24 +1172,46 @@ fn combine_callable_requirements(
     left: &CallableDescr,
     right: &CallableDescr,
 ) -> Option<CallableDescr> {
-    if left.function.is_none()
-        || left.function != right.function
-        || left.arity != right.arity
-        || left.capture_layouts.len() != right.capture_layouts.len()
-    {
+    if matches!(left, CallableDescr::Opaque) || matches!(right, CallableDescr::Opaque) {
         return None;
     }
-    let capture_layouts = left
-        .capture_layouts
-        .iter()
-        .copied()
-        .zip(right.capture_layouts.iter().copied())
-        .map(|(left, right)| combine_capture_requirements(world, left, right))
-        .collect::<Option<Box<_>>>()?;
-    Some(CallableDescr {
-        capture_layouts,
-        ..left.clone()
-    })
+    let mut alternatives = left.alternatives().to_vec();
+    for alternative in right.alternatives() {
+        if let Some(existing) = alternatives.iter_mut().find(|item| item.same_identity(alternative)) {
+            if existing.arity != alternative.arity
+                || existing.capture_layouts.len() != alternative.capture_layouts.len()
+            {
+                return None;
+            }
+            existing.capture_layouts = existing
+                .capture_layouts
+                .iter()
+                .copied()
+                .zip(alternative.capture_layouts.iter().copied())
+                .map(|(left, right)| combine_capture_requirements(world, left, right))
+                .collect::<Option<Box<_>>>()?;
+        } else {
+            alternatives.push(alternative.clone());
+        }
+    }
+    alternatives.sort_by(|left, right| {
+        world
+            .function_ref(left.function)
+            .denotation
+            .semantic_cmp(&world.function_ref(right.function).denotation)
+            .then_with(|| world.types().cmp_activation_tys(&left.capture_tys, &right.capture_tys))
+    });
+    if alternatives.len() == 1 {
+        Some(CallableDescr::Direct {
+            alternative: alternatives.remove(0),
+        })
+    } else {
+        let int = world.types_mut().int();
+        Some(CallableDescr::Closed {
+            selector: value_lane(world, int),
+            alternatives: alternatives.into_boxed_slice(),
+        })
+    }
 }
 
 fn combine_capture_requirements(
@@ -1288,8 +1307,9 @@ fn direct_callable_descr(
             None => return DirectCallableDescr::Position(RecipeLayout::Waiting(key)),
         }
     }
-    DirectCallableDescr::Descr(CallableDescr {
-        function: Some(target.activation.function),
+    DirectCallableDescr::Descr(CallableAlternative {
+        function: target.activation.function,
+        capture_tys: target.activation_inputs[..capture_count].to_vec().into_boxed_slice(),
         arity: world
             .function_ref(target.activation.function)
             .arity
@@ -1297,26 +1317,6 @@ fn direct_callable_descr(
             .expect("source arity fits its descriptor"),
         capture_layouts: capture_layouts.into_boxed_slice(),
     })
-}
-
-/// The executable a closure callsite could ground its return against:
-/// `CallSiteSummary::single_owned_target` paired with the need this callsite
-/// asks of it. Whether the grounding APPLIES is decided at recipe evaluation by
-/// `callee_supplies_target_captures` — the same predicate `closure_call_form`
-/// mints a direct edge from — so claim and call share one authority. The claim
-/// asks the predicate itself rather than reading the recorded form, because it
-/// runs first: the form is minted from the layout this claim settles.
-fn singleton_closure_call_target(
-    facts: &ExecutableFacts,
-    callsite: &CallSiteId,
-) -> Option<(ActivationKey, ExecutableNeed)> {
-    let (_, activation) = facts.callsites().get(callsite)?.single_owned_target()?;
-    let need = facts
-        .callsite_needs()
-        .get(callsite)
-        .copied()
-        .unwrap_or(ExecutableNeed::Value);
-    Some((activation.clone(), need))
 }
 
 fn origin_transport_recipe(
@@ -1363,31 +1363,43 @@ fn origin_transport_recipe(
             )
         }
         TransportSource::ClosureCallReturn { callsite, callee } => {
-            // A closure-call result refines the settled singleton target
-            // forward (fz-9i4.4.5): when the caller can supply that target's
-            // captures, `closure_call_form` mints a direct edge to it, so the
-            // result aliases that executable's own return fact — caller and
-            // callee read one shape and agree by construction. A callee that has to go through the construction
-            // wrapper returns the public boxed contract instead, and the claim
-            // stays public with it. The gate is deferred to recipe evaluation
-            // because the callee's own layout is itself a transport product.
+            let need = facts
+                .callsite_needs()
+                .get(callsite)
+                .copied()
+                .unwrap_or(ExecutableNeed::Value);
+            let grounded = facts
+                .callsites()
+                .get(callsite)
+                .map(|summary| {
+                    summary
+                        .targets
+                        .iter()
+                        .map(|target| {
+                            let activation = match (&target.callee, &target.activation) {
+                                (SelectedCallee::Function(_), Some(activation)) => activation,
+                                _ => return None,
+                            };
+                            Some(DirectClosureTarget {
+                                target: target.clone(),
+                                return_recipe: TransportRecipe::Alias(TransportPosition::ExecutableReturn {
+                                    executable: ExecutableSymbol::from_key(&ExecutableKey {
+                                        activation: activation.clone(),
+                                        need,
+                                    }),
+                                }),
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
             TransportRecipe::ClosureCallReturn {
                 callee: TransportPosition::Value {
                     executable: symbol.clone(),
                     value: *callee,
                 },
-                grounded: singleton_closure_call_target(facts, callsite).map(|(activation, need)| {
-                    let recipe = TransportRecipe::Alias(TransportPosition::ExecutableReturn {
-                        executable: ExecutableSymbol::from_key(&ExecutableKey {
-                            activation: activation.clone(),
-                            need,
-                        }),
-                    });
-                    Box::new(DirectClosureTarget {
-                        target: activation,
-                        return_recipe: recipe,
-                    })
-                }),
+                grounded,
             }
         }
         TransportSource::Join(origins) => TransportRecipe::Alternatives(
@@ -1520,11 +1532,46 @@ fn produce_local_callable_construction(
     let direct_surfaces = surface_shapes(world, &flow.direct_surfaces);
     let direct_edges = callable_direct_edges(world, &flow.direct_edges);
     let arity = callable_ty_arity(world, callable_ty);
-    let callable = world.intern_callable(CallableDescr {
-        function: Some(producer.function),
-        arity,
-        capture_layouts: capture_layouts.clone().into_boxed_slice(),
-    });
+    let mut descr = CallableDescr::Direct {
+        alternative: CallableAlternative {
+            function: producer.function,
+            arity,
+            capture_tys: capture_tys.clone().into_boxed_slice(),
+            capture_layouts: capture_layouts.clone().into_boxed_slice(),
+        },
+    };
+    if flow.first_class_edges.is_empty()
+        && !flow.opaque
+        && !flow.escape
+        && let Some(clauses) = world.types().closed_callable_clauses(&callable_ty)
+    {
+        // A source lambda can be reached under several correlated capture
+        // rows. Preserve those rows; the aggregate capture ValueIds alone
+        // would lose the construction selection before its first call.
+        let mut closed = None;
+        for clause in clauses {
+            let closure = clause.closure.expect("closed callable literal");
+            assert_eq!(function_id_of_closure_target(closure.target), producer.function);
+            assert_eq!(closure.captures.len(), capture_layouts.len());
+            let row = CallableDescr::Direct {
+                alternative: CallableAlternative {
+                    function: producer.function,
+                    arity,
+                    capture_tys: closure.captures.into_boxed_slice(),
+                    capture_layouts: capture_layouts.clone().into_boxed_slice(),
+                },
+            };
+            closed = Some(match closed {
+                None => row,
+                Some(previous) => combine_callable_requirements(world, &previous, &row)
+                    .expect("one source producer supplies the same physical capture layouts"),
+            });
+        }
+        if let Some(closed) = closed {
+            descr = closed;
+        }
+    }
+    let callable = world.intern_callable(descr);
     let boundary_surfaces = flow.first_class_surfaces.clone();
     let boundary_layouts = surface_layouts(world, &boundary_surfaces);
     let boundary_resolutions = boundary_resolution_symbols_for_flow_surfaces(flow, &boundary_surfaces);
@@ -2192,14 +2239,16 @@ fn cut_in_component_returns(
             // closure call (fz-9i4.4.5).
             // This arm deliberately does NOT set `on_cycle`: a data-returning
             // cycle carried only by closure edges keeps its evidence form
-            // instead of the contract. The edge is indirect through the boxed
-            // apply seam, so no direct-call tail is at stake (fz-kdt.100
-            // records the residual).
-            if let Some(grounded) = grounded.as_deref_mut()
-                && let TransportRecipe::Alias(child) = &grounded.return_recipe
-                && statically_reaches(world, context, child.executable().activation.function, owner)?
-            {
-                grounded.return_recipe = TransportRecipe::CutEdge;
+            // instead of the contract. This existing cut rule applies to each
+            // closed target as well as public calls; it is not a proof that
+            // arbitrary callable return cycles have a finite private layout
+            // (fz-kdt.100 records that residual).
+            for grounded in grounded {
+                if let TransportRecipe::Alias(child) = &grounded.return_recipe
+                    && statically_reaches(world, context, child.executable().activation.function, owner)?
+                {
+                    grounded.return_recipe = TransportRecipe::CutEdge;
+                }
             }
         }
         TransportRecipe::Terminal
@@ -2302,18 +2351,28 @@ fn append_origin_children(
             }
         }
         TransportSource::ClosureCallReturn { callsite, callee } => {
-            // The claim depends on the callee value's carrier and, when a
-            // singleton target exists, on that target's return fact — so
-            // replacement or withdrawal of either product re-settles this
-            // position.
+            // The carrier decides whether each owned target's exact return
+            // can ground the result. Keep every dependency for invalidation.
             children.push(TransportPosition::Value {
                 executable: symbol.clone(),
                 value: *callee,
             });
-            if let Some((activation, need)) = singleton_closure_call_target(facts, callsite) {
-                children.push(TransportPosition::ExecutableReturn {
-                    executable: ExecutableSymbol::from_key(&ExecutableKey { activation, need }),
-                });
+            if let Some(summary) = facts.callsites().get(callsite) {
+                let need = facts
+                    .callsite_needs()
+                    .get(callsite)
+                    .copied()
+                    .unwrap_or(ExecutableNeed::Value);
+                for target in &summary.targets {
+                    if let (SelectedCallee::Function(_), Some(activation)) = (&target.callee, &target.activation) {
+                        children.push(TransportPosition::ExecutableReturn {
+                            executable: ExecutableSymbol::from_key(&ExecutableKey {
+                                activation: activation.clone(),
+                                need,
+                            }),
+                        });
+                    }
+                }
             }
         }
         TransportSource::Join(origins) => {
@@ -2424,7 +2483,16 @@ fn joined_transport_layout<T: crate::telemetry::Telemetry>(
         Ok(None) => generic.structural,
         Err(interrupted) => return interrupted,
     };
-    let carrier = layouts.iter().any(|layout| layout.carrier.is_value_ref()) || generic.carrier.is_value_ref();
+    // A called-only receiver can extract a published source's construction
+    // and captures into its exact carrier. One escaping alternative does not
+    // impose a public wrapper on its otherwise closed siblings.
+    let exact_callable = demand.is_callable()
+        && !demand.callable.is_first_class()
+        && !generic.carrier.is_value_ref()
+        && matches!(world.shape(generic.structural), ShapeDescr::Callable(callable)
+            if !world.callable(*callable).alternatives().is_empty());
+    let carrier = generic.carrier.is_value_ref()
+        || (!exact_callable && layouts.iter().any(|layout| layout.carrier.is_value_ref()));
     RecipeLayout::Exact(TransportLayout {
         structural,
         carrier: if carrier {
@@ -2624,13 +2692,7 @@ fn callable_layout_from_demand<T: crate::telemetry::Telemetry>(
     {
         return exact;
     }
-    let callable = world.intern_callable(CallableDescr {
-        function: None,
-        // A generic callable names no function, so it has no arity of its own;
-        // it is never minted into a closure value.
-        arity: 0,
-        capture_layouts: Box::default(),
-    });
+    let callable = world.intern_callable(CallableDescr::Opaque);
     RecipeLayout::Exact(TransportLayout {
         structural: world.intern_shape(ShapeDescr::Callable(callable)),
         carrier: if demand.callable.is_first_class() {
@@ -2755,36 +2817,162 @@ mod tests {
     use super::*;
 
     #[test]
+    fn overlapping_capture_types_do_not_mix_construction_rows() {
+        let mut world = World::new();
+        let function = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "capture", 1);
+        let int = world.types_mut().int();
+        let any = world.types_mut().any();
+        assert!(world.types().is_subtype(&int, &any));
+        let mut alternatives = Vec::new();
+        let mut targets = Vec::new();
+        for ty in [int, any] {
+            alternatives.push(CallableAlternative {
+                function,
+                arity: 1,
+                capture_tys: Box::new([ty]),
+                capture_layouts: Box::new([TransportLayout::structural(value_lane_shape(&mut world, ty))]),
+            });
+            let inputs = vec![ty, int];
+            targets.push(CallTargetSummary {
+                callee: SelectedCallee::Function(function),
+                surface_inputs: vec![int],
+                activation: Some(ActivationKey::from_inputs(
+                    RootId::for_test(0),
+                    function,
+                    &inputs,
+                    world.types_mut(),
+                )),
+                activation_inputs: Some(inputs),
+                extern_params: None,
+                return_ty: Some(int),
+            });
+        }
+        let selector = value_lane(&mut world, int);
+        let callable = world.intern_callable(CallableDescr::Closed {
+            selector,
+            alternatives: alternatives.into_boxed_slice(),
+        });
+        let layout = TransportLayout::structural(world.intern_shape(ShapeDescr::Callable(callable)));
+        let arms = closed_call_arms(&mut world, layout, &targets).unwrap();
+        assert_eq!(
+            arms,
+            vec![(0, targets[0].clone()), (1, targets[1].clone())],
+            "subtype containment proves admission, not construction identity"
+        );
+    }
+
+    #[test]
+    fn closed_selector_order_uses_source_denotations_not_interning_order() {
+        let mut world = World::new();
+        let module = super::super::super::identity::ModuleId::GLOBAL;
+        let z = world.reference_function(module, "z", 0);
+        let a = world.reference_function(module, "a", 0);
+        let descriptor = |function| CallableDescr::Direct {
+            alternative: CallableAlternative {
+                function,
+                arity: 0,
+                capture_tys: Box::default(),
+                capture_layouts: Box::default(),
+            },
+        };
+        let az = combine_callable_requirements(&mut world, &descriptor(a), &descriptor(z)).unwrap();
+        let za = combine_callable_requirements(&mut world, &descriptor(z), &descriptor(a)).unwrap();
+        assert_eq!(az, za);
+        assert_eq!(
+            az.alternatives().iter().map(|a| a.function).collect::<Vec<_>>(),
+            vec![a, z]
+        );
+        let callable = world.intern_callable(az);
+        let shape = world.intern_shape(ShapeDescr::Callable(callable));
+        assert_eq!(
+            world.shape_width(shape),
+            1,
+            "capture-free joins carry only the selector"
+        );
+    }
+
+    #[test]
+    fn selector_distinguishes_capture_schemas_and_combines_invocation_requirements() {
+        let mut world = World::new();
+        let function = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "factory", 0);
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let nothing = TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing));
+        let int_layout = TransportLayout::structural(value_lane_shape(&mut world, int));
+        let alternative = |ty, layout| CallableDescr::Direct {
+            alternative: CallableAlternative {
+                function,
+                arity: 0,
+                capture_tys: Box::new([ty]),
+                capture_layouts: Box::new([layout]),
+            },
+        };
+        let used = alternative(int, int_layout);
+        let unused = alternative(int, nothing);
+        let combined = combine_callable_requirements(&mut world, &used, &unused).unwrap();
+        assert_eq!(
+            combined, used,
+            "an invocation does not create a construction alternative"
+        );
+        let other_schema = alternative(float, nothing);
+        let combined = combine_callable_requirements(&mut world, &combined, &other_schema).unwrap();
+        assert_eq!(
+            combined.alternatives().len(),
+            2,
+            "even an elided capture retains its construction schema"
+        );
+        let callable = world.intern_callable(combined);
+        let shape = world.intern_shape(ShapeDescr::Callable(callable));
+        assert_eq!(world.shape_width(shape), 2, "selector plus the only live capture");
+    }
+
+    #[test]
     fn same_source_capture_requirements_retain_concrete_zero_lane_children() {
         let mut world = World::new();
         let module = super::super::super::identity::ModuleId::GLOBAL;
         let function = world.reference_function(module, "holder", 0);
         let captured = world.reference_function(module, "captured", 0);
         let nothing = TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing));
-        let captured = world.intern_callable(CallableDescr {
-            function: Some(captured),
-            arity: 0,
-            capture_layouts: Box::default(),
+        let captured = world.intern_callable(CallableDescr::Direct {
+            alternative: CallableAlternative {
+                function: captured,
+                arity: 0,
+                capture_tys: Box::default(),
+                capture_layouts: Box::default(),
+            },
         });
         let captured = TransportLayout::structural(world.intern_shape(ShapeDescr::Callable(captured)));
-        let left = CallableDescr {
-            function: Some(function),
+        let left = CallableAlternative {
+            function,
             arity: 0,
+            capture_tys: Box::new([world.types_mut().any()]),
             capture_layouts: Box::new([tuple_layout(&mut world, &[nothing, captured])]),
         };
-        let right = CallableDescr {
+        let right = CallableAlternative {
             capture_layouts: Box::new([tuple_layout(&mut world, &[captured, nothing])]),
             ..left.clone()
         };
-        let expected = CallableDescr {
+        let expected = CallableAlternative {
             capture_layouts: Box::new([tuple_layout(&mut world, &[captured, captured])]),
             ..left.clone()
         };
         for (left, right) in [(&left, &right), (&right, &left)] {
-            let combined = combine_callable_requirements(&mut world, left, right)
-                .expect("one activation's unused slot does not erase another activation's concrete child");
-            assert_eq!(combined, expected);
-            assert!(world.layout_physical_lanes(combined.capture_layouts[0]).is_empty());
+            let combined = combine_callable_requirements(
+                &mut world,
+                &CallableDescr::Direct {
+                    alternative: left.clone(),
+                },
+                &CallableDescr::Direct {
+                    alternative: right.clone(),
+                },
+            )
+            .expect("one activation's unused slot does not erase another activation's concrete child");
+            assert_eq!(combined.direct().unwrap(), &expected);
+            assert!(
+                world
+                    .layout_physical_lanes(combined.direct().unwrap().capture_layouts[0])
+                    .is_empty()
+            );
         }
     }
 
@@ -2794,17 +2982,23 @@ mod tests {
         let function = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "capturing", 0);
         let int = world.types_mut().int();
         let float = world.types_mut().float();
-        let left = CallableDescr {
-            function: Some(function),
+        let left = CallableAlternative {
+            function,
             arity: 0,
+            capture_tys: Box::new([world.types_mut().any()]),
             capture_layouts: Box::new([TransportLayout::structural(value_lane_shape(&mut world, int))]),
         };
-        let right = CallableDescr {
+        let right = CallableAlternative {
             capture_layouts: Box::new([TransportLayout::structural(value_lane_shape(&mut world, float))]),
             ..left.clone()
         };
         assert!(
-            combine_callable_requirements(&mut world, &left, &right).is_none(),
+            combine_callable_requirements(
+                &mut world,
+                &CallableDescr::Direct { alternative: left },
+                &CallableDescr::Direct { alternative: right }
+            )
+            .is_none(),
             "target requirements alone do not prove that the source retained a whole boxed payload"
         );
     }
@@ -2839,15 +3033,14 @@ mod tests {
             opaque: false,
             escape: false,
         });
-        let generic = world.intern_callable(CallableDescr {
-            function: None,
-            arity: 0,
-            capture_layouts: Box::default(),
-        });
-        let exact = world.intern_callable(CallableDescr {
-            function: Some(function),
-            arity: 0,
-            capture_layouts: Box::default(),
+        let generic = world.intern_callable(CallableDescr::Opaque);
+        let exact = world.intern_callable(CallableDescr::Direct {
+            alternative: CallableAlternative {
+                function,
+                arity: 0,
+                capture_tys: Box::default(),
+                capture_layouts: Box::default(),
+            },
         });
         let layout = TransportLayout::structural(world.intern_shape(ShapeDescr::Callable(exact)));
         let position = TransportPosition::Value {

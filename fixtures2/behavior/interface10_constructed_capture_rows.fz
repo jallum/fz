@@ -1,0 +1,21 @@
+#---
+# purpose: "a lambda constructed after a join selects its exact capture row, including a nested closed callable, without a public allocation"
+#---
+def scalar(n) do
+  cap = if n > 0, do: 3, else: "s"
+  f = fn () -> cap end
+  f.()
+end
+def nested(n) do
+  cap = if n > 0, do: fn () -> 7 end, else: fn () -> :ok end
+  f = fn () -> cap.() end
+  f.()
+end
+def main() do
+  dbg(scalar(1))
+  dbg(scalar(0))
+  dbg(nested(1))
+  dbg(nested(0))
+  stats = Process.heap_alloc_stats()
+  dbg({stats[:closure_allocs], stats[:frame_allocs]})
+end

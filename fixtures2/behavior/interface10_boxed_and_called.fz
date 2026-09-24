@@ -1,0 +1,36 @@
+#---
+# purpose: "identity-observed callable values retain their public value while a closed call borrows their selector and captures"
+#---
+def choose(flag) do
+  if flag do
+    fn x -> x + 1 end
+  else
+    fn x -> x * 2 end
+  end
+end
+def make(offset) do
+  fn x ->
+    case offset do
+      :twice -> x * 2
+      n -> x + n
+    end
+  end
+end
+def choose_captured(flag) do
+  if flag, do: make(10), else: make(:twice)
+end
+def apply_one(f, x), do: f.(x)
+def main() do
+  f = choose(true)
+  g = choose(false)
+  dbg(f === g)
+  dbg(apply_one(f, 2))
+  dbg(apply_one(g, 2))
+  dbg(f === g)
+  a = choose_captured(true)
+  b = choose_captured(false)
+  dbg(a === b)
+  dbg(apply_one(a, 2))
+  dbg(apply_one(b, 2))
+  dbg(a === b)
+end

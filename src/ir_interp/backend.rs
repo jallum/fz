@@ -754,7 +754,7 @@ pub(super) fn backend_callable_identity(
     };
     let callable = transport.interners().callable(wrapper.callable);
     Some(CallableShape {
-        target: ClosureTarget(callable.function?.as_u32()),
+        target: ClosureTarget(callable.direct()?.function.as_u32()),
         captures: wrapper
             .captures
             .iter()
@@ -763,15 +763,22 @@ pub(super) fn backend_callable_identity(
     })
 }
 
-/// The function a runtime code word runs, unwrapping a construction wrapper.
-///
-/// The wrapper's word is this backend's own numbering, so it is never a
-/// `FunctionId`; the program is what translates it back.
-fn backend_callable_function(transport: &TransportStore, program: &BackendProgram, fn_id: FnId) -> Option<FunctionId> {
-    match construction_wrapper_for_fn(program, fn_id) {
-        Some(wrapper) => transport.interners().callable(wrapper.callable).function,
-        None => Some(FunctionId::from_fn_id(fn_id)),
-    }
+#[allow(clippy::too_many_arguments)]
+fn select_backend_call_outcome(
+    runtime: &mut IrInterpRuntime,
+    types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
+    program: &BackendProgram,
+    module: &Module,
+    plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
+    inputs: &[Option<BackendBoundValue>],
+) -> Result<crate::dispatch_matrix::OutcomeId, String> {
+    let values = dispatch_values(runtime.cur_proc(), transport, plan, DispatchSource::Inputs(inputs))?;
+    let operands = values.over(transport, inputs);
+    Dispatch::new(runtime, types, program, module, plan, operands)
+        .run()?
+        .map(|decision| decision.outcome())
+        .ok_or_else(|| "backend call missed an exhaustive dispatch".into())
 }
 
 fn step_eval_entry<T: Telemetry + ?Sized>(
@@ -870,22 +877,15 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                             Ok(Some(BackendBoundValue::Runtime(value)))
                         })
                         .collect::<Result<Vec<_>, String>>()?;
-                    let values = dispatch_values(
-                        runtime.cur_proc(),
+                    let outcome = select_backend_call_outcome(
+                        runtime,
+                        types,
                         transport,
+                        program,
+                        module,
                         &dispatch.plan,
-                        DispatchSource::Inputs(&inputs),
+                        &inputs,
                     )?;
-                    let operands = values.over(transport, &inputs);
-                    let decided = Dispatch::new(runtime, types, program, module, &dispatch.plan, operands)
-                        .run()?
-                        .ok_or_else(|| {
-                            format!(
-                                "backend dispatch callsite in executable {:?} missed an exhaustive dispatch",
-                                executable.key
-                            )
-                        })?;
-                    let outcome = decided.outcome();
                     let arm = dispatch
                         .arm(outcome)
                         .ok_or_else(|| format!("backend dispatch outcome {:?} has no target", outcome))?;
@@ -914,6 +914,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
         }
         BackendTail::ClosureCall {
             edge,
+            target,
             callsite,
             callee,
             args,
@@ -926,15 +927,75 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             // target declares, and the captures come out of the callee value's
             // own lanes; a seam call goes through the boxed apply wrapper. This
             // door emits what that one answer promised, exactly as native does.
-            let (executable_target, call_args) = match edge {
-                ClosureCallEdge::Direct { target, capture_count } => {
+            let selected = match edge {
+                ClosureCallEdge::Direct {
+                    target: callee_target,
+                    capture_count,
+                } => {
+                    let CallEdge::Direct(direct) = target else {
+                        return Err("direct closure has no direct edge".into());
+                    };
+                    Some((callee_target, *capture_count, 0, direct.extern_marshals.as_deref()))
+                }
+                ClosureCallEdge::Closed { arms } => {
+                    let CallEdge::Dispatch(dispatch) = target else {
+                        return Err("closed closure has no dispatch edge".into());
+                    };
+                    let selector = match &callee_value {
+                        Some(BackendBoundValue::Transport { shape, lanes }) => {
+                            match transport.interners().shape(*shape) {
+                                ShapeDescr::Callable(callable)
+                                    if transport.interners().callable(*callable).selector().is_some() =>
+                                {
+                                    *lanes.first().ok_or("closed callable lacks selector")?
+                                }
+                                _ => AnyValue::Int(0),
+                            }
+                        }
+                        _ => AnyValue::Int(0),
+                    };
+                    let mut inputs = vec![Some(BackendBoundValue::Runtime(selector))];
+                    for (index, arg) in args.iter().enumerate() {
+                        inputs.push(Some(if dispatch.plan.required_input(index + 1) {
+                            env_get_value(&env, arg.value)?
+                        } else {
+                            BackendBoundValue::Runtime(interp_nil_value())
+                        }));
+                    }
+                    let outcome = select_backend_call_outcome(
+                        runtime,
+                        types,
+                        transport,
+                        program,
+                        module,
+                        &dispatch.plan,
+                        &inputs,
+                    )?;
+                    let source = arms
+                        .get(outcome.0 as usize)
+                        .ok_or("closed dispatch capture source absent")?;
+                    let arm = dispatch.arm(outcome).ok_or("closed dispatch target absent")?;
+                    if arm.callee.local() != Some(&source.target) {
+                        return Err("closed dispatch capture target differs".into());
+                    }
+                    Some((
+                        &source.target,
+                        source.capture_count,
+                        source.alternative,
+                        arm.extern_marshals.as_deref(),
+                    ))
+                }
+                ClosureCallEdge::Seam | ClosureCallEdge::Dead => None,
+            };
+            let (executable_target, call_args, extern_marshals) = match selected {
+                Some((target, capture_count, alternative, extern_marshals)) => {
                     let callee_executable = backend_executable_ref(program, types, target)?;
-                    let capture_inputs_end = *capture_count;
+                    let capture_inputs_end = capture_count;
                     let captures = match &callee_value {
                         Some(BackendBoundValue::Transport { shape, lanes })
                             if matches!(transport.interners().shape(*shape), ShapeDescr::Callable(_)) =>
                         {
-                            transport_field_views(transport, *shape, lanes)?
+                            callable_capture_views(transport, *shape, lanes, alternative)?
                         }
                         _ => Vec::new(),
                     };
@@ -977,9 +1038,9 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         args,
                         capture_inputs_end,
                     )?);
-                    (callee_executable, lanes)
+                    (callee_executable, lanes, extern_marshals)
                 }
-                ClosureCallEdge::Seam | ClosureCallEdge::Dead => {
+                None => {
                     let callee_value = callee_value.ok_or_else(|| {
                         format!(
                             "closure call executable={:?} function={} callsite={} callee_value={}: backend value {} is unbound",
@@ -1028,26 +1089,21 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         member,
                     }
                     .encode(&capture_lanes, args, |arg| env_get_value(&env, arg.value))?;
-                    (callee_executable, lanes)
+                    (callee_executable, lanes, None)
                 }
             };
-            let continuations = match dest {
-                ControlDestination::Return => continuations,
-                ControlDestination::Deliver(target) => {
-                    let mut continuations = continuations;
-                    continuations.push(BackendContinuation {
-                        executable: executable.clone(),
-                        entry: *target,
-                        env: capture_backend_continuation_env(transport, entries, *target, &env)?,
-                    });
-                    continuations
-                }
-            };
-            Ok(BackendEvalTransition::Next(BackendEvalState::Executable {
-                executable: executable_target,
-                args: call_args,
+            eval_encoded_direct_call(
+                runtime,
+                transport,
+                program,
+                executable_target,
+                call_args,
+                extern_marshals,
+                env,
+                executable,
+                dest.clone(),
                 continuations,
-            }))
+            )
         }
         BackendTail::If {
             cond,
@@ -1396,22 +1452,9 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 }
                 let bound = if let Some(construction) = construction {
                     construction_callable_value(runtime.cur_proc(), program, construction, types, &[])?
-                } else if executable
-                    .abi
-                    .materialized
-                    .runtime_demand
-                    .callable_flows
-                    .get(value)
-                    .is_some_and(|flow| !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty())
-                {
-                    let proc = runtime.cur_proc();
-                    direct_callable_value(transport, program, executable, proc, env, *value, *function, &[])?
                 } else {
-                    BackendBoundValue::Runtime(AnyValue::FnRef(
-                        FnId(function.as_u32()),
-                        callable_value_arity(program, *function, 0),
-                        function.denotation(),
-                    ))
+                    let proc = runtime.cur_proc();
+                    direct_callable_value(transport, program, executable, proc, env, *value, *function, &[], 0)?
                 };
                 env.insert(*value, bound);
             }
@@ -1420,6 +1463,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 function,
                 captures,
                 construction,
+                selection,
             } => {
                 for capture in captures {
                     if let Some(value) = env.get(capture) {
@@ -1431,6 +1475,34 @@ fn eval_steps<T: Telemetry + ?Sized>(
                         .node
                         .register_closure_denotation(function.denotation(), types.callable_source_origin(*function));
                 }
+                let selected = if let Some(selection) = selection {
+                    let inputs = captures
+                        .iter()
+                        .enumerate()
+                        .map(|(index, capture)| {
+                            if selection.plan.required_input(index) {
+                                env_get_value(env, *capture).map(Some)
+                            } else {
+                                Ok(None)
+                            }
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let outcome = select_backend_call_outcome(
+                        runtime,
+                        types,
+                        transport,
+                        program,
+                        module,
+                        &selection.plan,
+                        &inputs,
+                    )?;
+                    *selection
+                        .alternatives
+                        .get(selection.plan.body_id(outcome) as usize)
+                        .ok_or_else(|| "capture selection outcome has no callable alternative".to_string())?
+                } else {
+                    0
+                };
                 let bound = if let Some(construction) = construction {
                     let wrapper = construction_wrapper_for_identity(program, construction, types).ok_or_else(|| {
                         format!("backend callable construction {construction:?} is missing its wrapper")
@@ -1444,24 +1516,11 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     }
                     let captures = env_values(transport, runtime.cur_proc(), env, captures)?;
                     construction_callable_value(runtime.cur_proc(), program, construction, types, &captures)?
-                } else if executable
-                    .abi
-                    .materialized
-                    .runtime_demand
-                    .callable_flows
-                    .get(value)
-                    .is_some_and(|flow| !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty())
-                {
-                    let proc = runtime.cur_proc();
-                    direct_callable_value(transport, program, executable, proc, env, *value, *function, captures)?
                 } else {
-                    BackendBoundValue::Runtime(make_closure(
-                        runtime,
-                        function.as_u32(),
-                        function.denotation(),
-                        callable_value_arity(program, *function, captures.len()),
-                        env_values(transport, runtime.cur_proc(), env, captures)?,
-                    )?)
+                    let proc = runtime.cur_proc();
+                    direct_callable_value(
+                        transport, program, executable, proc, env, *value, *function, captures, selected,
+                    )?
                 };
                 env.insert(*value, bound);
             }
@@ -1813,6 +1872,34 @@ fn eval_direct_call(
 ) -> Result<BackendEvalTransition, String> {
     let executable = callee.as_ref();
     let call_args = encode_call_args(transport, program, runtime, executable, &env, args, 0)?;
+    eval_encoded_direct_call(
+        runtime,
+        transport,
+        program,
+        callee,
+        call_args,
+        extern_marshals,
+        env,
+        caller,
+        dest,
+        continuations,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_encoded_direct_call(
+    runtime: &mut IrInterpRuntime,
+    transport: &TransportStore,
+    program: &BackendProgram,
+    callee: Rc<BackendExecutable>,
+    call_args: Vec<AnyValue>,
+    extern_marshals: Option<&[crate::fz_ir::ExternTy]>,
+    env: HashMap<ValueId, BackendBoundValue>,
+    caller: &Rc<BackendExecutable>,
+    dest: ControlDestination,
+    continuations: Vec<BackendContinuation>,
+) -> Result<BackendEvalTransition, String> {
+    let executable = callee.as_ref();
     let continuations = match dest {
         ControlDestination::Return => continuations,
         ControlDestination::Deliver(target) => {
@@ -2060,6 +2147,7 @@ fn direct_callable_value(
     value: ValueId,
     function: FunctionId,
     captures: &[ValueId],
+    selected: usize,
 ) -> Result<BackendBoundValue, String> {
     let shape = value_shape(executable, value)?;
     let ShapeDescr::Callable(callable) = transport.interners().shape(shape) else {
@@ -2069,8 +2157,12 @@ fn direct_callable_value(
         ));
     };
     let callable_id = *callable;
-    let callable = transport.interners().callable(callable_id);
-    if callable.function != Some(function) {
+    let callable = transport
+        .interners()
+        .callable(callable_id)
+        .alternative(selected)
+        .ok_or_else(|| "a local callable producer needs its direct construction layout".to_string())?;
+    if callable.function != function {
         return Err(format!(
             "backend direct callable producer {} expected function {}, got {:?}",
             value.as_u32(),
@@ -2086,11 +2178,24 @@ fn direct_callable_value(
             captures.len()
         ));
     }
-    let mut lanes = Vec::new();
-    for (capture, layout) in captures.iter().copied().zip(callable.capture_layouts.iter().copied()) {
+    let mut lanes = vec![interp_nil_value(); transport.interners().shape_width(shape)];
+    if transport.interners().callable(callable_id).selector().is_some() {
+        lanes[0] = AnyValue::Int(selected as i64);
+    }
+    for (capture, (layout, span)) in captures.iter().copied().zip(
+        transport
+            .interners()
+            .callable_capture_spans(callable_id, selected)
+            .unwrap(),
+    ) {
         if transport.interners().layout_width(layout) != 0 {
             let bound = env_get_value(env, capture)?;
-            encode_transport_layout(transport, program, proc, &bound, layout, &mut lanes)?;
+            let mut encoded = Vec::new();
+            encode_transport_layout(transport, program, proc, &bound, layout, &mut encoded)?;
+            if encoded.len() != span.len() {
+                return Err("local callable capture encoded the wrong width".into());
+            }
+            lanes[span].copy_from_slice(&encoded);
         }
     }
     let expected = transport.interners().shape_width(shape);
@@ -2124,25 +2229,6 @@ fn construction_wrapper_identity_fn(index: usize) -> Result<FnId, String> {
         .filter(|index| index & CONSTRUCTION_WRAPPER_IDENTITY_BASE == 0)
         .ok_or_else(|| "backend callable construction inventory exceeds runtime identity space".to_string())?;
     Ok(FnId(CONSTRUCTION_WRAPPER_IDENTITY_BASE | index))
-}
-
-/// The user-visible parameter count of the callable value `function` produces:
-/// the function's own inputs less the ones its environment supplies. This is
-/// what a rendered fun reports (Elixir's `#Function<.../arity>`), and it is
-/// fixed by the source regardless of how many captures survive demand.
-///
-/// A callable described exactly by transport carries its own `CallableDescr::
-/// arity` and is read there instead. This answers for the remaining case: a
-/// callable value whose flow is neither a construction nor a direct surface,
-/// where the transported description may be the generic callable and so has no
-/// arity of its own. The program always does.
-fn callable_value_arity(program: &BackendProgram, function: FunctionId, capture_count: usize) -> u16 {
-    program
-        .executables()
-        .iter()
-        .find(|executable| executable.key.activation.function == function)
-        .map(|executable| executable.abi.semantic_inputs.len().saturating_sub(capture_count) as u16)
-        .unwrap_or(0)
 }
 
 fn construction_wrapper_for_fn(program: &BackendProgram, fn_id: FnId) -> Option<&BackendConstructionWrapper> {
@@ -2425,16 +2511,30 @@ pub(super) fn materialize_transport_value(
         }
         ShapeDescr::Callable(callable) => {
             let callable = transport.interners().callable(*callable);
-            let Some(function) = callable.function else {
+            if matches!(callable, crate::compiler2::transport::CallableDescr::Opaque) {
                 return lanes
                     .first()
                     .copied()
                     .ok_or_else(|| format!("backend generic callable shape {shape:?} has no published lane"));
+            }
+            let selected = if callable.selector().is_some() {
+                match lanes.first() {
+                    Some(AnyValue::Int(tag)) => {
+                        usize::try_from(*tag).map_err(|_| "negative callable selector".to_string())?
+                    }
+                    _ => return Err("closed callable has no integer selector".into()),
+                }
+            } else {
+                0
             };
-            if callable.capture_layouts.is_empty() {
+            let alternative = callable
+                .alternative(selected)
+                .ok_or_else(|| "invalid callable selector".to_string())?;
+            if alternative.capture_layouts.is_empty() {
+                let function = alternative.function;
                 return Ok(AnyValue::FnRef(
                     FnId(function.as_u32()),
-                    callable.arity,
+                    alternative.arity,
                     function.denotation(),
                 ));
             }
@@ -2592,25 +2692,7 @@ fn encode_runtime_value(
             }
             Ok(())
         }
-        ShapeDescr::Callable(callable) => {
-            let callable = transport.interners().callable(*callable);
-            match callable.function {
-                // Direct callable: descriptor names the target, so the value
-                // travels as its flat capture lanes.
-                Some(_) => {
-                    let extracted = direct_callable_capture_lanes(transport, program, proc, value, callable)?;
-                    lanes.extend(extracted);
-                    Ok(())
-                }
-                // Generic (escaped / boundary-published) callable: the published
-                // value lane is one boxed callable ref. Materialize the value into
-                // that single lane instead of flattening captures.
-                None => {
-                    lanes.push(materialize_backend_value(transport, proc, value)?);
-                    Ok(())
-                }
-            }
-        }
+        ShapeDescr::Callable(callable) => encode_callable_lanes(transport, program, proc, value, *callable, lanes),
     }
 }
 
@@ -2835,57 +2917,108 @@ fn tuple_field_values_for_encoding(
         .collect()
 }
 
-fn direct_callable_capture_lanes(
+pub(super) fn callable_capture_views(
+    transport: &TransportStore,
+    shape: ShapeId,
+    lanes: &[AnyValue],
+    alternative: usize,
+) -> Result<Vec<BackendBoundValue>, String> {
+    let ShapeDescr::Callable(callable) = transport.interners().shape(shape) else {
+        return Err("capture view requires a callable shape".into());
+    };
+    if lanes.len() != transport.interners().shape_width(shape) {
+        return Err("callable capture view has an invalid lane width".into());
+    }
+    transport
+        .interners()
+        .callable_capture_spans(*callable, alternative)
+        .ok_or_else(|| "callable capture view requires a selected alternative".to_string())?
+        .map(|(layout, span)| decode_field(transport, shape, lanes, layout, span))
+        .collect()
+}
+
+fn encode_callable_lanes(
     transport: &TransportStore,
     program: &BackendProgram,
     proc: *mut Process,
     value: &BackendBoundValue,
-    callable: &crate::compiler2::transport::CallableDescr,
-) -> Result<Vec<AnyValue>, String> {
-    let function = callable.function.expect("direct callable names its source function");
-    let captures = if let BackendBoundValue::Transport { shape, lanes } = value
-        && let ShapeDescr::Callable(source) = transport.interners().shape(*shape)
-    {
+    target: crate::compiler2::transport::CallableId,
+    lanes: &mut Vec<AnyValue>,
+) -> Result<(), String> {
+    let target_descr = transport.interners().callable(target);
+    if matches!(target_descr, crate::compiler2::transport::CallableDescr::Opaque) {
+        lanes.push(materialize_backend_value(transport, proc, value)?);
+        return Ok(());
+    }
+    let (source, captures) = if let BackendBoundValue::Transport { shape, lanes } = value {
+        let ShapeDescr::Callable(source) = transport.interners().shape(*shape) else {
+            return Err("callable encoding received another structural shape".into());
+        };
         let source = transport.interners().callable(*source);
-        if source.function != Some(function) {
-            return Err(format!(
-                "backend direct-callable transport expected function {}, got {:?}",
-                function.as_u32(),
-                source.function
-            ));
-        }
-        transport_field_views(transport, *shape, lanes)?
+        let selected = if source.selector().is_some() {
+            match lanes.first() {
+                Some(AnyValue::Int(tag)) => {
+                    usize::try_from(*tag).map_err(|_| "negative callable selector".to_string())?
+                }
+                _ => return Err("closed callable has no integer selector".into()),
+            }
+        } else {
+            0
+        };
+        let alternative = source
+            .alternative(selected)
+            .ok_or_else(|| "invalid callable selector".to_string())?;
+        (alternative, callable_capture_views(transport, *shape, lanes, selected)?)
     } else {
         let materialized = materialize_backend_value(transport, proc, value)?;
         let (fn_id, words) = match materialized {
             AnyValue::FnRef(fn_id, _, _) => (fn_id, Vec::new()),
             other => unpack_closure(other.value(proc)?)?,
         };
-        // The word is a CONSTRUCTION, not a function: a wrapper's word is this
-        // backend's own numbering, so the program translates it back before the
-        // check (fz-kdt.127).
-        if backend_callable_function(transport, program, fn_id) != Some(function) {
-            return Err(format!(
-                "backend direct-callable transport expected function {}, got construction word {}",
-                function.as_u32(),
-                fn_id.0
-            ));
+        let source = match construction_wrapper_for_fn(program, fn_id) {
+            Some(wrapper) => transport.interners().callable(wrapper.callable).direct(),
+            None => target_descr.alternatives().iter().find(|alternative| {
+                alternative.function == FunctionId::from_fn_id(fn_id) && alternative.capture_tys.is_empty()
+            }),
         }
-        words.into_iter().map(BackendBoundValue::Runtime).collect()
+        .ok_or_else(|| "runtime callable has no exact construction schema".to_string())?;
+        (source, words.into_iter().map(BackendBoundValue::Runtime).collect())
     };
-    if captures.len() != callable.capture_layouts.len() {
-        return Err(format!(
-            "backend direct-callable transport expected {} lexical capture(s) for function {}, got {}",
-            callable.capture_layouts.len(),
-            function.as_u32(),
-            captures.len()
-        ));
+    let (selected, alternative) = target_descr
+        .alternatives()
+        .iter()
+        .enumerate()
+        .find(|(_, alternative)| alternative.same_identity(source))
+        .ok_or_else(|| format!("callable source schema {source:?} is absent from target {target_descr:?}"))?;
+    if captures.len() != alternative.capture_layouts.len() {
+        return Err("callable source capture count disagrees with selected alternative".into());
     }
-    let mut lanes = Vec::new();
-    for (capture, layout) in captures.iter().zip(callable.capture_layouts.iter().copied()) {
-        encode_transport_layout(transport, program, proc, capture, layout, &mut lanes)?;
+    let width = usize::from(target_descr.selector().is_some())
+        + target_descr
+            .alternatives()
+            .iter()
+            .flat_map(|alternative| alternative.capture_layouts.iter())
+            .map(|layout| transport.interners().layout_width(*layout))
+            .sum::<usize>();
+    // Interpreter lanes carry tagged values, even for a native raw ABI. Nil
+    // safely occupies inactive slots and is never decoded as a capture.
+    let mut encoded = vec![interp_nil_value(); width];
+    if target_descr.selector().is_some() {
+        encoded[0] = AnyValue::Int(selected as i64);
     }
-    Ok(lanes)
+    for (capture, (layout, span)) in captures
+        .iter()
+        .zip(transport.interners().callable_capture_spans(target, selected).unwrap())
+    {
+        let mut capture_lanes = Vec::new();
+        encode_transport_layout(transport, program, proc, capture, layout, &mut capture_lanes)?;
+        if capture_lanes.len() != span.len() {
+            return Err("callable capture encoded the wrong lane width".into());
+        }
+        encoded[span].copy_from_slice(&capture_lanes);
+    }
+    lanes.extend(encoded);
+    Ok(())
 }
 
 fn publish_runtime_value(proc: *mut Process, value: AnyValue) -> Result<AnyValue, String> {
@@ -3019,16 +3152,6 @@ fn make_closure_on_proc(
     Ok(AnyValue::Ref(
         AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("backend closure ref"),
     ))
-}
-
-fn make_closure(
-    runtime: &mut IrInterpRuntime,
-    code: u32,
-    denotation: fz_runtime::any_value::ClosureDenotationId,
-    arity: u16,
-    captures: Vec<AnyValue>,
-) -> Result<AnyValue, String> {
-    make_closure_on_proc(runtime.cur_proc(), code, denotation, arity, captures)
 }
 
 fn drain_pending_dtors_backend<T: Telemetry + ?Sized>(

@@ -546,54 +546,30 @@ boundary publication names the one position that publishes it, and no member
 speaks for a group-mate. Which member's job happens to close the cycle therefore
 cannot change what any member says.
 
-Closure-call materialization asks ONE question of the callee's positioned
-layout: can this caller supply every capture input the target declares?
-`callee_supplies_target_captures` answers it, and `closure_call_form` folds that
-answer, the callee's carrier and the callsite summary into the single
-three-valued `ClosureCallEdge` the artifact edge records: `Direct` with the
-target and the number of captures the caller hands it, `Seam`, or `Dead`. Every
-consumer reads the recorded form — native emits the captures it promised, and
-the interpreter calls the recorded target the same way instead of re-deriving a
-route from the runtime value. The closure-call return claim is the one place
-that asks `callee_supplies_target_captures` for itself, because it runs first:
-the claim settles the callee return layout the form is later minted from.
+Closure-call materialization and return grounding share `closed_call_arms`.
+It matches each carried construction alternative to the callsite's owned target
+rows, requiring the complete ordered capture schema and its capture layouts.
+Every alternative and every summary row must participate. A public `ValueRef`
+carrier supplies no private captures and uses the existing apply seam.
 
-The caller supplies captures out of the lanes it holds, so a value travelling as
-one public word supplies none: only the seam opens it, and target cardinality
-cannot turn a transported value back into a private call. `layout_is_one_public_word`
-names that form — a `ValueRef` carrier, or a bare structural lane whose ABI form
-is `ValueRef`, which is what a callable with no raw representation comes to. A
-DECOMPOSED callable is never that word however wide it is: a direct callable
-whose single capture happens to be boxed still hands the caller that capture.
-The rustdoc on `callee_supplies_target_captures` owns how the answer is derived
-from the callee's descriptor. A callee that is neither — no word to call
-through and no captures to supply — is `Dead` when the callsite names nothing
-either, and otherwise cannot come from a program: the callsite summary and the
-transport layout describe one value, so that state is a contradiction between
-two authorities and stops the compiler as an internal error inside the
-calculator. Callable-construction ownership remains the authority for
-wrapper construction and packaging, not for rediscovering how the call is made.
-Public delivery names the caller-owned `ReturnPayload` as its source and adapts
-it into the separate delivered-resume destination.
+`ClosureCallEdge` records that decision: `Direct` names one executable and its
+capture count; `Closed` associates each dispatch outcome with a construction
+alternative, executable, and capture count; `Seam` invokes the public wrapper;
+`Dead` has no reachable target. A callee with neither the promised captures nor
+a public word is a compiler contradiction. Return grounding reads this same
+layout decision before materialization and joins the selected executables' own
+return products. It retains each dependency and cuts each recursive return edge
+with the existing static-reachability rule.
 
-That decision is carried by the emitted call form itself. A
-`BackendTail::ClosureCall` carries the `ClosureCallEdge` its artifact edge was
-minted with, and that one value is what every consumer reads. Native lowers
-`Direct` to a `Call`/`TailCall` direct edge to the named executable, and `Seam`
-or `Dead` to a `CallClosure`/`TailCallClosure` term, which is indirect by
-construction and always dispatches through the callee value's published callable
-boundary. The backend interpreter reads the same field the same way: `Direct` is
-called with the captures decoded out of the callee value's own callable lanes,
-and the other two materialize the word and go through the construction wrapper.
-It does not ask whether the function it finds at runtime happens to have a
-wrapper. Neither door re-derives where the target's captures end either:
-`capture_count` is the count `World::activation_capture_count` gave when the
-form was minted, and it is also where the surface arguments begin. The
-boxed-apply contract reads the same form — only a `Seam` call records a
-requirement, because a direct edge never meets the seam and a dead one never
-happens. There is no per-FnId closure-target surface registry and no
-consumer-side re-derivation of a direct target from an indirect call, on any
-door.
+`BackendTail::ClosureCall` retains the complete `CallEdge`, including each arm's
+return flow. Closed dispatch uses the ordinary pattern graph with subjects
+`[selector, source arguments...]`. Selector tests are integer value patterns,
+since integer types do not distinguish numeric literals. Source arguments can
+select several invocation interfaces for one construction; the selector never
+names an executable. Native and interpreter lowering select that arm's capture
+view, prepend it to the source arguments, and reuse direct-call execution and
+return delivery. A compact singleton supplies constant selector zero when it
+needs argument dispatch. Only `Seam` publishes a boxed-apply requirement.
 
 World movements arrive from the scheduler as borrowed `FactMovement` values,
 one exact final `FactState` per moved key. Product generations and reader edges
@@ -693,10 +669,54 @@ args after the callee capture prefix. `DeriveRuntimeDemand(E)` records Current
 reads of exact target input sub-facts, so a changed callee input vector wakes
 only formulas that read it; return/value-only movement does not wake them.
 
-A callable demand yields the exact direct-callable layout at every depth: a
-tuple field holding a lambda that is called publishes the lambda's identity and
-capture lanes exactly as a whole position does, because both ask the same
-function for it. That reaches the field because the demand does: a
+A called-only demand uses exact callable layouts at every depth. Before
+removing a boxed call obligation, runtime demand enumerates the settled callee
+value's canonical callable clauses. Each clause must name a literal and one
+owned target must cover its complete capture row and arity. Unknown callable
+clauses, negative identities, other value kinds, or missing capture rows fail
+this proof. Joined delivery and continuation captures do not force escape when
+this proof succeeds; real identity, whole-value, opaque, and escape demands
+remain first-class.
+
+`CallableDescr::Direct` holds one lexical function, source arity, ordered capture
+schema, and capture layouts. It has no selector lane. `Closed` holds canonical
+construction alternatives and lanes `[RawInt selector | captures0 | captures1 |
+...]`; ordering uses source denotations and semantic capture-type order, never
+interner arrival. Several invocation targets of one construction combine their
+capture requirements without making extra tags. Different capture schemas can
+need distinct tags even when their physical lanes coincide. Capture values such
+as integer scales 1 and 10 share the same schema and tag. Target requirements
+match that complete capture row exactly: the resolver preserves captures while
+keying only invocation arguments. Subtype containment proves coverage, not
+construction identity. For example, `wrap(&mailbox/2)` must not inherit the boxed
+capture requirement of the separate `wrap(any)` alternative.
+
+A lambda built after a capture join also retains its complete source capture
+rows: `cap = if n > 0, do: 3, else: "s"; f = fn () -> cap end` has two
+construction alternatives, not one `int | binary` schema. The settled backend
+lambda carries an ordinary pattern plan and its canonical alternative map.
+It tests the varying capture coordinates and writes the selected environment.
+Runtime demand retains these discriminators even when the body ignores them;
+unchanged captures still follow the called body's demands. Callable tests use
+existing `CallableShape` predicates, which retain nested capture schemas:
+a compact callable answers statically, while a closed one reads its selector.
+This requires lossless runtime selection of those rows. The compiler reports
+an error if existing predicates would discard one. A post-join list capture
+whose rows differ only in an unobservable tail remains a baseline limitation
+tracked by `fz-kdt.98.3.17.25`; neither a fabricated tag nor public boxing alone
+recovers the lost construction provenance.
+
+A called-only join uses its exact receiving layout even when one producer also
+has a public use. Coercion extracts that producer's existing wrapper into the
+closed carrier; it does not force the other alternatives to publish wrappers.
+A genuinely first-class receiving demand keeps its public carrier.
+Coercion remaps the selector and recursively converts only the active capture
+payload. Unselected lanes receive integer/float zero, the nil atom, or a tagged
+nil value as their representation requires. Physical ABI types admit those
+padding values; exact semantic capture schemas stay on the alternatives.
+`callable_capture_spans` exposes one selected environment, including duplicate
+and nested captures, without treating inactive payload as live captures.
+A called tuple field follows these same layout rules. That reaches the field because the demand does: a
 `ShapeDemand::TupleFields` vector is a PREFIX, so two consumers of one tuple —
 one reading field 0, one reading field 1 — join by padding the shorter with
 `ignore` and joining field by field, rather than coarsening to `Whole` and
@@ -762,8 +782,9 @@ Both doors hold a value the same three ways -- one runtime word, the lanes of a
 transport shape, or explicit absence -- so they hold it in one `BoundValue<W>`
 over the door's own word type, named `NativeBoundValue` and
 `BackendBoundValue`. `TransportInterners::field_spans` is the one calculator
-both use to say which lanes a field occupies: a tuple's fields and a callable's
-captures alike, since both are the same sequence of layouts laid end to end.
+both use for tuple fields and compact singleton captures. Closed callable
+captures use `callable_capture_spans(callable, alternative)`, whose offsets
+include the selector and preceding alternatives.
 Whether a callable may answer for a TUPLE is a different question, and
 `tuple_arity` is the one place it is asked, so a reader that needs a tuple
 guards on the arity and then reads the fields.
@@ -797,15 +818,14 @@ which value is called; no judgment is baked in at collection. The claim is
 decided at transport-recipe evaluation from the callee VALUE's own carrier —
 the same fact `closure_call_form` mints the call form from — so claim and call
 share one authority (fz-9i4.4.5). An exact (non-`ValueRef`)
-callee carrier with a settled singleton compiler-owned target lowers as a
-direct edge, and the result aliases that target's own `ExecutableReturn`:
-caller and callee read one fact and agree on the exact return lanes by
-construction (three-level currying returns its nested closure as capture
-lanes, no boxing). A `ValueRef` callee dispatches through its construction
+callee carrier lowers its covered compiler-owned targets as direct or closed
+edges. The result joins those targets' own `ExecutableReturn` layouts, so
+caller and callees agree on return lanes by construction (three-level currying
+returns its nested closure as capture lanes, no boxing). A `ValueRef` callee dispatches through its construction
 wrapper, whose return is the public boxed contract
 (`BackendCallableReturn::ValueRef`), and the claim stays public with it. Both
-the callee-value shape and, when present, the singleton target's return fact
-are recorded as position dependencies, so replacement or withdrawal of either
+the callee-value shape and every owned target's return fact are recorded as
+position dependencies, so replacement or withdrawal of either
 re-settles the claim.
 
 The carrier is also what decides whether a constructed tuple becomes a heap
@@ -935,10 +955,14 @@ bypass the public object and use a member's private ABI.
 
 Each construction retains its source function and ordered capture annotations.
 `NativeCallableBoundary` records their runtime predicate (`shape`) separately
-from the physical descriptor (`callable`): function, source arity, and ordered
-capture layouts. Different annotations can share that descriptor. A runtime
+from the callable descriptor (`callable`), which retains function, source arity,
+ordered capture schema, and capture layouts. A runtime
 callable test compares a value's code word against the
-addresses of the wrappers whose shape it names. `Prim::ClosureCapture` reads
+addresses of the wrappers whose shape it names. `Prim::CallableConstructionIs` tests the existing construction entry when a
+boxed source must supply a closed receiver. It compares the same wrapper code
+word that `MakeFnRef` or `MakeClosure` stored; it neither creates a selector
+registry nor changes public source-denotation equality. The selected wrapper's
+schema determines the destination tag, then `Prim::ClosureCapture` reads
 one lexical slot through its runtime kind byte, independently of the wrapper
 or specialization that stored it. The same capture value then projects to
 the requested ABI; there is no construction-set lookup or duplicated payload.

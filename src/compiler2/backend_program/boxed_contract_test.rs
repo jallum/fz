@@ -59,7 +59,7 @@ fn boxed_caller_body(
                     ownership: crate::fz_ir::OwnershipMode::Share,
                 }],
                 dest: ControlDestination::Return,
-                return_flow: Some(return_flow),
+                target: crate::compiler2::artifact::CallEdge::Indirect(return_flow),
             },
         }],
     };

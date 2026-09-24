@@ -456,12 +456,11 @@ fn compiler2_transport_flow_names_non_tail_return_payload_position() {
         })
         .expect("the producer payload belongs to an emitted callsite");
     let flows = match &call.tail {
-        BackendTail::DirectCall { target, .. } => match target {
+        BackendTail::DirectCall { target, .. } | BackendTail::ClosureCall { target, .. } => match target {
             super::artifact::CallEdge::Direct(edge) => vec![&edge.return_flow],
             super::artifact::CallEdge::Dispatch(dispatch) => dispatch.arms.iter().map(|arm| &arm.return_flow).collect(),
             super::artifact::CallEdge::Indirect(flow) => vec![flow],
         },
-        BackendTail::ClosureCall { return_flow, .. } => return_flow.iter().collect(),
         _ => unreachable!("selected a callsite"),
     };
     assert!(
@@ -501,6 +500,22 @@ def main(), do: make()
     );
 }
 
+fn assert_called_only_source_has_no_public_wrappers(source: &str) {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("called_only_capture_control.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (_, program) = pull_backend_for_test(&tel, &mut world, root);
+    assert!(
+        program.construction_wrappers().is_empty(),
+        "known called-only closures retain typed environments without public construction wrappers"
+    );
+    assert!(
+        retained_layouts(&program).any(|(_, layout)| shape_contains_callable(&world, layout.structural)),
+        "the control must retain callable transport rather than eliminate its closure values"
+    );
+}
+
 #[test]
 fn compiler2_callable_wrapper_keeps_capture_carriers_distinct_from_raw_arguments() {
     let source = r#"
@@ -521,12 +536,15 @@ def main() do
 end
 "#;
 
+    assert_called_only_source_has_no_public_wrappers(source);
+    // Identity observation exercises the public wrapper contract independently of invocation.
+    let source = source
+        .replace("  {n, _} = f.()", "  dbg(f === f)\n  {n, _} = f.()")
+        .replace("  g.(1.0)", "  dbg(g === g)\n  g.(1.0)");
+
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
-    world.submit_code(
-        Some("callable_boundary_carrier_provenance.fz".to_string()),
-        source.to_string(),
-    );
+    world.submit_code(Some("callable_boundary_carrier_provenance.fz".to_string()), source);
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (_, program) = pull_backend_for_test(&tel, &mut world, root);
 
@@ -534,7 +552,7 @@ end
         .flat_map(|positioned| positioned.owner.boundary_facts.keys())
         .find_map(|boundary| {
             let descr = world.boundary(*boundary);
-            let [capture] = world.callable(descr.callable).capture_layouts.as_ref() else {
+            let [capture] = world.callable(descr.callable).direct()?.capture_layouts.as_ref() else {
                 return None;
             };
             let [argument] = descr.surface_arg_layouts.as_ref() else {
@@ -1048,7 +1066,8 @@ end
     let callable = *callable;
     let producer_function = world
         .callable(callable)
-        .function
+        .direct()
+        .map(|alternative| alternative.function)
         .unwrap_or_else(|| panic!("returned direct callable should name its local producer"));
     let flow = upstream_callable_flow_for_producer(&world, session, producer_function);
     assert_callable_facts_match_upstream_flow(&mut world, session, callable, &flow);
@@ -1747,8 +1766,9 @@ fn sole_callable_with_callable_capture(world: &World, session: &PullSession) -> 
         .filter(|callable| {
             world
                 .callable(*callable)
-                .capture_layouts
+                .alternatives()
                 .iter()
+                .flat_map(|alternative| alternative.capture_layouts.iter())
                 .any(|layout| matches!(shape_descr(world, layout.structural), ShapeDescr::Callable(_)))
         })
         .collect::<BTreeSet<_>>();
@@ -1762,13 +1782,24 @@ fn sole_callable_with_callable_capture(world: &World, session: &PullSession) -> 
 fn assert_suspend_continuation_captures(world: &World, continuation: super::transport::CallableId) {
     let continuation_descr = world.callable(continuation);
     assert_eq!(
-        continuation_descr.capture_layouts.len(),
+        continuation_descr
+            .direct()
+            .expect("direct callable capture schema")
+            .capture_layouts
+            .len(),
         3,
         "the suspend continuation should capture the remaining list, accumulator, and reducer"
     );
     assert!(
         matches!(
-            shape_descr(world, continuation_descr.capture_layouts[2].structural),
+            shape_descr(
+                world,
+                continuation_descr
+                    .direct()
+                    .expect("direct callable capture schema")
+                    .capture_layouts[2]
+                    .structural
+            ),
             ShapeDescr::Callable(_)
         ),
         "the captured reducer should remain callable-shaped inside the continuation descriptor"
@@ -1787,11 +1818,15 @@ def main() do
 end
 "#;
 
+    assert_called_only_source_has_no_public_wrappers(source);
+    // Identity observation exercises the public wrapper contract independently of invocation.
+    let source = source.replace("  f.(3)", "  dbg(f === f)\n  f.(3)");
+
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
         Some("transport_tuple_returned_callable_resume_capture.fz".to_string()),
-        source.to_string(),
+        source,
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
@@ -1969,7 +2004,8 @@ end
     let callable = *callable;
     let producer_function = world
         .callable(callable)
-        .function
+        .direct()
+        .map(|alternative| alternative.function)
         .unwrap_or_else(|| panic!("returned direct-and-escaped callable should name its local producer"));
     let flow = upstream_callable_flow_for_producer(&world, session, producer_function);
     assert_callable_facts_match_upstream_flow(&mut world, session, callable, &flow);
@@ -2047,7 +2083,7 @@ end
         .iter()
         .find_map(|(outer, _)| {
             let outer_descr = world.callable(*outer);
-            let [capture_layout] = outer_descr.capture_layouts.as_ref() else {
+            let [capture_layout] = outer_descr.direct()?.capture_layouts.as_ref() else {
                 return None;
             };
             let ShapeDescr::Callable(captured) = shape_descr(&world, capture_layout.structural) else {
@@ -2063,7 +2099,8 @@ end
         });
     let producer_function = world
         .callable(captured_callable)
-        .function
+        .direct()
+        .map(|alternative| alternative.function)
         .unwrap_or_else(|| panic!("captured callable should name its local producer"));
     let flow = upstream_callable_flow_for_producer(&world, session, producer_function);
     assert_callable_facts_match_upstream_flow(&mut world, session, captured_callable, &flow);
@@ -2787,11 +2824,10 @@ end
 }
 
 #[test]
-fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce_boundary() {
-    // INTENT: named function refs that join across branches before feeding
-    // Enum.reduce stay directly callable AND publish first-class obligations,
-    // and the delivered joined value itself carries the escaped callable demand
-    // with its arity-2 surface before downstream lowering.
+fn compiler2_runtime_demand_keeps_joined_function_refs_closed_before_reduce_boundary() {
+    // Named function refs retain their exact targets through a join. Their
+    // downstream calls cover both alternatives, so cardinality alone creates
+    // neither an opaque invocation nor a first-class escape obligation.
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -2818,13 +2854,11 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
                         .direct_edges
                         .iter()
                         .all(|edge| edge.resolution.activation.function == flow.function)
-                    && flow
-                        .first_class_surfaces
-                        .iter()
-                        .any(|surface| surface.inputs.len() == 2)
-                    && flow.escape
+                    && flow.first_class_surfaces.is_empty()
+                    && !flow.escape
+                    && !flow.opaque
             }),
-            "a branch function ref that joins before Enum.reduce must remain directly callable and also publish a first-class runtime obligation: {demand:?}",
+            "each branch function ref retains its direct invocation without a manufactured escape: {demand:?}",
         );
     }
 
@@ -2860,8 +2894,10 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
     }
     let joined_callable = &joined_demand.callable;
     assert!(
-        joined_callable.escape && joined_callable.resolved.iter().any(|surface| surface.inputs.len() == 2),
-        "the delivered joined callable value itself must publish a first-class discriminator before downstream lowering: {joined_callable:?}",
+        !joined_callable.is_first_class()
+            && joined_callable.targets.len() == 2
+            && joined_callable.resolved.iter().any(|surface| surface.inputs.len() == 2),
+        "the joined value retains both covered targets and its arity-2 surface: {joined_callable:?}",
     );
 }
 
@@ -3130,7 +3166,8 @@ fn compiler2_uncalled_named_function_value_is_callable_in_interp_and_jit() {
         .filter(|construction| {
             world
                 .callable(construction.callable)
-                .function
+                .direct()
+                .map(|alternative| alternative.function)
                 .is_some_and(|function| world.function_ref(function).is_named("identity"))
         })
         .collect::<Vec<_>>();
@@ -3202,7 +3239,10 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     let plus_callables = owner_callables
         .iter()
         .filter_map(|(callable, facts)| {
-            let function = world.callable(*callable).function?;
+            let function = world
+                .callable(*callable)
+                .direct()
+                .map(|alternative| alternative.function)?;
             function_is(&world, function, "+", 2).then_some((*callable, facts))
         })
         .collect::<Vec<_>>();
@@ -3254,7 +3294,10 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
         panic!("the exact Kernel.+/2 input should retain a callable shape")
     };
     let plus_descr = world.callable(*plus_callable);
-    assert_eq!(plus_descr.function, Some(zero_capture_plus_input.2.activation.function));
+    assert_eq!(
+        plus_descr.direct().map(|alternative| alternative.function),
+        Some(zero_capture_plus_input.2.activation.function)
+    );
     assert!(callable_capture_lanes(&world, *plus_callable).is_empty());
     assert_eq!(plus_layout.carrier, TransportCarrier::Absent);
     assert_materialized_executable_fact_authority(&world, &driver.session());
@@ -3540,7 +3583,7 @@ fn executable_input_shape_is_nothing(
 }
 
 #[test]
-fn compiler2_transport_plan_publishes_joined_enum_reduce_reducer_as_first_class() {
+fn compiler2_transport_plan_publishes_joined_enum_reduce_reducer_as_closed() {
     let source = r#"
 def add_a(x, acc), do: acc + x
 def add_b(x, acc), do: acc + x
@@ -3605,11 +3648,23 @@ end
             let ShapeDescr::Callable(callable) = shape_descr(&world, *shape) else {
                 return false;
             };
-            callables
-                .iter()
-                .any(|(candidate, facts)| candidate == callable && !facts.boundary_ids.is_empty())
+            let super::transport::CallableDescr::Closed { alternatives, .. } = world.callable(*callable) else {
+                return false;
+            };
+            alternatives.len() == 2
+                && alternatives
+                    .iter()
+                    .all(|alternative| alternative.capture_layouts.is_empty())
+                && ["add_a", "add_b"].iter().all(|name| {
+                    alternatives
+                        .iter()
+                        .any(|alternative| function_is(&world, alternative.function, name, 2))
+                })
+                && callables
+                    .iter()
+                    .any(|(candidate, facts)| candidate == callable && facts.boundary_ids.is_empty())
         }),
-        "the joined reducer must publish a first-class callable boundary instead of pooling a direct target"
+        "the joined reducer carries a selector for both zero-capture targets without a public boundary"
     );
 }
 
@@ -3627,52 +3682,53 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
     let main = executable_for(&world, session, "main", 0);
     let add_a = executable_for(&world, session, "add_a", 2).activation.function;
     let add_b = executable_for(&world, session, "add_b", 2).activation.function;
-    let boundaries = boundary_contributions(session);
-    let (_, facts) = boundaries
-        .iter()
-        .find(|(_, facts)| {
-            let resolutions = facts
-                .resolutions
-                .iter()
-                .map(|resolution| resolution.activation.function)
-                .collect::<HashSet<_>>();
-            resolutions.contains(&add_a)
-                && resolutions.contains(&add_b)
-                && facts.publications.iter().any(|position| {
-                    matches!(position,
-                    TransportPosition::CallArg { executable, .. } if executable == &main)
-                })
-        })
-        .unwrap_or_else(|| {
-            panic!("one published boundary must own the joined add_a/add_b resolutions: {boundaries:?}")
-        });
-    let publications = facts
-        .publications
-        .iter()
-        .filter(|position| position.executable() == &main)
-        .inspect(|&position| {
-            let layout = retained_layout_at(&plan, position)
-                .unwrap_or_else(|| panic!("a published callable position must carry its settled layout: {position:?}"));
-            let ShapeDescr::Callable(callable) = shape_descr(&world, layout.structural) else {
-                panic!("a joined callable publication must remain callable-shaped: {position:?} -> {layout:?}")
+    let publications = retained_layouts(&plan)
+        .filter(|(position, _)| position.executable() == &main)
+        .filter_map(|(position, layout)| {
+            let ShapeDescr::Callable(callable) = world.shape(layout.structural) else {
+                return None;
             };
-            assert_eq!(world.callable(*callable).function, None);
-            assert!(layout.carrier.is_value_ref());
+            let super::transport::CallableDescr::Closed { alternatives, .. } = world.callable(*callable) else {
+                return None;
+            };
+            let functions = alternatives
+                .iter()
+                .map(|alternative| alternative.function)
+                .collect::<HashSet<_>>();
+            if functions != HashSet::from([add_a, add_b]) {
+                return None;
+            }
+            assert_eq!(layout.carrier, TransportCarrier::Absent);
+            assert!(
+                alternatives
+                    .iter()
+                    .all(|alternative| alternative.capture_layouts.is_empty())
+            );
+            let lanes = world.layout_lane_ids(layout);
+            assert_eq!(lanes.len(), 1, "the zero-capture join carries only its selector");
+            assert!(world.types().is_integer(&world.lane(lanes[0]).ty));
+            Some(position)
         })
         .collect::<Vec<_>>();
     assert!(
-        !publications.is_empty(),
-        "main must carry the joined callable boundary before native lowering"
+        publications.iter().any(|position| matches!(
+            position,
+            TransportPosition::Value { .. } | TransportPosition::ResumePayload { .. }
+        )),
+        "the joined source value has a retained selector before capture lowering"
     );
-    let targets = plan
-        .construction_wrappers()
-        .iter()
-        .filter(|wrapper| wrapper.identity.executable() == &main)
-        .flat_map(|wrapper| wrapper.members.iter().map(|member| member.target.activation.function))
-        .collect::<HashSet<_>>();
+    let publications = publications
+        .into_iter()
+        .filter(|position| matches!(position, TransportPosition::CallArg { .. }))
+        .collect::<Vec<_>>();
+    assert!(!publications.is_empty(), "main forwards its retained closed callable");
     assert!(
-        targets.contains(&add_a) && targets.contains(&add_b),
-        "each branch retains the concrete wrapper whose closure word flows into the join"
+        plan.construction_wrappers()
+            .iter()
+            .all(|wrapper| wrapper.members.iter().all(|member| {
+                member.target.activation.function != add_a && member.target.activation.function != add_b
+            })),
+        "neither named reducer needs a boxed construction wrapper"
     );
     for position in publications {
         let TransportPosition::CallArg {
@@ -3705,69 +3761,84 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
                 .find(|input| input.semantic_index == *semantic_index)
                 .expect("each selected callee retains the reducer argument")
                 .layout;
-            assert_eq!(
-                input.structural, published.structural,
-                "each dispatch arm receives the joined callable's structural contract"
+            let ShapeDescr::Callable(input_callable) = world.shape(input.structural) else {
+                panic!("a selected reducer input retains a callable schema")
+            };
+            let ShapeDescr::Callable(published_callable) = world.shape(published.structural) else {
+                unreachable!("selected closed publication")
+            };
+            let selected = world.callable(*input_callable);
+            let supplied = world.callable(*published_callable);
+            assert!(
+                !selected.alternatives().is_empty()
+                    && selected.alternatives().iter().all(|alternative| {
+                        supplied
+                            .alternatives()
+                            .iter()
+                            .any(|source| source.same_identity(alternative))
+                    }),
+                "each specialized dispatch arm receives covered construction schemas"
             );
             assert_eq!(
                 input.carrier, published.carrier,
-                "each dispatch arm receives the same published closure carrier"
+                "each dispatch arm receives the same absent carrier"
             );
             assert_eq!(
                 input.reprs.as_ref(),
-                &[AbiValueRepr::ValueRef],
-                "the joined callable crosses the emitted call edge as one closure word before native capture"
+                vec![AbiValueRepr::RawInt; usize::from(selected.selector().is_some())],
+                "a joined input carries its selector; a selected zero-capture singleton needs no lane"
             );
         }
     }
 }
 
 #[test]
-fn compiler2_transport_plan_retains_whole_callable_capture_independently_of_member_inputs() {
-    // `add_a`/`add_b` join into one first-class callable value at a runtime
-    // branch. That join still needs a genuine boxed carrier to publish --
-    // there is no static resolution for a runtime branch. But once the
-    // dispatch that later consumes the joined value is specialized against
-    // its concrete resolutions, that consumption needs less than the whole
-    // retained boxed form: the member demand does not force a carrier of its
-    // own.
+fn compiler2_transport_plan_retains_identity_observed_callable_beside_closed_member_inputs() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
-        Some("opaque_fn_value_join.fz".to_string()),
-        include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
+        Some("identity_observed_and_called.fz".to_string()),
+        include_str!("../../fixtures2/behavior/interface10_boxed_and_called.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
-    let session = &*driver.session();
-    let callables = callable_contributions(session);
-    let (callable, facts) = callables
+    let (_driver, plan) = pull_backend_for_test(&tel, &mut world, root);
+    let public_functions = plan
+        .construction_wrappers()
         .iter()
-        .find(|(candidate, facts)| world.callable(*candidate).function.is_none() && !facts.boundary_ids.is_empty())
-        .expect("the runtime join of add_a/add_b should publish one genuinely first-class callable");
+        .flat_map(|wrapper| wrapper.members.iter().map(|member| member.target.activation.function))
+        .collect::<HashSet<_>>();
     assert!(
-        !facts.resolutions.is_empty(),
-        "the published join must retain executable resolutions once specialized against its concrete targets: {facts:?}",
-    );
-    let callable_positions = retained_layouts(&plan)
-        .filter_map(|(position, layout)| match shape_descr(&world, layout.structural) {
-            ShapeDescr::Callable(candidate) if candidate == callable => Some((position, layout)),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        callable_positions
-            .iter()
-            .any(|(position, layout)| layout.carrier.is_value_ref()
-                && matches!(position, TransportPosition::ResumePayload { .. })),
-        "the branch join must deliver the whole boxed callable through a first-class continuation carrier: {callable_positions:?}",
+        !public_functions.is_empty(),
+        "identity observation retains real public wrappers"
     );
     assert!(
-        callable_positions
-            .iter()
-            .any(|(position, layout)| !layout.carrier.is_value_ref()
-                && matches!(position, TransportPosition::CallArg { .. })),
-        "a member may need less than the whole retained callable; the specialized dispatch consumes it without a carrier of its own: {callable_positions:?}",
+        retained_layouts(&plan).any(|(position, layout)| {
+            matches!(world.shape(layout.structural), ShapeDescr::Callable(_))
+                && layout.carrier.is_value_ref()
+                && matches!(
+                    position,
+                    TransportPosition::Value { .. } | TransportPosition::ResumePayload { .. }
+                )
+        }),
+        "the identity-observed value retains its public carrier"
+    );
+    assert!(
+        retained_layouts(&plan).any(|(position, layout)| {
+            if !matches!(position, TransportPosition::CallArg { .. }) || layout.carrier.is_value_ref() {
+                return false;
+            }
+            let ShapeDescr::Callable(callable) = world.shape(layout.structural) else {
+                return false;
+            };
+            let super::transport::CallableDescr::Closed { alternatives, .. } = world.callable(*callable) else {
+                return false;
+            };
+            alternatives.len() > 1
+                && alternatives
+                    .iter()
+                    .all(|alternative| public_functions.contains(&alternative.function))
+        }),
+        "invocation borrows a closed selector/environment view of the same public constructions"
     );
 }
 
@@ -3812,22 +3883,27 @@ fn compiler2_singleton_callable_input_retains_its_source_environment_layout() {
         panic!("the exact callable input should retain a callable shape: {layout:?}")
     };
     let descr = world.callable(*callable);
-    assert_eq!(descr.function, Some(target.activation.function));
-    assert_eq!(descr.capture_layouts.len(), 2);
+    assert_eq!(
+        descr.direct().map(|alternative| alternative.function),
+        Some(target.activation.function)
+    );
+    assert_eq!(
+        descr
+            .direct()
+            .expect("direct callable capture schema")
+            .capture_layouts
+            .len(),
+        2
+    );
     assert_eq!(callable_capture_lanes(&world, *callable).len(), 2);
     assert_eq!(layout.carrier, TransportCarrier::Absent);
 }
 
 #[test]
-fn compiler2_transport_plan_keeps_a_continuation_captured_first_class_callable_boxed_by_carrier() {
-    // `maplist` is non-tail recursive (`[f.(h) | maplist(t, f)]`), so its
-    // recursion is captured in a continuation that closes over `f`. The phi of
-    // two lambdas forces `f` to be a genuine first-class (boxed, function:None)
-    // callable. Specializing every resolvable target leaves exactly one
-    // genuinely opaque callable position: the branch join itself, delivered
-    // into the continuation as a resume payload. The call argument that
-    // dispatches on that value afterward needs no boxed carrier of its own --
-    // it consumes the already-boxed value the resume payload carried in.
+fn compiler2_transport_plan_keeps_a_closed_callable_selector_through_non_tail_continuations() {
+    // The two alternatives remain exact while a non-tail recursion retains
+    // its callback. The selector crosses the branch resume and call boundary
+    // without introducing a public closure carrier.
     let source = r#"
 def maplist([], _f), do: []
 def maplist([h | t], f), do: [f.(h) | maplist(t, f)]
@@ -3846,36 +3922,40 @@ end
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (_driver, plan) = pull_backend_for_test(&tel, &mut world, root);
-    let first_class_positions = retained_layouts(&plan)
-        .filter_map(|(position, layout)| match shape_descr(&world, layout.structural) {
-            ShapeDescr::Callable(callable) => Some((position.clone(), layout, *callable)),
-            _ => None,
-        })
-        .filter(|(_, _, callable)| world.callable(*callable).function.is_none())
-        .collect::<Vec<_>>();
-    let boxed = first_class_positions
-        .iter()
-        .filter(|(position, layout, _)| {
-            layout.carrier.is_value_ref() && matches!(position, TransportPosition::ResumePayload { .. })
+    let closed_positions = retained_layouts(&plan)
+        .filter_map(|(position, layout)| {
+            let ShapeDescr::Callable(callable) = world.shape(layout.structural) else {
+                return None;
+            };
+            world.callable(*callable).selector().map(|_| (position, layout))
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        boxed.len(),
-        1,
-        "the branch join of maplist's two lambdas must deliver exactly one genuinely first-class callable through a boxed continuation carrier: {first_class_positions:?}",
-    );
-    let (position, layout, _) = boxed[0];
-    assert_eq!(
-        world.shape_width(layout.structural),
-        0,
-        "a generic callable's structure must not duplicate its boxed carrier: {position:?}",
-    );
+    assert!(!closed_positions.is_empty(), "both alternatives retain a selector");
+    for (position, layout) in &closed_positions {
+        assert_eq!(
+            layout.carrier,
+            TransportCarrier::Absent,
+            "closed continuation position {position:?}"
+        );
+        assert_eq!(
+            world.shape_width(layout.structural),
+            1,
+            "zero-capture alternatives carry one selector"
+        );
+    }
+    for resume in [true, false] {
+        assert!(
+            closed_positions.iter().any(|(position, _)| if resume {
+                matches!(position, TransportPosition::ResumePayload { .. })
+            } else {
+                matches!(position, TransportPosition::CallArg { .. })
+            }),
+            "the selector survives both the branch resume and subsequent call boundary"
+        );
+    }
     assert!(
-        first_class_positions
-            .iter()
-            .any(|(position, layout, _)| !layout.carrier.is_value_ref()
-                && matches!(position, TransportPosition::CallArg { .. })),
-        "the specialized dispatch on that boxed value needs no carrier of its own; the call-argument view stays unboxed: {first_class_positions:?}",
+        plan.construction_wrappers().is_empty(),
+        "non-tail retention alone does not make a closed callable escape"
     );
 }
 
@@ -3910,7 +3990,7 @@ end
     let callables = callable_contributions(session);
     let captured_callable = callables.iter().find_map(|(outer, facts)| {
         let outer_descr = world.callable(*outer);
-        let [capture_layout] = outer_descr.capture_layouts.as_ref() else {
+        let [capture_layout] = outer_descr.direct()?.capture_layouts.as_ref() else {
             return None;
         };
         let ShapeDescr::Callable(captured) = shape_descr(&world, capture_layout.structural) else {
@@ -4028,9 +4108,16 @@ def make(n) do
 end
 def main(), do: make(41).(1)
 "#;
+    assert_called_only_source_has_no_public_wrappers(source);
+    // Identity observation exercises the public wrapper contract independently of invocation.
+    let source = source.replace(
+        "def main(), do: make(41).(1)",
+        "def main() do\n  f = make(41)\n  dbg(f === f)\n  f.(1)\nend",
+    );
+
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
-    world.submit_code(Some("scalar_capture_construction.fz".to_string()), source.to_string());
+    world.submit_code(Some("scalar_capture_construction.fz".to_string()), source.clone());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (program, driver) =
         super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
@@ -4044,7 +4131,8 @@ def main(), do: make(41).(1)
         .filter(|construction| {
             world
                 .callable(construction.callable)
-                .function
+                .direct()
+                .map(|alternative| alternative.function)
                 .is_some_and(|function| world.function_ref(function).is_generated())
                 && construction.captures.len() == 1
                 && construction.members.len() == 1
@@ -4058,7 +4146,11 @@ def main(), do: make(41).(1)
     for construction in constructions {
         let descriptor = world.callable(construction.callable);
         assert_eq!(
-            descriptor.capture_layouts.as_ref(),
+            descriptor
+                .direct()
+                .expect("direct callable capture schema")
+                .capture_layouts
+                .as_ref(),
             construction
                 .captures
                 .iter()
@@ -4112,7 +4204,7 @@ def main(), do: make(41).(1)
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("scalar_capture_construction_runtime.fz".to_string()),
-        text: source.to_string(),
+        text: source,
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4714,9 +4806,16 @@ def make(n) do
 end
 def main(), do: make(41).(1)
 "#;
+    assert_called_only_source_has_no_public_wrappers(source);
+    // Identity observation exercises the public wrapper contract independently of invocation.
+    let source = source.replace(
+        "def main(), do: make(41).(1)",
+        "def main() do\n  f = make(41)\n  dbg(f === f)\n  f.(1)\nend",
+    );
+
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
-    world.submit_code(Some("unused_capture_construction.fz".to_string()), source.to_string());
+    world.submit_code(Some("unused_capture_construction.fz".to_string()), source);
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (program, driver) =
         super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
@@ -4730,7 +4829,8 @@ def main(), do: make(41).(1)
         .find(|construction| {
             world
                 .callable(construction.callable)
-                .function
+                .direct()
+                .map(|alternative| alternative.function)
                 .is_some_and(|function| world.function_ref(function).is_generated())
                 && construction.captures.len() == 1
         })
@@ -4981,12 +5081,24 @@ fn compiler2_callable_construction_owners_preserve_shared_boundary_publications(
     let left_callable = *left
         .callable_facts
         .keys()
-        .find(|callable| world.callable(**callable).function.is_some())
+        .find(|callable| {
+            world
+                .callable(**callable)
+                .direct()
+                .map(|alternative| alternative.function)
+                .is_some()
+        })
         .expect("left/0 return should refine the inc/1 callable identity");
     let right_callable = *right
         .callable_facts
         .keys()
-        .find(|callable| world.callable(**callable).function.is_some())
+        .find(|callable| {
+            world
+                .callable(**callable)
+                .direct()
+                .map(|alternative| alternative.function)
+                .is_some()
+        })
         .expect("right/0 return should refine the inc/1 callable identity");
     assert_eq!(left_callable, right_callable);
     let [left_boundary] = left.callable_facts[&left_callable].boundary_ids.as_ref() else {
@@ -5045,7 +5157,7 @@ end
         .iter()
         .find_map(|(callable, facts)| {
             let descr = world.callable(*callable);
-            let [capture_layout] = descr.capture_layouts.as_ref() else {
+            let [capture_layout] = descr.direct()?.capture_layouts.as_ref() else {
                 return None;
             };
             let ShapeDescr::Callable(captured) = shape_descr(&world, capture_layout.structural) else {
@@ -5151,7 +5263,7 @@ end
         .map(|(id, _)| id)
         .filter_map(|callable| {
             let descr = world.callable(*callable);
-            let [capture] = descr.capture_layouts.as_ref() else {
+            let [capture] = descr.direct()?.capture_layouts.as_ref() else {
                 return None;
             };
             Some(capture.structural)
@@ -5197,7 +5309,11 @@ fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_produce
         let matching_callables = callables
             .iter()
             .filter(|(callable, facts)| {
-                world.callable(**callable).function == Some(flow.function)
+                world
+                    .callable(**callable)
+                    .direct()
+                    .map(|alternative| alternative.function)
+                    == Some(flow.function)
                     && sorted_executable_symbols(facts.resolutions.as_ref()) == flow_resolutions
                     && transport_surfaces_match_upstream(&mut world, &facts.direct_surfaces, &flow.direct_surfaces)
             })
@@ -5743,11 +5859,14 @@ fn assert_generic_callable_shape_matches_upstream_demand(
     }
     let demand = demand.callable;
     let descr = world.callable(callable);
-    // A boxed first-class callable's VALUE shape is a capture-free callable
-    // identity with `function: None`. The invocation contract (the observed
+    // A boxed first-class callable's VALUE shape is opaque. Its invocation
+    // contract (the observed
     // surfaces) projects into the published BOUNDARIES, not the value's identity
     // — asserted below.
-    assert_eq!(descr.function, None, "an opaque callable value is boxed: function None");
+    assert!(
+        matches!(descr, super::transport::CallableDescr::Opaque),
+        "a public callable has an opaque value shape"
+    );
     assert_eq!(
         callable_capture_lanes(world, callable).len(),
         0,
@@ -5986,8 +6105,9 @@ fn shape_descr(world: &World, shape: ShapeId) -> &ShapeDescr {
 fn callable_capture_lanes(world: &World, callable: super::transport::CallableId) -> Vec<LaneId> {
     world
         .callable(callable)
-        .capture_layouts
+        .alternatives()
         .iter()
+        .flat_map(|alternative| alternative.capture_layouts.iter())
         .copied()
         .flat_map(|layout| world.layout_lane_ids(layout))
         .collect()
@@ -6445,7 +6565,8 @@ def main(), do: call_pair(mk(5))
     };
     let descr = world.callable(*callable);
     let function = descr
-        .function
+        .direct()
+        .map(|alternative| alternative.function)
         .unwrap_or_else(|| panic!("a called field names the lambda it carries: {descr:?}"));
     let denotation = &world.function_ref(function).denotation;
     let fz_runtime::function_denotation::FunctionOrigin::Generated { owner, .. } = &denotation.origin else {

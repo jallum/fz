@@ -958,6 +958,14 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::MakeClosure(_, fn_id, captured) => lower_make_closure(body, env, var_env, *fn_id, captured),
         Prim::RuntimeTypeTest(v, descr) => lower_runtime_type_predicate(body, env, var_env, *v, descr, dest_var),
         Prim::ClosureCapture { closure, index } => lower_closure_capture(body, var_env, *closure, *index),
+        Prim::CallableConstructionIs { callable, construction } => {
+            let boundary = settled_callable_boundary_id(env, *construction)?;
+            let expected = fn_addr(body.jmod, env.callable_boundary_fn_ids[&boundary], body.b);
+            let callable = body.value_as_any_ref(*var_env.get(&callable.0).expect("callable construction subject"));
+            let actual = body.closure_code_ref(callable);
+            let matches = body.b.ins().icmp(IntCC::Equal, actual, expected);
+            Ok(LowerOut::Strict(strict_bool(body.b, matches)))
+        }
     }
 }
 

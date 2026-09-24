@@ -1,0 +1,20 @@
+#---
+# purpose: "a returned public callback does not force its called-only sibling joins through boxed transport"
+#---
+def run(flag) do
+  p = fn (x) -> {:p, x} end
+  r = fn (x) -> {:r, x} end
+  q = fn (x) -> x end
+  left = if flag, do: p, else: r
+  a = left.(1)
+  right = if flag, do: p, else: q
+  b = right.(2)
+  {a, b, p}
+end
+
+def main() do
+  {a1, b1, _} = run(true)
+  {a2, b2, _} = run(false)
+  dbg({a1, b1, a2, b2})
+  0
+end

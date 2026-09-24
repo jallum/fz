@@ -1,12 +1,24 @@
 #---
-# purpose: runtime-selected predicate unions retain their behavior through closed invocation
+# purpose: dynamic predicate-or-atom values retain boxed invocation sharing without merging semantic identities
 #---
 def positive(x), do: x > 0
 def even(x), do: (x % 2) == 0
 def large(x), do: x > 2
 
-def select_left(flag), do: if flag, do: positive, else: even
-def select_right(flag), do: if flag, do: large, else: even
+def select_left(flag) do
+  case flag do
+    true -> positive
+    false -> even
+    _ -> :not_callable
+  end
+end
+def select_right(flag) do
+  case flag do
+    true -> large
+    false -> even
+    _ -> :not_callable
+  end
+end
 def make_reducer(predicate) do
   fn (entry, acc) -> if predicate.(entry), do: acc + 1, else: acc end
 end

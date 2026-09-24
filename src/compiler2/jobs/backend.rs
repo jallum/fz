@@ -3,6 +3,8 @@
 //! This module packages product-keyed symbolic backend executables into the
 //! backend-owned program consumed by the interpreter and native lowering.
 
+#[cfg(test)]
+use super::super::artifact::AbiValueRepr;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -15,10 +17,10 @@ use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::super::artifact::{
-    AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
-    BackendConstructionCapture, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry,
-    BackendEntryCapture, BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout,
-    BackendStep, BackendTail, CallEdge, CallReturnFlow, DirectCallEdge, DispatchCallArm,
+    AbiReadyCallEdge, AbiReadyExecutable, BackendBody, BackendCallArg, BackendClause, BackendConstructionCapture,
+    BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
+    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout, BackendStep,
+    BackendTail, CallEdge, CallReturnFlow, DirectCallEdge, DispatchCallArm,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry, LoweredStep, LoweredTail,
@@ -401,7 +403,7 @@ fn backend_call_edge(
 }
 
 fn backend_entry_captures(
-    world: &World,
+    world: &mut World,
     abi: &AbiReadyExecutable,
     values: &[ValueId],
     positions: &[TransportPosition],
@@ -431,19 +433,7 @@ fn backend_entry_captures(
                 .layout_physical_lanes(layout)
                 .into_iter()
                 .filter(|physical| !ignored || physical.source == PhysicalLaneSource::Carrier)
-                .map(|physical| {
-                    let ty = world.lane(physical.lane).ty;
-                    let repr = if physical.source == PhysicalLaneSource::Carrier {
-                        AbiValueRepr::ValueRef
-                    } else if world.types().is_integer(&ty) {
-                        AbiValueRepr::RawInt
-                    } else if world.types().is_atom_type(&ty) {
-                        AbiValueRepr::RawAtom
-                    } else {
-                        AbiValueRepr::ValueRef
-                    };
-                    (world.lane(physical.lane).ty, repr)
-                })
+                .map(|physical| super::artifact::abi_physical_lane_contract(world, physical))
                 .collect::<Vec<_>>();
             Ok(BackendEntryCapture {
                 value: *value,
@@ -611,8 +601,9 @@ fn package_backend_construction_wrappers(
                 .collect::<Result<Box<_>, FatalError>>()?;
             let function = world
                 .callable(construction.callable)
-                .function
-                .expect("construction names a source function");
+                .direct()
+                .expect("construction names a source function")
+                .function;
             Ok(Rc::new(BackendConstructionWrapper {
                 identity: positioned.position.clone(),
                 source_origin: std::sync::Arc::clone(&world.function_ref(function).denotation),
@@ -751,9 +742,7 @@ fn lower_backend_tail(
                 edge: form.clone(),
                 args: lowerer.lower_call_args(abi, *callsite, Some(*callee), args)?,
                 dest: dest.clone(),
-                return_flow: symbolic_call_edge_return_flow(target)
-                    .map(|flow| resolve_return_flow(flow, &lowerer.return_endpoints))
-                    .transpose()?,
+                target: backend_call_edge(target, &lowerer.return_endpoints)?,
             }
         }
         LoweredTail::If {
@@ -783,14 +772,6 @@ fn lower_backend_tail(
         })),
         LoweredTail::Halt { atom } => BackendTail::Halt { atom: atom.clone() },
     })
-}
-
-fn symbolic_call_edge_return_flow(target: &CallEdge<ExecutableKey>) -> Option<&CallReturnFlow> {
-    match target {
-        CallEdge::Direct(direct) => Some(&direct.return_flow),
-        CallEdge::Indirect(return_flow) => Some(return_flow),
-        CallEdge::Dispatch(_) => None,
-    }
 }
 
 struct BackendLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
@@ -935,15 +916,43 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 value,
                 function,
                 captures,
-            } => self.construction_step_or_omitted(
-                *value,
-                BackendStep::Lambda {
-                    value: *value,
-                    function: *function,
-                    captures: captures.clone(),
-                    construction: self.constructions.get(value).cloned(),
-                },
-            ),
+            } => {
+                let selection = match self
+                    .value_layouts
+                    .get(value)
+                    .map(|layout| self.world.shape(layout.structural))
+                {
+                    Some(super::super::transport::ShapeDescr::Callable(callable))
+                        if self.world.callable(*callable).selector().is_some() =>
+                    {
+                        let rows = self
+                            .world
+                            .callable(*callable)
+                            .alternatives()
+                            .iter()
+                            .map(|alternative| alternative.capture_tys.to_vec())
+                            .collect::<Vec<_>>();
+                        Some(
+                            super::super::callsite_dispatch::capture_alternative_selection(
+                                self.world.types_mut(),
+                                &rows,
+                            )
+                            .map_err(|message| incomplete_backend_program(self.telemetry, self.root_id, message))?,
+                        )
+                    }
+                    _ => None,
+                };
+                self.construction_step_or_omitted(
+                    *value,
+                    BackendStep::Lambda {
+                        value: *value,
+                        function: *function,
+                        captures: captures.clone(),
+                        construction: self.constructions.get(value).cloned(),
+                        selection,
+                    },
+                )
+            }
             LoweredStep::BinaryOp { value, op, left, right } => BackendStep::BinaryOp {
                 value: *value,
                 op: *op,
@@ -1128,7 +1137,7 @@ fn collect_executable_atoms(
                 collect_dispatch_atoms(world, dispatch.plan(), seen, atoms);
             }
             for clause in clauses {
-                collect_step_atoms(&clause.projections, seen, atoms);
+                collect_step_atoms(world, &clause.projections, seen, atoms);
             }
             for entry in entries {
                 collect_entry_atoms(world, entry, seen, atoms);
@@ -1138,11 +1147,11 @@ fn collect_executable_atoms(
 }
 
 fn collect_entry_atoms(world: &mut World, entry: &BackendEntry, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
-    collect_step_atoms(&entry.steps, seen, atoms);
+    collect_step_atoms(world, &entry.steps, seen, atoms);
     collect_tail_atoms(world, &entry.tail, seen, atoms);
 }
 
-fn collect_step_atoms(steps: &[BackendStep], seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+fn collect_step_atoms(world: &mut World, steps: &[BackendStep], seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     for step in steps {
         match step {
             BackendStep::Const { literal, .. } | BackendStep::AssertLiteral { literal, .. } => {
@@ -1155,6 +1164,14 @@ fn collect_step_atoms(steps: &[BackendStep], seen: &mut HashSet<String>, atoms: 
             }
             BackendStep::RequireMapValue { key, .. } => {
                 collect_literal_atoms(key, seen, atoms);
+            }
+            BackendStep::Lambda {
+                selection: Some(selection),
+                ..
+            } => {
+                collect_dispatch_atoms(world, &selection.plan, seen, atoms);
+                push_atom(seen, atoms, UNREACHABLE_CONTROL_ATOM);
+                push_atom(seen, atoms, "nil");
             }
             BackendStep::Omitted { .. }
             | BackendStep::Tuple { .. }
@@ -1184,6 +1201,10 @@ fn collect_step_atoms(steps: &[BackendStep], seen: &mut HashSet<String>, atoms: 
 fn collect_tail_atoms(world: &mut World, tail: &BackendTail, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     match tail {
         BackendTail::DirectCall {
+            target: CallEdge::Dispatch(dispatch),
+            ..
+        }
+        | BackendTail::ClosureCall {
             target: CallEdge::Dispatch(dispatch),
             ..
         } => {
@@ -1516,7 +1537,7 @@ mod tests {
                             ownership: crate::fz_ir::OwnershipMode::Share,
                         }],
                         dest: ControlDestination::Return,
-                        return_flow: Some(BackendReturnFlow::Deliver {
+                        target: CallEdge::Indirect(BackendReturnFlow::Deliver {
                             source: Box::new(BackendReturnLayout {
                                 layout: value_layout(
                                     TransportCarrier::ValueRef(LaneId::for_test(0)),

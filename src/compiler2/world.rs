@@ -512,6 +512,14 @@ impl World {
         self.transport.interners().tuple_arity(shape)
     }
 
+    pub fn callable_capture_spans(
+        &self,
+        callable: CallableId,
+        alternative: usize,
+    ) -> Option<impl Iterator<Item = (TransportLayout, std::ops::Range<usize>)> + '_> {
+        self.transport.interners().callable_capture_spans(callable, alternative)
+    }
+
     pub fn shape_count(&self) -> usize {
         self.transport.interners().shape_count()
     }

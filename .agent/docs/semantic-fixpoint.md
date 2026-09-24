@@ -312,23 +312,17 @@ it is what says which functions can arrive there. The demand's target set
 answers where each one lives, and it accumulates across every callsite the
 value is joined through, so it can name a lambda this slot's type excludes;
 `targets_the_slot_type_admits` drops that target before the fold sees it.
-Several
-activations of one function can share one physical callable descriptor:
-function, source arity, and ordered capture layouts. An absent capture requires
-nothing; compatible tuple and callable requirements combine recursively.
-Source capture annotations belong to construction wrappers and never split
-this physical identity. The value travels as the required captures with no
-runtime identity lane (`TransportCarrier::Absent`). Which activation a
-callsite reaches is decided at the callsite from the argument types it holds
-(fz-kdt.132), so that choice never has to travel with the value. Only where
-the targets name different functions or incompatible physical capture
-requirements does no exact shared layout exist, and the position uses its
-generic layout. Counting targets instead of
-layouts made a many-target position carry NOTHING while the callsite still
-ground a direct call to one of them — the shape a mailbox-delivered reducer
-takes through `Enum.reduce/3`, where the accumulator specialization splits one
-callable input across two activations of one lambda and the reducer's own
-capture then had no lane to travel in (fz-kdt.152).
+Several activations of one construction combine their physical capture
+requirements recursively. An absent capture requires nothing. The descriptor
+also retains the lexical function and ordered semantic capture schema: distinct
+schemas can require distinct selections even when their lanes coincide.
+A singleton carries only its captures; a closed join adds a RawInt selector
+followed by each alternative's capture lanes. Canonical source/type ordering
+assigns tags independently of executable admission. The callsite uses that tag
+and its arguments to select an invocation target. Unknown or first-class
+callables keep the public representation. `closed_callable_clauses` and
+`callable_targets_cover` prove every callee alternative and its complete capture
+row is covered before runtime demand removes the public obligation.
 
 Published outputs:
 

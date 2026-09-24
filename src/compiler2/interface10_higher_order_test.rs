@@ -400,3 +400,203 @@ fn joined_captured_alternatives_keep_their_actual_environment() {
 fn joined_callable_captured_by_an_adapter_keeps_selection_and_raw_abi() {
     assert_closed_int_apply("joined_nested", "wrap", 1);
 }
+
+fn closed_callable_input<'a>(
+    run: &'a Witness,
+    label: &str,
+    count: usize,
+) -> (&'a BackendExecutable, &'a [super::transport::CallableAlternative]) {
+    let bodies = run.bodies(label);
+    assert_eq!(bodies.len(), 1, "the joined callable has one receiving body");
+    let body = bodies[0];
+    let input = body
+        .abi
+        .semantic_inputs
+        .iter()
+        .find(|input| input.semantic_index == 0)
+        .expect("the called input has a positioned layout");
+    assert_eq!(input.layout.carrier, super::pull::TransportCarrier::Absent);
+    let world = run.compiler.world();
+    let super::transport::ShapeDescr::Callable(callable) = world.shape(input.layout.structural) else {
+        panic!("the called input must retain its callable schema")
+    };
+    let super::transport::CallableDescr::Closed { alternatives, .. } = world.callable(*callable) else {
+        panic!("the joined value needs a selector and exact member environments")
+    };
+    assert_eq!(alternatives.len(), count);
+    assert_eq!(input.layout.reprs[0], AbiValueRepr::RawInt, "selector ABI");
+    assert!(
+        run.program.construction_wrappers().is_empty(),
+        "closed calls allocate no public closure wrapper"
+    );
+    (body, alternatives)
+}
+
+fn assert_closed_call_arms(
+    run: &Witness,
+    body: &BackendExecutable,
+    alternatives: &[super::transport::CallableAlternative],
+) -> Vec<Vec<(usize, super::ExecutableKey)>> {
+    let super::BackendBody::Clauses { entries, .. } = &body.body else {
+        panic!("source invocation body")
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let super::BackendTail::ClosureCall { edge, args, target, .. } = &entry.tail else {
+                return None;
+            };
+            let super::ClosureCallEdge::Closed { arms } = edge else {
+                panic!("each invocation uses the closed selector: {edge:?}")
+            };
+            let super::CallEdge::Dispatch(dispatch) = target else {
+                panic!("the backend must retain the materialized per-arm dispatch")
+            };
+            assert_eq!(
+                dispatch.plan.input_count,
+                args.len() + 1,
+                "selector precedes invocation arguments"
+            );
+            assert_eq!(dispatch.arms.len(), arms.len());
+            assert_eq!(
+                arms.len(),
+                alternatives.len(),
+                "each alternative has one target at this invocation"
+            );
+            let mut rows = Vec::new();
+            for (selected, arm) in arms.iter().zip(&dispatch.arms) {
+                let alternative = &alternatives[selected.alternative];
+                assert_eq!(alternative.function, selected.target.activation.function);
+                assert_eq!(selected.capture_count, alternative.capture_layouts.len());
+                assert_eq!(
+                    arm.callee.local(),
+                    Some(&selected.target),
+                    "capture selection and emitted arm agree"
+                );
+                let executable = run
+                    .program
+                    .executables()
+                    .iter()
+                    .find(|body| body.key == selected.target)
+                    .expect("every selected arm has its emitted executable");
+                match &arm.return_flow {
+                    super::artifact::BackendReturnFlow::Continue { source }
+                    | super::artifact::BackendReturnFlow::Deliver { source, .. } => {
+                        assert_eq!(
+                            source.as_ref(),
+                            &executable.abi.return_layout,
+                            "each arm retains its own return endpoint"
+                        );
+                    }
+                    super::artifact::BackendReturnFlow::Tail | super::artifact::BackendReturnFlow::NoReturn => {}
+                }
+                rows.push((selected.alternative, selected.target.clone()));
+            }
+            rows.sort_by_key(|(alternative, _)| *alternative);
+            Some(rows)
+        })
+        .collect()
+}
+
+#[test]
+fn joined_capture_schemas_keep_distinct_environments_for_one_lexical_lambda() {
+    let run = witness("joined_capture_schemas");
+    let (body, alternatives) = closed_callable_input(&run, "invoke/1", 2);
+    assert_eq!(alternatives[0].function, alternatives[1].function);
+    assert_ne!(alternatives[0].capture_tys, alternatives[1].capture_tys);
+    assert!(
+        alternatives
+            .iter()
+            .all(|alternative| alternative.capture_layouts.len() == 1)
+    );
+    assert_eq!(body.abi.param_reprs.len(), 3, "selector and both capture schemas");
+    assert!(body.abi.param_reprs.contains(&AbiValueRepr::RawInt));
+    assert!(body.abi.param_reprs.contains(&AbiValueRepr::RawAtom));
+    assert_eq!(assert_closed_call_arms(&run, body, alternatives).len(), 1);
+}
+
+#[test]
+fn joined_padding_preserves_float_atom_and_value_ref_environment_lanes() {
+    let run = witness("joined_padding");
+    let (body, alternatives) = closed_callable_input(&run, "invoke/1", 3);
+    assert_eq!(body.abi.param_reprs.len(), 4, "selector and one lane per alternative");
+    for repr in [
+        AbiValueRepr::RawInt,
+        AbiValueRepr::RawF64,
+        AbiValueRepr::RawAtom,
+        AbiValueRepr::ValueRef,
+    ] {
+        assert!(
+            body.abi.param_reprs.contains(&repr),
+            "missing closed environment lane {repr:?}"
+        );
+    }
+    assert_eq!(assert_closed_call_arms(&run, body, alternatives).len(), 1);
+}
+
+#[test]
+fn joined_twice_keeps_one_selector_alternative_across_two_invocation_interfaces() {
+    let run = witness("joined_twice_interfaces");
+    let (body, alternatives) = closed_callable_input(&run, "twice/2", 2);
+    assert!(
+        alternatives
+            .iter()
+            .all(|alternative| alternative.capture_layouts.is_empty())
+    );
+    assert_eq!(
+        body.abi.param_reprs.as_slice(),
+        &[AbiValueRepr::RawInt, AbiValueRepr::RawInt]
+    );
+    let rows = assert_closed_call_arms(&run, body, alternatives);
+    assert_eq!(rows.len(), 2);
+    for (left, right) in rows[0].iter().zip(&rows[1]) {
+        assert_eq!(
+            left.0, right.0,
+            "the construction selector is independent of invocation interface"
+        );
+        assert_eq!(left.1.activation.function, right.1.activation.function);
+        assert_ne!(
+            left.1, right.1,
+            "the same callable is invoked at integer and atom interfaces"
+        );
+    }
+}
+
+#[test]
+fn joined_non_tail_call_preserves_selector_and_duplicate_capture_positions() {
+    let run = witness("joined_non_tail_duplicate");
+    let (body, alternatives) = closed_callable_input(&run, "twice/2", 2);
+    for alternative in alternatives {
+        assert_eq!(alternative.capture_layouts.len(), 2);
+        assert_eq!(alternative.capture_tys[0], alternative.capture_tys[1]);
+    }
+    assert_eq!(body.abi.param_reprs.as_slice(), &[AbiValueRepr::RawInt; 6]);
+    assert_eq!(assert_closed_call_arms(&run, body, alternatives).len(), 2);
+}
+
+#[test]
+fn identity_observed_callables_keep_public_values_beside_closed_invocations() {
+    let run = witness("boxed_and_called");
+    assert!(
+        !run.program.construction_wrappers().is_empty(),
+        "identity observation retains public construction wrappers"
+    );
+    let calls = run.bodies("apply_one/2");
+    assert!(!calls.is_empty());
+    for body in calls {
+        assert_eq!(body.abi.return_layout.layout.reprs.as_ref(), &[AbiValueRepr::RawInt]);
+        let super::BackendBody::Clauses { entries, .. } = &body.body else {
+            panic!("source apply body")
+        };
+        assert!(
+            entries.iter().any(|entry| matches!(
+                &entry.tail,
+                super::BackendTail::ClosureCall {
+                    edge: super::ClosureCallEdge::Closed { .. },
+                    ..
+                }
+            )),
+            "a call may borrow a closed view while the original remains identity-observable"
+        );
+    }
+}

@@ -16,15 +16,15 @@ use crate::source::Span;
 
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendReturnLayout, BackendSemanticInputLayout,
-    BackendValueLayout, CallEdge, CallReturnFlow, CallTarget, ClosureCallEdge, DirectCallEdge, DispatchCallArm,
-    DispatchCallEdge, EffectSummary, MaterializedCallEdge, MaterializedExecutable, MaterializedExecutableTransport,
-    PositionedCallableConstructionOwner,
+    BackendValueLayout, CallEdge, CallReturnFlow, CallTarget, ClosedClosureCallArm, ClosureCallEdge, DirectCallEdge,
+    DispatchCallArm, DispatchCallEdge, EffectSummary, MaterializedCallEdge, MaterializedExecutable,
+    MaterializedExecutableTransport, PositionedCallableConstructionOwner,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
     LoweredStep, LoweredTail, ValueId,
 };
-use super::super::callsite_dispatch::{CallDestinations, call_destinations};
+use super::super::callsite_dispatch::{CallDestinations, call_destinations, closed_callable_dispatch};
 use super::super::drive::FactKey;
 use super::super::executable_facts::ExecutableFacts;
 use super::super::facts::FactUse;
@@ -1089,6 +1089,58 @@ fn materialize_closure_call_edge(
         // The form came from the callsite's one owned target and carries that
         // summary row, so the direct edge is lowered against the row the
         // decision was made from.
+        ClosureCallForm::Closed { arms } => {
+            let super::super::callsite_dispatch::ClosedCallableDispatch { plan, targets } =
+                closed_callable_dispatch(world.types_mut(), arms).map_err(|error| {
+                    incomplete_semantic_plan(
+                        tel,
+                        root_id,
+                        format!("closed callable dispatch at {callsite:?}: {error:?}"),
+                    )
+                })?;
+            let mut arms = Vec::with_capacity(targets.len());
+            let mut captures = Vec::with_capacity(targets.len());
+            let mut return_ty = world.types_mut().none();
+            for (alternative, target) in targets {
+                let activation = target
+                    .activation
+                    .as_ref()
+                    .expect("closed callable target is compiler owned");
+                captures.push(ClosedClosureCallArm {
+                    alternative,
+                    target: ExecutableKey {
+                        activation: activation.clone(),
+                        need,
+                    },
+                    capture_count: world.activation_capture_count(activation),
+                });
+                let (direct, arm_return) = lower_materialized_call_target(
+                    world,
+                    tel,
+                    root_id,
+                    transport_plan,
+                    executable,
+                    analysis,
+                    need,
+                    callsite,
+                    dest,
+                    original_entry_ids,
+                    callsite_args,
+                    target,
+                )?;
+                return_ty = world.types_mut().union(return_ty, arm_return);
+                arms.push(DispatchCallArm {
+                    callee: direct.callee,
+                    return_flow: direct.return_flow,
+                    extern_marshals: direct.extern_marshals,
+                });
+            }
+            Ok(MaterializedCallEdge::Closure {
+                form: ClosureCallEdge::Closed { arms: captures },
+                target: CallEdge::Dispatch(Box::new(DispatchCallEdge::new(plan, arms))),
+                return_ty,
+            })
+        }
         ClosureCallForm::Direct { edge, target } => {
             let (direct, return_ty) = lower_materialized_call_target(
                 world,
@@ -1860,15 +1912,30 @@ pub(super) fn abi_layout_contract(world: &mut World, layout: TransportLayout) ->
     world
         .layout_physical_lanes(layout)
         .into_iter()
-        .map(|physical| {
-            let ty = world.lane(physical.lane).ty;
-            let repr = match physical.source {
-                PhysicalLaneSource::Structural => AbiValueRepr::for_ty(world, ty),
-                PhysicalLaneSource::Carrier => AbiValueRepr::ValueRef,
-            };
-            (ty, repr)
-        })
+        .map(|physical| abi_physical_lane_contract(world, physical))
         .collect()
+}
+
+pub(super) fn abi_physical_lane_contract(
+    world: &mut World,
+    physical: super::super::transport::PhysicalLane,
+) -> (Ty, AbiValueRepr) {
+    let ty = world.lane(physical.lane).ty;
+    let repr = match physical.source {
+        PhysicalLaneSource::Structural => AbiValueRepr::for_ty(world, ty),
+        PhysicalLaneSource::Carrier => AbiValueRepr::ValueRef,
+    };
+    let ty = if physical.may_be_inactive {
+        match repr {
+            AbiValueRepr::RawInt => world.types_mut().int(),
+            AbiValueRepr::RawF64 => world.types_mut().float(),
+            AbiValueRepr::RawAtom => world.types_mut().atom(),
+            AbiValueRepr::ValueRef => world.types_mut().any(),
+        }
+    } else {
+        ty
+    };
+    (ty, repr)
 }
 
 /// A tail-position direct call whose callsite settled on no reachable target.

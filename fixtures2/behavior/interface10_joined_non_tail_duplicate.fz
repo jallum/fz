@@ -1,0 +1,18 @@
+#---
+# purpose: "a non-tail closure call retains its selector and both same-shaped capture positions for the next call"
+#---
+def choose(n, a, b) do
+  if n > 0 do
+    fn x -> x + a + b end
+  else
+    fn x -> x * a * b end
+  end
+end
+def twice(f, x) do
+  first = f.(x)
+  {first, f.(first)}
+end
+def main() do
+  dbg(twice(choose(1, 2, 2), 3))
+  dbg(twice(choose(0, 2, 2), 3))
+end

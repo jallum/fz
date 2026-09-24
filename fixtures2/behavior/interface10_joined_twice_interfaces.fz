@@ -1,0 +1,13 @@
+#---
+# purpose: "one closed callable selector survives two invocation interfaces and keeps distinct per-arm return flows"
+#---
+def left(_x :: integer), do: :middle
+def left(:middle), do: "left"
+def right(_x :: integer), do: :middle
+def right(:middle), do: "right"
+def choose(n), do: if n > 0, do: &left/1, else: &right/1
+def twice(f, x), do: f.(f.(x))
+def main() do
+  dbg(twice(choose(1), 7))
+  dbg(twice(choose(0), 7))
+end

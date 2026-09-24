@@ -5760,10 +5760,11 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
                         saw_return_payload_flow = true;
                     }
                 }
-                BackendTail::ClosureCall {
-                    return_flow: Some(return_flow),
-                    ..
-                } if return_flow_is_distinct_return_payload(return_flow, &executable.abi.return_layout) => {
+                BackendTail::ClosureCall { target, .. }
+                    if backend_call_return_flows(target).into_iter().any(|return_flow| {
+                        return_flow_is_distinct_return_payload(return_flow, &executable.abi.return_layout)
+                    }) =>
+                {
                     saw_return_payload_flow = true;
                 }
                 _ => {}
@@ -6541,6 +6542,8 @@ fn compiler2_native_program_keeps_grounded_predicates_distinct_without_boxed_cap
 
 #[test]
 fn compiler2_native_program_shares_runtime_selected_predicate_invocation_only() {
+    // The selectors can also return a non-callable atom, so these captured
+    // values require public transport. A closed callable join alone does not.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -6554,8 +6557,8 @@ fn compiler2_native_program_shares_runtime_selected_predicate_invocation_only() 
     );
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("boxed_predicate_cps_sharing.fz".into()),
-        text: include_str!("../../fixtures2/behavior/boxed_predicate_cps_sharing.fz").into(),
+        name: Some("boxed_predicate_public_cps_sharing.fz".into()),
+        text: include_str!("../../fixtures2/behavior/boxed_predicate_public_cps_sharing.fz").into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -6990,6 +6993,8 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
     functions.install(&tel);
     let native = NativeProgramCapture::new();
     native.install(&tel);
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
@@ -7010,26 +7015,66 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
             .last(&["fz", "diag", "error"])
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
-        panic!("opaque joined function values should settle before native lowering: {outcome:?}; diagnostic={message}");
+        panic!("closed joined function values should settle before native lowering: {outcome:?}; diagnostic={message}");
     }
 
     let add_a_id = function_id(&functions, "add_a", 2);
     let add_b_id = function_id(&functions, "add_b", 2);
     let program = native.last(root_id).program;
     let callable_functions = program
-        .callable_boundaries
+        .executable_entries
         .iter()
-        .flat_map(|boundary| boundary.members.iter())
-        .map(|member| member.target.activation.function)
+        .map(|entry| entry.key.activation.function)
         .collect::<HashSet<_>>();
     assert!(
         callable_functions.contains(&add_a_id) && callable_functions.contains(&add_b_id),
-        "native callable inventory should include both concrete functions flowing through the case join",
+        "native executable inventory should include both concrete functions flowing through the case join",
     );
 
+    assert_eq!(
+        native_closure_call_count(&program),
+        0,
+        "the closed joined callable must dispatch without a public closure-call seam",
+    );
     assert!(
-        native_closure_call_count(&program) > 0,
-        "opaque joined function values should stay explicit closure-call seams instead of collapsing to direct calls",
+        program.callable_boundaries.is_empty(),
+        "called-only reducers need no public wrapper"
+    );
+    assert!(
+        backend.last(root_id).program.executables().iter().any(|executable| {
+            let BackendBody::Clauses { entries, .. } = &executable.body else {
+                return false;
+            };
+            entries.iter().any(|entry| {
+                let BackendTail::DirectCall {
+                    args,
+                    target: CallEdge::Dispatch(dispatch),
+                    ..
+                } = &entry.tail
+                else {
+                    return false;
+                };
+                args.iter().enumerate().any(|(index, arg)| {
+                    let structural = executable
+                        .abi
+                        .value_layouts
+                        .get(&arg.value)
+                        .map(|layout| layout.structural)
+                        .or_else(|| match &entry.origin {
+                            BackendEntryOrigin::DeliveredResume { value, layout } if *value == arg.value => {
+                                Some(layout.layout.structural)
+                            }
+                            _ => None,
+                        });
+                    dispatch.plan.required_input(index)
+                        && structural.is_some_and(|shape| {
+                            matches!(compiler.world().shape(shape), super::transport::ShapeDescr::Callable(callable)
+                            if compiler.world().callable(*callable).selector().is_some())
+                        })
+                })
+            })
+        }),
+        "the call dispatch must inspect the joined reducer's typed selector before invoking a concrete target"
     );
 }
 
@@ -13359,7 +13404,7 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
             "def odd(0), do: fn(x) -> x + 1 end\ndef odd(n), do: even(n - 1)\n",
         ),
     ];
-    fn settle(order: usize) -> (String, Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+    fn settle(order: usize, identity_observed: bool) -> (String, Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
         let tel = ConfiguredTelemetry::new();
         let runs = Rc::new(RefCell::new(Vec::<(ExecutableKey, String)>::new()));
         let run_sink = Rc::clone(&runs);
@@ -13383,7 +13428,14 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
         for (_, text) in &FUNCTIONS {
             source.push_str(text);
         }
-        source.push_str("def main(), do: dbg({left(1).(3), right(2).(4), count(3).(1), even(4).(1)})\n");
+        if identity_observed {
+            source.push_str(
+                "def main() do\n e = even(4)\n o = odd(4)\n \
+                 dbg({left(1).(3), right(2).(4), count(3).(1), e.(1)})\n dbg(e === o)\nend\n",
+            );
+        } else {
+            source.push_str("def main(), do: dbg({left(1).(3), right(2).(4), count(3).(1), even(4).(1)})\n");
+        }
         compiler.submit_code(CodeSubmission {
             name: Some("runtime_demand_order.fz".to_string()),
             text: source,
@@ -13472,10 +13524,17 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
                 "each formula must subscribe to exactly its direct and callable-flow targets",
             );
         }
-        assert!(
-            ["even", "odd"].iter().all(|name| construction_owners.contains(*name)),
-            "the mutually recursive closure producers must bootstrap through exact construction targets: {construction_owners:?}",
-        );
+        if identity_observed {
+            assert!(
+                ["even", "odd"].iter().all(|name| construction_owners.contains(*name)),
+                "identity-observed recursive closures must bootstrap through exact public construction targets: {construction_owners:?}",
+            );
+        } else {
+            assert!(
+                ["even", "odd"].iter().all(|name| !construction_owners.contains(*name)),
+                "closed called-only recursion needs direct targets, not public construction targets: {construction_owners:?}",
+            );
+        }
         let order = runs.iter().map(|(_, name)| name.clone()).collect();
         let mut work = runs
             .iter()
@@ -13496,31 +13555,34 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
         )
     }
 
-    let baseline = settle(0);
-    let alternatives = [settle(1), settle(2)];
-    assert_eq!(
-        baseline.1,
-        vec!["{4, 8, 1, 1}"],
-        "the settled artifact must execute correctly"
-    );
-    for alternative in alternatives {
-        assert_ne!(
-            baseline.2, alternative.2,
-            "each registration order must perturb reactive arrival"
-        );
-        assert_eq!(
-            baseline.0, alternative.0,
-            "arrival order must not move the canonical backend"
-        );
-        assert_eq!(baseline.1, alternative.1, "arrival order must not move runtime output");
-        assert_eq!(
-            baseline.3, alternative.3,
-            "arrival order must not move the exact executable RuntimeDemand work multiset",
-        );
-        assert_eq!(
-            baseline.4, alternative.4,
-            "arrival order must not move any settled RuntimeDemand semantic fact",
-        );
+    for identity_observed in [false, true] {
+        let baseline = settle(0, identity_observed);
+        let alternatives = [settle(1, identity_observed), settle(2, identity_observed)];
+        let expected = if identity_observed {
+            vec!["{4, 8, 1, 1}", "false"]
+        } else {
+            vec!["{4, 8, 1, 1}"]
+        };
+        assert_eq!(baseline.1, expected, "the settled artifact must execute correctly");
+        for alternative in alternatives {
+            assert_ne!(
+                baseline.2, alternative.2,
+                "each registration order must perturb reactive arrival"
+            );
+            assert_eq!(
+                baseline.0, alternative.0,
+                "arrival order must not move the canonical backend"
+            );
+            assert_eq!(baseline.1, alternative.1, "arrival order must not move runtime output");
+            assert_eq!(
+                baseline.3, alternative.3,
+                "arrival order must not move the exact executable RuntimeDemand work multiset",
+            );
+            assert_eq!(
+                baseline.4, alternative.4,
+                "arrival order must not move any settled RuntimeDemand semantic fact",
+            );
+        }
     }
 }
 
@@ -16026,19 +16088,21 @@ fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
             continue;
         };
         for entry in entries {
-            let crate::compiler2::BackendTail::ClosureCall { return_flow, .. } = &entry.tail else {
+            let crate::compiler2::BackendTail::ClosureCall { target, .. } = &entry.tail else {
                 continue;
             };
-            let Some(crate::compiler2::artifact::BackendReturnFlow::Deliver { source, .. }) = return_flow else {
-                continue;
-            };
-            checked += 1;
-            assert!(
-                source.layout.reprs.is_empty(),
-                "no seam boxes this callable, so a discarded closure call publishes no return lanes; \
-                 it claimed {:?}",
-                source.layout.reprs,
-            );
+            for return_flow in backend_call_return_flows(target) {
+                let crate::compiler2::artifact::BackendReturnFlow::Deliver { source, .. } = return_flow else {
+                    continue;
+                };
+                checked += 1;
+                assert!(
+                    source.layout.reprs.is_empty(),
+                    "no seam boxes this callable, so a discarded closure call publishes no return lanes; \
+                     it claimed {:?}",
+                    source.layout.reprs,
+                );
+            }
         }
     }
     assert!(
@@ -19741,6 +19805,14 @@ fn native_function_contains_nil_const(program: &NativeProgram, fn_id: FnId) -> b
     })
 }
 
+fn backend_call_return_flows(target: &CallEdge<ExecutableKey, BackendReturnFlow>) -> Vec<&BackendReturnFlow> {
+    match target {
+        CallEdge::Direct(edge) => vec![&edge.return_flow],
+        CallEdge::Dispatch(dispatch) => dispatch.arms.iter().map(|arm| &arm.return_flow).collect(),
+        CallEdge::Indirect(flow) => vec![flow],
+    }
+}
+
 fn return_flow_is_distinct_return_payload(flow: &BackendReturnFlow, caller: &BackendReturnLayout) -> bool {
     matches!(flow, BackendReturnFlow::Continue { source } if source.as_ref() != caller)
 }
@@ -21968,6 +22040,8 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
 
 #[test]
 fn compiler2_connected_callable_returns_share_one_public_value_ref_contract() {
+    // Public identity is observed explicitly: a closed runtime join alone
+    // does not require the boxed callable convention.
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     let native = NativeProgramCapture::new();
@@ -21985,6 +22059,7 @@ def run(flag) do
   left = if flag, do: p, else: r
   a = left.(1)
   right = if flag, do: p, else: q
+  dbg(left === right)
   b = right.(2)
   {a, b, p}
 end
@@ -22054,7 +22129,7 @@ end
 
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(compiled.run_with_output(compiler.telemetry(), &dbg, program.entry), 0);
-    assert_eq!(dbg.lines(), ["{{:p, 1}, {:p, 2}, {:r, 1}, 2}"]);
+    assert_eq!(dbg.lines(), ["true", "false", "{{:p, 1}, {:p, 2}, {:r, 1}, 2}"]);
 }
 
 #[test]

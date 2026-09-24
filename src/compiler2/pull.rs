@@ -5008,10 +5008,13 @@ mod tests {
         let right_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 353));
         let replacement_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 354));
         let mut world = World::new();
-        let callable = world.intern_callable(super::super::transport::CallableDescr {
-            function: Some(FunctionId::from_coordinate(355)),
-            arity: 0,
-            capture_layouts: Box::default(),
+        let callable = world.intern_callable(super::super::transport::CallableDescr::Direct {
+            alternative: crate::compiler2::transport::CallableAlternative {
+                function: FunctionId::from_coordinate(355),
+                capture_tys: Box::default(),
+                arity: 0,
+                capture_layouts: Box::default(),
+            },
         });
         let boundary = BoundaryId::for_test(8);
         let layout = TransportLayout::structural(ShapeId::for_test(9));
@@ -6005,11 +6008,7 @@ mod tests {
         assert!(ring_forward.1 <= 5 && ring_reverse.1 <= 5);
 
         let mut world = World::new();
-        let callable = world.intern_callable(super::super::transport::CallableDescr {
-            function: None,
-            arity: 0,
-            capture_layouts: Box::default(),
-        });
+        let callable = world.intern_callable(super::super::transport::CallableDescr::Opaque);
         for answer in pair_forward.0 {
             let ProductValue::CallableConstruction(answer) = answer.product_value(callable, BoundaryId::for_test(9))
             else {
@@ -6049,11 +6048,7 @@ mod tests {
         });
         let unrelated_parent = ProductKey::AbiExecutable(fake_executable_with_function(root, 372));
         let mut world = World::new();
-        let callable = world.intern_callable(super::super::transport::CallableDescr {
-            function: None,
-            arity: 0,
-            capture_layouts: Box::default(),
-        });
+        let callable = world.intern_callable(super::super::transport::CallableDescr::Opaque);
         let boundary = BoundaryId::for_test(10);
         let layout = TransportLayout {
             structural: ShapeId::for_test(101),

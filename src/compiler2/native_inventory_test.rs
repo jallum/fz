@@ -62,7 +62,9 @@ pub(super) fn unreachable_native_functions(program: &NativeProgram) -> Vec<FnId>
         for block in &function.blocks {
             for statement in &block.stmts {
                 match statement.prim() {
-                    Prim::MakeFnRef(_, id) | Prim::MakeClosure(_, id, _) => roots.push(construction_target(*id)),
+                    Prim::MakeFnRef(_, id)
+                    | Prim::MakeClosure(_, id, _)
+                    | Prim::CallableConstructionIs { construction: id, .. } => roots.push(construction_target(*id)),
                     _ => {}
                 }
             }
@@ -265,12 +267,21 @@ fn native_inventory_roots_every_construction_word_even_in_unreachable_bodies() {
                 index: 0,
             },
         ),
+        Stmt::Let(
+            Var(4),
+            Prim::CallableConstructionIs {
+                callable: Var(2),
+                construction: FnId(103),
+            },
+        ),
     ];
     assert_eq!(unreachable_native_functions(&program), vec![FnId(5)]);
-    for slot in 0..2 {
+    for slot in [0, 1, 3] {
         let mut dangling = program.clone();
         match dangling.module.fns[5].blocks[0].stmts[slot].prim_mut() {
-            Prim::MakeFnRef(_, id) | Prim::MakeClosure(_, id, _) => *id = FnId(99),
+            Prim::MakeFnRef(_, id)
+            | Prim::MakeClosure(_, id, _)
+            | Prim::CallableConstructionIs { construction: id, .. } => *id = FnId(99),
             _ => unreachable!(),
         }
         assert!(std::panic::catch_unwind(|| unreachable_native_functions(&dangling)).is_err());
