@@ -10,10 +10,10 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use super::*;
-use crate::compiler2::body::{CallInputMode, CallSiteId, ControlEntryId, ValueId};
+use crate::compiler2::body::{CallInputMode, CallSiteId, ControlDestination, ControlEntryId, ValueId};
 use crate::compiler2::canon::function_label;
 use crate::compiler2::drive::{FactKey, Job};
-use crate::compiler2::return_skeleton::{FunctionSkeleton, Returns, Skeleton, lower};
+use crate::compiler2::return_skeleton::{FunctionSkeleton, Invocation, InvocationCallee, Returns, Skeleton, lower};
 use crate::compiler2::types::Types;
 use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
@@ -61,18 +61,16 @@ impl Statics {
         let mut feeds = Vec::new();
         for caller in callers {
             let skeleton = &self.skeletons[&caller];
-            for (callsite, (named, mode)) in &skeleton.callees {
-                if *named != callee {
+            for (callsite, invocation) in &skeleton.invocations {
+                if invocation.callee.named() != Some(callee) {
                     continue;
                 }
-                let (Some(arguments), Some(site)) = (
-                    skeleton.arguments.get(callsite),
-                    self.answers[&caller].callsite(*callsite),
-                ) else {
+                let Some(site) = self.answers[&caller].callsite(*callsite) else {
                     continue;
                 };
+                let arguments = &invocation.arguments;
                 for index in 0..arguments.len() {
-                    if mode.semantic_index(input_len, arguments.len(), index) == Some(slot) {
+                    if CallInputMode::Direct.semantic_index(input_len, arguments.len(), index) == Some(slot) {
                         feeds.push((site, index));
                     }
                 }
@@ -186,7 +184,11 @@ fn reach(
         let Some(skeleton) = skeletons.get(&reached_function).cloned() else {
             continue;
         };
-        for (callee, _) in skeleton.callees.values().copied() {
+        for callee in skeleton
+            .invocations
+            .values()
+            .filter_map(|invocation| invocation.callee.named())
+        {
             if !reached.contains(&callee) {
                 reached.push(callee);
             }
@@ -214,8 +216,16 @@ fn a_missing_static_callee_return_is_conservative_but_a_known_discard_is_not() {
                 value: ValueId::from_u32(0),
             },
         )])),
-        arguments: BTreeMap::from([(callsite, vec![Skeleton::Input(0)])]),
-        callees: BTreeMap::from([(callsite, (callee, CallInputMode::Direct))]),
+        invocations: BTreeMap::from([(
+            callsite,
+            Invocation {
+                entry,
+                callee: InvocationCallee::Named(callee),
+                arguments: vec![Skeleton::Input(0)],
+                result: ValueId::from_u32(0),
+                destination: ControlDestination::Return,
+            },
+        )]),
         input_len: 2,
     };
     let known_discard = FunctionSkeleton {
@@ -261,8 +271,16 @@ fn opaque_return_may_flow_is_precise_and_not_a_known_empty_or_declared_return() 
                 value: ValueId::from_u32(0),
             },
         )])),
-        arguments: BTreeMap::from([(callsite, vec![Skeleton::Tuple(vec![Skeleton::Input(0)])])]),
-        callees: BTreeMap::from([(callsite, (callee, CallInputMode::Direct))]),
+        invocations: BTreeMap::from([(
+            callsite,
+            Invocation {
+                entry,
+                callee: InvocationCallee::Named(callee),
+                arguments: vec![Skeleton::Tuple(vec![Skeleton::Input(0)])],
+                result: ValueId::from_u32(0),
+                destination: ControlDestination::Return,
+            },
+        )]),
         input_len: 2,
     };
     let opaque = FunctionSkeleton {
@@ -326,25 +344,36 @@ fn an_input_fallback_for_a_missing_body_can_manufacture_a_productive_cycle() {
                 },
             ),
         ])),
-        arguments: BTreeMap::from([
+        invocations: BTreeMap::from([
             (
                 recurse,
-                vec![
-                    Skeleton::Ground(ValueId::from_u32(1)),
-                    Skeleton::List {
-                        element: Box::new(Skeleton::Result {
-                            callsite: opaque_call,
-                            value: ValueId::from_u32(2),
-                        }),
-                        non_empty: true,
-                    },
-                ],
+                Invocation {
+                    entry: recursive_entry,
+                    callee: InvocationCallee::Named(loop_function),
+                    arguments: vec![
+                        Skeleton::Ground(ValueId::from_u32(1)),
+                        Skeleton::List {
+                            element: Box::new(Skeleton::Result {
+                                callsite: opaque_call,
+                                value: ValueId::from_u32(2),
+                            }),
+                            non_empty: true,
+                        },
+                    ],
+                    result: ValueId::from_u32(0),
+                    destination: ControlDestination::Return,
+                },
             ),
-            (opaque_call, vec![Skeleton::Input(1)]),
-        ]),
-        callees: BTreeMap::from([
-            (recurse, (loop_function, CallInputMode::Direct)),
-            (opaque_call, (opaque, CallInputMode::Direct)),
+            (
+                opaque_call,
+                Invocation {
+                    entry: ControlEntryId::from_u32(2),
+                    callee: InvocationCallee::Named(opaque),
+                    arguments: vec![Skeleton::Input(1)],
+                    result: ValueId::from_u32(2),
+                    destination: ControlDestination::Deliver(recursive_entry),
+                },
+            ),
         ]),
         input_len: 2,
     };
@@ -824,7 +853,7 @@ fn a_call_site_is_found_by_where_it_sits_not_by_the_source_it_came_from() {
         .find(|(_, label)| *label == "dup/1")
         .expect("dup/1 is reachable")
         .0;
-    let lowered: Vec<CallSiteId> = statics.skeletons[&dup].arguments.keys().copied().collect();
+    let lowered: Vec<CallSiteId> = statics.skeletons[&dup].invocations.keys().copied().collect();
     assert!(!lowered.is_empty(), "dup/1 calls wrap and itself");
     for callsite in lowered {
         let from_another_version = CallSiteId::new(callsite.as_u32(), crate::source::Span::DUMMY);

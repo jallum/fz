@@ -9,9 +9,10 @@
 //! observed there -- a `Ground` value to its type, a `Result` to the
 //! activations the call site reached.
 //!
-//! Two skeletons are published per function: the one its return is built
-//! from, and one per argument of each call site. Together with the static
-//! call graph they close: a call site's argument skeleton feeds the callee's
+//! One definition-owned relationship records its returns and invocations.
+//! Each invocation retains its named or value callee, ordered argument
+//! skeletons, result, source entry, and control destination. Together with
+//! the static call graph they close: an argument skeleton feeds the callee's
 //! slot, and the callee's return skeleton feeds the call site's result. That
 //! closure is what `return_unknowns` walks to decide, statically, which
 //! positions a fixpoint is still solving -- an answer keying needs in its
@@ -30,8 +31,8 @@ use crate::dispatch_matrix::ProjectionKind;
 use crate::ground_value::GroundValue;
 
 use super::body::{
-    CallInputMode, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody, LoweredExtern,
-    LoweredStep, LoweredTail, SubjectOriginRoot, ValueId, delivered_value_joins,
+    CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody, LoweredExtern, LoweredStep,
+    LoweredTail, SubjectOriginRoot, ValueId, delivered_value_joins,
 };
 use super::identity::{FunctionId, ModuleId};
 use super::semantic::ProjectStep;
@@ -210,15 +211,42 @@ impl Default for Returns {
     }
 }
 
+/// The source operand which selects an invocation's target. A value call
+/// retains its relationship to inputs, projections, and earlier call results
+/// before any particular target or executable has been inferred.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InvocationCallee {
+    Named(FunctionId),
+    Value(Skeleton),
+}
+
+impl InvocationCallee {
+    pub(crate) fn named(&self) -> Option<FunctionId> {
+        match self {
+            Self::Named(function) => Some(*function),
+            Self::Value(_) => None,
+        }
+    }
+}
+
+/// One invocation in its definition's vocabulary. Its enclosing map supplies
+/// the CallSiteId; the entry locates the existing lowered tail and its control
+/// prerequisites. A discarded result still has an invocation and destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Invocation {
+    pub(crate) entry: ControlEntryId,
+    pub(crate) callee: InvocationCallee,
+    pub(crate) arguments: Vec<Skeleton>,
+    pub(crate) result: ValueId,
+    pub(crate) destination: ControlDestination,
+}
+
 /// One function's whole static shape: what it returns and what each of its
-/// call sites passes, all in that function's own vocabulary.
+/// call sites invokes, all in that function's own vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct FunctionSkeleton {
     pub(crate) returns: Returns,
-    /// One entry per call site, holding that site's positional arguments.
-    pub(crate) arguments: BTreeMap<CallSiteId, Vec<Skeleton>>,
-    /// The function a call site names in the body itself.
-    pub(crate) callees: BTreeMap<CallSiteId, (FunctionId, CallInputMode)>,
+    pub(crate) invocations: BTreeMap<CallSiteId, Invocation>,
     /// How many semantic inputs the function has, which is what a call
     /// site's positional arguments are mapped onto.
     pub(crate) input_len: usize,
@@ -228,7 +256,10 @@ impl FunctionSkeleton {
     /// The slice of an activation's `value_types` a return solve actually
     /// reads: the types standing at this function's `Ground` leaves and its
     /// unaddressed `Result` leaves, across both its return shapes and every
-    /// call site's argument shapes. `addressed_callsites` is this walk's own
+    /// call site's argument shapes. Callable operands are retained in the
+    /// source relationship, but this solver still gets their resolved targets
+    /// from CallSiteTargets, so they add no observed-value read here.
+    /// `addressed_callsites` is this walk's own
     /// answer to which call sites it resolved to an activation -- the same
     /// value it publishes as `CallSiteTargets` -- so a `Result` leaf whose
     /// call site the component's equations already answer is excluded here
@@ -246,8 +277,8 @@ impl FunctionSkeleton {
                 shape.collect_solved_leaves(addressed_callsites, &mut leaves);
             }
         }
-        for shapes in self.arguments.values() {
-            for shape in shapes {
+        for invocation in self.invocations.values() {
+            for shape in &invocation.arguments {
                 shape.collect_solved_leaves(addressed_callsites, &mut leaves);
             }
         }
@@ -323,8 +354,7 @@ pub(crate) fn lower(body: &LoweredBody, types: &Types) -> FunctionSkeleton {
     }
 
     let mut returns: BTreeMap<ControlEntryId, Skeleton> = BTreeMap::new();
-    let mut arguments = BTreeMap::new();
-    let mut callees = BTreeMap::new();
+    let mut invocations = BTreeMap::new();
     for (index, entry) in entries.iter().enumerate() {
         let owner = ControlEntryId::from_u32(index as u32);
         match &entry.tail {
@@ -343,10 +373,15 @@ pub(crate) fn lower(body: &LoweredBody, types: &Types) -> FunctionSkeleton {
                 dest,
                 ..
             } => {
-                callees.insert(*callsite, (*callee, CallInputMode::Direct));
-                arguments.insert(
+                invocations.insert(
                     *callsite,
-                    args.iter().map(|arg| lowering.resolve(arg.value)).collect::<Vec<_>>(),
+                    Invocation {
+                        entry: owner,
+                        callee: InvocationCallee::Named(*callee),
+                        arguments: args.iter().map(|arg| lowering.resolve(arg.value)).collect(),
+                        result: *value,
+                        destination: dest.clone(),
+                    },
                 );
                 if matches!(dest, ControlDestination::Return) {
                     returns.insert(
@@ -361,13 +396,20 @@ pub(crate) fn lower(body: &LoweredBody, types: &Types) -> FunctionSkeleton {
             LoweredTail::ClosureCall {
                 value,
                 callsite,
+                callee,
                 args,
                 dest,
                 ..
             } => {
-                arguments.insert(
+                invocations.insert(
                     *callsite,
-                    args.iter().map(|arg| lowering.resolve(arg.value)).collect::<Vec<_>>(),
+                    Invocation {
+                        entry: owner,
+                        callee: InvocationCallee::Value(lowering.resolve(*callee)),
+                        arguments: args.iter().map(|arg| lowering.resolve(arg.value)).collect(),
+                        result: *value,
+                        destination: dest.clone(),
+                    },
                 );
                 if matches!(dest, ControlDestination::Return) {
                     returns.insert(
@@ -388,8 +430,7 @@ pub(crate) fn lower(body: &LoweredBody, types: &Types) -> FunctionSkeleton {
     }
     FunctionSkeleton {
         returns: Returns::Entries(returns),
-        arguments,
-        callees,
+        invocations,
         input_len: clauses.first().map_or(0, |clause| clause.params.len()),
     }
 }

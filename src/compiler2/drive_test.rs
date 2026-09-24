@@ -22737,17 +22737,21 @@ fn compiler2_no_ascent_rung_sits_on_an_unsolved_position() {
                 else {
                     continue;
                 };
-                for (callsite, (named, mode)) in &skeleton.callees {
-                    if named != function {
+                for (callsite, invocation) in &skeleton.invocations {
+                    if invocation.callee.named() != Some(*function) {
                         continue;
                     }
-                    let (Some(arguments), Some(site)) =
-                        (skeleton.arguments.get(callsite), unknowns.callsite(*callsite))
-                    else {
+                    let Some(site) = unknowns.callsite(*callsite) else {
                         continue;
                     };
+                    let arguments = &invocation.arguments;
                     for index in 0..arguments.len() {
-                        if mode.semantic_index(input_len, arguments.len(), index) == Some(slot) {
+                        if crate::compiler2::body::CallInputMode::Direct.semantic_index(
+                            input_len,
+                            arguments.len(),
+                            index,
+                        ) == Some(slot)
+                        {
                             fed = true;
                             answer = answer.join(site.arguments[index].clone());
                         }

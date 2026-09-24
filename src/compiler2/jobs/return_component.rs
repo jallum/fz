@@ -390,7 +390,8 @@ fn gather(
         // `CallSiteTargets` is read (and so subscribed) here directly, which
         // is what wakes this solve the moment it resolves, without needing
         // `ActivationAnalysis.callsites` to restate the same set.
-        for (callsite, arguments) in &skeleton.arguments {
+        for (callsite, invocation) in &skeleton.invocations {
+            let arguments = &invocation.arguments;
             let key = CallSiteKey {
                 activation: caller.clone(),
                 callsite: *callsite,

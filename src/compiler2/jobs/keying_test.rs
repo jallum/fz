@@ -1,4 +1,5 @@
-//! `DeriveInputDemand` read through the fact it publishes.
+//! Definition-owned source equations and input demand, read through their
+//! published facts before activation keying consumes them.
 //!
 //! The demand fact is what activation keying asks before it decides whether a
 //! slot's arriving type is meaning or freight, so the statements here are
@@ -9,10 +10,10 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use crate::compiler2::body::{CallInputMode, CallSiteId, ControlEntryId, ValueId};
+use crate::compiler2::body::{CallSiteId, ControlDestination, ControlEntryId, ValueId};
 use crate::compiler2::dump::DumpStage;
 use crate::compiler2::facts::FactUse;
-use crate::compiler2::return_skeleton::{FunctionSkeleton, Returns, Skeleton};
+use crate::compiler2::return_skeleton::{FunctionSkeleton, Invocation, InvocationCallee, Returns, Skeleton};
 use crate::compiler2::{
     CodeSubmission, Compiler2, ExecutableNeed, FactKey, FunctionId, InputDemand, ModuleId, RootSubmission, World,
 };
@@ -77,6 +78,78 @@ fn demand_of(demands: &BTreeMap<String, InputDemand>, label: &str) -> InputDeman
         .clone()
 }
 
+/// A source equation has the function's stable identity before it has a
+/// definition. Definition arrival and replacement supply its relationship;
+/// neither discovery needs an activation of that function or a caller's
+/// concrete types. Expanding `def` itself still runs its compile-time code.
+#[test]
+fn a_referenced_source_equation_waits_for_definition_and_tracks_replacement() {
+    use crate::compiler2::drive::{ExecutionContext, Job};
+    use crate::compiler2::pull::ProductSessions;
+    use crate::compiler2::scheduler::DriveOutcome;
+
+    let tel = ConfiguredTelemetry::new();
+    let runs = Rc::new(RefCell::new(Vec::<Job>::new()));
+    let sink = Rc::clone(&runs);
+    tel.attach_raw_event2::<World, crate::compiler2::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| sink.borrow_mut().push(completion.job.clone()),
+    );
+    let mut world = World::new();
+    let mut sessions = ProductSessions::default();
+    let first = world.reference_function(ModuleId::GLOBAL, "first", 2);
+    world.demand(Job::DeriveReturnSkeleton(first));
+    let DriveOutcome::Unresolved { waits } =
+        ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive()
+    else {
+        panic!("an equation referenced before its definition must remain pending");
+    };
+    assert!(
+        world.return_skeleton(first).is_none(),
+        "a referenced but undefined equation is pending, not an opaque or bottom equation"
+    );
+    assert!(!world.has_fact(&FactKey::ReturnSkeleton(first)));
+    assert!(
+        waits.iter().any(|wait| {
+            wait.jobs.contains(&Job::DeriveReturnSkeleton(first))
+                && wait.fact == crate::compiler2::drive::fact_dependency(FactUse::current(FactKey::LoweredBody(first)))
+        }),
+        "the pending equation must subscribe to the definition's lowered body"
+    );
+
+    for (returned, slot) in [("x", 0), ("y", 1)] {
+        let source = world.submit_code(
+            Some("source-equation-lifecycle.fz".into()),
+            format!("def first(x, y), do: {returned}\n"),
+        );
+        world.demand(Job::ScopeCode(source));
+        assert!(matches!(
+            ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+            DriveOutcome::Resolved
+        ));
+        assert_eq!(world.reference_function(ModuleId::GLOBAL, "first", 2), first);
+        let skeleton = world
+            .return_skeleton(first)
+            .expect("definition arrival must publish its equation");
+        assert_eq!(skeleton.input_len, 2);
+        let Returns::Entries(entries) = &skeleton.returns else {
+            panic!("a defined projection must publish a source relationship");
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries.values().next(),
+            Some(&Skeleton::Input(slot)),
+            "definition replacement must rederive the relationship at the same equation reference"
+        );
+    }
+    assert!(
+        runs.borrow()
+            .iter()
+            .all(|job| !matches!(job, Job::AnalyzeActivation(key) if key.function == first)),
+        "source equation discovery and replacement must not analyze first/2"
+    );
+}
+
 #[test]
 fn an_absent_transitive_return_reads_its_definition_for_rediscovery() {
     use crate::compiler2::drive::{ExecutionContext, Job, JobEffects};
@@ -107,8 +180,16 @@ fn an_absent_transitive_return_reads_its_definition_for_rediscovery() {
                     value: ValueId::from_u32(0),
                 },
             )])),
-            arguments: BTreeMap::from([(callsite, vec![Skeleton::Input(0)])]),
-            callees: BTreeMap::from([(callsite, (later, CallInputMode::Direct))]),
+            invocations: BTreeMap::from([(
+                callsite,
+                Invocation {
+                    entry,
+                    callee: InvocationCallee::Named(later),
+                    arguments: vec![Skeleton::Input(0)],
+                    result: ValueId::from_u32(0),
+                    destination: ControlDestination::Return,
+                },
+            )]),
             input_len: 1,
         }),
     ));

@@ -27,16 +27,117 @@ fn invocation_equation_distinguishes_which_input_is_called() {
     );
     let first = all.get("first/3");
     let second = all.get("second/3");
-    assert_eq!(first.arguments[&sole_result(&joined(first))], vec![Skeleton::Input(2)]);
     assert_eq!(
-        second.arguments[&sole_result(&joined(second))],
+        first.invocations[&sole_result(&joined(first))].arguments,
+        vec![Skeleton::Input(2)]
+    );
+    assert_eq!(
+        second.invocations[&sole_result(&joined(second))].arguments,
         vec![Skeleton::Input(2)]
     );
     assert_ne!(
-        first.callees.values().collect::<Vec<_>>(),
-        second.callees.values().collect::<Vec<_>>(),
+        first.invocations.values().map(|call| &call.callee).collect::<Vec<_>>(),
+        second.invocations.values().map(|call| &call.callee).collect::<Vec<_>>(),
         "f.(x) and g.(x) are different equations: the callable operand must survive source lowering"
     );
+}
+
+#[test]
+fn repeated_and_composed_invocations_retain_their_ordered_result_dependencies() {
+    let all = skeletons(
+        "invocation_dependencies.fz",
+        "def twice(f, x), do: f.(f.(x))\n\
+         def compose(f, g, x), do: f.(g.(x))\n\
+         def main() do\n\
+           twice(fn x -> x end, 1)\n\
+           compose(fn x -> x end, fn x -> x end, 1)\n\
+         end\n",
+    );
+    for (name, inner_callee, input) in [("twice/2", 0, 1), ("compose/3", 1, 2)] {
+        let skeleton = all.get(name);
+        assert_eq!(skeleton.invocations.len(), 2);
+        let outer_site = sole_result(&joined(skeleton));
+        let outer = &skeleton.invocations[&outer_site];
+        assert_eq!(outer.callee, InvocationCallee::Value(Skeleton::Input(0)));
+        let [
+            Skeleton::Result {
+                callsite: inner_site, ..
+            },
+        ] = outer.arguments.as_slice()
+        else {
+            panic!("{name}: outer invocation must read the inner invocation's result");
+        };
+        assert_ne!(
+            *inner_site, outer_site,
+            "successive calls are distinct source positions"
+        );
+        let inner = &skeleton.invocations[inner_site];
+        assert_eq!(inner.callee, InvocationCallee::Value(Skeleton::Input(inner_callee)));
+        assert_eq!(inner.arguments, vec![Skeleton::Input(input)]);
+        assert_eq!(inner.destination, ControlDestination::Deliver(outer.entry));
+        assert_eq!(outer.destination, ControlDestination::Return);
+        assert_ne!(inner.result, outer.result);
+    }
+}
+
+#[test]
+fn invocation_retains_a_projected_or_returned_callee_and_duplicate_arguments() {
+    let all = skeletons(
+        "invocation_operands.fz",
+        "def projected(pair, x, y) do\n\
+           {_, f} = pair\n\
+           f.(y, x, y)\n\
+         end\n\
+         def returned(maker, x) do\n f = maker.()\n f.(x)\nend\n\
+         def main() do\n\
+           projected({:unused, fn (a, b, c) -> {a, b, c} end}, 1, :ok)\n\
+           returned(fn () -> fn x -> x end end, 2)\n\
+         end\n",
+    );
+    let projected = all.get("projected/3");
+    let call = &projected.invocations[&sole_result(&joined(projected))];
+    assert_eq!(
+        call.callee,
+        InvocationCallee::Value(Skeleton::project(Skeleton::Input(0), ProjectStep::TupleField(1)))
+    );
+    assert_eq!(
+        call.arguments,
+        vec![Skeleton::Input(2), Skeleton::Input(1), Skeleton::Input(2)]
+    );
+
+    let returned = all.get("returned/2");
+    let outer_site = sole_result(&joined(returned));
+    let outer = &returned.invocations[&outer_site];
+    let InvocationCallee::Value(Skeleton::Result { callsite, .. }) = &outer.callee else {
+        panic!("invoking a returned callable must retain its producing invocation");
+    };
+    let inner = &returned.invocations[callsite];
+    assert_eq!(inner.callee, InvocationCallee::Value(Skeleton::Input(0)));
+    assert!(inner.arguments.is_empty());
+    assert_eq!(outer.arguments, vec![Skeleton::Input(1)]);
+    assert_eq!(inner.destination, ControlDestination::Deliver(outer.entry));
+}
+
+#[test]
+fn a_discarded_invocation_keeps_its_result_and_control_destination() {
+    let all = skeletons(
+        "discarded_invocation.fz",
+        "def discard(f, x) do\n f.(x)\n :ok\nend\n\
+         def main(), do: discard(fn x -> x end, 1)\n",
+    );
+    let discarded = all.get("discard/2");
+    assert_eq!(discarded.invocations.len(), 1);
+    let invocation = discarded.invocations.values().next().unwrap();
+    assert_eq!(invocation.callee, InvocationCallee::Value(Skeleton::Input(0)));
+    assert_eq!(invocation.arguments, vec![Skeleton::Input(1)]);
+    let ControlDestination::Deliver(successor) = invocation.destination else {
+        panic!("the discarded call must still precede the literal suffix");
+    };
+    let Returns::Entries(returns) = &discarded.returns else {
+        panic!("source body has return entries");
+    };
+    assert!(returns.contains_key(&successor));
+    assert!(!returns.contains_key(&invocation.entry));
 }
 
 /// Submits one source and drives only far enough for every reachable body to
@@ -99,12 +200,12 @@ impl Skeletons {
 
     /// The function a call site of `caller` names, by label.
     fn callee(&self, caller: &FunctionSkeleton, callsite: CallSiteId) -> &str {
-        let (function, _) = caller
-            .callees
-            .get(&callsite)
+        let function = caller.invocations[&callsite]
+            .callee
+            .named()
             .unwrap_or_else(|| panic!("call site {callsite:?} names no callee"));
         self.labels
-            .get(function)
+            .get(&function)
             .map(String::as_str)
             .unwrap_or_else(|| panic!("no label for {function:?}"))
     }
@@ -221,7 +322,7 @@ fn a_wrapping_helper_guards_its_own_slot() {
         "wrap's return is a one-element list of its own slot 0",
     );
     assert!(
-        all.get("wrap/1").arguments.is_empty(),
+        all.get("wrap/1").invocations.is_empty(),
         "wrap calls nothing, so it hands no arguments to anyone",
     );
 }
@@ -237,14 +338,16 @@ fn a_recursive_return_names_the_call_that_produced_it() {
     let wrap_call = sole_result(&joined(nest));
     let inner = inner_call(nest, wrap_call);
     assert_eq!(
-        nest.arguments
-            .get(&wrap_call)
-            .map(|arguments| arguments.iter().map(result_callsite).collect::<Vec<_>>()),
+        nest.invocations.get(&wrap_call).map(|invocation| invocation
+            .arguments
+            .iter()
+            .map(result_callsite)
+            .collect::<Vec<_>>()),
         Some(vec![Some(inner)]),
         "the helper is handed the result of nest's own recursive call",
     );
     assert_eq!(
-        nest.arguments.get(&inner).map(Vec::as_slice),
+        nest.invocations.get(&inner).map(|call| call.arguments.as_slice()),
         Some([Skeleton::project(Skeleton::Input(0), ProjectStep::ListTail)].as_slice()),
         "the recursive call is handed the tail of nest's own slot 0",
     );
@@ -262,7 +365,7 @@ fn result_callsite(skeleton: &Skeleton) -> Option<CallSiteId> {
 /// `nest`'s other call site: the one whose result the helper call consumes.
 fn inner_call(nest: &FunctionSkeleton, wrap_call: CallSiteId) -> CallSiteId {
     let sites: Vec<CallSiteId> = nest
-        .arguments
+        .invocations
         .keys()
         .copied()
         .filter(|callsite| *callsite != wrap_call)

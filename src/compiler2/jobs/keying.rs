@@ -1017,7 +1017,11 @@ pub(super) fn derive_return_unknowns(world: &mut World, function: FunctionId) ->
             continue;
         };
         reads.push(fact);
-        for (callee, _) in skeleton.callees.values().copied() {
+        for callee in skeleton
+            .invocations
+            .values()
+            .filter_map(|invocation| invocation.callee.named())
+        {
             if !reached.contains(&callee) {
                 reached.push(callee);
             }

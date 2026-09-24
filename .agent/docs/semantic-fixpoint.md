@@ -692,6 +692,30 @@ computation only one place can do once, for every member together.
 `seed` solves its return with. It is built in two layers, and the split
 between them is what makes the answer settle.
 
+A function reference and its source relationship have separate lifetimes.
+`FunctionId` is available before a body exists; `ReturnSkeleton(FunctionId)`
+is the separately published definition. An undefined local relationship waits
+on `LoweredBody`, without publishing `any`, `none`, or `Returns::Opaque`.
+Definition arrival and replacement rederive the same referenced relationship.
+For `first(x, y) = x`, its return is `Input(0)`; replacing the body with `y`
+changes that to `Input(1)` without analyzing an activation of `first/2`.
+Compile-time definition macros may themselves execute during source lowering.
+
+`FunctionSkeleton::invocations` contains one complete record per `CallSiteId`:
+a named function or a value-callee skeleton, ordered argument skeletons, the
+result `ValueId`, owning control entry, and return/deliver destination. The
+entry refers back to the existing lowered tail and its control prerequisites.
+Thus `f.(x)` and `g.(x)` differ before target resolution; `f.(f.(x))` retains
+two invocation positions and the inner-result-to-outer-argument edge. A callee
+can itself be a projection or a preceding call result. Discarding the result
+does not remove the invocation or its successor destination. The old separate
+argument and named-callee maps have been replaced in every consumer.
+
+This is source relationship information. Current call binding still creates
+an `ActivationKey` before reading return evidence, and the return solver still
+binds `Ground` leaves from activation observations. Retaining the callable
+operand does not yet move that ownership or implement shared inference.
+
 The static layer decides which positions of a return system are still being
 solved, from the function skeletons (`return_skeleton.rs`,
 `return_unknowns.rs`). A position is a function's whole return, one of its
@@ -733,9 +757,10 @@ protocol callbacks and provider boundaries do not wait for impossible local
 bodies. There is one lowering of each real body's return, shared by the
 static questions and the activation solver.
 
-A call made THROUGH a value names no callee in any body, so this walk cannot
-see past it: the arguments such a call hands on are recorded, and what it
-yields reaches nothing. A cycle that closes only through a value call is
+A call made through a value retains its callable operand in the source
+relationship. The static position walk follows only `InvocationCallee::Named`
+references; it does not resolve the value operand to targets. Its result
+therefore has no static target edge yet. A cycle that closes only through a value call is
 therefore invisible here, and the activation layer below handles it by the
 ordinary climb rather than by a component solve.
 

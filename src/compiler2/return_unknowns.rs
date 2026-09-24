@@ -472,7 +472,7 @@ impl<'a> PositionGraph<'a> {
         let mut callers: Vec<FunctionId> = skeletons.keys().copied().collect();
         callers.sort_by_key(|function| function.as_u32());
         for caller in callers {
-            let callsites: Vec<CallSiteId> = skeletons[&caller].arguments.keys().copied().collect();
+            let callsites: Vec<CallSiteId> = skeletons[&caller].invocations.keys().copied().collect();
             for callsite in callsites {
                 if let Some((callee, mode)) = graph.named_callee(caller, callsite) {
                     graph.feed_slots(caller, callsite, callee, mode);
@@ -485,12 +485,13 @@ impl<'a> PositionGraph<'a> {
     /// Records each of one call site's arguments as an alternative arriving
     /// at the callee slot it lands in.
     fn feed_slots(&mut self, caller: FunctionId, callsite: CallSiteId, callee: FunctionId, mode: CallInputMode) {
-        let Some(arguments) = self.skeletons[&caller].arguments.get(&callsite).cloned() else {
+        let Some(invocation) = self.skeletons[&caller].invocations.get(&callsite).cloned() else {
             return;
         };
         let Some(callee_skeleton) = self.skeletons.get(&callee) else {
             return;
         };
+        let arguments = invocation.arguments;
         let input_len = callee_skeleton.input_len;
         for (index, argument) in arguments.iter().enumerate() {
             let Some(slot) = mode.semantic_index(input_len, arguments.len(), index) else {
@@ -508,7 +509,13 @@ impl<'a> PositionGraph<'a> {
     /// positional arguments land. A call made through a value names none, so
     /// it reaches nothing here.
     fn named_callee(&self, function: FunctionId, callsite: CallSiteId) -> Option<(FunctionId, CallInputMode)> {
-        self.skeletons.get(&function)?.callees.get(&callsite).copied()
+        self.skeletons
+            .get(&function)?
+            .invocations
+            .get(&callsite)?
+            .callee
+            .named()
+            .map(|callee| (callee, CallInputMode::Direct))
     }
 
     /// Where each of one call site's positional arguments lands. A call made
@@ -698,10 +705,10 @@ impl<'a> PositionGraph<'a> {
                         }
                     }
                 } else {
-                    let Some(arguments) = self.skeletons[function].arguments.get(callsite) else {
+                    let Some(invocation) = self.skeletons[function].invocations.get(callsite) else {
                         return out;
                     };
-                    for argument in arguments {
+                    for argument in &invocation.arguments {
                         for position in held_positions(*function, argument) {
                             let target = self.node(position);
                             self.edge(from, target, PositionEdge::OpaqueMayFlow);
@@ -822,15 +829,20 @@ pub(crate) fn derive(skeletons: &HashMap<FunctionId, Rc<FunctionSkeleton>>, func
     // so nothing the graph already said about `function` moves because of
     // it.
     let destinations: BTreeMap<CallSiteId, Vec<Option<(FunctionId, usize)>>> = skeleton
-        .arguments
+        .invocations
         .iter()
-        .map(|(callsite, arguments)| (*callsite, graph.destinations(function, *callsite, arguments.len())))
+        .map(|(callsite, invocation)| {
+            (
+                *callsite,
+                graph.destinations(function, *callsite, invocation.arguments.len()),
+            )
+        })
         .collect();
     let mut seeds = vec![Position::Return(function)];
     seeds.extend((0..skeleton.input_len).map(|slot| Position::Slot(function, slot)));
     seeds.extend(
         skeleton
-            .arguments
+            .invocations
             .keys()
             .map(|callsite| Position::Result(function, *callsite)),
     );
@@ -868,9 +880,10 @@ pub(crate) fn derive(skeletons: &HashMap<FunctionId, Rc<FunctionSkeleton>>, func
     }
 
     let callsites = skeleton
-        .arguments
+        .invocations
         .iter()
-        .map(|(callsite, arguments)| {
+        .map(|(callsite, invocation)| {
+            let arguments = &invocation.arguments;
             let site = CallSiteUnknowns {
                 arguments: arguments
                     .iter()

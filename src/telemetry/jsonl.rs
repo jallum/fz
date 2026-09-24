@@ -1035,7 +1035,7 @@ impl JsonlBackend {
                     crate::metadata! {
                         function: crate::telemetry::opaque(function),
                         inputs: skeleton.input_len as u64,
-                        callsites: skeleton.arguments.len() as u64,
+                        callsites: skeleton.invocations.len() as u64,
                     },
                 );
             },
