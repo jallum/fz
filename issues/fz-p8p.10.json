@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-25T21:22:59Z",
+  "description": "## Why\nOwner decisions: one flat fixtures/ and numbered names for everything. The 574 files in fixtures2/behavior/ are named without numbers.\n\n## What changes\nEach behaviour fixture and its sidecars (expected.*, oracle.exs) move to `fixtures/NNNNN_\u003cstem\u003e.*`; path-routing prefixes (`a-`, `ja-`) keep working; references in code, docs and tickets are updated. Trial names become `matrix::NNNNN_\u003cstem\u003e::\u003cpath\u003e`.\n\n## Signal\nfixtures2/behavior/ is gone.",
+  "id": "fz-p8p.10",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "Move the behaviour fixtures into fixtures/ with numbers",
+  "type": "task",
+  "updated_at": "2026-09-25T21:22:59Z"
+}
