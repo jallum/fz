@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-25T21:58:45Z",
+  "description": "lib/kernel.fz declares all 70 extern defps in one block at the top of the module, far from the defs that call them. The Elixir idiom is to put a def's private helpers directly after it. Move each extern defp to sit right after the def (or operator clause family) that uses it; the four _bb ordering externs sit after their operator, beside the commented-out binary clause they serve.\n\nThis is a pure reordering: the set of declarations and every body are unchanged. Anything that moves is an id or source position, so test pins that record kernel declaration order or offsets may be re-blessed; any pin that moves is listed in the PR with the reason.",
+  "id": "fz-odj",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Kernel: each extern defp sits directly after the def that uses it",
+  "type": "task",
+  "updated_at": "2026-09-25T21:58:45Z"
+}
