@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-afu.1"
+  ],
   "blocks": [],
   "created": "2026-09-25T20:28:36Z",
   "description": "Every compile runs two nested backend compiles for the `def/1` and `defp/1`\nmacros. Roots 1 and 2 (backend products for Kernel def/1 and defp/1) are\nrequested mid-compile while library source is indexed; on\n`def main(), do: Enum.take([1, 2, 3], 2)` they span from ~5ms to ~280ms of a\n~300ms front end, and each census test pays it once per compile.\n\nQuestion for the owner before any work: is expanding library `def`/`defp`\nthrough a compiled macro root on every compile intended? If the expansion is\nthe same on every compile, its product is a fixed fact of the library source.\nA reader measures what the two roots cost (jobs and time) and what they\nproduce, on the reduced case.",

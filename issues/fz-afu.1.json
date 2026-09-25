@@ -4,7 +4,8 @@
   "blocks": [
     "fz-afu.2",
     "fz-afu.3",
-    "fz-afu.4"
+    "fz-afu.4",
+    "fz-afu.5"
   ],
   "created": "2026-09-25T20:28:35Z",
   "description": "The distiller (`tools/distill-telemetry.exs`) reports most-re-run jobs and\ntheir wake causes, but not the proportionality census every child of this\nepic is accepted against: per job kind, runs vs distinct subjects, excess,\nand the wake cause of each re-run grouped by (kind, changed fact, completing\njob). This was computed by hand with a throwaway script during diagnosis.\n\nAdd it as a distiller section so acceptance is one command, and so a re-run's\ncause is read from telemetry, not inferred. If a re-run has no recorded wake\n(a work start from blocked-waiter expansion or the activation frontier), the\nsection says which start reason it was — the PullSession finish event already\ncounts work_starts_changed_revision_wake / blocked_waiter_expansion /\nactivation_frontier.\n\nTest: the distiller on a checked-in small trace yields the expected table.\nDocs: `.agent/strategies/profile-a-compilation.md` gains the section.",
