@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-xxd.3"
+  ],
   "created": "2026-09-25T20:29:31Z",
   "description": "When an extern row can never be answered, the error is silent at compile time\nand a trap at runtime.\n\nOnce an extern's return is its contract applied to its row, a row outside\nevery clause (a truly out-of-domain call) keeps return evidence \"not yet\nknown\"; at the fixpoint that coincides with `none` (jobs/semantic.rs:208-212\ncomment), the continuation is specialized to `compiler2_unreachable_control`\n(jobs/artifact.rs ~1484-1493), and JIT/AOT trap with SIGILL while the\ncompile reports nothing. Errors must be loud: a settled activation whose\nreturn is absent because its contract rejected the row is a diagnosable fact,\nnot an unreachable branch.\n\nAlso observed (three-path parity, unmeasured): concurrency_ping_pong,\nshared_heap_send_large_bitstring and spawn_with_captures pass on interp while\nfailing on run/build in the same state; the reader's hypothesis is tail\nposition of the call in the spawned function. The interp must fail the same\nway or the others must not.\n\nSettle with a reader, then the owner: what the compile reports (library vs\nuser callsite gating applies: library callsites are validated but not\ndiagnosed because joined activation evidence can pair uncorrelated callers),\nand how \"rejected\" is distinguished from \"not yet known\" in the data model\nrather than by the absence of an answer.",
   "id": "fz-xxd.6",
