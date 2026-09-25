@@ -4,14 +4,16 @@
   "blocks": [
     "fz-p8p.12"
   ],
+  "closed_at": "2026-09-25T22:06:59Z",
+  "close_reason": "Committed a008a8a69 on fz-p8p.11/inline-tests; cherry-picks onto fz-p8p/test-consolidation after .3 commits.",
   "created": "2026-09-25T21:22:59Z",
   "description": "## Why\n443 #[test]s live inline in 45 production modules (e.g. types/arrow_match.rs 83, pull.rs 44, runtime_type_predicate.rs 41); the house rule is sibling \u003cmodule\u003e_test.rs files mounted with #[path].\n\n## What changes\nEach module's inline tests move to its sibling _test.rs file.\n\n## Signal\nNo #[test] outside *_test.rs files.",
   "id": "fz-p8p.11",
   "labels": [],
   "parent": "fz-p8p",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Move inline #[test]s out of production modules",
   "type": "task",
-  "updated_at": "2026-09-25T21:27:36Z"
+  "updated_at": "2026-09-25T22:06:59Z"
 }
