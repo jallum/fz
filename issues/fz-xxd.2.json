@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-xxd.3"
+  ],
   "created": "2026-09-25T20:29:00Z",
   "description": "`Kernel.send/2` is `@spec send(pid | integer, t) :: t when t: any` and\nforwards its first argument to `extern \"fz\" defp fz_send(pid, t) :: t when\nt: any` (lib/kernel.fz:27). A call `send(1, 42)`\n(fixtures2/behavior/concurrency_ping_pong.fz) builds the row fz_send[int, int],\noutside the extern's declared domain. The runtime accepts it (the fixture\npasses today), so the declaration is narrower than the definition.\n\nToday the raw declared return hides this. Once an extern's return is its\ncontract applied to its row, the row has no answer, the continuation becomes\nunreachable, and the program traps.\n\nWork: make the declaration truthful (verify in the runtime what fz_send\naccepts), and scan every extern in lib/*.fz for a declared domain narrower\nthan its wrapper's @spec; each one found is fixed at the declaration in the\nsame commit, or reported if the runtime genuinely rejects the wider domain.",
   "id": "fz-xxd.2",
