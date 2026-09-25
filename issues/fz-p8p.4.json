@@ -4,7 +4,8 @@
     "fz-p8p.3"
   ],
   "blocks": [
-    "fz-p8p.8"
+    "fz-p8p.8",
+    "fz-p8p.9"
   ],
   "created": "2026-09-25T21:22:59Z",
   "description": "## Why\n387 tests; census (attached to fz-p8p as port.tsv): 329 assert only that the drive resolves, several discard the outcome (`let _ = compiler.drive()`), 342 TODOs name the intended claim, several contradict their names.\n\n## What changes\n- Resolves-only tests are deleted: once their fixture is in `fixtures/` the matrix proves it compiles and runs on three paths.\n- Each TODO's intended claim becomes an in-language `assert` in its fixture (owner decision). A failing assert is a finding with its own ticket. TODOs naming diagnostic codes that do not exist are listed, not invented.\n- The ~41 structural tests move to stage-appropriate test files through the harness.\n- Their fixtures are deduplicated (e.g. 00389-00402 collapse into 00191-00207), given `purpose:`, and moved to `fixtures/`.\n- Tests whose names contradict their bodies (`struct_type_alias_must_cover_all_fields`, `cross_module_import_resolves_external_call_edges`, `guard_partition_selects_refined_clause`) are renamed to what they prove or become bug tickets.\n\n## Signal\nZero `port_*_test.rs` files.",
