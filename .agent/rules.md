@@ -35,12 +35,13 @@
 - Have descriptions that explain in eli5 _style_ (no need to _say it) why we're making the change, what we've changed, and how it works -- with examples.
 
 ## Best Practices
+- Comments should be timeless information, and only included when it's not possible to push that information into the code with better names, breaking things into functions, etc.
 - Local correctness does not guarantee global architectural alignment.
 - Data-model -> up, so that the problem is correct-by-construction.
-- For semantic compiler bugs, use the strategy trigger in `.agent/strategies.md`.
+- Use the strategy triggers in `.agent/strategies.md`.
 - Prefer short functions with crisp names over comments.
 - Modules should have a coherent focus.
-- Deeply nested code is a smell.
+- Deeply nested code is a smell. Long functions are a smell.
 - Data should be immutable where possible (esp. after construction).
 - Code should live in the right modules, modules should live in the right places.
 - Tests should observe telemetry wherever possible. Not available? Consider judiciously adding (or extending) events.
