@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-25T21:22:29Z",
+  "description": "## Symptom\n\n`fixtures2/00430_opaque_value_accessor.fz` (a module `A` with `@type t :: opaque resource(integer)`, `def get(h :: t), do: h.value`, and `main` calling `A.get(A.make())`):\n\n- `fz2 run` prints `7`.\n- `fz2 interp` fails: `function_clause: no backend entry clause matched for executable ExecutableKey { ... }`.\n\nThree-path parity is broken on the interp leg.\n\n## Reduction (measured at 4fca80802, fz2 debug build)\n\n- Drop the annotation (`def get(h)`): interp prints 7.\n- Drop `opaque` (`@type t :: resource(integer)`): interp prints 7.\n\nSo the backend interpreter's entry-clause test for a parameter typed as an opaque resource rejects a value of that type. The JIT accepts it.\n\n## Found by\n\nfz-p8p census: the only test that drives 00430 (`port_planner_test.rs::opaque_value_accessor_inside_declaring_module_types_as_inner`) asserts only that the drive resolves, so the runtime failure was never observed. Once 00430 runs on the fixture matrix it is red on interp; this ticket is the fix.",
+  "id": "fz-p8p.2",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "The backend interpreter rejects an argument annotated with an opaque resource type",
+  "type": "bug",
+  "updated_at": "2026-09-25T21:22:29Z"
+}
