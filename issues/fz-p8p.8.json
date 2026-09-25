@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-p8p.4"
+  ],
   "blocks": [],
   "created": "2026-09-25T21:22:59Z",
   "description": "## Why\ndrive_test.rs was meant to test the fact-engine drive machinery (scheduler, jobs, waits, demand, pull sessions, wakes, settlement) and grew into general compiler tests. After homing, by census subject roughly: semantic 72, drive-machinery 18 (+62 mixed), native 44, lowering 23, backend 15, source 6, transport 3, runtime 3.\n\n## What changes\nStructural tests move to per-stage files, joining existing single-subject homes (macro_product_test.rs for source, semantic_analysis_test.rs for semantic). drive_test.rs and product_drive_test.rs (30/38 drive-machinery) keep drive machinery and may merge.\n\n## Signal\nEvery test in drive_test.rs has subject drive-machinery.",
