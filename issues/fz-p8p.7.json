@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-25T21:22:59Z",
+  "description": "## Why\nCensus other.tsv (attached to fz-p8p): 307 tests; 149 inline programs, 19 consts, 9 helper-built.\n\n## What changes\nSame treatment. `contract_test.rs` renamed to what it is (Types / FunctionContract tests). The two `compile_enum_predicate_search` helpers in product_drive_test.rs become one. `00547_compiler_contract_smoke` already pins the fixture_facts_test.rs claim marked delete.\n\n## Signal\nNo program strings, no raw `Compiler2::new` outside the harness in these files.",
+  "id": "fz-p8p.7",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "Home the claims of the other 17 compiler2 test files",
+  "type": "task",
+  "updated_at": "2026-09-25T21:22:59Z"
+}
