@@ -1,26 +1,21 @@
 cause of every re-run
-  job kind                                changed fact (use)            completing job  disposition  count
-  DefineFunction            ExpandedFunctionSource (current)      ExpandFunctionSource     enqueued      3
-  DeriveCallGraphComponent           StaticCallees (current)       DeriveStaticCallees     enqueued      3
-  DeriveInputDemand                  EntryDispatch (current)         PlanEntryDispatch     enqueued      3
-  DeriveRuntimeDemand              ExecutableFacts (settled)     DeriveExecutableFacts     enqueued      3
-  DeriveInputDemand                  StaticCallees (current)       DeriveStaticCallees     enqueued      2
-  AnalyzeActivation                    InputDemand (current)         DeriveInputDemand     enqueued      1
-  AnalyzeActivation                     ReturnType (current)         AnalyzeActivation     enqueued      1
-  DeriveRuntimeDemand          RuntimeDemandInputs (current)       DeriveRuntimeDemand     enqueued      1
-  DeriveStaticCallees                  LoweredBody (current)             LowerFunction     enqueued      1
-  ExpandFunctionSource                  CodeScoped (current)                 ScopeCode     enqueued      1
-  LowerFunction                    FunctionDefined (current)            DefineFunction     enqueued      1
-  ScopeCode                            CodeIndexed (current)                 IndexCode     enqueued      1
-  ScopeCode                             CodeScoped (current)                 ScopeCode     enqueued      1
-  ScopeCode                        FunctionDefined (current)            DefineFunction     enqueued      1
-  SeedRoot                         FunctionDefined (settled)            DefineFunction     enqueued      1
-  SeedRoot                             InputDemand (settled)         DeriveInputDemand     enqueued      1
-  SeedRoot                               Recursive (settled)  DeriveCallGraphComponent     enqueued      1
+  job kind                                changed fact (use)         completing job  disposition  count
+  DefineFunction            ExpandedFunctionSource (current)   ExpandFunctionSource     enqueued      2
+  DeriveCallGraphComponent           StaticCallees (current)    DeriveStaticCallees     enqueued      2
+  DeriveInputDemand                  EntryDispatch (current)      PlanEntryDispatch     enqueued      2
+  DeriveInputDemand                  StaticCallees (current)    DeriveStaticCallees     enqueued      2
+  DeriveRuntimeDemand              ExecutableFacts (settled)  DeriveExecutableFacts     enqueued      2
+  SeedRoot                             InputDemand (settled)      DeriveInputDemand     enqueued      2
+  ExpandFunctionSource                  CodeScoped (current)              ScopeCode     enqueued      1
+  ScopeCode                            CodeIndexed (current)              IndexCode     enqueued      1
+  ScopeCode                             CodeScoped (current)              ScopeCode     enqueued      1
+  ScopeCode                        FunctionDefined (current)         DefineFunction     enqueued      1
+  ScopeCode                                Product (settled)     dependencies_moved     enqueued      1
+  SeedRoot                         FunctionDefined (settled)         DefineFunction     enqueued      1
 
   coalesced: an additional cause landing on a re-run already enqueued by the row above, not a separate start
-  job kind                        changed fact (use)       completing job  disposition  count
-  DeriveRuntimeDemand  RuntimeDemandInputs (current)  DeriveRuntimeDemand    coalesced      1
+  none
 
-  1 re-run(s) with no matching enqueued wake (session-summed work starts: ignition=2 changed_revision_wake=27 activation_frontier=3 blocked_waiter_expansion=31 unsanctioned=0)
+  matched enqueued wakes (18) == work_starts_changed_revision_wake (18)
+  ignition + activation_frontier + blocked_waiter_expansion (26) == distinct subjects (26)
 
