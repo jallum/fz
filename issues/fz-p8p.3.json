@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-p8p.10",
@@ -15,8 +15,8 @@
   "labels": [],
   "parent": "fz-p8p",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fixtures/ home: one flat self-describing fixture directory, every fixture on the matrix, one drive harness",
   "type": "task",
-  "updated_at": "2026-09-25T21:22:59Z"
+  "updated_at": "2026-09-25T21:25:05Z"
 }
