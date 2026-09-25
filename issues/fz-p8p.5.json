@@ -4,7 +4,8 @@
     "fz-p8p.3"
   ],
   "blocks": [
-    "fz-p8p.8"
+    "fz-p8p.8",
+    "fz-p8p.9"
   ],
   "created": "2026-09-25T21:22:59Z",
   "description": "## Why\nCensus drive_a.tsv (attached to fz-p8p): 155 tests; structure 178 claims, behaviour 92, shape-metric 12, resolves-only 2.\n\n## What changes\n- Deletes and behaviour moves per the census; behaviour claims become fixture asserts (or goldens when rendering is the point).\n- Every inline, const and helper-built program becomes a `fixtures/` file; identical programs merge.\n- Remaining tests use the harness. `entry/0`-style convenience roots become `main`; open-input roots use `open_root`; root-API claims stay as drive-machinery tests.\n- Name-vs-body mismatches (e.g. `..._with_exact_reducer_lanes`) renamed to what they prove.\n\n## Signal\nNo program strings and no raw `Compiler2::new` in the first half.",
