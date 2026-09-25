@@ -20,78 +20,6 @@ defmodule Kernel do
   for every other pair of values.
   """
 
-  extern "fz" defp fz_dbg_value(t) :: t when t: any
-  extern "fz" defp fz_panic(any) :: never
-  extern "fz" defp fz_spawn(() -> any) :: pid
-  extern "fz" defp fz_self() :: pid
-  extern "fz" defp fz_send(pid, t) :: t when t: any
-  extern "C" defp fz_make_ref() :: ref
-  extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | c_pointer
-  extern "fz" defp fz_resource_claim(resource(t)) :: boolean when t: integer | c_pointer
-  extern "fz" defp fz_binary_concat(binary, binary) :: binary
-  extern "C" defp fz_op_neg_i(integer) :: {integer, boolean}
-  extern "C" defp fz_op_neg_f(float) :: float
-  extern "C" defp fz_op_add_ii(integer, integer) :: {integer, boolean}
-  extern "C" defp fz_op_add_if(integer, float) :: {float, boolean}
-  extern "C" defp fz_op_add_ff(float, float) :: {float, boolean}
-  extern "C" defp fz_op_sub_ii(integer, integer) :: {integer, boolean}
-  extern "C" defp fz_op_sub_if(integer, float) :: {float, boolean}
-  extern "C" defp fz_op_sub_fi(float, integer) :: {float, boolean}
-  extern "C" defp fz_op_sub_ff(float, float) :: {float, boolean}
-  extern "C" defp fz_op_mul_ii(integer, integer) :: {integer, boolean}
-  extern "C" defp fz_op_mul_if(integer, float) :: {float, boolean}
-  extern "C" defp fz_op_mul_ff(float, float) :: {float, boolean}
-  extern "C" defp fz_op_div_ii(integer, integer) :: {integer, boolean}
-  extern "C" defp fz_op_div_ii_to_float(integer, integer) :: {float, boolean}
-  extern "C" defp fz_op_div_if(integer, float) :: {float, boolean}
-  extern "C" defp fz_op_div_fi(float, integer) :: {float, boolean}
-  extern "C" defp fz_op_div_ff(float, float) :: {float, boolean}
-  extern "C" defp fz_op_rem_ii(integer, integer) :: {integer, boolean}
-  extern "C" defp fz_op_rem_if(integer, float) :: {float, boolean}
-  extern "C" defp fz_op_rem_fi(float, integer) :: {float, boolean}
-  extern "C" defp fz_op_rem_ff(float, float) :: {float, boolean}
-  extern "C" defp fz_bitstring_byte_size(any) :: integer
-  # The total term order over every value, which the cross-type clauses below
-  # are written in terms of. Takes the process (the `fz` ABI) because atoms
-  # order by name, not by the id they were interned with.
-  extern "fz" defp fz_value_cmp_ref(any, any) :: integer
-  extern "C" defp fz_op_lt_ii(integer, integer) :: boolean
-  extern "C" defp fz_op_lt_ff(float, float) :: boolean
-  extern "fz" defp fz_op_lt_bb(binary, binary) :: boolean
-  extern "C" defp fz_op_lte_ii(integer, integer) :: boolean
-  extern "C" defp fz_op_lte_ff(float, float) :: boolean
-  extern "fz" defp fz_op_lte_bb(binary, binary) :: boolean
-  extern "C" defp fz_op_gt_ii(integer, integer) :: boolean
-  extern "C" defp fz_op_gt_ff(float, float) :: boolean
-  extern "fz" defp fz_op_gt_bb(binary, binary) :: boolean
-  extern "C" defp fz_op_gte_ii(integer, integer) :: boolean
-  extern "C" defp fz_op_gte_ff(float, float) :: boolean
-  extern "fz" defp fz_op_gte_bb(binary, binary) :: boolean
-  extern "fz" defp fz_op_eq(any, any) :: boolean
-  extern "fz" defp fz_op_neq(any, any) :: boolean
-  extern "fz" defp fz_op_identical(any, any) :: boolean
-  extern "fz" defp fz_op_not_identical(any, any) :: boolean
-  extern "C" defp fz_op_eq_ii(integer, integer) :: boolean
-  extern "C" defp fz_op_eq_ff(float, float) :: boolean
-  extern "C" defp fz_op_eq_if(integer, float) :: boolean
-  extern "C" defp fz_op_eq_fi(float, integer) :: boolean
-  extern "C" defp fz_op_neq_ii(integer, integer) :: boolean
-  extern "C" defp fz_op_neq_ff(float, float) :: boolean
-  extern "C" defp fz_op_neq_if(integer, float) :: boolean
-  extern "C" defp fz_op_neq_fi(float, integer) :: boolean
-  extern "C" defp fz_op_identical_ii(integer, integer) :: boolean
-  extern "C" defp fz_op_identical_ff(float, float) :: boolean
-  extern "C" defp fz_op_not_identical_ii(integer, integer) :: boolean
-  extern "C" defp fz_op_not_identical_ff(float, float) :: boolean
-  extern "C" defp fz_op_lt_if(integer, float) :: boolean
-  extern "C" defp fz_op_lt_fi(float, integer) :: boolean
-  extern "C" defp fz_op_lte_if(integer, float) :: boolean
-  extern "C" defp fz_op_lte_fi(float, integer) :: boolean
-  extern "C" defp fz_op_gt_if(integer, float) :: boolean
-  extern "C" defp fz_op_gt_fi(float, integer) :: boolean
-  extern "C" defp fz_op_gte_if(integer, float) :: boolean
-  extern "C" defp fz_op_gte_fi(float, integer) :: boolean
-
   @doc """
   Aborts the current process with `msg` as the reason.
 
@@ -99,6 +27,8 @@ defmodule Kernel do
   """
   @spec panic(any) :: never
   def panic(msg), do: fz_panic(msg)
+
+  extern "fz" defp fz_panic(any) :: never
 
   # In Elixir, `to_string/1` is a macro expanding to `String.Chars.to_string/1`.
   # Here it is an ordinary function, since the macro's expansion has nothing
@@ -129,6 +59,8 @@ defmodule Kernel do
   """
   @spec dbg(t) :: t when t: any
   def dbg(x), do: fz_dbg_value(x)
+
+  extern "fz" defp fz_dbg_value(t) :: t when t: any
 
   @doc """
   Aborts the current process if `x` is `nil` or `false`.
@@ -192,11 +124,15 @@ defmodule Kernel do
   @spec spawn(() -> any) :: pid
   def spawn(fun), do: fz_spawn(fun)
 
+  extern "fz" defp fz_spawn(() -> any) :: pid
+
   @doc """
   Returns the pid of the calling process.
   """
   @spec self() :: pid
   def self(), do: fz_self()
+
+  extern "fz" defp fz_self() :: pid
 
   @doc """
   Sends `msg` to `pid` and returns `msg`.
@@ -218,6 +154,8 @@ defmodule Kernel do
   @spec send(pid | integer, t) :: t when t: any
   def send(pid, msg), do: fz_send(pid, msg)
 
+  extern "fz" defp fz_send(pid, t) :: t when t: any
+
   @doc """
   Returns a fresh, opaque reference; no two calls in a process return the
   same one.
@@ -231,6 +169,8 @@ defmodule Kernel do
   @spec make_ref() :: ref
   def make_ref(), do: fz_make_ref()
 
+  extern "C" defp fz_make_ref() :: ref
+
   @doc """
   Wraps a host handle `value` and destructor `dtor` in a resource.
 
@@ -240,6 +180,8 @@ defmodule Kernel do
   """
   @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | c_pointer
   def make_resource(value, dtor), do: fz_make_resource(value, dtor)
+
+  extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | c_pointer
 
   @doc """
   Claims `resource` for deterministic cleanup.
@@ -253,6 +195,8 @@ defmodule Kernel do
     value = resource.value
     claim_resource_result(fz_resource_claim(resource), value)
   end
+
+  extern "fz" defp fz_resource_claim(resource(t)) :: boolean when t: integer | c_pointer
 
   @spec claim_resource_result(boolean, t) :: {:ok, t} | {:error, :closed} when t: integer | c_pointer
   defp claim_resource_result(true, value), do: {:ok, value}
@@ -295,6 +239,8 @@ defmodule Kernel do
   @spec binary <> binary :: binary
   def (left :: binary) <> (right :: binary), do: fz_binary_concat(left, right)
 
+  extern "fz" defp fz_binary_concat(binary, binary) :: binary
+
   # Unary minus. Every binary operator is a typed clause family, so a
   # dynamically-typed operand dispatches; unary minus was lowered straight to
   # one machine instruction and read one lane, so `-x` aborted natively where
@@ -323,6 +269,9 @@ defmodule Kernel do
   def negate(x :: integer), do: arithmetic_result(fz_op_neg_i(x))
   def negate(x :: float), do: fz_op_neg_f(x)
 
+  extern "C" defp fz_op_neg_i(integer) :: {integer, boolean}
+  extern "C" defp fz_op_neg_f(float) :: float
+
   @doc """
   Returns the sum of `left` and `right`.
 
@@ -345,6 +294,10 @@ defmodule Kernel do
   def (left :: integer) + (right :: float), do: arithmetic_result(fz_op_add_if(left, right))
   def (left :: float) + (right :: integer), do: arithmetic_result(fz_op_add_if(right, left))
   def (left :: float) + (right :: float), do: arithmetic_result(fz_op_add_ff(left, right))
+
+  extern "C" defp fz_op_add_ii(integer, integer) :: {integer, boolean}
+  extern "C" defp fz_op_add_if(integer, float) :: {float, boolean}
+  extern "C" defp fz_op_add_ff(float, float) :: {float, boolean}
 
   @doc """
   Returns the difference of `left` and `right`.
@@ -369,6 +322,11 @@ defmodule Kernel do
   def (left :: float) - (right :: integer), do: arithmetic_result(fz_op_sub_fi(left, right))
   def (left :: float) - (right :: float), do: arithmetic_result(fz_op_sub_ff(left, right))
 
+  extern "C" defp fz_op_sub_ii(integer, integer) :: {integer, boolean}
+  extern "C" defp fz_op_sub_if(integer, float) :: {float, boolean}
+  extern "C" defp fz_op_sub_fi(float, integer) :: {float, boolean}
+  extern "C" defp fz_op_sub_ff(float, float) :: {float, boolean}
+
   @doc """
   Returns the product of `left` and `right`.
 
@@ -391,6 +349,10 @@ defmodule Kernel do
   def (left :: integer) * (right :: float), do: arithmetic_result(fz_op_mul_if(left, right))
   def (left :: float) * (right :: integer), do: arithmetic_result(fz_op_mul_if(right, left))
   def (left :: float) * (right :: float), do: arithmetic_result(fz_op_mul_ff(left, right))
+
+  extern "C" defp fz_op_mul_ii(integer, integer) :: {integer, boolean}
+  extern "C" defp fz_op_mul_if(integer, float) :: {float, boolean}
+  extern "C" defp fz_op_mul_ff(float, float) :: {float, boolean}
 
   # `/` always returns a float, as in Elixir: `1 / 2` is `0.5`, not `0`. The
   # truncating form is `div/2` below. Getting this wrong is silent -- integer
@@ -419,6 +381,11 @@ defmodule Kernel do
   def (left :: float) / (right :: integer), do: arithmetic_result(fz_op_div_fi(left, right))
   def (left :: float) / (right :: float), do: arithmetic_result(fz_op_div_ff(left, right))
 
+  extern "C" defp fz_op_div_ii_to_float(integer, integer) :: {float, boolean}
+  extern "C" defp fz_op_div_if(integer, float) :: {float, boolean}
+  extern "C" defp fz_op_div_fi(float, integer) :: {float, boolean}
+  extern "C" defp fz_op_div_ff(float, float) :: {float, boolean}
+
   @doc """
   Returns the truncating integer quotient of `left` divided by `right`.
 
@@ -432,6 +399,8 @@ defmodule Kernel do
   """
   @spec div(integer, integer) :: integer
   def div(left, right), do: arithmetic_result(fz_op_div_ii(left, right))
+
+  extern "C" defp fz_op_div_ii(integer, integer) :: {integer, boolean}
 
   @doc """
   Returns the remainder of `left` divided by `right`, with the sign of
@@ -470,6 +439,11 @@ defmodule Kernel do
   def (left :: integer) % (right :: float), do: arithmetic_result(fz_op_rem_if(left, right))
   def (left :: float) % (right :: integer), do: arithmetic_result(fz_op_rem_fi(left, right))
   def (left :: float) % (right :: float), do: arithmetic_result(fz_op_rem_ff(left, right))
+
+  extern "C" defp fz_op_rem_ii(integer, integer) :: {integer, boolean}
+  extern "C" defp fz_op_rem_if(integer, float) :: {float, boolean}
+  extern "C" defp fz_op_rem_fi(float, integer) :: {float, boolean}
+  extern "C" defp fz_op_rem_ff(float, float) :: {float, boolean}
 
   # Comparing an integer against a float is a comparison of two floats, and
   # widening the integer is this module's job. Arithmetic already spells its
@@ -532,6 +506,12 @@ defmodule Kernel do
   # def (left :: binary) < (right :: binary), do: fz_op_lt_bb(left, right)
   def left < right, do: compare(left, right) < 0
 
+  extern "C" defp fz_op_lt_ii(integer, integer) :: boolean
+  extern "C" defp fz_op_lt_ff(float, float) :: boolean
+  extern "C" defp fz_op_lt_if(integer, float) :: boolean
+  extern "C" defp fz_op_lt_fi(float, integer) :: boolean
+  extern "fz" defp fz_op_lt_bb(binary, binary) :: boolean
+
   @doc """
   Returns whether `left` is less than or equal to `right`.
 
@@ -558,6 +538,12 @@ defmodule Kernel do
   def (left :: float) <= (right :: integer), do: fz_op_lte_fi(left, right)
   # def (left :: binary) <= (right :: binary), do: fz_op_lte_bb(left, right)
   def left <= right, do: compare(left, right) <= 0
+
+  extern "C" defp fz_op_lte_ii(integer, integer) :: boolean
+  extern "C" defp fz_op_lte_ff(float, float) :: boolean
+  extern "C" defp fz_op_lte_if(integer, float) :: boolean
+  extern "C" defp fz_op_lte_fi(float, integer) :: boolean
+  extern "fz" defp fz_op_lte_bb(binary, binary) :: boolean
 
   @doc """
   Returns whether `left` is greater than `right`.
@@ -589,6 +575,12 @@ defmodule Kernel do
   # def (left :: binary) > (right :: binary), do: fz_op_gt_bb(left, right)
   def left > right, do: compare(left, right) > 0
 
+  extern "C" defp fz_op_gt_ii(integer, integer) :: boolean
+  extern "C" defp fz_op_gt_ff(float, float) :: boolean
+  extern "C" defp fz_op_gt_if(integer, float) :: boolean
+  extern "C" defp fz_op_gt_fi(float, integer) :: boolean
+  extern "fz" defp fz_op_gt_bb(binary, binary) :: boolean
+
   @doc """
   Returns whether `left` is greater than or equal to `right`.
 
@@ -616,6 +608,12 @@ defmodule Kernel do
   # def (left :: binary) >= (right :: binary), do: fz_op_gte_bb(left, right)
   def left >= right, do: compare(left, right) >= 0
 
+  extern "C" defp fz_op_gte_ii(integer, integer) :: boolean
+  extern "C" defp fz_op_gte_ff(float, float) :: boolean
+  extern "C" defp fz_op_gte_if(integer, float) :: boolean
+  extern "C" defp fz_op_gte_fi(float, integer) :: boolean
+  extern "fz" defp fz_op_gte_bb(binary, binary) :: boolean
+
   @doc """
   Returns the number of bytes in `bytes`.
 
@@ -632,6 +630,8 @@ defmodule Kernel do
   """
   @spec byte_size(binary) :: integer
   def byte_size(bytes), do: fz_bitstring_byte_size(bytes)
+
+  extern "C" defp fz_bitstring_byte_size(any) :: integer
 
   # `</2` and its siblings carry this order through `compare/2`.
   @doc """
@@ -656,6 +656,10 @@ defmodule Kernel do
   """
   @spec compare(any, any) :: integer
   def compare(left, right), do: fz_value_cmp_ref(left, right)
+
+  # The total term order over every value. Takes the process (the `fz` ABI)
+  # because atoms order by name, not by the id they were interned with.
+  extern "fz" defp fz_value_cmp_ref(any, any) :: integer
 
   @doc """
   Returns whether `left` and `right` are equal, comparing numbers by value.
@@ -682,6 +686,12 @@ defmodule Kernel do
   def (left :: float) == (right :: integer), do: fz_op_eq_fi(left, right)
   def left == right, do: fz_op_eq(left, right)
 
+  extern "C" defp fz_op_eq_ii(integer, integer) :: boolean
+  extern "C" defp fz_op_eq_ff(float, float) :: boolean
+  extern "C" defp fz_op_eq_if(integer, float) :: boolean
+  extern "C" defp fz_op_eq_fi(float, integer) :: boolean
+  extern "fz" defp fz_op_eq(any, any) :: boolean
+
   @doc """
   Returns whether `left` and `right` are not equal; the negation of `==/2`.
 
@@ -704,6 +714,12 @@ defmodule Kernel do
   def (left :: integer) != (right :: float), do: fz_op_neq_if(left, right)
   def (left :: float) != (right :: integer), do: fz_op_neq_fi(left, right)
   def left != right, do: fz_op_neq(left, right)
+
+  extern "C" defp fz_op_neq_ii(integer, integer) :: boolean
+  extern "C" defp fz_op_neq_ff(float, float) :: boolean
+  extern "C" defp fz_op_neq_if(integer, float) :: boolean
+  extern "C" defp fz_op_neq_fi(float, integer) :: boolean
+  extern "fz" defp fz_op_neq(any, any) :: boolean
 
   # `===` asks whether two values are the same value, where `==` compares
   # numbers by value: `1 == 1.0` is true and `1 === 1.0` is false. Membership,
@@ -734,6 +750,10 @@ defmodule Kernel do
   def (_left :: float) === (_right :: integer), do: false
   def left === right, do: fz_op_identical(left, right)
 
+  extern "C" defp fz_op_identical_ii(integer, integer) :: boolean
+  extern "C" defp fz_op_identical_ff(float, float) :: boolean
+  extern "fz" defp fz_op_identical(any, any) :: boolean
+
   @doc """
   Returns whether `left` and `right` are not the same value; the negation
   of `===/2`.
@@ -757,4 +777,8 @@ defmodule Kernel do
   def (_left :: integer) !== (_right :: float), do: true
   def (_left :: float) !== (_right :: integer), do: true
   def left !== right, do: fz_op_not_identical(left, right)
+
+  extern "C" defp fz_op_not_identical_ii(integer, integer) :: boolean
+  extern "C" defp fz_op_not_identical_ff(float, float) :: boolean
+  extern "fz" defp fz_op_not_identical(any, any) :: boolean
 end
