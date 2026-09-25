@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-p8p.4"
+    "fz-p8p.4",
+    "fz-p8p.5"
   ],
   "created": "2026-09-25T21:22:59Z",
   "description": "## Why\nEvery later step needs a place to put processed fixtures and one way to drive them. Owner decisions 2026-09-25: one flat `fixtures/` (no `behavior/` subdirectory); every fixture is a runnable program entered at `main/0` (or `test` blocks) and runs on the run/interp/build matrix; files are `NNNNN_\u003cshort_description\u003e.fz` with a stable unique number and a `# purpose:` line.\n\n## What changes\n- `tests/fixture_matrix.rs` discovers `fixtures/*.fz` in addition to `fixtures2/behavior/`; the contract harness discovers `fixtures/` in addition to `fixtures2/`. The second root is scaffolding removed by the fixtures2 deletion step.\n- A static trial pins the shape of `fixtures/`: every file has `purpose:`, a unique `NNNNN_` number (unique across both roots), and a `main/0` or `test` blocks.\n- A test-only drive harness (cfg(test)) replaces per-file setup: fixture by number, root defaulting to `main/0` + `Value`, `open_root(module, name, arity)` as the only override, optional targeted `demand(job)`, captures requested by type, and the lookups that are redefined per file today (`module_name` x29, `assert_resolved` x13, `function_id` x7, `lowered_body`, `presence`, `entry_dispatch`, `FunctionCapture`) defined once.\n- Pilot migrations: `fixture_facts_test.rs`, `canon_test.rs`.\n- Delete `FixtureMetadata::participates_in_matrix` (only its own unit test calls it).\n- Fold `fixtures2/GOLDEN.md` into `.agent/docs/fixtures.md`; README points there.\n\n## Signal\nMatrix cost of one moved fixture measured and recorded; per-file helper copies deleted; gate green except the fz-xxd.3 reds.",
