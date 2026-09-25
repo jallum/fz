@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-25T21:58:45Z",
@@ -7,8 +7,8 @@
   "id": "fz-odj",
   "labels": [],
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Kernel: each extern defp sits directly after the def that uses it",
   "type": "task",
-  "updated_at": "2026-09-25T21:58:45Z"
+  "updated_at": "2026-09-25T22:19:06Z"
 }
