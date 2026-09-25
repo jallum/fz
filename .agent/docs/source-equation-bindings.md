@@ -40,6 +40,40 @@ These are kernel obligations, not the cell solver: source restrictions,
 cell-addressed argument equations, pending dependencies and the ordinary
 compiler re-key gate still have to be connected through the existing evaluator.
 
+## Ports are not nominal type variables
+
+Equation alphas are source ports, not `Types::type_var` values. Existing type
+variables are nominal template placeholders on their own descriptor axis.
+Filtering one before substitution loses the deferred operation. With
+`sigma(alpha)=:a|:b`, the current APIs give:
+
+| Operation order | Intersection with :a | Difference from :a |
+| --- | --- | --- |
+| Filter alpha, then instantiate | none | :a \| :b |
+| Instantiate alpha, then filter | :a | :b |
+
+Keep a cell restriction as an equation operation on its live port/local
+reference, and apply the ground predicate to the bound relation. Do not intern
+`alpha & mask` as an ordinary Ty and expect later substitution to recover it.
+The existing regular descriptor algebra remains the lowering target once
+those references and operations have been bound; no second type store follows
+from this distinction.
+
+`Types::instantiate` also recursively walks a variable-bearing regular Ty
+without memoizing the graph. That independent traversal issue is tracked in
+fz-kdt.177.20; repairing it would not change the nominal-variable restriction
+semantics above and is not a prerequisite for source-port binding.
+
+Completion must likewise distinguish a missing equation from a port whose
+installed equation has not produced an observation. The fact ledger
+intentionally permits a Current read of an absent fact to become quiet, and
+recursive return inference uses this for Kleene iteration. Do not turn every
+absent observation into a Settled wait. Preserve genuinely missing source or
+external-substitution prerequisites with their existing fact coordinates,
+and express component-local recursion as equation edges. The closed-alias
+kernel regression remains red on the pushed compiler; its expected assertion
+is a requirement, not evidence that production already honors this contract.
+
 ## Definitions, substitutions, and sharing
 
 ```elixir

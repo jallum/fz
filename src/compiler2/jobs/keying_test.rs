@@ -590,6 +590,23 @@ fn recursive_accumulator_inherits_whole_demand_without_an_activation() {
     let mut graph = BTreeMap::new();
     super::collect_input_forwarding_graph(&world, build, &mut reads, &mut waits, &mut graph);
     assert!(waits.is_empty());
+    let relay = world.reference_function(ModuleId::GLOBAL, "relay", 1);
+    let finish = world.reference_function(ModuleId::GLOBAL, "finish", 1);
+    assert_eq!(
+        graph[&relay].local[0],
+        DispatchDemand::Ignore,
+        "relay only forwards the accumulator"
+    );
+    assert_eq!(
+        graph[&finish].local[0],
+        DispatchDemand::Whole,
+        "the literal :start clause is the source of the whole-value question"
+    );
+    assert_eq!(
+        super::solve_forwarded_demand(&graph, relay, |node| &node.local)[0],
+        DispatchDemand::Whole,
+        "relay inherits the literal question before it reaches build"
+    );
     assert_eq!(
         graph[&build].local[1],
         DispatchDemand::Ignore,
