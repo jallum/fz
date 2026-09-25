@@ -1,0 +1,26 @@
+#---
+# oracle: interface10_retained_cell_rekey.oracle.exs
+# purpose: "a recursive list head widens from atom to tuple while the earlier atom-only return stays filtered"
+#---
+# Runtime by hand for build(1, [:seed]):
+#   classify(:seed) -> {:atom, {:atom_payload, :seed}}
+#   classify({:later}) -> {:tuple, {:tuple_payload, {:later}}}
+# The recursive list-element equation is E = :seed | {:later}. A cell
+# initially restricted to atoms must keep that restriction as E grows.
+# Its payload cannot contain {:later}; the tuple route carries that value.
+# Runtime output alone cannot prove an in-epoch re-key: the cell-solver gate
+# must also check retained filters, no retraction, and bounded re-key work.
+def head([value | _rest]), do: value
+
+def classify(value :: atom),
+  do: {:atom, {:atom_payload, value}}
+def classify({value}),
+  do: {:tuple, {:tuple_payload, {value}}}
+
+def build(0, values), do: classify(head(values))
+def build(n, values) do
+  earlier = classify(head(values))
+  {earlier, build(n - 1, [{:later} | values])}
+end
+
+def main(), do: dbg(build(1, [:seed]))

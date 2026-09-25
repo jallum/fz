@@ -271,47 +271,57 @@ return solver, dispatch proof semantics, and contribution ledger.
 
 ## The next coherent implementation
 
-First establish **whole-row substitution and joint restriction in the existing
-solver**. An incoming edge binds ordered capture/argument producer references
-together. Projection keeps its parent-row relationship. A multioperand proof
-must consume alternatives from that same row. Retain the finite source
-substitution rather than allocating a row for every unfolded history.
-The first production witness must preserve evaluator rows before aggregation
-and change their solver consumption together: a new row record without that
-consumer would leave the existing loss in place.
+The current ticket's step 6 owns this cut. Exact recursive admission is deferred
+in .26; it is not a prerequisite for moving inference off activation keys.
+Every recursive component starts Projected, with finite partition cells and
+regular marginal equations. The ground restriction kernel is implemented;
+cell admission, fixed filters and completion wiring are not.
 
-Use rotate and synchronized growth to establish the normalization and product
-bound, with mismatched inputs as a negative control. Then cover the parser,
-reducer capture cycle, and observable wrapper distinctions. The general
-admission law remains open until those products have a justified finite
-representation; storing their source equations is only representation work.
+Reuse the retained LoweredBody and `step_inputs`/`step_delta` evaluator. Source
+operation outputs use fixed body coordinates, not a second operation IR or
+nested transformation histories. A finite set of projection operations does
+not bound strings such as `tail^n`; recursion must be a graph backreference.
 
-With that law established, move semantic ownership coherently:
+Move the following as one production replacement:
 
-1. Retain each evaluator row's inputs, restrictions, observations, reached
-   invocations, and result together before deriving aggregate views.
-2. Address those bindings and their pending results through source ports;
-   move call edges, input contributions, caller/component relationships, and
-   Term/Bindings together. Keep exact capture producers off sharing keys.
-3. Make `prepare_function_call`, root seeding, and latent callable seeding
-   request those bindings. Established interfaces then group executable
-   activations and feed the existing typed transport.
-4. Remove activation-frontier inference and activation-snapshot gathering
-   from the migrated path. No first-only evaluator, preflight, or fallback.
+1. Address inputs, local values, invocation results, restrictions and completion
+   dependencies by bound source scope, finite cell and source port. A scope
+   preserves independent external substitutions; recursive edges reuse it.
+2. At `prepare_function_call`, bind the ordered target/capture/argument row and
+   subscribe to its source result before any executable key is minted. Keep
+   each row's restrictions, observations, reached calls and result associated.
+3. Move call emissions, subscriptions, component membership, contribution
+   owners and root/latent seeding to those addresses. Remove activation-snapshot
+   gathering and activation-frontier inference from that path.
+4. Derive executable activations from the solved source interfaces. Complete
+   compatible-interface sharing and typed transport without feeding executable
+   keys back into source inference.
 
-The work contract is causal, not a guessed scheduler count: one installed
-source definition; each distinct transfer operand/proof row evaluated when
-its dependencies change; a second compatible callback adds its own analysis
-and target wiring without another apply-body walk or unchanged transfer.
-For the closed unused loop, wrapper depth adds no demanded callback interface
-or inference state. Pending external facts remain subscriptions, not `none`.
+`(root, function)` is not a substitution identity: two calls to `first` within
+one root can require different answers. Conversely, allocating a fresh binding
+from each recursive predecessor recreates the input ladder. The implementation
+must establish its allocation/reuse law and finite bound before claiming this
+cut; an opaque scope ID alone supplies neither.
 
-The acceptance gates are independent first results (including definition
-arrival/replacement and strict dead/pending arguments), existing apply
-work/ABI tests, and twice with different
-intermediate tags in its two bindings. Give the callbacks explicit wrong-tag
-arms so cross-binding results are observable. Measure work at the surviving
-evaluator: deleting ActivationKey telemetry must not fake a zero-work pass.
+The work contract is causal: an installed definition supplies fixed operations;
+changed operand/proof rows wake their dependent transfers. A second compatible
+callback must not repeat unchanged apply-body work. Pending external facts stay
+subscriptions, not `none`, and strict completion dependencies survive discarded
+results and projections.
+
+### Retained-filter regression
+
+`interface10_retained_cell_rekey.fz` starts with `[:seed]` and recursively adds
+`{:later}`. Its element equation is `E = :seed | {:later}`. An atom-only cell
+must keep its fixed filter when E gains tuples; the tuple alternative belongs
+to the tuple route. The Elixir oracle independently checks the runtime golden.
+
+At `1c98e0f68`, the new fixture fails in run/interp/build before execution with
+`a resume payload value must have an analyzed type`. This is an enabled source
+regression, not evidence of a working cell lifecycle. The eventual solver test
+must stage the growth and assert the old cell's filtered answer, the new cell's
+tuple answer, no within-epoch retraction and the finite re-key bound. Runtime
+output alone cannot establish those internal obligations.
 
 ## Measured checkpoint
 
