@@ -4,6 +4,7 @@
     "fz-p8p.3"
   ],
   "blocks": [
+    "fz-p8p.12",
     "fz-p8p.8",
     "fz-p8p.9"
   ],
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Home the claims of drive_test.rs, first half (tests before line 9614)",
   "type": "task",
-  "updated_at": "2026-09-25T21:22:59Z"
+  "updated_at": "2026-09-25T21:23:00Z"
 }
