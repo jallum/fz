@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-p8p.3"
+  ],
   "blocks": [],
   "created": "2026-09-25T21:22:59Z",
   "description": "## Why\nCensus drive_b.tsv and drive_helpers.tsv (attached to fz-p8p): 156 tests; 145 helpers catalogued.\n\n## What changes\nSame treatment as the first half. Plus: the helper section collapses into the harness; `STATIC_CALL_GRAPH_SOURCE` shared program becomes one fixture; `compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_need` renamed to what it asserts.\n\n## Signal\nNo program strings, no raw `Compiler2::new`, no helper section left in drive_test.rs beyond drive-machinery needs.",
