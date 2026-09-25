@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-afu.1"
+    "fz-afu.1",
+    "fz-afu.6"
   ],
   "blocks": [],
   "created": "2026-09-25T20:28:35Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Once-only jobs start before their inputs exist and run twice",
   "type": "bug",
-  "updated_at": "2026-09-25T20:28:36Z"
+  "updated_at": "2026-09-25T21:05:17Z"
 }
