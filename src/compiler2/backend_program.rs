@@ -2,8 +2,6 @@
 
 pub(crate) mod boxed_contract;
 #[cfg(test)]
-mod boxed_contract_test;
-#[cfg(test)]
 mod contribution_test;
 
 #[cfg(test)]

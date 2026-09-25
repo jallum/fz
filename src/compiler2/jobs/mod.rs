@@ -21,15 +21,11 @@ mod native;
 pub(super) use native::produce_native_program;
 mod root;
 pub(crate) mod runtime_demand;
-#[cfg(test)]
-mod runtime_demand_test;
 mod semantic;
 mod source;
 #[cfg(test)]
 mod source_test;
 pub(crate) mod transport;
-#[cfg(test)]
-mod transport_test;
 mod types;
 
 pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(

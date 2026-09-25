@@ -1771,39 +1771,5 @@ fn inverse(order: &[usize]) -> Vec<usize> {
 }
 
 #[cfg(test)]
-mod carrier_canon_tests {
-    use super::*;
-
-    fn render_root_carrier_with_dummy_lanes(dummy_lanes: usize) -> String {
-        let mut world = World::new();
-        let int = world.types_mut().int();
-        let atom = world.types_mut().atom();
-        for _ in 0..dummy_lanes {
-            world.intern_lane(crate::compiler2::transport::LaneDescr {
-                ty: atom,
-                class: crate::compiler2::transport::TransportClass::Value,
-            });
-        }
-        let carrier = world.intern_lane(crate::compiler2::transport::LaneDescr {
-            ty: int,
-            class: crate::compiler2::transport::TransportClass::Value,
-        });
-        let nothing = world.intern_shape(ShapeDescr::Nothing);
-        let layout = BackendValueLayout {
-            structural: nothing,
-            carrier: TransportCarrier::ValueRef(carrier),
-            tys: Box::new([int]),
-            reprs: Box::new([AbiValueRepr::ValueRef]),
-        };
-        let labels = |fn_id| function_label(&world, FunctionId::from_fn_id(fn_id));
-        ProgramCanon::new(&world, TyCanon::new(&labels)).layout(&layout)
-    }
-
-    #[test]
-    fn root_carrier_canon_uses_the_lane_type_not_its_mint_order() {
-        assert_eq!(
-            render_root_carrier_with_dummy_lanes(0),
-            render_root_carrier_with_dummy_lanes(1)
-        );
-    }
-}
+#[path = "canon_test.rs"]
+mod canon_test;

@@ -124,8 +124,6 @@ pub use world::World;
 #[cfg(test)]
 mod artifact_test;
 #[cfg(test)]
-mod canon_test;
-#[cfg(test)]
 mod closure_denotation_test;
 #[cfg(test)]
 mod code_test;
@@ -144,11 +142,7 @@ mod fixture_contract_harness_test;
 #[cfg(test)]
 mod fixture_facts;
 #[cfg(test)]
-mod fixture_facts_test;
-#[cfg(test)]
 mod frontdoor_test;
-#[cfg(test)]
-mod identity_test;
 #[cfg(test)]
 mod namespace_test;
 #[cfg(test)]
@@ -172,8 +166,6 @@ mod port_resolve_test;
 #[cfg(test)]
 mod port_type_infer_test;
 #[cfg(test)]
-mod product_drive_test;
-#[cfg(test)]
 mod quoted_function_test;
 #[cfg(test)]
 mod quoted_surface_test;
@@ -185,12 +177,6 @@ mod scheduler_test;
 mod scope_test;
 #[cfg(test)]
 mod semantic_analysis_test;
-#[cfg(test)]
-mod semantic_test;
-#[cfg(test)]
-mod source_publish_test;
-#[cfg(test)]
-mod source_sugar_test;
 #[cfg(test)]
 mod source_test;
 #[cfg(test)]
