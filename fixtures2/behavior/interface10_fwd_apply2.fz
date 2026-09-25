@@ -1,0 +1,9 @@
+#---
+# purpose: "forwarding a callable preserves its identity through both higher-order helpers"
+#---
+def apply2(f, x), do: f.(x)
+def fwd(f, x), do: apply2(f, x)
+def main() do
+  dbg(fwd(fn x -> x + 1 end, 2))
+  dbg(fwd(fn x -> x * 2 end, 2))
+end

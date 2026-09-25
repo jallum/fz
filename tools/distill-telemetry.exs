@@ -8,87 +8,27 @@
 #
 #     elixir tools/distill-telemetry.exs trace.jsonl [--top 20]
 
+Code.require_file("telemetry.exs", __DIR__)
+
 defmodule Distill do
   def main(args) do
     {opts, [path], _} = OptionParser.parse(args, strict: [top: :integer])
     top = Keyword.get(opts, :top, 20)
 
-    records = path |> File.stream!() |> Stream.map(&JSON.decode!/1) |> Enum.to_list()
-    names = names(records)
-    spans = spans(records, names)
-    wall = wall(records)
+    records = Telemetry.read(path)
+    names = Telemetry.names(records)
+    spans = Telemetry.spans(records, names)
+    wall = Telemetry.wall(records)
 
     IO.puts("#{length(records)} records, #{map_size(spans)} spans, #{fmt_ms(wall)} ms from first record to last\n")
     timeline(records, spans)
     by_name(spans, top)
-    jobs = for {_id, %{name: "fz.compiler2.job"} = s} <- spans, do: s
+    jobs = Telemetry.jobs(spans)
     by_kind(jobs, top)
     by_subject(jobs, top)
     reruns(jobs, top)
     return_revisions(records, names, top)
     wakes(records, jobs, names, top)
-  end
-
-  # The compiler names each function once, in a canon event; jobs name it by id.
-  defp names(records) do
-    for %{"name" => ["fz", "compiler2", "canon", "function"], "metadata" => %{"function_id" => id, "canon" => canon}} <- records,
-        into: %{},
-        do: {id, canon}
-  end
-
-  # One map per span: name, label (what it was about), start, inclusive and
-  # self time in nanoseconds.
-  defp spans(records, names) do
-    starts =
-      for %{"kind" => "span_start", "span_id" => id} = r <- records, into: %{} do
-        {id,
-         %{
-           id: id,
-           parent: r["parent_span_id"],
-           name: Enum.join(r["name"], "."),
-           label: label(r["metadata"], names),
-           start: r["time_ns"],
-           inclusive: 0,
-           self: 0
-         }}
-      end
-
-    with_stops =
-      Enum.reduce(records, starts, fn
-        %{"kind" => "span_stop", "span_id" => id, "elapsed_ns" => elapsed}, acc ->
-          Map.update!(acc, id, &%{&1 | inclusive: elapsed, self: elapsed})
-
-        _, acc ->
-          acc
-      end)
-
-    # A child's inclusive time comes out of its parent's self time.
-    Enum.reduce(with_stops, with_stops, fn {_id, span}, acc ->
-      case Map.fetch(acc, span.parent) do
-        {:ok, parent} -> Map.put(acc, parent.id, %{parent | self: parent.self - span.inclusive})
-        :error -> acc
-      end
-    end)
-  end
-
-  defp label(%{"job" => job}, names), do: {job["kind"], subject(job, names)}
-  defp label(%{} = meta, _names) when map_size(meta) == 0, do: {nil, ""}
-  defp label(meta, _names), do: {nil, inspect(meta, limit: 6)}
-
-  # A job's subject, with a function named rather than numbered.
-  # The function is what a reader looks for, so it leads; the remaining keys
-  # follow in a fixed order so two rows for the same subject render alike.
-  defp subject(job, names) do
-    fields = Map.drop(job, ["kind", "opaque_type"])
-    name = for {"function_id", id} <- fields, do: Map.get(names, id, "f#{id}")
-
-    rest =
-      fields
-      |> Map.drop(["function_id"])
-      |> Enum.sort_by(fn {k, _} -> k end)
-      |> Enum.map(fn {k, v} -> "#{k}=#{inspect(v)}" end)
-
-    Enum.join(name ++ rest, " ")
   end
 
   # How many rounds each activation's return type took. Every
@@ -101,11 +41,11 @@ defmodule Distill do
     widened =
       for %{"name" => ["fz", "compiler2", "return_type", "widened"], "metadata" => %{"activation" => a}} <- records,
           into: MapSet.new(),
-          do: subject(a, names)
+          do: Telemetry.subject(a, names)
 
     defined =
       for %{"name" => ["fz", "compiler2", "return_type", "defined"], "metadata" => %{"activation" => a}} <- records,
-          do: subject(a, names)
+          do: Telemetry.subject(a, names)
 
     defined
     |> Enum.frequencies()
@@ -131,7 +71,7 @@ defmodule Distill do
     causes =
       for %{"name" => ["fz", "compiler2", "work_graph", "applied"], "metadata" => %{"completion" => c}} <- records,
           wake <- c["wakes"] || [],
-          key = {wake["job"]["kind"], subject(wake["job"], names)},
+          key = {wake["job"]["kind"], Telemetry.subject(wake["job"], names)},
           Map.has_key?(hot, key),
           do: {key, cause(wake["cause"], c, names)}
 
@@ -151,14 +91,9 @@ defmodule Distill do
   end
 
   defp cause(cause, completion, names) do
-    fact = cause |> Map.drop(["use", "opaque_type"]) |> subject(names)
-    from = "#{completion["kind"]} #{completion |> Map.take(["function_id", "arrow", "root_id", "executable"]) |> subject(names)}"
+    fact = cause |> Map.drop(["use", "opaque_type"]) |> Telemetry.subject(names)
+    from = "#{completion["kind"]} #{completion |> Map.take(["function_id", "arrow", "root_id", "executable"]) |> Telemetry.subject(names)}"
     "#{cause["kind"]} #{fact} (#{cause["use"]}) after #{from}"
-  end
-
-  defp wall(records) do
-    times = Enum.map(records, & &1["time_ns"])
-    Enum.max(times) - Enum.min(times)
   end
 
   # Where the run's time sits: before the first compiler job, inside the jobs,
@@ -167,7 +102,7 @@ defmodule Distill do
   defp timeline(records, spans) do
     first = records |> Enum.map(& &1["time_ns"]) |> Enum.min()
     last = records |> Enum.map(& &1["time_ns"]) |> Enum.max()
-    jobs = for {_id, %{name: "fz.compiler2.job"} = s} <- spans, do: s
+    jobs = Telemetry.jobs(spans)
     job_first = jobs |> Enum.map(& &1.start) |> Enum.min(fn -> first end)
     job_last = jobs |> Enum.map(&(&1.start + &1.inclusive)) |> Enum.max(fn -> first end)
     job_sum = jobs |> Enum.map(& &1.inclusive) |> Enum.sum()

@@ -9,8 +9,9 @@ use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::facts::FactUse;
-use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId};
-use super::types::{Ty, Types};
+use super::identity::{ActivationKey, ActivationSignature, ExecutableKey, ExecutableNeed, FunctionId};
+use super::return_skeleton::FunctionSkeleton;
+use super::types::{MapKey, Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallSiteKey {
@@ -71,6 +72,9 @@ pub struct CallTargetSummary {
     /// The exact bounded activation this target demanded, when the callee is
     /// compiler-owned. Provider boundaries do not name a compiler2 activation.
     pub activation: Option<ActivationKey>,
+    /// Compiler-owned targets carry their exact activation inputs here;
+    /// provider boundaries use it for the explicit direct call contract while
+    /// `surface_inputs` continues to name the runtime value denotation.
     pub activation_inputs: Option<Vec<Ty>>,
     /// Fixed positional inputs consumed by an extern body; absent for ordinary
     /// executables and provider boundaries.
@@ -772,33 +776,146 @@ impl EntryReachability {
     }
 }
 
+/// Whether an activation shares the solve for its return, and with whom.
+///
+/// Membership is read from call-site targets, and a call site that has
+/// named no target yet is a question rather than an answer. "Shares with
+/// nobody" and "not yet knowable" decide different owners for the same
+/// return, so one value carries which of the two this is and no reader can
+/// mistake the second for the first.
+pub(crate) enum ReturnMembership {
+    /// The activation's own `AnalyzeActivation` answers its return.
+    Alone,
+    /// A call site out of this activation has named no target yet, so
+    /// whether its return is shared is still to be said. No job may publish
+    /// the return while this stands: whoever published it would have to
+    /// withdraw it the moment the site named a target that joins a system.
+    /// Carries every reached-but-unresolved call site the walk found -- what
+    /// a job already holding this component owed must wait on, rather than
+    /// concluding wait-free and retracting what it already published.
+    Unknown(Vec<CallSiteKey>),
+    /// The system this activation's return is solved with, published by the
+    /// component's canonical owner.
+    Shared(ReturnComponent),
+}
+
+impl ReturnMembership {
+    /// The system, when membership is settled and there is one.
+    pub(crate) fn into_component(self) -> Option<ReturnComponent> {
+        match self {
+            Self::Shared(component) => Some(component),
+            Self::Alone | Self::Unknown(_) => None,
+        }
+    }
+
+    /// Whether this activation answers its own return.
+    pub(crate) fn is_alone(&self) -> bool {
+        matches!(self, Self::Alone)
+    }
+}
+
+/// The one producer and complete member set of a recursive-return
+/// component. It is derived from the current `ActivationAnalysis` and
+/// `CallSiteTargets` facts reachable from its seed; it is not a second cache
+/// beside those facts. `members` is sorted into semantic activation order;
+/// `owner` is the semantic minimum over them -- the single canonical key
+/// every member's `ReturnType` is published under while membership holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReturnComponent {
+    pub(crate) owner: ActivationKey,
+    pub(crate) members: Vec<ActivationKey>,
+}
+
+/// The one layer a [`Skeleton::Project`](super::return_skeleton::Skeleton)
+/// reads. Each variant names the `Types` operation the ordinary walk
+/// performs at that step, so the static and the observed view are computed
+/// by one function.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ProjectStep {
+    /// Field `index` of a tuple: `Types::tuple_field_type`.
+    TupleField(usize),
+    /// The uniform element of a list: `Types::list_element_type`.
+    ListElement,
+    /// What is left of a list once one element is removed: the
+    /// possibly-empty list of the same uniform element. A matched tail is a
+    /// PROJECTION of the value that was matched, not a list built here --
+    /// the companion is provenance, and `rest` in `[_ | rest]` is part of
+    /// what arrived, not something the clause constructed.
+    ListTail,
+    /// A map or struct field at a literal key: `Types::map_field_lookup`,
+    /// falling back to `any` for a key the type does not promise, exactly as
+    /// the walk's own field read does.
+    MapField(MapKey),
+}
+
+impl ProjectStep {
+    pub fn apply(&self, types: &mut Types, ty: Ty) -> Ty {
+        match self {
+            ProjectStep::TupleField(index) => types.tuple_field_type(&ty, *index),
+            ProjectStep::ListElement => types.list_element_type(&ty),
+            ProjectStep::ListTail => {
+                let elem = types.list_element_type(&ty);
+                types.list(elem)
+            }
+            ProjectStep::MapField(key) => types.map_field_lookup(&ty, key).unwrap_or_else(|| types.any()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationRowTarget {
+    pub key: ActivationKey,
+    pub inputs: Vec<ActivationInput>,
+    /// The result observed at this call after its local refinements, which
+    /// can be narrower than the activation's cumulative return fact.
+    pub value_ty: Option<Ty>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationRowCall {
+    pub callsite: CallSiteId,
+    /// One path's resolution, before the aggregate callsite surface joins
+    /// targets reached through other rows or paths.
+    pub resolution: CallSiteResolution<CallSiteSummary>,
+    pub targets: Vec<ActivationRowTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationRowAnalysis {
+    pub inputs: ActivationInputRow,
+    pub entry_reachability: EntryReachability,
+    pub reachable_entries: Vec<ControlEntryId>,
+    pub value_types: HashMap<ValueId, Ty>,
+    /// Several reached paths can contribute the same callsite. Keeping those
+    /// emissions separate retains each selected target's complete input row.
+    pub calls: Vec<ActivationRowCall>,
+    pub return_evidence: Option<Ty>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationAnalysis {
+    /// Exact row observations are retained before deriving the aggregate
+    /// views below. A row's result belongs to its own substitution.
+    pub rows: Vec<ActivationRowAnalysis>,
     /// Correlated rows already read by the activation analysis.
     pub input_rows: Vec<Vec<Ty>>,
     pub entry_reachability: EntryReachability,
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
     pub value_types: HashMap<ValueId, Ty>,
+    /// The call sites this walk resolved to at least one activation --
+    /// exactly the callsites `CallSiteTargets` would report addressed, from
+    /// the same resolutions that publish it. A return solve answers an
+    /// addressed call site's `Result` leaf from the component's equations,
+    /// never from `value_types`, so this set is what tells the narrow return
+    /// solve projection which `Result` leaves to leave out.
+    pub addressed_callsites: HashSet<CallSiteId>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ActivationSlot {
     return_ty: Option<Ty>,
-    /// Strict ascents of the return evidence since the last rebase. Past
-    /// `RETURN_WIDENING_BUDGET` the join widens; past twice that it tops out.
-    ascents: u32,
     analysis: Option<ActivationAnalysis>,
-}
-
-pub const RETURN_WIDENING_BUDGET: u32 = 8;
-
-/// The outcome of installing one round's return evidence.
-#[derive(Debug, Clone, Copy)]
-pub struct ReturnDefine {
-    pub changed: bool,
-    pub ascents: u32,
-    pub widened: bool,
 }
 
 #[derive(Debug, Default)]
@@ -807,7 +924,7 @@ pub struct ActivationMap {
 }
 
 /// A total, owner-aware semantic order for identities that cannot derive
-/// `Ord`: activation arrows contain World-local intern handles, so only the
+/// `Ord`: activation coordinates contain World-local intern handles, so only the
 /// owning `Types` can compare what they mean.
 pub trait SemanticOrd<Ctx> {
     fn semantic_cmp(&self, other: &Self, ctx: &Ctx) -> Ordering;
@@ -833,7 +950,8 @@ impl SemanticOrd<Types> for ActivationKey {
         self.root
             .cmp(&other.root)
             .then_with(|| self.function.cmp(&other.function))
-            .then_with(|| types.cmp_activation_ty(self.arrow, other.arrow))
+            .then_with(|| types.cmp_activation_signature(&self.signature, &other.signature))
+            .then_with(|| types.cmp_activation_callable_surfaces(&self.callable_surfaces, &other.callable_surfaces))
     }
 }
 
@@ -889,7 +1007,8 @@ struct ContributionSlot<P, V> {
 /// The store does NOT own a per-publisher output-key index. The scheduler's
 /// work graph already tracks every job's published facts under the identical
 /// accumulate-on-extend / replace-on-conclude rule, so it is the single source
-/// of truth for a publisher's frontier; `conclude` takes that frontier as
+/// of truth for a publisher's frontier; each concluding arm (`conclude_exact`,
+/// `conclude_preserving_frontier`) takes that frontier as
 /// `previous_output_keys`.
 pub struct ContributionMap<K, P, V> {
     slots: HashMap<K, ContributionSlot<P, V>>,
@@ -902,11 +1021,15 @@ impl<K, P, V> Default for ContributionMap<K, P, V> {
 }
 
 /// A conclusion/extension's effect: the publisher's new output-key frontier and
-/// the keys whose joined aggregate moved.
+/// the keys whose joined aggregate moved, and the keys whose publisher's OWN
+/// cell moved -- a narrower fact than the aggregate, useful to a reader who
+/// subscribes to one contributor's row rather than the whole join (e.g.
+/// `FactKey::ActivationCallEvidence`'s per-`EvidenceSource` cell).
 #[derive(Debug)]
 pub struct ContributionReplace<K> {
     pub output_keys: HashSet<K>,
     pub changed_keys: HashSet<K>,
+    pub cell_changed_keys: HashSet<K>,
 }
 
 impl<K> Default for ContributionReplace<K> {
@@ -914,6 +1037,7 @@ impl<K> Default for ContributionReplace<K> {
         Self {
             output_keys: HashSet::new(),
             changed_keys: HashSet::new(),
+            cell_changed_keys: HashSet::new(),
         }
     }
 }
@@ -922,27 +1046,165 @@ impl<K> Default for ContributionReplace<K> {
 /// rows, joined as a canonical antichain of alternatives (fz-9i4.7.10.2).
 pub type ActivationInputMap<P> = ContributionMap<ActivationKey, P, ActivationInputAlternatives>;
 
+/// Every call site that addresses one activation: the inverse of
+/// `CallSiteTargets`, keyed by the callee.
+///
+/// It exists for one reader. `SolveReturnComponent` answers a whole
+/// recursive-return component at once, and the set of members it answers for
+/// is discovered, not declared -- an activation minted later can call a member
+/// and so join the component after the owner has already solved. The owner's
+/// reads name the members it knew, so nothing it subscribed to moves on a
+/// newcomer's account. Reading this fact for each member is that subscription:
+/// the component owner re-solves when a member gains a caller.
+///
+/// It carries call sites and nothing else. What a caller PASSES is the
+/// argument skeleton, read statically off `FunctionSkeleton`, and what a
+/// callee RETURNS is its return skeleton. Neither is duplicated here.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Callers(BTreeSet<CallSiteKey>);
+
+impl Callers {
+    pub fn of(site: CallSiteKey) -> Self {
+        Self(BTreeSet::from([site]))
+    }
+
+    /// The call sites this activation is reached by. A member's evidence
+    /// gather walks these to find which callers sit outside its own
+    /// recursive-return component.
+    pub fn sites(&self) -> impl Iterator<Item = &CallSiteKey> {
+        self.0.iter()
+    }
+}
+
+impl JoinContribution for Callers {
+    type Ctx = Types;
+
+    fn bottom() -> Self {
+        Self(BTreeSet::new())
+    }
+
+    /// Set union. A caller is a caller however many rows or arms reach it, and
+    /// one that stops calling cannot unsay another's edge -- the same
+    /// cumulative rule the input evidence beside it follows.
+    fn join_assign(&mut self, other: &Self, _ctx: &mut Types) {
+        self.0.extend(other.0.iter().cloned());
+    }
+}
+
+pub type CallerMap<P> = ContributionMap<ActivationKey, P, Callers>;
+
 /// Past this many alternatives the antichain widens to its single column-wise
-/// joined row. The mirror of `RETURN_WIDENING_BUDGET`: termination is a
-/// theorem for every program, not a property of lucky inputs.
+/// joined row: termination is a theorem for every program, not a property of
+/// lucky inputs.
 pub const ACTIVATION_INPUT_ROW_BUDGET: usize = 8;
 
 /// One correlated publication of an activation's inputs: these columns arrived
 /// together from one call analysis and may only be read together. A row is
 /// never synthesized by mixing columns of different rows — that Cartesian
 /// combination is exactly what this type exists to make unrepresentable.
+///
+/// `ty` is the value denotation. `callable_surfaces` is the planner evidence
+/// for callable values reachable through that denotation. They deliberately
+/// travel together here rather than being re-encoded in an `ArrowSig`: one
+/// closure value then has one `Ty`, while two observed specializations remain
+/// two input-row alternatives.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ActivationInput {
+    ty: Ty,
+    callable_surfaces: BTreeSet<ActivationSignature>,
+}
+
+impl ActivationInput {
+    pub fn new(ty: Ty) -> Self {
+        Self {
+            ty,
+            callable_surfaces: BTreeSet::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_callable_surface(ty: Ty, surface: ActivationSignature) -> Self {
+        Self {
+            ty,
+            callable_surfaces: BTreeSet::from([surface]),
+        }
+    }
+
+    pub fn ty(&self) -> Ty {
+        self.ty
+    }
+
+    /// The direct callable observations associated with this value.  These
+    /// are activation coordinates, not members of the value type.
+    pub(crate) fn callable_surfaces(&self) -> &BTreeSet<ActivationSignature> {
+        &self.callable_surfaces
+    }
+
+    pub(crate) fn from_parts(ty: Ty, callable_surfaces: BTreeSet<ActivationSignature>) -> Self {
+        Self { ty, callable_surfaces }
+    }
+
+    pub(crate) fn with_ty(mut self, ty: Ty) -> Self {
+        self.ty = ty;
+        self
+    }
+
+    pub(crate) fn extend_callable_surfaces(mut self, surfaces: impl IntoIterator<Item = ActivationSignature>) -> Self {
+        self.callable_surfaces.extend(surfaces);
+        self
+    }
+
+    /// Address this input's callable surfaces at its own slot (`input`) in the
+    /// enclosing activation's row -- the SAME nested frame
+    /// `ActivationKey::from_inputs_with_callable_surfaces` uses to mint a key
+    /// from this same evidence (`Types::address_signature_at_input`). A row's
+    /// evidence for input `i` and a key's `callable_surfaces[i]` describe the
+    /// one observation, so they must be built by the one function: a self-call
+    /// that reads this settled row back (`SemanticValue::from_activation_input`)
+    /// and an entry call that addresses the surface fresh at key-mint time must
+    /// land on the identical coordinate, or the two producers fork the same
+    /// activation into two keys.
+    pub(crate) fn addressed_callable_surfaces(mut self, input: usize, types: &mut Types) -> Self {
+        self.callable_surfaces = self
+            .callable_surfaces
+            .iter()
+            .map(|surface| types.address_signature_at_input(input, surface))
+            .collect();
+        self
+    }
+
+    fn equivalent(&self, other: &Self, types: &Types) -> bool {
+        self.callable_surfaces == other.callable_surfaces && types.is_equivalent(&self.ty, &other.ty)
+    }
+
+    fn dominates(&self, other: &Self, types: &Types) -> bool {
+        self.callable_surfaces.is_subset(&other.callable_surfaces) && types.row_column_dominates(&self.ty, &other.ty)
+    }
+
+    fn join_assign(&mut self, other: &Self, types: &mut Types) {
+        if self.ty != other.ty && !types.is_equivalent(&self.ty, &other.ty) {
+            self.ty = types.union(self.ty, other.ty);
+        }
+        self.callable_surfaces.extend(other.callable_surfaces.iter().cloned());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationInputRow {
-    columns: Vec<Ty>,
+    columns: Vec<ActivationInput>,
 }
 
 impl ActivationInputRow {
-    pub fn new(columns: Vec<Ty>) -> Self {
+    pub fn from_inputs(columns: Vec<ActivationInput>) -> Self {
         Self { columns }
     }
 
-    pub fn columns(&self) -> &[Ty] {
+    pub(crate) fn inputs(&self) -> &[ActivationInput] {
         &self.columns
+    }
+
+    pub fn tys(&self) -> Vec<Ty> {
+        self.columns.iter().map(ActivationInput::ty).collect()
     }
 }
 
@@ -957,14 +1219,19 @@ impl ActivationInputRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationInputAlternatives {
     rows: Vec<ActivationInputRow>,
-    joined: Vec<Ty>,
+    joined: Vec<ActivationInput>,
 }
 
 impl ActivationInputAlternatives {
+    #[cfg(test)]
     pub fn from_row(columns: Vec<Ty>) -> Self {
+        Self::from_inputs(columns.into_iter().map(ActivationInput::new).collect())
+    }
+
+    pub fn from_inputs(columns: Vec<ActivationInput>) -> Self {
         Self {
             joined: columns.clone(),
-            rows: vec![ActivationInputRow::new(columns)],
+            rows: vec![ActivationInputRow::from_inputs(columns)],
         }
     }
 
@@ -975,12 +1242,17 @@ impl ActivationInputAlternatives {
     /// The column-wise joined projection: each column is the union of that
     /// column across every row. Correlation-blind by construction — only
     /// consumers whose question is genuinely per-column may read it.
-    pub fn joined(&self) -> &[Ty] {
+    pub fn joined(&self) -> &[ActivationInput] {
         &self.joined
     }
 
+    #[cfg(test)]
     pub fn push_row(&mut self, types: &mut Types, columns: Vec<Ty>) {
-        self.insert_row(types, ActivationInputRow::new(columns));
+        self.push_inputs(types, columns.into_iter().map(ActivationInput::new).collect());
+    }
+
+    pub fn push_inputs(&mut self, types: &mut Types, columns: Vec<ActivationInput>) {
+        self.insert_row(types, ActivationInputRow::from_inputs(columns));
         self.rebuild(types);
     }
 
@@ -1044,22 +1316,34 @@ impl ActivationInputAlternatives {
                 "one activation input fact cannot receive differing arities from one publisher",
             );
         }
-        if self
-            .rows
-            .iter()
-            .any(|existing| existing.columns.equivalent(&row.columns, types))
-        {
+        if self.rows.iter().any(|existing| {
+            existing.columns.len() == row.columns.len()
+                && existing
+                    .columns
+                    .iter()
+                    .zip(&row.columns)
+                    .all(|(left, right)| left.equivalent(right, types))
+        }) {
             return;
         }
-        if self
-            .rows
-            .iter()
-            .any(|standing| types.row_dominates(&row.columns, &standing.columns))
-        {
+        if self.rows.iter().any(|standing| {
+            row.columns.len() == standing.columns.len()
+                && row
+                    .columns
+                    .iter()
+                    .zip(&standing.columns)
+                    .all(|(sub, dom)| sub.dominates(dom, types))
+        }) {
             return;
         }
-        self.rows
-            .retain(|standing| !types.row_dominates(&standing.columns, &row.columns));
+        self.rows.retain(|standing| {
+            standing.columns.len() != row.columns.len()
+                || !standing
+                    .columns
+                    .iter()
+                    .zip(&row.columns)
+                    .all(|(sub, dom)| sub.dominates(dom, types))
+        });
         self.rows.push(row);
     }
 
@@ -1068,17 +1352,28 @@ impl ActivationInputAlternatives {
     /// projection recomputed.
     fn rebuild(&mut self, types: &mut Types) {
         self.rows
-            .sort_by(|left, right| types.cmp_activation_tys(&left.columns, &right.columns));
-        let mut joined = Vec::new();
+            .sort_by(|left, right| types.cmp_activation_tys(&left.tys(), &right.tys()));
+        let mut joined = Vec::<ActivationInput>::new();
         for row in &self.rows {
-            joined.join_assign(&row.columns, types);
+            if joined.is_empty() {
+                joined.clone_from(&row.columns);
+                continue;
+            }
+            assert_eq!(
+                joined.len(),
+                row.columns.len(),
+                "one activation input fact cannot join differing arities"
+            );
+            for (current, observed) in joined.iter_mut().zip(&row.columns) {
+                current.join_assign(observed, types);
+            }
         }
         self.joined = joined;
         if self.rows.len() > ACTIVATION_INPUT_ROW_BUDGET {
             // The count goes to the type store because the type store is the
             // only thing this join holds: see `Types::activation_input_collapses`.
             types.note_activation_input_collapse();
-            self.rows = vec![ActivationInputRow::new(self.joined.clone())];
+            self.rows = vec![ActivationInputRow::from_inputs(self.joined.clone())];
         }
     }
 }
@@ -1109,11 +1404,14 @@ impl JoinContribution for ActivationInputAlternatives {
 
     fn equivalent(&self, other: &Self, types: &Types) -> bool {
         self.rows.len() == other.rows.len()
-            && self
-                .rows
-                .iter()
-                .zip(&other.rows)
-                .all(|(left, right)| left.columns.equivalent(&right.columns, types))
+            && self.rows.iter().zip(&other.rows).all(|(left, right)| {
+                left.columns.len() == right.columns.len()
+                    && left
+                        .columns
+                        .iter()
+                        .zip(&right.columns)
+                        .all(|(left, right)| left.equivalent(right, types))
+            })
     }
 }
 
@@ -1133,6 +1431,21 @@ pub struct CallSiteTargetsMap {
     slots: HashMap<CallSiteKey, CallSiteResolution<CallSiteTargets>>,
 }
 
+/// How a round's return evidence meets the slot that already stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReturnArrival {
+    /// One walk's round on unchanged ground: it reached some of this
+    /// activation's clauses, so what it carries is a CONTRIBUTION to the
+    /// climb and the slot joins it.
+    Ascends,
+    /// Evidence that supersedes what stands. Two producers say this and they
+    /// say the same thing: a component solve, whose answer is the whole
+    /// system's fixed point rather than another rung of it, and a walk whose
+    /// ground shifted, whose standing value was derived from facts that no
+    /// longer hold.
+    Supersedes,
+}
+
 impl ActivationMap {
     pub fn new() -> Self {
         Self::default()
@@ -1149,89 +1462,126 @@ impl ActivationMap {
         self.slots.keys()
     }
 
-    /// Install one round's return evidence — the single join point of the
+    /// Install one round's return evidence -- the single join point of the
     /// fixpoint. `None` is the ascent's bottom: no evidence adds nothing and
-    /// never erases standing evidence. `Some` evidence JOINS by union (which
-    /// preserves closure identities; `refine_widen` does not and is not
-    /// idempotent), so within an epoch the stored value only ascends —
-    /// descent is unrepresentable. A `rebased` publisher REPLACES instead:
-    /// the only narrowing path, taken when its ground shifted.
+    /// never erases standing evidence.
     ///
-    /// The ladder must end: past `RETURN_WIDENING_BUDGET` strict ascents the
-    /// join widens the growing spine (`convergence_class`); past twice the
-    /// budget it tops out at `any`. Termination is then a theorem for every
-    /// program, not a property of lucky inputs.
+    /// How the slot takes evidence follows from how that evidence arrives.
+    /// An ASCENDING round JOINS by union (which preserves closure
+    /// identities; `refine_widen` does not and is not idempotent), so the
+    /// stored value only climbs and descent is unrepresentable. Evidence
+    /// that SUPERSEDES replaces the slot whole, which is the only way a
+    /// return can descend -- and it must be able to, or a component solve's
+    /// answer would be polluted by the partial rounds that preceded it and a
+    /// re-analysis over edited source would keep a type its ground no longer
+    /// supports.
+    ///
+    /// Nothing here bounds the climb. Termination is a property of the
+    /// answer, not of a budget: a return the fixpoint is still solving is
+    /// named by its component's solve, which produces the recursive type in
+    /// one step, and a return that is not is reached by a finite join over
+    /// its clauses.
     pub fn define_return(
         &mut self,
         types: &mut Types,
         key: &ActivationKey,
         evidence: Option<Ty>,
-        rebased: bool,
-    ) -> ReturnDefine {
+        arrival: ReturnArrival,
+    ) -> bool {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
-        if rebased {
+        if arrival == ReturnArrival::Supersedes {
             let changed = slot.return_ty != evidence;
             slot.return_ty = evidence;
-            slot.ascents = 0;
-            return ReturnDefine {
-                changed,
-                ascents: 0,
-                widened: false,
-            };
+            return changed;
         }
         let Some(next) = evidence else {
-            return ReturnDefine {
-                changed: false,
-                ascents: slot.ascents,
-                widened: false,
-            };
+            return false;
         };
         let joined = match slot.return_ty {
             None => next,
-            Some(current) if current == next => {
-                return ReturnDefine {
-                    changed: false,
-                    ascents: slot.ascents,
-                    widened: false,
-                };
-            }
+            Some(current) if current == next => return false,
             Some(current) => types.union(current, next),
         };
-        if Some(joined) == slot.return_ty {
-            return ReturnDefine {
-                changed: false,
-                ascents: slot.ascents,
-                widened: false,
-            };
-        }
-        slot.ascents += 1;
-        let stored = if slot.ascents > 2 * RETURN_WIDENING_BUDGET {
-            types.any()
-        } else if slot.ascents > RETURN_WIDENING_BUDGET {
-            types.convergence_class(&joined)
-        } else {
-            joined
-        };
-        // `widened` reports what actually happened to the stored value, not
-        // that the budget threshold was crossed: past the threshold the
-        // operator is often the identity (the spine already collapsed).
-        let widened = stored != joined;
-        let changed = Some(stored) != slot.return_ty;
-        slot.return_ty = Some(stored);
-        ReturnDefine {
-            changed,
-            ascents: slot.ascents,
-            widened,
-        }
+        let changed = Some(joined) != slot.return_ty;
+        slot.return_ty = Some(joined);
+        changed
     }
 
-    pub fn define_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> bool {
+    pub fn clear_return(&mut self, key: &ActivationKey) {
+        let Some(slot) = self.slots.get_mut(key) else {
+            return;
+        };
+        slot.return_ty = None;
+    }
+
+    /// Stores one activation's analysis and reports two things a caller may
+    /// need separately: whether the whole fact moved, and whether the part a
+    /// return solve reads -- `reachable_entries`, and `value_types` at the
+    /// function's `Ground` leaves and its unaddressed `Result` leaves --
+    /// moved with it. A publisher changing something the solve never reads
+    /// should not wake the solve; that is the whole reason this second
+    /// answer exists.
+    pub(crate) fn define_analysis(
+        &mut self,
+        key: &ActivationKey,
+        analysis: ActivationAnalysis,
+        skeleton: Option<&FunctionSkeleton>,
+    ) -> (bool, bool) {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
+        let previous_solve_inputs = return_solve_inputs(slot.analysis.as_ref(), skeleton);
         let changed = slot.analysis.as_ref() != Some(&analysis);
         if changed {
             slot.analysis = Some(analysis);
         }
-        changed
+        let return_part_changed = return_solve_inputs(slot.analysis.as_ref(), skeleton) != previous_solve_inputs;
+        (changed, return_part_changed)
+    }
+}
+
+/// The part of an activation's analysis a return solve actually reads. `None`
+/// -- no analysis published yet, or the function's skeleton not published yet
+/// -- reads as empty, the same as any other contribution that has not
+/// arrived.
+#[derive(Default, PartialEq, Eq)]
+struct ReturnSolveInputs {
+    reachable_entries: Vec<ControlEntryId>,
+    value_types: HashMap<ValueId, Ty>,
+    captures: Vec<(CallSiteId, ActivationKey, Vec<ActivationInput>)>,
+}
+
+fn return_solve_inputs(
+    analysis: Option<&ActivationAnalysis>,
+    skeleton: Option<&FunctionSkeleton>,
+) -> ReturnSolveInputs {
+    let (Some(analysis), Some(skeleton)) = (analysis, skeleton) else {
+        return ReturnSolveInputs::default();
+    };
+    // Positional arguments are read from the source equation. Their current
+    // concrete approximation includes the solve's own Settled contribution,
+    // so subscribing to it would make the solve wake on its own publication.
+    // Only captures still require an observed row here.
+    let mut captures = Vec::new();
+    for row in &analysis.rows {
+        for call in &row.calls {
+            let Some(invocation) = skeleton.invocations.get(&call.callsite) else {
+                continue;
+            };
+            for target in &call.targets {
+                let offset = target.inputs.len().saturating_sub(invocation.arguments.len());
+                if offset == 0 {
+                    continue;
+                }
+                let captured = (call.callsite, target.key.clone(), target.inputs[..offset].to_vec());
+                if !captures.contains(&captured) {
+                    captures.push(captured);
+                }
+            }
+        }
+    }
+    ReturnSolveInputs {
+        reachable_entries: analysis.reachable_entries.clone(),
+        value_types: skeleton.return_solve_inputs(&analysis.value_types, &analysis.addressed_callsites),
+        captures,
     }
 }
 
@@ -1252,27 +1602,37 @@ where
         self.slots.get(key).map(|slot| &slot.joined)
     }
 
-    /// The concluding-completion arm: the publisher's contribution key set is
-    /// replaced — dropping a key withdraws that contribution, the only path by
-    /// which a sole publisher retracts — while entry values JOIN with the
-    /// publisher's prior entry unless its ground shifted (`rebased`), the only
-    /// path by which contributed values may narrow. `previous_output_keys` is
-    /// the publisher's prior frontier, owned by the work graph.
-    ///
-    /// Withdrawal-on-conclude is correct only where a publisher's absence of a
-    /// key genuinely retracts a contribution it alone made (e.g. a `SeedRoot`
-    /// that stops seeding a body's input edge). For a fact whose contributions
-    /// only ever grow within an epoch as upstream evidence ascends — a callee
-    /// or demand transiently unreachable, not impossible — a non-rebased absence
-    /// is NOT a retraction; those callers conclude through
-    /// `conclude_preserving_frontier` so the frontier survives the round.
-    pub fn conclude(
+    /// One contributor's own cell for a key -- not the joined aggregate --
+    /// found by the publisher it satisfies `matches`. A reader that only
+    /// knows a coarser identity than the raw publisher (e.g.
+    /// `EvidenceSource`, which groups several possible `Job`s into one of
+    /// three buckets) finds its cell this way instead of reaching into the
+    /// contributor table directly.
+    pub fn contributor_cell(&self, key: &K, matches: impl Fn(&P) -> bool) -> Option<&V> {
+        self.slots
+            .get(key)?
+            .contributors
+            .iter()
+            .find(|(publisher, _)| matches(publisher))
+            .map(|(_, value)| value)
+    }
+
+    /// The concluding-completion arm for facts whose publisher's silence about
+    /// a key really is knowledge: a key in `previous_output_keys` but absent
+    /// from `next` is withdrawn, and every listed value replaces the
+    /// publisher's prior entry outright rather than joining it.
+    /// `RuntimeDemandInput` and `IncomingInputSlot` conclude here, where a
+    /// publisher that stops naming a key genuinely retracts the contribution
+    /// it alone made. Cumulative evidence a publisher may fall silent about
+    /// without refuting it -- `ActivationInputs`, `Callers` -- concludes
+    /// through `conclude_preserving_frontier` instead; `extend` is the
+    /// waiting arm.
+    pub fn conclude_exact(
         &mut self,
         ctx: &mut V::Ctx,
         publisher: P,
         previous_output_keys: HashSet<K>,
         next: HashMap<K, V>,
-        rebased: bool,
     ) -> ContributionReplace<K> {
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
         let mut touched = previous_output_keys
@@ -1284,30 +1644,25 @@ where
             .collect::<Vec<_>>();
         touched.sort_by(|left, right| left.semantic_cmp(right, &*ctx));
         let mut changed_keys = HashSet::new();
+        let mut cell_changed_keys = HashSet::new();
         for key in touched {
             let entry = match next.get(&key) {
                 Some(value) => SlotEntry::Upsert(value.clone()),
                 None => SlotEntry::Withdraw,
             };
-            if self.apply(ctx, &key, &publisher, entry, !rebased) {
-                changed_keys.insert(key);
+            let (moved, cell_moved) = self.apply(ctx, &key, &publisher, entry, false);
+            if moved {
+                changed_keys.insert(key.clone());
+            }
+            if cell_moved {
+                cell_changed_keys.insert(key);
             }
         }
         ContributionReplace {
             output_keys: next_output_keys,
             changed_keys,
+            cell_changed_keys,
         }
-    }
-
-    /// Replace this publisher's complete frontier and each listed value.
-    pub fn conclude_exact(
-        &mut self,
-        ctx: &mut V::Ctx,
-        publisher: P,
-        previous_output_keys: HashSet<K>,
-        next: HashMap<K, V>,
-    ) -> ContributionReplace<K> {
-        self.conclude(ctx, publisher, previous_output_keys, next, true)
     }
 
     /// A cumulative concluding-completion arm for evidence whose absence in a
@@ -1326,14 +1681,20 @@ where
         let mut output_keys = previous_output_keys;
         output_keys.extend(ordered_next.iter().map(|(key, _)| key.clone()));
         let mut changed_keys = HashSet::new();
+        let mut cell_changed_keys = HashSet::new();
         for (key, value) in ordered_next {
-            if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
-                changed_keys.insert(key);
+            let (moved, cell_moved) = self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true);
+            if moved {
+                changed_keys.insert(key.clone());
+            }
+            if cell_moved {
+                cell_changed_keys.insert(key);
             }
         }
         ContributionReplace {
             output_keys,
             changed_keys,
+            cell_changed_keys,
         }
     }
 
@@ -1348,28 +1709,37 @@ where
         let mut ordered_next = next.into_iter().collect::<Vec<_>>();
         ordered_next.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let mut changed_keys = HashSet::new();
+        let mut cell_changed_keys = HashSet::new();
         for (key, value) in ordered_next {
-            if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
-                changed_keys.insert(key);
+            let (moved, cell_moved) = self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true);
+            if moved {
+                changed_keys.insert(key.clone());
+            }
+            if cell_moved {
+                cell_changed_keys.insert(key);
             }
         }
         ContributionReplace {
             output_keys: next_output_keys,
             changed_keys,
+            cell_changed_keys,
         }
     }
 
-    /// Apply one publisher's entry (or withdrawal) to one key and report whether
-    /// the joined aggregate moved. An emptied slot is dropped, and its move to
-    /// bottom is reported so a multi-publisher retraction is observed; a sole
-    /// publisher's retraction is reported too, though the fact table neutralizes
-    /// it through the vanished publisher set.
-    fn apply(&mut self, ctx: &mut V::Ctx, key: &K, publisher: &P, entry: SlotEntry<V>, join: bool) -> bool {
+    /// Apply one publisher's entry (or withdrawal) to one key and report
+    /// whether the joined aggregate moved, and separately whether this
+    /// publisher's OWN cell moved (old cell value vs new, by `equivalent`).
+    /// An emptied slot is dropped, and its move to bottom is reported so a
+    /// multi-publisher retraction is observed; a sole publisher's retraction
+    /// is reported too, though the fact table neutralizes it through the
+    /// vanished publisher set.
+    fn apply(&mut self, ctx: &mut V::Ctx, key: &K, publisher: &P, entry: SlotEntry<V>, join: bool) -> (bool, bool) {
         let mut slot = self.slots.remove(key).unwrap_or_else(|| ContributionSlot {
             contributors: HashMap::new(),
             joined: V::bottom(),
         });
         let old_joined = (!slot.contributors.is_empty()).then(|| slot.joined.clone());
+        let old_cell = slot.contributors.get(publisher).cloned();
         match entry {
             SlotEntry::Upsert(value) => {
                 upsert_contribution(ctx, &mut slot.contributors, publisher, value, join);
@@ -1378,6 +1748,12 @@ where
                 slot.contributors.remove(publisher);
             }
         }
+        let new_cell = slot.contributors.get(publisher).cloned();
+        let cell_moved = match (&old_cell, &new_cell) {
+            (None, None) => false,
+            (None, Some(_)) | (Some(_), None) => true,
+            (Some(old), Some(new)) => !old.equivalent(new, ctx),
+        };
         // `slot.contributors` is a `HashMap<P, V>`: folding `.values()` in its
         // native order makes the joined aggregate a function of `RandomState`
         // iteration, not of which publishers contributed. `V::join_assign`
@@ -1386,11 +1762,10 @@ where
         // same contributor set in a different order can settle on
         // equivalent-but-differently-interned `Ty`s — so pin the fold order
         // itself to a deterministic, publisher-identity-derived key.
-        // `SemanticOrd` (not raw `Debug`) is load-bearing here: `Job` embeds
-        // `ActivationKey.arrow`, a bare interned `Ty`, and two runs can settle
-        // on an equal-but-differently-numbered arrow for the same activation —
-        // sorting by its raw id would reintroduce the very order-dependence
-        // this fold order exists to remove.
+        // `SemanticOrd` (not raw `Debug`) is load-bearing here: a `Job` embeds
+        // typed activation coordinates, and two runs can mint equal types with
+        // different arena ids on the way to one activation. Sorting by a raw
+        // id would reintroduce the very order-dependence this fold removes.
         let mut ordered_contributors = slot.contributors.iter().collect::<Vec<_>>();
         ordered_contributors.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let joined = join_contributions(ctx, ordered_contributors.into_iter().map(|(_, value)| value));
@@ -1401,7 +1776,7 @@ where
             }
             self.slots.insert(key.clone(), slot);
         }
-        moved
+        (moved, cell_moved)
     }
 }
 
@@ -1409,20 +1784,12 @@ impl ActivationSlot {
     fn new() -> Self {
         Self {
             return_ty: None,
-            ascents: 0,
             analysis: None,
         }
     }
 
     pub fn return_ty(&self) -> Option<&Ty> {
         self.return_ty.as_ref()
-    }
-
-    /// Strict ascents of the return evidence since the last rebase: which
-    /// round of the ladder the stored value came from. `RETURN_WIDENING_BUDGET`
-    /// is where the join starts widening, twice it is where it tops out.
-    pub fn return_ascents(&self) -> u32 {
-        self.ascents
     }
 
     pub fn analysis(&self) -> Option<&ActivationAnalysis> {
@@ -1556,8 +1923,10 @@ where
 }
 
 /// Join every contributor into the key's aggregate. The join of zero
-/// contributors is `V::bottom`.
-fn join_contributions<'a, V>(ctx: &mut V::Ctx, contributors: impl Iterator<Item = &'a V>) -> V
+/// contributors is `V::bottom`. `pub(crate)` because a reader that subscribes
+/// to individual edge-fact cells (rather than the map's own whole-key join)
+/// still needs to fold the cells it selects the same way the map does.
+pub(crate) fn join_contributions<'a, V>(ctx: &mut V::Ctx, contributors: impl Iterator<Item = &'a V>) -> V
 where
     V: JoinContribution + 'a,
 {
@@ -1625,9 +1994,9 @@ mod tests {
 
     use super::*;
     use crate::compiler2::drive::JobEffects;
-    use crate::compiler2::{ExecutableNeed, FactKey, Job, RootId, World};
+    use crate::compiler2::{ExecutableNeed, FactKey, Job, World};
     use crate::telemetry::ConfiguredTelemetry;
-    use crate::types::{ClosureTarget, Sigma};
+    use crate::types::ClosureTarget;
 
     fn test_key(world: &mut World, _tel: &ConfiguredTelemetry) -> ActivationKey {
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
@@ -2000,7 +2369,7 @@ mod tests {
         assert_eq!(
             CallSiteTargets::from_summary(&narrow),
             CallSiteTargets::from_summary(&wider),
-            "membership edges are callee+activation identity only; surface and return type ascents must not move them",
+            "membership edges are callee+activation identity only; surface and return type evidence must not move them",
         );
     }
 
@@ -2254,105 +2623,6 @@ mod tests {
     }
 
     #[test]
-    fn rebased_activation_input_conclusion_preserves_prior_publisher_frontier() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new();
-        let key = test_key(&mut world, &tel);
-        let input = world.types_mut().atom_lit("seen");
-        let publisher = Job::AnalyzeActivation(key.clone());
-        let mut map = ActivationInputMap::new();
-
-        let first = map.conclude(
-            world.types_mut(),
-            publisher.clone(),
-            HashSet::new(),
-            HashMap::from([(key.clone(), ActivationInputAlternatives::from_row(vec![input]))]),
-            false,
-        );
-        assert_eq!(first.output_keys, HashSet::from([key.clone()]));
-        assert_eq!(map.get(&key), Some(&ActivationInputAlternatives::from_row(vec![input])));
-
-        let rebased = map.conclude_preserving_frontier(
-            world.types_mut(),
-            publisher,
-            HashSet::from([key.clone()]),
-            HashMap::new(),
-        );
-
-        assert_eq!(
-            rebased.output_keys,
-            HashSet::from([key.clone()]),
-            "rebased activation-input evidence may pause but must not retract the publisher's prior edge"
-        );
-        assert!(
-            rebased.changed_keys.is_empty(),
-            "preserving an unchanged frontier should not mark the activation input dirty"
-        );
-        assert_eq!(map.get(&key), Some(&ActivationInputAlternatives::from_row(vec![input])));
-    }
-
-    #[test]
-    fn contribution_key_waves_allocate_identically_across_reverse_insertion() {
-        let run = |reverse: bool| {
-            let mut world = World::new();
-            let root = RootId::for_test(92);
-            let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "contribution_order", 1);
-            let int = world.types_mut().int();
-            let float = world.types_mut().float();
-            let atom_a = world.types_mut().atom_lit("a");
-            let atom_b = world.types_mut().atom_lit("b");
-            let list = world.types_mut().list(int);
-            let non_empty = world.types_mut().non_empty_list(int);
-            let list_key = ActivationKey::from_inputs(root, function, &[list], world.types_mut());
-            let non_empty_key = ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
-            let mut map = ActivationInputMap::new();
-            let publisher_a = Job::SeedRoot(root);
-            let publisher_b = Job::AnalyzeActivation(list_key.clone());
-            let first = HashMap::from([
-                (list_key.clone(), ActivationInputAlternatives::from_row(vec![int])),
-                (
-                    non_empty_key.clone(),
-                    ActivationInputAlternatives::from_row(vec![float]),
-                ),
-            ]);
-            map.conclude(world.types_mut(), publisher_a, HashSet::new(), first, false);
-            let second = if reverse {
-                [
-                    (
-                        non_empty_key.clone(),
-                        ActivationInputAlternatives::from_row(vec![atom_b]),
-                    ),
-                    (list_key.clone(), ActivationInputAlternatives::from_row(vec![atom_a])),
-                ]
-                .into_iter()
-                .collect()
-            } else {
-                HashMap::from([
-                    (list_key.clone(), ActivationInputAlternatives::from_row(vec![atom_a])),
-                    (
-                        non_empty_key.clone(),
-                        ActivationInputAlternatives::from_row(vec![atom_b]),
-                    ),
-                ])
-            };
-            map.conclude(
-                world.types_mut(),
-                publisher_b,
-                HashSet::from([list_key.clone(), non_empty_key.clone()]),
-                second,
-                false,
-            );
-            (
-                map.get(&list_key).expect("list contribution").rows()[0].columns()[0],
-                map.get(&non_empty_key).expect("non-empty contribution").rows()[0].columns()[0],
-                world.types().identity_inventory(),
-            )
-        };
-
-        assert_eq!(run(false), run(true));
-    }
-
-    #[test]
     fn ground_dispatch_surfaces_resolves_a_publication_template_to_its_ground_dispatch() {
         // The Enum.with_index shape: a first-class publication template `(a0, a1)`
         // whose only real runtime dispatch is the ground sibling `(atom, int)`
@@ -2500,7 +2770,7 @@ mod tests {
     }
 
     #[test]
-    fn activation_return_joins_within_an_epoch_and_narrows_only_on_rebase() {
+    fn activation_return_joins_a_walk_and_is_replaced_by_its_components_solve() {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let mut activations = ActivationMap::new();
@@ -2508,26 +2778,15 @@ mod tests {
         let any = world.types_mut().any();
         let int = world.types_mut().int();
 
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(any), false)
-                .changed
-        );
+        assert!(activations.define_return(world.types_mut(), &key, Some(any), ReturnArrival::Ascends));
         // Within an epoch evidence only ascends: int joins into any and
         // disappears — descent is unrepresentable without a ground shift.
-        assert!(
-            !activations
-                .define_return(world.types_mut(), &key, Some(int), false)
-                .changed
-        );
+        assert!(!activations.define_return(world.types_mut(), &key, Some(int), ReturnArrival::Ascends));
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&any));
 
-        // The ground shifted (rebase): the fresh derivation replaces.
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(int), true)
-                .changed
-        );
+        // The component solve answers the whole system at once, so its
+        // answer supersedes the rounds that led up to it.
+        assert!(activations.define_return(world.types_mut(), &key, Some(int), ReturnArrival::Supersedes));
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&int));
     }
 
@@ -2540,13 +2799,9 @@ mod tests {
         let int = world.types_mut().int();
 
         // No evidence adds nothing — before and after real evidence lands.
-        assert!(!activations.define_return(world.types_mut(), &key, None, false).changed);
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(int), false)
-                .changed
-        );
-        assert!(!activations.define_return(world.types_mut(), &key, None, false).changed);
+        assert!(!activations.define_return(world.types_mut(), &key, None, ReturnArrival::Ascends));
+        assert!(activations.define_return(world.types_mut(), &key, Some(int), ReturnArrival::Ascends));
+        assert!(!activations.define_return(world.types_mut(), &key, None, ReturnArrival::Ascends));
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&int));
     }
 
@@ -2560,23 +2815,11 @@ mod tests {
         let atom = world.types_mut().atom();
         let both = world.types_mut().union(int, atom);
 
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(int), false)
-                .changed
-        );
+        assert!(activations.define_return(world.types_mut(), &key, Some(int), ReturnArrival::Ascends));
         // Equal republication is quiet — the load-bearing scheduler
         // invariant: changed=false wakes nobody.
-        assert!(
-            !activations
-                .define_return(world.types_mut(), &key, Some(int), false)
-                .changed
-        );
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(atom), false)
-                .changed
-        );
+        assert!(!activations.define_return(world.types_mut(), &key, Some(int), ReturnArrival::Ascends));
+        assert!(activations.define_return(world.types_mut(), &key, Some(atom), ReturnArrival::Ascends));
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&both));
     }
 
@@ -2590,16 +2833,8 @@ mod tests {
         let target = world.reference_function(super::super::identity::ModuleId::GLOBAL, "f", 1);
         let closure = world.closure_ty(target, vec![int]);
 
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(closure), false)
-                .changed
-        );
-        assert!(
-            activations
-                .define_return(world.types_mut(), &key, Some(int), false)
-                .changed
-        );
+        assert!(activations.define_return(world.types_mut(), &key, Some(closure), ReturnArrival::Ascends));
+        assert!(activations.define_return(world.types_mut(), &key, Some(int), ReturnArrival::Ascends));
         let joined = *activations
             .get(&key)
             .and_then(|slot| slot.return_ty())
@@ -2610,79 +2845,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn activation_return_widening_reports_only_real_coarsening() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new();
-        let mut activations = ActivationMap::new();
-        let key = test_key(&mut world, &tel);
-
-        // Atom-by-atom growth ascends strictly but never builds a list
-        // spine, so past the budget `convergence_class` is the identity:
-        // crossing the threshold coarsens nothing and must not be reported
-        // as widening.
-        for index in 0..(2 * RETURN_WIDENING_BUDGET) {
-            let atom = world.types_mut().atom_lit(&format!("a{index}"));
-            let outcome = activations.define_return(world.types_mut(), &key, Some(atom), false);
-            assert!(outcome.changed, "each fresh atom is a strict ascent");
-            assert!(
-                !outcome.widened,
-                "round {index}: nothing was coarsened, so nothing may report as widened",
-            );
-        }
-
-        // The ascent past twice the budget tops out at `any` — a real
-        // coarsening, reported exactly once; at the top further evidence
-        // joins quietly.
-        let atom = world.types_mut().atom_lit("top");
-        let outcome = activations.define_return(world.types_mut(), &key, Some(atom), false);
-        assert!(outcome.changed && outcome.widened, "topping out at any IS a coarsening");
-        let atom = world.types_mut().atom_lit("after");
-        let outcome = activations.define_return(world.types_mut(), &key, Some(atom), false);
-        assert!(
-            !outcome.changed && !outcome.widened,
-            "evidence joins quietly at the top"
-        );
-    }
-
-    #[test]
-    fn activation_return_widens_past_the_delay_and_terminates() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new();
-        let mut activations = ActivationMap::new();
-        let key = test_key(&mut world, &tel);
-
-        // The canonical divergent ascent: ever-deeper list nests.
-        let mut ty = world.types_mut().int();
-        let mut widened_at = None;
-        for round in 0..(2 * RETURN_WIDENING_BUDGET + 8) {
-            ty = world.types_mut().list(ty);
-            let outcome = activations.define_return(world.types_mut(), &key, Some(ty), false);
-            if outcome.widened && widened_at.is_none() {
-                widened_at = Some(round);
-            }
-            if !outcome.changed {
-                // The ladder ended: a strictly-deepening ascent reached a
-                // fixed point through the widening operator.
-                assert!(widened_at.is_some(), "termination must come from widening");
-                return;
-            }
-        }
-        panic!("the widening operator must terminate a strictly-deepening ascent");
-    }
-
-    /// The ground instance of a closure literal at one signature: the same
-    /// `fn_id` and captures, with the surface vars `closure_lit` mints for its
-    /// parameters and return replaced by concrete types.
-    fn ground_instance(world: &mut World, lambda: Ty, args: &[Ty], ret: Ty) -> Ty {
-        let shape = world.types_mut().arrow(args, ret);
-        let mut sigma = Sigma::new();
-        world
-            .types_mut()
-            .collect_instantiation_subst(&lambda, &shape, &mut sigma);
-        world.types_mut().instantiate(&lambda, &sigma)
-    }
-
     /// Push rows into one antichain the way a publisher does, and read back the
     /// column vectors that survived.
     fn settled_rows(world: &mut World, rows: &[Vec<Ty>]) -> Vec<Vec<Ty>> {
@@ -2690,7 +2852,15 @@ mod tests {
         for row in &rows[1..] {
             alternatives.push_row(world.types_mut(), row.clone());
         }
-        alternatives.rows().iter().map(|row| row.columns().to_vec()).collect()
+        alternatives.rows().iter().map(ActivationInputRow::tys).collect()
+    }
+
+    fn settled_input_rows(world: &mut World, rows: &[Vec<ActivationInput>]) -> Vec<Vec<ActivationInput>> {
+        let mut alternatives = ActivationInputAlternatives::from_inputs(rows[0].clone());
+        for row in &rows[1..] {
+            alternatives.push_inputs(world.types_mut(), row.clone());
+        }
+        alternatives.rows().iter().map(|row| row.inputs().to_vec()).collect()
     }
 
     /// fz-kdt.106: an ascent LADDER is one caller's history, not four
@@ -2742,21 +2912,33 @@ mod tests {
         let nil = world.types_mut().nil();
         let int_or_nil = world.types_mut().union(int, nil);
         let template = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
-        let ground = ground_instance(&mut world, template, &[int], int);
+        let template_surface = world
+            .types()
+            .callable_literal_signature(&template)
+            .expect("a literal has its owner surface");
+        let ground_surface = ActivationSignature {
+            inputs: vec![int].into_boxed_slice(),
+            result: int,
+        };
 
         assert!(
-            world.types().is_subtype(&template, &ground) && world.types().is_subtype(&ground, &template),
-            "the hazard this test guards must actually exist: func_clause_empty judges a \
-             var-carrying template arrow and its ground instance over one lambda equivalent",
+            world.types().is_subtype(&template, &template),
+            "the closure is one denotation; its template and ground observations live in the row carrier",
         );
 
-        assert_ne!(
-            world.types().free_var_ids(&template),
-            world.types().free_var_ids(&ground),
-            "the template's surface vars are what tells the two apart",
+        let rows = settled_input_rows(
+            &mut world,
+            &[
+                vec![
+                    ActivationInput::new(int),
+                    ActivationInput::with_callable_surface(template, template_surface),
+                ],
+                vec![
+                    ActivationInput::new(int_or_nil),
+                    ActivationInput::with_callable_surface(template, ground_surface),
+                ],
+            ],
         );
-
-        let rows = settled_rows(&mut world, &[vec![int, template], vec![int_or_nil, ground]]);
 
         assert_eq!(
             rows.len(),
@@ -2768,14 +2950,10 @@ mod tests {
     /// fz-kdt.106: `is_subtype` cannot decide a closure-literal column, so
     /// dominance may not be "simplified" back to it.
     ///
-    /// `types::emptiness::func_clause_empty` decides `P \ N` for a negative
-    /// arrow carrying a `ClosureLit` from `fn_id` and `captures` ALONE -- it
-    /// never reads `args` or `ret` -- so two arrows over ONE lambda are judged
-    /// mutually subtypes however far apart their signatures are. Absorbing on
-    /// that judgement drops a row whose reducer really is a different
-    /// specialization. `Types::row_column_dominates` therefore requires the
-    /// dominated column's closure-literal arrow shapes to appear verbatim in
-    /// the dominator's, which is the part subtyping refuses to look at.
+    /// A closure denotation no longer embeds its input/result surface. Row
+    /// dominance therefore compares direct callable surfaces alongside the
+    /// denotational `Ty`, rather than asking the callable kernel to recover
+    /// planner facts it intentionally does not model.
     #[test]
     fn activation_input_rows_keep_arrows_that_differ_only_where_subtyping_is_blind() {
         let _tel = ConfiguredTelemetry::new();
@@ -2784,24 +2962,32 @@ mod tests {
         let nil = world.types_mut().nil();
         let int_or_nil = world.types_mut().union(int, nil);
         let lambda = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
-        let narrow = ground_instance(&mut world, lambda, &[int], int);
-        let wide = ground_instance(&mut world, lambda, &[int_or_nil], int);
-
-        assert_ne!(narrow, wide, "the two reducer arrows must be distinct types");
+        let narrow = ActivationSignature {
+            inputs: vec![int].into_boxed_slice(),
+            result: int,
+        };
+        let wide = ActivationSignature {
+            inputs: vec![int_or_nil].into_boxed_slice(),
+            result: int,
+        };
         assert!(
-            world.types().is_subtype(&narrow, &wide) && world.types().is_subtype(&wide, &narrow),
-            "the hazard this test guards must actually exist: func_clause_empty judges two \
-             signatures over one lambda equivalent",
+            world.types().is_subtype(&lambda, &lambda),
+            "one closure value stays one callable type whatever direct surface observes it",
         );
 
-        assert_eq!(
-            world.types().free_var_ids(&narrow),
-            world.types().free_var_ids(&wide),
-            "both arrows are ground, so free-var parity cannot be what keeps them apart -- the \
-             literal SHAPE has to",
+        let rows = settled_input_rows(
+            &mut world,
+            &[
+                vec![
+                    ActivationInput::new(int),
+                    ActivationInput::with_callable_surface(lambda, narrow),
+                ],
+                vec![
+                    ActivationInput::new(int_or_nil),
+                    ActivationInput::with_callable_surface(lambda, wide),
+                ],
+            ],
         );
-
-        let rows = settled_rows(&mut world, &[vec![int, narrow], vec![int_or_nil, wide]]);
 
         assert_eq!(
             rows.len(),
@@ -2811,17 +2997,58 @@ mod tests {
         );
     }
 
+    /// The callable value and the call surface are different kinds of fact.
+    /// Once literal arrows stop storing the latter, this is the row relation
+    /// that still keeps two specializations of one closure apart.
+    #[test]
+    fn activation_input_rows_keep_direct_callable_surfaces_beside_one_closure_value() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let nil = world.types_mut().nil();
+        let int_or_nil = world.types_mut().union(int, nil);
+        let lambda = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
+
+        let narrow = ActivationSignature {
+            inputs: vec![int].into_boxed_slice(),
+            result: int,
+        };
+        let wide = ActivationSignature {
+            inputs: vec![int_or_nil].into_boxed_slice(),
+            result: int,
+        };
+        assert!(
+            world.types().is_subtype(&lambda, &lambda) && world.types().is_subtype(&lambda, &lambda),
+            "the closure denotation is one value whatever surface observes it",
+        );
+
+        let rows = settled_input_rows(
+            &mut world,
+            &[
+                vec![
+                    ActivationInput::new(int),
+                    ActivationInput::with_callable_surface(lambda, narrow),
+                ],
+                vec![
+                    ActivationInput::new(int_or_nil),
+                    ActivationInput::with_callable_surface(lambda, wide),
+                ],
+            ],
+        );
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "two specializations of one closure are two row-carried observations, not two callable types: {rows:?}",
+        );
+    }
+
     /// fz-kdt.106: the blind spot is STRUCTURAL, so the evidence has to be
     /// collected structurally.
     ///
-    /// `func_clause_empty` reaches a lambda wrapped in a tuple exactly as it
-    /// reaches a bare one, so `{:tag, fn}` columns over one lambda that differ
-    /// only in the nested arrow's signature are mutually subtypes too. A
-    /// `lit_arrow_shapes` that walked only the column's own funcs axis would
-    /// report no shapes on either side, containment would hold vacuously both
-    /// ways, and the pair would absorb -- the depth-0 sibling above, one tuple
-    /// deep. Nothing in the corpus builds this row today; the walk is
-    /// structural so that nothing has to.
+    /// The carrier follows a closure through structural values. A tuple that
+    /// contains one closure value can still carry two distinct observations of
+    /// that value; a top-level-only carrier would silently absorb this pair.
     #[test]
     fn activation_input_rows_keep_nested_arrows_that_differ_only_where_subtyping_is_blind() {
         let _tel = ConfiguredTelemetry::new();
@@ -2831,28 +3058,29 @@ mod tests {
         let int_or_nil = world.types_mut().union(int, nil);
         let tag = world.types_mut().atom_lit("tag");
         let lambda = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
-        let narrow = ground_instance(&mut world, lambda, &[int], int);
-        let wide = ground_instance(&mut world, lambda, &[int_or_nil], int);
-        let narrow = world.types_mut().tuple(&[tag, narrow]);
-        let wide = world.types_mut().tuple(&[tag, wide]);
+        let tuple = world.types_mut().tuple(&[tag, lambda]);
+        let narrow = ActivationSignature {
+            inputs: vec![int].into_boxed_slice(),
+            result: int,
+        };
+        let wide = ActivationSignature {
+            inputs: vec![int_or_nil].into_boxed_slice(),
+            result: int,
+        };
 
-        assert_ne!(narrow, wide, "the two wrapped reducer arrows must be distinct types");
-        assert!(
-            world.types().is_subtype(&narrow, &wide) && world.types().is_subtype(&wide, &narrow),
-            "the hazard this test guards must actually exist: subtyping is blind to the nested \
-             signature exactly as it is blind to a bare one",
+        let rows = settled_input_rows(
+            &mut world,
+            &[
+                vec![
+                    ActivationInput::new(int),
+                    ActivationInput::with_callable_surface(tuple, narrow),
+                ],
+                vec![
+                    ActivationInput::new(int_or_nil),
+                    ActivationInput::with_callable_surface(tuple, wide),
+                ],
+            ],
         );
-        assert_eq!(
-            world.types().free_var_ids(&narrow),
-            world.types().free_var_ids(&wide),
-            "both wrapped arrows are ground, so free-var parity cannot be what keeps them apart",
-        );
-        assert!(
-            !world.types().lit_arrow_shapes(&narrow).is_empty(),
-            "the shapes have to be found THROUGH the tuple, or containment holds vacuously",
-        );
-
-        let rows = settled_rows(&mut world, &[vec![int, narrow], vec![int_or_nil, wide]]);
 
         assert_eq!(
             rows.len(),

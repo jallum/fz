@@ -64,6 +64,59 @@ pub(crate) fn call_destinations(
     })))
 }
 
+pub(crate) struct ClosedCallableDispatch {
+    pub(crate) plan: Rc<PatternDispatchPlan<Ty>>,
+    pub(crate) targets: Vec<(usize, CallTargetSummary)>,
+}
+
+/// Route each construction's invocation specializations with the ordinary
+/// call routing rules, then distinguish constructions by their transport tag.
+/// Numeric tags are value patterns: numeric singleton types do not exist.
+pub(crate) fn closed_callable_dispatch(
+    types: &mut Types,
+    arms: Vec<(usize, CallTargetSummary)>,
+) -> Result<ClosedCallableDispatch, PatternDispatchError> {
+    let mut grouped = std::collections::BTreeMap::<usize, Vec<CallTargetSummary>>::new();
+    for (alternative, target) in arms {
+        grouped.entry(alternative).or_default().push(target);
+    }
+    let mut selected = Vec::new();
+    let mut rows = Vec::new();
+    let mut input_count = 1;
+    for (alternative, targets) in grouped {
+        let targets = arrival_order(types, &targets);
+        let surfaces = target_surfaces(&targets);
+        let arity = surfaces.first().map_or(0, Vec::len);
+        input_count = arity + 1;
+        let (order, _) = routable_alternatives(types, arity, &surfaces, &same_callee(&targets))?;
+        let observable = observable_inputs(types, &surfaces);
+        for index in order {
+            let mut row = dispatch_row(
+                &observable[index],
+                arity,
+                &(0..arity).collect::<Vec<_>>(),
+                selected.len() as u32,
+            );
+            row.patterns
+                .insert(0, Spanned::new(Pattern::Int(alternative as i64), Span::DUMMY));
+            for (subject, _) in &mut row.preconditions {
+                if let PatternSubjectRef::Input(input) = subject {
+                    *input += 1;
+                }
+            }
+            rows.push(row);
+            selected.push((alternative, targets[index].clone()));
+        }
+    }
+    Ok(ClosedCallableDispatch {
+        plan: Rc::new(pattern_dispatch_from_source(SourcePatternRows::lexical(
+            input_count,
+            rows,
+        ))?),
+        targets: selected,
+    })
+}
+
 /// A callsite with no choice left to make.
 fn sole_destination(target: Option<CallTargetSummary>) -> CallDestinations {
     match target {
@@ -672,15 +725,9 @@ fn seating(
 /// ONE AND THE SAME QUESTION SEPARATES NOTHING, and this says so outright
 /// rather than leaving `overlaps` to agree with itself. Two arms asking the
 /// identical question at an input admit the identical set of values there,
-/// whatever that set is. Asking `overlaps` there would make the answer turn on
-/// a test being REALIZABLE, which not every one is: a tuple clause with a
-/// subtracted signature loses its whole arity in
-/// `runtime_type_predicate_tuple_arities`, so a surface holding every non-int
-/// pair projects to a test that admits nothing and does not overlap ITSELF.
-/// That is a defect in the projection and the projection's to cure; what it may
-/// not do is decide a seat, a drop or a column order, and stated this way it
-/// cannot -- `an_untested_position_is_not_a_separation` is the pair that proves
-/// it.
+/// whatever that set is. Even an empty question does not overlap itself,
+/// but its equality with the other question cannot establish a separation
+/// at a position the dispatch plan does not test.
 fn separated_at(early: &RuntimeTypePredicate, late: &RuntimeTypePredicate) -> bool {
     early != late && !early.overlaps(late)
 }
@@ -918,6 +965,24 @@ pub(crate) fn construction_member_selection(
     Ok(ConstructionSelection {
         members,
         plan: plan.map(Rc::new),
+    })
+}
+
+/// Select a local closure's capture schema without discarding an identity
+/// which a later exact callable coercion can name.
+pub(crate) fn capture_alternative_selection(
+    types: &mut Types,
+    captures: &[Vec<Ty>],
+) -> Result<super::artifact::CallableCaptureSelection, String> {
+    let arity = captures.first().map_or(0, Vec::len);
+    let (alternatives, plan) = routable_alternatives(types, arity, captures, &|_, _| true)
+        .map_err(|error| format!("capture selection: {error:?}"))?;
+    if alternatives.len() != captures.len() {
+        return Err("local callable capture schemas cannot all be distinguished by runtime predicates".into());
+    }
+    Ok(super::artifact::CallableCaptureSelection {
+        alternatives,
+        plan: Rc::new(plan.ok_or_else(|| "closed local callable needs multiple capture alternatives".to_string())?),
     })
 }
 
@@ -1475,6 +1540,110 @@ mod tests {
     use crate::compiler2::{SelectedCallee, World};
     use crate::dispatch_matrix::{DispatchNode, Region, RegionPredicate, SubjectId, SubjectSource};
     use crate::telemetry::ConfiguredTelemetry;
+
+    #[test]
+    fn capture_selection_keeps_each_distinguishable_schema_identity() {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let binary = world.types_mut().str_t();
+        let selection = capture_alternative_selection(world.types_mut(), &[vec![binary], vec![int]]).unwrap();
+        let mut identities = selection.alternatives.clone();
+        identities.sort();
+        assert_eq!(identities, vec![0, 1]);
+        assert!(selection.plan.required_input(0));
+        assert_eq!(selection.plan.outcomes.len(), 2);
+    }
+
+    #[test]
+    fn capture_selection_rejects_dropping_an_unobservable_schema_identity() {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let tail = world.types_mut().atom_lit("tail");
+        let union = world.types_mut().union(int, tail);
+        let narrow = world.types_mut().list(int);
+        let wide = world.types_mut().list(union);
+        assert!(capture_alternative_selection(world.types_mut(), &[vec![narrow], vec![wide]]).is_err());
+    }
+
+    #[test]
+    fn closed_callback_selection_uses_literal_tags_for_equal_argument_interfaces() {
+        let mut world = World::new();
+        let add = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "add", 1);
+        let mul = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "mul", 1);
+        let int = world.types_mut().int();
+        let target = |function| CallTargetSummary {
+            callee: SelectedCallee::Function(function),
+            surface_inputs: vec![int],
+            activation: None,
+            activation_inputs: None,
+            extern_params: None,
+            return_ty: Some(int),
+        };
+        let arrived = vec![(1, target(mul)), (0, target(add))];
+        let ClosedCallableDispatch {
+            plan,
+            targets: selected,
+        } = closed_callable_dispatch(world.types_mut(), arrived.clone()).unwrap();
+        assert_eq!(selected, vec![arrived[1].clone(), arrived[0].clone()]);
+        assert_eq!(plan.outcomes.len(), 2);
+        assert!(
+            plan.required_input(0),
+            "equal argument types cannot select the callback"
+        );
+        let tags = plan
+            .graph
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                DispatchNode::Test {
+                    predicate:
+                        RegionPredicate {
+                            region:
+                                Region::Equal(crate::dispatch_matrix::ComparisonValue::Const(
+                                    crate::ground_value::GroundValue::Int(tag),
+                                )),
+                            ..
+                        },
+                    ..
+                } => Some(*tag),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            tags.contains(&0) && tags.contains(&1),
+            "numeric kinds do not distinguish selector values: {tags:?}"
+        );
+        let ClosedCallableDispatch {
+            plan: reversed_plan,
+            targets: reversed,
+        } = closed_callable_dispatch(world.types_mut(), arrived.into_iter().rev().collect()).unwrap();
+        assert_eq!(plan, reversed_plan);
+        assert_eq!(selected, reversed);
+    }
+
+    #[test]
+    fn one_closed_construction_routes_multiple_invocation_interfaces_by_argument() {
+        let mut world = World::new();
+        let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "callback", 1);
+        let int = world.types_mut().int();
+        let atom = world.types_mut().atom();
+        let target = |ty| CallTargetSummary {
+            callee: SelectedCallee::Function(function),
+            surface_inputs: vec![ty],
+            activation: None,
+            activation_inputs: None,
+            extern_params: None,
+            return_ty: Some(ty),
+        };
+        let ClosedCallableDispatch {
+            plan,
+            targets: selected,
+        } = closed_callable_dispatch(world.types_mut(), vec![(0, target(int)), (0, target(atom))]).unwrap();
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().all(|(alternative, _)| *alternative == 0));
+        assert!(plan.required_input(1));
+        assert_eq!(plan.outcomes.len(), 2);
+    }
 
     #[test]
     fn multi_target_summary_builds_receiver_type_dispatch_rows() {
@@ -2969,32 +3138,11 @@ mod tests {
         }
     }
 
-    /// A position the plan does NOT test may not separate a pair, and the
-    /// separation check has to say so itself rather than trust that every
-    /// realizable test overlaps itself.
-    ///
-    /// [`dispatch_columns`] drops a position where every arm carries the
-    /// SAME observable surface -- the plan emits no test there at all -- so a
-    /// pair "separated" there is separated by nothing the runtime asks. The
-    /// projection makes that reachable: a tuple clause with a SUBTRACTED
-    /// signature loses its whole arity in
-    /// `runtime_type_predicate_tuple_arities`, so `{any, any} & not({int,
-    /// int})` holds every pair that is not two ints and yet projects to a test
-    /// admitting nothing, which does not overlap itself.
-    ///
-    /// Both arms below carry that surface at subject 1 and differ only at
-    /// subject 0, where `:ok` sits inside `:ok | :tail` on the ATOM axis --
-    /// separating, so coverage runs both ways and the precision preference
-    /// seats the narrow arm first. Read subject 1 through `overlaps` alone and
-    /// the pair is `Separated`, `seats_before(N, W)` is false, and the drop
-    /// takes the narrow arm for its stand-in: the callsite collapses to
-    /// `Direct(W)` and `(:ok, pair)` runs a body no arrival of these two arms
-    /// ever sent it to. That is the relative-soundness theorem
-    /// [`unroutable_alternatives`] rests on, broken by a question the plan
-    /// never puts.
-    ///
-    /// One and the same question separates nothing, so [`seating`] skips a
-    /// position the two arms ask identically, and the narrow arm survives.
+    /// Equal observable surfaces contribute no dispatch column. A shared
+    /// tuple exclusion must therefore leave the narrower atom arm first and
+    /// preserve both destinations. Tuple normalization now makes the shared
+    /// predicate realizable; the equal-empty-question check separately pins
+    /// the original rule that equality never establishes a separation.
     #[test]
     fn an_untested_position_is_not_a_separation() {
         let _tel = ConfiguredTelemetry::new();
@@ -3035,9 +3183,14 @@ mod tests {
             "subject 1 is the same surface on both arms, so the plan tests subject 0 and nothing else",
         );
         assert!(
-            !questions[0][1].overlaps(&questions[1][1]),
-            "the shared surface's own test does not overlap ITSELF -- the projection defect this gate \
-             refuses to let decide a routing",
+            questions[0][1].overlaps(&questions[1][1]),
+            "factoring the tuple exclusion must preserve a realizable shared predicate",
+        );
+        let empty_question = RuntimeTypePredicate::none();
+        assert!(!empty_question.overlaps(&empty_question));
+        assert!(
+            !separated_at(&empty_question, &empty_question),
+            "even identical empty questions cannot separate an untested position",
         );
         let types = world.types();
         assert_eq!(

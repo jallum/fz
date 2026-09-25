@@ -15,7 +15,7 @@ use crate::source::Span;
 use super::body::{CallSiteId, LoweredBody, LoweredTail};
 use super::identity::{ActivationKey, FunctionId, RootId};
 use super::semantic::{CallSiteSummary, SelectedCallee, SemanticOrd};
-use super::types::{ClosureSurfacePos, TypeVarId, decode_closure_surface_var};
+use super::types::{ClosureSurfacePos, Ty, TypeVarId, decode_closure_surface_var};
 use super::world::World;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -24,14 +24,14 @@ pub struct CanonicalCallEdgeFact {
     pub callsite: String,
     pub dispatch: String,
     pub targets: Vec<CanonicalCallTargetFact>,
-    pub return_ty: String,
+    pub return_type_text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CanonicalCallTargetFact {
     pub target: String,
-    pub input_types: Vec<String>,
-    pub return_ty: String,
+    pub input_type_text: Vec<String>,
+    pub return_type_text: String,
 }
 
 pub(crate) fn canonical_call_edge_facts(
@@ -90,7 +90,7 @@ pub(crate) fn render_canonical_call_edge_snapshot(facts: &[CanonicalCallEdgeFact
             fact.callsite,
             fact.dispatch,
             render_target_list(&fact.targets),
-            fact.return_ty
+            fact.return_type_text
         ));
     }
     out
@@ -110,30 +110,48 @@ fn canonical_call_edge_fact(
         .iter()
         .map(|target| CanonicalCallTargetFact {
             target: target_label(world, target.callee.clone(), labels),
-            input_types: target
+            input_type_text: target
                 .surface_inputs
                 .iter()
-                .map(|ty| stable_type_text(world, world.types().display(ty)))
+                .enumerate()
+                .map(|(slot, ty)| render_target_input_type(world, target, slot, *ty))
                 .collect(),
-            return_ty: target
+            return_type_text: target
                 .return_ty
-                .map(|ty| stable_type_text(world, world.types().display(&ty)))
+                .map(|ty| render_fixture_type(world, world.types().display(&ty)))
                 .unwrap_or_else(|| "none".to_string()),
         })
         .collect::<Vec<_>>();
     targets.sort_by(|left, right| {
-        (&left.target, &left.input_types, &left.return_ty).cmp(&(&right.target, &right.input_types, &right.return_ty))
+        (&left.target, &left.input_type_text, &left.return_type_text).cmp(&(
+            &right.target,
+            &right.input_type_text,
+            &right.return_type_text,
+        ))
     });
     CanonicalCallEdgeFact {
         caller: activation_label(world, activation, labels),
         callsite: span_label(callsite.span()),
         dispatch,
         targets,
-        return_ty: summary
+        return_type_text: summary
             .return_ty
-            .map(|ty| stable_type_text(world, world.types().display(&ty)))
+            .map(|ty| render_fixture_type(world, world.types().display(&ty)))
             .unwrap_or_else(|| "none".to_string()),
     }
+}
+
+fn render_target_input_type(world: &World, target: &super::semantic::CallTargetSummary, slot: usize, ty: Ty) -> String {
+    target
+        .activation
+        .as_ref()
+        .filter(|activation| {
+            activation
+                .callable_surfaces(slot)
+                .is_some_and(|surfaces| !surfaces.is_empty())
+        })
+        .map(|activation| render_activation_input_type(world, activation, slot, ty))
+        .unwrap_or_else(|| render_fixture_type(world, world.types().display(&ty)))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,12 +217,36 @@ fn activation_label(world: &World, activation: &ActivationKey, labels: &mut Hash
         "{}[{}]",
         canonical_function_label(world, activation.function, labels),
         activation
-            .inputs(world.types())
+            .inputs()
             .iter()
-            .map(|ty| stable_type_text(world, world.types().display(ty)))
+            .enumerate()
+            .map(|(slot, ty)| render_activation_input_type(world, activation, slot, *ty))
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+fn render_activation_input_type(world: &World, activation: &ActivationKey, slot: usize, ty: Ty) -> String {
+    let Some(surfaces) = activation
+        .callable_surfaces(slot)
+        .filter(|surfaces| !surfaces.is_empty())
+    else {
+        return render_fixture_type(world, world.types().display(&ty));
+    };
+    surfaces
+        .iter()
+        .map(|surface| {
+            let inputs = surface
+                .inputs
+                .iter()
+                .map(|ty| render_fixture_type(world, world.types().display(ty)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let result = render_fixture_type(world, world.types().display(&surface.result));
+            format!("({inputs}) -> {result}")
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 fn target_label(world: &World, callee: SelectedCallee, labels: &mut HashMap<FunctionId, String>) -> String {
@@ -232,8 +274,8 @@ fn render_target_list(targets: &[CanonicalCallTargetFact]) -> String {
             format!(
                 "{}({}) => {}",
                 target.target,
-                target.input_types.join(", "),
-                target.return_ty
+                target.input_type_text.join(", "),
+                target.return_type_text
             )
         })
         .collect::<Vec<_>>()
@@ -274,7 +316,7 @@ fn drop_closure_capture_tag(chars: &mut std::iter::Peekable<std::str::Chars<'_>>
     *chars = probe;
 }
 
-fn stable_type_text(world: &World, rendered: String) -> String {
+fn render_fixture_type(world: &World, rendered: String) -> String {
     let mut out = String::with_capacity(rendered.len());
     let mut chars = rendered.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -343,7 +385,7 @@ fn stable_var_label(world: &World, var_id: u32) -> String {
 
 #[cfg(test)]
 mod capture_tag_tests {
-    use super::{World, drop_closure_capture_tag, stable_type_text};
+    use super::{World, drop_closure_capture_tag, render_fixture_type};
     use crate::telemetry::ConfiguredTelemetry;
 
     /// Runs `drop_closure_capture_tag` over `input` and returns what's left
@@ -406,13 +448,13 @@ mod capture_tag_tests {
     }
 
     #[test]
-    fn stable_type_text_strips_the_capture_tag_call_edges_carry() {
+    fn fixture_type_rendering_strips_closure_capture_tags() {
         // Mirrors the real shape a call-edge snapshot renders: a volatile
         // `#<id>` suffix immediately followed by the closure literal's
         // capture tag, both of which `stable_type_text` treats as noise.
         let _tel = ConfiguredTelemetry::new();
         let world = World::new();
         let rendered = "(a0_p0) -> a0_r#14closure[int, atom] => int".to_string();
-        assert_eq!(stable_type_text(&world, rendered), "(a0_p0) -> a0_r => int");
+        assert_eq!(render_fixture_type(&world, rendered), "(a0_p0) -> a0_r => int");
     }
 }

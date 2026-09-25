@@ -1,25 +1,30 @@
 # The Addressed Arrow
 
-Every function surface in compiler2 — activation keys, callable surfaces, and
-source contracts — speaks one type language: an interned, structurally-addressed
-arrow, `(a0, {a1_0, a1_1}, a2) -> r0`. A type variable's canonical identity is
-its **structural address** in a signature, not a counter value. Because vars are
-addressed the moment a surface is built, the hash-consing interner folds each
-alpha-equivalence class to a single integer by construction — so interned
-identity *is* the canonical form, and there is no separate normalization pass.
+Every function surface in compiler2 uses structurally-addressed coordinates:
+`(a0, {a1_0, a1_1}, a2) => r0`. Callable *values* remain `Ty`s; an activation
+and a resolved source contract carry their inputs and result as a typed
+coordinate record, not as a synthetic callable `Ty`. A type variable's canonical
+identity is its **structural address** in a signature, not a counter value.
+Because each coordinate is addressed when its surface is built, the interner
+folds the coordinate types' alpha-equivalence classes by construction; the
+carrier itself cannot mint a callable identity.
 
 The pieces, and what each owns:
 
 - `types/addressed.rs` — the address vocabulary (`AddrStep`), the var-id
   partition (`ADDRESS_TAG`), and the addressing builders (`address_arrow`,
-  `address_inputs`, `own_surface`). This is the construction machinery.
-- `identity.rs` — `ActivationKey { root, function, arrow: Ty }`. Dispatch
-  identity is the arrow's param side.
-- `semantic.rs` — `CallableSurface { inputs }`, addressed at birth.
+  `address_signature_with_env`, `address_inputs`, `address_signature_at_input`,
+  `own_surface`). This is the construction machinery.
+- `identity.rs` — `ActivationKey { root, function, signature: ActivationSignature }`.
+  Dispatch identity is `signature.inputs`, plus the direct callable observations
+  retained beside each value coordinate.
+- `semantic.rs` — `ActivationInput { ty, callable_surfaces }`: a value
+  denotation and its direct callable observations travel together without being
+  conflated. `CallableSurface { inputs }` is the runtime-demand projection.
 - `resolve.rs` — `resolve_spec` resolves an `@spec` and addresses it at the
   binder, emitting params/result/bounds all in the address frame.
-- `contract.rs` — `ContractArrow { arrow, bounds }`: one interned arrow plus an
-  address-keyed bounds sidecar.
+- `contract.rs` — `ContractArrow { params, result, bounds }`: one addressed
+  coordinate record plus an address-keyed bounds sidecar.
 - `types/arrow_match.rs` — `match_arrow`, the trichotomy calculator that decides
   contract application. This is the authority for every *compatibility* question.
 
@@ -81,9 +86,10 @@ same integer. That, alone, is **alpha-blind**. `(a5, a5) -> a5` and
 intern to two integers; the interner cannot fold them.
 
 Addressing closes the gap at the binder. Every member of an alpha-equivalence
-class is built with the *same* ids (`a0`, `a1`, `r0`), so the members are
-byte-identical and the interner folds them into one integer — and that integer
-is the canonical form.
+class is built with the *same* ids (`a0`, `a1`, `r0`), so the coordinate types
+are byte-identical and the interner folds them into one integer. An `ActivationSignature`
+then keeps those canonical coordinates directly, without constructing a
+callable type merely to transport them.
 
 ```text
 addressing  canonicalizes variable identity  (assigned once, at the binder)
@@ -93,7 +99,7 @@ together →  one integer per alpha-equivalence class, by construction
 
 Addresses are interned through `Types::address_id`, so `param_alpha(0)` always
 yields the same `a0` for a given `Types` instance: structurally identical
-signatures build byte-identical arrows.
+signatures build byte-identical coordinate records.
 
 ## Var ids are partitioned by kind
 
@@ -115,8 +121,8 @@ and equality are untouched: alpha-equivalent arrows still fold to one identity,
 
 **The resolver binder** (`resolve.rs::resolve_spec`). The resolver allocates
 first-occurrence ids as raw material, then addresses the whole spec scope in one
-pass: `address_arrow_with_env(&params, result)` returns the canonical arrow plus
-an `original-id -> address-id` map. Names and bounds re-key through that map —
+pass: `address_signature_with_env(&params, result)` returns canonical params and
+result plus an `original-id -> address-id` map. Names and bounds re-key through that map —
 the `when`-clause bounds become an address-keyed `HashMap<TypeVarId, Ty>` — so
 nothing escapes un-addressed. Source contracts (`ContractArrow`) are therefore
 *born* canonical: two alpha-equivalent specs intern byte-identical.
@@ -126,7 +132,7 @@ Activation inputs are produced by *inference* with arbitrary unification ids, no
 by the resolver. `from_inputs` addresses the whole input vector with
 `address_inputs`: the inputs map into the param-address space `(a0, a1, …)` in
 one shared pass — distinct positions stay distinct, repeats share — and the
-arrow is canonical the instant it is built. `CallableSurface::new` and the
+coordinate record is canonical the instant it is built. `CallableSurface::new` and the
 contribution/callsite normalizers (`normalize_contributions`,
 `define_callsite_summary`) call the *same* `address_inputs`, so every
 compiler2-side surface lands in one canonical frame.
@@ -137,48 +143,92 @@ key is minted from inputs only, dispatch is on inputs, and nothing keys on the
 result. The activation's real pending return lives in the `ReturnType` fact
 (an `Option`, where "unknown" is distinct from the type `none`). `from_inputs` is the
 single mint shared by `World::canonical_activation_key` and every other
-key-construction site; `realpha_inputs` carries a key minted elsewhere (a flow
-edge, a cloned summary) back onto the canonical addresses, and is idempotent on
-an already-addressed arrow.
+key-construction site; coordinate transforms carry a key minted elsewhere (a
+flow edge, a cloned summary) back onto canonical addresses, and are idempotent
+on an already-addressed coordinate vector.
 
-## The dispatch key is a derived collapse, not the evidence
+## A callable has a value coordinate and an observation coordinate
 
-`canonical_activation_key` mints the precise evidence arrow with `from_inputs`,
-then — for recursive functions only — derives the dispatch key with
-`convergence_collapse(arrow, demand, returned)`, where `demand` is
-`InputDemand::forwarded_dispatch` — this body's own entry dispatch joined with
-what every callee it forwards a slot to asks of that slot (fz-kdt.183) — and
-`returned` is `InputDemand::returned`, the positions this activation's
-published return is built from and the recursion does not supply (fz-kdt.199).
-`demand` is a
-vector of `DispatchDemand`, not a boolean keep/drop bit: UNDEMANDED subtrees
-collapse to their `convergence_class` (`list(τ)`, `[]`, and `[] | [τ]` all key
-as one addressed list class), while demanded structure can keep only the part
-dispatch observes (for example a tuple tag) and collapse the payload. A
-demanded list keeps its ELEMENT at every depth, because the element decides
-which callee activation the forward reaches; only freight collapses. A RETURNED
-position keeps its addressed convergence class on the second axis — list
-families normalise to `list(elem)` with the element kept, brands still erase —
-because an activation publishes one return and a returned position the key
-erased is a position on which two callers' answers blend. `{:done, acc}` is the
-shape: the tag is the question, the payload is the answer, and each axis keeps
-its own half. A `Whole` slot has no collapse at all, and forwarding can hand a
-`Whole` up; that slot sits outside fz-y6w's termination argument. The returned
-axis does not widen that: it never keeps a slot verbatim.
-`ListShape(elem_demand)` is
-still a recursive convergence key: it preserves the demanded element information
-from the whole list-family descriptor, then converges empty/non-empty shape to
-the all-list class, so a tail-recursive list walk does not fork one activation
-for the initial cons case, another for the possibly-empty tail, or another for
-an already-joined equivalent list family. A recursive ascent therefore settles
-without erasing the discriminator that chose the clause.
+`Ty` answers the runtime question: which closure value can arrive, including
+its literal owner and capture values. `ActivationSignature` answers the planning question:
+which direct parameter/result surface was observed for that value. An
+`ActivationInput` holds both, and `SemanticValue` preserves both while a body
+walks tuples, containers, bindings, and calls. A literal contributes its owner
+signature; a matched function contract contributes its matched direct signature.
+Neither contribution intersects an arrow into the closure's `Ty`.
 
-Key != evidence is intentional. The precise arrow stays in the
-`ActivationInputs` fact; the collapsed arrow is the `HashMap` dispatch key.
-Recursive activation-input evidence uses the same demand shape, but only widens
-variable-bearing ignored payloads so concrete caller evidence is not lowered by
-key convergence. This is a bounded-specialization control, and it is
-one whole-arrow operation on the interned arrow — not a per-input pre-pass.
+`ActivationKey::from_inputs_with_callable_surfaces` addresses the outer value
+inputs as `a0`, `a1`, … and then addresses each nested callable signature below
+the owning input (`a0_p0`, `a0_r`, …) with `Types::address_signature_at_input`.
+Thus equal observations share a carrier coordinate and an observation cannot
+accidentally alias the enclosing body parameter. A non-consuming forwarding
+body clears the carrier of every locally-ignored callable slot together with
+the erased closure brand. Precise `ActivationInputs` rows always retain it —
+and address it with that same `address_signature_at_input(input, surface)` call
+(`ActivationInput::addressed_callable_surfaces`, driven from
+`World::normalize_contributions`), nested under the row's own input slot — so
+a self call that reads its own settled row back and an entry call that
+addresses the surface fresh at key-mint time land on the identical coordinate.
+One function, one frame, one activation key for the one activation.
+`address_vars_at`'s `CallableSurface` arm derives every address fresh, scoped
+to the current addressing call's own `AddressCorrelations` (`binder.surface`
+for names repeated within one callable's own params/result, `correlations.values`
+across the call); it no longer passes an already-address-tagged var through
+unchanged from some earlier, unrelated addressing call. That pass-through
+existed for a callable *embedded* inside a larger structure, but a repeated
+`address_signature_at_input` call on the same evidence needs the opposite:
+re-derive the address under the current call's frame every time, or a stale
+frame from one call leaks into the next and mints a second key for what is
+otherwise the same activation.
+
+## The key is a derived collapse, not the evidence
+
+The value coordinates arrive at `canonical_activation_key` already decided.
+`key_inputs_for_call` (`jobs/semantic.rs`) named each slot before the key was
+minted, from two static answers about that slot: whether the value arriving
+there is a position the fixpoint is still SOLVING (the caller's own
+`CallSiteUnknowns::destinations`), and whether anything outside the activation
+can OBSERVE it — a dispatch question that reads it
+(`InputDemand::forwarded_dispatch`, this body's entry dispatch joined with what
+every callee it forwards the slot to asks of that slot) or the callee's
+published return being built from it (`FunctionUnknowns::returns_input`).
+
+Both answers want one coordinate for a whole slot, so they fold into one
+`KeyShape` and one `KeyShape::coordinate` call. `Settled` keys on what arrived.
+`Unknown` — a climbing position, or a slot nothing can observe — keys on the
+variable that ADDRESSES it, and the shape descends, so an accumulator built by
+consing an unsolved value onto a solved list keys as a list of its element's
+address variable: the list constructor survives and only the element is a
+variable. An address is the same coordinate at every round, so the callee gets
+ONE activation whose input evidence simply grows to the solved type.
+
+One fold then applies to what the key named. Where the callee's demand on the
+slot is `DispatchDemand::ListShape`, the coordinate passes through
+`Types::list_family_class`, so `[τ]` and `[] | [τ]` key one activation: such a
+question is `[]` against `[h | t]`, which the callee answers by testing the
+value it is handed, so the refinement the value arrives with is not a
+coordinate. The ELEMENT is untouched at every depth, because the element
+decides which callee activation a forward reaches. A tail-recursive list walk
+therefore does not fork one activation for the initial cons and another for the
+possibly-empty tail, and it settles without erasing the discriminator that
+chose the clause. Any other demand leaves the coordinate exactly as it arrived,
+and an absent fact reads as `Whole`, so a coordinate is only ever folded on a
+proven answer.
+
+`canonical_activation_key_with_callable_surfaces` makes one further decision,
+from the same `World::observable_inputs` vector the call site read: the
+observed call surfaces of every slot that vector calls unobservable are
+blanked, because a surface travels beside the value type rather than inside
+it. Nothing else collapses a key. What the value CLOSED OVER survives in the
+type the call site named.
+
+Key != evidence is intentional. The precise coordinates stay in the
+`ActivationInputs` fact; the collapsed coordinates are the `HashMap` dispatch key.
+Nothing widens an evidence row to match a key: `insert_row` absorbs a row only
+when it is equivalent to or dominated by a standing one, so concrete caller
+evidence is not lowered by anything the key folded. This is a
+bounded-specialization control, and it is one whole-coordinate operation — not
+a per-input pre-pass.
 
 ## Matching is subsumption — the trichotomy calculator
 
@@ -263,16 +313,14 @@ partially-joined variable answers `Underconstrained` instead, and
 `FunctionContract::apply` drops an `Underconstrained` clause's result while
 keeping its parameters.
 
-The unit is the NODE, and that is what a `Known` verdict delivers: no node the
-walk visited was wholly unreadable. It is not the stronger claim that every
-covariant occurrence was individually read. Two collectors skip a single unread
-occurrence while a sibling keeps the node's merged outcome `Known`, so the one
-marking site never fires: `collect_map_match` skips a pattern key the witness
-does not name, and `collect_arrow_match` skips a pattern clause no witness clause
-matches on arity. Both are pinned KNOWN-WRONG in `arrow_match.rs`
-(`p5_a_skipped_map_key_…`, `p10_a_skipped_arrow_clause_…`); neither is reachable
-from the shipped runtime library, which declares no map-typed and no
-multi-clause `@spec`, and fz-kdt.218 owns closing them.
+The node-wide mark handles a node whose whole witness is unreadable. A
+collector that declines one LIVE subtree marks that subtree directly, so a
+sibling cannot complete its missing lower-bound term. `collect_map_match` does
+this when a variable-carrying witness omits a pattern key: the key may still be
+present through the unresolved remainder. A ground witness missing that key is
+`Invalid`. A callable UNION is satisfied as soon as the witness fits one of its
+arms. When that arm supplies the evidence, an unused alternative adds no
+lower-bound obligation.
 
 The node unit is coarse in the other direction too: an unreadable node names
 every covariant variable beneath it, including one another position already
@@ -347,8 +395,8 @@ suppressed the claim without naming why it was wrong. The partial-join rule
 marks that rung, and every occurrence the walk cannot read with it, so nothing
 is left for a witness-shaped veto to do.
 
-`ContractArrow::apply` is then a thin loop: for each clause, read
-`arrow_params`/`arrow_result`, call `match_arrow` with the bounds sidecar, and
+`ContractArrow::apply` is then a thin loop: for each clause, read its direct
+`params`/`result`, call `match_arrow` with the bounds sidecar, and
 fold `Known`/`Underconstrained` param projections into the applied contract,
 unioning the per-clause results.
 
@@ -368,8 +416,8 @@ has erased transported closure identity.
 
 ## The backend boundary: value templates
 
-The interned addressed arrow is the only thing that crosses into keying,
-transport, and the backend; names and bounds stop at the semantics boundary. The
+Addressed coordinates cross into keying, transport, and the backend; names and
+bounds stop at the semantics boundary. The
 one thing that must NOT cross is an activation whose argument has no runtime
 representation. `is_value_template` is that predicate: a bare type variable, or a
 tuple one of whose fields is a bare variable. It is narrower than `has_vars` — a

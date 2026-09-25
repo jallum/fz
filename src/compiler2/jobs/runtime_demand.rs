@@ -11,7 +11,7 @@ use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, Run
 #[cfg(test)]
 use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
 use super::super::facts::FactUse;
-use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
+use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, function_id_of_closure_target};
 use super::super::incoming_inputs::{IncomingInputRole, IncomingInputSource, IncomingInputSources, InputSlot};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
@@ -148,7 +148,7 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     }
     let own = RuntimeDemandOwnInput {
         return_demand: contribution.return_demand.unwrap_or_else(RuntimeDemand::ignore),
-        input_demands: (0..executable.activation.input_len(world.types()))
+        input_demands: (0..executable.activation.input_len())
             .map(|index| {
                 contribution
                     .input_demands
@@ -286,10 +286,10 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     };
     let mut incoming = HashMap::new();
     if has_owner {
-        collect_callsite_input_sources(world, executable, &facts, &mut incoming);
+        collect_callsite_input_sources(executable, &facts, &mut incoming);
         collect_callable_capture_input_sources(executable, &demand, &mut incoming);
     }
-    for semantic_index in 0..executable.activation.input_len(world.types()) {
+    for semantic_index in 0..executable.activation.input_len() {
         incoming
             .entry(InputSlot {
                 executable: executable.clone(),
@@ -574,7 +574,6 @@ fn construction_flow_edge(
 }
 
 fn collect_callsite_input_sources(
-    world: &World,
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
     contribution: &mut HashMap<InputSlot, HashSet<IncomingInputSource>>,
@@ -598,9 +597,7 @@ fn collect_callsite_input_sources(
                 continue;
             };
             for (index, arg) in args.iter().enumerate() {
-                let Some(semantic_index) =
-                    mode.semantic_index(callee.activation.input_len(world.types()), args.len(), index)
-                else {
+                let Some(semantic_index) = mode.semantic_index(callee.activation.input_len(), args.len(), index) else {
                     continue;
                 };
                 contribution
@@ -752,6 +749,7 @@ fn plan_callable_flows(
                 types,
                 executable,
                 facts,
+                value,
                 producer.function,
                 &producer.captures,
                 &direct_targets,
@@ -798,6 +796,7 @@ fn callable_flow_edges_for_targets(
     types: &Types,
     executable: &ExecutableKey,
     facts: &RuntimeDemandFacts<'_>,
+    value: ValueId,
     function: FunctionId,
     captures: &[ValueId],
     targets: &BTreeSet<CallableTarget>,
@@ -813,16 +812,30 @@ fn callable_flow_edges_for_targets(
         return Vec::new();
     };
     let captures_len = capture_tys.len();
+    let closed_rows = facts
+        .value_types
+        .get(&value)
+        .and_then(|ty| types.closed_callable_clauses(ty));
     let mut edges = targets
         .iter()
         .filter(|target| target.activation.root == executable.activation.root && target.activation.function == function)
         .filter(|target| {
-            target.activation_inputs.len() == captures_len + target.surface.inputs.len()
-                && target
-                    .activation_inputs
+            if target.activation_inputs.len() != captures_len + target.surface.inputs.len() {
+                return false;
+            }
+            let target_captures = &target.activation_inputs[..captures_len];
+            match &closed_rows {
+                Some(rows) => rows.iter().any(|row| {
+                    let closure = row.closure.as_ref().expect("closed callable literal");
+                    function_id_of_closure_target(closure.target) == function
+                        && row.args.len() == target.surface.inputs.len()
+                        && closure.captures.as_slice() == target_captures
+                }),
+                None => target_captures
                     .iter()
                     .zip(&capture_tys)
-                    .all(|(target, capture)| types.is_equivalent(target, capture))
+                    .all(|(target, capture)| types.is_equivalent(target, capture)),
+            }
         })
         .map(|target| CallableFlowEdge {
             surface: target.surface.clone(),
@@ -841,7 +854,11 @@ fn callable_flow_edges_for_targets(
     // Order by what each surface says, the same typed activation key the first-class
     // edges use, so the direct half is canonical for the same reason and by the
     // same authority (fz-kdt.108).
-    edges.sort_by(|a, b| types.cmp_activation_tys(&a.surface.inputs, &b.surface.inputs));
+    edges.sort_by(|a, b| {
+        types
+            .cmp_activation_tys(&a.surface.inputs, &b.surface.inputs)
+            .then_with(|| a.resolution.semantic_cmp(&b.resolution, types))
+    });
     edges
 }
 
@@ -892,7 +909,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
     let mut out = ExecutableRuntimeDemand {
         callable_activation_inputs: facts.callable_activation_inputs.to_vec(),
         return_demand: demands.own.return_demand.clone(),
-        input_demands: vec![RuntimeDemand::ignore(); executable.activation.input_len(types)],
+        input_demands: vec![RuntimeDemand::ignore(); executable.activation.input_len()],
         ..ExecutableRuntimeDemand::default()
     };
     let mut call_return_demands = HashMap::new();
@@ -901,7 +918,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
         out.input_demands = match &facts.body {
             LoweredBody::Extern { signature } => executable
                 .activation
-                .inputs(types)
+                .inputs()
                 .iter()
                 .enumerate()
                 .map(|(index, ty)| {
@@ -962,7 +979,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
         }
     }
 
-    let activation_inputs = executable.activation.inputs(types);
+    let activation_inputs = executable.activation.inputs();
     for (semantic_index, dispatch_demand) in facts.entry_dispatch_demand.iter().enumerate() {
         if !dispatch_demand.asks_anything() {
             continue;
@@ -1068,7 +1085,8 @@ fn collect_entry_external_demands(
     if let Some(value) = entry.origin.input_value()
         && let Some(demand) = live.remove(&value)
     {
-        let demand = upgrade_joined_delivered_callable_value_demand(facts, callable_flows, entry_id, value, demand);
+        let demand =
+            upgrade_joined_delivered_callable_value_demand(types, facts, callable_flows, entry_id, value, demand);
         record_delivered_call_return_demands(facts, call_return_demands, entry_id, value, &demand);
         join_map_demand(&mut out.value_demands, value, demand.clone());
         external.insert(value, demand);
@@ -1078,7 +1096,7 @@ fn collect_entry_external_demands(
         .iter()
         .map(|capture| {
             let demand = live.remove(capture).unwrap_or(RuntimeDemand::ignore());
-            continuation_capture_demand(facts, callable_flows, *capture, demand)
+            continuation_capture_demand(types, facts, callable_flows, *capture, demand)
         })
         .collect::<Vec<_>>();
     record_entry_capture_demands(out, entry_id, &capture_demands);
@@ -1151,15 +1169,7 @@ fn collect_entry_live_demands(
             record_call_return_demand(call_return_demands, *callsite, demand);
             tail_call_return = Some((*callsite, *value));
             merge_live_demands(&mut live, external_demands);
-            let arg_demands = direct_call_arg_demands(
-                types,
-                executable,
-                *callsite,
-                args.as_slice(),
-                facts,
-                demands,
-                callable_flows,
-            );
+            let arg_demands = direct_call_arg_demands(*callsite, args.as_slice(), facts, demands, callable_flows);
             record_call_arg_demands(out, *callsite, arg_demands.as_slice());
             for (arg, demand) in args.iter().zip(arg_demands) {
                 note_live_demand(out, &mut live, arg.value, demand);
@@ -1191,7 +1201,9 @@ fn collect_entry_live_demands(
             tail_call_return = Some((*callsite, *value));
             merge_live_demands(&mut live, external_demands);
             let callee_callable = closure_callee_demand(
+                types,
                 facts,
+                *callee,
                 args.as_slice(),
                 facts.callsites.get(callsite),
                 facts
@@ -1203,15 +1215,7 @@ fn collect_entry_live_demands(
             let callee_demand = RuntimeDemand::callable(callee_callable);
             callable_flows.record_direct_demand(facts, *callee, &callee_demand);
             note_live_demand(out, &mut live, *callee, callee_demand);
-            let arg_demands = closure_call_arg_demands(
-                types,
-                executable,
-                *callsite,
-                args.as_slice(),
-                facts,
-                demands,
-                callable_flows,
-            );
+            let arg_demands = closure_call_arg_demands(*callsite, args.as_slice(), facts, demands, callable_flows);
             record_call_arg_demands(out, *callsite, arg_demands.as_slice());
             for (arg, demand) in args.iter().zip(arg_demands) {
                 note_live_demand(out, &mut live, arg.value, demand);
@@ -1409,13 +1413,17 @@ fn destination_demands(
 }
 
 fn upgrade_joined_delivered_callable_value_demand(
+    types: &Types,
     facts: &RuntimeDemandFacts<'_>,
     callable_flows: &mut CallableFlowBuilder,
     entry: ControlEntryId,
     value: ValueId,
     mut demand: RuntimeDemand,
 ) -> RuntimeDemand {
-    if demand.is_callable() && delivered_join_has_distinct_callable_producers(facts, entry, value) {
+    if demand.is_callable()
+        && delivered_join_has_distinct_callable_producers(facts, entry, value)
+        && !value_has_closed_callable_demand(types, facts, value, &demand.callable)
+    {
         callable_flows.record_direct_demand(facts, value, &demand);
         demand.callable.escape = true;
     }
@@ -1423,6 +1431,7 @@ fn upgrade_joined_delivered_callable_value_demand(
 }
 
 fn continuation_capture_demand(
+    types: &Types,
     facts: &RuntimeDemandFacts<'_>,
     callable_flows: &mut CallableFlowBuilder,
     capture: ValueId,
@@ -1433,6 +1442,7 @@ fn continuation_capture_demand(
         && value_is_callable(facts, capture)
         && value_depends_on_callsite_return(facts, capture)
         && value_is_closure_callee(facts.body, capture)
+        && !value_has_closed_callable_demand(types, facts, capture, &demand.callable)
     {
         demand.callable.escape = true;
     }
@@ -1967,6 +1977,41 @@ fn note_clause_matcher_demands(
     }
 }
 
+fn lambda_capture_discriminator_demands(
+    types: &Types,
+    value: ValueId,
+    captures: &[ValueId],
+    facts: &RuntimeDemandFacts<'_>,
+) -> Vec<(ValueId, RuntimeDemand)> {
+    let Some(clauses) = facts
+        .value_types
+        .get(&value)
+        .and_then(|ty| types.closed_callable_clauses(ty))
+    else {
+        return Vec::new();
+    };
+    let rows = clauses
+        .iter()
+        .map(|clause| &clause.closure.as_ref().expect("closed callable identity").captures)
+        .collect::<Vec<_>>();
+    let Some(first) = rows.first() else {
+        return Vec::new();
+    };
+    assert!(
+        rows.iter().all(|row| row.len() == captures.len()),
+        "one lambda's alternatives retain its capture arity"
+    );
+    captures
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| rows.iter().any(|row| row[*index] != first[*index]))
+        .map(|(_, capture)| {
+            let ty = facts.value_types[capture];
+            (*capture, facts.dispatch_demand(ty))
+        })
+        .collect()
+}
+
 fn propagate_lambda_capture_demands(
     types: &Types,
     value: ValueId,
@@ -1986,8 +2031,21 @@ fn propagate_lambda_capture_demands(
         return;
     }
     let callable = demand.callable;
-    let mut exact_edges =
-        callable_flow_edges_for_targets(types, &all_demands.member, facts, function, captures, &callable.targets);
+    if !callable.is_first_class() {
+        for (capture, demand) in lambda_capture_discriminator_demands(types, value, captures, facts) {
+            callable_flows.record_direct_demand(facts, capture, &demand);
+            note_live_demand(out, live, capture, demand);
+        }
+    }
+    let mut exact_edges = callable_flow_edges_for_targets(
+        types,
+        &all_demands.member,
+        facts,
+        value,
+        function,
+        captures,
+        &callable.targets,
+    );
     exact_edges.extend(
         all_demands
             .construction_targets
@@ -2083,50 +2141,26 @@ fn direct_only_capture_callable_demand(
 }
 
 fn direct_call_arg_demands(
-    types: &Types,
-    executable: &ExecutableKey,
     callsite: CallSiteId,
     args: &[CallArg],
     facts: &RuntimeDemandFacts<'_>,
     demands: &RuntimeDemandFormulaSnapshot,
     callable_flows: &mut CallableFlowBuilder,
 ) -> Vec<RuntimeDemand> {
-    arg_demands_for_summary(
-        types,
-        executable,
-        callsite,
-        args,
-        CallInputMode::Direct,
-        facts,
-        demands,
-        callable_flows,
-    )
+    arg_demands_for_summary(callsite, args, CallInputMode::Direct, facts, demands, callable_flows)
 }
 
 fn closure_call_arg_demands(
-    types: &Types,
-    executable: &ExecutableKey,
     callsite: CallSiteId,
     args: &[CallArg],
     facts: &RuntimeDemandFacts<'_>,
     demands: &RuntimeDemandFormulaSnapshot,
     callable_flows: &mut CallableFlowBuilder,
 ) -> Vec<RuntimeDemand> {
-    arg_demands_for_summary(
-        types,
-        executable,
-        callsite,
-        args,
-        CallInputMode::Closure,
-        facts,
-        demands,
-        callable_flows,
-    )
+    arg_demands_for_summary(callsite, args, CallInputMode::Closure, facts, demands, callable_flows)
 }
 
 fn arg_demands_for_summary(
-    types: &Types,
-    _executable: &ExecutableKey,
     callsite: CallSiteId,
     args: &[CallArg],
     input_mode: CallInputMode,
@@ -2160,10 +2194,9 @@ fn arg_demands_for_summary(
         let records_direct_arg_surfaces = matches!(target.callee, super::super::semantic::SelectedCallee::Function(_))
             && target.activation.is_some()
             && target.extern_params.is_none();
-        let target_demands = local_target_input_demands(types, facts, target, need, demands);
+        let target_demands = local_target_input_demands(facts, target, need, demands);
         for (index, (arg, slot)) in args.iter().zip(out.iter_mut()).enumerate().take(arity) {
-            let fallback_ty = target
-                .surface_inputs
+            let fallback_ty = target_observed_surface_inputs(target)
                 .get(index)
                 .copied()
                 .unwrap_or(facts.demand_types.any);
@@ -2179,7 +2212,7 @@ fn arg_demands_for_summary(
             let offset = target
                 .activation
                 .as_ref()
-                .and_then(|activation| input_mode.semantic_index(activation.input_len(types), args.len(), index))
+                .and_then(|activation| input_mode.semantic_index(activation.input_len(), args.len(), index))
                 .unwrap_or(index);
             let observed = target_demands
                 .get(offset)
@@ -2233,7 +2266,7 @@ fn multi_target_receiver_fallbacks(summary: &CallSiteSummary, any: Ty) -> BTreeS
     let mut fallbacks = summary
         .targets
         .iter()
-        .filter_map(|target| target.surface_inputs.first().copied())
+        .filter_map(|target| target_observed_surface_inputs(target).first().copied())
         .collect::<BTreeSet<_>>();
     if fallbacks.is_empty() {
         fallbacks.insert(any);
@@ -2268,7 +2301,6 @@ fn ground_first_class_callable_surface(facts: &RuntimeDemandFacts<'_>, demand: &
 }
 
 fn local_target_input_demands(
-    types: &Types,
     facts: &RuntimeDemandFacts<'_>,
     target: &super::super::semantic::CallTargetSummary,
     need: ExecutableNeed,
@@ -2280,8 +2312,7 @@ fn local_target_input_demands(
             // defined function and no module body (`function_is_provider_boundary`),
             // so there is no lowered body to consult. Every argument crosses the
             // seam at its boundary demand; marshalling is the boundary fact's job.
-            target
-                .surface_inputs
+            target_observed_surface_inputs(target)
                 .iter()
                 .copied()
                 .map(|ty| facts.boundary_demand(ty))
@@ -2315,9 +2346,25 @@ fn local_target_input_demands(
                 .get(&ExecutableKey { activation, need })
                 .cloned()
                 .unwrap_or_else(|| {
-                    vec![RuntimeDemand::ignore(); target.activation.as_ref().map_or(0, |a| a.input_len(types))]
+                    vec![RuntimeDemand::ignore(); target.activation.as_ref().map_or(0, |a| a.input_len())]
                 })
         }
+    }
+}
+
+/// A provider boundary observes its declared, grounded call contract while
+/// the raw `surface_inputs` remain available to identify an escaping closure
+/// value. Compiler-owned calls use the raw vector here; their activation owns
+/// the more precise input evidence separately.
+fn target_observed_surface_inputs(target: &super::super::semantic::CallTargetSummary) -> &[Ty] {
+    match target.callee {
+        super::super::semantic::SelectedCallee::ProviderBoundary(_) => {
+            target.activation_inputs.as_deref().unwrap_or(&target.surface_inputs)
+        }
+        super::super::semantic::SelectedCallee::Function(_) if target.extern_params.is_some() => {
+            target.activation_inputs.as_deref().unwrap_or(&target.surface_inputs)
+        }
+        super::super::semantic::SelectedCallee::Function(_) => &target.surface_inputs,
     }
 }
 
@@ -2403,7 +2450,9 @@ fn record_first_class_boundary_demand(
 }
 
 fn closure_callee_demand(
+    types: &Types,
     facts: &RuntimeDemandFacts<'_>,
+    callee: ValueId,
     args: &[CallArg],
     summary: Option<&CallSiteSummary>,
     need: ExecutableNeed,
@@ -2431,9 +2480,12 @@ fn closure_callee_demand(
     let mut demand = CallableDemand::default();
     demand.resolved.insert(facts.demand_types.surface(&actual_inputs));
     for target in &summary.targets {
-        let surface = facts.demand_types.surface(&target.surface_inputs);
+        let surface = facts.demand_types.surface(target_observed_surface_inputs(target));
         demand.resolved.insert(surface.clone());
-        if let (Some(activation), Some(activation_inputs)) = (&target.activation, &target.activation_inputs) {
+        if let (super::super::semantic::SelectedCallee::Function(function), Some(activation), Some(activation_inputs)) =
+            (&target.callee, &target.activation, &target.activation_inputs)
+            && *function == activation.function
+        {
             demand.targets.insert(CallableTarget {
                 surface,
                 activation: activation.clone(),
@@ -2442,17 +2494,50 @@ fn closure_callee_demand(
             });
         }
     }
-    let exact_local_target = matches!(
-        summary.targets.as_slice(),
-        [target]
-            if matches!(target.callee, super::super::semantic::SelectedCallee::Function(_))
-                && target.activation.is_some()
-                && target.activation_inputs.is_some()
-    );
-    if !exact_local_target {
+    if !value_has_closed_callable_demand(types, facts, callee, &demand) {
         demand.opaque = true;
     }
     demand
+}
+
+fn value_has_closed_callable_demand(
+    types: &Types,
+    facts: &RuntimeDemandFacts<'_>,
+    value: ValueId,
+    demand: &CallableDemand,
+) -> bool {
+    !demand.is_first_class()
+        && facts
+            .value_types
+            .get(&value)
+            .is_some_and(|ty| callable_targets_cover(types, *ty, &demand.targets))
+}
+
+/// A known target set is exhaustive only when it covers every literal and
+/// its complete capture row. One target must cover the whole row; mixing
+/// capture columns from different targets would invent an environment.
+fn callable_targets_cover(types: &Types, ty: Ty, targets: &BTreeSet<CallableTarget>) -> bool {
+    let Some(clauses) = types.closed_callable_clauses(&ty) else {
+        return false;
+    };
+    !clauses.is_empty()
+        && clauses.iter().all(|clause| {
+            let closure = clause
+                .closure
+                .as_ref()
+                .expect("closed callable clause names its literal");
+            let function = function_id_of_closure_target(closure.target);
+            targets.iter().any(|target| {
+                target.activation.function == function
+                    && target.surface.inputs.len() == clause.args.len()
+                    && target.activation_inputs.len() == closure.captures.len() + clause.args.len()
+                    && closure
+                        .captures
+                        .iter()
+                        .zip(&target.activation_inputs)
+                        .all(|(capture, supplied)| types.is_subtype(capture, supplied))
+            })
+        })
 }
 
 fn finish_callable_flows(plans: Vec<CallableFlowPlan>, demand: &mut ExecutableRuntimeDemand) {
@@ -2575,6 +2660,329 @@ mod tests {
     use crate::compiler2::types::Types;
     use crate::source::Span;
 
+    fn coverage_target(types: &mut Types, function: u32, captures: &[Ty], arguments: &[Ty]) -> CallableTarget {
+        use crate::compiler2::identity::{ActivationKey, RootId};
+        let activation_inputs = captures.iter().chain(arguments).copied().collect::<Vec<_>>();
+        CallableTarget {
+            surface: CallableSurface::new(arguments.to_vec(), types),
+            activation: ActivationKey::from_inputs(
+                RootId::for_test(0),
+                FunctionId::from_coordinate(function),
+                &activation_inputs,
+                types,
+            ),
+            activation_inputs,
+            need: ExecutableNeed::Value,
+        }
+    }
+
+    #[test]
+    fn closed_callable_coverage_requires_every_alternative_without_minting_types() {
+        use crate::compiler2::types::ClosureTarget;
+        let mut types = Types::new();
+        let int = types.int();
+        let left = types.fn_ref_lit(ClosureTarget(1), 1);
+        let right = types.fn_ref_lit(ClosureTarget(2), 1);
+        let joined = types.union(left, right);
+        let mut targets = BTreeSet::from([coverage_target(&mut types, 1, &[], &[int])]);
+        assert!(!callable_targets_cover(&types, joined, &targets));
+        targets.insert(coverage_target(&mut types, 2, &[], &[int]));
+        let inventory = types.identity_inventory();
+        assert!(callable_targets_cover(&types, joined, &targets));
+        assert_eq!(types.identity_inventory(), inventory);
+    }
+
+    #[test]
+    fn closed_callable_coverage_preserves_unenumerated_and_noncallable_alternatives() {
+        use crate::compiler2::types::ClosureTarget;
+        let mut types = Types::new();
+        let int = types.int();
+        let literal = types.fn_ref_lit(ClosureTarget(1), 1);
+        let unknown = types.arrow(&[int], int);
+        let mixed_callable = types.union(literal, unknown);
+        let mixed_value = types.union(literal, int);
+        let negative = types.difference(unknown, literal);
+        let any = types.any();
+        let none = types.none();
+        let targets = BTreeSet::from([coverage_target(&mut types, 1, &[], &[int])]);
+        for ty in [unknown, mixed_callable, mixed_value, negative, any, none] {
+            assert!(
+                !callable_targets_cover(&types, ty, &targets),
+                "a known target must not hide an uncovered value alternative: {}",
+                types.display(&ty)
+            );
+        }
+    }
+
+    #[test]
+    fn closed_callable_coverage_checks_arity_and_capture_specialization() {
+        use crate::compiler2::types::ClosureTarget;
+        let mut types = Types::new();
+        let int = types.int();
+        let atom = types.atom();
+        let literal = types.closure_lit(ClosureTarget(1), vec![atom], 1);
+        let wrong_capture = BTreeSet::from([coverage_target(&mut types, 1, &[int], &[int])]);
+        let wrong_arity = BTreeSet::from([coverage_target(&mut types, 1, &[atom], &[int, int])]);
+        let missing_capture = BTreeSet::from([coverage_target(&mut types, 1, &[], &[int])]);
+        let exact = BTreeSet::from([coverage_target(&mut types, 1, &[atom], &[int])]);
+        assert!(!callable_targets_cover(&types, literal, &wrong_capture));
+        assert!(!callable_targets_cover(&types, literal, &wrong_arity));
+        assert!(!callable_targets_cover(&types, literal, &missing_capture));
+        assert!(callable_targets_cover(&types, literal, &exact));
+    }
+
+    #[test]
+    fn closed_callable_coverage_never_splices_capture_rows() {
+        use crate::compiler2::types::ClosureTarget;
+        let mut types = Types::new();
+        let int = types.int();
+        let atom = types.atom();
+        let literal = types.closure_lit(ClosureTarget(1), vec![int, int], 1);
+        let targets = BTreeSet::from([
+            coverage_target(&mut types, 1, &[int, atom], &[int]),
+            coverage_target(&mut types, 1, &[atom, int], &[int]),
+        ]);
+        assert!(!callable_targets_cover(&types, literal, &targets));
+    }
+
+    #[test]
+    fn a_resolved_summary_does_not_hide_dynamic_alternatives_or_public_escape() {
+        use crate::compiler2::semantic::{ActivationAnalysis, EntryReachability, RuntimeDemandTypeInputs};
+        use crate::compiler2::types::ClosureTarget;
+        let mut types = Types::new();
+        let any = types.any();
+        let int = types.int();
+        let literal = types.fn_ref_lit(ClosureTarget(1), 0);
+        let unknown = types.arrow(&[], int);
+        let mixed = types.union(literal, unknown);
+        let owned = coverage_target(&mut types, 1, &[], &[]);
+        let summary = CallSiteSummary {
+            targets: vec![CallTargetSummary {
+                callee: SelectedCallee::Function(owned.activation.function),
+                surface_inputs: Vec::new(),
+                activation: Some(owned.activation.clone()),
+                activation_inputs: Some(Vec::new()),
+                extern_params: None,
+                return_ty: Some(int),
+            }],
+            return_ty: Some(int),
+        };
+        let callee = ValueId::from_u32(0);
+        let mut demand_types = RuntimeDemandTypeInputs::new(any);
+        demand_types.surfaces.insert(Vec::new(), owned.surface.clone());
+        let mut evidence = ExecutableFacts {
+            analysis: ActivationAnalysis {
+                rows: Vec::new(),
+                input_rows: Vec::new(),
+                entry_reachability: EntryReachability::new(Vec::new(), false),
+                reachable_entries: Vec::new(),
+                callsites: Vec::new(),
+                value_types: HashMap::from([(callee, mixed)]),
+                addressed_callsites: HashSet::new(),
+            },
+            body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
+            entry_dispatch: None,
+            callsites: HashMap::new(),
+            callsite_needs: HashMap::new(),
+            delivered_value_joins: HashMap::new(),
+            callsite_return_origins: HashMap::new(),
+            value_origins: HashMap::new(),
+            callable_origins: HashMap::new(),
+            return_origins: Box::new([]),
+            demand_types,
+            callable_activation_inputs: Vec::new(),
+        };
+        let projections = HashMap::new();
+        let mixed_facts = evidence.runtime_demand_facts(&projections);
+        let demand = closure_callee_demand(&types, &mixed_facts, callee, &[], Some(&summary), ExecutableNeed::Value);
+        assert!(
+            demand.opaque,
+            "one resolved target does not cover the unknown alternative"
+        );
+        assert_eq!(
+            demand.targets.len(),
+            1,
+            "known target evidence is retained beside opaque demand"
+        );
+
+        evidence.analysis.value_types.insert(callee, literal);
+        let facts = evidence.runtime_demand_facts(&projections);
+        let mut demand = closure_callee_demand(&types, &facts, callee, &[], Some(&summary), ExecutableNeed::Value);
+        assert!(!demand.opaque);
+        demand.escape = true;
+        assert!(!value_has_closed_callable_demand(&types, &facts, callee, &demand));
+
+        let mut boundary = summary;
+        boundary.targets[0].callee = SelectedCallee::ProviderBoundary(owned.activation.function);
+        let demand = closure_callee_demand(&types, &facts, callee, &[], Some(&boundary), ExecutableNeed::Value);
+        assert!(demand.opaque);
+        assert!(demand.targets.is_empty(), "a provider is not an owned dispatch arm");
+    }
+
+    #[test]
+    fn local_closed_constructor_retains_only_varying_capture_discriminators_without_escape() {
+        use crate::compiler2::identity::{ActivationKey, RootId};
+        use crate::compiler2::semantic::{
+            ActivationAnalysis, EntryReachability, RuntimeDemandTypeInputs, RuntimeDemandTypeProjection,
+        };
+        use crate::compiler2::types::ClosureTarget;
+
+        let mut types = Types::new();
+        let (any, int, atom) = (types.any(), types.int(), types.atom());
+        let scalar = types.union(int, atom);
+        let callback_a = types.fn_ref_lit(ClosureTarget(2), 1);
+        let callback_b = types.fn_ref_lit(ClosureTarget(3), 1);
+        let callback = types.union(callback_a, callback_b);
+        let row_a = types.closure_lit(ClosureTarget(1), vec![int, callback_a, int], 1);
+        let row_b = types.closure_lit(ClosureTarget(1), vec![atom, callback_b, int], 1);
+        let joined = types.union(row_a, row_b);
+        let surface = CallableSurface::new(vec![int], &mut types);
+        let called = RuntimeDemand::callable(CallableDemand {
+            resolved: BTreeSet::from([surface]),
+            ..CallableDemand::default()
+        });
+        let value = ValueId::from_u32(0);
+        let captures = [ValueId::from_u32(1), ValueId::from_u32(2), ValueId::from_u32(3)];
+        let mut evidence = ExecutableFacts {
+            analysis: ActivationAnalysis {
+                rows: Vec::new(),
+                input_rows: Vec::new(),
+                entry_reachability: EntryReachability::new(Vec::new(), false),
+                reachable_entries: Vec::new(),
+                callsites: Vec::new(),
+                value_types: HashMap::from([
+                    (value, joined),
+                    (captures[0], scalar),
+                    (captures[1], callback),
+                    (captures[2], int),
+                ]),
+                addressed_callsites: HashSet::new(),
+            },
+            body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
+            entry_dispatch: None,
+            callsites: HashMap::new(),
+            callsite_needs: HashMap::new(),
+            delivered_value_joins: HashMap::new(),
+            callsite_return_origins: HashMap::new(),
+            value_origins: HashMap::new(),
+            callable_origins: HashMap::new(),
+            return_origins: Box::new([]),
+            demand_types: RuntimeDemandTypeInputs::new(any),
+            callable_activation_inputs: Vec::new(),
+        };
+        let projection = |dispatch| {
+            Rc::new(RuntimeDemandTypeProjection {
+                boundary: RuntimeDemand::whole(),
+                dispatch,
+                callable_value_demand: None,
+            })
+        };
+        let projections = HashMap::from([
+            (scalar, projection(RuntimeDemand::whole())),
+            (int, projection(RuntimeDemand::whole())),
+            (callback, projection(called.clone())),
+        ]);
+        let function = FunctionId::from_coordinate(1);
+        let mut snapshot = RuntimeDemandFormulaSnapshot {
+            member: ExecutableKey {
+                activation: ActivationKey::from_inputs(RootId::for_test(0), function, &[], &mut types),
+                need: ExecutableNeed::Value,
+            },
+            own: RuntimeDemandOwnInput {
+                return_demand: RuntimeDemand::ignore(),
+                input_demands: Vec::new(),
+            },
+            target_inputs: HashMap::new(),
+            construction_targets: HashMap::new(),
+        };
+        let target_a = coverage_target(&mut types, 1, &[int, callback_a, int], &[int]);
+        let target_b = coverage_target(&mut types, 1, &[atom, callback_b, int], &[int]);
+        let spliced = coverage_target(&mut types, 1, &[int, callback_b, int], &[int]);
+        let mut called_with_targets = called.clone();
+        called_with_targets.callable.targets = BTreeSet::from([target_a.clone(), target_b.clone(), spliced]);
+        let inventory = types.identity_inventory();
+        let derive = |evidence: &ExecutableFacts, called: &RuntimeDemand, snapshot: &RuntimeDemandFormulaSnapshot| {
+            let facts = evidence.runtime_demand_facts(&projections);
+            let mut live = HashMap::new();
+            let mut out = ExecutableRuntimeDemand::default();
+            propagate_lambda_capture_demands(
+                &types,
+                value,
+                function,
+                &captures,
+                called.clone(),
+                &facts,
+                snapshot,
+                &mut live,
+                &mut out,
+                &mut CallableFlowBuilder::new(),
+            );
+            out.value_demands
+        };
+        let demands = derive(&evidence, &called, &snapshot);
+        assert_eq!(
+            demands.len(),
+            2,
+            "only varying capture columns feed construction selection, even when the member does not read them"
+        );
+        assert_eq!(demands[&captures[0]], RuntimeDemand::whole());
+        assert_eq!(demands[&captures[1]], called);
+        assert!(
+            !demands[&captures[1]].callable.is_first_class(),
+            "a callable type discriminator does not observe public identity"
+        );
+        assert!(
+            !demands.contains_key(&captures[2]),
+            "an unchanged unused capture remains absent from execution demand"
+        );
+        evidence.analysis.value_types.insert(value, row_a);
+        assert!(
+            derive(&evidence, &called, &snapshot).is_empty(),
+            "one capture schema needs no constructor discriminator"
+        );
+        evidence.analysis.value_types.insert(value, joined);
+        let facts = evidence.runtime_demand_facts(&projections);
+        let edges = callable_flow_edges_for_targets(
+            &types,
+            &snapshot.member,
+            &facts,
+            value,
+            function,
+            &captures,
+            &called_with_targets.callable.targets,
+        );
+        assert_eq!(
+            edges.len(),
+            2,
+            "only complete constructor rows admit target edges; aggregate columns cannot reject valid rows or splice new ones"
+        );
+        for target in [target_a, target_b] {
+            snapshot.target_inputs.insert(
+                ExecutableKey {
+                    activation: target.activation,
+                    need: target.need,
+                },
+                vec![
+                    RuntimeDemand::ignore(),
+                    RuntimeDemand::ignore(),
+                    RuntimeDemand::whole(),
+                    RuntimeDemand::ignore(),
+                ],
+            );
+        }
+        let retained = derive(&evidence, &called_with_targets, &snapshot);
+        assert_eq!(
+            retained[&captures[2]],
+            RuntimeDemand::whole(),
+            "an unchanged capture consumed by member execution survives beside unused selector captures"
+        );
+        assert_eq!(
+            types.identity_inventory(),
+            inventory,
+            "capture selection demand reads settled type evidence without interning"
+        );
+    }
+
     #[test]
     fn first_class_capture_retention_joins_available_exact_targets_without_guessing_missing_inputs() {
         use crate::compiler2::identity::{ActivationKey, RootId};
@@ -2594,11 +3002,13 @@ mod tests {
         let atom_surface = CallableSurface::new(vec![atom], &mut types);
         let facts = ExecutableFacts {
             analysis: ActivationAnalysis {
+                rows: Vec::new(),
                 input_rows: Vec::new(),
                 entry_reachability: EntryReachability::new(Vec::new(), false),
                 reachable_entries: Vec::new(),
                 callsites: Vec::new(),
                 value_types: HashMap::new(),
+                addressed_callsites: HashSet::new(),
             },
             body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
             entry_dispatch: None,

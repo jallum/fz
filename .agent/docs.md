@@ -18,6 +18,7 @@ Read:
 - [set-theoretic types](docs/set-theoretic-types.md) — types as sets of values: axes/DNF, the two `Types` implementations behind one trait, schemes, brands/opaques, and the typing-vs-runtime predicate split.
 - [addressed arrow](docs/addressed-arrow.md) — the one interned arrow language for every function surface: variables as structural addresses, addressing+interning as canonical-by-construction, the two binders, the dispatch-key collapse vs. evidence split, and the `match_arrow` trichotomy calculator.
 - [type specialization](docs/type-specialization.md) — how compiler2 types one activation (value-flow over lowered steps, return as a union over reachable clauses) and why specialization stays finite.
+- [source equation bindings](docs/source-equation-bindings.md) — .10's paper contracts, measured recursive-binding limits, and the joint-row solver capability required before moving inference ownership; not yet implemented.
 - [specs](docs/specs.md) — the `@spec` contract engine: overload sets, scheme matching, application with overlap witnesses, higher-order callback evidence, and the upper-bound coverage check.
 - [protocols](docs/protocols.md) — protocols as owned facts: callback surface + domain type, impl registration, and receiver-subtype dispatch (`resolve_protocol_call`) with lazy runtime-impl loading.
 - [modules](docs/modules.md) — modules and namespaces: identity-on-reference, the Placeholder→Indexed→Scoped→Defined lifecycle, the namespace savepoint chain, two-pass scoping, and lazy runtime-library/prelude loading.
@@ -25,6 +26,7 @@ Read:
 - [telemetry](docs/telemetry.md) — compile-time telemetry internals plus the emission contract, trace harness, and test-observability guidance.
 - [performance instrumentation](docs/performance-instrumentation.md) — finding where compile time goes and why work started: the `--log-telemetry` / `--emit=stats` switches, causal job/product/work-start records, and reading settle counts against per-settle cost.
 - [runtime telemetry](docs/runtime-telemetry.md) — the runtime exit event and semantic output sink contracts, and how tests observe a run without poking process internals.
+- [runtime predicate programs](docs/runtime-predicate-program.md) — immutable runtime-owned regular predicate graphs, their static-data ABI, ownership boundary, and exact worklist evaluator.
 - [parser syntax](docs/parser-syntax.md) — source front-door boundary: `src/parser` is lexer-only; compiler2 parses tokens to quoted source in `compiler2/frontdoor.rs`.
 - [dispatch matrix](docs/dispatch-matrix.md) — the shared `DispatchMatrix`/`DispatchGraph` model behind function heads, `case`, receive, guard helpers, and protocol dispatch.
 - [pattern matching](docs/pattern-matching.md) — one decision model (`SourcePatternRows`→`PatternDispatchPlan`): test-first/project-second, payloads, and guards.

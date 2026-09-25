@@ -36,13 +36,15 @@ use crate::fz_ir::FnId;
 use super::axis;
 use super::bits::{BASIC_NAMES, BasicBits};
 use super::conj::Conj;
-use super::descr::Descr;
-use super::emptiness::{self, Memo, NonEmptyLists};
+use super::descr::{Descr, Structure};
+use super::emptiness::{self, Memo, NonEmptyLists, Operand};
 use super::format::brand_refinement;
+use super::render_bindings::{BindingVisit, RenderBindings};
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, TupleSig};
 use super::{CallableValueKind, MapKey, Ty, TyCtx, TypeVarId, Types};
 
-/// Renders types in their canonical external form, memoized by `Ty`.
+/// Renders types in their canonical external form, with completed root forms
+/// memoized by `Ty`.
 ///
 /// A compile mints ~1.4k distinct types against ~17.5k events, so the cost is
 /// per distinct type rather than per rendering site. Build one per comparison
@@ -52,9 +54,10 @@ pub(crate) struct TyCanon<'a> {
     /// a mint-order index, so it can never be the rendered identity; the owner
     /// (`World`) knows the module/name/arity behind it.
     labels: &'a dyn Fn(FnId) -> String,
-    bodies: HashMap<Ty, Arc<str>>,
     fingerprints: HashMap<Ty, Arc<str>>,
     whole: HashMap<Ty, Arc<str>>,
+    bindings: RenderBindings,
+    active_descriptors: HashMap<Descr, Ty>,
     #[cfg(test)]
     alpha_names: Option<HashMap<TypeVarId, usize>>,
     #[cfg(test)]
@@ -65,9 +68,10 @@ impl<'a> TyCanon<'a> {
     pub(crate) fn new(labels: &'a dyn Fn(FnId) -> String) -> Self {
         Self {
             labels,
-            bodies: HashMap::new(),
             fingerprints: HashMap::new(),
             whole: HashMap::new(),
+            bindings: RenderBindings::default(),
+            active_descriptors: HashMap::new(),
             #[cfg(test)]
             alpha_names: None,
             #[cfg(test)]
@@ -93,6 +97,11 @@ impl<'a> TyCanon<'a> {
         if let Some(hit) = self.whole.get(&ty) {
             return Arc::clone(hit);
         }
+        self.bindings.reset();
+        assert!(
+            self.active_descriptors.is_empty(),
+            "a canonical render left an active descriptor"
+        );
         let cx = types.ctx();
         let text: Arc<str> = format!("{} {}", self.fingerprint_at(cx, ty), self.body(cx, ty)).into();
         self.whole.insert(ty, Arc::clone(&text));
@@ -140,13 +149,17 @@ impl<'a> TyCanon<'a> {
         text
     }
 
-    fn body(&mut self, cx: TyCtx<'_>, ty: Ty) -> Arc<str> {
-        if let Some(hit) = self.bodies.get(&ty) {
-            return Arc::clone(hit);
+    fn body(&mut self, cx: TyCtx<'_>, ty: Ty) -> String {
+        match self.bindings.enter(ty) {
+            BindingVisit::Reference(name) => name,
+            BindingVisit::Fresh => {
+                let descriptor = cx.descr(&ty);
+                assert!(self.active_descriptors.insert(descriptor.clone(), ty).is_none());
+                let body = self.descr_body(cx, descriptor, Provenance::Interned);
+                assert_eq!(self.active_descriptors.remove(descriptor), Some(ty));
+                self.bindings.finish(ty, body)
+            }
         }
-        let text: Arc<str> = self.descr_body(cx, cx.descr(&ty), Provenance::Interned).into();
-        self.bodies.insert(ty, Arc::clone(&text));
-        text
     }
 
     // ------------------------------------------------------------------
@@ -159,22 +172,39 @@ impl<'a> TyCanon<'a> {
     /// built itself — a list clause's intersected element fragment — never
     /// reached the interner, so it gets them here, from the same functions.
     fn descr_body(&mut self, cx: TyCtx<'_>, d: &Descr, provenance: Provenance) -> String {
+        // A list clause's `Operand::Built` element carries no `Ty` of its own
+        // to bind, so this lookup is the only thing that catches one equal to
+        // an active type's descriptor and binds it instead of re-entering it.
+        if matches!(provenance, Provenance::Synthesized)
+            && let Some(ty) = self.active_descriptors.get(d)
+        {
+            return self.bindings.reference(*ty);
+        }
         if d.is_empty_memo(cx, &mut Memo::default()) {
             return "none".to_string();
         }
         if d.is_full(cx) {
             return "any".to_string();
         }
-        let normalized;
-        let d = match provenance {
-            Provenance::Interned => d,
-            Provenance::Synthesized => {
-                let mut swept = d.clone();
-                axis::drop_empty_clauses(cx, &mut swept, &|ty| cx.descr(ty).is_empty(cx));
-                normalized = swept;
-                &normalized
-            }
-        };
+        let mut cases = d
+            .cases
+            .iter()
+            .map(|case| {
+                let mut structure = case.structure.clone();
+                if matches!(provenance, Provenance::Synthesized) {
+                    axis::drop_empty_clauses(cx, &mut structure, &|ty| cx.descr(ty).is_empty(cx));
+                }
+                brand_refinement(&case.brands, self.structure_body(cx, &structure, provenance))
+            })
+            .collect::<Vec<_>>();
+        cases.sort();
+        cases.join(" | ")
+    }
+
+    /// Render one payload in the correlated outer partition.  The payload has
+    /// no brand field by construction, so every branch here is forced to be a
+    /// structural axis reader.
+    fn structure_body(&mut self, cx: TyCtx<'_>, d: &Structure, provenance: Provenance) -> String {
         let axes = self.axes(cx, d, provenance);
         let mut parts: Vec<String> = basic_names(d.basic);
         push_set(&mut parts, &d.atoms, "atom", |name| format!(":{name}"));
@@ -194,7 +224,7 @@ impl<'a> TyCanon<'a> {
             self.clause_texts(cx, &axes.funcs, Self::func_clause).into_iter(),
         ));
         parts.extend(sorted(self.clause_texts(cx, &axes.maps, Self::map_clause).into_iter()));
-        brand_refinement(&d.brands, parts.join(" | "))
+        parts.join(" | ")
     }
 
     /// One clause rendered with its factors sorted. `top` names the clause with
@@ -249,10 +279,11 @@ impl<'a> TyCanon<'a> {
         } else {
             "non_empty_list"
         };
-        let mut factors = vec![format!(
-            "{head}({})",
-            self.descr_body(cx, &elem, Provenance::Synthesized)
-        )];
+        let elem_rendered = match elem {
+            Operand::Ty(t) => self.body(cx, t),
+            Operand::Built(d) => self.descr_body(cx, &d, Provenance::Synthesized),
+        };
+        let mut factors = vec![format!("{head}({elem_rendered})")];
         for cut in &minus {
             let rendered = self.descr_body(cx, cut, Provenance::Synthesized);
             factors.push(format!("not(non_empty_list({rendered}))"));
@@ -283,7 +314,7 @@ impl<'a> TyCanon<'a> {
     }
 
     fn tuple_sig(&mut self, cx: TyCtx<'_>, sig: &TupleSig) -> String {
-        let elems: Vec<String> = sig.elems.iter().map(|ty| self.body(cx, *ty).to_string()).collect();
+        let elems: Vec<String> = sig.elems.iter().map(|ty| self.body(cx, *ty)).collect();
         format!("{{{}}}", elems.join(", "))
     }
 
@@ -292,7 +323,7 @@ impl<'a> TyCanon<'a> {
     }
 
     fn arrow_sig(&mut self, cx: TyCtx<'_>, sig: &ArrowSig) -> String {
-        let args: Vec<String> = sig.args.iter().map(|ty| self.body(cx, *ty).to_string()).collect();
+        let args: Vec<String> = sig.args.iter().map(|ty| self.body(cx, *ty)).collect();
         let base = format!("({}) -> {}", args.join(", "), self.body(cx, sig.ret));
         match &sig.lit {
             None => base,
@@ -301,27 +332,16 @@ impl<'a> TyCanon<'a> {
     }
 
     /// `fnref[label]` for a bare function reference, `closure[label](caps)`
-    /// for an env-carrying closure. The label is `?` for an ANONYMOUS literal
-    /// -- a closure of some function over exactly these capture types, which
-    /// is what a forwarder key leaves of a literal whose brand it erased.
-    /// `closure[?](int)` and `closure[?](float)` are two forms because the
-    /// capture types are two, and `closure[?](int)` and `closure[L](int)` are
-    /// two because the anonymous one names every brand and `L` names one.
-    ///
-    /// `closure[?]` is the only anonymous form. `fnref[?]` is not a form at
-    /// all: a `FnRef` literal carries no captures (`Types::fn_ref_lit` is its
-    /// only constructor), and the erasure drops a capture-free literal whole
-    /// rather than anonymising it -- there is nothing left to say once the
-    /// brand is gone -- so a `FnRef` literal always keeps its label.
+    /// for an env-carrying closure. The label names the function the literal
+    /// was minted from, so `closure[L](int)` and `closure[L](float)` are two
+    /// forms because the capture types are two, and `closure[L](int)` and
+    /// `closure[M](int)` are two because the brands are two.
     fn closure_lit(&mut self, cx: TyCtx<'_>, lit: &ClosureLit) -> String {
-        let label = match lit.fn_id {
-            Some(fn_id) => (self.labels)(fn_id),
-            None => "?".into(),
-        };
+        let label = (self.labels)(lit.fn_id);
         match lit.kind {
             CallableValueKind::FnRef => format!("fnref[{label}]"),
             CallableValueKind::Closure => {
-                let caps: Vec<String> = lit.captures.iter().map(|ty| self.body(cx, *ty).to_string()).collect();
+                let caps: Vec<String> = lit.captures.iter().map(|ty| self.body(cx, *ty)).collect();
                 format!("closure[{label}]({})", caps.join(", "))
             }
         }
@@ -343,43 +363,30 @@ impl<'a> TyCanon<'a> {
     // Normalization
     // ------------------------------------------------------------------
 
-    /// The four denotational axes were absorbed at the persistence boundary, so
-    /// an INTERNED descriptor has nothing left to absorb and this repeats
-    /// nothing. Only the descriptors this module builds ITSELF — a list
-    /// clause's intersected element fragment — need the rule applied here, and
-    /// they get it from the same function, the list axis's set-level merge
-    /// (`[] ∨ non_empty(T) = list(T)`) included: a fragment is `Descr`
-    /// arithmetic over interned children, and the arithmetic concatenates
-    /// clauses that the boundary would have merged.
-    ///
-    /// The callable axis is the one this module still normalizes after the
-    /// fact whatever the descriptor came from: an interned arrow carries a
-    /// declared signature and a closure's capture layout beside its
-    /// denotation, so the boundary must leave it alone, while a RENDERING
-    /// reads nothing back out of it and may collapse it to what it denotes.
-    fn axes(&mut self, cx: TyCtx<'_>, d: &Descr, provenance: Provenance) -> Axes {
+    /// The persistence boundary has already absorbed every stored axis it can
+    /// normalize. Only a list fragment synthesized by this renderer needs the
+    /// shared rules again: descriptor arithmetic concatenates clauses after
+    /// their children were interned.
+    fn axes(&mut self, cx: TyCtx<'_>, d: &Structure, provenance: Provenance) -> Axes {
         let subtype = &|narrower: &Ty, wider: &Ty| cx.descr(narrower).is_subtype(cx, cx.descr(wider));
-        let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
+        let covers = &|wider: &Structure, narrower: &Structure| narrower.is_subtype(cx, wider);
         let mut tuples = d.tuples.clone();
         let mut lists = d.lists.clone();
         let mut resources = d.resources.clone();
         let mut maps = d.maps.clone();
         if matches!(provenance, Provenance::Synthesized) {
-            axis::merge_empty_list_clause(&mut lists);
+            axis::normalize_list_empty_shape(&mut lists);
             axis::absorb_axis(cx, &mut tuples, subtype, covers, &axis::TUPLES);
             axis::absorb_axis(cx, &mut lists, subtype, covers, &axis::LISTS);
             axis::absorb_axis(cx, &mut resources, subtype, covers, &axis::RESOURCES);
             axis::absorb_axis(cx, &mut maps, subtype, covers, &axis::MAPS);
         }
 
-        let mut funcs = d.funcs.clone();
-        axis::absorb_axis(cx, &mut funcs, subtype, covers, &axis::FUNCS);
-
         Axes {
             tuples,
             lists,
             resources,
-            funcs,
+            funcs: d.funcs.clone(),
             maps,
         }
     }
@@ -429,9 +436,9 @@ struct Axes {
 /// when every kind axis is). So `a ≡ b` forces `a \ b = ∅` on each axis
 /// separately, which for the scalar axes means equal `BasicBits` and equal
 /// finite/cofinite sets — their universes are infinite, so a finite set never
-/// denotes what a cofinite one does. `brands` is not a kind but a REFINEMENT
-/// factor over all of them, so it is recorded the same way and read the same
-/// way, with the unconstrained slot (the unbranded case) omitted.
+/// denotes what a cofinite one does. `brands` is not a kind: each correlated
+/// outer case pairs one brand cell with one structural payload, and the
+/// fingerprint records those canonical cases rather than a global factor.
 ///
 /// For the structural axes only INHABITED-ness survives: clause counts do not,
 /// since the whole point of the normalization elsewhere in this module is that
@@ -451,12 +458,34 @@ fn descr_fingerprint(cx: TyCtx<'_>, d: &Descr, mut render_var: impl FnMut(TypeVa
     if d.is_full(cx) {
         return "fp[any]".to_string();
     }
+    if let [case] = d.cases.as_slice()
+        && case.brands.is_any()
+    {
+        return structure_fingerprint(cx, &case.structure, render_var);
+    }
+    let mut cases = d
+        .cases
+        .iter()
+        .map(|case| {
+            let mut brand = Vec::new();
+            if !case.brands.is_any() {
+                push_key(&mut brand, "n", &case.brands, Clone::clone);
+            }
+            format!(
+                "{}{{{}}}",
+                brand.join(";"),
+                structure_fingerprint(cx, &case.structure, &mut render_var)
+            )
+        })
+        .collect::<Vec<_>>();
+    cases.sort();
+    format!("fp[U:{}]", cases.join("|"))
+}
+
+fn structure_fingerprint(cx: TyCtx<'_>, d: &Structure, mut render_var: impl FnMut(TypeVarId) -> String) -> String {
     let mut parts = basic_names(d.basic);
     push_key(&mut parts, "a", &d.atoms, |name| format!(":{name}"));
     push_key(&mut parts, "o", &d.opaques, ToString::to_string);
-    if !d.brands.is_any() {
-        push_key(&mut parts, "n", &d.brands, Clone::clone);
-    }
     push_key(&mut parts, "v", &d.vars, |id| render_var(*id));
     let structural: String = [
         (inhabited(cx, &d.tuples, emptiness::tuple_clause_empty), "T"),

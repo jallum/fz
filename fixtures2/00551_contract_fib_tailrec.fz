@@ -5,7 +5,6 @@
 # assert.metric.semantic.executables: 2
 # assert.metric.semantic.callsites: 11
 # assert.metric.call_edges.count: 11
-# assert.metric.return_type.widened: 0
 # assert.edge: fib/3[int, int, int] | @70-90 | direct | fib/3
 # assert.edge: main/0[] | @173-186 | direct | fib/3
 # snapshot.call_edges: call_edges

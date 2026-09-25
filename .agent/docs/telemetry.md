@@ -126,6 +126,41 @@ span.stop0()
 
 ## Policy Choices
 
+### Compiler2 inference work
+
+Events under `fz.compiler2.inference_work` count execution of the current
+inference machinery, separately from job starts, published facts, distinct
+activation keys, and emitted bodies. They use typed raw callbacks and are
+included in the public JSONL trace. Projection and rendering happen only in
+the listening handler; the compiler does not build a second counter store.
+
+| Event suffix | Raw borrowed arguments | Counted boundary |
+| --- | --- | --- |
+| `skeleton_lowered` | `FunctionId`, `FunctionSkeleton` | Each completed call to source skeleton lowering; excludes provider-only opaque publication and waits |
+| `activation_walk` | `ActivationKey`, `ActivationInputAlternatives` | Entry to an admitted activation evaluation, after its readiness gates |
+| `input_row` | `ActivationKey`, `ActivationInputRow` | Each correlated row dispatched by that evaluation |
+| `clause_walk` | `ActivationKey`, `u32`, `Vec<ActivationInput>` | Each reachable row/clause pair with enough inputs to bind its parameters |
+| `step_transfer_attempt` | `ActivationKey`, `StepSite`, `LoweredStep` | Each invocation of the step evaluator by the body walk |
+| `tail_transfer_attempt` | `ActivationKey`, `ControlEntryId`, `LoweredTail` | Each invocation of the tail evaluator by the body walk |
+| `invocation_target_attempt` | caller `ActivationKey`, `CallSiteId`, target `ActivationKey` | Each selected compiler-owned target keyed before reading its return evidence |
+| `return_solve` | owner `ActivationKey`, `Vec<ActivationKey>` | Each component solve after successful membership discovery and binding gathering |
+| `return_branches_iteration` | owner `ActivationKey`, `usize` node count | Each branch-expansion pass |
+| `return_escapes_iteration` | owner `ActivationKey`, `usize` node count | Each escaping-value fixed-point pass |
+| `return_pending_iteration` | owner `ActivationKey`, `usize` node count | Each pending-dependency fixed-point pass |
+
+Transfer attempts include invocations that find a pending operand and produce
+no observation. Target attempts include repeated admission of the same target;
+they are not counts of new keys or published edges. Consumers may separately
+deduplicate the complete caller/site/target identities. Component iteration
+counts include the final pass that detects stability, and do not count the
+regular-type interner's internal partition refinement. The branch pass's node
+count is its starting size; that pass may discover more nodes.
+
+JSONL retains activation identities, correlated row columns and callable
+surfaces, clause/entry/step positions, operation kinds, target identities, and
+component sizes. These events report the existing activation-owned work; they
+do not claim that higher-order inference sharing has been implemented.
+
 **Fatal vs telemetry.** A failure that must stop compilation returns
 `Err(FatalError)`. Everything observational — including diagnostics that get
 rendered as user errors — is an event. So the trait has no fallible method: a
@@ -350,18 +385,15 @@ Fact waits returned by product producers in `jobs::artifact`, `jobs::backend`,
 `jobs::transport`, and `jobs::runtime_demand` are polled by the pull driver, so
 they do not register scheduler waiters. Scheduler jobs are different:
 `SeedRoot`, for example, returns settled `JobEffects` waits that
-`World::complete_job` registers with the work graph. fz-kdt.45 added another
-scheduler formula, `DeriveExecutableFacts(E)`, for the direct
-`ExecutableFacts(E)` World fact. It stands directly on settled semantic facts;
-in this fixture, `ActivationAnalyzed` and `CallSiteSummary` finality flips wake
-that exact producer and exercise `Cause::Readiness`. This signal comes from
-direct `ExecutableFacts` scheduling and is independent of how root analysis is
-ignited. On
-`00181_enum_reduce_operator_ref`, the 21 recorded wakes are 18 enqueues and 3
-coalesces, producing 18 readiness-caused evaluations and no uncaused work.
+`World::complete_job` registers with the work graph. A false-to-true finality
+movement wakes one of those standing waiters; a concluded formula that merely
+read a settled fact instead carries the changed finality through its outputs
+without another evaluation. fz-kdt.45's `DeriveExecutableFacts(E)` is one such
+direct fact formula once it has concluded. On
+`00181_enum_reduce_operator_ref`,
 `the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation`
-(`tests/fz2_cli.rs`) pins the cause identities and preserves the surrounding
-causal and output counts.
+(`tests/fz2_cli.rs`) pins that all formula work is either initial or caused by
+content, with no readiness-caused or unexplained re-run.
 
 The public stream is SELF-DESCRIBING (fz-kdt.34.6). A raw `Ty` or `FunctionId`
 is a position in one `World`, so a log that carries only ids means nothing to a
@@ -379,16 +411,22 @@ then the referencing event:
 type, `compiler2::canon::function_label` for a function), never
 `Types::display` — display is measured non-injective, so two different
 activations would compare equal. The `type` domain covers every raw `Ty` on the
-stream: the `arrow` field and the elements of an `ActivationSymbol`'s `input`
-array both resolve through it. The canonical form is an EQUIVALENCE, not an
+stream: the `inputs` array, `result` field, and every nested input/result pair
+in `callable_surfaces` of activation identities all resolve through it. A
+`callable_surfaces` entry is an array per activation input; each inner record
+is `{inputs, result}` in that input's addressed frame. The canonical form is an EQUIVALENCE, not an
 injection on ids: two mutually-subtype arena slots share one canonical form and
 are one identity to a reader, which is the point — that is the pair a
 renumbering is free to swap.
 
+Causal reports apply that dictionary to the same activation coordinates before
+they group fact and product identities, so their cross-process summaries do not
+depend on one run's raw type ids.
+
 This lives entirely in the sink (`CanonStream`, `jsonl.rs`). No production emit
 site changed, telemetry-off renders nothing, and the cost is per DISTINCT id
-(measured on `00181_enum_reduce_operator_ref`: 203 definition lines, 38KB, on a
-917KB log). Definitions need a `&World`, which only some events carry, so a line
+(measured on `00181_enum_reduce_operator_ref`: 304 definition lines, 58KB, on a
+1.68MB log). Definitions need a `&World`, which only some events carry, so a line
 naming a still-undefined id is PARKED until an event arrives that can define it;
 once anything is parked everything parks, so the stream's own order never
 changes and a streaming reader never sees an id it has no dictionary entry for.
@@ -661,12 +699,33 @@ carries the same completion plus `World`, and handlers iterate its affected
 activation-key set.
 Return publication carries raw `World` plus `ActivationKey` only when the
 stored return changes. Event presence is the change signal; handlers read the
-settled return from `World`. `return_type.widened` is a separate raw
-`World`-plus-key event emitted only when the widening operator coarsens the
-candidate. Both are public (allowlisted in `is_public_compiler2_trace_event`),
-as are `activation_analysis.defined` and `callsite.defined`; the JSONL
-projection adds a `semantic` object carrying the standing return and the
-activation's ascent count.
+settled return from `World`. `return_type.cleared` is its counterpart: it fires
+with the same payload when an activation's return slot drops, so a test can
+tell "the return never moved" from "the return was published and then
+retracted" -- the signature of a component whose ownership flickers.
+`return_component.solved` carries the solve's `owner` beside the `members` it
+answered, which is the membership a test asserts rather than re-deriving.
+`return_membership.discovered` fires once per `SolveReturnComponent`
+dispatch, from `jobs/return_component.rs::solve_return_component` itself --
+`World::return_membership` is a pure query with no telemetry parameter, so
+the dispatch carries the one `ReturnDiscovery` the solve already computed for
+its own answer, never a second walk asked just to report on the first.
+It carries `visited` (how many activations the walk touched) and `members`
+(how many belong to the seed's component) as measurements, plus the `seed`
+activation as metadata. `visited` is `members` plus every `Callers`
+candidate the walk examined and ruled back out -- a stale entry whose site
+has since moved on, or now names someone else -- since that read happens
+whether or not the candidate turns out to belong, and so is part of what the
+walk cost. Discovery's cost tracking the component and its immediate callers
+instead of the world is a north-star property, and `visited` is what lets a
+test hold it to that: a walk over a two-member component with one caller
+outside it should never visit a fourth activation.
+These are public (allowlisted in `is_public_compiler2_trace_event`), as are
+`activation_analysis.defined` and `callsite.defined`; the JSONL projection
+gives `activation_analysis.defined`, `callsite.defined`, the return
+publication and `return_membership.discovered` a `semantic` object -- the
+return publication's carries the standing return, and
+`return_membership.discovered`'s carries the seed.
 
 `root.submitted` carries raw `World` and `RootId`. `code.submitted` carries raw
 `World` with the submitted `SourceOwner` or runtime registration. Protocol callback

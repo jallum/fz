@@ -1,5 +1,5 @@
 #---
-# purpose: runtime-selected predicate unions share boxed invocation code without merging semantic identities
+# purpose: runtime-selected predicate unions retain their behavior through closed invocation
 #---
 def positive(x), do: x > 0
 def even(x), do: (x % 2) == 0

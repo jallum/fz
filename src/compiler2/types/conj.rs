@@ -1,6 +1,6 @@
 //! One conjunctive clause inside a DNF: `⋀ pos  ∧  ⋀ (¬neg)`.
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct Conj<T> {
     pub(crate) pos: Vec<T>,

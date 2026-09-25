@@ -1,0 +1,18 @@
+#---
+# purpose: "an activation minted after a return component solves still gets its return answered"
+#---
+#
+# `Map.keys/1` and `Map.to_list/1` walk the same recursive helper. Analysing
+# the first mints that helper's activation and puts it in a recursive-return
+# component, which solves. Analysing the second reaches the SAME helper
+# activation, so it joins the component after its owner has already answered.
+# The owner learns of the new member through `Callers`, re-solves, and answers
+# for it too. Without that subscription nothing wakes the owner and the second
+# call's return is never published.
+#
+# The order matters: `Map.to_list/1` first and `Map.keys/1` second does not
+# exercise the late join.
+def main() do
+  dbg(Map.keys(%{a: 1}))
+  dbg(Map.to_list(%{a: 1}))
+end

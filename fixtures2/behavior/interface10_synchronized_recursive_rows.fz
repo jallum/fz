@@ -1,0 +1,15 @@
+#---
+# purpose: "recursive tuple construction keeps both argument depths synchronized through joint dispatch"
+#---
+def aligned(:left, :right), do: :ok
+def aligned({x}, {y}), do: aligned(x, y)
+def aligned(_x, _y), do: :crossed
+
+def grow(0, x, y), do: aligned(x, y)
+def grow(n, x, y), do: grow(n - 1, {x}, {y})
+
+def main() do
+  result = grow(2, :left, :right)
+  dbg(result)
+  result
+end

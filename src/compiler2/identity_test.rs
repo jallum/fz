@@ -1,4 +1,4 @@
-use super::identity::DeclaredCallableKind;
+use super::identity::{DeclaredCallableKind, FunctionBody};
 use super::quoted_surface::ScopeSurface;
 use super::{
     CodeMap, CodeState, FunctionMap, FunctionSource, FunctionState, Horizon, ModuleId, ModuleMap, ModuleState,
@@ -200,7 +200,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: add_source.clone(),
+            body: FunctionBody::Declared(add_source.clone()),
         },
         FunctionSource {
             owner: source_owner,
@@ -209,7 +209,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: quoted_source("math.fz", "def add(x, y), do: 42\n"),
+            body: FunctionBody::Declared(quoted_source("math.fz", "def add(x, y), do: 42\n")),
         },
         add_ast.clone(),
     );
@@ -222,7 +222,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: add_source,
+            body: FunctionBody::Declared(add_source),
         },
         FunctionSource {
             owner: source_owner,
@@ -231,7 +231,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: quoted_source("math.fz", "def add(x, y), do: 42\n"),
+            body: FunctionBody::Declared(quoted_source("math.fz", "def add(x, y), do: 42\n")),
         },
         add_ast,
     );
@@ -370,7 +370,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: first,
+            body: FunctionBody::Declared(first),
         },
         FunctionSource {
             owner: source_owner,
@@ -379,7 +379,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: quoted_source("math.fz", "def add(x, y), do: 42\n"),
+            body: FunctionBody::Declared(quoted_source("math.fz", "def add(x, y), do: 42\n")),
         },
         def_ast.clone(),
     );
@@ -392,7 +392,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: second,
+            body: FunctionBody::Declared(second),
         },
         FunctionSource {
             owner: source_owner,
@@ -401,7 +401,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: quoted_source("math.fz", "def add(x, y), do: 42\n"),
+            body: FunctionBody::Declared(quoted_source("math.fz", "def add(x, y), do: 42\n")),
         },
         def_ast.clone(),
     );
@@ -414,7 +414,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: third,
+            body: FunctionBody::Declared(third),
         },
         FunctionSource {
             owner: source_owner,
@@ -423,7 +423,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: quoted_source("math.fz", "def add(x, y), do: 43\n"),
+            body: FunctionBody::Declared(quoted_source("math.fz", "def add(x, y), do: 43\n")),
         },
         def_ast,
     );
@@ -457,7 +457,7 @@ fn compiler2_re_noting_a_defined_function_preserves_the_defined_state() {
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: first,
+            body: FunctionBody::Declared(first),
         },
         FunctionSource {
             owner: source_owner,
@@ -466,7 +466,7 @@ fn compiler2_re_noting_a_defined_function_preserves_the_defined_state() {
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: quoted_source("math.fz", "def add(), do: 42\n"),
+            body: FunctionBody::Declared(quoted_source("math.fz", "def add(), do: 42\n")),
         },
         surface.clone(),
     );
@@ -481,7 +481,7 @@ fn compiler2_re_noting_a_defined_function_preserves_the_defined_state() {
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: second,
+            body: FunctionBody::Declared(second),
         },
     );
     assert!(
@@ -498,7 +498,8 @@ fn compiler2_re_noting_a_defined_function_preserves_the_defined_state() {
             );
             assert!(
                 source
-                    .source
+                    .declared_root()
+                    .expect("a declared function carries its root")
                     .semantically_eq(&quoted_source("math.fz", "def add(), do: 42\n"), Horizon::Full),
                 "the noted source should still refresh to the incoming source content"
             );
@@ -528,7 +529,7 @@ fn compiler2_define_function_updates_a_re_noted_surface_when_expansion_changes()
                 capture_params: Vec::new(),
                 required_remote_macros: Vec::new(),
                 variadic: false,
-                source: first.clone(),
+                body: FunctionBody::Declared(first.clone()),
             },
             FunctionSource {
                 owner: source_owner,
@@ -537,7 +538,7 @@ fn compiler2_define_function_updates_a_re_noted_surface_when_expansion_changes()
                 capture_params: Vec::new(),
                 required_remote_macros: Vec::new(),
                 variadic: false,
-                source: first,
+                body: FunctionBody::Declared(first),
             },
             function_surface_with_int("add", 42),
         ),
@@ -554,7 +555,7 @@ fn compiler2_define_function_updates_a_re_noted_surface_when_expansion_changes()
                 capture_params: Vec::new(),
                 required_remote_macros: Vec::new(),
                 variadic: false,
-                source: second.clone(),
+                body: FunctionBody::Declared(second.clone()),
             },
         ),
         "re-noting a changed raw source should invalidate the definition",
@@ -570,7 +571,7 @@ fn compiler2_define_function_updates_a_re_noted_surface_when_expansion_changes()
                 capture_params: Vec::new(),
                 required_remote_macros: Vec::new(),
                 variadic: false,
-                source: second.clone(),
+                body: FunctionBody::Declared(second.clone()),
             },
             FunctionSource {
                 owner: source_owner,
@@ -579,7 +580,7 @@ fn compiler2_define_function_updates_a_re_noted_surface_when_expansion_changes()
                 capture_params: Vec::new(),
                 required_remote_macros: Vec::new(),
                 variadic: false,
-                source: second,
+                body: FunctionBody::Declared(second),
             },
             function_surface_with_int("add", 43),
         ),
@@ -599,7 +600,7 @@ fn compiler2_define_function_updates_a_re_noted_surface_when_expansion_changes()
 
 #[test]
 fn compiler2_activation_key_from_inputs_results_in_addressed_result_alpha_not_none() {
-    // The activation arrow's result slot is the addressed result variable `r0`
+    // The activation key's result coordinate is the addressed result variable `r0`
     // ("return not yet known" — an unknown to be resolved), NEVER `none()` (⊥).
     // `none`, like `any`, must be EARNED from evidence, never used as a fallback
     // for an unknown; a not-yet-computed return is a distinct cell (a var), not
@@ -622,9 +623,7 @@ fn compiler2_activation_key_from_inputs_results_in_addressed_result_alpha_not_no
 
     let key = ActivationKey::from_inputs(root, function, &[int], &mut types);
 
-    let result = types
-        .arrow_result(&key.arrow)
-        .expect("the activation arrow has a result slot");
+    let result = key.signature.result;
     let result_alpha = types.result_alpha();
     let none = types.none();
     assert_eq!(
@@ -681,4 +680,38 @@ fn a_declared_callable_kind_is_the_latest_declaration() {
         None,
         "declaring one key says nothing about another"
     );
+}
+
+/// An activation specializes a body by addressed input/result coordinates; it
+/// is not itself a callable value. Keeping that record on the funcs axis mints
+/// a fresh function `Ty` for every key and makes the callable interner carry
+/// planner evidence instead of denotation.
+#[test]
+fn compiler2_activation_key_coordinates_do_not_mint_a_callable_type() {
+    use super::ExecutableNeed;
+    use super::identity::{ActivationKey, FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
+    use super::types::Types;
+
+    let mut types = Types::new();
+    let int = types.int();
+    let result_alpha = types.result_alpha();
+    let before = types.interned_tys().len();
+    let mut roots = RootMap::new();
+    let mut functions = FunctionMap::new();
+    let function = functions.reference(ModuleId::GLOBAL, None, "main", 1);
+    let root = roots.define(RootEntry {
+        function,
+        input: vec![int],
+        need: ExecutableNeed::Value,
+        kind: RootKind::Runtime,
+    });
+    let key = ActivationKey::from_inputs(root, function, &[int], &mut types);
+
+    assert_eq!(
+        types.interned_tys().len(),
+        before,
+        "a key must keep its coordinates as data, never intern a synthetic callable arrow"
+    );
+    assert_eq!(key.inputs(), &[int]);
+    assert_eq!(key.signature.result, result_alpha);
 }

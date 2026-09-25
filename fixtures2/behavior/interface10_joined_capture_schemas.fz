@@ -1,0 +1,10 @@
+#---
+# purpose: "one lexical closure retains distinct integer and atom capture schemas in a closed callable set"
+#---
+def captured(value), do: fn () -> value end
+def choose(n), do: if n > 0, do: captured(3), else: captured(:ok)
+def invoke(f), do: f.()
+def main() do
+  dbg(invoke(choose(1)))
+  dbg(invoke(choose(0)))
+end

@@ -1,0 +1,9 @@
+warning[type/no-matching-clause]: function clauses don't cover every input
+  --> fixtures2/behavior/project_input_return.fz:2:1
+   |
+2 | def loop([_ | t]), do: {:done, [second(loop(t))]}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+

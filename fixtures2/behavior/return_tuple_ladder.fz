@@ -5,11 +5,12 @@
 #
 # The program itself is ordinary and correct on every door. What it pins is the
 # compiler's cost of inferring its return. `build/1` returns `:start` or a pair
-# whose second field is another `build/1` return, so each round of the fixpoint
-# learns one more level of nesting and the inferred return climbs a ladder
-# instead of reaching a recursive denotation. Past the widening budget the
-# ladder tops out at `any`. `compiler2_tuple_return_ladder_revises_once_per_nesting_level`
-# in the drive tests measures that cost.
+# whose second field is another `build/1` return, so its recursive-return
+# component names the return directly as a regular denotation,
+# mu t.(:start | {integer, t}), on its own evidence -- no ladder of
+# ever-deeper approximations, no widening.
+# `compiler2_tuple_return_ladder_settles_via_component_solve` in the drive
+# tests measures that cost.
 def build(0), do: :start
 def build(n), do: {n, build(n - 1)}
 

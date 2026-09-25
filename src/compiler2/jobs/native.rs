@@ -186,8 +186,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
             };
             let callable = world.callable(wrapper.callable);
-            let shape = callable.function.map(|function| CallableShape {
-                target: ClosureTarget(function.as_u32()),
+            let shape = callable.direct().map(|alternative| CallableShape {
+                target: ClosureTarget(alternative.function.as_u32()),
                 captures: wrapper
                     .captures
                     .iter()
@@ -722,8 +722,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             return_tuple_arity,
             executable.abi.effects,
         );
-        let activation_inputs = executable.key.activation.inputs(self.world.types());
-        let params = ctx.entry_params(activation_inputs.as_slice());
+        let activation_inputs = executable.key.activation.inputs();
+        let params = ctx.entry_params(activation_inputs);
         let mut extern_args = Vec::with_capacity(params.len());
         for (arg_index, param) in params.iter().copied().enumerate() {
             let arg = if arg_index < signature.params.len() {
@@ -1228,7 +1228,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         lowered.push(crate::fz_ir::BitFieldIr {
                             value: self.env_runtime_var(ctx, executable, env, field.value),
                             ty: field.spec.ty,
-                            size: lower_bit_size_ir(self.world, &field.spec.size, env)?,
+                            size: lower_bit_size_ir(&field.spec.size, env)?,
                             endian: field.spec.endian,
                             signed: field.spec.signed,
                             unit: field.spec.unit,
@@ -1270,6 +1270,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     function: _,
                     captures,
                     construction,
+                    selection,
                 } => {
                     for capture in captures {
                         share_native_value(ctx, env.value(*capture));
@@ -1300,8 +1301,24 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         self.bind_runtime_value(ctx, executable, env, *value, var);
                     } else {
                         let callable = callable_id_for_shape(self.world, shape)?;
+                        if let Some(selection) = selection {
+                            let captures = captures
+                                .iter()
+                                .map(|capture| env.value(*capture).cloned().unwrap_or(NativeBoundValue::Absent))
+                                .collect::<Vec<_>>();
+                            let lanes =
+                                self.lower_capture_selection(ctx, executable, shape, callable, selection, &captures)?;
+                            bind_local_value(
+                                ctx,
+                                executable,
+                                env,
+                                *value,
+                                NativeBoundValue::Transport { shape, lanes },
+                            );
+                            continue;
+                        }
                         let callable_descr = self.world.callable(callable).clone();
-                        let capture_layouts = callable_descr.capture_layouts.to_vec();
+                        let capture_layouts = callable_descr.direct().ok_or(FatalError)?.capture_layouts.to_vec();
                         if capture_layouts.len() != captures.len() {
                             return Err(incomplete_native_program(
                                 self.telemetry,
@@ -1442,7 +1459,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let (result, _) = ctx.emit_let(Prim::BitReadField {
                         reader,
                         ty: spec.ty,
-                        size: lower_bit_size_ir(self.world, &spec.size, env)?,
+                        size: lower_bit_size_ir(&spec.size, env)?,
                         endian: spec.endian,
                         signed: spec.signed,
                         unit: spec.unit,
@@ -1498,7 +1515,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     &direct.return_flow,
                 ),
                 CallEdge::Dispatch(dispatch) => {
-                    self.lower_dispatch_call_tail(ctx, executable, entries, entry_fns, env, dispatch, args, dest)
+                    self.lower_dispatch_call_tail(ctx, executable, entries, entry_fns, env, dispatch, args, dest, None)
                 }
                 CallEdge::Indirect { .. } => Err(incomplete_native_program(
                     self.telemetry,
@@ -1511,137 +1528,72 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 edge,
                 args,
                 dest,
-                return_flow,
+                target,
                 ..
             } => {
+                let return_flow = match target {
+                    CallEdge::Indirect(flow) => Some(flow),
+                    _ => None,
+                };
                 let callee_value = env.cloned_value(*callee);
                 // The recorded call form carries the decision the artifact
                 // layer made. Native emits what that answer promised; it does
                 // not re-decide, and it does not re-derive where the target's
                 // captures end.
-                let direct_call = match edge {
-                    ClosureCallEdge::Direct { target, capture_count } => {
-                        let capture_inputs_end = *capture_count;
-                        let capture_lanes = self.direct_closure_capture_lanes(
+                match edge {
+                    ClosureCallEdge::Direct {
+                        target: executable_target,
+                        capture_count,
+                    } => {
+                        let CallEdge::Direct(direct) = target else {
+                            return Err(FatalError);
+                        };
+                        let (callee, call_args) = self.native_closure_call_target_and_args(
                             ctx,
                             executable,
+                            env,
                             *callee,
                             callee_value.as_ref(),
-                            target,
-                            capture_inputs_end,
+                            executable_target,
+                            *capture_count,
+                            0,
+                            args,
+                            &direct.return_flow,
                         )?;
-                        let target = self
-                            .program
-                            .executable_index(target, self.world.types())
-                            .ok_or(FatalError)?;
-                        let callee_executable = &self.program.executables()[target];
-                        let mut call_args = capture_lanes;
-                        let target_inputs = callee_executable.key.activation.input_len(self.world.types());
-                        if target_inputs != capture_inputs_end + args.len() {
-                            return Err(incomplete_native_program(
-                                self.telemetry,
-                                self.root_id,
-                                format!(
-                                    "native direct closure call owner={:?} target={:?} takes {target_inputs} input(s), but the call form names {capture_inputs_end} capture(s) and passes {} argument(s)",
-                                    executable.key,
-                                    callee_executable.key,
-                                    args.len(),
-                                ),
-                            ));
-                        }
-                        for (surface_index, arg) in args.iter().enumerate() {
-                            let semantic_index = capture_inputs_end + surface_index;
-                            let Some(target_input) = callee_executable
-                                .abi
-                                .semantic_inputs
-                                .iter()
-                                .find(|input| input.semantic_index == semantic_index)
-                            else {
-                                continue;
-                            };
-                            if target_input.layout.reprs.is_empty() {
-                                continue;
-                            }
-                            let local = env_local_value(env, arg.value)?;
-                            if matches!(
-                                target_input.layout.carrier,
-                                super::super::pull::TransportCarrier::ValueRef(_)
-                            ) {
-                                self.encode_runtime_value_for_layout(
-                                    ctx,
-                                    callee_executable,
-                                    Some(arg.value),
-                                    &local,
-                                    &target_input.layout,
-                                    &mut call_args,
-                                )?;
-                            } else {
-                                self.encode_runtime_value(
-                                    ctx,
-                                    callee_executable,
-                                    Some(arg.value),
-                                    &local,
-                                    target_input.layout.structural,
-                                    &mut call_args,
-                                )?;
-                            }
-                        }
-                        if call_args.len() != callee_executable.abi.param_reprs.len() {
-                            return Err(incomplete_native_program(
-                                self.telemetry,
-                                self.root_id,
-                                format!(
-                                    "native direct closure call owner={:?} target={:?} encoded {} argument lane(s) for {} parameter(s)",
-                                    executable.key,
-                                    callee_executable.key,
-                                    call_args.len(),
-                                    callee_executable.abi.param_reprs.len(),
-                                ),
-                            ));
-                        }
-                        if !return_flow.as_ref().is_some_and(|flow| match flow {
-                            BackendReturnFlow::NoReturn | BackendReturnFlow::Tail => true,
-                            BackendReturnFlow::Continue { source } | BackendReturnFlow::Deliver { source, .. } => {
-                                source.as_ref() == &callee_executable.abi.return_layout
-                            }
-                        }) {
-                            return Err(incomplete_native_program(
-                                self.telemetry,
-                                self.root_id,
-                                format!(
-                                    "native direct closure call owner={:?} target={:?} reads a return flow {:?} the target does not publish",
-                                    executable.key, callee_executable.key, return_flow,
-                                ),
-                            ));
-                        }
-                        Some((target, call_args))
+                        return self.emit_native_direct_call_tail(
+                            ctx,
+                            executable,
+                            entries,
+                            entry_fns,
+                            env,
+                            callee,
+                            call_args,
+                            dest,
+                            &direct.return_flow,
+                        );
+                    }
+                    ClosureCallEdge::Closed { .. } => {
+                        let CallEdge::Dispatch(dispatch) = target else {
+                            return Err(FatalError);
+                        };
+                        return self.lower_dispatch_call_tail(
+                            ctx,
+                            executable,
+                            entries,
+                            entry_fns,
+                            env,
+                            dispatch,
+                            args,
+                            dest,
+                            Some((edge, *callee)),
+                        );
                     }
                     // A seam call goes through the callee value's own boundary,
                     // and a dead call reaches nothing: both lower to the
                     // indirect term below, whose return flow says which.
-                    ClosureCallEdge::Seam | ClosureCallEdge::Dead => None,
+                    ClosureCallEdge::Seam | ClosureCallEdge::Dead => {}
                 };
-                if let Some((target, call_args)) = direct_call {
-                    let callee = DirectCallTarget::Local(self.executable_fns[target]);
-                    let return_flow = return_flow.as_ref().ok_or_else(|| {
-                        incomplete_native_program(
-                            self.telemetry,
-                            self.root_id,
-                            "native direct closure call is missing return-flow facts",
-                        )
-                    })?;
-                    self.emit_native_direct_call_tail(
-                        ctx,
-                        executable,
-                        entries,
-                        entry_fns,
-                        env,
-                        callee,
-                        call_args,
-                        dest,
-                        return_flow,
-                    )
-                } else {
+                {
                     let callee_value = callee_value.as_ref().ok_or_else(|| {
                         incomplete_native_program(
                             self.telemetry,
@@ -1656,7 +1608,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         env,
                         &args.iter().map(|arg| arg.value).collect::<Vec<_>>(),
                     );
-                    match (return_flow.as_ref(), dest) {
+                    match (return_flow, dest) {
                         (Some(BackendReturnFlow::Continue { source }), ControlDestination::Return) => {
                             let continuation =
                                 self.return_lane_continuation_for_source_payload(ctx, executable, source)?;
@@ -1846,6 +1798,117 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn native_closure_call_target_and_args(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        env: &ValueEnv,
+        callee: ValueId,
+        callee_value: Option<&NativeBoundValue>,
+        target: &ExecutableKey,
+        capture_count: usize,
+        alternative: usize,
+        args: &[super::super::artifact::BackendCallArg],
+        return_flow: &BackendReturnFlow,
+    ) -> Result<(DirectCallTarget, Vec<Var>), FatalError> {
+        let capture_inputs_end = capture_count;
+        let capture_lanes = self.direct_closure_capture_lanes(
+            ctx,
+            executable,
+            callee,
+            callee_value,
+            target,
+            capture_inputs_end,
+            alternative,
+        )?;
+        let target = self
+            .program
+            .executable_index(target, self.world.types())
+            .ok_or(FatalError)?;
+        let callee_executable = &self.program.executables()[target];
+        let mut call_args = capture_lanes;
+        let target_inputs = callee_executable.key.activation.input_len();
+        if target_inputs != capture_inputs_end + args.len() {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "native direct closure call owner={:?} target={:?} takes {target_inputs} input(s), but the call form names {capture_inputs_end} capture(s) and passes {} argument(s)",
+                    executable.key,
+                    callee_executable.key,
+                    args.len(),
+                ),
+            ));
+        }
+        for (surface_index, arg) in args.iter().enumerate() {
+            let semantic_index = capture_inputs_end + surface_index;
+            let Some(target_input) = callee_executable
+                .abi
+                .semantic_inputs
+                .iter()
+                .find(|input| input.semantic_index == semantic_index)
+            else {
+                continue;
+            };
+            if target_input.layout.reprs.is_empty() {
+                continue;
+            }
+            let local = env_local_value(env, arg.value)?;
+            if matches!(
+                target_input.layout.carrier,
+                super::super::pull::TransportCarrier::ValueRef(_)
+            ) {
+                self.encode_runtime_value_for_layout(
+                    ctx,
+                    callee_executable,
+                    Some(arg.value),
+                    &local,
+                    &target_input.layout,
+                    &mut call_args,
+                )?;
+            } else {
+                self.encode_runtime_value(
+                    ctx,
+                    callee_executable,
+                    Some(arg.value),
+                    &local,
+                    target_input.layout.structural,
+                    &mut call_args,
+                )?;
+            }
+        }
+        if call_args.len() != callee_executable.abi.param_reprs.len() {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "native direct closure call owner={:?} target={:?} encoded {} argument lane(s) for {} parameter(s)",
+                    executable.key,
+                    callee_executable.key,
+                    call_args.len(),
+                    callee_executable.abi.param_reprs.len(),
+                ),
+            ));
+        }
+        if !match return_flow {
+            BackendReturnFlow::NoReturn | BackendReturnFlow::Tail => true,
+            BackendReturnFlow::Continue { source } | BackendReturnFlow::Deliver { source, .. } => {
+                source.as_ref() == &callee_executable.abi.return_layout
+            }
+        } {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "native direct closure call owner={:?} target={:?} reads a return flow {:?} the target does not publish",
+                    executable.key, callee_executable.key, return_flow,
+                ),
+            ));
+        }
+        Ok((DirectCallTarget::Local(self.executable_fns[target]), call_args))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn lower_direct_call_tail(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -1883,23 +1946,33 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         dispatch: &DispatchCallEdge<ExecutableKey, BackendReturnFlow>,
         args: &[super::super::artifact::BackendCallArg],
         dest: &ControlDestination,
+        closure: Option<(&ClosureCallEdge, ValueId)>,
     ) -> Result<(), FatalError> {
+        let input_offset = usize::from(closure.is_some());
         let input_ids = args.iter().map(|arg| arg.value).collect::<Vec<_>>();
-        let input_vars = input_ids
+        let mut word_inputs = input_ids
             .iter()
             .enumerate()
             .map(|(index, value)| {
-                if dispatch.plan.required_input(index) {
-                    self.env_runtime_var(ctx, executable, env, *value)
+                if dispatch.plan.required_input(index + input_offset) {
+                    env_local_value(env, *value)
                 } else {
-                    ctx.emit_let(Prim::Const(Const::Nil)).0
+                    Ok(NativeBoundValue::Absent)
                 }
             })
-            .collect::<Vec<_>>();
-        let word_inputs = input_vars
-            .into_iter()
-            .map(NativeBoundValue::Runtime)
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some((_, callee)) = closure {
+            let selector = match env.value(callee) {
+                Some(NativeBoundValue::Transport { shape, lanes }) => match self.world.shape(*shape) {
+                    ShapeDescr::Callable(callable) if self.world.callable(*callable).selector().is_some() => {
+                        *lanes.first().ok_or(FatalError)?
+                    }
+                    _ => lower_backend_literal(ctx, &self.atom_ids, self.world.types_mut(), &GroundValue::Int(0))?,
+                },
+                _ => lower_backend_literal(ctx, &self.atom_ids, self.world.types_mut(), &GroundValue::Int(0))?,
+            };
+            word_inputs.insert(0, NativeBoundValue::Runtime(selector));
+        }
         let bindings = self.lower_argument_bindings(ctx, &dispatch.plan, &word_inputs)?;
         let mut state = DispatchState::new(word_inputs, Vec::new(), bindings);
         self.lower_dispatch_call_node(
@@ -1911,6 +1984,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             dispatch,
             args,
             dest,
+            closure,
             dispatch.plan.graph.root,
             &mut state,
         )
@@ -1927,6 +2001,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         dispatch: &DispatchCallEdge<ExecutableKey, BackendReturnFlow>,
         args: &[super::super::artifact::BackendCallArg],
         dest: &ControlDestination,
+        closure: Option<(&ClosureCallEdge, ValueId)>,
         node_id: GraphNodeId,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
@@ -1947,8 +2022,26 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     ctx.halt_with_atom(self.atom_id(UNREACHABLE_CONTROL_ATOM));
                     return Ok(());
                 };
-                let (callee, call_args) =
-                    self.native_direct_call_target_and_args(ctx, executable, env, &arm.callee, args)?;
+                let (callee, call_args) = if let Some((ClosureCallEdge::Closed { arms }, callee)) = closure {
+                    let source = arms.get(outcome.0 as usize).ok_or(FatalError)?;
+                    if arm.callee.local() != Some(&source.target) {
+                        return Err(FatalError);
+                    }
+                    self.native_closure_call_target_and_args(
+                        ctx,
+                        executable,
+                        env,
+                        callee,
+                        env.value(callee),
+                        &source.target,
+                        source.capture_count,
+                        source.alternative,
+                        args,
+                        &arm.return_flow,
+                    )?
+                } else {
+                    self.native_direct_call_target_and_args(ctx, executable, env, &arm.callee, args)?
+                };
                 self.emit_native_direct_call_tail(
                     ctx,
                     executable,
@@ -1975,7 +2068,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 state,
                 &mut |lowerer, ctx, target, state| {
                     lowerer.lower_dispatch_call_node(
-                        ctx, executable, entries, entry_fns, env, dispatch, args, dest, target, state,
+                        ctx, executable, entries, entry_fns, env, dispatch, args, dest, closure, target, state,
                     )
                 },
             ),
@@ -2806,7 +2899,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         executable: &BackendExecutable,
         params: &[Var],
     ) -> Result<Vec<Option<NativeBoundValue>>, FatalError> {
-        let semantic_arity = executable.key.activation.input_len(self.world.types());
+        let semantic_arity = executable.key.activation.input_len();
         let mut bound = vec![None; semantic_arity];
         let mut lane_index = 0;
         for input in &executable.abi.semantic_inputs {
@@ -3042,13 +3135,18 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
 
     /// What a type test answers from transport shapes alone.
     ///
-    /// A tuple delivered as lanes carries its arity in its shape, so a question
-    /// about it can be settled before any code is emitted. `None` where the
+    /// Tuples carry their arity and callables carry their construction schemas,
+    /// so some questions settle before any code is emitted. `None` where the
     /// answer needs a value to read -- the emitting pass then asks it.
     fn settled_lane_form_type_test(&self, value: &NativeBoundValue, predicate: &RuntimeTypePredicate) -> Option<bool> {
         let NativeBoundValue::Transport { shape, lanes } = value else {
             return None;
         };
+        if let ShapeDescr::Callable(callable) = self.world.shape(*shape) {
+            let answers = self.callable_alternative_type_tests(*callable, predicate);
+            let first = *answers.first()?;
+            return answers.iter().all(|answer| *answer == first).then_some(first);
+        }
         let arity = self.world.tuple_arity(*shape)?;
         let positions = match predicate.tuple_positions(arity) {
             TuplePositions::Never => return Some(false),
@@ -3078,13 +3176,35 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         admitted
     }
 
+    /// Read the same construction annotation that a public wrapper stamps,
+    /// without materializing a closure or inspecting its captured values.
+    fn callable_alternative_type_tests(&self, callable: CallableId, predicate: &RuntimeTypePredicate) -> Vec<bool> {
+        self.world
+            .callable(callable)
+            .alternatives()
+            .iter()
+            .map(|alternative| {
+                predicate.callables.admits(&CallableShape {
+                    target: ClosureTarget(alternative.function.as_u32()),
+                    captures: alternative
+                        .capture_tys
+                        .iter()
+                        .map(|ty| self.world.types().runtime_type_predicate(ty))
+                        .collect(),
+                })
+            })
+            .collect()
+    }
+
     /// Ask a type test of a value in whatever form it is held.
     ///
     /// A whole value answers with one `RuntimeTypeTest`. A tuple held as lanes
     /// has no value to read a schema off, so it asks the predicate what it
     /// wants of a tuple of that arity and puts one question to each position
     /// instead -- the same decomposition the boxed matcher and the boxed
-    /// emitter make, one level in, against lanes already in hand.
+    /// emitter make, one level in, against lanes already in hand. A closed
+    /// callable asks its selector which known construction annotation applies;
+    /// captured runtime values never replace that annotation.
     ///
     /// Whatever the shapes settle is decided first, so a shape this value
     /// cannot match emits nothing at all.
@@ -3114,6 +3234,31 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             NativeBoundValue::Transport { shape, lanes } => (*shape, lanes.clone()),
         };
+        if let ShapeDescr::Callable(callable) = self.world.shape(shape) {
+            let answers = self.callable_alternative_type_tests(*callable, predicate);
+            if self.world.callable(*callable).selector().is_none() || lanes.is_empty() {
+                return Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!("native type test cannot read callable selector in {:?}", ctx.origin),
+                ));
+            }
+            let mut admitted = DispatchAnswer::Static(false);
+            for (index, matches) in answers.into_iter().enumerate() {
+                if !matches {
+                    continue;
+                }
+                let expected = lower_backend_literal(
+                    ctx,
+                    &self.atom_ids,
+                    self.world.types_mut(),
+                    &GroundValue::Int(index as i64),
+                )?;
+                let equal = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, lanes[0], expected)).0;
+                admitted = admitted.or(ctx, DispatchAnswer::Runtime(equal));
+            }
+            return Ok(admitted);
+        }
         let Some(arity) = self.world.tuple_arity(shape) else {
             return Err(incomplete_native_program(
                 self.telemetry,
@@ -3925,7 +4070,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             ShapeDescr::Callable(callable) => {
                 let descr = self.world.callable(callable);
-                if descr.function.is_none() && lanes.len() == 1 {
+                if matches!(descr, super::super::transport::CallableDescr::Opaque) && lanes.len() == 1 {
                     return Ok(lanes[0]);
                 }
                 let capture_lanes = self.world.shape_width(shape);
@@ -3941,7 +4086,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         ),
                     ));
                 }
-                if descr.function.is_none() {
+                if matches!(descr, super::super::transport::CallableDescr::Opaque) {
                     return Err(incomplete_native_program(
                         self.telemetry,
                         self.root_id,
@@ -3997,9 +4142,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ))
     }
 
-    fn direct_callable_captures(
+    fn selected_callable_captures(
         &self,
         value: &NativeBoundValue,
+        alternative: usize,
     ) -> Result<Option<(FunctionId, Vec<NativeBoundValue>)>, FatalError> {
         let NativeBoundValue::Transport { shape, lanes } = value else {
             return Ok(None);
@@ -4007,11 +4153,35 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let ShapeDescr::Callable(callable) = self.world.shape(*shape) else {
             return Ok(None);
         };
-        let descr = self.world.callable(*callable);
-        let Some(function) = descr.function else {
-            return Ok(None);
-        };
-        Ok(Some((function, self.transport_field_views(*shape, lanes)?)))
+        let selected = self
+            .world
+            .callable(*callable)
+            .alternative(alternative)
+            .ok_or(FatalError)?;
+        if lanes.len() != self.world.shape_width(*shape) {
+            return Err(FatalError);
+        }
+        let captures = self
+            .world
+            .callable_capture_spans(*callable, alternative)
+            .ok_or(FatalError)?
+            .map(|(layout, span)| {
+                let values = lanes.get(span).ok_or(FatalError)?.to_vec();
+                Ok(if layout.carrier.is_value_ref() {
+                    NativeBoundValue::Runtime(*values.first().ok_or(FatalError)?)
+                } else {
+                    match self.world.shape(layout.structural) {
+                        ShapeDescr::Nothing => NativeBoundValue::Absent,
+                        ShapeDescr::Lane(_) => NativeBoundValue::Runtime(*values.first().ok_or(FatalError)?),
+                        ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => NativeBoundValue::Transport {
+                            shape: layout.structural,
+                            lanes: values,
+                        },
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, FatalError>>()?;
+        Ok(Some((selected.function, captures)))
     }
 
     /// The capture lanes a direct closure call hands its target.
@@ -4029,6 +4199,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         value: Option<&NativeBoundValue>,
         target: &ExecutableKey,
         capture_inputs_end: usize,
+        alternative: usize,
     ) -> Result<Vec<Var>, FatalError> {
         let target = self
             .program
@@ -4036,7 +4207,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .ok_or(FatalError)?;
         let executable = Rc::clone(&self.program.executables()[target]);
         if let Some(value) = value
-            && let Some((function, captures)) = self.direct_callable_captures(value)?
+            && let Some((function, captures)) = self.selected_callable_captures(value, alternative)?
         {
             if function != executable.key.activation.function || captures.len() != capture_inputs_end {
                 return Err(FatalError);
@@ -4181,65 +4352,338 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 Ok(())
             }
             ShapeDescr::Callable(callable) => {
-                let descr = self.world.callable(callable).clone();
-                let descriptor_lanes = self.world.shape_lane_ids(shape);
-                if descr.function.is_none()
-                    && let [lane] = descriptor_lanes.as_slice()
-                {
-                    let ty = self.world.lane(*lane).ty;
-                    lanes.push(self.materialize_native_value(ctx, Some(ty), value)?);
-                    return Ok(());
-                }
-                if let Some((function, captures)) = self.direct_callable_captures(value)? {
-                    if descr.function != Some(function) || captures.len() != descr.capture_layouts.len() {
-                        return Err(FatalError);
-                    }
-                    for (capture, layout) in captures.iter().zip(descr.capture_layouts.iter().copied()) {
-                        self.encode_transport_layout(ctx, executable, None, capture, layout, lanes)?;
-                    }
-                    return Ok(());
-                }
-                if let NativeBoundValue::Runtime(var) = value {
-                    if descr.function.is_none() {
-                        return Err(incomplete_native_program(
-                            self.telemetry,
-                            self.root_id,
-                            format!(
-                                "native cannot project captures out of a callable that names no function in {:?}",
-                                ctx.origin
-                            ),
-                        ));
-                    }
-                    let capture_layouts = descr.capture_layouts;
-                    for (index, layout) in capture_layouts.iter().copied().enumerate() {
-                        if self.world.layout_width(layout) == 0 {
-                            continue;
-                        }
-                        let (capture, _) = ctx.emit_let(Prim::ClosureCapture {
-                            closure: *var,
-                            index: index as u32,
-                        });
-                        self.encode_transport_layout(
-                            ctx,
-                            executable,
-                            None,
-                            &NativeBoundValue::Runtime(capture),
-                            layout,
-                            lanes,
-                        )?;
-                    }
-                    return Ok(());
-                }
-                Err(incomplete_native_program(
-                    self.telemetry,
-                    self.root_id,
-                    format!(
-                        "native attempted to encode callable shape {:?} ({:?}) for value {:?} from {:?} in {:?}; callable values must be supplied by matching transport lanes or a published value seam",
-                        shape, descr, value_id, value, ctx.origin,
-                    ),
-                ))
+                self.encode_callable_lanes(ctx, executable, value, shape, callable, lanes)
             }
         }
+    }
+
+    fn encode_callable_lanes(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        value: &NativeBoundValue,
+        shape: ShapeId,
+        callable: CallableId,
+        lanes: &mut Vec<Var>,
+    ) -> Result<(), FatalError> {
+        let target = self.world.callable(callable).clone();
+        if matches!(target, super::super::transport::CallableDescr::Opaque) {
+            lanes.push(self.materialize_native_value(ctx, None, value)?);
+            return Ok(());
+        }
+        if let NativeBoundValue::Runtime(var) = value {
+            let Some(alternative) = target.direct() else {
+                lanes.extend(self.encode_boxed_callable(ctx, executable, *var, shape, callable)?);
+                return Ok(());
+            };
+            for (index, layout) in alternative.capture_layouts.iter().copied().enumerate() {
+                if self.world.layout_width(layout) == 0 {
+                    continue;
+                }
+                let capture = ctx
+                    .emit_let(Prim::ClosureCapture {
+                        closure: *var,
+                        index: index as u32,
+                    })
+                    .0;
+                self.encode_transport_layout(
+                    ctx,
+                    executable,
+                    None,
+                    &NativeBoundValue::Runtime(capture),
+                    layout,
+                    lanes,
+                )?;
+            }
+            return Ok(());
+        }
+        let NativeBoundValue::Transport {
+            shape: source_shape,
+            lanes: source_lanes,
+        } = value
+        else {
+            return Err(FatalError);
+        };
+        let ShapeDescr::Callable(source) = self.world.shape(*source_shape) else {
+            return Err(FatalError);
+        };
+        let source = self.world.callable(*source).clone();
+        if let Some(alternative) = source.direct() {
+            let selected = target
+                .alternatives()
+                .iter()
+                .position(|member| member.same_identity(alternative))
+                .ok_or_else(|| {
+                    incomplete_native_program(
+                        self.telemetry,
+                        self.root_id,
+                        format!("callable source {alternative:?} absent from destination {target:?}"),
+                    )
+                })?;
+            let (_, captures) = self.selected_callable_captures(value, 0)?.ok_or(FatalError)?;
+            lanes.extend(self.encode_selected_callable(ctx, executable, shape, callable, selected, &captures)?);
+            return Ok(());
+        }
+        if source.selector().is_none() {
+            return Err(FatalError);
+        }
+        let selector = *source_lanes.first().ok_or(FatalError)?;
+        let contract = super::artifact::abi_layout_contract(self.world, TransportLayout::structural(shape));
+        let params = contract
+            .iter()
+            .map(|(ty, _)| {
+                let var = ctx.builder.fresh_var();
+                ctx.value_types.insert(var, *ty);
+                var
+            })
+            .collect::<Vec<_>>();
+        let done = ctx.builder.block(params.clone());
+        for (index, alternative) in source.alternatives().iter().enumerate() {
+            let Some(selected) = target
+                .alternatives()
+                .iter()
+                .position(|member| member.same_identity(alternative))
+            else {
+                continue;
+            };
+            let tag = lower_backend_literal(
+                ctx,
+                &self.atom_ids,
+                self.world.types_mut(),
+                &GroundValue::Int(index as i64),
+            )?;
+            let cond = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, selector, tag)).0;
+            let yes = ctx.builder.block(vec![]);
+            let no = ctx.builder.block(vec![]);
+            ctx.set_term(Term::If {
+                cond,
+                then_b: yes,
+                else_b: no,
+                origin: BranchOrigin::ClauseDispatch,
+            });
+            ctx.current_block = yes;
+            let (_, captures) = self.selected_callable_captures(value, index)?.ok_or(FatalError)?;
+            let encoded = self.encode_selected_callable(ctx, executable, shape, callable, selected, &captures)?;
+            ctx.set_term(Term::Goto(done, encoded));
+            ctx.current_block = no;
+        }
+        ctx.halt_with_atom(self.atom_id(UNREACHABLE_CONTROL_ATOM));
+        ctx.current_block = done;
+        lanes.extend(params);
+        Ok(())
+    }
+
+    fn encode_boxed_callable(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        value: Var,
+        shape: ShapeId,
+        callable: CallableId,
+    ) -> Result<Vec<Var>, FatalError> {
+        let target = self.world.callable(callable).clone();
+        let candidates = self
+            .callable_boundaries
+            .iter()
+            .filter_map(|boundary| {
+                let source = self.world.callable(boundary.callable).direct()?;
+                let selected = target
+                    .alternatives()
+                    .iter()
+                    .position(|alternative| alternative.same_identity(source))?;
+                Some((boundary.identity_fn, selected, source.capture_tys.len()))
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                "closed callable conversion has no published source construction",
+            ));
+        }
+        let contract = super::artifact::abi_layout_contract(self.world, TransportLayout::structural(shape));
+        let params = contract
+            .iter()
+            .map(|(ty, _)| {
+                let var = ctx.builder.fresh_var();
+                ctx.value_types.insert(var, *ty);
+                var
+            })
+            .collect::<Vec<_>>();
+        let done = ctx.builder.block(params.clone());
+        for (construction, selected, count) in candidates {
+            let cond = ctx
+                .emit_let(Prim::CallableConstructionIs {
+                    callable: value,
+                    construction,
+                })
+                .0;
+            let yes = ctx.builder.block(vec![]);
+            let no = ctx.builder.block(vec![]);
+            ctx.set_term(Term::If {
+                cond,
+                then_b: yes,
+                else_b: no,
+                origin: BranchOrigin::ClauseDispatch,
+            });
+            ctx.current_block = yes;
+            let captures = (0..count)
+                .map(|index| {
+                    NativeBoundValue::Runtime(
+                        ctx.emit_let(Prim::ClosureCapture {
+                            closure: value,
+                            index: index as u32,
+                        })
+                        .0,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let encoded = self.encode_selected_callable(ctx, executable, shape, callable, selected, &captures)?;
+            ctx.set_term(Term::Goto(done, encoded));
+            ctx.current_block = no;
+        }
+        ctx.halt_with_atom(self.atom_id(UNREACHABLE_CONTROL_ATOM));
+        ctx.current_block = done;
+        Ok(params)
+    }
+
+    fn lower_capture_selection(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        shape: ShapeId,
+        callable: CallableId,
+        selection: &super::super::artifact::CallableCaptureSelection,
+        captures: &[NativeBoundValue],
+    ) -> Result<Vec<Var>, FatalError> {
+        let contract = super::artifact::abi_layout_contract(self.world, TransportLayout::structural(shape));
+        let params = contract
+            .into_iter()
+            .map(|(ty, _)| {
+                let var = ctx.builder.fresh_var();
+                ctx.value_types.insert(var, ty);
+                var
+            })
+            .collect::<Vec<_>>();
+        let done = ctx.builder.block(params.clone());
+        let bindings = self.lower_argument_bindings(ctx, &selection.plan, captures)?;
+        let mut state = DispatchState::new(captures.to_vec(), Vec::new(), bindings);
+        self.lower_capture_selection_node(
+            ctx,
+            executable,
+            shape,
+            callable,
+            selection,
+            captures,
+            done,
+            selection.plan.graph.root,
+            &mut state,
+        )?;
+        ctx.current_block = done;
+        Ok(params)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_capture_selection_node(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        shape: ShapeId,
+        callable: CallableId,
+        selection: &super::super::artifact::CallableCaptureSelection,
+        captures: &[NativeBoundValue],
+        done: BlockId,
+        node: GraphNodeId,
+        state: &mut DispatchState,
+    ) -> Result<(), FatalError> {
+        match selection.plan.graph.node(node).cloned().ok_or(FatalError)? {
+            DispatchNode::Fail => {
+                ctx.halt_with_atom(self.atom_id(UNREACHABLE_CONTROL_ATOM));
+                Ok(())
+            }
+            DispatchNode::Outcome { outcome, .. } => {
+                let selected = *selection
+                    .alternatives
+                    .get(selection.plan.body_id(outcome) as usize)
+                    .ok_or(FatalError)?;
+                let lanes = self.encode_selected_callable(ctx, executable, shape, callable, selected, captures)?;
+                ctx.set_term(Term::Goto(done, lanes));
+                Ok(())
+            }
+            DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } => self.lower_dispatch_test(
+                ctx,
+                &selection.plan,
+                &predicate,
+                &on_match,
+                &on_miss,
+                BranchOrigin::ClauseDispatch,
+                state,
+                &mut |lowerer, ctx, node, state| {
+                    lowerer.lower_capture_selection_node(
+                        ctx, executable, shape, callable, selection, captures, done, node, state,
+                    )
+                },
+            ),
+        }
+    }
+
+    fn encode_selected_callable(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        shape: ShapeId,
+        callable: CallableId,
+        selected: usize,
+        captures: &[NativeBoundValue],
+    ) -> Result<Vec<Var>, FatalError> {
+        let descr = self.world.callable(callable).clone();
+        let spans = self
+            .world
+            .callable_capture_spans(callable, selected)
+            .ok_or(FatalError)?
+            .collect::<Vec<_>>();
+        if captures.len() != spans.len() {
+            return Err(FatalError);
+        }
+        let mut encoded = super::artifact::abi_layout_contract(self.world, TransportLayout::structural(shape))
+            .into_iter()
+            .map(|(ty, repr)| {
+                let constant = match repr {
+                    AbiValueRepr::RawInt => Const::Int(0),
+                    AbiValueRepr::RawF64 => Const::Float(0.0),
+                    AbiValueRepr::RawAtom | AbiValueRepr::ValueRef => Const::Nil,
+                };
+                let var = ctx.emit_let(Prim::Const(constant)).0;
+                ctx.value_types.insert(var, ty);
+                var
+            })
+            .collect::<Vec<_>>();
+        if descr.selector().is_some() {
+            encoded[0] = lower_backend_literal(
+                ctx,
+                &self.atom_ids,
+                self.world.types_mut(),
+                &GroundValue::Int(selected as i64),
+            )?;
+        }
+        for (capture, (layout, span)) in captures.iter().zip(spans) {
+            // An omitted capture can still have a known tuple or callable
+            // shape. Its empty representation needs no bound runtime value.
+            if span.is_empty() {
+                continue;
+            }
+            let mut values = Vec::new();
+            self.encode_transport_layout(ctx, executable, None, capture, layout, &mut values)?;
+            if values.len() != span.len() {
+                return Err(FatalError);
+            }
+            encoded[span].copy_from_slice(&values);
+        }
+        Ok(encoded)
     }
 
     fn encode_env_value_for_layout(
@@ -4386,94 +4830,16 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
         }
     }
 
-    let scc_of = {
-        let mut index_counter = 0usize;
-        let mut stack = Vec::new();
-        let mut on_stack = HashSet::new();
-        let mut index = HashMap::new();
-        let mut lowlink = HashMap::new();
-        let mut scc_of = HashMap::new();
-        let mut scc_count = 0usize;
-        let all_fns = module.fns.iter().map(|function| function.id).collect::<Vec<_>>();
-
-        fn strongconnect(
-            function: FnId,
-            graph: &HashMap<FnId, HashSet<FnId>>,
-            index_counter: &mut usize,
-            stack: &mut Vec<FnId>,
-            on_stack: &mut HashSet<FnId>,
-            index: &mut HashMap<FnId, usize>,
-            lowlink: &mut HashMap<FnId, usize>,
-            scc_of: &mut HashMap<FnId, usize>,
-            scc_count: &mut usize,
-        ) {
-            let function_index = *index_counter;
-            index.insert(function, function_index);
-            lowlink.insert(function, function_index);
-            *index_counter += 1;
-            stack.push(function);
-            on_stack.insert(function);
-
-            if let Some(neighbors) = graph.get(&function) {
-                for neighbor in neighbors.iter().copied().collect::<Vec<_>>() {
-                    if !index.contains_key(&neighbor) {
-                        strongconnect(
-                            neighbor,
-                            graph,
-                            index_counter,
-                            stack,
-                            on_stack,
-                            index,
-                            lowlink,
-                            scc_of,
-                            scc_count,
-                        );
-                        let neighbor_lowlink = lowlink[&neighbor];
-                        let function_lowlink = lowlink.get_mut(&function).expect("function lowlink");
-                        if neighbor_lowlink < *function_lowlink {
-                            *function_lowlink = neighbor_lowlink;
-                        }
-                    } else if on_stack.contains(&neighbor) {
-                        let neighbor_index = index[&neighbor];
-                        let function_lowlink = lowlink.get_mut(&function).expect("function lowlink");
-                        if neighbor_index < *function_lowlink {
-                            *function_lowlink = neighbor_index;
-                        }
-                    }
-                }
-            }
-
-            if lowlink[&function] == index[&function] {
-                let scc_id = *scc_count;
-                *scc_count += 1;
-                loop {
-                    let member = stack.pop().expect("SCC stack member");
-                    on_stack.remove(&member);
-                    scc_of.insert(member, scc_id);
-                    if member == function {
-                        break;
-                    }
-                }
-            }
+    let all_fns = module.fns.iter().map(|function| function.id).collect::<Vec<_>>();
+    let components = super::super::scc::strongly_connected_components(all_fns, |function| {
+        graph.get(function).into_iter().flatten().copied().collect::<Vec<_>>()
+    });
+    let mut scc_of = HashMap::new();
+    for (scc_id, members) in components.into_iter().enumerate() {
+        for member in members {
+            scc_of.insert(member, scc_id);
         }
-
-        for function in &all_fns {
-            if !index.contains_key(function) {
-                strongconnect(
-                    *function,
-                    &graph,
-                    &mut index_counter,
-                    &mut stack,
-                    &mut on_stack,
-                    &mut index,
-                    &mut lowlink,
-                    &mut scc_of,
-                    &mut scc_count,
-                );
-            }
-        }
-        scc_of
-    };
+    }
 
     for function in &mut module.fns {
         let caller_scc = scc_of.get(&function.id).copied().unwrap_or(usize::MAX);
@@ -4814,26 +5180,13 @@ fn collect_extern_marshals(
 ) -> Result<HashMap<usize, Vec<ExternTy>>, FatalError> {
     let mut out = HashMap::new();
     for executable in program.executables() {
-        if let BackendBody::Clauses { clauses, entries, .. } = &executable.body {
-            for clause in clauses {
-                collect_extern_marshals_in_steps(world, root_id, program, &clause.projections, &mut out)?;
-            }
+        if let BackendBody::Clauses { entries, .. } = &executable.body {
             for entry in entries {
                 collect_extern_marshals_in_tail(world, tel, root_id, program, &entry.tail, &mut out)?;
             }
         }
     }
     Ok(out)
-}
-
-fn collect_extern_marshals_in_steps(
-    _world: &World,
-    _root_id: RootId,
-    _program: &BackendProgram,
-    _steps: &[BackendStep],
-    _out: &mut HashMap<usize, Vec<ExternTy>>,
-) -> Result<(), FatalError> {
-    Ok(())
 }
 
 fn collect_extern_marshals_in_tail(
@@ -4844,7 +5197,7 @@ fn collect_extern_marshals_in_tail(
     tail: &BackendTail,
     out: &mut HashMap<usize, Vec<ExternTy>>,
 ) -> Result<(), FatalError> {
-    if let BackendTail::DirectCall { target, .. } = tail {
+    if let BackendTail::DirectCall { target, .. } | BackendTail::ClosureCall { target, .. } = tail {
         match target {
             CallEdge::Direct(direct) => {
                 collect_extern_marshals_for_call_target(
@@ -5062,7 +5415,6 @@ fn atom_names(atom_ids: &HashMap<String, u32>) -> Vec<String> {
 }
 
 fn lower_bit_size_ir(
-    _world: &World,
     size: &Option<super::super::body::LoweredBitSize>,
     env: &ValueEnv,
 ) -> Result<Option<BitSizeIr>, FatalError> {
@@ -5320,6 +5672,286 @@ mod tests {
     }
 
     #[test]
+    fn closed_callable_coercion_preserves_active_lanes_and_pads_each_inactive_representation() {
+        use crate::compiler2::transport::{CallableAlternative, CallableDescr};
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let atom = world.types_mut().atom();
+        let any = world.types_mut().any();
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let mut scalar = |ty| {
+            let lane = world.intern_lane(LaneDescr {
+                ty,
+                class: TransportClass::Value,
+            });
+            (
+                lane,
+                TransportLayout::structural(world.intern_shape(ShapeDescr::Lane(lane))),
+            )
+        };
+        let (selector, int_layout) = scalar(int);
+        let (_, float_layout) = scalar(float);
+        let (_, atom_layout) = scalar(atom);
+        let (_, any_layout) = scalar(any);
+        let active = CallableAlternative {
+            function: FunctionId::from_coordinate(2),
+            arity: 1,
+            capture_tys: Box::new([int, int]),
+            capture_layouts: Box::new([int_layout, int_layout]),
+        };
+        let inactive = CallableAlternative {
+            function: FunctionId::from_coordinate(1),
+            arity: 1,
+            capture_tys: Box::new([float, atom, any]),
+            capture_layouts: Box::new([float_layout, atom_layout, any_layout]),
+        };
+        let source = world.intern_callable(CallableDescr::Direct {
+            alternative: active.clone(),
+        });
+        let source = world.intern_shape(ShapeDescr::Callable(source));
+        let target = world.intern_callable(CallableDescr::Closed {
+            selector,
+            alternatives: Box::new([inactive, active]),
+        });
+        let target = world.intern_shape(ShapeDescr::Callable(target));
+        let root = RootId::for_test(0);
+        let key = ExecutableKey {
+            activation: ActivationKey::from_inputs(root, FunctionId::from_coordinate(0), &[], world.types_mut()),
+            need: ExecutableNeed::Value,
+        };
+        let executable = test_executable(key.clone(), int, nothing);
+        let program = empty_backend_program();
+        let telemetry = NullTelemetry;
+        let mut lowerer = NativeLowerer::new(&mut world, &telemetry, root, &program).unwrap();
+        let mut ctx = NativeFnCtx::new(
+            FnId(0),
+            "closed_padding",
+            FnCategory::User,
+            NativeBodyOrigin::Executable(key),
+            NativeEntryAbi::Direct,
+            vec![AbiValueRepr::RawInt],
+            int,
+            vec![AbiValueRepr::RawInt],
+            None,
+            EffectSummary::default(),
+        );
+        let params = ctx.entry_params(&[int]);
+        let value = NativeBoundValue::Transport {
+            shape: source,
+            lanes: vec![params[0], params[0]],
+        };
+        let encoded = encode_for_layout(&mut lowerer, &mut ctx, &executable, &value, target).unwrap();
+        assert_eq!(encoded.len(), 6);
+        assert_eq!(
+            ctx.value_types.get(&encoded[0]),
+            Some(&int),
+            "selector constants retain their raw integer type"
+        );
+        assert_eq!(
+            &encoded[4..],
+            [params[0], params[0]],
+            "duplicate lexical captures retain their runtime values"
+        );
+        assert_eq!(ctx.value_types[&encoded[1]], float);
+        assert_eq!(ctx.value_types[&encoded[2]], atom);
+        assert_eq!(ctx.value_types[&encoded[3]], any);
+        ctx.set_term(Term::ReturnLanes(encoded.clone()));
+        let function = ctx.builder.build();
+        assert!(matches!(
+            defining_prim(&function, encoded[0]),
+            Some(Prim::Const(Const::Int(1)))
+        ));
+        assert!(matches!(defining_prim(&function, encoded[1]), Some(Prim::Const(Const::Float(n))) if *n == 0.0));
+        for value in &encoded[2..4] {
+            assert!(matches!(
+                defining_prim(&function, *value),
+                Some(Prim::Const(Const::Nil))
+            ));
+        }
+    }
+
+    #[test]
+    fn selected_callable_encoding_does_not_read_omitted_zero_width_captures() {
+        use crate::compiler2::transport::{CallableAlternative, CallableDescr};
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let tuple_ty = world.types_mut().tuple(&[]);
+        let callback_ty = world.types_mut().fn_ref_lit(ClosureTarget(3), 0);
+        let selector = world.intern_lane(LaneDescr {
+            ty: int,
+            class: TransportClass::Value,
+        });
+        let scalar = world.intern_shape(ShapeDescr::Lane(selector));
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let tuple = world.intern_shape(ShapeDescr::Tuple(Box::default()));
+        let callback = world.intern_callable(CallableDescr::Direct {
+            alternative: CallableAlternative {
+                function: FunctionId::from_coordinate(3),
+                arity: 0,
+                capture_tys: Box::default(),
+                capture_layouts: Box::default(),
+            },
+        });
+        let callback = world.intern_shape(ShapeDescr::Callable(callback));
+        let callable = world.intern_callable(CallableDescr::Closed {
+            selector,
+            alternatives: Box::new([
+                CallableAlternative {
+                    function: FunctionId::from_coordinate(2),
+                    arity: 0,
+                    capture_tys: Box::default(),
+                    capture_layouts: Box::default(),
+                },
+                CallableAlternative {
+                    function: FunctionId::from_coordinate(1),
+                    arity: 0,
+                    capture_tys: Box::new([int, tuple_ty, callback_ty]),
+                    capture_layouts: Box::new([scalar, tuple, callback].map(TransportLayout::structural)),
+                },
+            ]),
+        });
+        let shape = world.intern_shape(ShapeDescr::Callable(callable));
+        let root = RootId::for_test(0);
+        let key = ExecutableKey {
+            activation: ActivationKey::from_inputs(root, FunctionId::from_coordinate(0), &[], world.types_mut()),
+            need: ExecutableNeed::Value,
+        };
+        let executable = test_executable(key.clone(), int, nothing);
+        let program = empty_backend_program();
+        let telemetry = NullTelemetry;
+        let mut lowerer = NativeLowerer::new(&mut world, &telemetry, root, &program).unwrap();
+        let mut ctx = NativeFnCtx::new(
+            FnId(0),
+            "omitted_captures",
+            FnCategory::User,
+            NativeBodyOrigin::Executable(key),
+            NativeEntryAbi::Direct,
+            vec![AbiValueRepr::RawInt],
+            int,
+            vec![AbiValueRepr::RawInt],
+            None,
+            EffectSummary::default(),
+        );
+        let value = ctx.entry_params(&[int])[0];
+        let encoded = lowerer
+            .encode_selected_callable(
+                &mut ctx,
+                &executable,
+                shape,
+                callable,
+                1,
+                &[
+                    NativeBoundValue::Runtime(value),
+                    NativeBoundValue::Absent,
+                    NativeBoundValue::Absent,
+                ],
+            )
+            .unwrap();
+        assert_eq!(encoded.len(), 2);
+        assert_eq!(encoded[1], value);
+    }
+
+    #[test]
+    fn typed_callable_type_tests_use_the_selected_construction_schema() {
+        use crate::compiler2::transport::{CallableAlternative, CallableDescr};
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let atom = world.types_mut().atom();
+        let function = FunctionId::from_coordinate(1);
+        let target = ClosureTarget(function.as_u32());
+        let ty = world.types_mut().closure_lit(target, vec![int], 0);
+        let predicate = world.types().runtime_type_predicate(&ty);
+        let selector = world.intern_lane(LaneDescr {
+            ty: int,
+            class: TransportClass::Value,
+        });
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let alternative = |capture| CallableAlternative {
+            function,
+            arity: 0,
+            capture_tys: Box::new([capture]),
+            capture_layouts: Box::new([TransportLayout::structural(nothing)]),
+        };
+        let direct = world.intern_callable(CallableDescr::Direct {
+            alternative: alternative(int),
+        });
+        let direct = world.intern_shape(ShapeDescr::Callable(direct));
+        let closed = world.intern_callable(CallableDescr::Closed {
+            selector,
+            alternatives: Box::new([alternative(atom), alternative(int)]),
+        });
+        let closed = world.intern_shape(ShapeDescr::Callable(closed));
+        let tuple = tuple_shape(&mut world, &[direct]);
+        let tuple_ty = world.types_mut().tuple(&[ty]);
+        let tuple_predicate = world.types().runtime_type_predicate(&tuple_ty);
+        let root = RootId::for_test(0);
+        let key = ExecutableKey {
+            activation: ActivationKey::from_inputs(root, FunctionId::from_coordinate(0), &[], world.types_mut()),
+            need: ExecutableNeed::Value,
+        };
+        let program = empty_backend_program();
+        let telemetry = NullTelemetry;
+        let mut lowerer = NativeLowerer::new(&mut world, &telemetry, root, &program).unwrap();
+        assert_eq!(
+            lowerer.settled_lane_form_type_test(
+                &NativeBoundValue::Transport {
+                    shape: direct,
+                    lanes: Vec::new(),
+                },
+                &predicate
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            lowerer.settled_lane_form_type_test(
+                &NativeBoundValue::Transport {
+                    shape: tuple,
+                    lanes: Vec::new(),
+                },
+                &tuple_predicate
+            ),
+            Some(true)
+        );
+        let mut ctx = NativeFnCtx::new(
+            FnId(0),
+            "callable_type_test",
+            FnCategory::User,
+            NativeBodyOrigin::Executable(key),
+            NativeEntryAbi::Direct,
+            vec![AbiValueRepr::RawInt],
+            int,
+            vec![AbiValueRepr::RawAtom],
+            None,
+            EffectSummary::default(),
+        );
+        let tag = ctx.entry_params(&[int])[0];
+        let answer = lowerer
+            .lane_form_type_test(
+                &mut ctx,
+                &NativeBoundValue::Transport {
+                    shape: closed,
+                    lanes: vec![tag],
+                },
+                &predicate,
+            )
+            .unwrap();
+        let DispatchAnswer::Runtime(flag) = answer else {
+            panic!("capture alternatives require their selector")
+        };
+        ctx.set_term(Term::Return(flag));
+        let function = ctx.builder.build();
+        let Some(Prim::BinOp(IrBinOp::Eq, compared, expected)) = defining_prim(&function, flag) else {
+            panic!("the question must compare the carried selector")
+        };
+        assert_eq!(*compared, tag);
+        assert!(matches!(
+            defining_prim(&function, *expected),
+            Some(Prim::Const(Const::Int(1)))
+        ));
+    }
+
+    #[test]
     fn nested_callable_adapter_preserves_the_source_lane_type_and_repr() {
         use crate::compiler2::transport::CallableDescr;
 
@@ -5333,16 +5965,22 @@ mod tests {
                 class: TransportClass::Value,
             });
             let scalar = world.intern_shape(ShapeDescr::Lane(lane));
-            let inner = world.intern_callable(CallableDescr {
-                function: Some(FunctionId::from_coordinate(1)),
-                arity: 0,
-                capture_layouts: Box::new([TransportLayout::structural(scalar)]),
+            let inner = world.intern_callable(CallableDescr::Direct {
+                alternative: crate::compiler2::transport::CallableAlternative {
+                    function: FunctionId::from_coordinate(1),
+                    capture_tys: Box::new([int]),
+                    arity: 0,
+                    capture_layouts: Box::new([TransportLayout::structural(scalar)]),
+                },
             });
             let inner_shape = world.intern_shape(ShapeDescr::Callable(inner));
-            let outer = world.intern_callable(CallableDescr {
-                function: Some(FunctionId::from_coordinate(2)),
-                arity: 0,
-                capture_layouts: Box::new([TransportLayout::structural(inner_shape)]),
+            let outer = world.intern_callable(CallableDescr::Direct {
+                alternative: crate::compiler2::transport::CallableAlternative {
+                    function: FunctionId::from_coordinate(2),
+                    capture_tys: Box::new([any]),
+                    arity: 0,
+                    capture_layouts: Box::new([TransportLayout::structural(inner_shape)]),
+                },
             });
             world.intern_shape(ShapeDescr::Callable(outer))
         };
@@ -5397,7 +6035,6 @@ mod tests {
     fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         use crate::dispatch_matrix::demand::DispatchDemand;
         use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
-        use std::collections::BTreeMap;
         let mut world = World::new();
         let int = world.types_mut().int();
         let nothing = world.intern_shape(ShapeDescr::Nothing);
@@ -5454,10 +6091,7 @@ mod tests {
         let dispatch = crate::compiler2::ExecutableDispatch::new(Rc::new(plan), vec![0]);
         assert_eq!(
             dispatch.plan().input_demand(),
-            [DispatchDemand::TupleFields(BTreeMap::from([(
-                1,
-                DispatchDemand::Whole
-            )]))],
+            [DispatchDemand::TupleFields],
             "the clause head questions its tuple parameter"
         );
         let materialized = Rc::make_mut(&mut abi.materialized);

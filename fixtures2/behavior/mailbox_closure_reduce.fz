@@ -15,6 +15,30 @@
 # it), and a reducer holding a capture of its own (the mailbox callable is
 # itself a closure with a lane, not a bare function). The empty list is the
 # control: it never reaches a reducing step at all.
+#
+# Paper answer.
+#
+# Each reducer is minted in main/0, sent to this process's own mailbox, and received
+# back before it is used. A value that arrives from a mailbox is first-class data at
+# the receive site: nothing there names the activation it was minted from. So sum,
+# prepend and scaled each reach Enum.reduce/3 as a generic callable, and the input
+# position carrying one is a position whose exact layout is not knowable. That is the
+# condition under which a generic carrier is necessary rather than merely convenient.
+#
+#   sum     : {int, int}       -> int        the accumulator starts int and stays int
+#   prepend : {int, list(int)} -> list(int)  the accumulator starts [] and widens
+#   scaled  : {int, int}       -> int        and carries a lane, the capture scale
+#
+# The generic carrier stops there. The continuation `List.reduce_cont/3` returns is
+# `{:cont, acc}`: the tag is the same ground atom in every arm, so nothing at runtime
+# needs to carry it, and the only part that varies is `acc`. The reduce body's
+# self-recursive dispatch asks which arm it holds, and field 1 alone answers that --
+# `int` on one path, `[]` on the other. A question about one field of a tuple demands
+# that field, not the whole tuple, so the continuation travels as one lane with the tag
+# erased, and is never boxed.
+#
+# Enum.reduce([], 7, sum) reaches no reducing step, so its value is the accumulator it
+# was given. The four values are 6, 7, [3, 2, 1] and 60.
 def main() do
   send(self(), fn (x, acc) -> acc + x end)
   sum = receive do f -> f end

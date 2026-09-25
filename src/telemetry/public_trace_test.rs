@@ -1039,7 +1039,7 @@ const SAME_FUNCTION_TWO_TYPES_SOURCE: &str =
 /// real compile can produce indistinguishable in the public log. This proves
 /// the projection now renders within-run identity: two activations of the
 /// SAME function (`identity/1`, called once with an int and once with an
-/// atom) show equal `function_id` and different `arrow` in the public
+/// atom) show equal `function_id` and different input coordinates in the public
 /// stream.
 #[test]
 fn analyze_activation_job_spans_distinguish_two_activations_of_one_function() {
@@ -1047,7 +1047,7 @@ fn analyze_activation_job_spans_distinguish_two_activations_of_one_function() {
     assert!(matches!(trace.outcome, DriveOutcome::Resolved));
 
     let job_spans = trace.spans_named(&["fz", "compiler2", "job"]);
-    let analyze_activations: Vec<(u64, u64)> = job_spans
+    let analyze_activations: Vec<(u64, Vec<u64>, u64)> = job_spans
         .iter()
         .filter_map(|span| {
             let job = span.start.metadata_key("job")?;
@@ -1055,30 +1055,41 @@ fn analyze_activation_job_spans_distinguish_two_activations_of_one_function() {
                 return None;
             }
             let function_id = job.get("function_id")?.as_u64()?;
-            let arrow = job.get("arrow")?.as_u64()?;
-            Some((function_id, arrow))
+            let inputs = job
+                .get("inputs")?
+                .as_array()?
+                .iter()
+                .map(|input| input.as_u64())
+                .collect::<Option<Vec<_>>>()?;
+            let result = job.get("result")?.as_u64()?;
+            Some((function_id, inputs, result))
         })
         .collect();
 
     assert!(
         analyze_activations.len() >= 2,
-        "expected at least two AnalyzeActivation job spans with function_id/arrow metadata, got {analyze_activations:?}"
+        "expected at least two AnalyzeActivation job spans with function_id/input/result metadata, got {analyze_activations:?}"
     );
 
-    let mut arrows_by_function: std::collections::HashMap<u64, std::collections::HashSet<u64>> =
+    let mut coordinates_by_function: std::collections::HashMap<u64, std::collections::HashSet<(Vec<u64>, u64)>> =
         std::collections::HashMap::new();
-    for (function_id, arrow) in &analyze_activations {
-        arrows_by_function.entry(*function_id).or_default().insert(*arrow);
+    for (function_id, inputs, result) in &analyze_activations {
+        coordinates_by_function
+            .entry(*function_id)
+            .or_default()
+            .insert((inputs.clone(), *result));
     }
     assert!(
-        arrows_by_function.values().any(|arrows| arrows.len() >= 2),
-        "expected two AnalyzeActivation job spans with EQUAL function_id and DIFFERENT arrow \
+        coordinates_by_function
+            .values()
+            .any(|coordinates| coordinates.len() >= 2),
+        "expected two AnalyzeActivation job spans with EQUAL function_id and DIFFERENT coordinates \
          (two activations of one function distinguishable in the public log): {analyze_activations:?}"
     );
 }
 
 /// A settled `backend_executable` product carries identity beyond `"kind"`:
-/// the activation it was built for (`function_id`, `arrow`) and which need
+/// the activation it was built for (`function_id`, `inputs`, `result`) and which need
 /// it answers (`need`).
 #[test]
 fn backend_executable_product_settled_carries_identity_beyond_kind() {
@@ -1097,8 +1108,12 @@ fn backend_executable_product_settled_carries_identity_beyond_kind() {
         "backend_executable product metadata missing function_id: {backend_executable:?}"
     );
     assert!(
-        backend_executable.get("arrow").and_then(|v| v.as_u64()).is_some(),
-        "backend_executable product metadata missing arrow: {backend_executable:?}"
+        backend_executable.get("inputs").and_then(|v| v.as_array()).is_some(),
+        "backend_executable product metadata missing inputs: {backend_executable:?}"
+    );
+    assert!(
+        backend_executable.get("result").and_then(|v| v.as_u64()).is_some(),
+        "backend_executable product metadata missing result: {backend_executable:?}"
     );
     assert!(
         backend_executable.get("need").and_then(|v| v.as_str()).is_some(),
@@ -1322,13 +1337,48 @@ const SCENARIOS: [&str; 5] = [
     "callee_replaced",
 ];
 
+/// What the three return families do on each scenario after `cold`, in
+/// `(DeriveReturnSkeleton, DeriveReturnUnknowns, SolveReturnComponent)` order.
+///
+/// An edit must pay only for what it moves, and these rows are where an
+/// explosion in the return jobs would show up as an edit that re-derives the
+/// whole program's returns. An unchanged root and an edit nothing reaches
+/// derive no return facts at all. Editing a reached leaf re-derives that one
+/// leaf's skeleton. Replacing a callee re-derives the new leaf's skeleton and
+/// re-opens the unknowns of the three functions on the path to it.
+const RETURN_WORK_AFTER_COLD: [[FamilyRow; 3]; 4] = [
+    [
+        family_row(0, 0, 0, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+    ],
+    [
+        family_row(0, 0, 0, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+    ],
+    [
+        family_row(1, 1, 1, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+    ],
+    [
+        family_row(1, 1, 1, 0, 0),
+        family_row(3, 3, 3, 0, 0),
+        family_row(0, 0, 0, 0, 0),
+    ],
+];
+
 // fz-5xp.2: the take/drop/split row falls 232 -> 228 reachable executables --
 // `Enum.to_list/1`'s `[a]` clause removes the reduce-and-reverse activations
 // those families used to mint on the way to their list arguments. The
 // construction-wrapper column is unchanged.
 // fz-5xp.30: each fixture reaches four ordinary generic arithmetic
 // result/status executable bodies; wrapper populations stay flat.
-const POPULATION_BASELINES: [(u64, u64); 3] = [(66, 0), (176, 32), (232, 38)];
+// fz-kdt.98.3.17.7: range-map's cold frontier falls 66 -> 65 with its
+// runtime-demand body-work pin (237 -> 235): direct callable observation
+// removes the one now-unneeded synthetic callable-contract executable.
+const POPULATION_BASELINES: [(u64, u64); 3] = [(65, 0), (176, 32), (232, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1526,7 +1576,10 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             // helpers the reached paths call as ordinary generic functions;
             // the three edit scenarios walk only what their edit moves, which
             // is why `unchanged` and `unreachable_edit` are zero and the two
-            // reached edits are a fraction of cold. Tuple-field demands join
+            // reached edits are a fraction of cold. Finality-only edges do
+            // not re-walk concluded runtime-demand readers, so each
+            // reached-leaf edit performs only its one content-driven body
+            // walk. Tuple-field demands join
             // as prefixes, so a field one consumer reads stays distinct from
             // a field another ignores -- take/drop/split pays two extra cold
             // walks for that and saves eighteen on the replacement edit, which
@@ -1534,7 +1587,16 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             // reached.
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                [[237, 0, 0, 9, 5], [592, 0, 0, 64, 6], [1117, 0, 0, 70, 6]][fixture_index][scenario],
+                // A reached-leaf edit carries a direct callable observation
+                // beside the closure value, rather than materializing a
+                // synthetic callable value for the contract. That removes
+                // redundant demand body walks on the callable lenses.
+                // fz-kdt.98.3.17.7: 237 -> 235 on the range-map cold path.
+                // Known callable targets no longer re-walk the two synthetic
+                // callable-contract positions they formerly needed. The
+                // zero-uncaused assertion below proves the drop is work
+                // removed by a causal refinement, not a lost wake.
+                [[235, 0, 0, 1, 5], [592, 0, 0, 1, 6], [1117, 0, 0, 1, 6]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1555,6 +1617,25 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 runtime_demand.initial + runtime_demand.content_caused,
                 "{fixture} {name}: RuntimeDemand work must be initial or content-caused"
             );
+            // Pinned on the first target fixture. The other two reach a
+            // transport panic before this loop runs for them, so there is no
+            // measurement to pin.
+            if fixture_index == 0
+                && let Some(expected) = scenario
+                    .checked_sub(1)
+                    .map(|after_cold| RETURN_WORK_AFTER_COLD[after_cold])
+            {
+                let measured = [
+                    family_row_of(report, "DeriveReturnSkeleton"),
+                    family_row_of(report, "DeriveReturnUnknowns"),
+                    family_row_of(report, "SolveReturnComponent"),
+                ];
+                assert_return_family_laws(&format!("{fixture} {name}"), measured[0], measured[1]);
+                assert_eq!(
+                    measured, expected,
+                    "{fixture} {name}: an edit must derive return facts only for what it moves"
+                );
+            }
             assert_eq!(
                 (
                     report.final_population.reachable_executables,
@@ -1692,10 +1773,11 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // result/status helpers are ordinary generic calls.
     // The typed `==` clauses this fixture's predicates reach add one
     // component evaluation and their StaticCallees work.
-    // Publishing a function's source one round earlier leaves it
-    // present-but-dirty while the scope walk that published it is still
-    // blocked; one extraction blocks once more on that earlier-visible body.
-    ("fixtures2/behavior/enum_take_drop_split.fz", 129, 26, 274, 141),
+    // fz-kdt.98.3.17.7: 274/141 -> 273/140. Resolving one reducer
+    // callable directly removes one blocked static-callee re-derivation;
+    // the test below still proves every non-publishing evaluation blocked on
+    // the body it needed, so this is less work rather than a lost dependency.
+    ("fixtures2/behavior/enum_take_drop_split.fz", 129, 26, 273, 140),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -1806,7 +1888,85 @@ struct AnalysisClaimRatchet {
     /// had. fz-kdt.84 is where this column stopped being mostly self-inflicted;
     /// what is left is fz-kdt.85/.86's to explain.
     analyze_zero_change: u64,
+    /// Semantic formula work with `DeriveRuntimeDemand` and the three return
+    /// families taken out -- each of those has its own row, so an explosion in
+    /// one of them shows up where it happens instead of hiding inside a single
+    /// scalar that nobody can attribute.
     total_evaluations: u64,
+    /// `DeriveReturnSkeleton`: one static skeleton per function whose returns
+    /// the walk must name.
+    return_skeleton: FamilyRow,
+    /// `DeriveReturnUnknowns`: the handles a skeleton leaves open.
+    return_unknowns: FamilyRow,
+    /// `SolveReturnComponent`: the least fixed point of a recursive component's
+    /// returns, run only where a component actually closes a cycle.
+    return_component_solve: FamilyRow,
+}
+
+/// One job family's work on one compile. The row exists so that a rise in a
+/// family is charged to that family: an undetected explosion in job counts is
+/// exactly what a summed scalar cannot show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FamilyRow {
+    formulas: u64,
+    evaluations: u64,
+    changed_outputs: u64,
+    unchanged_outputs: u64,
+    blocked_completions: u64,
+}
+
+const fn family_row(
+    formulas: u64,
+    evaluations: u64,
+    changed_outputs: u64,
+    unchanged_outputs: u64,
+    blocked_completions: u64,
+) -> FamilyRow {
+    FamilyRow {
+        formulas,
+        evaluations,
+        changed_outputs,
+        unchanged_outputs,
+        blocked_completions,
+    }
+}
+
+/// The five numbers `FamilyRow` pins, read off a report.
+fn family_row_of(report: &CausalReport, kind: &str) -> FamilyRow {
+    let (formulas, work) = family_work(report, kind);
+    family_row(
+        formulas,
+        work.evaluations,
+        work.changed_outputs,
+        work.unchanged_outputs,
+        work.blocked_completions,
+    )
+}
+
+/// The two shapes the return families hold on every fixture.
+///
+/// A skeleton is a function's static return form: it is derived once per
+/// function that needs one, and the derivation always concludes something new,
+/// so formulas, evaluations and changed outputs are one number and nothing ever
+/// blocks. Unknowns re-run as the handles they name arrive, so they do block --
+/// and every blocked completion is precisely a run that concluded nothing,
+/// which is why the two columns are equal.
+fn assert_return_family_laws(context: &str, skeleton: FamilyRow, unknowns: FamilyRow) {
+    assert_eq!(
+        (skeleton.formulas, skeleton.formulas, 0),
+        (
+            skeleton.evaluations,
+            skeleton.changed_outputs,
+            skeleton.blocked_completions
+        ),
+        "{context}: a return skeleton is derived once per function and always concludes; \
+         row: {skeleton:?}"
+    );
+    assert_eq!(
+        unknowns.unchanged_outputs, unknowns.blocked_completions,
+        "{context}: a return-unknowns run concludes nothing exactly when it blocks on a handle \
+         it cannot yet read; row: {unknowns:?}"
+    );
 }
 
 const fn lifecycle(distinct: u64, first_appearances: u64, retractions: u64) -> FactLifecycle {
@@ -2125,9 +2285,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The ordering families carry no `binary` clause, so the StaticCallees
         // evaluations above are the whole of what this total counts for them;
         // causal work stays exact.
-        // Deleting the source-copy job removes one semantic evaluation per
-        // reached function.
         total_evaluations: 1048,
+        return_skeleton: family_row(53, 53, 53, 0, 0),
+        return_unknowns: family_row(42, 69, 43, 26, 26),
+        // No function on this fixture returns through a cycle, so no component
+        // is ever solved.
+        return_component_solve: family_row(0, 0, 0, 0, 0),
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -2214,9 +2377,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The ordering families this fixture's predicates reach each end in an
         // `any`/`any` body that calls `compare/2`, and that body brings its own
         // reached formulas to this total.
-        // Deleting the source-copy job removes one semantic evaluation per
-        // reached function.
         total_evaluations: 1425,
+        return_skeleton: family_row(79, 79, 79, 0, 0),
+        return_unknowns: family_row(63, 116, 64, 52, 52),
+        return_component_solve: family_row(0, 0, 0, 0, 0),
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2333,10 +2497,6 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The ordering families this fixture's predicates reach end in an
         // `any`/`any` clause through `compare/2`; three of the rebased
         // completions are standing completions of those families.
-        // Publishing a function's source one round earlier leaves it
-        // present-but-dirty while the scope walk that published it is still
-        // blocked, where before it was absent; five more DeriveInputDemand
-        // completions rebase on that earlier-visible, still-moving ground.
         shifts: shifts(26, 85),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
@@ -2404,10 +2564,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // predicates reach.
         // The ordering families carry no `binary` clause, so no analysis of
         // one is counted here; equal reproductions stay at 15.
-        // Two analyses fewer: their inputs settle without the intermediate
-        // source-copy conclusion between them.
-        analyze_evaluations: 900,
-        analyze_zero_change: 16,
+        // Direct callable observations no longer allocate synthetic value
+        // types. The continuation ladders therefore have a different semantic
+        // order, while their settled activations and terminal artifacts hold.
+        analyze_evaluations: 912,
+        analyze_zero_change: 21,
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
         // typed ordering removes the fifteen analyses above.
@@ -2423,9 +2584,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // activation and callsite populations do not see them.
         // The ordering families' `any`/`any` clauses contribute four formulas
         // and no `binary` clause analyses; the claim populations stay put.
-        // Deleting the source-copy job removes one semantic evaluation per
-        // reached function.
-        total_evaluations: 2360,
+        total_evaluations: 2372,
+        return_skeleton: family_row(120, 120, 120, 0, 0),
+        return_unknowns: family_row(103, 167, 104, 63, 63),
+        // The one component this fixture closes is solved once and re-run once,
+        // the second run reproducing the fixed point the first reached.
+        return_component_solve: family_row(1, 2, 1, 1, 0),
     },
 ];
 
@@ -2457,6 +2621,9 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
             analyze_evaluations,
             analyze_zero_change,
             total_evaluations,
+            return_skeleton,
+            return_unknowns,
+            return_component_solve,
         } = row;
         let trace = compile_fixture(fixture);
         assert!(
@@ -2505,8 +2672,22 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
             "{fixture}: AnalyzeActivation work moved off its fz-kdt.63/.84 pin. Full row: {analyze:?}"
         );
         let (_, runtime_demand_work) = family_work(&report, "DeriveRuntimeDemand");
+
+        let measured_skeleton = family_row_of(&report, "DeriveReturnSkeleton");
+        let measured_unknowns = family_row_of(&report, "DeriveReturnUnknowns");
+        let measured_solve = family_row_of(&report, "SolveReturnComponent");
+        assert_return_family_laws(fixture, measured_skeleton, measured_unknowns);
         assert_eq!(
-            report.formula_totals().evaluations - runtime_demand_work.evaluations,
+            (measured_skeleton, measured_unknowns, measured_solve),
+            (return_skeleton, return_unknowns, return_component_solve),
+            "{fixture}: the return jobs' work must stay at its measured count -- this row is the \
+             only place an explosion in them is visible"
+        );
+
+        let return_evaluations =
+            measured_skeleton.evaluations + measured_unknowns.evaluations + measured_solve.evaluations;
+        assert_eq!(
+            report.formula_totals().evaluations - runtime_demand_work.evaluations - return_evaluations,
             total_evaluations,
             "{fixture}: semantic formula work must remain at its measured count"
         );

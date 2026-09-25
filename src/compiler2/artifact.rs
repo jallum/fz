@@ -216,10 +216,11 @@ impl MaterializedCallEdge {
     }
 }
 
-/// How one closure callsite's call is made: the whole answer, in three states.
+/// How one closure callsite supplies its invocation target and captures.
 ///
 /// A caller that holds the target's capture inputs calls that target directly
-/// and hands it those captures. A caller holding one public word calls through
+/// and hands it those captures. A closed selection names each dispatch arm's
+/// alternative in the transported environment. A caller holding one public word calls through
 /// the boxed apply seam, which is the only thing that can open the word. A
 /// callee that is neither reaches nothing, so the call never happens.
 ///
@@ -234,8 +235,19 @@ pub enum ClosureCallEdge {
         /// which is also where the surface arguments begin.
         capture_count: usize,
     },
+    /// One capture source per dispatch outcome, in the plan's outcome order.
+    Closed {
+        arms: Vec<ClosedClosureCallArm>,
+    },
     Seam,
     Dead,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedClosureCallArm {
+    pub alternative: usize,
+    pub target: ExecutableKey,
+    pub capture_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1078,8 +1090,8 @@ impl BackendExecutable {
         let symbol = ExecutableSymbol {
             activation: super::transport::ActivationSymbol {
                 function: key.activation.function,
-                arrow: key.activation.arrow,
-                input: Box::default(),
+                signature: key.activation.signature.clone(),
+                callable_surfaces: key.activation.callable_surfaces.clone(),
             },
             need: key.need,
         };
@@ -1280,7 +1292,7 @@ pub enum BackendTail {
         edge: ClosureCallEdge,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
-        return_flow: Option<BackendReturnFlow>,
+        target: CallEdge<ExecutableKey, BackendReturnFlow>,
     },
     If {
         cond: ValueId,
@@ -1346,6 +1358,7 @@ pub enum BackendStep {
         function: FunctionId,
         captures: Vec<ValueId>,
         construction: Option<TransportPosition>,
+        selection: Option<CallableCaptureSelection>,
     },
     BinaryOp {
         value: ValueId,
@@ -1417,6 +1430,13 @@ pub enum BackendStep {
     AssertBitstringDone {
         reader: ValueId,
     },
+}
+
+/// The capture predicate graph and its explicit canonical descriptor indices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableCaptureSelection {
+    pub(crate) alternatives: Vec<usize>,
+    pub(crate) plan: Rc<PatternDispatchPlan<Ty>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

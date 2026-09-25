@@ -1,0 +1,9 @@
+#---
+# purpose: "calling the same callback twice preserves selection across compatible bindings"
+#---
+def twice(f, x), do: f.(f.(x))
+def called(f, x), do: twice(f, x)
+def main() do
+  dbg(called(fn x -> x + 1 end, 2))
+  dbg(called(fn x -> x * 2 end, 2))
+end

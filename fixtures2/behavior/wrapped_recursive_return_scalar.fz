@@ -1,0 +1,11 @@
+#---
+# purpose: "the wrapper is handed a recursive scalar result: only the caller can say that value is still climbing"
+#---
+def wrap(v), do: {v}
+
+def dup(0), do: 0
+def dup(n), do: wrap(dup(n - 1))
+
+def main() do
+  dbg(dup(1))
+end

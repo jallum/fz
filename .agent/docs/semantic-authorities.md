@@ -43,11 +43,14 @@ with their program. Runtime comparison asks the Node for source order, never
 orders numeric denotation IDs. A closure's one retained environment stores one
 complete value per lexical capture; execution wrappers project that environment
 into their own ABI layouts without changing its identity.
-`CallableDescr` interns only function, arity, and ordered physical capture
-layouts. Each construction owns its ordered source capture annotations, carried
-unchanged into the backend wrapper and its runtime type predicate. Distinct
-annotations can therefore share one physical descriptor without sharing a
-construction's semantic type; invocation target prefixes supply neither.
+`CallableDescr` retains lexical function, source arity, ordered capture schema,
+and capture layouts. The schema distinguishes construction alternatives when
+closed dispatch needs different specializations with the same physical lanes.
+It does not change source denotation or public closure equality. Invocation
+arguments and executable keys remain outside the descriptor. Each public
+construction still owns its complete source capture annotations and wrapper;
+its executable targets project those captures through their own ABI layouts.
+
 
 **Truthiness** — owner `fz_truthy_ref` (`runtime/src/ir_runtime.rs`). The rule is
 "every value is true except `false` and `nil`". `fn_ctx::truthy_ref` and

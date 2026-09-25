@@ -1,0 +1,18 @@
+#---
+# purpose: "inactive float, atom and ValueRef environment lanes have safe padding while every active alternative executes"
+#---
+def choose(n, number, tag, list) do
+  case n do
+    0 -> fn () -> number end
+    1 -> fn () -> tag end
+    _ -> fn () -> list end
+  end
+end
+def invoke(f), do: f.()
+def main() do
+  dbg(invoke(choose(0, 1.5, :ok, [7])))
+  dbg(invoke(choose(1, 1.5, :ok, [7])))
+  dbg(invoke(choose(2, 1.5, :ok, [7])))
+  stats = Process.heap_alloc_stats()
+  dbg({stats[:closure_allocs], stats[:frame_allocs]})
+end

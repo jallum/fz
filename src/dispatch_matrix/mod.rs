@@ -56,7 +56,7 @@ use std::collections::BTreeMap;
 pub(crate) mod demand;
 pub(crate) mod pattern;
 
-use demand::{DemandPathStep, DispatchDemand, demand_at_step};
+use demand::{DispatchDemand, demand_at_projection};
 
 /// The dispatch/pattern constant carrier. `dispatch_matrix` is otherwise
 /// generic over an opaque `TypeHandle` and has no dependency on any concrete
@@ -1062,10 +1062,8 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
 /// What one question asks of the value it tests.
 fn demand_for_region<TypeHandle>(region: &Region<TypeHandle>) -> DispatchDemand {
     match region {
-        Region::List(ListRegion::Empty | ListRegion::Cons) => {
-            DispatchDemand::ListShape(Box::new(DispatchDemand::Ignore))
-        }
-        Region::TupleArity(_) => DispatchDemand::TupleFields(BTreeMap::new()),
+        Region::List(ListRegion::Empty | ListRegion::Cons) => DispatchDemand::ListShape,
+        Region::TupleArity(_) => DispatchDemand::TupleFields,
         Region::Equal(_)
         | Region::Type(_)
         | Region::MapKind
@@ -1100,8 +1098,10 @@ fn subject_root(subjects: &[Subject], mut subject: SubjectId) -> Option<u32> {
 /// of that input.
 ///
 /// The walk climbs the same chain as `subject_root`, and each step it climbs
-/// wraps the demand in the projection that reached it, so the demand that
-/// arrives at the input is the one the input carries.
+/// restates the demand as what that step asks of the value it was taken from.
+/// The step nearest the input therefore decides what the input carries: a
+/// question about the head of a list held in field 0 asks the input about a
+/// tuple, not about a list.
 fn subject_demand(
     subjects: &[Subject],
     mut subject: SubjectId,
@@ -1111,7 +1111,7 @@ fn subject_demand(
         match &subjects.get(subject.0 as usize)?.source {
             SubjectSource::Input { ordinal } => return Some((*ordinal, demand)),
             SubjectSource::Projection(projection) => {
-                demand = demand_at_step(&DemandPathStep::from(&projection.kind), demand);
+                demand = demand_at_projection(&projection.kind);
                 subject = projection.source;
             }
         }

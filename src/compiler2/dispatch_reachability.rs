@@ -1,12 +1,18 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::hash::Hash;
 
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::dispatch_matrix::{
-    BitstringFieldKind, ComparisonValue, DispatchNode, GraphNodeId, ListRegion, OutcomeId, ProjectionKind, ProofSense,
-    Region, RegionPredicate, SubjectId, SubjectSource,
+    BitstringFieldKind, ComparisonValue, DispatchNode, GraphNodeId, ListRegion, OutcomeId, ProjectionKind, Proof,
+    ProofSense, Region, RegionPredicate, SubjectId, SubjectSource,
 };
 use crate::ground_value::{DispatchShape, GroundValue};
 
+use super::identity::ModuleId;
+use crate::modules::identity::ModuleName;
+
+use super::return_skeleton::{BoundSkeleton, Skeleton, Substitution};
+use super::semantic::ProjectStep;
 use super::types::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +24,488 @@ pub(crate) struct DispatchReachability {
     pub(crate) visited_states: usize,
     #[cfg(test)]
     pub(crate) max_root_slots: usize,
+}
+
+/// The result of restricting one whole row by one existing dispatch proof.
+/// An unresolved alternative is recorded separately from an impossible one.
+#[derive(Debug)]
+pub(crate) struct RefinedRows<R> {
+    pub(crate) rows: Vec<R>,
+    pub(crate) pending: bool,
+}
+
+/// Supplies the meaning of a proof over a complete row. The graph walker is
+/// shared; concrete types and source-equation bindings differ only in how a
+/// proof restricts their state. Equal rows must denote equal restrictions.
+pub(crate) trait DispatchRowDomain {
+    type Row: Clone + Eq + Hash;
+
+    fn refine(&mut self, plan: &PatternDispatchPlan<Ty>, row: &Self::Row, proof: &Proof<Ty>) -> RefinedRows<Self::Row>;
+}
+
+#[derive(Debug)]
+pub(crate) struct DispatchRows<R> {
+    pub(crate) outcomes: Vec<(OutcomeId, R)>,
+    pub(crate) fail_reachable: bool,
+    pub(crate) pending: bool,
+    #[cfg(test)]
+    pub(crate) visited_states: usize,
+}
+
+pub(crate) fn dispatch_rows<D: DispatchRowDomain>(
+    domain: &mut D,
+    plan: &PatternDispatchPlan<Ty>,
+    rows: impl IntoIterator<Item = D::Row>,
+) -> DispatchRows<D::Row> {
+    let mut walker = DispatchWalker {
+        domain,
+        plan,
+        visited: HashSet::new(),
+        seen_outcomes: HashSet::new(),
+        outcomes: Vec::new(),
+        fail_reachable: false,
+        pending: false,
+    };
+    for row in rows {
+        walker.visit(plan.graph.root, row);
+    }
+    DispatchRows {
+        outcomes: walker.outcomes,
+        fail_reachable: walker.fail_reachable,
+        pending: walker.pending,
+        #[cfg(test)]
+        visited_states: walker.visited.len(),
+    }
+}
+
+struct DispatchWalker<'a, D: DispatchRowDomain> {
+    domain: &'a mut D,
+    plan: &'a PatternDispatchPlan<Ty>,
+    visited: HashSet<(GraphNodeId, D::Row)>,
+    seen_outcomes: HashSet<(OutcomeId, D::Row)>,
+    outcomes: Vec<(OutcomeId, D::Row)>,
+    fail_reachable: bool,
+    pending: bool,
+}
+
+impl<D: DispatchRowDomain> DispatchWalker<'_, D> {
+    fn visit(&mut self, node_id: GraphNodeId, row: D::Row) {
+        if !self.visited.insert((node_id, row.clone())) {
+            return;
+        }
+        let Some(node) = self.plan.graph.node(node_id) else {
+            return;
+        };
+        match node {
+            DispatchNode::Fail => self.fail_reachable = true,
+            DispatchNode::Outcome { outcome, .. } => {
+                if self.seen_outcomes.insert((*outcome, row.clone())) {
+                    self.outcomes.push((*outcome, row));
+                }
+            }
+            DispatchNode::Test { on_match, on_miss, .. } => {
+                for next in self.apply_proofs(&row, &on_match.evidence.proofs) {
+                    self.visit(on_match.target, next);
+                }
+                for next in self.apply_proofs(&row, &on_miss.evidence.proofs) {
+                    self.visit(on_miss.target, next);
+                }
+            }
+        }
+    }
+
+    fn apply_proofs(&mut self, row: &D::Row, proofs: &[Proof<Ty>]) -> Vec<D::Row> {
+        let mut rows = vec![row.clone()];
+        for proof in proofs {
+            let mut next = Vec::new();
+            let mut seen = HashSet::new();
+            for row in rows {
+                let refined = self.domain.refine(self.plan, &row, proof);
+                self.pending |= refined.pending;
+                for row in refined.rows {
+                    if seen.insert(row.clone()) {
+                        next.push(row);
+                    }
+                }
+            }
+            rows = next;
+        }
+        rows
+    }
+}
+
+/// Access to the caller-owned binding arena. A family alternative is a whole
+/// substitution; a missing alternative is not an independently unknown column.
+pub(crate) trait BoundDispatchSource {
+    type Frame: Clone + Eq + Hash;
+
+    fn input_rows(&mut self, frame: &Self::Frame) -> RefinedRows<Substitution<Self::Frame>>;
+    fn observed(&mut self, value: &BoundSkeleton<Self::Frame>, types: &mut Types) -> Option<Ty>;
+    fn struct_name(&self, module: ModuleId) -> Option<ModuleName>;
+    fn rebind(&mut self, frame: &Self::Frame, inputs: &Substitution<Self::Frame>) -> Self::Frame;
+}
+
+/// Source producers and restrictions for one dispatch proof. Undemanded
+/// roots may remain unexpanded; this is not a semantic application input row.
+/// Concrete constraints are proof restrictions, never replacement values.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct BoundDispatchRow<F> {
+    pub(crate) substitution: Substitution<F>,
+    pub(crate) constraints: Vec<Option<Ty>>,
+    list_shapes: Vec<Option<ListRegion>>,
+}
+
+impl<F: Clone + Eq + Hash> BoundDispatchRow<F> {
+    pub(crate) fn new(plan: &PatternDispatchPlan<Ty>, substitution: Substitution<F>) -> Self {
+        assert_eq!(plan.input_count, substitution.arguments.len());
+        Self {
+            constraints: vec![None; substitution.arguments.len()],
+            substitution,
+            list_shapes: vec![None; plan.graph.subjects.len()],
+        }
+    }
+}
+
+pub(crate) struct BoundDispatchDomain<'a, S: BoundDispatchSource> {
+    pub(crate) types: &'a mut Types,
+    pub(crate) source: &'a mut S,
+}
+
+enum BoundNeed<F> {
+    Family(F),
+    Pending,
+}
+
+impl<S: BoundDispatchSource> BoundDispatchDomain<'_, S> {
+    /// Constructor/projection cancellation retains the producer's frame.
+    /// A projected proof constraint travels beside that symbolic value.
+    #[cfg(test)]
+    fn project(
+        &mut self,
+        row: &BoundDispatchRow<S::Frame>,
+        input: usize,
+        step: ProjectStep,
+    ) -> (BoundSkeleton<S::Frame>, Option<Ty>) {
+        let value = self.resolve(&row.substitution.arguments[input]);
+        let value = value.project(step.clone(), &mut |_, _| None);
+        let constraint = row.constraints[input].map(|ty| step.apply(self.types, ty));
+        (value, constraint)
+    }
+
+    #[cfg(test)]
+    fn resolve(&mut self, value: &BoundSkeleton<S::Frame>) -> BoundSkeleton<S::Frame> {
+        value.resolve(&mut |frame, slot| {
+            let mut family = self.source.input_rows(frame);
+            if !family.pending && family.rows.len() == 1 {
+                family.rows.pop().and_then(|row| row.arguments.get(slot).cloned())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn subject(
+        &mut self,
+        plan: &PatternDispatchPlan<Ty>,
+        row: &BoundDispatchRow<S::Frame>,
+        subject: SubjectId,
+    ) -> Option<BoundSkeleton<S::Frame>> {
+        match plan.subject(subject) {
+            SubjectSource::Input { ordinal } => row.substitution.arguments.get(*ordinal as usize).cloned(),
+            SubjectSource::Projection(projection) => {
+                let source = self.subject(plan, row, projection.source)?;
+                let step = match &projection.kind {
+                    ProjectionKind::TupleField(index) => ProjectStep::TupleField(*index as usize),
+                    ProjectionKind::StructField(name) => {
+                        ProjectStep::MapField(super::types::MapKey::Atom(name.clone()))
+                    }
+                    ProjectionKind::MapValue { key } => ProjectStep::MapField(key.as_map_key()?),
+                    ProjectionKind::ListHead => ProjectStep::ListElement,
+                    ProjectionKind::ListTail => ProjectStep::ListTail,
+                    ProjectionKind::BitstringField(_) => return None,
+                };
+                Some(source.project(step, &mut |_, _| None))
+            }
+        }
+    }
+
+    /// These envelopes answer universal dispatch questions only. Family
+    /// choices remain inexact: an ambiguous proof must select a whole row.
+    fn view(
+        &mut self,
+        bound: &BoundSkeleton<S::Frame>,
+        active: &mut HashMap<BoundSkeleton<S::Frame>, usize>,
+    ) -> (Ty, bool) {
+        self.view_at_depth(bound, active, 0)
+    }
+
+    fn view_at_depth(
+        &mut self,
+        bound: &BoundSkeleton<S::Frame>,
+        active: &mut HashMap<BoundSkeleton<S::Frame>, usize>,
+        depth: usize,
+    ) -> (Ty, bool) {
+        if let Some(previous_depth) = active.get(bound) {
+            // An unguarded alias adds no branch. Recurrence beneath a
+            // constructor may add arbitrarily deep values, all covered by
+            // this temporary top envelope; it is never settled evidence.
+            return (
+                if *previous_depth == depth {
+                    self.types.none()
+                } else {
+                    self.types.any()
+                },
+                false,
+            );
+        }
+        active.insert(bound.clone(), depth);
+        let value = bound.resolve(&mut |_, _| None);
+        if let Some(observed) = self.source.observed(&value, self.types) {
+            active.remove(bound);
+            return (observed, true);
+        }
+        let child = |shape: &Skeleton| BoundSkeleton::new(value.frame.clone(), shape.clone());
+        let answer = match &value.shape {
+            Skeleton::Bottom => (self.types.none(), true),
+            Skeleton::Input(slot) => {
+                let family = self.source.input_rows(&value.frame);
+                let mut joined = if family.pending {
+                    self.types.any()
+                } else {
+                    self.types.none()
+                };
+                for row in family.rows {
+                    let Some(input) = row.arguments.get(*slot) else {
+                        joined = self.types.any();
+                        continue;
+                    };
+                    let (ty, _) = self.view_at_depth(input, active, depth);
+                    joined = self.types.union(joined, ty);
+                }
+                (joined, false)
+            }
+            Skeleton::Ground(_) | Skeleton::Result { .. } => self
+                .source
+                .observed(&value, self.types)
+                .map(|ty| (ty, true))
+                .unwrap_or_else(|| (self.types.any(), false)),
+            Skeleton::Tuple(fields) => {
+                let views = fields
+                    .iter()
+                    .map(|shape| self.view_at_depth(&child(shape), active, depth + 1))
+                    .collect::<Vec<_>>();
+                let tys = views.iter().map(|(ty, _)| *ty).collect::<Vec<_>>();
+                (self.types.tuple(&tys), views.iter().all(|(_, exact)| *exact))
+            }
+            Skeleton::List { element, non_empty } => {
+                let (element, exact) = self.view_at_depth(&child(element), active, depth + 1);
+                let ty = if *non_empty {
+                    self.types.non_empty_list(element)
+                } else {
+                    self.types.list(element)
+                };
+                (ty, exact)
+            }
+            Skeleton::Map(fields) => {
+                let views = fields
+                    .iter()
+                    .map(|(key, shape)| (key.clone(), self.view_at_depth(&child(shape), active, depth + 1)))
+                    .collect::<Vec<_>>();
+                let fields = views
+                    .iter()
+                    .map(|(key, (ty, _))| (key.clone(), *ty))
+                    .collect::<Vec<_>>();
+                (self.types.map(&fields), views.iter().all(|(_, (_, exact))| *exact))
+            }
+            Skeleton::Struct(module, fields) => {
+                if let Some(name) = self.source.struct_name(*module) {
+                    let views = fields
+                        .iter()
+                        .map(|(key, shape)| (key.clone(), self.view_at_depth(&child(shape), active, depth + 1)))
+                        .collect::<Vec<_>>();
+                    let fields = views
+                        .iter()
+                        .map(|(key, (ty, _))| (key.clone(), *ty))
+                        .collect::<Vec<_>>();
+                    (
+                        self.types.struct_map(*module, name, &fields),
+                        views.iter().all(|(_, (_, exact))| *exact),
+                    )
+                } else {
+                    (self.types.any(), false)
+                }
+            }
+            Skeleton::Union(branches) => {
+                let mut joined = self.types.none();
+                let mut exact = true;
+                for shape in branches {
+                    let (ty, known) = self.view_at_depth(&child(shape), active, depth);
+                    joined = self.types.union(joined, ty);
+                    exact &= known;
+                }
+                (joined, exact)
+            }
+            Skeleton::Project { of, step } => {
+                let (ty, exact) = self.view_at_depth(&child(of), active, depth);
+                (step.apply(self.types, ty), exact)
+            }
+        };
+        active.remove(bound);
+        answer
+    }
+
+    fn need(&mut self, bound: &BoundSkeleton<S::Frame>) -> BoundNeed<S::Frame> {
+        // Choosing an input family is the joint operation performed by the
+        // caller. Do not walk its single recursive alternative separately in
+        // each column while looking for the next unresolved observation.
+        let value = bound.resolve(&mut |_, _| None);
+        match &value.shape {
+            Skeleton::Input(_) => BoundNeed::Family(value.frame),
+            Skeleton::Project { of, .. } => self.need(&BoundSkeleton::new(value.frame.clone(), (**of).clone())),
+            Skeleton::Tuple(fields) | Skeleton::Union(fields) => {
+                for shape in fields {
+                    let child = BoundSkeleton::new(value.frame.clone(), shape.clone());
+                    if !self.view(&child, &mut HashMap::new()).1 {
+                        return self.need(&child);
+                    }
+                }
+                BoundNeed::Pending
+            }
+            Skeleton::List { element, .. } => self.need(&BoundSkeleton::new(value.frame.clone(), (**element).clone())),
+            Skeleton::Map(fields) | Skeleton::Struct(_, fields) => {
+                for (_, shape) in fields {
+                    let child = BoundSkeleton::new(value.frame.clone(), shape.clone());
+                    if !self.view(&child, &mut HashMap::new()).1 {
+                        return self.need(&child);
+                    }
+                }
+                BoundNeed::Pending
+            }
+            Skeleton::Ground(_) | Skeleton::Result { .. } | Skeleton::Bottom => BoundNeed::Pending,
+        }
+    }
+}
+
+impl<S: BoundDispatchSource> DispatchRowDomain for BoundDispatchDomain<'_, S> {
+    type Row = BoundDispatchRow<S::Frame>;
+
+    fn refine(&mut self, plan: &PatternDispatchPlan<Ty>, row: &Self::Row, proof: &Proof<Ty>) -> RefinedRows<Self::Row> {
+        let mut work = vec![row.clone()];
+        let mut seen = HashSet::new();
+        let mut answer = RefinedRows {
+            rows: Vec::new(),
+            pending: false,
+        };
+        while let Some(row) = work.pop() {
+            if !seen.insert(row.clone()) {
+                continue;
+            }
+            let roots = row
+                .substitution
+                .arguments
+                .iter()
+                .enumerate()
+                .map(|(slot, bound)| {
+                    let (view, _) = self.view(bound, &mut HashMap::new());
+                    row.constraints[slot]
+                        .map(|constraint| self.types.intersect(view, constraint))
+                        .unwrap_or(view)
+                })
+                .collect::<Vec<_>>();
+            if roots.iter().any(|root| self.types.is_empty(root)) {
+                continue;
+            }
+            let subject = self.subject(plan, &row, proof.predicate.subject);
+            let target = predicate_target(self.types, &proof.predicate.region);
+            let mut universal = None;
+            let needed = match (subject.as_ref(), target) {
+                (Some(subject), Some(target)) => {
+                    let (view, exact) = self.view(subject, &mut HashMap::new());
+                    let overlap = self.types.intersect(view, target.ty);
+                    if exact {
+                        false
+                    } else if self.types.is_empty(&overlap) {
+                        universal = Some(false);
+                        false
+                    } else if self.types.is_subtype(&view, &target.ty) {
+                        universal = Some(true);
+                        false
+                    } else {
+                        true
+                    }
+                }
+                _ => false,
+            };
+            if let Some(holds) = universal {
+                if holds == matches!(proof.sense, ProofSense::Holds) {
+                    let mut next = row;
+                    let mut concrete = ConcreteDispatchRows { types: self.types };
+                    if concrete
+                        .record_list_shape(
+                            plan,
+                            &roots,
+                            &mut next.list_shapes,
+                            &proof.predicate,
+                            proof.predicate.subject,
+                            proof.sense,
+                        )
+                        .is_some()
+                    {
+                        answer.rows.push(next);
+                    }
+                }
+                continue;
+            }
+            if needed {
+                match self.need(subject.as_ref().expect("only symbolic subjects need expansion")) {
+                    BoundNeed::Pending => answer.pending = true,
+                    BoundNeed::Family(frame) => {
+                        let family = self.source.input_rows(&frame);
+                        answer.pending |= family.pending;
+                        for replacement in family.rows {
+                            let mut next = row.clone();
+                            next.substitution =
+                                row.substitution
+                                    .apply_once(&frame, &replacement, &mut |frame, replacement| {
+                                        self.source.rebind(frame, replacement)
+                                    });
+                            // This domain proves clause reachability only. A
+                            // root no test reads cannot distinguish outcomes;
+                            // retain its source reference rather than unfold
+                            // an irrelevant recursive constructor history.
+                            for (slot, argument) in next.substitution.arguments.iter_mut().enumerate() {
+                                if !plan.required_input(slot) {
+                                    *argument = row.substitution.arguments[slot].clone();
+                                }
+                            }
+                            work.push(next);
+                        }
+                    }
+                }
+                continue;
+            }
+            let mut concrete = ConcreteDispatchRows { types: self.types };
+            let refined = concrete.refine(
+                plan,
+                &ReachabilityState {
+                    roots: roots.clone(),
+                    list_shapes: row.list_shapes.clone(),
+                },
+                proof,
+            );
+            for state in refined.rows {
+                let mut next = row.clone();
+                for (slot, constrained) in state.roots.into_iter().enumerate() {
+                    if constrained != roots[slot] {
+                        next.constraints[slot] = Some(constrained);
+                    }
+                }
+                next.list_shapes = state.list_shapes;
+                answer.rows.push(next);
+            }
+        }
+        answer
+    }
 }
 
 pub(crate) fn calculate_dispatch_reachability(
@@ -44,26 +532,28 @@ pub(crate) fn calculate_dispatch_reachability(
             }
         })
         .collect::<Vec<_>>();
-    let mut calculator = ReachabilityCalculator {
-        types,
-        plan,
-        visited: HashSet::new(),
-        outcomes: BTreeSet::new(),
-        outcome_inputs: BTreeSet::new(),
-        fail_reachable: false,
-        #[cfg(test)]
-        max_root_slots: 0,
-    };
     let list_shapes = vec![None; plan.graph.subjects.len()];
-    calculator.visit(plan.graph.root, ReachabilityState { roots, list_shapes });
+    let mut domain = ConcreteDispatchRows { types };
+    let reached = dispatch_rows(&mut domain, plan, [ReachabilityState { roots, list_shapes }]);
+    debug_assert!(!reached.pending, "concrete type restrictions are always answerable");
+    let outcomes = reached
+        .outcomes
+        .iter()
+        .map(|(outcome, _)| *outcome)
+        .collect::<BTreeSet<_>>();
+    let outcome_inputs = reached
+        .outcomes
+        .into_iter()
+        .map(|(outcome, row)| (outcome, row.roots))
+        .collect::<BTreeSet<_>>();
     DispatchReachability {
-        outcomes: calculator.outcomes.into_iter().collect(),
-        outcome_inputs: calculator.outcome_inputs.into_iter().collect(),
-        fail_reachable: calculator.fail_reachable,
+        outcomes: outcomes.into_iter().collect(),
+        outcome_inputs: outcome_inputs.into_iter().collect(),
+        fail_reachable: reached.fail_reachable,
         #[cfg(test)]
-        visited_states: calculator.visited.len(),
+        visited_states: reached.visited_states,
         #[cfg(test)]
-        max_root_slots: calculator.max_root_slots,
+        max_root_slots: plan.input_count,
     }
 }
 
@@ -73,70 +563,38 @@ struct ReachabilityState {
     list_shapes: Vec<Option<ListRegion>>,
 }
 
-struct ReachabilityCalculator<'a> {
+struct ConcreteDispatchRows<'a> {
     types: &'a mut Types,
-    plan: &'a PatternDispatchPlan<Ty>,
-    visited: HashSet<(GraphNodeId, ReachabilityState)>,
-    outcomes: BTreeSet<OutcomeId>,
-    outcome_inputs: BTreeSet<(OutcomeId, Vec<Ty>)>,
-    fail_reachable: bool,
-    #[cfg(test)]
-    max_root_slots: usize,
 }
 
-impl ReachabilityCalculator<'_> {
-    fn visit(&mut self, node_id: GraphNodeId, state: ReachabilityState) {
-        #[cfg(test)]
-        {
-            self.max_root_slots = self.max_root_slots.max(state.roots.len());
-        }
-        if !self.visited.insert((node_id, state.clone())) {
-            return;
-        }
-        let Some(node) = self.plan.graph.node(node_id) else {
-            return;
-        };
-        match node {
-            DispatchNode::Fail => self.fail_reachable = true,
-            DispatchNode::Outcome { outcome, .. } => {
-                self.outcomes.insert(*outcome);
-                self.outcome_inputs.insert((*outcome, state.roots));
-            }
-            DispatchNode::Test { on_match, on_miss, .. } => {
-                if let Some(next) = self.apply_proofs(&state, &on_match.evidence.proofs) {
-                    self.visit(on_match.target, next);
-                }
-                if let Some(next) = self.apply_proofs(&state, &on_miss.evidence.proofs) {
-                    self.visit(on_miss.target, next);
-                }
-            }
+impl DispatchRowDomain for ConcreteDispatchRows<'_> {
+    type Row = ReachabilityState;
+
+    fn refine(&mut self, plan: &PatternDispatchPlan<Ty>, row: &Self::Row, proof: &Proof<Ty>) -> RefinedRows<Self::Row> {
+        RefinedRows {
+            rows: self
+                .apply_proof(plan, row.clone(), &proof.predicate, proof.sense)
+                .into_iter()
+                .collect(),
+            pending: false,
         }
     }
+}
 
-    fn apply_proofs(
-        &mut self,
-        state: &ReachabilityState,
-        proofs: &[crate::dispatch_matrix::Proof<Ty>],
-    ) -> Option<ReachabilityState> {
-        let mut refined = state.clone();
-        for proof in proofs {
-            refined = self.apply_proof(refined, &proof.predicate, proof.sense)?;
-        }
-        Some(refined)
-    }
-
+impl ConcreteDispatchRows<'_> {
     fn apply_proof(
         &mut self,
+        plan: &PatternDispatchPlan<Ty>,
         mut state: ReachabilityState,
         predicate: &RegionPredicate<Ty>,
         sense: ProofSense,
     ) -> Option<ReachabilityState> {
         let subject = predicate.subject;
-        self.record_list_shape(&state.roots, &mut state.list_shapes, predicate, subject, sense)?;
+        self.record_list_shape(plan, &state.roots, &mut state.list_shapes, predicate, subject, sense)?;
         let Some(target) = predicate_target(self.types, &predicate.region) else {
             return Some(state);
         };
-        let ordinal = subject_input(self.plan, subject)?;
+        let ordinal = subject_input(plan, subject)?;
         let root = *state.roots.get(ordinal)?;
         let alternatives = self.types.projection_alternatives(root);
         let mut matched = None;
@@ -144,7 +602,7 @@ impl ReachabilityCalculator<'_> {
         for alternative in alternatives {
             let mut row = state.roots.clone();
             row[ordinal] = alternative;
-            let projected = project_subject(self.types, self.plan, &row, subject);
+            let projected = project_subject(self.types, plan, &row, subject);
             let overlap = self.types.intersect(projected, target.ty);
             if self.types.is_empty(&overlap) {
                 missed = join_optional(self.types, missed, alternative);
@@ -155,9 +613,9 @@ impl ReachabilityCalculator<'_> {
                 continue;
             }
             if target.exact
-                && exact_projection_path(self.plan, subject)
+                && exact_projection_path(plan, subject)
                 && let Some((lifted_ordinal, lifted)) =
-                    lift_projection_constraint(self.types, self.plan, &row, subject, target.ty)
+                    lift_projection_constraint(self.types, plan, &row, subject, target.ty)
             {
                 debug_assert_eq!(lifted_ordinal, ordinal);
                 let match_alternative = self.types.intersect(alternative, lifted);
@@ -185,6 +643,7 @@ impl ReachabilityCalculator<'_> {
 
     fn record_list_shape(
         &mut self,
+        plan: &PatternDispatchPlan<Ty>,
         roots: &[Ty],
         list_shapes: &mut [Option<ListRegion>],
         predicate: &RegionPredicate<Ty>,
@@ -197,7 +656,7 @@ impl ReachabilityCalculator<'_> {
         let known = match sense {
             ProofSense::Holds => region,
             ProofSense::DoesNotHold => {
-                let projected = project_subject(self.types, self.plan, roots, subject);
+                let projected = project_subject(self.types, plan, roots, subject);
                 let any = self.types.any();
                 let proper_list = self.types.list(any);
                 if !self.types.is_subtype(&projected, &proper_list) {
@@ -393,6 +852,560 @@ mod tests {
             guard: None,
             body_id,
         }
+    }
+
+    #[derive(Default)]
+    struct SymbolicSource {
+        families: std::collections::HashMap<usize, (Vec<Substitution<usize>>, bool)>,
+        observations: std::collections::HashMap<BoundSkeleton<usize>, Ty>,
+        rebound: Vec<(usize, Substitution<usize>)>,
+        struct_names: HashMap<ModuleId, ModuleName>,
+        lookup_limit: Option<usize>,
+        lookups: usize,
+    }
+
+    impl BoundDispatchSource for SymbolicSource {
+        type Frame = usize;
+
+        fn input_rows(&mut self, frame: &usize) -> RefinedRows<Substitution<usize>> {
+            self.lookups += 1;
+            if let Some(limit) = self.lookup_limit {
+                assert!(
+                    self.lookups <= limit,
+                    "dispatch proof enumerated a recursive producer history"
+                );
+            }
+            match self.families.get(frame) {
+                Some((rows, pending)) => RefinedRows {
+                    rows: rows.clone(),
+                    pending: *pending,
+                },
+                None => RefinedRows {
+                    rows: Vec::new(),
+                    pending: true,
+                },
+            }
+        }
+
+        fn observed(&mut self, value: &BoundSkeleton<usize>, _types: &mut Types) -> Option<Ty> {
+            self.observations.get(value).copied()
+        }
+
+        fn struct_name(&self, module: ModuleId) -> Option<ModuleName> {
+            self.struct_names.get(&module).cloned()
+        }
+
+        fn rebind(&mut self, frame: &usize, inputs: &Substitution<usize>) -> usize {
+            if let Some(index) = self.rebound.iter().position(|entry| entry == &(*frame, inputs.clone())) {
+                return 100 + index;
+            }
+            let next = 100 + self.rebound.len();
+            self.rebound.push((*frame, inputs.clone()));
+            self.families.insert(next, (vec![inputs.clone()], false));
+            next
+        }
+    }
+
+    fn aligned_plan() -> PatternDispatchPlan<Ty> {
+        pattern_dispatch_from_source(SourcePatternRows::lexical(
+            2,
+            vec![
+                row2(Pattern::Atom("left".into()), Pattern::Atom("right".into()), 0),
+                row2(
+                    Pattern::Tuple(vec![Spanned::dummy(Pattern::Wildcard)]),
+                    Pattern::Tuple(vec![Spanned::dummy(Pattern::Wildcard)]),
+                    1,
+                ),
+                row2(Pattern::Wildcard, Pattern::Wildcard, 2),
+            ],
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn bound_dispatch_selects_one_recursive_producer_row_for_both_columns() {
+        let plan = aligned_plan();
+        let mut types = Types::new();
+        let left = types.atom_lit("left");
+        let right = types.atom_lit("right");
+        let seed = Substitution::in_frame(1, &[Skeleton::Input(0), Skeleton::Input(1)]);
+        let recur = Substitution::in_frame(
+            0,
+            &[
+                Skeleton::Tuple(vec![Skeleton::Input(0)]),
+                Skeleton::Tuple(vec![Skeleton::Input(1)]),
+            ],
+        );
+        let inputs = Substitution::in_frame(0, &[Skeleton::Input(0), Skeleton::Input(1)]);
+        let mut source = SymbolicSource::default();
+        source.families.insert(0, (vec![seed.clone(), recur], false));
+        source.families.insert(1, (vec![seed.clone()], false));
+        source.observations.insert(seed.arguments[0].clone(), left);
+        source.observations.insert(seed.arguments[1].clone(), right);
+        let mut domain = BoundDispatchDomain {
+            types: &mut types,
+            source: &mut source,
+        };
+        let reached = dispatch_rows(&mut domain, &plan, [BoundDispatchRow::new(&plan, inputs.clone())]);
+        assert!(!reached.pending);
+        assert!(!reached.fail_reachable);
+        assert_eq!(reached.outcomes.len(), 2);
+        for (outcome, row) in reached.outcomes {
+            match plan.outcome(outcome).unwrap().body_id {
+                0 => assert_eq!(row.substitution, seed),
+                1 => {
+                    for slot in 0..2 {
+                        let (projected, constraint) = domain.project(&row, slot, ProjectStep::TupleField(0));
+                        assert_eq!(projected, inputs.arguments[slot]);
+                        assert_eq!(
+                            constraint, None,
+                            "known constructors require no invented marginal restriction"
+                        );
+                    }
+                }
+                _ => panic!("equal-depth alternatives cannot reach the crossed fallback"),
+            }
+        }
+        let mismatched = Substitution {
+            arguments: vec![
+                seed.arguments[0].clone(),
+                BoundSkeleton::new(0, Skeleton::Tuple(vec![Skeleton::Input(1)])),
+            ],
+        };
+        let reached = dispatch_rows(&mut domain, &plan, [BoundDispatchRow::new(&plan, mismatched)]);
+        assert!(!reached.pending);
+        assert_eq!(reached.outcomes.len(), 1);
+        assert_eq!(plan.outcome(reached.outcomes[0].0).unwrap().body_id, 2);
+    }
+
+    #[test]
+    fn bound_dispatch_proves_unchanged_column_without_unfolding_growing_sibling() {
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            2,
+            vec![
+                row2(Pattern::Wildcard, Pattern::Atom("right".into()), 0),
+                row2(Pattern::Wildcard, Pattern::Wildcard, 1),
+            ],
+        ))
+        .unwrap();
+        let mut types = Types::new();
+        let left = types.atom_lit("left");
+        let right = types.atom_lit("right");
+        let seed = Substitution::in_frame(1, &[Skeleton::Input(0), Skeleton::Input(1)]);
+        let recur = Substitution::in_frame(0, &[Skeleton::Tuple(vec![Skeleton::Input(0)]), Skeleton::Input(1)]);
+        let inputs = Substitution::in_frame(0, &[Skeleton::Input(0), Skeleton::Input(1)]);
+        let mut source = SymbolicSource::default();
+        source.families.insert(0, (vec![seed.clone(), recur], false));
+        source.observations.insert(seed.arguments[0].clone(), left);
+        source.observations.insert(seed.arguments[1].clone(), right);
+        let mut domain = BoundDispatchDomain {
+            types: &mut types,
+            source: &mut source,
+        };
+        let (envelope, exact) = domain.view(&inputs.arguments[1], &mut HashMap::new());
+        assert_eq!(envelope, right, "an unguarded self alias adds no new branch");
+        assert!(!exact, "a family envelope never becomes settled input evidence");
+        let reached = dispatch_rows(&mut domain, &plan, [BoundDispatchRow::new(&plan, inputs.clone())]);
+        assert!(!reached.pending);
+        assert_eq!(reached.outcomes.len(), 1);
+        assert_eq!(plan.outcome(reached.outcomes[0].0).unwrap().body_id, 0);
+        assert_eq!(reached.outcomes[0].1.substitution, inputs);
+        assert_eq!(reached.outcomes[0].1.constraints, vec![None, None]);
+        assert!(reached.visited_states <= plan.graph.nodes.len());
+    }
+
+    #[test]
+    fn bound_dispatch_ambiguous_column_envelopes_still_choose_one_opposite_seed_row() {
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            2,
+            vec![
+                row2(Pattern::Atom("left".into()), Pattern::Atom("left".into()), 0),
+                row2(Pattern::Wildcard, Pattern::Wildcard, 1),
+            ],
+        ))
+        .unwrap();
+        let mut types = Types::new();
+        let left = types.atom_lit("left");
+        let right = types.atom_lit("right");
+        let first = Substitution::in_frame(1, &[Skeleton::Input(0), Skeleton::Input(1)]);
+        let second = Substitution::in_frame(2, &[Skeleton::Input(0), Skeleton::Input(1)]);
+        let mut source = SymbolicSource::default();
+        source.families.insert(0, (vec![first.clone(), second.clone()], false));
+        for (row, values) in [(&first, [left, right]), (&second, [right, left])] {
+            for (bound, ty) in row.arguments.iter().zip(values) {
+                source.observations.insert(bound.clone(), ty);
+            }
+        }
+        let mut domain = BoundDispatchDomain {
+            types: &mut types,
+            source: &mut source,
+        };
+        let input = BoundDispatchRow::new(
+            &plan,
+            Substitution::in_frame(0, &[Skeleton::Input(0), Skeleton::Input(1)]),
+        );
+        let reached = dispatch_rows(&mut domain, &plan, [input]);
+        assert!(!reached.pending);
+        assert_eq!(reached.outcomes.len(), 2);
+        for (outcome, row) in reached.outcomes {
+            assert_eq!(plan.outcome(outcome).unwrap().body_id, 1);
+            assert!(row.substitution == first || row.substitution == second);
+            assert_eq!(row.constraints, vec![None, None]);
+        }
+    }
+
+    #[test]
+    fn bound_dispatch_ambiguous_unchanged_column_does_not_expand_unread_growing_root() {
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            2,
+            vec![
+                row2(Pattern::Wildcard, Pattern::Atom("left".into()), 0),
+                row2(Pattern::Wildcard, Pattern::Wildcard, 1),
+            ],
+        ))
+        .unwrap();
+        assert!(!plan.required_input(0));
+        let mut types = Types::new();
+        let left = types.atom_lit("left");
+        let right = types.atom_lit("right");
+        let first = Substitution::in_frame(1, &[Skeleton::Input(0), Skeleton::Input(1)]);
+        let second = Substitution::in_frame(2, &[Skeleton::Input(0), Skeleton::Input(1)]);
+        let recur = Substitution::in_frame(0, &[Skeleton::Tuple(vec![Skeleton::Input(0)]), Skeleton::Input(1)]);
+        let mut source = SymbolicSource {
+            lookup_limit: Some(256),
+            ..SymbolicSource::default()
+        };
+        source
+            .families
+            .insert(0, (vec![first.clone(), second.clone(), recur], false));
+        for (row, values) in [(&first, [left, right]), (&second, [right, left])] {
+            for (bound, ty) in row.arguments.iter().zip(values) {
+                source.observations.insert(bound.clone(), ty);
+            }
+        }
+        let mut domain = BoundDispatchDomain {
+            types: &mut types,
+            source: &mut source,
+        };
+        let inputs = Substitution::in_frame(0, &[Skeleton::Input(0), Skeleton::Input(1)]);
+        let reached = dispatch_rows(&mut domain, &plan, [BoundDispatchRow::new(&plan, inputs.clone())]);
+        assert!(!reached.pending);
+        assert_eq!(reached.outcomes.len(), 2);
+        let mut clauses = Vec::new();
+        for (outcome, row) in reached.outcomes {
+            clauses.push(plan.outcome(outcome).unwrap().body_id);
+            assert_eq!(row.substitution.arguments[0], inputs.arguments[0]);
+            assert_eq!(row.constraints, vec![None, None]);
+        }
+        clauses.sort_unstable();
+        assert_eq!(clauses, vec![0, 1]);
+    }
+
+    #[test]
+    fn bound_dispatch_recursive_list_tail_reuses_the_same_demanded_proof() {
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            2,
+            vec![
+                row2(list_pattern(0, false), Pattern::Wildcard, 0),
+                row2(list_pattern(1, true), Pattern::Wildcard, 1),
+            ],
+        ))
+        .unwrap();
+        assert!(!plan.required_input(1));
+        let mut types = Types::new();
+        let integer = types.int();
+        let list = types.list(integer);
+        let empty = types.empty_list();
+        let seed = Substitution::in_frame(1, &[Skeleton::Input(0), Skeleton::Input(1)]);
+        let recur = Substitution::in_frame(
+            0,
+            &[
+                Skeleton::project(Skeleton::Input(0), ProjectStep::ListTail),
+                Skeleton::List {
+                    element: Box::new(Skeleton::Union(vec![
+                        Skeleton::project(Skeleton::Input(0), ProjectStep::ListElement),
+                        Skeleton::project(Skeleton::Input(1), ProjectStep::ListElement),
+                    ])),
+                    non_empty: false,
+                },
+            ],
+        );
+        let mut source = SymbolicSource {
+            lookup_limit: Some(256),
+            ..SymbolicSource::default()
+        };
+        source.families.insert(0, (vec![recur.clone(), seed.clone()], false));
+        source.observations.insert(seed.arguments[0].clone(), list);
+        source.observations.insert(seed.arguments[1].clone(), empty);
+        let mut domain = BoundDispatchDomain {
+            types: &mut types,
+            source: &mut source,
+        };
+        let rows = [recur, seed].into_iter().map(|row| BoundDispatchRow::new(&plan, row));
+        let reached = dispatch_rows(&mut domain, &plan, rows);
+        assert!(!reached.pending);
+        let mut clauses = reached
+            .outcomes
+            .iter()
+            .map(|(outcome, _)| plan.outcome(*outcome).unwrap().body_id)
+            .collect::<Vec<_>>();
+        clauses.sort_unstable();
+        clauses.dedup();
+        assert_eq!(clauses, vec![0, 1]);
+    }
+
+    #[test]
+    fn bound_dispatch_struct_envelope_uses_the_source_module_identity() {
+        let mut types = Types::new();
+        let name = ModuleName::parse_dotted("Box").unwrap();
+        let module = ModuleId::GLOBAL;
+        let expected = types.struct_map(module, name.clone(), &[]);
+        let mut source = SymbolicSource::default();
+        source.struct_names.insert(module, name);
+        let mut domain = BoundDispatchDomain {
+            types: &mut types,
+            source: &mut source,
+        };
+        let bound = BoundSkeleton::new(0, Skeleton::Struct(module, Vec::new()));
+        let (envelope, exact) = domain.view(&bound, &mut HashMap::new());
+        assert_eq!(envelope, expected);
+        assert!(exact);
+    }
+
+    #[test]
+    fn bound_dispatch_distinguishes_pending_family_from_closed_empty_family() {
+        let plan = aligned_plan();
+        let mut types = Types::new();
+        let mut source = SymbolicSource::default();
+        let input = BoundDispatchRow::new(
+            &plan,
+            Substitution::in_frame(0, &[Skeleton::Input(0), Skeleton::Input(1)]),
+        );
+        let mut domain = BoundDispatchDomain {
+            types: &mut types,
+            source: &mut source,
+        };
+        let pending = dispatch_rows(&mut domain, &plan, [input.clone()]);
+        assert!(pending.pending);
+        assert!(pending.outcomes.is_empty());
+        assert!(!pending.fail_reachable);
+        domain.source.families.insert(0, (Vec::new(), false));
+        let empty = dispatch_rows(&mut domain, &plan, [input]);
+        assert!(!empty.pending);
+        assert!(empty.outcomes.is_empty());
+        assert!(!empty.fail_reachable);
+    }
+
+    #[test]
+    fn bound_dispatch_preserves_known_rows_beside_pending_alternatives() {
+        let plan = aligned_plan();
+        let mut types = Types::new();
+        let seed = Substitution::in_frame(1, &[Skeleton::Input(0), Skeleton::Input(1)]);
+        let mut source = SymbolicSource::default();
+        source.families.insert(0, (vec![seed.clone()], true));
+        source
+            .observations
+            .insert(seed.arguments[0].clone(), types.atom_lit("left"));
+        source
+            .observations
+            .insert(seed.arguments[1].clone(), types.atom_lit("right"));
+        let mut domain = BoundDispatchDomain {
+            types: &mut types,
+            source: &mut source,
+        };
+        let row = BoundDispatchRow::new(
+            &plan,
+            Substitution::in_frame(0, &[Skeleton::Input(0), Skeleton::Input(1)]),
+        );
+        let reached = dispatch_rows(&mut domain, &plan, [row]);
+        assert!(reached.pending);
+        assert!(!reached.fail_reachable);
+        assert_eq!(reached.outcomes.len(), 1);
+        assert_eq!(plan.outcome(reached.outcomes[0].0).unwrap().body_id, 0);
+        assert_eq!(reached.outcomes[0].1.substitution, seed);
+    }
+
+    #[test]
+    fn bound_dispatch_does_not_observe_an_unresolved_struct_as_a_plain_map() {
+        let mut types = Types::new();
+        let mut source = SymbolicSource::default();
+        let mut domain = BoundDispatchDomain {
+            types: &mut types,
+            source: &mut source,
+        };
+        let bound = BoundSkeleton::new(0, Skeleton::Struct(super::super::ModuleId::GLOBAL, Vec::new()));
+        let (envelope, exact) = domain.view(&bound, &mut HashMap::new());
+        assert!(!exact);
+        assert_eq!(envelope, domain.types.any());
+    }
+
+    #[test]
+    fn bound_dispatch_keeps_type_restrictions_beside_the_original_producer() {
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![row(Pattern::Atom("left".into()), 0), row(Pattern::Wildcard, 1)],
+        ))
+        .unwrap();
+        let mut types = Types::new();
+        let left = types.atom_lit("left");
+        let right = types.atom_lit("right");
+        let either = types.union(left, right);
+        let value = BoundSkeleton::new(1, Skeleton::Input(0));
+        let mut source = SymbolicSource::default();
+        source.observations.insert(value.clone(), either);
+        let mut domain = BoundDispatchDomain {
+            types: &mut types,
+            source: &mut source,
+        };
+        let row = BoundDispatchRow::new(
+            &plan,
+            Substitution {
+                arguments: vec![value.clone()],
+            },
+        );
+        let reached = dispatch_rows(&mut domain, &plan, [row]);
+        assert!(!reached.pending);
+        assert_eq!(reached.outcomes.len(), 2);
+        for (outcome, row) in reached.outcomes {
+            assert_eq!(row.substitution.arguments, vec![value.clone()]);
+            let expected = if plan.outcome(outcome).unwrap().body_id == 0 {
+                left
+            } else {
+                right
+            };
+            assert_eq!(row.constraints, vec![Some(expected)]);
+        }
+    }
+
+    #[derive(Clone, PartialEq, Eq, Hash)]
+    enum BoundRow {
+        Choice,
+        Producer(usize, ReachabilityState),
+    }
+
+    struct BoundRows<'a> {
+        concrete: ConcreteDispatchRows<'a>,
+        producers: Vec<ReachabilityState>,
+        pending: bool,
+    }
+
+    impl DispatchRowDomain for BoundRows<'_> {
+        type Row = BoundRow;
+
+        fn refine(
+            &mut self,
+            plan: &PatternDispatchPlan<Ty>,
+            row: &BoundRow,
+            proof: &Proof<Ty>,
+        ) -> RefinedRows<BoundRow> {
+            let (producers, pending) = match row {
+                BoundRow::Choice => (
+                    self.producers.iter().cloned().enumerate().collect::<Vec<_>>(),
+                    self.pending,
+                ),
+                BoundRow::Producer(producer, row) => (vec![(*producer, row.clone())], false),
+            };
+            RefinedRows {
+                rows: producers
+                    .into_iter()
+                    .flat_map(|(producer, row)| {
+                        self.concrete
+                            .refine(plan, &row, proof)
+                            .rows
+                            .into_iter()
+                            .map(move |row| BoundRow::Producer(producer, row))
+                    })
+                    .collect(),
+                pending,
+            }
+        }
+    }
+
+    #[test]
+    fn shared_dispatch_keeps_joint_producer_rows_and_pending_alternatives() {
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            2,
+            vec![
+                row2(Pattern::Atom("a".into()), Pattern::Atom("b".into()), 0),
+                row2(Pattern::Atom("b".into()), Pattern::Atom("a".into()), 1),
+                row2(Pattern::Wildcard, Pattern::Wildcard, 2),
+            ],
+        ))
+        .unwrap();
+        let mut types = Types::new();
+        let a = types.atom_lit("a");
+        let b = types.atom_lit("b");
+        let producers = [vec![a, b], vec![b, a]]
+            .into_iter()
+            .map(|roots| ReachabilityState {
+                roots,
+                list_shapes: vec![None; plan.graph.subjects.len()],
+            })
+            .collect();
+        // The test domain names complete producer rows and delegates each
+        // actual predicate to the existing concrete restriction operation.
+        let mut domain = BoundRows {
+            concrete: ConcreteDispatchRows { types: &mut types },
+            producers,
+            pending: true,
+        };
+        let result = dispatch_rows(&mut domain, &plan, [BoundRow::Choice]);
+        assert!(result.pending, "an unresolved producer must survive beside known rows");
+        assert!(!result.fail_reachable);
+        assert_eq!(result.outcomes.len(), 2);
+        for (outcome, row) in result.outcomes {
+            let BoundRow::Producer(producer, row) = row else {
+                panic!("the choice must have been restricted")
+            };
+            assert_eq!(plan.outcome(outcome).unwrap().body_id as usize, producer);
+            assert_eq!(row.roots, if producer == 0 { vec![a, b] } else { vec![b, a] });
+        }
+        domain.producers.clear();
+        let pending = dispatch_rows(&mut domain, &plan, [BoundRow::Choice]);
+        assert!(pending.pending);
+        assert!(pending.outcomes.is_empty());
+        assert!(!pending.fail_reachable);
+        domain.pending = false;
+        let impossible = dispatch_rows(&mut domain, &plan, [BoundRow::Choice]);
+        assert!(!impossible.pending);
+        assert!(impossible.outcomes.is_empty());
+        assert!(!impossible.fail_reachable);
+    }
+
+    #[test]
+    fn shared_dispatch_memoizes_the_graph_node_with_its_whole_row() {
+        struct IdentityRows;
+        impl DispatchRowDomain for IdentityRows {
+            type Row = u8;
+            fn refine(&mut self, _plan: &PatternDispatchPlan<Ty>, row: &u8, _proof: &Proof<Ty>) -> RefinedRows<u8> {
+                RefinedRows {
+                    rows: vec![*row],
+                    pending: false,
+                }
+            }
+        }
+        let mut plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![row(Pattern::Atom("a".into()), 0), row(Pattern::Wildcard, 1)],
+        ))
+        .unwrap();
+        let root = plan.graph.root;
+        let DispatchNode::Test { on_match, .. } = &mut plan.graph.nodes[root.0 as usize] else {
+            panic!("the atom question must lead the test plan")
+        };
+        on_match.target = root;
+        let once = dispatch_rows(&mut IdentityRows, &plan, [7]);
+        let repeated = dispatch_rows(&mut IdentityRows, &plan, [7, 7]);
+        assert!(once.visited_states <= plan.graph.nodes.len());
+        assert_eq!(once.visited_states, repeated.visited_states);
+        assert_eq!(once.outcomes, repeated.outcomes);
+        assert!(
+            !once.outcomes.is_empty(),
+            "closing one edge must not discard its sibling"
+        );
+        let distinct = dispatch_rows(&mut IdentityRows, &plan, [7, 8]);
+        assert_eq!(distinct.visited_states, 2 * once.visited_states);
+        assert_eq!(distinct.outcomes.len(), 2 * once.outcomes.len());
     }
 
     /// A guard uses a carrier subject to enter the graph, but that carrier is

@@ -509,3 +509,92 @@ fn a_prepared_binary_key_two_tests_read_is_built_once() {
         "two questions over one constant are one copy"
     );
 }
+
+#[test]
+fn typed_callable_type_tests_use_the_selected_construction_schema() {
+    use crate::compiler2::FunctionId;
+    use crate::compiler2::transport::{CallableAlternative, CallableDescr};
+    use crate::types::ClosureTarget;
+    let mut door = Door::new();
+    let int = door.world.types_mut().int();
+    let atom = door.world.types_mut().atom();
+    let function = FunctionId::from_coordinate(1);
+    let ty = door
+        .world
+        .types_mut()
+        .closure_lit(ClosureTarget(function.as_u32()), vec![int], 0);
+    let predicate = door.world.types().runtime_type_predicate(&ty);
+    let selector = door.transport.interners_mut().intern_lane(LaneDescr {
+        ty: int,
+        class: TransportClass::Value,
+    });
+    let nothing = door.transport.interners_mut().intern_shape(ShapeDescr::Nothing);
+    let alternative = |capture| CallableAlternative {
+        function,
+        arity: 0,
+        capture_tys: Box::new([capture]),
+        capture_layouts: Box::new([TransportLayout::structural(nothing)]),
+    };
+    let direct = door.transport.interners_mut().intern_callable(CallableDescr::Direct {
+        alternative: alternative(int),
+    });
+    let direct = door
+        .transport
+        .interners_mut()
+        .intern_shape(ShapeDescr::Callable(direct));
+    let closed = door.transport.interners_mut().intern_callable(CallableDescr::Closed {
+        selector,
+        alternatives: Box::new([alternative(atom), alternative(int)]),
+    });
+    let closed = door
+        .transport
+        .interners_mut()
+        .intern_shape(ShapeDescr::Callable(closed));
+    let tuple = door
+        .transport
+        .interners_mut()
+        .intern_shape(ShapeDescr::Tuple(Box::new([TransportLayout::structural(closed)])));
+    let tuple_ty = door.world.types_mut().tuple(&[ty]);
+    let tuple_predicate = door.world.types().runtime_type_predicate(&tuple_ty);
+    let mut test = TypeTest {
+        runtime: &mut door.runtime,
+        types: door.world.types(),
+        program: &door.program,
+        module: &door.module,
+        transport: &door.transport,
+    };
+    assert!(
+        test.matches(
+            &predicate,
+            &BackendBoundValue::Transport {
+                shape: direct,
+                lanes: Vec::new()
+            }
+        )
+        .unwrap()
+    );
+    for (tag, expected) in [(0, false), (1, true)] {
+        assert_eq!(
+            test.matches(
+                &predicate,
+                &BackendBoundValue::Transport {
+                    shape: closed,
+                    lanes: vec![AnyValue::Int(tag)],
+                }
+            )
+            .unwrap(),
+            expected
+        );
+        assert_eq!(
+            test.matches(
+                &tuple_predicate,
+                &BackendBoundValue::Transport {
+                    shape: tuple,
+                    lanes: vec![AnyValue::Int(tag)],
+                }
+            )
+            .unwrap(),
+            expected
+        );
+    }
+}

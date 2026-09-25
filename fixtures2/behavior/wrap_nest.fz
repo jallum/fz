@@ -1,0 +1,10 @@
+#---
+# purpose: "a self cycle that returns through a non-recursive helper: nest is μX. int | [X] and wrap has one activation"
+#---
+def nest([]), do: 0
+def nest([_ | rest]), do: wrap(nest(rest))
+def wrap(v), do: [v]
+
+def main() do
+  dbg(nest([1, 2]))
+end

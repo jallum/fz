@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::runtime_demand::{CallableFlowBuilder, propagate_steps_reverse};
 use crate::compiler2::body::{LoweredBody, LoweredStep, ValueId};
@@ -108,11 +108,13 @@ fn propagate_tuple_step_demand(
     };
     let facts = ExecutableFacts {
         analysis: ActivationAnalysis {
+            rows: Vec::new(),
             input_rows: Vec::new(),
             entry_reachability: EntryReachability::new(Vec::new(), false),
             reachable_entries: Vec::new(),
             callsites: Vec::new(),
             value_types: HashMap::new(),
+            addressed_callsites: HashSet::new(),
         },
         body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
         entry_dispatch: None,

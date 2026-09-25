@@ -1,0 +1,10 @@
+#---
+# purpose: "a recursive callable slot the body only calls through keys on its address, so two lambdas share one activation"
+#---
+def run(0, f), do: 0
+def run(n, f), do: f.(n) + run(n - 1, f)
+
+def main() do
+  dbg(run(3, fn (a) -> a + 1 end))
+  dbg(run(3, fn (a) -> a * 2 end))
+end

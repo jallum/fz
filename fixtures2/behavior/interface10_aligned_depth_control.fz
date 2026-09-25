@@ -1,0 +1,12 @@
+#---
+# purpose: "aligned tuple dispatch accepts equal depths and rejects mismatched depths in either column"
+#---
+def aligned(:left, :right), do: :ok
+def aligned({x}, {y}), do: aligned(x, y)
+def aligned(_x, _y), do: :crossed
+
+def main() do
+  dbg(aligned({{:left}}, {{:right}}))
+  dbg(aligned({{:left}}, {:right}))
+  dbg(aligned({:left}, {{:right}}))
+end

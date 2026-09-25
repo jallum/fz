@@ -50,9 +50,25 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
 
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::JobCompletion {
         let completion = self.apply_completion(job, effects);
+        self.emit_return_retractions(&completion.step.movements);
         self.emit_job_completion(&completion);
         self.emit_activation_input_budget_collapses();
         completion
+    }
+
+    /// A return that drops is as much a movement of the fixpoint as a return
+    /// that is installed. Without the retraction in the stream a trace shows a
+    /// climb of `return_type.defined` with no account of what withdrew them,
+    /// and a flickering slot is indistinguishable from an ascending one.
+    fn emit_return_retractions(&self, movements: &[super::facts::FactMovement<DependencyKey>]) {
+        for movement in movements {
+            if movement.state.revision.is_some() {
+                continue;
+            }
+            if let Some(FactKey::ReturnType(activation)) = movement.key.fact() {
+                self.emit_world_key(&["fz", "compiler2", "return_type", "cleared"], activation);
+            }
+        }
     }
 
     fn apply_completion(&mut self, job: Job, effects: JobEffects) -> super::JobCompletion {
@@ -191,9 +207,15 @@ pub enum Job {
     DeriveStaticCallees(FunctionId),
     DeriveCallGraphComponent(FunctionId),
     DeriveInputDemand(FunctionId),
+    DeriveReturnSkeleton(FunctionId),
+    DeriveReturnUnknowns(FunctionId),
     SeedRoot(RootId),
     SeedActivation(ActivationKey),
     AnalyzeActivation(ActivationKey),
+    /// Solves every member's `ReturnType` for one recursive-return
+    /// component at once, keyed by the component's canonical owner (its
+    /// first member in semantic order). See `World::return_membership`.
+    SolveReturnComponent(ActivationKey),
     DeriveExecutableFacts(ExecutableKey),
     DeriveCallableConstructionTarget(CallableConstructionTargetKey),
     DeriveRuntimeDemand(ExecutableKey),
@@ -212,7 +234,9 @@ impl SemanticOrd<Types> for Job {
                 (Job::DefineFunction(left), Job::DefineFunction(right)) => left.cmp(right),
                 (Job::DeriveTypeDef(left), Job::DeriveTypeDef(right)) => left.cmp(right),
                 (Job::DeriveFunctionContract(left), Job::DeriveFunctionContract(right)) => left.cmp(right),
-                (Job::DeriveInputDemand(left), Job::DeriveInputDemand(right)) => left.cmp(right),
+                (Job::DeriveInputDemand(left), Job::DeriveInputDemand(right))
+                | (Job::DeriveReturnSkeleton(left), Job::DeriveReturnSkeleton(right))
+                | (Job::DeriveReturnUnknowns(left), Job::DeriveReturnUnknowns(right)) => left.cmp(right),
                 (Job::LowerFunction(left), Job::LowerFunction(right)) => left.cmp(right),
                 (Job::ReifyGuardDispatch(left), Job::ReifyGuardDispatch(right)) => left.cmp(right),
                 (Job::PlanEntryDispatch(left), Job::PlanEntryDispatch(right)) => left.cmp(right),
@@ -220,7 +244,10 @@ impl SemanticOrd<Types> for Job {
                 (Job::DeriveCallGraphComponent(left), Job::DeriveCallGraphComponent(right)) => left.cmp(right),
                 (Job::SeedRoot(left), Job::SeedRoot(right)) => left.cmp(right),
                 (Job::SeedActivation(left), Job::SeedActivation(right))
-                | (Job::AnalyzeActivation(left), Job::AnalyzeActivation(right)) => left.semantic_cmp(right, types),
+                | (Job::AnalyzeActivation(left), Job::AnalyzeActivation(right))
+                | (Job::SolveReturnComponent(left), Job::SolveReturnComponent(right)) => {
+                    left.semantic_cmp(right, types)
+                }
                 (Job::DeriveExecutableFacts(left), Job::DeriveExecutableFacts(right))
                 | (Job::DeriveRuntimeDemand(left), Job::DeriveRuntimeDemand(right)) => left.semantic_cmp(right, types),
                 (Job::DeriveCallableConstructionTarget(left), Job::DeriveCallableConstructionTarget(right)) => {
@@ -234,6 +261,7 @@ impl SemanticOrd<Types> for Job {
 fn job_order_rank(job: &Job) -> u8 {
     match job {
         Job::AnalyzeActivation(_) => 0,
+        Job::SolveReturnComponent(_) => 1,
         Job::DefineFunction(_) => 3,
         Job::DefineModule(_) => 4,
         Job::DefineModuleInterface(_) => 5,
@@ -241,6 +269,8 @@ fn job_order_rank(job: &Job) -> u8 {
         Job::DeriveExecutableFacts(_) => 7,
         Job::DeriveFunctionContract(_) => 8,
         Job::DeriveInputDemand(_) => 9,
+        Job::DeriveReturnSkeleton(_) => 23,
+        Job::DeriveReturnUnknowns(_) => 24,
         Job::DeriveStaticCallees(_) => 10,
         Job::DeriveTypeDef(_) => 11,
         Job::ExpandFunctionSource(_) => 12,
@@ -256,6 +286,35 @@ fn job_order_rank(job: &Job) -> u8 {
     }
 }
 
+/// Which kind of publisher wrote one `ActivationCallEvidence` cell. A callee's
+/// evidence rows partition by this, not by the raw `Job` that wrote them: a
+/// seed mints the callee's own row, a caller's walk contributes what IT
+/// observed calling the callee, and the callee's own return solve contributes
+/// its closed-form answer back through the same join. `Seed` and `Settled`
+/// are singletons; `Call` carries the calling activation, since a callee can
+/// have many callers, each with its own cell.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EvidenceSource {
+    Seed,
+    Call(ActivationKey),
+    Settled,
+}
+
+/// The call-evidence source a publisher writes under, one-to-one with the
+/// three jobs that ever publish an `activation_input_contributions` row:
+/// `SeedRoot`/`SeedActivation` mint an activation's own seed row, an
+/// `AnalyzeActivation` walk contributes what IT observed calling the callee,
+/// and `SolveReturnComponent` contributes its own settled answer -- the edge
+/// nothing subscribes to.
+pub(crate) fn evidence_source_for(job: &Job) -> Option<EvidenceSource> {
+    match job {
+        Job::SeedRoot(_) | Job::SeedActivation(_) => Some(EvidenceSource::Seed),
+        Job::AnalyzeActivation(activation) => Some(EvidenceSource::Call(activation.clone())),
+        Job::SolveReturnComponent(_) => Some(EvidenceSource::Settled),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FactKey {
     CodeIndexed(SourceOwner),
@@ -265,6 +324,7 @@ pub enum FactKey {
     ModuleInterface(ModuleId),
     FunctionSource(FunctionId),
     ExpandedFunctionSource(FunctionId),
+    TypeDeclared(TypeName),
     TypeDefined(TypeName),
     StructDefined(ModuleId),
     ProtocolDispatch(ModuleId),
@@ -278,10 +338,30 @@ pub enum FactKey {
     CallGraphComponent(FunctionId),
     Recursive(FunctionId),
     InputDemand(FunctionId),
+    ReturnSkeleton(FunctionId),
+    ReturnUnknowns(FunctionId),
     RootEntry(RootId),
     Activation(ActivationKey),
     ActivationInputs(ActivationKey),
+    /// One publisher's own cell in `ActivationInputs`' join, not the joined
+    /// aggregate: `callee` names the activation, `from` names which publisher
+    /// wrote it (`EvidenceSource`). A return solve reads the `Seed` cell and
+    /// each non-member `Call` cell for a member, so its own `Settled` publish
+    /// -- and a member's own `Call` cell, already modeled structurally as a
+    /// `Term::Shape` binding -- never wakes it back.
+    ActivationCallEvidence {
+        callee: ActivationKey,
+        from: EvidenceSource,
+    },
     ActivationAnalyzed(ActivationKey),
+    /// The part of `ActivationAnalyzed` a return solve reads: which entries
+    /// the activation returns through, and the types standing at its
+    /// function's `Ground` leaves and its unaddressed `Result` leaves. Same
+    /// stored `ActivationAnalysis`, narrower subscription -- moves only when
+    /// that part does.
+    ReturnSolveInputs(ActivationKey),
+    /// Every call site that addresses this activation (`semantic::Callers`).
+    Callers(ActivationKey),
     ReturnType(ActivationKey),
     CallSiteTargets(CallSiteKey),
     CallSiteSummary(CallSiteKey),
@@ -323,14 +403,31 @@ impl FactKey {
             | (FactKey::StaticCallees(left), FactKey::StaticCallees(right))
             | (FactKey::CallGraphComponent(left), FactKey::CallGraphComponent(right))
             | (FactKey::InputDemand(left), FactKey::InputDemand(right))
+            | (FactKey::ReturnSkeleton(left), FactKey::ReturnSkeleton(right))
+            | (FactKey::ReturnUnknowns(left), FactKey::ReturnUnknowns(right))
             | (FactKey::Recursive(left), FactKey::Recursive(right)) => left.cmp(right),
-            (FactKey::TypeDefined(left), FactKey::TypeDefined(right)) => left.cmp(right),
+            (FactKey::TypeDeclared(left), FactKey::TypeDeclared(right))
+            | (FactKey::TypeDefined(left), FactKey::TypeDefined(right)) => left.cmp(right),
             (FactKey::IncomingInputSlot(left), FactKey::IncomingInputSlot(right)) => left.semantic_cmp(right, types),
             (FactKey::RootEntry(left), FactKey::RootEntry(right)) => left.cmp(right),
             (FactKey::Activation(left), FactKey::Activation(right))
             | (FactKey::ActivationInputs(left), FactKey::ActivationInputs(right))
             | (FactKey::ActivationAnalyzed(left), FactKey::ActivationAnalyzed(right))
+            | (FactKey::ReturnSolveInputs(left), FactKey::ReturnSolveInputs(right))
+            | (FactKey::Callers(left), FactKey::Callers(right))
             | (FactKey::ReturnType(left), FactKey::ReturnType(right)) => left.semantic_cmp(right, types),
+            (
+                FactKey::ActivationCallEvidence {
+                    callee: left_callee,
+                    from: left_from,
+                },
+                FactKey::ActivationCallEvidence {
+                    callee: right_callee,
+                    from: right_from,
+                },
+            ) => left_callee
+                .semantic_cmp(right_callee, types)
+                .then_with(|| left_from.cmp(right_from)),
             (FactKey::CallSiteTargets(left), FactKey::CallSiteTargets(right))
             | (FactKey::CallSiteSummary(left), FactKey::CallSiteSummary(right)) => left.semantic_cmp(right, types),
             (FactKey::CallableConstructionTarget(left), FactKey::CallableConstructionTarget(right)) => {
@@ -368,6 +465,8 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::FunctionSource(_) => 15,
         FactKey::GuardDispatch(_) => 17,
         FactKey::InputDemand(_) => 18,
+        FactKey::ReturnSkeleton(_) => 39,
+        FactKey::ReturnUnknowns(_) => 40,
         FactKey::LoweredBody(_) => 19,
         FactKey::ModuleDefined(_) => 21,
         FactKey::ModuleIndexed(_) => 22,
@@ -383,7 +482,11 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::RuntimeDemand(_) => 32,
         FactKey::RuntimeDemandInput(_) => 33,
         FactKey::RuntimeDemandInputs(_) => 34,
+        FactKey::TypeDeclared(_) => 35,
         FactKey::IncomingInputSlot(_) => 37,
+        FactKey::Callers(_) => 38,
+        FactKey::ReturnSolveInputs(_) => 41,
+        FactKey::ActivationCallEvidence { .. } => 42,
     }
 }
 
@@ -397,6 +500,8 @@ impl ClaimShape for FactKey {
             self,
             FactKey::ReturnType(_)
                 | FactKey::ActivationInputs(_)
+                | FactKey::ActivationCallEvidence { .. }
+                | FactKey::Callers(_)
                 | FactKey::RuntimeDemandInput(_)
                 | FactKey::IncomingInputSlot(_)
         )
@@ -491,6 +596,14 @@ impl Derivation {
     pub(crate) fn of(job: Job, key: DerivationKey) -> Self {
         Self { job, key }
     }
+
+    pub(crate) fn own(job: &Job) -> Self {
+        let key = match job {
+            Job::AnalyzeActivation(activation) => DerivationKey::Activation(activation.clone()),
+            _ => DerivationKey::Job,
+        };
+        Self::of(job.clone(), key)
+    }
 }
 
 impl Publisher for Derivation {
@@ -501,10 +614,7 @@ impl Publisher for Derivation {
     }
 
     fn of_run(job: &Job) -> Self {
-        Self {
-            job: job.clone(),
-            key: DerivationKey::Job,
-        }
+        Self::own(job)
     }
 }
 
@@ -569,7 +679,17 @@ pub(crate) struct JobEffects {
     pub(crate) product_waits: Vec<ProductAddress>,
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
-    pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
+    /// One row per activation this job's own analysis correlated. Every
+    /// publisher -- a root/activation seed, an ordinary walk's call evidence,
+    /// or a return solve's own settled answer -- contributes through this
+    /// same field; `World::complete_job` derives which `EvidenceSource` cell
+    /// each row lands in from the publishing job itself
+    /// (`evidence_source_for`), so nothing here distinguishes them by shape.
+    pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::semantic::ActivationInput>)>,
+    /// One call edge per entry, keyed by the CALLEE: the channel that keeps a
+    /// recursive-return component's owner subscribed to its members gaining
+    /// callers.
+    pub(crate) caller_contributions: Vec<(ActivationKey, CallSiteKey)>,
     pub(crate) runtime_demand_input_contributions: Vec<(ExecutableKey, super::semantic::TargetDemandContribution)>,
     pub(crate) incoming_input_contributions:
         std::collections::HashMap<super::incoming_inputs::InputSlot, super::incoming_inputs::IncomingInputSources>,
@@ -619,7 +739,13 @@ impl World {
     pub(crate) fn demand_fact_producer(&mut self, fact: &FactKey, reason: WorkStartReason) -> u64 {
         let job = match fact {
             FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
-            FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
+            // A generated function has no declaration to expand. The lowering
+            // of the body that minted it publishes its definition as a
+            // co-output, so that lowering is its only producer.
+            FactKey::FunctionDefined(function) => Some(match self.generated_function_owner(*function) {
+                Some(owner) => Job::LowerFunction(owner),
+                None => Job::DefineFunction(*function),
+            }),
             FactKey::ModuleDefined(module) => Some(Job::DefineModule(*module)),
             // `StructDefined` publishes as `DefineModule`'s co-output
             // (`source_publish::publish_struct_def`), exactly like
@@ -628,7 +754,11 @@ impl World {
             // same producer mapping or it would stall forever with no wake
             // source.
             FactKey::StructDefined(module) => Some(Job::DefineModule(*module)),
-            FactKey::TypeDefined(name) => Some(Job::DeriveTypeDef(name.clone())),
+            FactKey::TypeDefined(name) => Some(Job::DeriveTypeDef(
+                self.recursive_type_def_component(name)
+                    .map(|component| component.owner)
+                    .unwrap_or_else(|| name.clone()),
+            )),
             FactKey::FunctionContract(function) => Some(Job::DeriveFunctionContract(*function)),
             FactKey::CodeIndexed(code) => Some(Job::IndexCode(*code)),
             FactKey::GuardDispatch(function) => Some(Job::ReifyGuardDispatch(*function)),
@@ -652,6 +782,8 @@ impl World {
                 Some(Job::DeriveCallGraphComponent(*function))
             }
             FactKey::InputDemand(function) => Some(Job::DeriveInputDemand(*function)),
+            FactKey::ReturnSkeleton(function) => Some(Job::DeriveReturnSkeleton(*function)),
+            FactKey::ReturnUnknowns(function) => Some(Job::DeriveReturnUnknowns(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
             // A function's source is published by the scope walk that defines
             // it, and which walk that is depends on where the function lives.
@@ -670,11 +802,11 @@ impl World {
                     .sum();
             }
             FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),
-            FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
-                self.seed_activation_producer(activation)
-            }
+            FactKey::Activation(activation)
+            | FactKey::ActivationInputs(activation)
+            | FactKey::ActivationCallEvidence { callee: activation, .. } => self.seed_activation_producer(activation),
             FactKey::ActivationAnalyzed(activation)
-            | FactKey::ReturnType(activation)
+            | FactKey::ReturnSolveInputs(activation)
             | FactKey::CallSiteTargets(CallSiteKey { activation, .. })
             | FactKey::CallSiteSummary(CallSiteKey { activation, .. }) => {
                 let activation = activation.clone();
@@ -683,6 +815,27 @@ impl World {
                     pokes += self.demand_producer_if_needed(seed, fact, reason) as u64;
                 }
                 return pokes + self.demand_producer_if_needed(Job::AnalyzeActivation(activation), fact, reason) as u64;
+            }
+            // A `ReturnType` is owned by `AnalyzeActivation` alone, exactly
+            // like the arm above, unless its activation shares the solve --
+            // then the component's canonical owner's `SolveReturnComponent`
+            // publishes it instead. While membership is still unknown the
+            // walk is the job to poke: it is what names the call-site
+            // targets that decide which of the two owns this return.
+            // `World::return_membership` is derived fresh each call, so this
+            // routing always matches the ownership rule
+            // `World::define_activation_return_outcome` enforces.
+            FactKey::ReturnType(activation) => {
+                let activation = activation.clone();
+                let mut pokes = 0;
+                if let Some(seed) = self.seed_activation_producer(&activation) {
+                    pokes += self.demand_producer_if_needed(seed, fact, reason) as u64;
+                }
+                let job = match self.return_membership(&activation).into_component() {
+                    Some(component) => Job::SolveReturnComponent(component.owner),
+                    None => Job::AnalyzeActivation(activation),
+                };
+                return pokes + self.demand_producer_if_needed(job, fact, reason) as u64;
             }
             FactKey::ExecutableFacts(executable) => Some(Job::DeriveExecutableFacts(executable.clone())),
             FactKey::CallableConstructionTarget(key) => Some(Job::DeriveCallableConstructionTarget(key.clone())),
@@ -848,11 +1001,21 @@ impl World {
     /// `ActivationAnalyzed`) stays perpetually `rebased` while blocked, and
     /// `demand_fact_producer`'s rebased branch re-enqueues unconditionally on
     /// every call — without this guard a permanently blocked-but-rebased
-    /// callee would be re-run every stall pass forever. Once a callee has
-    /// run at all, its own read/wait subscriptions (an unresolved wait's
-    /// fact is separately covered by `demand_blocked_wait_producers`) carry
-    /// every later revision. Retires each such key from the frontier so the
-    /// working set stays bounded. Returns how many analyses were demanded.
+    /// callee would be re-run every stall pass forever. Once a callee has run
+    /// at all, its own read/wait subscriptions (an unresolved wait's fact is
+    /// separately covered by `demand_blocked_wait_producers`) carry every
+    /// later revision -- except a recursive-return component member's
+    /// `ReturnType`, which nothing waits on (`prepare_function_call` only
+    /// ever reads it, by design, to avoid deadlocking mutual recursion) and
+    /// whose owner is `SolveReturnComponent`, not the member's own analysis.
+    /// A member therefore stays on the frontier after its own analysis has
+    /// run, and `activation_owes_return` pokes its component's
+    /// `SolveReturnComponent` exactly once per distinct owner identity, once
+    /// there is a component to name an owner at all (the
+    /// same first-run gate the analysis branch above uses), relying on that
+    /// job's own read subscriptions to carry every later revision. Retires
+    /// each key once it owes nothing further so the working set stays
+    /// bounded. Returns how many analyses/solves were demanded.
     pub(crate) fn demand_activation_frontier_analyses(&mut self) -> u64 {
         let mut demanded = 0_u64;
         let mut keys = self.activation_frontier_keys();
@@ -867,7 +1030,43 @@ impl World {
         keys.sort_by(|left, right| left.semantic_cmp(right, self.types()));
         for key in keys {
             if self.work_graph.has_run(&Job::AnalyzeActivation(key.clone())) {
-                self.retire_activation_frontier(&key);
+                // First-run analysis already ignited. A non-member's return
+                // was already self-published as a side effect of that run;
+                // a component member's return is instead owned by
+                // `SolveReturnComponent`, which carries no analogous
+                // guaranteed self-publish, so it still needs poking here
+                // exactly like a first-run analysis does -- the frontier
+                // stays the one standing-demand source for both obligations.
+                if !self.activation_owes_return(&key) {
+                    self.retire_activation_frontier(&key);
+                    continue;
+                }
+                // An activation whose membership is still unknown owes a
+                // return nobody can publish yet, so there is no owner to
+                // poke: `SolveReturnComponent` (once some run has made it
+                // this component's owner) is the one waiting on the
+                // unresolved edges' own SETTLED movement, keeping every
+                // member's `ReturnType` standing until they resolve.
+                if let Some(owner) = self.return_membership(&key).into_component().map(|c| c.owner) {
+                    // Poke exactly once per distinct owner identity, mirroring
+                    // the `has_run(AnalyzeActivation)` gate above: a
+                    // `SolveReturnComponent` that has already run at least
+                    // once carries every later revision through its own
+                    // registered reads (member `ActivationAnalyzed` facts and
+                    // external `ReturnType`s), so re-polling an already-run
+                    // owner every stall pass would only widen this scan's
+                    // surface for no gain. The key stays on the frontier
+                    // either way (below) so a later owner change --
+                    // membership growing to promote a different first member
+                    // -- is still caught the next time this scan runs.
+                    if !self.work_graph.has_run(&Job::SolveReturnComponent(owner.clone())) {
+                        let started = self.demand_fact_producer(
+                            &FactKey::ReturnType(key.clone()),
+                            WorkStartReason::ActivationFrontier,
+                        );
+                        demanded += started;
+                    }
+                }
                 continue;
             }
             #[cfg(test)]

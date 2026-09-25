@@ -222,7 +222,9 @@ or not — announces a publisher and moves nothing. It is minted at revision
 **0**: present, at bottom, no content movement (`facts::appearance_revision`),
 and `None` <-> `Some(0)` is not a content change in either direction
 (`FactChange::content_changed`). `Current` readers stay asleep; a `Current`
-wait is now satisfiable, and `Settled` subscribers wake on the readiness edge.
+wait is now satisfiable. A concluded reader carries the new finality through
+its outputs without re-running; a standing `Settled` wait wakes only when the
+fact becomes final.
 The first claim that carries real evidence is an ordinary ascent, 0 -> 1.
 
 A REPLACING fact has no bottom to be at, so this never applies to one: whatever
@@ -268,17 +270,20 @@ KNOWLEDGE. For `analyze_activation`'s callee `Activation` claims it is not: a
 callsite whose target evidence is still climbing names no callee, and reading
 that silence as a withdrawal retracts a fact that is still true. A NON-rebased
 `AnalyzeActivation` conclusion therefore keeps every `Activation` claim it did
-not re-emit (`World::preserved_analysis_claims`), exactly as its
-`ActivationInputs` contributions ride
-`ContributionMap::conclude_preserving_frontier`. Its `CallSiteSummary` and
+not re-emit (`World::preserved_analysis_claims`). Every publisher's
+`ActivationInputs` contributions ride the same preserving arm,
+`ContributionMap::conclude_preserving_frontier`, rebased or not: a
+publisher's silence about a key never withdraws the row it once contributed.
+Its `CallSiteSummary` and
 `CallSiteTargets` claims are on the other side of the line: the walk publishes
 an edge for EVERY callsite it reaches, unresolved and all
 (`CallSiteResolution`, [`semantic-fixpoint`](semantic-fixpoint.md)), so silence
 about one really is knowledge and nothing about those kinds is preserved. A
 preserved claim is RE-LISTED, never re-published: its revision does not move, its stored
-value is untouched, and no `Current` reader wakes (a readiness flip on a
-re-listed key is representable and reaches `Settled` subscribers only). One
-side effect is real: re-listed `Activation` keys pass
+value is untouched, and no reader wakes. A readiness flip on a re-listed key
+still propagates finality through concluded readers and can satisfy a standing
+`Settled` wait only when it becomes final. One side effect is real:
+re-listed `Activation` keys pass
 back through the completion's frontier harvest, so an unsettled callee is
 re-noted on every preserving conclusion — bounded, and retired by the drain
 pass's has-run guard.
@@ -306,29 +311,45 @@ that actually derived it.
 
 A job run may conclude more than one derivation. A `Derivation` is
 `(Job, DerivationKey)`: the job that ran, and which answer of that run this
-is. `DerivationKey::Job` is the run's own answer — the one its standing waits
-leave unfinished. Other keys (`Function(FunctionId)`, and, reserved for future
-publishers of the same shape, `Activation`/`Executable`/`InputSlot`) name an
-answer the run reached on the way to its own conclusion. Reads, claims,
+is. `DerivationKey::Job` is ordinarily the run's own answer — the one its standing waits
+leave unfinished. `AnalyzeActivation(a)` instead has `Activation(a)` as its
+own publisher, so every claim it reaches — including `ReturnType(a)` — stays
+in its normal wait/extend lifecycle. Other keys (`Function(FunctionId)`, with
+`Executable`/`InputSlot` available for the same shape) name an answer the run
+reached on the way to its own conclusion. Reads, claims,
 dirtiness, rebase flag, and finality are all per derivation, not per job: two
 derivations of the same run can be clean and dirty at once. The agenda and
 standing waits stay per job — a job's run is one unit of scheduling even when
 it yields several answers.
 
-Today the scope walk (`source_publish.rs`) is the one publisher that reaches
-more than its own answer: `ScopeSession::define_source_function` records a
+The scope walk (`source_publish.rs`) publishes answers reached before its run
+concludes. `ScopeSession::define_source_function` records a
 `Function(f)` derivation as soon as it defines each function, carrying the
-reads accumulated up to that point (`ground_derivations` in `jobs/source.rs`
-splices in the reads the scope walk's own job had before the walk began, so an
-answer that read nothing downstream still stands on real ground rather than
-looking quiet by omission). When the walk later blocks on something further
-down — an item-macro expansion, say — `blocked_effects` carries every
-derivation reached so far out with the job's wait.
-`World::complete_job_with_external` always
-appends the job's own `DerivationKey::Job` derivation last, carrying the
-ordinary `JobEffects::{reads,outputs,changed}` exactly as before; a job that
-answers one question per run only ever has this one derivation, so its shape
-is unchanged.
+reads accumulated up to that point. `ground_derivations` in `jobs/source.rs`
+adds only the scope job's base ground — the prelude and parent scope read
+before the walk — to each such prefix. The scope conclusion separately reads
+the walk's complete final dependency set, including imports encountered after
+an earlier function. This keeps a function source on real ground without
+making it subscribe to later source forms. When the walk later blocks on
+something further down — an item-macro expansion, say — `blocked_effects`
+carries every derivation reached so far out with the job's wait, and
+`scope_code` adds that pre-walk base ground to both the derivations and the
+blocked job answer. Later reads inside the blocked walk remain specific to the
+answers that actually reached them.
+`AnalyzeActivation(a)` publishes `ReturnType(a)` under its own `Activation(a)`
+derivation, so its waits, reads, claims, rebase state, and return payload have
+one identity. An inactive activation re-lists that same own derivation through
+the ordinary `JobEffects::{reads,outputs,changed}` fields.
+`World::complete_job_with_external` always appends the job's own
+`Derivation::own` derivation last, carrying the ordinary
+`JobEffects::{reads,outputs,changed}` exactly as before. That is the `Job` key
+for ordinary jobs and the `Activation` key for `AnalyzeActivation`; a job that
+answers one question per run still has only this one derivation.
+
+When the last `ReturnType(a)` claim retracts, `World` clears
+that payload and its ascent count before a later derivation can reuse the key.
+The fact table remains the visibility authority; there is no shadow return
+store.
 
 A run's conclusion replaces reads and claims for each derivation it concludes
 this time (`concluding` — every derivation except the job's own while the job
@@ -379,8 +400,9 @@ An activation's existence facts have exactly one producer, and which job that
 is depends on how the key was reached. A root entry is `SeedRoot`'s: it
 publishes `Activation`/`ActivationInputs` for its entry from the root's own
 input. A callee reached over a call edge is its CALLER's: `analyze_activation`
-publishes `Activation(callee)` and contributes the callee's input row, and
-withdraws both only on a rebased conclusion. `Job::SeedActivation` owns the
+publishes `Activation(callee)` and contributes the callee's input row.
+A rebased conclusion withdraws the `Activation` claim it does not re-emit; the
+input contribution is never withdrawn, rebased or not. `Job::SeedActivation` owns the
 third case and only the third case -- an activation the runtime-demand
 frontier minted from a callable surface (`jobs::runtime_demand`), which no
 analysis ever walked and no caller ever claimed. It reconstructs the inputs
@@ -444,10 +466,12 @@ claim from a publisher that is still deriving makes the fact unquiet, and that
 reader unfinalises through the same wave as any other reader.
 
 A readiness-only change (a fact losing or regaining finality with the same
-content) reaches `Settled` subscribers ONLY. Routing it
-to `Current` subscribers as well would recompute formulas whose input content
-never moved; `compiler2_scheduler_readiness_only_movement_evaluates_nobody`
-holds that line.
+content) changes the finality of every concluded reader's outputs, but
+evaluates no concluded reader. Only its false-to-true edge can satisfy a
+standing `Settled` wait. Routing it to subscribers, or to `Current` readers,
+would recompute formulas whose input content never moved;
+`compiler2_scheduler_readiness_only_movement_evaluates_nobody` holds that
+line.
 
 ### The drain arbiter
 
@@ -552,10 +576,10 @@ end state. Both compile twice in ONE process, which is what exposes the hazard:
 iterate differently from the first's.
 
 Activation-bearing identities have one owner-supplied total order.
-`SemanticOrd<Types>` compares real fields and delegates activation arrows to
-`Types::cmp_activation_ty`. That operation reuses the type store's structural
-walk in activation mode: callable arguments, return, then literal; list
-emptiness and addressed variable paths remain explicit, and named literals use
+`SemanticOrd<Types>` compares real fields and delegates activation coordinate
+records to `Types::cmp_activation_signature`. That operation compares the input
+coordinates then the result with the type store's activation structural walk;
+list emptiness and addressed variable paths remain explicit, and named literals use
 immutable owner-registered typed callable identities. It therefore distinguishes lattice
 forms that display intentionally merges, including possibly-empty and
 non-empty lists, without allocating or parsing presentation text.
@@ -574,12 +598,13 @@ structural comparison.
 The type store memoizes each activation-order verdict by a normalized
 `(low Ty, high Ty)` pair (`Types::cmp_activation_ty`, cached under
 `ComparisonKey::ActivationArrowOrder`); asking in the reverse direction reuses
-the inverse verdict rather than recomputing it. Descriptors and structural
-addresses are immutable after interning, and callable identities must be
-registered before comparison and cannot be renamed, so the entry lives for the
-owning `Types`/`World` lifetime with no invalidation path. Hit/miss counters
-(`Types::comparison_cache_stats`) exist for tests to assert on, not for
-production use. ClauseOrder's private storage-canonical relation
+the inverse verdict rather than recomputing it. `ActivationSignature` comparison reduces
+each input, result, and callable-observation coordinate to that typed order.
+Descriptors and structural addresses are immutable after interning, and
+callable identities must be registered before comparison and cannot be renamed,
+so the entry lives for the owning `Types`/`World` lifetime with no invalidation
+path. Hit/miss counters (`Types::comparison_cache_stats`) exist for tests to
+assert on, not for production use. ClauseOrder's private storage-canonical relation
 remains distinct: it intentionally puts a closure literal before its surface to
 group DNF clauses and must not determine activation order.
 

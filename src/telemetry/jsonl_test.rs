@@ -439,28 +439,42 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
     use crate::compiler2::SemanticOrd as _;
     use crate::compiler2::{ActivationKey, FactChange, FactKey, FactMovement, FactState, FactUse, FunctionId, RootId};
 
-    fn canonicalize_arrows(
+    fn canonicalize_coordinate_types(
         value: &serde_json::Value,
-        arrows: &std::collections::HashMap<u64, &'static str>,
+        types: &std::collections::HashMap<u64, &'static str>,
         field: Option<&str>,
     ) -> serde_json::Value {
         match (field, value) {
-            (Some("arrow"), serde_json::Value::Number(id)) => serde_json::Value::String(
-                arrows
+            (Some("result"), serde_json::Value::Number(id)) => serde_json::Value::String(
+                types
                     .get(&id.as_u64().expect("arrow id is an integer"))
-                    .expect("test dictionary covers every activation arrow")
+                    .expect("test dictionary covers every activation coordinate")
                     .to_string(),
+            ),
+            (Some("inputs"), serde_json::Value::Array(values)) => serde_json::Value::Array(
+                values
+                    .iter()
+                    .map(|value| {
+                        let id = value.as_u64().expect("input type id is an integer");
+                        serde_json::Value::String(
+                            types
+                                .get(&id)
+                                .expect("test dictionary covers every activation coordinate")
+                                .to_string(),
+                        )
+                    })
+                    .collect(),
             ),
             (_, serde_json::Value::Object(fields)) => serde_json::Value::Object(
                 fields
                     .iter()
-                    .map(|(name, value)| (name.clone(), canonicalize_arrows(value, arrows, Some(name))))
+                    .map(|(name, value)| (name.clone(), canonicalize_coordinate_types(value, types, Some(name))))
                     .collect(),
             ),
             (_, serde_json::Value::Array(values)) => serde_json::Value::Array(
                 values
                     .iter()
-                    .map(|value| canonicalize_arrows(value, arrows, None))
+                    .map(|value| canonicalize_coordinate_types(value, types, None))
                     .collect(),
             ),
             _ => value.clone(),
@@ -485,7 +499,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
             let non_empty = ActivationKey::from_inputs(root, function, &[non_empty], &mut types);
             (list, non_empty)
         };
-        let raw_order = list.arrow < non_empty.arrow;
+        let raw_order = list.signature < non_empty.signature;
         let keys = if non_empty_first {
             vec![
                 FactKey::ReturnType(non_empty.clone()),
@@ -526,13 +540,17 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
             body.strip_prefix(',').expect("applied body starts with a field")
         );
         let raw: serde_json::Value = serde_json::from_str(&json).expect("applied step JSON");
-        let arrows = std::collections::HashMap::from([
-            (list.arrow.as_u32() as u64, "list-activation"),
-            (non_empty.arrow.as_u32() as u64, "non-empty-list-activation"),
+        let types = std::collections::HashMap::from([
+            (list.signature.inputs[0].as_u32() as u64, "list-activation"),
+            (
+                non_empty.signature.inputs[0].as_u32() as u64,
+                "non-empty-list-activation",
+            ),
+            (list.signature.result.as_u32() as u64, "result"),
         ]);
         (
             raw_order,
-            serde_json::to_vec(&canonicalize_arrows(&raw, &arrows, None)).expect("canonical batch JSON"),
+            serde_json::to_vec(&canonicalize_coordinate_types(&raw, &types, None)).expect("canonical batch JSON"),
         )
     };
 
@@ -540,7 +558,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
     let non_empty_first = render(true);
     assert_ne!(
         list_first.0, non_empty_first.0,
-        "fixture must deterministically reverse raw arrow ids"
+        "fixture must deterministically reverse raw activation coordinate ids"
     );
     assert_eq!(
         list_first.1, non_empty_first.1,
@@ -626,7 +644,8 @@ fn incoming_slot_facts_identify_the_exact_root_executable_and_input() {
                 &[int, int],
                 &mut types,
             );
-            let arrow = activation.arrow.as_u32();
+            let inputs = activation.inputs().iter().map(|ty| ty.as_u32()).collect::<Vec<_>>();
+            let result = activation.signature.result.as_u32();
             let slot = InputSlot {
                 executable: ExecutableKey {
                     activation,
@@ -642,7 +661,8 @@ fn incoming_slot_facts_identify_the_exact_root_executable_and_input() {
                 identity,
                 serde_json::json!({
                     "use": "settled", "kind": "IncomingInputSlot", "root_id": root,
-                    "function_id": 9, "arrow": arrow, "need": "value", "semantic_index": index,
+                    "function_id": 9, "inputs": inputs, "result": result,
+                    "callable_surfaces": [[], []], "need": "value", "semantic_index": index,
                 })
             );
             assert!(
@@ -796,11 +816,78 @@ fn an_unresolved_callsite_edge_renders_as_itself() {
     );
 }
 
-/// A recursive return whose value grows each round: `build/1` returns
-/// `:start` or a tuple wrapping its own next return, so the fixpoint climbs
-/// the ladder one round at a time until the widening budget stops it.
+/// A recursive return: `build/1` returns `:start` or a tuple wrapping its own
+/// next return. `build/1` calls itself across a constructor, so its
+/// recursive-return component names the return directly --
+/// `mu t.(:start | {integer, t})` -- in one solve rather than climbing
+/// towards it.
 const ASCENDING_RETURN_SOURCE: &str =
     "def build(0), do: :start\ndef build(n), do: {n, build(n - 1)}\ndef main(), do: build(3)\n";
+
+#[test]
+fn jsonl_inference_work_counts_evaluator_work_separately_from_owners() {
+    let trace = crate::telemetry::public_trace::PublicTrace::compile_requests(ASCENDING_RETURN_SOURCE, &[]);
+    let events = |kind| trace.events_named(&["fz", "compiler2", "inference_work", kind]);
+    let walks = events("activation_walk");
+    let rows = events("input_row");
+    assert!(!walks.is_empty());
+    assert_eq!(
+        walks
+            .iter()
+            .map(|event| event.metadata["rows"].as_u64().unwrap())
+            .sum::<u64>(),
+        rows.len() as u64,
+        "each admitted activation walk dispatches each correlated row exactly once"
+    );
+    assert!(rows.iter().all(|event| event.metadata["inputs"]["columns"].is_array()));
+    assert!(
+        events("clause_walk")
+            .iter()
+            .all(|event| { event.metadata["clause"].is_u64() && event.metadata["inputs"]["columns"].is_array() })
+    );
+    let names = canon_function_names(&trace);
+    for event in events("skeleton_lowered") {
+        let id = event.metadata["function"]["function_id"].as_u64().unwrap();
+        assert!(
+            names.contains_key(&id),
+            "source work names a function defined in the public trace"
+        );
+        assert!(event.metadata["inputs"].is_u64() && event.metadata["callsites"].is_u64());
+    }
+    let steps = events("step_transfer_attempt");
+    assert!(steps.iter().any(|event| event.metadata["operation"] == "tuple"));
+    assert!(steps.iter().all(|event| {
+        let site = &event.metadata["site"];
+        site["index"].is_u64() && (site["entry"].is_u64() || site["clause"].is_u64())
+    }));
+    let tails = events("tail_transfer_attempt");
+    assert!(tails.iter().any(|event| event.metadata["operation"] == "direct_call"));
+    assert!(tails.iter().all(|event| event.metadata["entry"].is_u64()));
+    let targets = events("invocation_target_attempt");
+    assert!(!targets.is_empty());
+    assert!(targets.iter().all(|event| {
+        event.metadata["activation"]["function_id"].is_u64()
+            && event.metadata["callsite"].is_u64()
+            && event.metadata["target"]["function_id"].is_u64()
+    }));
+    let solves = events("return_solve");
+    assert!(
+        !solves.is_empty(),
+        "the recursive backend request actually enters the component solver"
+    );
+    for phase in [
+        "return_branches_iteration",
+        "return_escapes_iteration",
+        "return_pending_iteration",
+    ] {
+        let iterations = events(phase);
+        assert!(
+            iterations.len() >= solves.len(),
+            "every solve performs at least a stable-check pass for {phase}"
+        );
+        assert!(iterations.iter().all(|event| event.metadata["nodes"].is_u64()));
+    }
+}
 
 /// Names every function the trace canonicalized, so an assertion can talk
 /// about `build/1` rather than about whatever id it drew this run.
@@ -820,20 +907,20 @@ fn canon_function_names(trace: &crate::telemetry::public_trace::PublicTrace) -> 
         .collect()
 }
 
-/// The return ascent is the compiler's central cost signal: every round of the
-/// semantic fixpoint that moves an activation's return type is one
-/// `return_type.defined`, and `return_type.widened` is the round where the
-/// budget ended the climb instead of the program doing so. A profile that
-/// cannot see them can measure that a compile was slow but not that its
-/// returns kept moving, so both belong in the public stream with the
-/// activation they are about and the evidence they installed.
+/// A return revision is the compiler's central cost signal: every round of
+/// the semantic fixpoint that moves an activation's return type is one
+/// `return_type.defined`. A profile that cannot see them can measure that a
+/// compile was slow but not that its returns kept moving, so each belongs in
+/// the public stream with the activation it is about and the type it
+/// installed -- and, for a return the component solver names, the count is a
+/// small number rather than a climb.
 #[test]
 fn jsonl_emits_return_type_revisions() {
     let trace = crate::telemetry::public_trace::PublicTrace::compile(ASCENDING_RETURN_SOURCE);
     let names = canon_function_names(&trace);
 
     let defined = trace.events_named(&["fz", "compiler2", "return_type", "defined"]);
-    let build_ascents = defined
+    let build_returns = defined
         .iter()
         .filter(|event| {
             let activation = &event.metadata["activation"];
@@ -844,81 +931,48 @@ fn jsonl_emits_return_type_revisions() {
         .map(|event| {
             let activation = &event.metadata["activation"];
             assert!(
-                activation["root_id"].is_u64() && activation["arrow"].is_u64(),
+                activation["root_id"].is_u64()
+                    && activation["inputs"].is_array()
+                    && activation["result"].is_u64()
+                    && activation["callable_surfaces"].is_array(),
                 "a revision names the whole activation, not just its function: {activation}"
             );
-            assert!(
-                event.semantic["return"].is_string(),
-                "a revision carries the evidence it installed: {}",
-                event.semantic
-            );
-            event.semantic["ascents"]
-                .as_u64()
-                .expect("a revision counts its ascent")
+            event.semantic["return"]
+                .as_str()
+                .expect("a revision carries the evidence it installed")
+                .to_string()
         })
         .collect::<Vec<_>>();
 
     assert!(
-        build_ascents.len() > 1,
-        "a recursive return climbs more than one round; saw {build_ascents:?} of {} return revisions in total",
+        !build_returns.is_empty(),
+        "build/1's return is defined at least once; saw {} return revisions in total",
         defined.len()
     );
-    // `ascents` counts strict ascents since the activation's last rebase, so it
-    // is monotone within an epoch and starts over at the next one. A revision
-    // whose counter did not climb is therefore not a violation but an epoch
-    // boundary, and the claim to check is that each epoch climbs from one.
-    for epoch in ascent_epochs(&build_ascents) {
-        assert_eq!(
-            epoch.first().copied(),
-            Some(1),
-            "an epoch's first revision is its first ascent: {epoch:?} of {build_ascents:?}"
-        );
-        assert!(
-            epoch.windows(2).all(|pair| pair[0] < pair[1]),
-            "the ascent counter only climbs within an epoch: {epoch:?} of {build_ascents:?}"
-        );
-    }
-
-    let widened = trace.events_named(&["fz", "compiler2", "return_type", "widened"]);
-    assert!(
-        !widened.is_empty(),
-        "a return that grows a tuple spine every round runs past the widening budget, so the stream must show the widening"
+    assert_eq!(
+        build_returns.last().map(String::as_str),
+        Some("\u{3bc}X. :start | {int, X}"),
+        "the solve names build/1's recursive return exactly: {build_returns:?}"
     );
     assert!(
-        widened.iter().all(|event| event.semantic["ascents"]
-            .as_u64()
-            .is_some_and(|ascents| ascents > u64::from(crate::compiler2::RETURN_WIDENING_BUDGET))),
-        "widening only happens past the budget"
+        build_returns.len() <= 2,
+        "a solved return is named in one step, and moves a second time only when the first solve \
+         ran before a callee had published anything: {build_returns:?}"
     );
 }
 
-/// Splits one activation's ascent counters into epochs. The counter resets to
-/// zero when the activation is rebased and starts climbing again, so a value
-/// that does not exceed its predecessor opens a new epoch rather than breaking
-/// monotonicity.
-fn ascent_epochs(ascents: &[u64]) -> Vec<Vec<u64>> {
-    let mut epochs: Vec<Vec<u64>> = Vec::new();
-    for ascent in ascents {
-        match epochs.last_mut() {
-            Some(epoch) if epoch.last().is_some_and(|last| *last < *ascent) => epoch.push(*ascent),
-            _ => epochs.push(vec![*ascent]),
-        }
-    }
-    epochs
-}
-
-/// The claims that feed the return ascent travel with it: an activation's
+/// The claims that feed a return revision travel with it: an activation's
 /// analysis is the round that produced the evidence, and a callsite is the
 /// edge that carries a callee's return back to its caller and wakes the next
 /// round. Both already had a semantic projection; the public stream shows it.
 #[test]
-fn jsonl_emits_the_claims_behind_a_return_ascent() {
+fn jsonl_emits_the_claims_behind_a_return_revision() {
     let trace = crate::telemetry::public_trace::PublicTrace::compile(ASCENDING_RETURN_SOURCE);
 
     let analyses = trace.events_named(&["fz", "compiler2", "activation_analysis", "defined"]);
     assert!(
         !analyses.is_empty(),
-        "every return ascent has an analysis that produced it"
+        "every return revision has an analysis that produced it"
     );
     assert!(
         analyses.iter().all(|event| {

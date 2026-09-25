@@ -1,0 +1,10 @@
+#---
+# purpose: "composition passes the inner callback result to the outer callback"
+#---
+def compose(f, g, x), do: f.(g.(x))
+def increment(x), do: x + 1
+def double(x), do: x * 2
+def main() do
+  dbg(compose(&increment/1, &double/1, 2))
+  dbg(compose(&double/1, &increment/1, 2))
+end

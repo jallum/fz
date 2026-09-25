@@ -2,12 +2,19 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path};
+use crate::dispatch_matrix::demand::{DispatchDemand, demand_at_projection};
 
-use super::super::body::{CallInputMode, LoweredBody, LoweredStep, LoweredTail, ValueId};
+use super::super::body::{
+    CallInputMode, LoweredBody, LoweredStep, LoweredTail, SubjectOriginRoot, ValueId, step_used_values,
+    tail_used_values,
+};
 use super::super::drive::{FactKey, JobEffects, current_uses};
+use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
 use super::super::identity::FunctionId;
+use std::rc::Rc;
+
 use super::super::keying::{BodyKeying, InputDemand};
+use super::super::return_skeleton::{FunctionSkeleton, Returns};
 use super::super::scheduler::FatalError;
 use super::super::world::World;
 use crate::telemetry::TelemetryExt as _;
@@ -15,13 +22,13 @@ use crate::telemetry::TelemetryExt as _;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StaticEdge {
     Direct(FunctionId),
-    Lambda(FunctionId),
+    Construction(FunctionId),
 }
 
 impl StaticEdge {
     fn function(self) -> FunctionId {
         match self {
-            StaticEdge::Direct(function) | StaticEdge::Lambda(function) => function,
+            StaticEdge::Direct(function) | StaticEdge::Construction(function) => function,
         }
     }
 }
@@ -109,11 +116,7 @@ fn body_static_callees(world: &World, function: FunctionId, reads: &mut Vec<Fact
             reads.push(FactKey::FunctionDefined(target));
             continue;
         }
-        if matches!(edge, StaticEdge::Lambda(_)) {
-            // A lambda target is an edge only once its generated function
-            // exists. The conclusion consulted that fact, so it is read
-            // whether or not it was there -- a definition that lands later
-            // must be able to grow this edge set.
+        if matches!(edge, StaticEdge::Construction(_)) {
             reads.push(FactKey::FunctionDefined(target));
             if world.function_defined_revision(target).is_none() {
                 continue;
@@ -158,9 +161,9 @@ fn publish_static_callees(
 /// Identity consumption is a body-local property with no call-graph content,
 /// but it has always ridden `FactKey::Recursive`'s one value and still does.
 ///
-/// Lambda creation is a static edge from the owner to the generated function,
-/// so recursion through generated closures is handled the same way as direct
-/// or mutual recursion.
+/// Callable construction is a static edge from the owner to its named or
+/// generated function, so recursion through references and closures is handled
+/// the same way as direct or mutual recursion.
 pub(super) fn derive_call_graph_component(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
     if world.function_is_provider_boundary(function) {
         // No body in this program: no edges, so the component is the function
@@ -169,10 +172,7 @@ pub(super) fn derive_call_graph_component(world: &mut World, function: FunctionI
             world,
             function,
             function,
-            BodyKeying {
-                recursive: false,
-                consumes_callable_identity: false,
-            },
+            BodyKeying { recursive: false },
             Vec::new(),
         ));
     }
@@ -182,10 +182,8 @@ pub(super) fn derive_call_graph_component(world: &mut World, function: FunctionI
     let mut graph = HashMap::new();
     let mut seen = HashSet::new();
     collect_static_graph(world, function, &mut reads, &mut waits, &mut graph, &mut seen);
-    // Identity consumption is a property of this body alone, so it rides the
-    // same conclusion rather than the graph walk -- but it needs the body,
-    // which a `StaticCallees` fact published for an undefined protocol
-    // callback does not imply.
+    // The component walk needs the body, which a `StaticCallees` fact
+    // published for an undefined protocol callback does not imply.
     let lowered = FactKey::LoweredBody(function);
     if !world.has_fact(&lowered) {
         waits.insert(lowered);
@@ -203,7 +201,6 @@ pub(super) fn derive_call_graph_component(world: &mut World, function: FunctionI
     let component = strong_component(function, &graph);
     let keying = BodyKeying {
         recursive: component.len() > 1 || graph.get(&function).is_some_and(|edges| edges.contains(&function)),
-        consumes_callable_identity: body_consumes_callable_identity(world, function),
     };
     let canonical = component
         .into_iter()
@@ -243,50 +240,10 @@ fn publish_call_graph_node(
     }
 }
 
-/// Does this function's body CONSUME callable identity -- call through a
-/// callable value, or capture values into a lambda it constructs? A call
-/// consumes identity directly (the specialization buys direct dispatch); a
-/// construction bakes the captured value's identity into a new closure whose
-/// downstream consumers depend on the correlation, so the constructor must
-/// stay split per identity too. A body that does neither only transports
-/// callables, and brands are freight to it. `ClosureCall` only occurs as an
-/// entry tail and `Lambda` only as a step, so scanning the flat entry list
-/// covers every dispatch arm, branch, and receive clause.
-fn body_consumes_callable_identity(world: &World, function: FunctionId) -> bool {
-    // A closure's captures ARE identity: whatever a capturing lambda does with
-    // a capture -- call it, or pass it to something that does -- its consumers
-    // depend on the correlation between the construction site and the captured
-    // values, and that correlation is transitive through any chain of
-    // capture-holding lambdas. So a function with capture params is
-    // identity-laden by definition, without needing a flow analysis to prove
-    // where the captures end up.
-    if world
-        .function_source(function)
-        .is_some_and(|source| !source.capture_params.is_empty())
-    {
-        return true;
-    }
-    match &*world.lowered_body(function) {
-        LoweredBody::Extern { .. } => false,
-        LoweredBody::Clauses { clauses, entries, .. } => {
-            let step_constructs = |step: &LoweredStep| matches!(step, LoweredStep::Lambda { .. });
-            entries.iter().any(|entry| {
-                matches!(entry.tail, LoweredTail::ClosureCall { .. }) || entry.steps.iter().any(step_constructs)
-            }) || clauses
-                .iter()
-                .any(|clause| clause.projections.iter().any(step_constructs))
-        }
-    }
-}
-
-/// One node of the input-demand graph: a body's OWN dispatch demand, and the
-/// parameters it hands on unchanged.
+/// One body's own observations and the source dependencies of its calls.
 #[derive(Debug, Clone, Default)]
 struct DemandNode {
     local: Vec<DispatchDemand>,
-    /// The positions this body's OWN returns are built from (fz-kdt.199),
-    /// before any forwarding join.
-    local_result: Vec<DispatchDemand>,
     forwards: Vec<ForwardEdge>,
 }
 
@@ -301,38 +258,16 @@ struct ForwardEdge {
     callee_slot: usize,
 }
 
-/// Derives which function inputs are DEMANDED -- by this body's own entry
-/// dispatch, or by a callee this body forwards them to, transitively.
+/// Derive the questions that can distinguish a function's input slots.
+/// Entry/inline dispatch and callable observations seed local
+/// demand. Pull those questions back through source dependencies, then join
+/// callee questions through unchanged-input forwarding.
 ///
-/// Dispatch demand alone answers "what does this body ASK about its inputs",
-/// and that was never the question activation keying needs. The question is
-/// "what does this activation's published return DEPEND on", and a body that
-/// hands a parameter straight to a callee depends on everything that callee's
-/// KEY names at that position: the element decides which callee activation is
-/// reached, and therefore what comes back. `List.reduce_step/3` forwards its
-/// list to `List.reduce_cont/3`, whose key is ground in the element, so the
-/// element is part of `reduce_step/3`'s meaning even though `reduce_step/3`
-/// dispatches only on its accumulator tag -- and without it two `Enum.reduce/3`
-/// users share one activation and one JOINED return (fz-kdt.183, fz-kdt.122).
-///
-/// So the published demand is a JOIN over the `DispatchDemand` lattice
-/// (`Ignore` < `ListShape`/`TupleFields` < `Whole`, `DispatchDemand::join_assign`):
-/// the demand on slot `i` of `f` is `f`'s own local demand on `i` joined with
-/// the demand on every position `g@j` that `f` forwards `i` to.
-///
-/// Forwarding is cyclic (`reduce_cont/3` <-> `reduce_step/3`), so this is a
-/// least fixpoint, computed by Kleene iteration over the forwarding graph one walk
-/// discovers -- the same shape `derive_call_graph_component` uses for the
-/// strong component, and terminating for the same reason: the join is monotone
-/// and no join deepens a demand tree past the deepest local mask in the graph,
-/// which is a fixed finite depth once the graph is fixed.
-///
-/// A slot NOT reached this way is freight: the body neither asks about it nor
-/// hands it to anyone who does. It stays collapsed, which is what keeps one
-/// activation for `loop(n, junk)` and one for `partition/4`'s two accumulators.
-///
-/// The LOCAL half publishes beside the forwarded one, because brand erasure
-/// asks the local question and only the local question (see [`InputDemand`]).
+/// Both walks use Ignore < ListShape/TupleFields < Whole. A value or input
+/// slot rises at most twice. Forwarding carries the same value unchanged,
+/// so recursive calls cannot grow projection paths or prevent convergence.
+/// An input untouched by these questions remains freight. Return flow is the
+/// other source of observability, combined by World::observable_inputs.
 pub(super) fn derive_input_demand(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -351,9 +286,7 @@ pub(super) fn derive_input_demand(
     }
 
     let demand = InputDemand {
-        local_dispatch: graph.get(&function).map(|node| node.local.clone()).unwrap_or_default(),
         forwarded_dispatch: solve_forwarded_demand(&graph, function, |node| &node.local),
-        returned: solve_forwarded_demand(&graph, function, |node| &node.local_result),
     };
     emit_input_demand_derived(tel, &function, &demand);
     let changed = world.define_input_demand(function, demand);
@@ -365,10 +298,9 @@ pub(super) fn derive_input_demand(
     })
 }
 
-/// Walks the input FORWARDING graph from `function`: only a callee that receives
-/// one of this body's parameters unchanged is entered, so the graph is a fraction
-/// of the call graph and a body that forwards nothing reads exactly the facts
-/// the local mask always needed.
+/// Visit callees receiving an unchanged input of this body. Read every
+/// visited source even when its current demand is Ignore: later edits can add
+/// observations and must invalidate the callers' answers.
 fn collect_input_forwarding_graph(
     world: &World,
     function: FunctionId,
@@ -413,20 +345,16 @@ fn collect_input_forwarding_graph(
     }
     reads.push(dispatch);
     reads.push(lowered);
-    // The plan states what it reads of its inputs; this walk only joins that
-    // across the bodies a value is forwarded to.
-    let local = world.entry_dispatch(function).input_demand().to_vec();
-    let local_result = return_flow_mask(world, function, local.len());
-    let forwards = forwarded_inputs(world, function, local.len());
+    // Entry and inline plans own their questions; origins pull those
+    // questions back to the semantic inputs before callee propagation.
+    let body = world.lowered_body(function);
+    let mut local = world.entry_dispatch(function).input_demand().to_vec();
+    let observations = SourceObservations::new(&body);
+    join_source_observations(&observations, &mut local);
+    let slots_of = direct_input_slots(&observations, local.len());
+    let forwards = forwarded_inputs(world, &body, &slots_of);
     let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
-    graph.insert(
-        function,
-        DemandNode {
-            local,
-            local_result,
-            forwards,
-        },
-    );
+    graph.insert(function, DemandNode { local, forwards });
     for callee in next {
         collect_input_forwarding_graph(world, callee, reads, waits, graph);
     }
@@ -496,7 +424,6 @@ fn collect_protocol_callback_node(
         function,
         DemandNode {
             local: vec![DispatchDemand::Ignore; arity],
-            local_result: vec![DispatchDemand::Ignore; arity],
             forwards,
         },
     );
@@ -512,23 +439,10 @@ fn collect_protocol_callback_node(
 /// argument IS a parameter exactly when its value is one of them. A direct
 /// call's args are its callee's inputs one-for-one (`CallInputMode::Direct`),
 /// which is why the callee slot is the argument index.
-fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> Vec<ForwardEdge> {
-    let body = world.lowered_body(function);
-    let LoweredBody::Clauses { entries, .. } = &*body else {
+fn forwarded_inputs(world: &World, body: &LoweredBody, slots_of: &HashMap<ValueId, Vec<usize>>) -> Vec<ForwardEdge> {
+    let LoweredBody::Clauses { entries, .. } = body else {
         return Vec::new();
     };
-    let slots_of = input_positions(&body, input_count)
-        .into_iter()
-        .map(|(value, positions)| {
-            (
-                value,
-                positions
-                    .into_iter()
-                    .filter_map(|(slot, path)| path.is_empty().then_some(slot))
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
     let mut edges = Vec::new();
     for entry in entries {
         let LoweredTail::DirectCall { callee, args, .. } = &entry.tail else {
@@ -553,278 +467,262 @@ fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> 
     edges
 }
 
-/// The input positions this body's OWN returns are built from: the LOCAL half
-/// of the `returned` axis (fz-kdt.199), before any forwarding join.
+/// Every input slot a value names DIRECTLY -- the parameter itself, not a
+/// piece of it.
 ///
-/// fz-kdt.183 asked "does anything on the forwarding chain DISPATCH on this
-/// slot", and a slot nothing dispatches on is freight -- collapsed, so two
-/// callers key one activation. That is sound for a slot the activation only
-/// carries, and unsound the moment the activation RETURNS it: an activation
-/// publishes ONE return, so two callers that reach one activation read one
-/// JOINED return, and a returned position the key erased is a position on
-/// which two callers' answers blend. `loop(0, junk), do: junk` at `[1, 2]` and
-/// at `["a", "b"]` keys one activation whose published return is
-/// `non_empty_list(int) | non_empty_list(binary)`, and `walk({:done, acc}, n)`
-/// -- the tuple-field shape, where the key names the TAG and the return IS the
-/// payload -- does the same one field down.
+/// A clause binds each of the function's semantic inputs to one `ValueId`, and
+/// that value names its slot. So does anything that only RENAMES it: an alias,
+/// a join of aliases, a dispatch subject read straight off the input. A
+/// projection does not -- the value standing there is a piece of the input, so
+/// it is not unchanged forwarding. Local observations use the separate
+/// projection-aware pullback below.
 ///
-/// So a position is on this axis when the returned value IS it, CONTAINS it,
-/// or is a PROJECTION of it:
-///
-/// ```text
-/// defp f({:done, acc}, _n), do: acc          -- projection: slot 0, field 1
-/// defp f([], acc, _r), do: {:done, acc}      -- containment: slot 1
-/// def loop(0, junk), do: junk               -- identity:    slot 1
-/// ```
-///
-/// Everything else is opaque and contributes nothing: a call result, a closure
-/// call, an arithmetic result, a constant, a constructed lambda's captures
-/// (that is fz-kdt.165's callable axis, not this one). A call whose result is
-/// returned needs no rule here -- the forwarding edge already joins the
-/// callee's whole demand into the caller's slot, and the callee's own returned
-/// axis rides that join.
-///
-/// That join rides `forwarded_inputs`, which is fz-kdt.183's DISPATCH edge
-/// set, and this axis inherits its three holes -- all measured, all cost or
-/// missed cure rather than unsoundness, and all owned by fz-kdt.214. It
-/// ignores a `LoweredTail::DirectCall`'s `dest`, so a slot handed to a call
-/// whose result is DELIVERED and discarded is keyed anyway (a body returning
-/// the constant `0` goes 7 -> 9 executables). A RECONSTRUCTED argument is not
-/// a forward edge, so `outer({:go, acc}, n), do: mid({:go, acc}, n)` splits
-/// `mid` and `inner` while `outer` stays collapsed and re-joins -- two keys
-/// that both publish the join. A PROJECTED argument is not one either, so a
-/// protocol callback handed `acc` rather than a whole parameter stays
-/// uncured.
-fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> Vec<DispatchDemand> {
-    let mut mask = vec![DispatchDemand::Ignore; input_count];
-    let body = world.lowered_body(function);
-    let LoweredBody::Clauses { clauses, entries, .. } = &*body else {
-        return mask;
-    };
-    let origins = input_positions(&body, input_count);
-    let rebuilt = recursion_supplied_positions(function, entries, &origins, input_count);
-    for (slot, path) in returned_values(&body, clauses, entries)
-        .iter()
-        .filter_map(|value| origins.get(value))
-        .flatten()
-        .filter(|position| !rebuilt.contains(*position))
-    {
-        if let Some(demand) = mask.get_mut(*slot) {
-            demand.join_assign(demand_at_path(path, DispatchDemand::Whole));
-        }
+/// One value can name more than one slot: `f(x, x)` binds one `ValueId` to two.
+fn direct_input_slots(observations: &SourceObservations<'_>, input_count: usize) -> HashMap<ValueId, Vec<usize>> {
+    let mut slots = observations.inputs.clone();
+    for named in slots.values_mut() {
+        named.retain(|slot| *slot < input_count);
     }
-    mask
+    for value in observations.origins.keys() {
+        resolve_direct_slots(
+            observations.body,
+            *value,
+            &observations.origins,
+            &mut slots,
+            &mut HashSet::new(),
+        );
+    }
+    slots
 }
 
-/// The positions the RECURSION itself supplies, as a LEAST FIXPOINT: a
-/// position is supplied when a self-call hands it a value the caller held
-/// nowhere, or held only at positions that are themselves supplied.
-///
-/// The fixpoint is what makes the subtraction sound. An eager rule -- "the
-/// caller did not hold this value at this same position, so the position is
-/// rebuilt" -- misreads a PERMUTATION. `go(n - 1, b, a)` hands each slot a
-/// value the caller held at the OTHER slot, which supplies neither, and the
-/// eager rule marks both (and poisons both, since each is held elsewhere).
-/// Measured: `go(0, a, _b), do: a` at `["x"]` and at `[9]` then blends into
-/// one key publishing `non_empty_list(binary) | non_empty_list(int)`, the
-/// exact defect this axis exists to remove. Under the fixpoint the
-/// permutation's obligations never discharge, the set settles empty, and
-/// `go/3` keys its two users apart.
-///
-/// Keying a genuinely supplied position is a cost with no separation to buy,
-/// and both halves are measured. The cost: an accumulator visits `[]` and then
-/// `list(tau)` within ONE caller; those different denotations correctly intern
-/// apart, so keying it mints one activation per state and k accumulators mint
-/// their product --
-/// `split3/5` 1 -> 8 and `split4/6` 1 -> 16, every body identical. The absent
-/// payoff: the SEED activation is the one every caller passes through and its
-/// inputs are the same `[]` for all of them, so it stays shared and its
-/// published return stays the join no matter how finely the ascended states
-/// key. Measured on `tag(f, list, [])` at two reducers: keying the accumulator
-/// mints three activations and the seed still publishes
-/// `list(binary) | list(int)`.
-///
-/// A position the recursion does NOT supply is constant along the ascent, so
-/// two keys there ARE two callers -- `loop(n, junk)`'s junk, the two slots
-/// `go/3` permutes, and the payload of `walk({:go, acc}, n - 1)`, which the
-/// reconstructed tuple hands on unchanged.
-///
-/// Only SELF calls are read, so the subtraction is INCOMPLETE by construction
-/// and the ticket's rule holds with a named exception: a position the
-/// recursion supplies ACROSS a cycle, or through a generated lambda, is not
-/// seen here and is keyed anyway. That is a cost, never an unsoundness -- the
-/// key names more than the return depends on. Measured corpus-wide (604
-/// fixtures, 475 backend dumps, added executables attributed to the function
-/// they key): 36 land on a function that gains a distinct published return and
-/// 91 do not, the 91 dominated by `List.reduce_cont/3` (21),
-/// `List.reduce_while_cont/3` (18), `Range.reduce_while_cont/6` (9) and
-/// `List.reduce_while_step/3` (6) minting `empty_list()`/`list(tau)`
-/// ascent rungs across the cont<->step cycle. Closing it wants the strong
-/// component (`FactKey::CallGraphComponent`, which `DeriveInputDemand` does
-/// not read today) and the reverse call edge, because the rebuild belongs to
-/// the CALLEE's position: fz-kdt.213 owns that removal.
-fn recursion_supplied_positions(
-    function: FunctionId,
-    entries: &[super::super::body::LoweredEntry],
-    origins: &HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
-    input_count: usize,
-) -> HashSet<(usize, Vec<DemandPathStep>)> {
-    let mut rebuilt = HashSet::new();
-    let mut obligations: Vec<RebuildObligation> = Vec::new();
-    let mut constructions: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
-    for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
-        if let LoweredStep::Tuple { value, items } = step {
-            constructions.insert(*value, items.iter().map(|item| item.value).collect());
-        }
-    }
-    for entry in entries {
-        let LoweredTail::DirectCall { callee, args, .. } = &entry.tail else {
-            continue;
-        };
-        if *callee != function {
-            continue;
-        }
-        for (arg_index, arg) in args.iter().enumerate() {
-            let Some(slot) = CallInputMode::Direct.semantic_index(input_count, args.len(), arg_index) else {
-                continue;
-            };
-            collect_rebuild_obligations(
-                arg.value,
-                slot,
-                &mut Vec::new(),
-                origins,
-                &constructions,
-                &mut obligations,
-            );
-        }
-    }
-    // Least fixpoint: a position is SUPPLIED only when the value handed to it
-    // is not one the caller already held at a position the recursion itself
-    // leaves constant. A permutation (`go(n - 1, b, a)`) hands each slot a
-    // value the caller held elsewhere and supplies nothing, so it settles at
-    // the empty set; a rebuild (`go(n - 1, [h | a], a)`) supplies the built
-    // slot in the first round and drags the slot fed from it in the second.
-    loop {
-        let mut changed = false;
-        for (position, held) in &obligations {
-            if rebuilt.contains(position) {
-                continue;
-            }
-            if held.is_empty() || held.iter().all(|source| rebuilt.contains(source)) {
-                rebuilt.insert(position.clone());
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    rebuilt
+/// Pull source observations through the same aliases and projections used by
+/// transport. Computed values conservatively ask about their operands; this is
+/// a dependency walk, not a second implementation of operation semantics.
+struct SourceObservations<'a> {
+    body: &'a LoweredBody,
+    origins: HashMap<ValueId, TransportOrigin>,
+    call_operands: HashMap<super::super::body::CallSiteId, Vec<ValueId>>,
+    inputs: HashMap<ValueId, Vec<usize>>,
 }
 
-/// One "this self-call hands POSITION a value the caller held at HELD" record.
-/// An empty `held` is a value built here, which supplies the position outright.
-type RebuildObligation = ((usize, Vec<DemandPathStep>), Vec<(usize, Vec<DemandPathStep>)>);
+impl<'a> SourceObservations<'a> {
+    fn new(body: &'a LoweredBody) -> Self {
+        let mut call_operands = HashMap::new();
+        let mut inputs = HashMap::<ValueId, Vec<usize>>::new();
+        if let LoweredBody::Clauses { clauses, entries, .. } = body {
+            for clause in clauses {
+                for (slot, value) in clause.params.iter().enumerate() {
+                    inputs.entry(*value).or_default().push(slot);
+                }
+            }
+            for entry in entries {
+                if let LoweredTail::DirectCall { callsite, .. } | LoweredTail::ClosureCall { callsite, .. } =
+                    &entry.tail
+                {
+                    let mut used = Vec::new();
+                    tail_used_values(&entry.tail, &mut used);
+                    call_operands.insert(*callsite, used);
+                }
+            }
+        }
+        Self {
+            body,
+            origins: collect_value_origins(body, &collect_callsite_return_origins(body)),
+            call_operands,
+            inputs,
+        }
+    }
 
-fn collect_rebuild_obligations(
-    value: ValueId,
-    slot: usize,
-    path: &mut Vec<DemandPathStep>,
-    origins: &HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
-    constructions: &HashMap<ValueId, Vec<ValueId>>,
-    obligations: &mut Vec<RebuildObligation>,
-) {
-    let held = origins.get(&value).map(Vec::as_slice).unwrap_or_default();
-    if held
-        .iter()
-        .any(|(held_slot, held_path)| *held_slot == slot && held_path == path)
-    {
-        // The caller already held this exact position, so the recursion carries
-        // it rather than supplying it.
+    fn pull(&self, seeds: Vec<(ValueId, DispatchDemand)>, local: &mut [DispatchDemand]) {
+        let mut pending = seeds;
+        let mut seen = HashMap::<ValueId, DispatchDemand>::new();
+        while let Some((value, demand)) = pending.pop() {
+            let prior = seen.entry(value).or_default();
+            let before = prior.clone();
+            prior.join_assign(demand);
+            if *prior == before {
+                continue;
+            }
+            let demand = prior.clone();
+            if let Some(slots) = self.inputs.get(&value) {
+                for slot in slots {
+                    if let Some(local) = local.get_mut(*slot) {
+                        local.join_assign(demand.clone());
+                    }
+                }
+                continue;
+            }
+            if let Some(origin) = self.origins.get(&value) {
+                self.pull_origin(origin, &demand, local, &mut pending);
+                continue;
+            }
+            if let Some(step) = self.body.value_definition(value) {
+                let mut operands = Vec::new();
+                step_used_values(step, &mut operands);
+                pending.extend(operands.into_iter().map(|operand| (operand, DispatchDemand::Whole)));
+            }
+        }
+    }
+
+    fn pull_origin(
+        &self,
+        origin: &TransportOrigin,
+        demand: &DispatchDemand,
+        local: &mut [DispatchDemand],
+        pending: &mut Vec<(ValueId, DispatchDemand)>,
+    ) {
+        match origin {
+            TransportOrigin::ExecutableInput(slot) => {
+                if let Some(local) = local.get_mut(*slot) {
+                    local.join_assign(demand.clone());
+                }
+            }
+            TransportOrigin::LocalValue(value) => pending.push((*value, demand.clone())),
+            TransportOrigin::Projection { source, kind } => pending.push((*source, pull_projection(kind, demand))),
+            TransportOrigin::OutcomeSubject { owner, subject } => {
+                let (root, path) = self.body.dispatch_subject_origin(*owner, *subject);
+                if let SubjectOriginRoot::Value(value) = root {
+                    let demand = path
+                        .iter()
+                        .rev()
+                        .fold(demand.clone(), |demand, kind| pull_projection(kind, &demand));
+                    pending.push((value, demand));
+                }
+            }
+            TransportOrigin::Join(children) => {
+                for child in children {
+                    self.pull_origin(child, demand, local, pending);
+                }
+            }
+            TransportOrigin::TupleValue(items) => {
+                pending.extend(items.iter().map(|item| (*item, DispatchDemand::Whole)))
+            }
+            TransportOrigin::CallableValue(producer) => pending.extend(
+                producer
+                    .captures
+                    .iter()
+                    .map(|capture| (*capture, DispatchDemand::Whole)),
+            ),
+            TransportOrigin::CallsiteReturn(callsite) | TransportOrigin::ClosureCallReturn { callsite, .. } => {
+                pending.extend(
+                    self.call_operands
+                        .get(callsite)
+                        .into_iter()
+                        .flatten()
+                        .map(|value| (*value, DispatchDemand::Whole)),
+                );
+            }
+        }
+    }
+}
+
+fn pull_projection(kind: &crate::dispatch_matrix::ProjectionKind, demand: &DispatchDemand) -> DispatchDemand {
+    if matches!(
+        (kind, demand),
+        (
+            crate::dispatch_matrix::ProjectionKind::ListTail,
+            DispatchDemand::ListShape
+        )
+    ) {
+        DispatchDemand::ListShape
+    } else {
+        demand_at_projection(kind)
+    }
+}
+
+fn join_source_observations(observations: &SourceObservations<'_>, local: &mut [DispatchDemand]) {
+    let body = observations.body;
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
         return;
-    }
-    obligations.push(((slot, path.clone()), held.to_vec()));
-    // A reconstructed tuple is rebuilt at its own position and no deeper: a
-    // field it hands on unchanged is still carried.
-    for (index, item) in constructions.get(&value).into_iter().flatten().copied().enumerate() {
-        path.push(DemandPathStep::TupleField(index as u32));
-        collect_rebuild_obligations(item, slot, path, origins, constructions, obligations);
-        path.pop();
-    }
-}
-
-/// Every value that names an input position, and which position(s) it names.
-///
-/// A clause parameter names its own slot at the empty path; a projection step
-/// names its source's position one step deeper. One value can name more than
-/// one position -- `f(x, x)` binds one `ValueId` to two slots -- exactly as
-/// `forwarded_inputs` records.
-fn input_positions(body: &LoweredBody, input_count: usize) -> HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>> {
-    use super::super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
-    let LoweredBody::Clauses { clauses, .. } = body else {
-        return HashMap::new();
     };
-    let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
-    let mut positions = HashMap::<ValueId, Vec<(usize, Vec<DemandPathStep>)>>::new();
-    for clause in clauses {
-        for (slot, value) in clause.params.iter().copied().enumerate().take(input_count) {
-            let known = positions.entry(value).or_default();
-            let position = (slot, Vec::new());
-            if !known.contains(&position) {
-                known.push(position);
+    let mut seeds = Vec::new();
+    for entry in entries {
+        match &entry.tail {
+            LoweredTail::Dispatch {
+                inputs,
+                bindings,
+                dispatch,
+            } => {
+                seeds.extend(inputs.iter().copied().zip(dispatch.plan.input_demand().iter().cloned()));
+                seeds.extend(
+                    bindings
+                        .pinned
+                        .iter()
+                        .chain(&bindings.prepared)
+                        .map(|value| (*value, DispatchDemand::Whole)),
+                );
             }
+            LoweredTail::ClosureCall { .. } | LoweredTail::If { .. } | LoweredTail::Receive(_) => {
+                let mut used = Vec::new();
+                tail_used_values(&entry.tail, &mut used);
+                seeds.extend(used.into_iter().map(|value| (value, DispatchDemand::Whole)));
+            }
+            _ => {}
         }
     }
-    for value in origins.keys() {
-        resolve_input_positions(body, *value, &origins, &mut positions, &mut HashSet::new());
+    for step in clauses
+        .iter()
+        .flat_map(|clause| &clause.projections)
+        .chain(entries.iter().flat_map(|entry| &entry.steps))
+    {
+        if let LoweredStep::Lambda { captures, .. } = step {
+            seeds.extend(captures.iter().map(|value| (*value, DispatchDemand::Whole)));
+        }
     }
-    positions
+    observations.pull(seeds, local);
 }
 
-fn resolve_input_positions(
+/// The slots `value` names directly, memoized in `slots` as it goes. A cyclic
+/// origin chain names nothing, which `visiting` detects.
+fn resolve_direct_slots(
     body: &LoweredBody,
     value: ValueId,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
-    positions: &mut HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
+    origins: &HashMap<ValueId, TransportOrigin>,
+    slots: &mut HashMap<ValueId, Vec<usize>>,
     visiting: &mut HashSet<ValueId>,
-) -> Vec<(usize, Vec<DemandPathStep>)> {
-    if let Some(known) = positions.get(&value) {
-        return known.clone();
+) -> Vec<usize> {
+    if let Some(named) = slots.get(&value) {
+        return named.clone();
     }
     if !visiting.insert(value) {
         return Vec::new();
     }
     let found = origins
         .get(&value)
-        .map(|origin| input_origin_positions(body, origin, origins, positions, visiting))
+        .map(|origin| direct_slots_of_origin(body, origin, origins, slots, visiting))
         .unwrap_or_default();
     visiting.remove(&value);
-    positions.insert(value, found.clone());
+    slots.insert(value, found.clone());
     found
 }
 
-fn input_origin_positions(
+/// The slots an origin names directly. A rename passes its source's slots
+/// through and a join passes every child's; every other origin -- a projection,
+/// a dispatch subject that reads a projection, a call return, a constructed
+/// value -- stands for a value that is not an input, so it names no slot.
+fn direct_slots_of_origin(
     body: &LoweredBody,
-    origin: &super::super::executable_facts::TransportOrigin,
-    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
-    positions: &mut HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
+    origin: &TransportOrigin,
+    origins: &HashMap<ValueId, TransportOrigin>,
+    slots: &mut HashMap<ValueId, Vec<usize>>,
     visiting: &mut HashSet<ValueId>,
-) -> Vec<(usize, Vec<DemandPathStep>)> {
-    use super::super::executable_facts::TransportOrigin;
-    let (source, path) = match origin {
-        TransportOrigin::LocalValue(value) => (*value, Vec::new()),
-        TransportOrigin::Projection { source, kind } => (*source, vec![kind]),
+) -> Vec<usize> {
+    let renamed = match origin {
+        TransportOrigin::LocalValue(value) => *value,
         TransportOrigin::OutcomeSubject { owner, subject } => {
             let (root, path) = body.dispatch_subject_origin(*owner, *subject);
             let super::super::body::SubjectOriginRoot::Value(value) = root else {
                 return Vec::new();
             };
-            (value, path)
+            if !path.is_empty() {
+                return Vec::new();
+            }
+            value
         }
         TransportOrigin::Join(children) => {
             let mut all = children
                 .iter()
-                .flat_map(|child| input_origin_positions(body, child, origins, positions, visiting))
+                .flat_map(|child| direct_slots_of_origin(body, child, origins, slots, visiting))
                 .collect::<Vec<_>>();
             all.sort_unstable();
             all.dedup();
@@ -832,87 +730,7 @@ fn input_origin_positions(
         }
         _ => return Vec::new(),
     };
-    let mut found = resolve_input_positions(body, source, origins, positions, visiting);
-    for (_, steps) in &mut found {
-        steps.extend(path.iter().copied().map(DemandPathStep::from));
-    }
-    found
-}
-
-/// Every value this body can publish as its return, plus everything such a
-/// value is built from.
-///
-/// The roots are the tails that RETURN rather than deliver; a delivered value
-/// counts through its join, so a non-tail `if` whose branches deliver into a
-/// resume entry is followed one hop per join. Construction steps are opened --
-/// `{:done, acc}` returns `acc` -- because an activation's published return
-/// carries the field's type whether or not the tuple around it is new.
-fn returned_values(
-    body: &LoweredBody,
-    clauses: &[super::super::body::LoweredClause],
-    entries: &[super::super::body::LoweredEntry],
-) -> HashSet<ValueId> {
-    let mut returned = HashSet::new();
-    let mut frontier = Vec::new();
-    for entry in entries {
-        if let LoweredTail::Value {
-            value,
-            dest: super::super::body::ControlDestination::Return,
-        } = &entry.tail
-            && returned.insert(*value)
-        {
-            frontier.push(*value);
-        }
-    }
-    let mut built: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
-    for step in clauses
-        .iter()
-        .flat_map(|clause| clause.projections.iter())
-        .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
-    {
-        match step {
-            LoweredStep::Tuple { value, items } => {
-                built.insert(*value, items.iter().map(|item| item.value).collect());
-            }
-            LoweredStep::List { value, items, tail, .. } => {
-                built.insert(*value, items.iter().copied().chain(*tail).collect());
-            }
-            LoweredStep::Map { value, entries, .. } => {
-                built.insert(*value, entries.iter().map(|(_key, item)| *item).collect());
-            }
-            LoweredStep::MapUpdate { value, base, entries } => {
-                built.insert(
-                    *value,
-                    std::iter::once(*base)
-                        .chain(entries.iter().map(|(_key, item)| *item))
-                        .collect(),
-                );
-            }
-            LoweredStep::Struct { value, fields, .. } => {
-                built.insert(*value, fields.iter().map(|(_name, item)| *item).collect());
-            }
-            _ => {}
-        }
-    }
-    for join in super::super::body::delivered_value_joins(body).into_values() {
-        let sources = join
-            .sources
-            .iter()
-            .filter_map(|source| match source {
-                super::super::body::DeliveredValueSource::LocalValue(value) => Some(*value),
-                super::super::body::DeliveredValueSource::CallsiteReturn(_) => None,
-            })
-            .collect::<Vec<_>>();
-        built.entry(join.value).or_default().extend(sources);
-    }
-    while let Some(value) = frontier.pop() {
-        for source in built.get(&value).into_iter().flatten().copied() {
-            if returned.insert(source) {
-                frontier.push(source);
-            }
-        }
-    }
-    returned
+    resolve_direct_slots(body, renamed, origins, slots, visiting)
 }
 
 /// The least fixpoint of the input-forwarding graph, projected onto `function`.
@@ -1030,7 +848,7 @@ fn static_edges(body: &LoweredBody) -> Vec<StaticEdge> {
     edges.sort_by_key(|edge| {
         let rank = match edge {
             StaticEdge::Direct(_) => 0_u32,
-            StaticEdge::Lambda(_) => 1_u32,
+            StaticEdge::Construction(_) => 1_u32,
         };
         (edge.function().as_u32(), rank)
     });
@@ -1041,7 +859,9 @@ fn static_edges(body: &LoweredBody) -> Vec<StaticEdge> {
 fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
     for step in steps {
         match step {
-            LoweredStep::Lambda { function, .. } => edges.push(StaticEdge::Lambda(*function)),
+            LoweredStep::Lambda { function, .. } | LoweredStep::FunctionRef { function, .. } => {
+                edges.push(StaticEdge::Construction(*function));
+            }
             LoweredStep::Const { .. }
             | LoweredStep::Tuple { .. }
             | LoweredStep::List { .. }
@@ -1049,7 +869,6 @@ fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
             | LoweredStep::MapUpdate { .. }
             | LoweredStep::Struct { .. }
             | LoweredStep::Bitstring { .. }
-            | LoweredStep::FunctionRef { .. }
             | LoweredStep::BinaryOp { .. }
             | LoweredStep::UnaryOp { .. }
             | LoweredStep::MapIndex { .. }
@@ -1080,3 +899,155 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
         | LoweredTail::Halt { .. } => {}
     }
 }
+
+/// Derives one function's static shape: its return and each of its call
+/// sites' arguments, written over its own input slots and its own call
+/// results.
+///
+/// The answer depends on one body and nothing else, which is what makes the
+/// closure below cheap: the walk that spans the call graph reads one
+/// published skeleton per function instead of re-lowering every body it can
+/// reach.
+pub(super) fn derive_return_skeleton(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+) -> Result<JobEffects, FatalError> {
+    let lowered = FactKey::LoweredBody(function);
+    if !world.has_fact(&lowered) {
+        if world.function_is_provider_boundary(function) || world.protocol_callback(function).is_some() {
+            // This boundary has no lowered body in this program: its return
+            // may flow from values it is handed, but it names no structural
+            // return equation. Every fact that conclusion rests on is READ,
+            // so a real definition landing later re-derives it.
+            let module = world.function_module(function);
+            let reads = current_uses([
+                FactKey::FunctionDefined(function),
+                FactKey::ModuleDefined(module),
+                lowered,
+            ]);
+            let changed = world.define_return_skeleton(
+                function,
+                Rc::new(FunctionSkeleton {
+                    returns: Returns::Opaque,
+                    input_len: world.function_arity(function),
+                    ..FunctionSkeleton::default()
+                }),
+            );
+            return Ok(JobEffects {
+                reads,
+                outputs: vec![FactKey::ReturnSkeleton(function)],
+                changed: changed
+                    .then_some(FactKey::ReturnSkeleton(function))
+                    .into_iter()
+                    .collect(),
+                ..JobEffects::default()
+            });
+        }
+        // `LoweredBody`'s sole producer arm is `Job::LowerFunction`.
+        return Ok(JobEffects::wait_on_current(lowered));
+    }
+    let skeleton = Rc::new(super::super::return_skeleton::lower(
+        &world.lowered_body(function),
+        world.types(),
+    ));
+    tel.raw_event2(
+        &["fz", "compiler2", "inference_work", "skeleton_lowered"],
+        &function,
+        &*skeleton,
+    );
+    let changed = world.define_return_skeleton(function, skeleton);
+    Ok(JobEffects {
+        reads: current_uses([lowered]),
+        outputs: vec![FactKey::ReturnSkeleton(function)],
+        changed: changed
+            .then_some(FactKey::ReturnSkeleton(function))
+            .into_iter()
+            .collect(),
+        ..JobEffects::default()
+    })
+}
+
+/// Derives which of one function's positions the fixpoint is still solving.
+///
+/// A position is one the fixpoint solves when it sits on a cycle of the
+/// skeleton graph that crosses a constructor, so the walk has to span the
+/// call graph: a helper's slot joins its caller's cycle without either body
+/// mentioning the other's return. The span is this function's own static
+/// callees, transitively -- a cycle a position of this function sits on runs
+/// through calls this function makes, so it lies inside that reach.
+///
+/// This is the fact a call site's key coordinate reads, and it is decided
+/// before any activation exists. That is the whole point: an answer derived
+/// from an activation's own companions would be derived from evidence the
+/// answer then destroys, and the discovery would oscillate forever.
+pub(super) fn derive_return_unknowns(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
+    let mut reads = Vec::new();
+    let mut waits = HashSet::new();
+    let mut skeletons = HashMap::new();
+    let mut reached = vec![function];
+    let mut next = 0;
+    while next < reached.len() {
+        let reached_function = reached[next];
+        next += 1;
+        // A requested local function has a body-backed keying path, so its
+        // skeleton is waited on before any answer is published. A
+        // transitive defined function gets the same wait; its producer chain
+        // already has a real body to derive.
+        //
+        // A transitively named undefined function is an opaque boundary for
+        // now. Waiting would demand every body the static graph can name;
+        // reading both its absent skeleton and definedness instead re-runs
+        // this answer if a real definition later arrives.
+        let fact = FactKey::ReturnSkeleton(reached_function);
+        let Some(skeleton) = world.return_skeleton(reached_function).cloned() else {
+            if reached_function == function
+                && !world.function_is_provider_boundary(reached_function)
+                && world.protocol_callback(reached_function).is_none()
+            {
+                waits.insert(fact);
+                continue;
+            }
+            if world.function_defined_revision(reached_function).is_some() {
+                waits.insert(fact);
+                continue;
+            }
+            reads.push(fact);
+            reads.push(FactKey::FunctionDefined(reached_function));
+            continue;
+        };
+        reads.push(fact);
+        for callee in skeleton
+            .invocations
+            .values()
+            .filter_map(|invocation| invocation.callee.named())
+        {
+            if !reached.contains(&callee) {
+                reached.push(callee);
+            }
+        }
+        skeletons.insert(reached_function, skeleton);
+    }
+    if !waits.is_empty() {
+        return Ok(JobEffects {
+            reads: current_uses(reads),
+            waits: current_uses(waits),
+            ..JobEffects::default()
+        });
+    }
+    let unknowns = Rc::new(super::super::return_unknowns::derive(&skeletons, function));
+    let changed = world.define_return_unknowns(function, unknowns);
+    Ok(JobEffects {
+        reads: current_uses(reads),
+        outputs: vec![FactKey::ReturnUnknowns(function)],
+        changed: changed
+            .then_some(FactKey::ReturnUnknowns(function))
+            .into_iter()
+            .collect(),
+        ..JobEffects::default()
+    })
+}
+
+#[cfg(test)]
+#[path = "keying_test.rs"]
+mod keying_test;

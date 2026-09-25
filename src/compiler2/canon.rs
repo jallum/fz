@@ -413,9 +413,30 @@ impl<'a> ProgramCanon<'a> {
 
     fn activation_key(&mut self, activation: &ActivationKey) -> String {
         let inputs: Vec<String> = activation
-            .inputs(self.world.types())
+            .inputs()
             .iter()
-            .map(|ty| self.ty(*ty))
+            .enumerate()
+            .map(|(slot, ty)| {
+                let Some(surfaces) = activation
+                    .callable_surfaces(slot)
+                    .filter(|surfaces| !surfaces.is_empty())
+                else {
+                    return self.ty(*ty);
+                };
+                surfaces
+                    .iter()
+                    .map(|surface| {
+                        let inputs = surface
+                            .inputs
+                            .iter()
+                            .map(|ty| self.ty(*ty))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("({inputs}) -> {}", self.ty(surface.result))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            })
             .collect();
         format!(
             "{}[{}]",
@@ -541,16 +562,43 @@ impl ProgramCanon<'_> {
             return Arc::clone(hit);
         }
         let descr = self.world.callable(id).clone();
-        let function = descr
-            .function
-            .map(|function| function_label(self.world, function))
-            .unwrap_or_else(|| "<unknown>".to_string());
-        let layouts: Vec<String> = descr
-            .capture_layouts
+        let alternatives = descr
+            .alternatives()
             .iter()
-            .map(|layout| self.transport_layout(*layout))
-            .collect();
-        let text: Arc<str> = format!("{function}/{} layouts=[{}]", descr.arity, layouts.join(", ")).into();
+            .map(|alternative| {
+                let function = function_label(self.world, alternative.function);
+                let layouts = alternative
+                    .capture_layouts
+                    .iter()
+                    .map(|layout| self.transport_layout(*layout))
+                    .collect::<Vec<_>>();
+                let captures = alternative
+                    .capture_tys
+                    .iter()
+                    .map(|ty| self.ty(*ty))
+                    .collect::<Vec<_>>();
+                format!(
+                    "{function}/{} captures=[{}] layouts=[{}]",
+                    alternative.arity,
+                    captures.join(", "),
+                    layouts.join(", ")
+                )
+            })
+            .collect::<Vec<_>>();
+        let text: Arc<str> = if let Some(selector) = descr.selector() {
+            format!(
+                "closed selector={} alternatives=[{}]",
+                self.lane(selector),
+                alternatives.join("; ")
+            )
+            .into()
+        } else {
+            alternatives
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "<unknown>".to_string())
+                .into()
+        };
         self.callables.insert(id, Arc::clone(&text));
         text
     }
@@ -1038,11 +1086,22 @@ impl ProgramCanon<'_> {
                 function,
                 captures,
                 construction,
+                selection,
             } => {
                 let name = self.names.value(*value);
                 let label = function_label(self.world, *function);
+                let selection = selection
+                    .as_ref()
+                    .map(|selection| {
+                        format!(
+                            "alternatives={:?} plan=[{}]",
+                            selection.alternatives,
+                            self.plan(&selection.plan).join("; ")
+                        )
+                    })
+                    .unwrap_or_else(|| "none".into());
                 format!(
-                    "{name} = lambda {label} captures=[{}] {}",
+                    "{name} = lambda {label} captures=[{}] {} selection={selection}",
                     self.value_list(captures),
                     self.construction(construction.as_ref())
                 )
@@ -1207,7 +1266,7 @@ impl ProgramCanon<'_> {
                 edge,
                 args,
                 dest,
-                return_flow,
+                target,
             } => {
                 let value = self.names.value(*value);
                 let callsite = self.names.callsite(*callsite);
@@ -1217,6 +1276,18 @@ impl ProgramCanon<'_> {
                     ClosureCallEdge::Direct { target, capture_count } => {
                         format!("direct({},captures={capture_count})", self.executable_ref(target))
                     }
+                    ClosureCallEdge::Closed { arms } => format!(
+                        "closed({})",
+                        arms.iter()
+                            .map(|arm| format!(
+                                "alt={},target={},captures={}",
+                                arm.alternative,
+                                self.executable_ref(&arm.target),
+                                arm.capture_count
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(";")
+                    ),
                     ClosureCallEdge::Seam => "seam".to_string(),
                     ClosureCallEdge::Dead => "dead".to_string(),
                 };
@@ -1224,10 +1295,7 @@ impl ProgramCanon<'_> {
                     "tail closure_call {value} {callsite} callee={callee} edge={edge} args=[{args}] {}",
                     destination(dest)
                 ));
-                if let Some(flow) = return_flow {
-                    let flow = self.return_flow(flow);
-                    out.put(&format!("return_flow {flow}"));
-                }
+                self.call_edge(out, target);
                 out.exit();
             }
             BackendTail::If {

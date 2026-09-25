@@ -1,16 +1,25 @@
 use crate::dispatch_matrix::demand::DispatchDemand;
 
+use super::drive_test::{FunctionCapture, function_id, generated_function_ids};
 use super::facts::FactUse;
 use super::keying::{BodyKeying, InputDemand};
+use super::return_unknowns::FunctionUnknowns;
 use super::{
-    DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, TypeName, Types, World,
+    DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, Ty, TypeName, Types, World,
 };
 use crate::ast::Attribute;
 use crate::compiler2::drive::{DependencyKey, JobEffects};
+use crate::compiler2::identity::ActivationSignature;
+use crate::compiler2::semantic::ActivationInput;
+use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 use std::cell::Cell;
 use std::rc::Rc;
+
+fn activation_inputs(inputs: impl IntoIterator<Item = Ty>) -> Vec<ActivationInput> {
+    inputs.into_iter().map(ActivationInput::new).collect()
+}
 
 #[test]
 fn private_extern_is_lexically_callable_but_absent_from_module_interface() {
@@ -91,17 +100,128 @@ fn completion_claims_belong_directly_to_the_job_that_read_their_ground() {
     );
 }
 
-/// The demand fact a body that forwards NOTHING and returns none of its own
-/// inputs publishes: what its own clauses ask about its inputs is the whole of
-/// what anything asks about them, so both dispatch halves of `InputDemand`
-/// carry the same mask (fz-kdt.183) and the `returned` axis is empty
-/// (fz-kdt.199).
-fn unforwarded_demand(mask: Vec<DispatchDemand>) -> InputDemand {
-    InputDemand {
-        returned: vec![DispatchDemand::Ignore; mask.len()],
-        local_dispatch: mask.clone(),
-        forwarded_dispatch: mask,
-    }
+#[test]
+fn type_definition_store_withdraws_with_its_fact() {
+    let mut world = World::new();
+    let name = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "withdrawn".to_string(),
+        arity: 0,
+    };
+    let definition = super::typedef::TypeDef {
+        ty: world.types_mut().int(),
+        params: Vec::new(),
+    };
+    assert!(world.define_type_def(&name, definition));
+    let job = Job::DeriveTypeDef(name.clone());
+    world.complete_job(
+        job.clone(),
+        JobEffects {
+            outputs: vec![FactKey::TypeDefined(name.clone())],
+            ..JobEffects::default()
+        },
+    );
+    assert!(
+        world.type_def(&name).is_some(),
+        "the fact gates the retained definition"
+    );
+
+    world.complete_job(job, JobEffects::default());
+    assert!(
+        world.type_def(&name).is_none(),
+        "withdrawing TypeDefined also removes the definition it made visible",
+    );
+}
+
+#[test]
+fn withdrawing_an_activation_return_derivation_clears_its_payload() {
+    let telemetry = NullTelemetry;
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "answer", 1);
+    let int = world.types_mut().int();
+    let activation = super::ActivationKey::from_inputs(root, function, &[int], world.types_mut());
+    let job = Job::AnalyzeActivation(activation.clone());
+    let return_fact = FactKey::ReturnType(activation.clone());
+
+    let return_derivation = super::drive::Derivation::own(&job);
+    assert!(
+        super::drive::ExecutionContext::new(&mut world, &telemetry)
+            .define_activation_return(&return_derivation, Some(int))
+    );
+    world.complete_job(
+        job.clone(),
+        JobEffects {
+            outputs: vec![return_fact.clone()],
+            changed: vec![return_fact.clone()],
+            ..JobEffects::default()
+        },
+    );
+    assert_eq!(world.activation_return(&activation), Some(int));
+
+    let (outputs, reads) = world.standing_claims_and_reads(&job);
+    world.complete_job(
+        job.clone(),
+        JobEffects {
+            reads: reads.into_iter().collect(),
+            outputs,
+            ..JobEffects::default()
+        },
+    );
+    assert_eq!(
+        world
+            .work_graph
+            .facts()
+            .publishers(&DependencyKey::Fact(return_fact.clone()))
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![return_derivation],
+        "an inactive analysis must re-list the return under its activation derivation"
+    );
+
+    world.complete_job(job, JobEffects::default());
+
+    assert!(
+        !world.has_fact(&return_fact),
+        "the concluded omission retracts the exact activation return claim"
+    );
+    assert_eq!(
+        world.activation_return_evidence(&activation),
+        None,
+        "an absent ReturnType fact must leave bottom storage for a later re-claim"
+    );
+}
+
+/// Every fact a key for `function` is built from, stated by hand: a driven
+/// compiler proves the same three through `World::require_activation_key_facts`
+/// before any caller mints a key, and the readers index them rather than guess
+/// at a missing one.
+///
+/// The demand is the one a body that forwards NOTHING publishes -- what its own
+/// clauses ask about its inputs is the whole of what anything asks about them --
+/// and every slot is one the return can be read back out of, so these worlds key
+/// on what arrives at each slot.
+fn define_activation_key_facts(
+    world: &mut World,
+    function: super::FunctionId,
+    recursive: bool,
+    mask: Vec<DispatchDemand>,
+) {
+    let inputs = mask.len();
+    assert!(world.define_body_keying(function, BodyKeying { recursive }));
+    assert!(world.define_input_demand(
+        function,
+        InputDemand {
+            forwarded_dispatch: mask,
+        },
+    ));
+    assert!(world.define_return_unknowns(
+        function,
+        Rc::new(FunctionUnknowns {
+            returned_inputs: vec![true; inputs].into(),
+            ..FunctionUnknowns::default()
+        }),
+    ));
 }
 
 #[test]
@@ -573,8 +693,11 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
         .expanded_function_source(main)
         .expect("DefineFunction should first materialize staged expanded source");
     assert_eq!(
-        raw.source.key(),
-        expanded.source.key(),
+        raw.declared_root().expect("a declared function carries its root").key(),
+        expanded
+            .declared_root()
+            .expect("a declared function carries its root")
+            .key(),
         "before raw publication flips over, staged expanded source should preserve the same quoted root",
     );
     assert!(
@@ -583,34 +706,26 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
     );
 }
 
+/// A key NAMES an activation; evidence says what actually arrived at it.
+/// They are two facts, and publishing evidence materializes its own: what
+/// comes back out is exactly what the caller put in, whatever coordinate the
+/// key chose for the same slot.
 #[test]
-fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() {
+fn compiler2_activation_inputs_are_published_as_their_own_fact() {
     let _tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: true,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Ignore])));
+    define_activation_key_facts(&mut world, function, true, vec![DispatchDemand::Ignore]);
 
-    // A recursive fn's UNDEMANDED slot collapses to its convergence class
-    // in the KEY (list(int) -> list(any)), while the body-input EVIDENCE
-    // keeps the precise type. (Numeric literals no longer exist to widen;
-    // the list collapse is the surviving canonicalization.)
     let int = world.types_mut().int();
     let raw_input = world.types_mut().list(int);
     let key = world.activation_key(root, function, &[raw_input]);
-    let canonical_input = key.inputs(world.types())[0];
 
     world.complete_job(
         Job::SeedRoot(root),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![raw_input])],
+            activation_input_contributions: vec![(key.clone(), activation_inputs([raw_input]))],
             ..JobEffects::default()
         },
     );
@@ -623,104 +738,6 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
         vec![raw_input],
         "activation body evidence should preserve the published caller input",
     );
-    assert!(
-        !world.types().is_equivalent(&canonical_input, &observed_inputs[0]),
-        "recursive key convergence should not overwrite the separate activation-input evidence",
-    );
-}
-
-#[test]
-fn compiler2_recursive_activation_key_ignores_accumulator_list_shape() {
-    let _tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
-    let function = world.reference_function(ModuleId::GLOBAL, "partition", 4);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: true,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(
-        function,
-        unforwarded_demand(vec![
-            DispatchDemand::Whole,
-            DispatchDemand::ListShape(Box::new(DispatchDemand::Whole)),
-            DispatchDemand::Ignore,
-            DispatchDemand::Ignore,
-        ]),
-    ));
-
-    let int = world.types_mut().int();
-    let list_int = world.types_mut().list(int);
-    let empty = world.types_mut().empty_list();
-    let non_empty = world.types_mut().non_empty_list(int);
-
-    let initial = world.activation_key(root, function, &[int, non_empty, empty, empty]);
-    let lo_accumulated = world.activation_key(root, function, &[int, list_int, non_empty, empty]);
-    let hi_accumulated = world.activation_key(root, function, &[int, list_int, empty, non_empty]);
-
-    assert_eq!(
-        initial, lo_accumulated,
-        "ignored accumulator list shape must not split recursive activation keys",
-    );
-    assert_eq!(
-        initial, hi_accumulated,
-        "ignored accumulator list shape must not split recursive activation keys",
-    );
-}
-
-#[test]
-fn compiler2_recursive_activation_key_ignores_tuple_accumulator_list_shape() {
-    let _tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
-    let function = world.reference_function(ModuleId::GLOBAL, "split_while_cont", 3);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: true,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(
-        function,
-        unforwarded_demand(vec![
-            DispatchDemand::ListShape(Box::new(DispatchDemand::Ignore)),
-            DispatchDemand::Ignore,
-            DispatchDemand::Ignore,
-        ]),
-    ));
-
-    let int = world.types_mut().int();
-    let list_int = world.types_mut().list(int);
-    let empty = world.types_mut().empty_list();
-    let non_empty = world.types_mut().non_empty_list(int);
-    let initial_acc = world.types_mut().tuple(&[empty, empty]);
-    let left_accumulated = world.types_mut().tuple(&[non_empty, empty]);
-    let right_accumulated = world.types_mut().tuple(&[empty, non_empty]);
-    let callable_a = {
-        let result = world.types_mut().atom_lit("cont");
-        world.types_mut().arrow(&[int], result)
-    };
-    let callable_b = {
-        let result = world.types_mut().atom_lit("halt");
-        world.types_mut().arrow(&[int], result)
-    };
-
-    let initial = world.activation_key(root, function, &[list_int, initial_acc, callable_a]);
-    let left = world.activation_key(root, function, &[list_int, left_accumulated, callable_a]);
-    let right = world.activation_key(root, function, &[list_int, right_accumulated, callable_b]);
-
-    assert_eq!(
-        initial, left,
-        "ignored tuple accumulator list shape must not split recursive activation keys",
-    );
-    assert_eq!(
-        initial, right,
-        "ignored callable surface details must not split recursive activation keys",
-    );
 }
 
 #[test]
@@ -729,14 +746,7 @@ fn compiler2_activation_input_join_is_quiet_for_absorbed_list_evidence() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "subtract", 1);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: false,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
+    define_activation_key_facts(&mut world, function, false, vec![DispatchDemand::Whole]);
 
     let int = world.types_mut().int();
     let empty = world.types_mut().empty_list();
@@ -755,7 +765,7 @@ fn compiler2_activation_input_join_is_quiet_for_absorbed_list_evidence() {
     world.complete_job(
         Job::SeedRoot(root),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![list_int])],
+            activation_input_contributions: vec![(key.clone(), activation_inputs([list_int]))],
             ..JobEffects::default()
         },
     );
@@ -786,7 +796,7 @@ fn compiler2_activation_input_join_is_quiet_for_absorbed_list_evidence() {
     let step = world.complete_job(
         Job::AnalyzeActivation(key.clone()),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![empty_then_list])],
+            activation_input_contributions: vec![(key.clone(), activation_inputs([empty_then_list]))],
             ..JobEffects::default()
         },
     );
@@ -818,22 +828,8 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let caller = world.reference_function(ModuleId::GLOBAL, "caller", 1);
     let callee = world.reference_function(ModuleId::GLOBAL, "callee", 1);
-    assert!(world.define_body_keying(
-        caller,
-        BodyKeying {
-            recursive: true,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(caller, unforwarded_demand(vec![DispatchDemand::Whole])));
-    assert!(world.define_body_keying(
-        callee,
-        BodyKeying {
-            recursive: true,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(callee, unforwarded_demand(vec![DispatchDemand::Whole])));
+    define_activation_key_facts(&mut world, caller, true, vec![DispatchDemand::Whole]);
+    define_activation_key_facts(&mut world, callee, true, vec![DispatchDemand::Whole]);
 
     let int = world.types_mut().int();
     let caller_key = world.activation_key(root, caller, &[int]);
@@ -842,7 +838,7 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
     world.complete_job(
         Job::AnalyzeActivation(caller_key.clone()),
         JobEffects {
-            activation_input_contributions: vec![(callee_key.clone(), vec![int])],
+            activation_input_contributions: vec![(callee_key.clone(), activation_inputs([int]))],
             ..JobEffects::default()
         },
     );
@@ -882,20 +878,12 @@ fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "delete_first", 2);
-    assert!(world.define_body_keying(
+    define_activation_key_facts(
+        &mut world,
         function,
-        BodyKeying {
-            recursive: true,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(
-        function,
-        unforwarded_demand(vec![
-            DispatchDemand::ListShape(Box::new(DispatchDemand::Whole)),
-            DispatchDemand::Ignore,
-        ]),
-    ));
+        true,
+        vec![DispatchDemand::ListShape, DispatchDemand::Ignore],
+    );
 
     let int = world.types_mut().int();
     let list_int = world.types_mut().list(int);
@@ -910,84 +898,83 @@ fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
     );
 }
 
+/// The coordinate a call site names and the brand the key keeps come from ONE
+/// question: can anything the arriving value reaches read this slot.
+///
+/// `called/2` and `carried/2` are the same body shape -- each forwards both of
+/// its inputs and asks nothing of them itself -- and they differ only in what
+/// their callee does. `twice/2` CALLS the callable it is handed, so the slot is
+/// observable and both halves of the key keep what arrived: two differently
+/// observed callables are two activations, each grounded for the callee it
+/// reaches. `ignored/2` merely carries the callable and hands back the other
+/// input, so nothing reachable can tell two callables apart and both halves
+/// drop what was observed: every callable shares one activation.
+///
+/// The mask the surface blanking applies IS the vector `key_inputs_for_call`
+/// addresses with, so a slot can never be addressed per surface and blanked
+/// of it.
 #[test]
-fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
-    let _tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
-    let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: false,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
+fn compiler2_the_key_and_the_surface_blanking_ask_one_observability_question() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("one_observability_question.fz".into()),
+        text: "def twice(f, x), do: f.(f.(x))\n\
+               def called(f, x), do: twice(f, x)\n\
+               def ignored(_f, x), do: x\n\
+               def carried(f, x), do: ignored(f, x)\n\
+               def main() do\n\
+               \x20 dbg(called(fn (a) -> a + 1 end, 1))\n\
+               \x20 carried(fn (a) -> a * 2 end, 1)\n\
+               end\n"
+            .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(1));
 
-    let input_a = world.types_mut().atom_lit("a");
-    let input_b = world.types_mut().atom_lit("b");
-    let key = world.activation_key(root, function, &[input_a]);
-
-    world.complete_job(
-        Job::SeedRoot(root),
-        JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![input_a])],
-            ..JobEffects::default()
-        },
-    );
-    world.complete_job(
-        Job::AnalyzeActivation(key.clone()),
-        JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![input_b])],
-            ..JobEffects::default()
-        },
-    );
-
-    let fact = FactKey::ActivationInputs(key.clone());
-    let dependency = DependencyKey::Fact(fact.clone());
-    let reader = Job::LowerFunction(function);
-    world.complete_job(
-        reader.clone(),
-        JobEffects {
-            reads: vec![FactUse::current(fact)],
-            ..JobEffects::default()
-        },
-    );
-    while world.work_graph.pop().is_some() {}
-
-    let step = world.complete_job(Job::SeedRoot(root), JobEffects::default());
-    assert!(
-        step.changed.iter().any(|change| {
-            change.key == DependencyKey::Fact(FactKey::ActivationInputs(key.clone()))
-                && change.old_revision.is_some()
-                && change.new_revision.is_some()
-                && change.new_revision > change.old_revision
-        }),
-        "retracting one publisher should republish the still-present activation-input fact when the joined body evidence changes",
+    let called = function_id(&functions, "called", 2);
+    let carried = function_id(&functions, "carried", 2);
+    let world = compiler.world_mut();
+    assert_eq!(
+        world.observable_inputs(called, 2),
+        vec![true, true],
+        "both of called/2's inputs reach twice/2, which calls one and hands it the other",
     );
     assert_eq!(
-        world.activation_inputs_joined(&key),
-        Some(vec![input_b]),
-        "the surviving publisher's input should remain as the body evidence after the stale contribution retracts",
+        world.observable_inputs(carried, 2),
+        vec![false, true],
+        "nothing carried/2 reaches asks about its callable; the other input is handed back",
     );
-    let wakes = step
-        .wakes
-        .iter()
-        .filter(|wake| wake.job == reader && wake.cause == FactUse::current(dependency.clone()))
-        .collect::<Vec<_>>();
+
+    let int = world.types_mut().int();
+    let atom = world.types_mut().atom_lit("a");
+    let callable = world.types_mut().arrow(&[int], int);
+    let surface_of = |result: Ty| ActivationSignature {
+        inputs: Box::new([int]),
+        result,
+    };
+    let call_with = |surface: ActivationSignature| {
+        vec![
+            ActivationInput::with_callable_surface(callable, surface),
+            ActivationInput::new(int),
+        ]
+    };
+    assert_ne!(
+        world.activation_key_for_inputs(root, called, &call_with(surface_of(int))),
+        world.activation_key_for_inputs(root, called, &call_with(surface_of(atom))),
+        "an observable callable slot keys on the surface that was observed, so its callee stays grounded",
+    );
     assert_eq!(
-        wakes.len(),
-        1,
-        "the narrowed aggregate should wake its exact reader once"
-    );
-    assert!(
-        wakes[0].shift,
-        "the authoritative contribution withdrawal must reach the reader as a ground shift",
-    );
-    assert!(
-        world.work_graph.rebased(&reader),
-        "the reader must replace evidence derived from the removed input row",
+        world.activation_key_for_inputs(root, carried, &call_with(surface_of(int))),
+        world.activation_key_for_inputs(root, carried, &call_with(surface_of(atom))),
+        "an unobservable callable slot is freight, observed surface and all",
     );
 }
 
@@ -1000,17 +987,12 @@ fn compiler2_correlated_activation_input_rows_stay_alternatives() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 2);
-    assert!(world.define_body_keying(
+    define_activation_key_facts(
+        &mut world,
         function,
-        BodyKeying {
-            recursive: false,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(
-        function,
-        unforwarded_demand(vec![DispatchDemand::Whole, DispatchDemand::Whole])
-    ));
+        false,
+        vec![DispatchDemand::Whole, DispatchDemand::Whole],
+    );
 
     let int = world.types_mut().int();
     let atom = world.types_mut().atom();
@@ -1022,8 +1004,8 @@ fn compiler2_correlated_activation_input_rows_stay_alternatives() {
         Job::SeedRoot(root),
         JobEffects {
             activation_input_contributions: vec![
-                (key.clone(), vec![int_list, int]),
-                (key.clone(), vec![atom_list, atom]),
+                (key.clone(), activation_inputs([int_list, int])),
+                (key.clone(), activation_inputs([atom_list, atom])),
             ],
             ..JobEffects::default()
         },
@@ -1033,11 +1015,7 @@ fn compiler2_correlated_activation_input_rows_stay_alternatives() {
         .activation_input_alternatives(&key)
         .expect("correlated contributions should publish alternatives")
         .clone();
-    let rows = alternatives
-        .rows()
-        .iter()
-        .map(|row| row.columns().to_vec())
-        .collect::<Vec<_>>();
+    let rows = alternatives.rows().iter().map(|row| row.tys()).collect::<Vec<_>>();
     assert_eq!(
         rows.len(),
         2,
@@ -1070,79 +1048,16 @@ fn compiler2_correlated_activation_input_rows_stay_alternatives() {
     );
 }
 
-/// fz-9i4.7.10.2: dropping one publisher's contribution retracts its rows and
-/// only its rows; the surviving publisher's correlation stands untouched.
-#[test]
-fn compiler2_withdrawing_a_publisher_retracts_only_its_rows() {
-    let _tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
-    let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: false,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
-
-    let input_a = world.types_mut().atom_lit("a");
-    let input_b = world.types_mut().atom_lit("b");
-    let key = world.activation_key(root, function, &[input_a]);
-
-    world.complete_job(
-        Job::SeedRoot(root),
-        JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![input_a])],
-            ..JobEffects::default()
-        },
-    );
-    world.complete_job(
-        Job::AnalyzeActivation(key.clone()),
-        JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![input_b])],
-            ..JobEffects::default()
-        },
-    );
-    assert_eq!(
-        world.activation_input_alternatives(&key).map(|alts| alts.rows().len()),
-        Some(2),
-        "distinct publisher rows should coexist as alternatives",
-    );
-
-    world.complete_job(Job::SeedRoot(root), JobEffects::default());
-    let rows = world
-        .activation_input_alternatives(&key)
-        .expect("the surviving publisher's fact should remain")
-        .rows()
-        .iter()
-        .map(|row| row.columns().to_vec())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        rows,
-        vec![vec![input_b]],
-        "withdrawing one publisher should retract exactly its row",
-    );
-}
-
-/// fz-9i4.7.10.2: the alternatives antichain is finite by construction — past
+/// The alternatives antichain is finite by construction — past
 /// `ACTIVATION_INPUT_ROW_BUDGET` rows it widens to its single column-wise
-/// joined row, mirroring `RETURN_WIDENING_BUDGET`.
+/// joined row.
 #[test]
 fn compiler2_activation_input_rows_widen_past_the_budget() {
     let _tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: false,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
+    define_activation_key_facts(&mut world, function, false, vec![DispatchDemand::Whole]);
 
     let inputs = (0..=super::semantic::ACTIVATION_INPUT_ROW_BUDGET)
         .map(|index| world.types_mut().atom_lit(&format!("row_{index}")))
@@ -1152,7 +1067,10 @@ fn compiler2_activation_input_rows_widen_past_the_budget() {
     world.complete_job(
         Job::SeedRoot(root),
         JobEffects {
-            activation_input_contributions: inputs.iter().map(|input| (key.clone(), vec![*input])).collect(),
+            activation_input_contributions: inputs
+                .iter()
+                .map(|input| (key.clone(), activation_inputs([*input])))
+                .collect(),
             ..JobEffects::default()
         },
     );
@@ -1167,8 +1085,12 @@ fn compiler2_activation_input_rows_widen_past_the_budget() {
         "past the row budget the antichain should widen to one joined row",
     );
     assert_eq!(
-        alternatives.rows()[0].columns(),
-        alternatives.joined(),
+        alternatives.rows()[0].tys(),
+        alternatives
+            .joined()
+            .iter()
+            .map(ActivationInput::ty)
+            .collect::<Vec<_>>(),
         "the widened row should be the joined projection itself",
     );
 }
@@ -1179,14 +1101,7 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: false,
-            consumes_callable_identity: true
-        }
-    ));
-    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
+    define_activation_key_facts(&mut world, function, false, vec![DispatchDemand::Whole]);
 
     let input = world.types_mut().int_lit(1);
     let key = world.activation_key(root, function, &[input]);
@@ -1194,7 +1109,7 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
     world.complete_job(
         Job::SeedRoot(root),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![input])],
+            activation_input_contributions: vec![(key.clone(), activation_inputs([input]))],
             ..JobEffects::default()
         },
     );
@@ -1240,7 +1155,7 @@ fn terminal_unresolved_inventory_uses_semantic_order_across_type_mint_histories(
             (list, non_empty, list_activation, non_empty_activation)
         };
         assert_eq!(world.types().display(&list), world.types().display(&non_empty));
-        let raw_order = list_activation.arrow < non_empty_activation.arrow;
+        let raw_order = list_activation.signature < non_empty_activation.signature;
         let list_fact = FactKey::Executable(super::ExecutableKey {
             activation: list_activation,
             need: super::ExecutableNeed::Value,
@@ -1318,7 +1233,7 @@ fn completion_outputs_movements_and_wakes_use_semantic_order_across_seeds() {
             let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
             (list_key, non_empty_key)
         };
-        let raw_order = list_key.arrow < non_empty_key.arrow;
+        let raw_order = list_key.signature < non_empty_key.signature;
         let list_fact = FactKey::ReturnType(list_key);
         let non_empty_fact = FactKey::ReturnType(non_empty_key);
         world.complete_job(
@@ -1414,6 +1329,8 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     world.demand(Job::PlanEntryDispatch(function));
     world.demand(Job::DeriveCallGraphComponent(function));
     world.demand(Job::DeriveInputDemand(function));
+    world.demand(Job::DeriveReturnSkeleton(function));
+    world.demand(Job::DeriveReturnUnknowns(function));
     assert_eq!(
         super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         DriveOutcome::Resolved,
@@ -1490,6 +1407,8 @@ fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
         world.demand(Job::PlanEntryDispatch(function));
         world.demand(Job::DeriveCallGraphComponent(function));
         world.demand(Job::DeriveInputDemand(function));
+        world.demand(Job::DeriveReturnSkeleton(function));
+        world.demand(Job::DeriveReturnUnknowns(function));
     }
     assert_eq!(
         super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
@@ -1522,7 +1441,7 @@ fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
                 FactKey::Activation(callee.clone()),
                 FactKey::ActivationInputs(callee.clone()),
             ],
-            activation_input_contributions: vec![(callee.clone(), vec![input])],
+            activation_input_contributions: vec![(callee.clone(), activation_inputs([input]))],
             ..JobEffects::default()
         },
     );
@@ -2108,5 +2027,98 @@ fn lowered_body_reads_share_one_allocation_not_a_fresh_clone() {
     assert!(
         Rc::ptr_eq(&first, &second),
         "two reads of one function's lowered body must share the producer's allocation, not each deep-clone it",
+    );
+}
+
+/// A generated function has no text of its own. It is minted while its owner's
+/// body is lowered, and that lowering publishes its definition in the same
+/// conclusion, so the lowering is its ONE producer.
+///
+/// The way this used to go wrong is worth stating, because it was silent: a
+/// lambda was handed its OWNER's quoted root, so `Job::ExpandFunctionSource`
+/// happily expanded `main` on the lambda's behalf and `Job::DefineFunction`
+/// derived `main`'s surface and installed it on the lambda. The lambda's id
+/// still said arity 1 while its surface said `main/0`, and only a job that
+/// actually demanded the definition would see it -- so the same program was
+/// green through the interpreter and wrong through the retained product.
+///
+/// Both halves of the law are pinned here: a generated function carries no
+/// declared root to re-derive from, and the producer map names its owner's
+/// lowering rather than a source job it can never satisfy.
+#[test]
+fn compiler2_a_generated_function_is_defined_only_by_its_owners_lowering() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut world = World::new();
+    world.submit_code(
+        Some("generated_has_one_producer.fz".to_string()),
+        "def main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let mut sessions = super::pull::ProductSessions::default();
+    super::product_drive::drive_retained_root_backend_product(&mut world, &tel, &mut sessions, root, None)
+        .expect("the lambda fixture should settle its backend product");
+
+    let main = function_id(&functions, "main", 0);
+    let generated = generated_function_ids(&functions, main);
+    assert_eq!(
+        generated.len(),
+        1,
+        "lowering main's body mints exactly one lambda, got {generated:?}",
+    );
+    let lambda = generated[0];
+    assert_eq!(
+        world.generated_function_owner(lambda),
+        Some(main),
+        "the lambda's source names the function whose lowering minted it",
+    );
+
+    let (source, surface) = world.function_definition(lambda);
+    assert_eq!(
+        surface.arity(),
+        1,
+        "the lambda's published surface is its own, not the surface of the function that minted it",
+    );
+    assert_eq!(
+        source.capture_params,
+        vec!["tag".to_string()],
+        "the lambda's source names the value it captured",
+    );
+    assert!(
+        source.declared_root().is_none(),
+        "a generated function carries no quoted root, so nothing can re-derive its surface from source",
+    );
+
+    let published = (surface.name.clone(), surface.arity());
+
+    // What the producer map offers for the lambda's definition. The owner's
+    // lowering has already run, so the honest answer is that nothing is left
+    // to do -- and in particular no source job is offered a function that has
+    // no source.
+    let offered = std::iter::from_fn(|| world.work_graph.pop()).count();
+    assert_eq!(offered, 0, "the settled product leaves no work on the graph");
+    world.demand_fact_producer(
+        &FactKey::FunctionDefined(lambda),
+        super::scheduler::WorkStartReason::BlockedWaiterExpansion,
+    );
+    let demanded: Vec<Job> = std::iter::from_fn(|| world.work_graph.pop()).collect();
+    assert!(
+        demanded.is_empty(),
+        "the lambda's only producer is its owner's lowering, which has already run, so nothing is offered; got {demanded:?}",
+    );
+
+    // Driving what that demand produced may not disturb the lambda: the way
+    // this failed before was a source job deriving the OWNER's surface and
+    // installing it here.
+    assert!(matches!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+    let (_, surface) = world.function_definition(lambda);
+    assert_eq!(
+        (surface.name.clone(), surface.arity()),
+        published,
+        "demanding the lambda's definition may not replace its surface with its owner's",
     );
 }

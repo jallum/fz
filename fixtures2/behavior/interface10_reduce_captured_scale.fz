@@ -1,0 +1,8 @@
+#---
+# purpose: "the same reducer construction retains different captured scale values"
+#---
+def scaled(scale), do: fn (x, acc) -> acc + x * scale end
+def main() do
+  dbg(Enum.reduce([1, 2, 3], 0, scaled(1)))
+  dbg(Enum.reduce([1, 2, 3], 0, scaled(10)))
+end

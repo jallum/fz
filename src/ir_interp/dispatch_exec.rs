@@ -902,7 +902,9 @@ impl TypeTest<'_> {
     /// no heap object to read a schema off, so it asks the predicate what it
     /// wants of a tuple of that arity and puts one question to each position
     /// instead -- the same decomposition the boxed matcher makes, one level in,
-    /// against lanes the caller already delivered.
+    /// against lanes the caller already delivered. A typed callable selects
+    /// its construction annotation from its carried selector, using the same
+    /// callable predicate as the public wrapper identity.
     ///
     /// A position carries runtime demand and so keeps a lane, which is why the
     /// absent arm below is unreachable rather than a case to answer.
@@ -917,6 +919,35 @@ impl TypeTest<'_> {
             }
             BackendBoundValue::Transport { shape, lanes } => (*shape, lanes),
         };
+        if let crate::compiler2::transport::ShapeDescr::Callable(callable) = transport.interners().shape(shape) {
+            let descr = transport.interners().callable(*callable);
+            let selected = if descr.selector().is_some() {
+                match lanes.first() {
+                    Some(AnyValue::Int(tag)) => usize::try_from(*tag)
+                        .map_err(|_| DispatchStop::broken("negative callable selector".to_string()))?,
+                    _ => {
+                        return Err(DispatchStop::broken(
+                            "closed callable has no integer selector".to_string(),
+                        ));
+                    }
+                }
+            } else {
+                0
+            };
+            let alternative = descr
+                .alternative(selected)
+                .ok_or_else(|| DispatchStop::broken("invalid callable alternative in type test".to_string()))?;
+            return Ok(predicate
+                .callables
+                .admits(&crate::runtime_type_predicate::CallableShape {
+                    target: crate::types::ClosureTarget(alternative.function.as_u32()),
+                    captures: alternative
+                        .capture_tys
+                        .iter()
+                        .map(|ty| self.types.runtime_type_predicate(ty))
+                        .collect(),
+                }));
+        }
         let Some(arity) = transport.interners().tuple_arity(shape) else {
             return Err(DispatchStop::broken(format!(
                 "backend type test cannot read lane-form {shape:?}"

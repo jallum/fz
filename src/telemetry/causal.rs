@@ -1694,11 +1694,13 @@ fn canonical_product_value(value: &Json, canon: &CanonTables) -> Json {
                 .iter()
                 .map(|(key, field)| {
                     let field = match (key.as_str(), field) {
-                        ("arrow", Json::Number(id)) => Json::String(canon.ty(id.as_u64().unwrap_or_default())),
+                        ("arrow" | "result", Json::Number(id)) => {
+                            Json::String(canon.ty(id.as_u64().unwrap_or_default()))
+                        }
                         ("function_id", Json::Number(id)) => {
                             Json::String(canon.function(id.as_u64().unwrap_or_default()))
                         }
-                        ("input" | "surface" | "surface_tys", Json::Array(tys)) => Json::Array(
+                        ("input" | "inputs" | "surface" | "surface_tys", Json::Array(tys)) => Json::Array(
                             tys.iter()
                                 .map(|ty| {
                                     ty.as_u64().map_or_else(
@@ -1738,13 +1740,14 @@ fn identity_value(value: &Json, canon: Option<&CanonTables>) -> Json {
 fn identity_field(key: &str, field: &Json, canon: Option<&CanonTables>) -> Json {
     match (canon, key, field) {
         (canon, "product", _) => canon.map_or_else(|| field.clone(), |canon| canonical_product_value(field, canon)),
-        (Some(canon), "arrow", Json::Number(id)) => Json::String(canon.ty(id.as_u64().unwrap_or_default())),
+        (Some(canon), "arrow" | "result", Json::Number(id)) => Json::String(canon.ty(id.as_u64().unwrap_or_default())),
         (Some(canon), "function_id", Json::Number(id)) => Json::String(canon.function(id.as_u64().unwrap_or_default())),
-        (Some(canon), "input" | "surface" | "surface_tys", Json::Array(tys)) => Json::Array(
+        (Some(canon), "input" | "inputs" | "surface" | "surface_tys", Json::Array(tys)) => Json::Array(
             tys.iter()
                 .map(|ty| Json::String(canon.ty(ty.as_u64().unwrap_or_default())))
                 .collect(),
         ),
+        (Some(canon), "callable_surfaces", _) => canonical_product_value(field, canon),
         (_, _, Json::Object(_)) => identity_value(field, canon),
         _ => field.clone(),
     }
@@ -1848,7 +1851,7 @@ mod tests {
     #[test]
     fn canonical_product_identity_substitutes_ids_without_filtering_fields() {
         let canon = CanonTables {
-            types: HashMap::from([(7, "int".to_string())]),
+            types: HashMap::from([(7, "int".to_string()), (8, "atom".to_string())]),
             functions: HashMap::from([(11, "module.function".to_string())]),
         };
         let raw = serde_json::json!({
@@ -1857,6 +1860,9 @@ mod tests {
             "arrow": 7,
             "function_id": 11,
             "input": [7],
+            "inputs": [7, 8],
+            "result": 7,
+            "callable_surfaces": [[], [{"inputs": [8], "result": 7}]],
             "use": "settled",
             "revision": 3,
             "settled": true,
@@ -1876,6 +1882,9 @@ mod tests {
                 "arrow": "int",
                 "function_id": "module.function",
                 "input": ["int"],
+                "inputs": ["int", "atom"],
+                "result": "int",
+                "callable_surfaces": [[], [{"inputs": ["atom"], "result": "int"}]],
                 "use": "settled",
                 "revision": 3,
                 "settled": true,

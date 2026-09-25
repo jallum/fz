@@ -1,0 +1,15 @@
+#---
+# purpose: "the json parser shape with the callee's result tuple passed whole into a sibling: the recursion enters through a ground input coordinate"
+#---
+def value([:open | rest]), do: items(rest, [])
+def value([n | rest]), do: {:ok, n, rest}
+
+def items([:close | rest], acc), do: {:ok, acc, rest}
+def items(toks, acc), do: item(value(toks), acc)
+
+def item({:ok, v, rest}, acc), do: items(rest, [v | acc])
+
+def main() do
+  dbg(value([1, :done]))
+  dbg(value([:open, 1, :open, 2, :close, :close, :done]))
+end

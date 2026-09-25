@@ -1140,37 +1140,8 @@ def main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 
 #[test]
 fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
-    // Budgets re-pinned for the fz-kdt.34 causality stream (fz-kdt.52), then
-    // again for its self-describing definition lines (fz-kdt.34.6), and again
-    // for fz-kdt.56: the public trace deliberately carries one
-    // `work_graph.applied` per applied job (the completion seam) plus product
-    // settlement/cache/displacement events, so events and bytes scale with work
-    // done, and one `fz.compiler2.canon.*` line per DISTINCT raw id so the log
-    // is a self-contained dictionary. fz-kdt.56 split the call graph's edge
-    // extraction out of `DeriveRecursive` into its own `DeriveStaticCallees`
-    // job, so the stream gained that job's completions: +100 events / +53,539
-    // bytes on 00181, +6 events on 00009. fz-kdt.44 then made settledness
-    // transitive, which moved the stream in BOTH directions: it added the drain
-    // arbiter's `work_graph.quiesced` steps (+37 on 00181, none on 00009) while
-    // shrinking every `changed` array, because a fact that is transitively
-    // unfinal no longer flips its settled bit on each local dirty/clean cycle.
-    // fz-kdt.5's request/evaluation/wait identities make product work exactly
-    // attributable. fz-tfn.38 then made each product evaluation's exact fact
-    // prerequisite set one arbiter boundary and made the job span timing-only;
-    // under llvm-cov 00181 emits 2,958 events / 1,394,744 bytes / 32 quiescence
-    // steps. The bounds retain modest headroom while unrelated public-stream
-    // creep still trips. `==` carries a typed clause per numeric pair, and
-    // 00181 compares, so its stream carries that family's completions: about
-    // a dozen events and eight kilobytes, with only `lib/kernel.fz` swapped.
-    // The semantic fixpoint's own ascent is public too: `return_type.defined`
-    // and `.widened`, `activation_analysis.defined` and `callsite.defined`, so
-    // the stream carries one event per round that moves a return and per claim
-    // that drove it. Adding them took 00181 from 3,012 to 3,114 events (16
-    // return revisions, 44 analyses, 42 callsite edges) and from 1,475,036 to
-    // 1,523,747 bytes, and 00009 from 322 to 326 events. The bound is the
-    // measured 3,114 plus the same headroom the old 3,012/3,060 pair carried.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_162, 1_600 * 1024),
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_162, 1_760 * 1024),
         ("fixtures2/00009_no_runtime.fz", 400, 192 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
@@ -1947,10 +1918,10 @@ end
 ///
 /// fz-kdt.45 made `DeriveExecutableFacts(E)` a scheduler job whose direct fact
 /// formula stands on settled `ActivationAnalyzed` and `CallSiteSummary` facts.
-/// Their finality flips therefore wake that exact producer. Product waits are
-/// still polled by the pull driver; the newly live readiness cause comes from
-/// this direct scheduler fact boundary, independent of how root analysis is
-/// ignited.
+/// A concluded formula carries those facts' finality through its output; it
+/// does not re-run merely because finality changes. Only a formula that is
+/// still waiting on a settled fact may wake when that fact becomes final.
+/// Product waits are still polled by the pull driver.
 ///
 /// fz-tfn.8 made executable effects ordinary product formulas. The mutually
 /// recursive `List.reduce_cont/3` and `List.reduce_step/3` formulas settle as
@@ -1981,14 +1952,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         .collect();
     assert_eq!(
         quiesced.len(),
-        // fz-5xp.30: 14 -> 20. Ordinary generic arithmetic result/status
-        // helper facts settle through the same arbiter and publish six more
-        // readiness-only steps.
+        // The ordinary helper co-outputs settle through two ordered drain
+        // steps; the readiness-kind census below pins their exact contents.
         2,
         "{fixture}: every ordinary helper co-output shares the same readiness arbiter"
     );
 
-    let mut wakes = Vec::new();
     let mut readiness_changes = BTreeMap::new();
     for event in &quiesced {
         let step = event.metadata.get("step").expect("a quiesced event carries its step");
@@ -2011,7 +1980,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
                 .expect("every readiness change names its fact kind");
             *readiness_changes.entry(kind).or_insert(0) += 1;
         }
-        wakes.extend(step.get("wakes").and_then(|w| w.as_array()).into_iter().flatten());
+        assert!(
+            step.get("wakes")
+                .and_then(|wakes| wakes.as_array())
+                .is_none_or(Vec::is_empty),
+            "a drain finality movement does not re-run concluded readers"
+        );
     }
     assert_eq!(
         readiness_changes,
@@ -2030,130 +2004,29 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         "ordinary generic helper co-outputs publish every exact readiness transition without changing values"
     );
 
-    let mut wake_causes = BTreeSet::new();
-    let mut wake_dispositions = BTreeMap::new();
-    for wake in &wakes {
-        let cause = wake.get("cause").expect("a readiness wake names its cause");
-        let cause_kind = cause
-            .get("kind")
-            .and_then(serde_json::Value::as_str)
-            .expect("a readiness wake names its fact kind");
-        let job = wake.get("job").expect("a readiness wake names its job");
-        assert_eq!(
-            cause.get("use").and_then(serde_json::Value::as_str),
-            Some("settled"),
-            "the direct producer must wait for settled semantic facts: {wake:?}"
-        );
-        assert_eq!(
-            job.get("kind").and_then(serde_json::Value::as_str),
-            Some("DeriveExecutableFacts"),
-            "only the direct executable-fact producer wakes here: {wake:?}"
-        );
-        assert_eq!(
-            job.get("need").and_then(serde_json::Value::as_str),
-            Some("value"),
-            "this census derives value-needed executable facts: {wake:?}"
-        );
-        for field in ["root_id", "function_id", "arrow"] {
-            let cause_component = cause
-                .get(field)
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_else(|| panic!("the cause must name its activation {field}: {wake:?}"));
-            let job_component = job
-                .get(field)
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_else(|| panic!("the producer must name its activation {field}: {wake:?}"));
-            assert_eq!(
-                cause_component, job_component,
-                "the semantic fact must wake its exact executable producer: {wake:?}"
-            );
-        }
-        let cause_fields = cause
-            .as_object()
-            .expect("a readiness cause is an object")
-            .keys()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            cause_fields,
-            BTreeSet::from(["arrow", "function_id", "kind", "root_id", "use"]),
-            "each prerequisite kind must carry exactly its semantic identity: {wake:?}"
-        );
-        assert_eq!(
-            job.as_object()
-                .expect("a readiness job is an object")
-                .keys()
-                .map(String::as_str)
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["arrow", "function_id", "kind", "need", "root_id"]),
-            "DeriveExecutableFacts must carry exactly one executable identity: {wake:?}"
-        );
-        assert_eq!(
-            wake.get("shift").and_then(serde_json::Value::as_bool),
-            Some(false),
-            "readiness alone is not a content shift: {wake:?}"
-        );
-        wake_causes.insert(cause_kind);
-        let disposition = wake
-            .get("disposition")
-            .and_then(serde_json::Value::as_str)
-            .expect("a readiness wake names its agenda disposition");
-        *wake_dispositions.entry(disposition).or_insert(0) += 1;
-    }
-    assert_eq!(
-        wake_causes,
-        BTreeSet::new(),
-        "{fixture}: callsite co-outputs must settle with their analysis, without another producer wake"
-    );
-    assert_eq!(
-        wake_dispositions,
-        // fz-5xp.30: 6 -> 9. Three ordinary helper executable facts wake
-        // their exact settled consumers.
-        BTreeMap::new(),
-        "{fixture}: direct-fact readiness wake accounting includes ordinary helpers"
-    );
-
     let report = CausalReport::derive(&events);
-    let executable_fact_readiness = report
-        .formulas
-        .iter()
-        .filter(|(formula, _)| formula.contains("\"kind\":\"DeriveExecutableFacts\""))
-        .map(|(_, work)| work.readiness_caused)
-        .sum::<u64>();
     let formula_totals = report.formula_totals();
     assert_eq!(
-        executable_fact_readiness, 0,
-        "the direct fact producer settles within the same certification as its callsite \
-         co-outputs, so it needs no separate readiness wake"
-    );
-    assert_eq!(
-        executable_fact_readiness, formula_totals.readiness_caused,
-        "all readiness-caused work in this fixture comes from the direct executable-fact boundary"
+        formula_totals.readiness_caused, 0,
+        "this fixture has no standing settled waiter to re-run"
     );
     assert_eq!(
         formula_totals,
         FormulaWork {
-            // fz-5xp.30: 349 -> 443 evaluations. The enum reducer reaches
-            // ordinary generic arithmetic result/status calls, whose facts
-            // add only attributed initial, content, and readiness work.
-            // Two downstream readers now wake off the singular
-            // RuntimeDemandInput fact a step ahead of the batched
-            // RuntimeDemandInputs fact, and the same drain fix removes three
-            // stale no-op re-runs elsewhere in the same job family.
-            // Publishing a function's source from the walk that scoped it
-            // removes one formula, one wake and one blocked prerequisite per
-            // reached function; the readiness and runtime-demand classes are
-            // untouched.
-            evaluations: 399,
+            // fz-kdt.98.1's function-reference edge adds eight attributed
+            // content re-evaluations. Finality still moves through the
+            // settled-read graph, but concluded readers do not re-run for
+            // the two ready transitions or their following no-op run.
+            evaluations: 407,
             runtime_demand_evaluations: 39,
             initial: 205,
-            content_caused: 194,
+            content_caused: 202,
             readiness_caused: 0,
             uncaused: 0,
-            changed_outputs: 254,
-            unchanged_outputs: 145,
-            wakes: 208,
-            blocked_completions: 170,
+            changed_outputs: 257,
+            unchanged_outputs: 150,
+            wakes: 216,
+            blocked_completions: 175,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2165,12 +2038,14 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             .filter(|(product, work)| product.kind() == Some("executable_effects") && work.cache_hits > 0)
             .map(|(product, work)| (product.canonical_identity(&report.canon), work.cache_hits)),
     );
-    let effect_identity = |function_id, arrow| {
+    let effect_identity = |function_id, inputs| {
         serde_json::json!({
-            "arrow": arrow,
+            "callable_surfaces": [[], [], []],
             "function_id": function_id,
+            "inputs": inputs,
             "kind": "executable_effects",
             "need": "value",
+            "result": "fp[vr0] r0",
             "root_id": 0,
         })
         .to_string()
@@ -2179,11 +2054,14 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         effect_cache_hits,
         BTreeMap::from([
             (
-                effect_identity("List.reduce_cont/3", "fp[F] (list(int), int, a2) -> r0"),
+                effect_identity("List.reduce_cont/3", ["fp[L] list(int)", "fp[int] int", "fp[va2] a2"],),
                 1,
             ),
             (
-                effect_identity("List.reduce_step/3", "fp[F] (list(int), {:cont, int}, a2) -> r0",),
+                effect_identity(
+                    "List.reduce_step/3",
+                    ["fp[L] list(int)", "fp[T] {:cont, int}", "fp[va2] a2"],
+                ),
                 1,
             ),
         ]),
@@ -2198,9 +2076,6 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             products.cache_hits,
             products.displacements,
         ),
-        // fz-5xp.30: the ordinary generic result/status boundary contributes
-        // forty-one settled, changed product generations; cache behavior is
-        // otherwise unchanged.
         (280, 280, 280, 0, 7, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );

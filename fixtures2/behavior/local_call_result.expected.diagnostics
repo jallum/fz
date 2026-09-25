@@ -1,0 +1,9 @@
+warning[type/no-matching-clause]: function clauses don't cover every input
+  --> fixtures2/behavior/local_call_result.fz:7:1
+   |
+7 | def inner([_ | t]), do: [outer(t)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+

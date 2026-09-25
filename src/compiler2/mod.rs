@@ -1,8 +1,10 @@
 mod agenda;
 mod artifact;
+#[cfg(test)]
+pub(crate) use artifact::BackendReturnFlow;
 mod backend_program;
 mod body;
-pub(crate) use body::OutcomeEdge;
+pub(crate) use body::{OutcomeEdge, StepSite};
 pub(crate) mod callsite_dispatch;
 mod canon;
 mod cli;
@@ -33,7 +35,11 @@ mod quoted_expander;
 mod quoted_function;
 mod quoted_surface;
 mod resolve;
+mod return_membership;
+mod return_skeleton;
+mod return_unknowns;
 mod runtime;
+mod scc;
 mod scheduler;
 mod scope;
 mod semantic;
@@ -58,9 +64,9 @@ pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
     BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
     BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReceive, BackendReturnLayout,
-    BackendSemanticInputLayout, BackendStep, BackendTail, BackendValueLayout, CallEdge, CallTarget, ClosureCallEdge,
-    DirectCallEdge, DispatchCallArm, DispatchCallEdge, ExecutableDispatch, MaterializedCallEdge,
-    MaterializedExecutable,
+    BackendSemanticInputLayout, BackendStep, BackendTail, BackendValueLayout, CallEdge, CallTarget,
+    ClosedClosureCallArm, ClosureCallEdge, DirectCallEdge, DispatchCallArm, DispatchCallEdge, ExecutableDispatch,
+    MaterializedCallEdge, MaterializedExecutable,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{
@@ -78,13 +84,13 @@ pub use deps::{DependencyIndex, UnresolvedWait};
 pub(crate) use drive::JobEffects;
 #[cfg(test)]
 mod macro_product_test;
-pub use drive::{DependencyKey, FactKey, Job, ProductAddress, WorkGraph};
+pub use drive::{DependencyKey, EvidenceSource, FactKey, Job, ProductAddress, WorkGraph};
 pub use facts::{FactChange, FactMovement, FactReadiness, FactReplace, FactState, FactTable, FactUse};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
-    ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, FunctionMap, FunctionRef, FunctionSource, FunctionState,
-    ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind,
-    RootMap, TypeName,
+    ActivationKey, ActivationSignature, ExecutableKey, ExecutableNeed, FunctionId, FunctionMap, FunctionRef,
+    FunctionSource, FunctionState, ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, NotedTypeDecl,
+    RootEntry, RootId, RootKind, RootMap, TypeName,
 };
 pub(crate) use keying::InputDemand;
 pub use module_interface::{
@@ -93,21 +99,19 @@ pub use module_interface::{
 };
 pub use namespace::{BindingId, CallableQualifier, Namespace, NamespaceStore, NamespaceSymbol};
 pub(crate) use pull::{ProductKey, PullSession};
+pub(crate) use return_skeleton::FunctionSkeleton;
 pub use scheduler::{
     AppliedStep, DriveOutcome, FatalError, Scheduler, Wake, WakeDisposition, WorkStartReason, WorkStartTally,
 };
 pub use scope::ScopeSnapshot;
-/// The widening budget is the fixpoint's own constant; nothing outside
-/// `semantic` acts on it, and only the telemetry tests read it — to check that
-/// a widening event can only appear past it.
-#[cfg(test)]
-pub(crate) use semantic::RETURN_WIDENING_BUDGET;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteResolution, CallSiteSummary,
     CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, ContributionMap, ContributionReplace,
     EntryReachability, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, ShapeDemand,
 };
-pub(crate) use semantic::{CallableConstructionTargetKey, SemanticOrd};
+pub(crate) use semantic::{
+    ActivationInput, ActivationInputAlternatives, ActivationInputRow, CallableConstructionTargetKey, SemanticOrd,
+};
 pub use source::{
     Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
     QuotedSourceError, QuotedSourceHeap, QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot,
@@ -150,6 +154,12 @@ mod frontdoor_test;
 #[cfg(test)]
 mod identity_test;
 #[cfg(test)]
+mod interface10_higher_order_test;
+#[cfg(test)]
+mod interface10_semantic_test;
+#[cfg(test)]
+mod interface10_work_test;
+#[cfg(test)]
 mod namespace_test;
 #[cfg(test)]
 mod native_inventory_test;
@@ -179,6 +189,8 @@ mod quoted_function_test;
 mod quoted_surface_test;
 #[cfg(test)]
 mod resolve_test;
+#[cfg(test)]
+mod scc_test;
 #[cfg(test)]
 mod scheduler_test;
 #[cfg(test)]

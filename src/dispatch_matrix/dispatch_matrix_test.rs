@@ -1300,14 +1300,14 @@ fn a_head_after_a_catch_all_demands_nothing() {
     );
 }
 
-/// A demand travels back to the input through every projection between them,
-/// and the order it nests in is the order the projections descend. The head
+/// A demand travels back to the input through every projection between it and
+/// the question, and what arrives is the step nearest the input. The head
 /// `{[{a} | _]}` asks its innermost arity of a subject two steps down: field 0
-/// of the input, then the head of the list that field holds. So the input
-/// records a TUPLE whose field 0 is a LIST whose head is a tuple -- the
-/// opposite nesting would say the input is a list, which it is not.
+/// of the input, then the head of the list that field holds. The step nearest
+/// the input is the tuple field, so the input is asked about as a tuple -- the
+/// step nearest the question would say the input is a list, which it is not.
 #[test]
-fn a_nested_projection_nests_the_demand_in_the_order_the_projections_descend() {
+fn a_nested_projection_charges_the_input_with_the_step_nearest_it() {
     let plan = pattern_plan(SourcePatternRows::lexical(
         1,
         vec![pattern_row(
@@ -1321,11 +1321,8 @@ fn a_nested_projection_nests_the_demand_in_the_order_the_projections_descend() {
 
     assert_eq!(
         input_demand(&plan),
-        vec![DispatchDemand::TupleFields(BTreeMap::from([(
-            0,
-            DispatchDemand::ListShape(Box::new(DispatchDemand::TupleFields(BTreeMap::new()))),
-        )]))],
-        "the input is a tuple whose field 0 is a list whose head is a tuple"
+        vec![DispatchDemand::TupleFields],
+        "the input is asked about as a tuple"
     );
 }
 
@@ -1344,7 +1341,7 @@ fn a_tuple_head_demands_the_shape_it_takes_apart() {
 
     assert_eq!(
         input_demand(&plan),
-        vec![DispatchDemand::TupleFields(BTreeMap::new())],
+        vec![DispatchDemand::TupleFields],
         "the arity is the question; the fields are projected, not asked about"
     );
 }

@@ -91,7 +91,7 @@ fn equivalent_executable_keys(types: &Types, program: &super::BackendProgram) ->
     let executables = program
         .executables()
         .iter()
-        .map(|executable| (&executable.key, executable.key.activation.inputs(types)))
+        .map(|executable| (&executable.key, executable.key.activation.inputs()))
         .collect::<Vec<_>>();
     let mut duplicates = Vec::new();
     for (index, (left_key, left_inputs)) in executables.iter().enumerate() {
@@ -105,7 +105,7 @@ fn equivalent_executable_keys(types: &Types, program: &super::BackendProgram) ->
             if left_inputs.len() == right_inputs.len()
                 && left_inputs
                     .iter()
-                    .zip(right_inputs)
+                    .zip(right_inputs.iter())
                     .all(|(left, right)| equivalent(types, *left, *right))
             {
                 duplicates.push(((*left_key).clone(), (*right_key).clone()));
@@ -151,6 +151,7 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
         }
 
         let mut collapsed = 0_usize;
+        let mut duplicate_forms = Vec::new();
         for group in groups.values() {
             let mut classes: HashMap<Arc<str>, Vec<Ty>> = HashMap::new();
             for ty in group {
@@ -166,6 +167,9 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
                         head.as_u32(),
                         member.as_u32(),
                     );
+                }
+                if class.len() > 1 {
+                    duplicate_forms.push(format!("{form}: {class:?}"));
                 }
                 collapsed += class.len() - 1;
             }
@@ -186,34 +190,13 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
             }
         }
 
-        // The arena still carries distinct ids for one type, so the sweep
-        // above proves canon collapses a measured defect rather than passing
-        // vacuously. Both counts are CEILINGS: every fold at the persistence
-        // boundary may lower them and none may raise them, and the target is
-        // zero duplicates.
-        assert!(
-            collapsed <= duplicate_ceiling(name),
-            "{name}: {collapsed} mutually-subtype distinct ids, above the {} this fixture is \
-             pinned at -- a boundary fold may lower this ceiling, never raise it",
-            duplicate_ceiling(name)
+        duplicate_forms.sort();
+        assert_eq!(
+            collapsed,
+            0,
+            "{name}: {collapsed} mutually-subtype distinct ids reached the identity census\n{}",
+            duplicate_forms.join("\n"),
         );
-    }
-}
-
-/// How many ids each target fixture still spends on a type it already has.
-/// Lower is better, so a change that improves the boundary lowers the pin in
-/// the same motion.
-///
-/// The number of interned types is deliberately NOT pinned beside it. It is
-/// not a lower-only quantity: fusing two clauses that agree on all but one
-/// coordinate mints the union of that coordinate, so a fold can spend a type
-/// to save an identity. Identities are what a specialization is keyed on;
-/// intermediate types are not.
-fn duplicate_ceiling(name: &str) -> usize {
-    match name {
-        "fixtures2/00420_enum_take_drop_split.fz" => 123,
-        "fixtures2/behavior/fz_f98_range_map_converges.fz" => 15,
-        other => panic!("no pinned ceiling for {other}"),
     }
 }
 
@@ -579,12 +562,12 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-5xp.22: 26 -> 27. `List.member?` asks `===` for identity where
             // it used to spell that `==` in a guard and rely on guards being
             // strict, so the strict operator becomes an executable of its own.
-            31,
+            33,
         ),
         (
             "fixtures2/behavior/fz_f98_range_map_converges.fz",
             include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
-            64,
+            63,
         ),
         (
             "fixtures2/behavior/enum_map_family.fz",
@@ -592,17 +575,21 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-5xp.30 re-measured 113 -> 114: binary-concat sugar now
             // retains the public Kernel.<>/2 wrapper between source callers
             // and the private fz_binary_concat/2 physical gateway.
-            118,
+            // `Enum.map_join/3` must not retain duplicate bodies whose only
+            // distinction was caller-local callable-address spelling. The
+            // closure is one value denotation; its direct observation is a
+            // separate activation coordinate.
+            117,
         ),
         (
             "fixtures2/behavior/mailbox_closure_each.fz",
             include_str!("../../fixtures2/behavior/mailbox_closure_each.fz"),
-            36,
+            34,
         ),
         (
             "fixtures2/behavior/mailbox_closure_reduce.fz",
             include_str!("../../fixtures2/behavior/mailbox_closure_reduce.fz"),
-            46,
+            45,
         ),
         (
             "fixtures2/behavior/actor_ring.fz",
@@ -610,13 +597,13 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // The ring's `got == 5` compares a mailbox value, so all three
             // reachable `==` clauses emit: `fz_op_eq_ii`, `fz_op_eq_fi` and
             // the `any`/`any` `fz_op_eq`.
-            31,
+            27,
         ),
         (
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
             // Exact caller rows retain four specializations hidden by blended evidence.
-            174,
+            230,
         ),
         (
             "fixtures2/behavior/enum_take_drop_split.fz",
@@ -630,12 +617,12 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // reach their list arguments through `Enum.to_list/1`'s `[a]`
             // clause, so the reduce-and-reverse activations they used to mint
             // on the way in are never specialized.
-            230,
+            355,
         ),
         (
             "fixtures2/00420_enum_take_drop_split.fz",
             include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
-            230,
+            355,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);
@@ -755,10 +742,7 @@ fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order()
             .filter(|(_, pair)| pair[0].key.activation.function == pair[1].key.activation.function)
             .filter(|(_, pair)| {
                 types
-                    .cmp_activation_tys(
-                        &pair[0].key.activation.inputs(types),
-                        &pair[1].key.activation.inputs(types),
-                    )
+                    .cmp_activation_tys(pair[0].key.activation.inputs(), pair[1].key.activation.inputs())
                     .is_gt()
             })
             .map(|(index, pair)| {

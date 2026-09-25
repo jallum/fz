@@ -1,15 +1,16 @@
 #---
-# purpose: "a tail recursion that grows a tuple accumulator: each rung is a new activation"
-# defer: "inferring build/2's return does not terminate: every rung is a fresh activation key with a fresh widening budget, so the ladder never reaches its own top"
+# purpose: "a tail recursion that grows a tuple accumulator inside one activation key"
+# defer: "compiling build/2 does not terminate: one shared recursive activation re-analyses forever because every round hands it a strictly deeper tuple row for acc, and no standing row is equivalent to or dominates the new one, so the input evidence never closes"
 # oracle: oracle.exs
 #---
 #
-# The accumulator variant of `return_tuple_ladder`. Here the nesting grows in an
-# argument rather than in the return, so each recursive call arrives with a
-# wider accumulator type and keys a new activation. A new activation starts a
-# fresh widening budget, so the budget that ends the ladder in
-# `return_tuple_ladder` never applies and the drive does not terminate. The
-# fixture is deferred for that reason: it runs on no door.
+# The accumulator variant of `return_tuple_ladder`. The nesting grows in an
+# argument rather than in the return, so the return-side unknown that answers
+# `return_tuple_ladder` has nothing to say here. `build/2` keys exactly two
+# activations, the entry and the recursive one, and it is the recursive key's
+# input EVIDENCE that deepens by one tuple per round: the loop input evidence
+# -> body -> self-call argument -> contribution never closes, and the fixture
+# runs on no door.
 def build(0, acc), do: acc
 def build(n, acc), do: build(n - 1, {n, acc})
 

@@ -1,0 +1,11 @@
+#---
+# purpose: "the same program with its two functions declared in the other order: declaration order must not decide the answer"
+#---
+def dup([]), do: []
+def dup([_ | xs]), do: wrap(dup(xs))
+
+def wrap(v), do: [v]
+
+def main() do
+  dbg(dup([1]))
+end

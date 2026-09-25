@@ -5,10 +5,10 @@ use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::source::Span;
 
-use super::super::drive::{FactKey, JobEffects, settled_uses};
+use super::super::drive::{EvidenceSource, FactKey, JobEffects, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, RootId, RootKind};
 use super::super::scheduler::FatalError;
-use super::super::semantic::{RuntimeDemand, TargetDemandContribution};
+use super::super::semantic::{ActivationInput, RuntimeDemand, TargetDemandContribution};
 use super::super::world::World;
 
 /// Seeds one semantic root once its entry definition exists.
@@ -79,6 +79,10 @@ pub(super) fn seed_root(
     let activation_fact = FactKey::Activation(entry_activation.clone());
     outputs.push(activation_fact);
     outputs.push(FactKey::ActivationInputs(entry_activation.clone()));
+    outputs.push(FactKey::ActivationCallEvidence {
+        callee: entry_activation.clone(),
+        from: EvidenceSource::Seed,
+    });
     let entry_executable = ExecutableKey {
         activation: entry_activation.clone(),
         need: root.need,
@@ -100,7 +104,10 @@ pub(super) fn seed_root(
     Ok(JobEffects {
         reads: settled_uses(reads),
         outputs,
-        activation_input_contributions: vec![(entry_activation, root.input.clone())],
+        activation_input_contributions: vec![(
+            (entry_activation),
+            root.input.iter().copied().map(ActivationInput::new).collect(),
+        )],
         runtime_demand_input_contributions: vec![(
             entry_executable,
             TargetDemandContribution {
@@ -117,7 +124,7 @@ pub(super) fn seed_root(
 /// a reducer captured by a returned suspend continuation), never through a
 /// direct call edge that an `analyze_activation` would publish.
 ///
-/// The input row is RECONSTRUCTED from the key's own arrow, which is the truth
+/// The input row is reconstructed from the key's own coordinates, which is the truth
 /// only for such a key: nothing else ever described it. That is why
 /// `World::seed_activation_producer` routes a demand here only while
 /// `ActivationInputs` has no publisher — for an activation some caller
@@ -137,17 +144,20 @@ pub(super) fn seed_root(
 /// reaches here also demands `AnalyzeActivation` for this same activation in
 /// the very same call -- co-demanded, not chained through a push. First-run
 /// demand is genuinely pulled by whichever fact wait triggered the seed.
-pub(super) fn seed_activation(
-    world: &mut World,
-    _tel: &impl crate::telemetry::Telemetry,
-    activation: &ActivationKey,
-) -> Result<JobEffects, FatalError> {
+pub(super) fn seed_activation(activation: &ActivationKey) -> Result<JobEffects, FatalError> {
     Ok(JobEffects {
         outputs: vec![
             FactKey::Activation(activation.clone()),
             FactKey::ActivationInputs(activation.clone()),
+            FactKey::ActivationCallEvidence {
+                callee: activation.clone(),
+                from: EvidenceSource::Seed,
+            },
         ],
-        activation_input_contributions: vec![(activation.clone(), activation.inputs(world.types()))],
+        activation_input_contributions: vec![(
+            activation.clone(),
+            activation.inputs().iter().copied().map(ActivationInput::new).collect(),
+        )],
         ..JobEffects::default()
     })
 }

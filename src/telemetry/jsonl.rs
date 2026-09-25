@@ -713,6 +713,7 @@ impl JsonlBackend {
             },
         );
         let demand_backend = Rc::clone(backend);
+        Self::install_inference_work(telemetry, backend);
         telemetry.attach_raw_event2::<crate::compiler2::FunctionId, crate::compiler2::InputDemand, _>(
             &["fz", "compiler2", "input_demand", "derived"],
             move |name, span_id, parent_span_id, function, demand| {
@@ -1018,6 +1019,151 @@ impl JsonlBackend {
         );
     }
 
+    fn install_inference_work(telemetry: &ConfiguredTelemetry, backend: &Rc<Self>) {
+        use crate::compiler2::{
+            ActivationInput, ActivationInputAlternatives, ActivationInputRow, ActivationKey, CallSiteId,
+            ControlEntryId, FunctionId, FunctionSkeleton, LoweredStep, LoweredTail, StepSite,
+        };
+        let sink = Rc::clone(backend);
+        telemetry.attach_raw_event2::<FunctionId, FunctionSkeleton, _>(
+            &["fz", "compiler2", "inference_work", "skeleton_lowered"],
+            move |name, span, parent, function, skeleton| {
+                sink.handle_raw_event(
+                    name,
+                    span,
+                    parent,
+                    crate::metadata! {
+                        function: crate::telemetry::opaque(function),
+                        inputs: skeleton.input_len as u64,
+                        callsites: skeleton.invocations.len() as u64,
+                    },
+                );
+            },
+        );
+        let sink = Rc::clone(backend);
+        telemetry.attach_raw_event2::<ActivationKey, ActivationInputAlternatives, _>(
+            &["fz", "compiler2", "inference_work", "activation_walk"],
+            move |name, span, parent, activation, inputs| {
+                sink.handle_raw_event(
+                    name,
+                    span,
+                    parent,
+                    crate::metadata! {
+                        activation: crate::telemetry::opaque(activation), rows: inputs.rows().len() as u64,
+                    },
+                );
+            },
+        );
+        let sink = Rc::clone(backend);
+        telemetry.attach_raw_event2::<ActivationKey, ActivationInputRow, _>(
+            &["fz", "compiler2", "inference_work", "input_row"],
+            move |name, span, parent, activation, row| {
+                sink.handle_raw_event(
+                    name,
+                    span,
+                    parent,
+                    crate::metadata! {
+                        activation: crate::telemetry::opaque(activation), inputs: crate::telemetry::opaque(row),
+                    },
+                );
+            },
+        );
+        let sink = Rc::clone(backend);
+        telemetry.attach_raw_event3::<ActivationKey, u32, Vec<ActivationInput>, _>(
+            &["fz", "compiler2", "inference_work", "clause_walk"],
+            move |name, span, parent, activation, clause, inputs| {
+                sink.handle_raw_event(
+                    name,
+                    span,
+                    parent,
+                    crate::metadata! {
+                        activation: crate::telemetry::opaque(activation), clause: *clause as u64,
+                        inputs: crate::telemetry::opaque(inputs),
+                    },
+                );
+            },
+        );
+        let sink = Rc::clone(backend);
+        telemetry.attach_raw_event3::<ActivationKey, StepSite, LoweredStep, _>(
+            &["fz", "compiler2", "inference_work", "step_transfer_attempt"],
+            move |name, span, parent, activation, site, step| {
+                sink.handle_raw_event(
+                    name,
+                    span,
+                    parent,
+                    crate::metadata! {
+                        activation: crate::telemetry::opaque(activation), site: crate::telemetry::opaque(site),
+                        operation: inference_step_kind(step),
+                    },
+                );
+            },
+        );
+        let sink = Rc::clone(backend);
+        telemetry.attach_raw_event3::<ActivationKey, ControlEntryId, LoweredTail, _>(
+            &["fz", "compiler2", "inference_work", "tail_transfer_attempt"],
+            move |name, span, parent, activation, entry, tail| {
+                sink.handle_raw_event(
+                    name,
+                    span,
+                    parent,
+                    crate::metadata! {
+                        activation: crate::telemetry::opaque(activation), entry: entry.as_u32() as u64,
+                        operation: inference_tail_kind(tail),
+                    },
+                );
+            },
+        );
+        let sink = Rc::clone(backend);
+        telemetry.attach_raw_event3::<ActivationKey, CallSiteId, ActivationKey, _>(
+            &["fz", "compiler2", "inference_work", "invocation_target_attempt"],
+            move |name, span, parent, caller, callsite, target| {
+                sink.handle_raw_event(
+                    name,
+                    span,
+                    parent,
+                    crate::metadata! {
+                        activation: crate::telemetry::opaque(caller), callsite: callsite.as_u32() as u64,
+                        target: crate::telemetry::opaque(target),
+                    },
+                );
+            },
+        );
+        let sink = Rc::clone(backend);
+        telemetry.attach_raw_event2::<ActivationKey, Vec<ActivationKey>, _>(
+            &["fz", "compiler2", "inference_work", "return_solve"],
+            move |name, span, parent, owner, members| {
+                sink.handle_raw_event(
+                    name,
+                    span,
+                    parent,
+                    crate::metadata! {
+                        activation: crate::telemetry::opaque(owner), members: members.len() as u64,
+                    },
+                );
+            },
+        );
+        for phase in [
+            "return_branches_iteration",
+            "return_escapes_iteration",
+            "return_pending_iteration",
+        ] {
+            let sink = Rc::clone(backend);
+            telemetry.attach_raw_event2::<ActivationKey, usize, _>(
+                &["fz", "compiler2", "inference_work", phase],
+                move |name, span, parent, owner, nodes| {
+                    sink.handle_raw_event(
+                        name,
+                        span,
+                        parent,
+                        crate::metadata! {
+                            activation: crate::telemetry::opaque(owner), nodes: *nodes as u64,
+                        },
+                    );
+                },
+            );
+        }
+    }
+
     fn install_world_key<K: Any>(
         telemetry: &ConfiguredTelemetry,
         backend: &Rc<Self>,
@@ -1209,20 +1355,33 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "backend_request", ..]
             | ["fz", "compiler2", "pull", "recursive_group", "searched"]
             | ["fz", "compiler2", "work", "started"]
+            | ["fz", "compiler2", "inference_work", ..]
             // The semantic fixpoint's own ascent. `return_type.defined` is the
-            // join point every recursive activation climbs through and
-            // `return_type.widened` is the budget's escape hatch firing, so
-            // together they say how many rounds a return took and whether the
-            // answer was widened rather than found. `activation_analysis.defined`
+            // join point every recursive activation climbs through, and it
+            // carries the type that round installed. `activation_analysis.defined`
             // is the round itself -- the analysis that produced that evidence --
             // and `callsite.defined` is the edge that carries a callee's return
             // back to its caller, which is what wakes the next round. Each
             // already has a semantic projection below; without them the stream
             // shows the cost of the climb but not the claim that drove it.
             | ["fz", "compiler2", "return_type", "defined"]
-            | ["fz", "compiler2", "return_type", "widened"]
+            // The retraction counterpart: an unreached output withdrew a
+            // return that a previous round had installed. A stream with only
+            // the definitions reads a flickering slot as an ascending one.
+            | ["fz", "compiler2", "return_type", "cleared"]
             | ["fz", "compiler2", "activation_analysis", "defined"]
             | ["fz", "compiler2", "callsite", "defined"]
+            // Fires once per `SolveReturnComponent` conclusion, carrying the
+            // component's member count and how many of them the solve found
+            // evidence for -- the component-solve counterpart to the ascent
+            // pair above, for the recursive-return components that settle
+            // together instead of one activation's own analysis alone.
+            | ["fz", "compiler2", "return_component", "solved"]
+            // Fires once per local membership walk, carrying the seed it
+            // was asked about and how many activations the walk visited --
+            // the north-star signal that a component's discovery cost
+            // tracks the component, not the world.
+            | ["fz", "compiler2", "return_membership", "discovered"]
             | ["fz", "compiler2", "drive", "stalled"]
             | ["fz", "compiler2", "drive", "timed_out"]
             | ["fz", "compiler2", "drive", "demand_on_stall"]
@@ -1238,6 +1397,49 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             // Listed so "public" has exactly one definition.
             | ["fz", "compiler2", "canon", ..]
     )
+}
+
+fn inference_step_kind(step: &crate::compiler2::LoweredStep) -> &'static str {
+    use crate::compiler2::LoweredStep;
+    match step {
+        LoweredStep::Const { .. } => "const",
+        LoweredStep::Tuple { .. } => "tuple",
+        LoweredStep::List { .. } => "list",
+        LoweredStep::Map { .. } => "map",
+        LoweredStep::MapUpdate { .. } => "map_update",
+        LoweredStep::Struct { .. } => "struct",
+        LoweredStep::Bitstring { .. } => "bitstring",
+        LoweredStep::FunctionRef { .. } => "function_ref",
+        LoweredStep::Lambda { .. } => "lambda",
+        LoweredStep::BinaryOp { .. } => "binary_op",
+        LoweredStep::UnaryOp { .. } => "unary_op",
+        LoweredStep::MapIndex { .. } => "map_index",
+        LoweredStep::FieldAccess { .. } => "field_access",
+        LoweredStep::AssertLiteral { .. } => "assert_literal",
+        LoweredStep::AssertStruct { .. } => "assert_struct",
+        LoweredStep::RequireMapValue { .. } => "require_map_value",
+        LoweredStep::AssertTuple { .. } => "assert_tuple",
+        LoweredStep::TupleField { .. } => "tuple_field",
+        LoweredStep::AssertEmptyList { .. } => "assert_empty_list",
+        LoweredStep::AssertSame { .. } => "assert_same",
+        LoweredStep::SplitList { .. } => "split_list",
+        LoweredStep::BitstringInit { .. } => "bitstring_init",
+        LoweredStep::BitstringRead { .. } => "bitstring_read",
+        LoweredStep::AssertBitstringDone { .. } => "assert_bitstring_done",
+    }
+}
+
+fn inference_tail_kind(tail: &crate::compiler2::LoweredTail) -> &'static str {
+    use crate::compiler2::LoweredTail;
+    match tail {
+        LoweredTail::Value { .. } => "value",
+        LoweredTail::DirectCall { .. } => "direct_call",
+        LoweredTail::ClosureCall { .. } => "closure_call",
+        LoweredTail::If { .. } => "if",
+        LoweredTail::Dispatch { .. } => "dispatch",
+        LoweredTail::Receive(_) => "receive",
+        LoweredTail::Halt { .. } => "halt",
+    }
 }
 
 fn write_event(out: &mut String, ev: &Event<'_, '_, '_>, time_ns: u64) {
@@ -1316,20 +1518,37 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
                 out.push(',');
             }
             out.push_str("{\"activation\":");
-            write_activation_key(out, activation);
+            write_activation_key_object(out, activation);
             if let Some(alternatives) = world.activation_input_alternatives(activation) {
                 out.push_str(",\"rows\":[");
                 for (row_index, row) in alternatives.rows().iter().enumerate() {
                     if row_index > 0 {
                         out.push(',');
                     }
-                    write_types(out, world, row.columns());
+                    write_types(out, world, &row.tys());
                 }
                 out.push(']');
             }
             out.push('}');
         }
         out.push_str("]}");
+        return;
+    }
+    if ev.name == ["fz", "compiler2", "return_membership", "discovered"] {
+        // The activation the walk was asked about, not one it necessarily
+        // owns -- a discovery can be reported from any member's seed, and
+        // the point of the event is to show the walk's cost from wherever
+        // it started.
+        let Some(seed) = ev
+            .metadata
+            .get("seed")
+            .and_then(Value::downcast_ref::<crate::compiler2::ActivationKey>)
+        else {
+            return;
+        };
+        out.push_str(",\"semantic\":{\"seed\":");
+        write_activation_key_object(out, seed);
+        out.push('}');
         return;
     }
     if ev.name == ["fz", "compiler2", "work_graph", "applied"] {
@@ -1361,15 +1580,34 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
         return;
     };
     match ev.name {
-        ["fz", "compiler2", "return_type", "defined"] | ["fz", "compiler2", "return_type", "widened"] => {
-            // `ascents` is the ladder's own round counter, not a fact
-            // revision: it counts strict ascents of this activation's return
-            // evidence since its last rebase, so it says how far into the
-            // widening budget the climb has gone.
+        ["fz", "compiler2", "return_component", "solved"] => {
+            // Which activations settled together, and under whose ownership.
+            // The member count alone says how big the component was; the
+            // membership says which one it was, which is what distinguishes a
+            // component that grew a member from one that re-ran unchanged.
+            let Some(members) = ev
+                .metadata
+                .get("members")
+                .and_then(Value::downcast_ref::<Vec<crate::compiler2::ActivationKey>>)
+            else {
+                return;
+            };
+            out.push_str(",\"semantic\":{\"owner\":");
+            write_activation_key_object(out, activation);
+            out.push_str(",\"members\":[");
+            for (index, member) in members.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_activation_key_object(out, member);
+            }
+            out.push_str("]}");
+        }
+        ["fz", "compiler2", "return_type", "defined"] => {
+            // The type this round installed, so a trace reads the answer and
+            // not just the fact that one moved.
             out.push_str(",\"semantic\":{\"return\":");
             write_optional_type(out, world, world.activation_return_evidence(activation));
-            out.push_str(",\"ascents\":");
-            push_u64(out, world.activation_return_ascents(activation) as u64);
             out.push('}');
         }
         ["fz", "compiler2", "activation_analysis", "defined"] => {
@@ -1725,6 +1963,26 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         opaque.downcast_ref::<crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>>()
     {
         write_applied_step_body(out, step);
+    } else if let Some(function) = opaque.downcast_ref::<crate::compiler2::FunctionId>() {
+        write_function_id(out, *function);
+    } else if let Some(site) = opaque.downcast_ref::<crate::compiler2::StepSite>() {
+        use crate::compiler2::StepSite;
+        match site {
+            StepSite::Projection { clause, index } => {
+                out.push_str(",\"kind\":\"projection\"");
+                write_id_field(out, "clause", *clause);
+                write_id_field(out, "index", *index);
+            }
+            StepSite::Entry { entry, index } => {
+                out.push_str(",\"kind\":\"entry\"");
+                write_id_field(out, "entry", entry.as_u32());
+                write_id_field(out, "index", *index);
+            }
+        }
+    } else if let Some(row) = opaque.downcast_ref::<crate::compiler2::ActivationInputRow>() {
+        write_inference_input_row(out, row.inputs());
+    } else if let Some(row) = opaque.downcast_ref::<Vec<crate::compiler2::ActivationInput>>() {
+        write_inference_input_row(out, row);
     } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::ActivationKey>() {
         write_activation_key(out, key);
     } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::CallSiteKey>() {
@@ -2011,10 +2269,44 @@ pub(crate) fn list_retention_counts(program: &crate::compiler2::BackendProgram) 
     (construction_count, physical_capture_count)
 }
 
+/// An activation key as a JSON object of its own. [`write_activation_key`]
+/// emits a comma-led field list, which is what an enclosing object that has
+/// already written a field of its own needs; a key standing alone as a value
+/// needs the braces and a leading field to hang the commas off.
+fn write_inference_input_row(out: &mut String, inputs: &[crate::compiler2::ActivationInput]) {
+    out.push_str(",\"columns\":[");
+    for (index, input) in inputs.iter().enumerate() {
+        if index != 0 {
+            out.push(',');
+        }
+        out.push_str("{\"type\":");
+        note_named_type(input.ty());
+        push_u64(out, input.ty().as_u32() as u64);
+        out.push_str(",\"callable_surfaces\":[");
+        for (surface_index, surface) in input.callable_surfaces().iter().enumerate() {
+            if surface_index != 0 {
+                out.push(',');
+            }
+            out.push_str("{\"kind\":\"signature\"");
+            write_activation_signature(out, surface);
+            out.push('}');
+        }
+        out.push_str("]}");
+    }
+    out.push(']');
+}
+
+fn write_activation_key_object(out: &mut String, key: &crate::compiler2::ActivationKey) {
+    out.push_str("{\"kind\":\"activation\"");
+    write_activation_key(out, key);
+    out.push('}');
+}
+
 fn write_activation_key(out: &mut String, key: &crate::compiler2::ActivationKey) {
     write_root_id(out, key.root);
     write_function_id(out, key.function);
-    write_arrow(out, key.arrow);
+    write_activation_signature(out, &key.signature);
+    write_activation_callable_surfaces(out, &key.callable_surfaces);
 }
 
 fn write_id_field(out: &mut String, key: &'static str, id: u32) {
@@ -2037,12 +2329,61 @@ fn write_function_id(out: &mut String, function: crate::compiler2::FunctionId) {
     write_id_field(out, "function_id", function.as_u32());
 }
 
-/// An activation's arrow, the one raw `Ty` the public stream carries. Its
-/// canonical form is what makes the stream comparable across processes, so
-/// every rendering funnels through here to be noted for definition.
-fn write_arrow(out: &mut String, arrow: crate::compiler2::Ty) {
-    note_named_type(arrow);
-    write_id_field(out, "arrow", arrow.as_u32());
+/// An activation is identified by addressed input/result coordinates, not a
+/// synthetic callable type. Each raw `Ty` is noted for its later definition so
+/// the public stream remains comparable across processes.
+fn write_activation_signature(out: &mut String, signature: &crate::compiler2::ActivationSignature) {
+    out.push(',');
+    write_str_lit(out, "inputs");
+    out.push(':');
+    out.push('[');
+    for (index, ty) in signature.inputs.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        note_named_type(*ty);
+        push_u64(out, ty.as_u32() as u64);
+    }
+    out.push(']');
+    note_named_type(signature.result);
+    write_id_field(out, "result", signature.result.as_u32());
+}
+
+/// The observation coordinates complete an activation identity when an input
+/// is callable. They are direct signatures, never synthetic callable values,
+/// so each is emitted as an ordinary input/result record.
+fn write_activation_callable_surfaces(
+    out: &mut String,
+    surfaces: &[std::collections::BTreeSet<crate::compiler2::ActivationSignature>],
+) {
+    out.push(',');
+    write_str_lit(out, "callable_surfaces");
+    out.push_str(":[");
+    for (slot, surfaces) in surfaces.iter().enumerate() {
+        if slot > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        for (index, signature) in surfaces.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"inputs\":[");
+            for (input, ty) in signature.inputs.iter().enumerate() {
+                if input > 0 {
+                    out.push(',');
+                }
+                note_named_type(*ty);
+                push_u64(out, ty.as_u32() as u64);
+            }
+            out.push_str("],\"result\":");
+            note_named_type(signature.result);
+            push_u64(out, signature.result.as_u32() as u64);
+            out.push('}');
+        }
+        out.push(']');
+    }
+    out.push(']');
 }
 
 fn write_root_id(out: &mut String, root: crate::compiler2::RootId) {
@@ -2128,6 +2469,25 @@ fn write_callsite_key_identity(out: &mut String, key: &crate::compiler2::CallSit
     write_activation_key(out, &key.activation);
 }
 
+/// Which publisher wrote an `ActivationCallEvidence` cell: `Seed` and
+/// `Settled` are singleton tags, `Call` carries the calling activation so a
+/// trace reader can tell one caller's edge from another's.
+fn write_evidence_source(out: &mut String, source: &crate::compiler2::EvidenceSource) {
+    use crate::compiler2::EvidenceSource;
+    out.push(',');
+    write_str_lit(out, "from");
+    out.push(':');
+    match source {
+        EvidenceSource::Seed => write_str_lit(out, "seed"),
+        EvidenceSource::Settled => write_str_lit(out, "settled"),
+        EvidenceSource::Call(activation) => {
+            out.push_str("{\"kind\":\"call\"");
+            write_activation_key(out, activation);
+            out.push('}');
+        }
+    }
+}
+
 /// `TransportPosition`'s variant kind — analogous to `job_kind`/`fact_kind`,
 /// kept alongside `write_transport_position_body` since both are driven by
 /// the same match.
@@ -2146,19 +2506,8 @@ fn transport_position_kind(position: &crate::compiler2::transport::TransportPosi
 
 fn write_activation_symbol(out: &mut String, symbol: &crate::compiler2::transport::ActivationSymbol) {
     write_function_id(out, symbol.function);
-    write_arrow(out, symbol.arrow);
-    out.push(',');
-    write_str_lit(out, "input");
-    out.push(':');
-    out.push('[');
-    for (index, ty) in symbol.input.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        note_named_type(*ty);
-        push_u64(out, ty.as_u32() as u64);
-    }
-    out.push(']');
+    write_activation_signature(out, &symbol.signature);
+    write_activation_callable_surfaces(out, &symbol.callable_surfaces);
 }
 
 fn write_executable_symbol(out: &mut String, symbol: &crate::compiler2::transport::ExecutableSymbol) {
@@ -2244,10 +2593,14 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
         | Job::PlanEntryDispatch(function)
         | Job::DeriveStaticCallees(function)
         | Job::DeriveCallGraphComponent(function)
-        | Job::DeriveInputDemand(function) => write_function_id(out, *function),
+        | Job::DeriveInputDemand(function)
+        | Job::DeriveReturnSkeleton(function)
+        | Job::DeriveReturnUnknowns(function) => write_function_id(out, *function),
         Job::DeriveTypeDef(type_name) => write_type_name(out, type_name),
         Job::SeedRoot(root) => write_root_id(out, *root),
-        Job::SeedActivation(key) | Job::AnalyzeActivation(key) => write_activation_key(out, key),
+        Job::SeedActivation(key) | Job::AnalyzeActivation(key) | Job::SolveReturnComponent(key) => {
+            write_activation_key(out, key)
+        }
         Job::DeriveExecutableFacts(key) | Job::DeriveRuntimeDemand(key) => write_executable_key(out, key),
         Job::DeriveCallableConstructionTarget(key) => write_callable_construction_target_key(out, key),
     }
@@ -2276,13 +2629,21 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::StaticCallees(function)
         | FactKey::CallGraphComponent(function)
         | FactKey::Recursive(function)
-        | FactKey::InputDemand(function) => write_function_id(out, *function),
-        FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
+        | FactKey::InputDemand(function)
+        | FactKey::ReturnSkeleton(function)
+        | FactKey::ReturnUnknowns(function) => write_function_id(out, *function),
+        FactKey::TypeDeclared(type_name) | FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
         FactKey::RootEntry(root) => write_root_id(out, *root),
         FactKey::Activation(key)
         | FactKey::ActivationInputs(key)
+        | FactKey::Callers(key)
         | FactKey::ActivationAnalyzed(key)
+        | FactKey::ReturnSolveInputs(key)
         | FactKey::ReturnType(key) => write_activation_key(out, key),
+        FactKey::ActivationCallEvidence { callee, from } => {
+            write_activation_key(out, callee);
+            write_evidence_source(out, from);
+        }
         FactKey::CallSiteTargets(key) | FactKey::CallSiteSummary(key) => write_callsite_key_identity(out, key),
         FactKey::CallableConstructionTarget(key) => write_callable_construction_target_key(out, key),
         FactKey::Executable(key)
@@ -2490,6 +2851,7 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::ModuleInterface(_) => "ModuleInterface",
         FactKey::FunctionSource(_) => "FunctionSource",
         FactKey::ExpandedFunctionSource(_) => "ExpandedFunctionSource",
+        FactKey::TypeDeclared(_) => "TypeDeclared",
         FactKey::TypeDefined(_) => "TypeDefined",
         FactKey::StructDefined(_) => "StructDefined",
         FactKey::ProtocolDispatch(_) => "ProtocolDispatch",
@@ -2503,10 +2865,15 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::CallGraphComponent(_) => "CallGraphComponent",
         FactKey::Recursive(_) => "Recursive",
         FactKey::InputDemand(_) => "InputDemand",
+        FactKey::ReturnSkeleton(_) => "ReturnSkeleton",
+        FactKey::ReturnUnknowns(_) => "ReturnUnknowns",
         FactKey::RootEntry(_) => "RootEntry",
         FactKey::Activation(_) => "Activation",
         FactKey::ActivationInputs(_) => "ActivationInputs",
+        FactKey::ActivationCallEvidence { .. } => "ActivationCallEvidence",
+        FactKey::Callers(_) => "Callers",
         FactKey::ActivationAnalyzed(_) => "ActivationAnalyzed",
+        FactKey::ReturnSolveInputs(_) => "ReturnSolveInputs",
         FactKey::ReturnType(_) => "ReturnType",
         FactKey::CallSiteTargets(_) => "CallSiteTargets",
         FactKey::CallSiteSummary(_) => "CallSiteSummary",
@@ -2538,32 +2905,38 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::DeriveStaticCallees(_) => "DeriveStaticCallees",
         Job::DeriveCallGraphComponent(_) => "DeriveCallGraphComponent",
         Job::DeriveInputDemand(_) => "DeriveInputDemand",
+        Job::DeriveReturnSkeleton(_) => "DeriveReturnSkeleton",
+        Job::DeriveReturnUnknowns(_) => "DeriveReturnUnknowns",
         Job::SeedRoot(_) => "SeedRoot",
         Job::SeedActivation(_) => "SeedActivation",
         Job::AnalyzeActivation(_) => "AnalyzeActivation",
+        Job::SolveReturnComponent(_) => "SolveReturnComponent",
         Job::DeriveExecutableFacts(_) => "DeriveExecutableFacts",
         Job::DeriveCallableConstructionTarget(_) => "DeriveCallableConstructionTarget",
         Job::DeriveRuntimeDemand(_) => "DeriveRuntimeDemand",
     }
 }
 
+/// A JSON string literal. The walk is over CHARACTERS, not bytes: JSON strings
+/// are text, and a multi-byte character emitted one byte at a time reads back
+/// as one mojibake character per byte. Anything above the control range is
+/// written through as itself, which JSON allows for UTF-8 output.
 fn write_str_lit(out: &mut String, s: &str) {
     out.push('"');
-    for b in s.bytes() {
-        match b {
-            b'"' => out.push_str("\\\""),
-            b'\\' => out.push_str("\\\\"),
-            b'\n' => out.push_str("\\n"),
-            b'\r' => out.push_str("\\r"),
-            b'\t' => out.push_str("\\t"),
-            0x00..=0x1f => {
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let b = c as u32;
                 out.push_str("\\u00");
-                let hi = b >> 4;
-                let lo = b & 0xf;
-                out.push(hex_digit(hi));
-                out.push(hex_digit(lo));
+                out.push(hex_digit((b >> 4) as u8));
+                out.push(hex_digit((b & 0xf) as u8));
             }
-            _ => out.push(b as char),
+            c => out.push(c),
         }
     }
     out.push('"');

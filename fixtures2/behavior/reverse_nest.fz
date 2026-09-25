@@ -1,0 +1,16 @@
+#---
+# purpose: "the json array loop in twelve lines: value, array and reverse are one system and reverse joins it through the accumulator it is handed"
+#---
+def value([:open | rest]), do: array(rest, [])
+def value([x | rest]), do: {:ok, x, rest}
+
+def array([:close | rest], acc), do: {:ok, reverse(acc, []), rest}
+def array(input, acc) do
+  {:ok, v, rest} = value(input)
+  array(rest, [v | acc])
+end
+
+def reverse([], out), do: out
+def reverse([h | t], out), do: reverse(t, [h | out])
+
+def main(), do: dbg(value([:open, 1, :open, 2, :close, :close]))

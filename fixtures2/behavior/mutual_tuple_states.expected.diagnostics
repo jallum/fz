@@ -1,0 +1,18 @@
+warning[type/no-matching-clause]: function clauses don't cover every input
+  --> fixtures2/behavior/mutual_tuple_states.fz:2:1
+   |
+2 | def even([_ | t]), do: {:e, odd(t)}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
+warning[type/no-matching-clause]: function clauses don't cover every input
+  --> fixtures2/behavior/mutual_tuple_states.fz:5:1
+   |
+5 | def odd([_ | t]), do: {:o, even(t)}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+

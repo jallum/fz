@@ -18,10 +18,8 @@
 //! Each rewrites a descriptor to a semantically EQUAL one, so emptiness and
 //! subtyping answers are unchanged; only the clause list shrinks. Equal under
 //! the relation the CALCULATOR answers with, which is the only relation there
-//! is. An axis rule that reasons about a clause as a plain set of values can
-//! outrun the kernel's own containment — see the resource rule below for the
-//! case where it does — and a rule that outruns it drops clauses the union
-//! they are folded into does not contain.
+//! is. Structural filters may reject only a containment that cannot hold; the
+//! shared calculator decides every collective coverage question they cannot.
 //!
 //! The tuple axis has a fourth, because a union of products can be CARVED
 //! into products more than one way and neither carving's clauses contain the
@@ -60,17 +58,16 @@
 //! and arity is unbounded — and a finite union of positive-only map clauses is
 //! never every map, for the same reason about struct tags. But `{any, any} ∨
 //! ¬{any, any}` IS every tuple, and `%{k: any} ∨ ¬%{k: any}` is every map, so
-//! "this axis has no top to reach" would be false. Lists and resources answer
-//! their positive-only case exactly, reading the verdict off the kernel's own
-//! clause-emptiness rule rather than off set reasoning, and go to the
-//! calculator for the rest.
+//! "this axis has no top to reach" would be false. Lists answer their
+//! positive-only case directly, while resources go to the calculator so a
+//! union of payload alternatives can cover their payload space.
 //!
 //! What those two rules ask of a child — "is this every value" — is a question
 //! about the DENOTATION, and `Descr::is_full` is its one implementation. A
 //! structural reading would answer no for an `any` written some other way,
-//! which the unabsorbed callable axis makes reachable (`f ∨ ¬f` is every
-//! callable in two clauses), and `[x]` and `[any]` would take two ids and two
-//! canonical forms for one set of lists.
+//! which a retained literal callable axis can make reachable (`f ∨ ¬f` is
+//! every callable in two clauses), and `[x]` and `[any]` would take two ids
+//! and two canonical forms for one set of lists.
 //!
 //! `Types::intern` is the authority: it applies them at the persistence
 //! boundary, so an interned descriptor arrives already rewritten and identity
@@ -81,67 +78,28 @@
 //! types. One function each way, so the boundary and the rendering cannot
 //! drift apart.
 //!
-//! Absorption reaches the tuple, list, resource and map axes. The callable
-//! axis is excluded, on three measured facts about the shapes that axis
-//! holds: an arrow carries MORE than the set it denotes, and each surplus
-//! has a reader that takes it back out.
+//! Absorption reaches the tuple, list, resource, map and literal-free callable
+//! axes. A callable axis with a literal remains a construction layout: its
+//! captures are projected by transport and cannot be discarded as coverage.
 //!
-//! A LIT-FREE arrow is how the compiler writes a record down. `ActivationKey`
-//! keeps a specialization's canonical inputs and result as one arrow's params
-//! and result and reads them back with `Types::arrow_params`, and a resolved
-//! `@spec` is decomposed by `arrow_params`/`arrow_result` the same way. The
-//! kernel meanwhile calls `(any, int) -> any` EVERY callable — an arrow whose
-//! result is every value constrains nothing a callable could fail, which
-//! `emptiness::func_clause_empty` decides outright — so the top rule would
-//! replace any such arrow with the contentless clause. `arrow_params` then
-//! answers `[]`, and `arrow_result` answers `None` where `resolve` and
-//! `contract` both `expect` a result slot: the collapse ends in a panic, not
-//! in a quietly empty answer. An activation key escapes only because its
-//! result slot is the unknown `r0` and not `any`; a declared callable
-//! parameter does not, and the target fixtures hold those by the dozen.
-//! `axis_test` pins the collapse against the params the same arrow still
-//! hands back.
-//!
-//! A LIT-BEARING arrow's `args` and `ret` are evidence `func_clause_empty`
-//! does not read, so two specializations of one lambda are mutually subtypes
-//! and a rule reading the denotation alone would merge them — stated once, and
-//! pinned against the planner that reads them, by `semantic`'s
-//! `activation_input_rows_keep_arrows_that_differ_only_where_subtyping_is_blind`.
-//! What puts the discarded evidence back is `Types::row_column_dominates`,
-//! and it is a conjunction of three: equal free var ids (which is what keeps
-//! a template beside its ground instance, a surplus with its own test),
-//! containment of `lit_arrow_shapes` in one direction — every literal shape of
-//! the dominated column appears in the dominator's — and `is_subtype`. A shape
-//! is `(brand, captures, args, ret)`; the kernel reads brand and captures, so
-//! `args` and `ret` are the part containment adds.
-//!
-//! A closure literal's CAPTURE LAYOUT is the third, and here the kernel
-//! ENDORSES the containment rather than refusing it: the capture-subset rule
-//! in `func_clause_empty` makes `closure[f]([mailbox]) ⊆ closure[f]([any])`,
-//! so absorbing the narrower clause into the wider one would be exact — and
-//! would still erase an environment, because `Types::callable_clauses` hands
-//! transport the captures of every clause it finds, narrower ones included.
-//! Absorb the axis and
-//! `transport_relation_incremental_test::a_nested_source_union_retains_both_environments_of_the_same_function`
-//! fails: one source union stops naming the same lambda with a `[mailbox]`
-//! environment beside its `[any]` one.
-//!
-//! That axis keeps its exact-duplicate dedupe instead. Dropping what denotes
-//! nothing is safe there and reaches all five. This is the one statement of
-//! that exclusion; every other site points here.
+//! A literal keeps its capture layout: transport reads every possible
+//! environment, and a capture-subset absorption could erase one. Its arrow
+//! surface is normalized to the literal owner's deterministic template before
+//! interning; a separately observed surface belongs to the activation input.
+//! Literal-bearing axes therefore retain exact duplicate removal only.
 
 use super::Ty;
 use super::TyCtx;
 use super::conj::Conj;
-use super::descr::Descr;
+use super::descr::{Descr, Structure};
 use super::dnf::is_dnf_top;
-use super::emptiness::{self, ListDenotation, NonEmptyLists};
-use super::sigs::{ListSig, ResourceSig, TupleSig};
+use super::emptiness::{self, ListDenotation, NonEmptyLists, Operand};
+use super::sigs::{ListSig, ListSigOf, ResourceSig, TupleSig, TupleSigOf};
 
 /// Install one axis's clauses into an otherwise contentless descriptor. The
 /// axis's containment questions are then asked of the shared type calculator
 /// rather than of a per-axis rule.
-pub(super) type InstallAxis<T> = fn(&mut Descr, Vec<Conj<T>>);
+pub(super) type InstallAxis<T> = fn(&mut Structure, Vec<Conj<T>>);
 
 /// One axis, named once: how to put a clause list into a descriptor and how to
 /// read it back out. Every caller here works through a view rather than
@@ -260,15 +218,7 @@ pub(super) const TUPLES: AxisView<TupleSig> = AxisView {
     // Products of non-empty sets compare coordinatewise: `∏Aᵢ ⊆ ∏Bᵢ` exactly
     // when every `Aᵢ ⊆ Bᵢ`, which is exact given an interned clause never
     // carries an empty coordinate.
-    clause_covers: |wider, narrower, sub| {
-        factors_are_superset(wider, narrower)
-            || match (plain_sig(narrower), plain_sig(wider)) {
-                (Some(a), Some(b)) => {
-                    a.elems.len() == b.elems.len() && a.elems.iter().zip(b.elems.iter()).all(|(x, y)| sub(x, y))
-                }
-                _ => false,
-            }
-    },
+    clause_covers: |wider, narrower, sub| tuple_clause_covers(wider, narrower, |a, b| sub(a, b)),
     coverage: |cx, clause, siblings, _subtype| {
         let Some(ours) = plain_sig(clause) else {
             return Coverage::Unproven;
@@ -285,6 +235,43 @@ pub(super) const TUPLES: AxisView<TupleSig> = AxisView {
     // clauses reaches finitely many arities, and arity is unbounded.
     plain_top: |_, _| Coverage::NotCovered,
 };
+
+pub(super) fn tuple_clause_covers<R: PartialEq>(
+    wider: &Conj<TupleSigOf<R>>,
+    narrower: &Conj<TupleSigOf<R>>,
+    mut is_subtype: impl FnMut(&R, &R) -> bool,
+) -> bool {
+    factors_are_superset(wider, narrower)
+        || match (plain_sig(narrower), plain_sig(wider)) {
+            (Some(narrower), Some(wider)) => {
+                narrower.elems.len() == wider.elems.len()
+                    && narrower
+                        .elems
+                        .iter()
+                        .zip(&wider.elems)
+                        .all(|(narrower, wider)| is_subtype(narrower, wider))
+            }
+            _ => false,
+        }
+}
+
+pub(super) fn drop_directly_covered_clauses<T>(
+    clauses: &mut Vec<Conj<T>>,
+    clause_covers: impl Fn(&Conj<T>, &Conj<T>) -> bool,
+) {
+    if clauses.len() < 2 {
+        return;
+    }
+    let mut keep = vec![true; clauses.len()];
+    for index in 0..clauses.len() {
+        keep[index] = !clauses
+            .iter()
+            .enumerate()
+            .any(|(other, sibling)| other != index && keep[other] && clause_covers(sibling, &clauses[index]));
+    }
+    let mut verdicts = keep.into_iter();
+    clauses.retain(|_| verdicts.next().unwrap_or(true));
+}
 pub(super) const LISTS: AxisView<ListSig> = AxisView {
     install: |d, clauses| d.lists = clauses,
     // A plain list clause has two exact dimensions: whether it admits `[]`,
@@ -362,18 +349,24 @@ pub(super) const LISTS: AxisView<ListSig> = AxisView {
 /// second spelling of one fact; a clause that keeps no non-empty list is `[]`
 /// itself.
 ///
-/// `intern` is injected because the fragment and the subtractions are
-/// descriptors that this rewrite computes: giving them identity is the
-/// interner's job, and only the boundary is holding it.
+/// `intern` is injected because a subtraction, and a `Built` element, are
+/// descriptors this rewrite computes: giving them identity is the interner's
+/// job, and only the boundary is holding it. An element the fold never had
+/// to build already IS a `Ty` -- re-interning its own descriptor would only
+/// walk back to the same id, so that case is returned as is.
 pub(super) fn list_clause_of(denotation: ListDenotation, intern: &mut dyn FnMut(Descr) -> Ty) -> Conj<ListSig> {
     let ListDenotation { holds_empty, non_empty } = denotation;
     let Some(NonEmptyLists { elem, minus }) = non_empty else {
         return Conj::pos_of(ListSig::empty());
     };
+    let elem = match elem {
+        Operand::Ty(t) => t,
+        Operand::Built(d) => intern((*d).clone()),
+    };
     Conj {
         pos: vec![ListSig {
             empty: holds_empty,
-            elem: Some(intern(elem)),
+            elem: Some(elem),
         }],
         neg: minus
             .into_iter()
@@ -396,17 +389,30 @@ pub(super) fn list_clause_of(denotation: ListDenotation, intern: &mut dyn FnMut(
 /// merged `[]` away early still carries it in the clause it merged into, and
 /// the next member widens against that.
 ///
-/// A clause in the list normal form carries no negative that could hold `[]`,
-/// so reading the flags is exact. A clause the boundary left alone (its
-/// elements carry type variables) may, and one is neither widened nor read as
-/// holding `[]`.
-pub(super) fn merge_empty_list_clause(clauses: &mut Vec<Conj<ListSig>>) {
-    fn just_empty(c: &Conj<ListSig>) -> bool {
-        plain_sig(c).is_some_and(ListSig::is_exact_empty)
+/// First place each positive-bearing clause's empty membership on its
+/// positives alone. This uses only flags, so local references and nominal
+/// variables obey the same rule. Negative-only clauses retain their flags;
+/// `clause_holds_empty` reads their membership directly.
+pub(super) fn normalize_list_empty_shape<R>(clauses: &mut Vec<Conj<ListSigOf<R>>>) {
+    // Empty-list membership depends only on flags, even when elements are
+    // local equation references or unsubstituted variables. State that one
+    // fact on the positives; negative flags then carry no additional fact.
+    for clause in clauses.iter_mut().filter(|clause| !clause.pos.is_empty()) {
+        let holds_empty = emptiness::clause_holds_empty(clause);
+        for positive in &mut clause.pos {
+            positive.empty = holds_empty;
+        }
+        for negative in &mut clause.neg {
+            negative.empty = false;
+        }
+        clause.neg.retain(|negative| negative.elem.is_some());
+    }
+    fn just_empty<R>(c: &Conj<ListSigOf<R>>) -> bool {
+        plain_sig(c).is_some_and(ListSigOf::is_exact_empty)
     }
     // Not `plain_sig`: a clause carrying a residual subtraction still keeps
     // only non-empty lists, and widening its positive is the same one step.
-    fn keeps_only_non_empty(c: &Conj<ListSig>) -> bool {
+    fn keeps_only_non_empty<R>(c: &Conj<ListSigOf<R>>) -> bool {
         matches!(c.pos.as_slice(), [sig] if !sig.empty && sig.elem.is_some()) && !c.neg.iter().any(|n| n.empty)
     }
     if !clauses.iter().any(emptiness::clause_holds_empty) {
@@ -436,34 +442,17 @@ pub(super) const RESOURCES: AxisView<ResourceSig> = AxisView {
                 _ => false,
             }
     },
-    // EXACT, and no descriptor arithmetic — but exact under the KERNEL's
-    // relation, which is narrower than reading a resource as a set of
-    // payloads. `emptiness::resource_clause_empty` decides a resource clause
-    // carrying negatives by asking whether a SINGLE negative swallows the
-    // payload, never whether their union does, so under the calculator's own
-    // containment `resource(C)` is inside a union of plain resource clauses
-    // exactly when ONE of them contains it — the same reasoning the list rule
-    // uses for its non-empty shape. `clause_covers` has already asked that and
-    // answered no, so there is nothing left for the union to add.
-    coverage: |_, clause, siblings, _| {
-        if plain_sig(clause).is_none() || plain_sigs(siblings.iter().copied()).is_none() {
-            return Coverage::Unproven;
-        }
-        Coverage::NotCovered
-    },
-    // EXACT, by the same reading of the kernel as the list rule. `top` minus a
-    // union of plain resource clauses is the one clause negating them all, and
-    // `emptiness::resource_clause_empty` calls that empty exactly when a
-    // SINGLE negated payload swallows `any` — so the axis is its top exactly
-    // when ONE clause's payload is every value, and two clauses partitioning
-    // the payloads between them are not every resource.
-    //
-    // "Every value" is `Descr::is_full`, for the reason the list rule states.
+    // Resource payload alternatives form a one-coordinate product. More than
+    // one sibling can cover that coordinate, so let the shared calculator
+    // apply `phi_tuple` rather than rejecting collective coverage here.
+    coverage: |_, _, _, _| Coverage::Unproven,
+    // One full payload proves top immediately. Other collective payload
+    // covers, such as `int | not int`, go to the same calculator.
     plain_top: |cx, sigs| {
         if sigs.iter().any(|sig| is_full(cx, sig.payload)) {
             Coverage::Covered
         } else {
-            Coverage::NotCovered
+            Coverage::Unproven
         }
     },
 };
@@ -522,17 +511,14 @@ pub(super) const MAPS: AxisView<super::sigs::MapSig> = AxisView {
 /// Whether a clause's child denotes every value, asked of the one
 /// implementation of that question ([`Descr::is_full`]). A structural answer
 /// alone would report `[x]` and `[any]` as two types wherever `x` is `any`
-/// written some other way — which the callable axis, left unabsorbed here,
-/// makes reachable.
+/// written some other way — which a literal callable axis can make reachable.
 fn is_full(cx: TyCtx<'_>, ty: Ty) -> bool {
     cx.descr(&ty).is_full(cx)
 }
 
-/// The callable axis, absorbed only where a RENDERING asks for it — where
-/// nothing reads the arrow back, so none of the three surpluses the module
-/// doc names can be lost. Intern leaves this axis alone, so its clause rule
-/// is the axis-independent one and every real question goes to the
-/// calculator.
+/// The literal-free callable axis uses the same absorption rule as the other
+/// denotational axes. `Types::intern` keeps literal-bearing axes out of that
+/// rule because their capture layouts remain construction evidence.
 pub(super) const FUNCS: AxisView<super::sigs::ArrowSig> = AxisView {
     install: |d, clauses| d.funcs = clauses,
     clause_covers: |wider, narrower, _| factors_are_superset(wider, narrower),
@@ -551,7 +537,7 @@ pub(super) const FUNCS: AxisView<super::sigs::ArrowSig> = AxisView {
 /// consulted only on the plain single-positive tuple product — overwhelmingly
 /// the common shape, and the one where a coordinate decides the clause on its
 /// own.
-pub(super) fn drop_empty_clauses(cx: TyCtx<'_>, d: &mut Descr, is_empty_ty: &dyn Fn(&Ty) -> bool) {
+pub(super) fn drop_empty_clauses(cx: TyCtx<'_>, d: &mut Structure, is_empty_ty: &dyn Fn(&Ty) -> bool) {
     d.tuples.retain(|clause| !tuple_clause_empty(cx, clause, is_empty_ty));
     retain_inhabited(cx, &mut d.lists, emptiness::list_clause_empty);
     retain_inhabited(cx, &mut d.resources, emptiness::resource_clause_empty);
@@ -635,7 +621,7 @@ pub(super) fn axis_is_top<T: Clone + 'static>(
 
 /// `wider ⊇ narrower` for two one-axis descriptors. Injected so the caller
 /// answers through its memo; the relation itself is `Descr::is_subtype`.
-pub(super) type Covers<'a> = &'a dyn Fn(&Descr, &Descr) -> bool;
+pub(super) type Covers<'a> = &'a dyn Fn(&Structure, &Structure) -> bool;
 
 /// Survivorship is threaded through the walk rather than decided pairwise
 /// afterwards, which is what leaves exact duplicates with one survivor: the
@@ -645,9 +631,9 @@ pub(super) type Covers<'a> = &'a dyn Fn(&Descr, &Descr) -> bool;
 /// Clauses are visited in index order. At `Types::intern` that is the
 /// canonical clause order the sort just imposed, so which of a MUTUALLY
 /// covering pair lives is a function of the descriptor and not of the
-/// schedule that built it. That order is canonical within one arena; on the
-/// callable axis, which only the renderer absorbs, two arenas agree only as
-/// far as their `FnId` mint orders do.
+/// schedule that built it. That order is canonical within one arena; on a
+/// literal-bearing callable axis, two arenas agree only as far as their `FnId`
+/// mint orders do.
 ///
 /// [`TyCanon`](super::canon) also runs this on descriptors it synthesized
 /// itself, whose clause lists carry the order its folds produced; there a
@@ -727,8 +713,8 @@ fn axis_covers_its_top<T: Clone>(covers: Covers<'_>, clauses: &[Conj<T>], instal
     )
 }
 
-fn axis_of<T>(clauses: Vec<Conj<T>>, install: InstallAxis<T>) -> Descr {
-    let mut d = Descr::unbranded();
+fn axis_of<T>(clauses: Vec<Conj<T>>, install: InstallAxis<T>) -> Structure {
+    let mut d = Structure::none();
     install(&mut d, clauses);
     d
 }
@@ -737,34 +723,41 @@ fn axis_of<T>(clauses: Vec<Conj<T>>, install: InstallAxis<T>) -> Descr {
 // Tuple carving
 // ----------------------------------------------------------------------
 
-/// One tuple coordinate. Carving builds coordinates that no type names yet, so
-/// a coordinate is either the id it arrived as or a descriptor still to be
-/// interned — and a coordinate carving never touched costs no interning at
-/// all.
-pub(super) enum Coord {
-    Interned(Ty),
-    Built(Box<Descr>),
-}
-
-impl Coord {
-    fn descr(&self, cx: TyCtx<'_>) -> Descr {
-        match self {
-            Self::Interned(ty) => cx.descr(ty).clone(),
-            Self::Built(d) => (**d).clone(),
-        }
-    }
-
-    fn same_as(&self, other: &Self, cx: TyCtx<'_>) -> bool {
-        match (self, other) {
-            (Self::Interned(a), Self::Interned(b)) => a == b,
-            _ => self.descr(cx) == other.descr(cx),
-        }
-    }
-}
-
 /// A plain single-positive tuple clause, read as the product of its
-/// coordinates.
-pub(super) type Rect = Vec<Coord>;
+/// coordinates. A coordinate is [`emptiness::Operand`], the same "the `Ty` it
+/// arrived as, or a descriptor still to be interned" cell `phi_tuple` keys
+/// its own memo on — carving and emptiness both build coordinates no type
+/// names yet, so one cell serves both instead of two shapes for the same
+/// idea.
+pub(super) type Rect = Vec<Operand>;
+
+pub(super) trait TupleRectOps<R> {
+    fn same(&self, left: &R, right: &R) -> bool;
+    fn union(&mut self, left: &R, right: &R) -> Option<R>;
+    fn covered_by(&self, candidate: &[R], rectangles: &[Vec<R>]) -> bool;
+}
+
+struct DirectTupleRectOps<'a> {
+    cx: TyCtx<'a>,
+}
+
+impl TupleRectOps<Operand> for DirectTupleRectOps<'_> {
+    fn same(&self, left: &Operand, right: &Operand) -> bool {
+        left.same_as(right, self.cx)
+    }
+
+    fn union(&mut self, left: &Operand, right: &Operand) -> Option<Operand> {
+        Some(Operand::built(
+            left.as_descr(self.cx).union(self.cx, right.as_descr(self.cx)),
+        ))
+    }
+
+    fn covered_by(&self, candidate: &[Operand], rectangles: &[Vec<Operand>]) -> bool {
+        let candidate = candidate.to_vec();
+        let rectangles = rectangles.to_vec();
+        emptiness::phi_tuple(self.cx, &candidate, &rectangles, &mut emptiness::Memo::default())
+    }
+}
 
 /// One union of rectangles, carved the same way whichever decomposition
 /// arrived.
@@ -788,13 +781,18 @@ pub(super) type Rect = Vec<Coord>;
 /// count; widening then runs against a settled sibling set. The pair repeats
 /// only while something changed, so the walk is bounded by the rectangle count
 /// it started with.
-pub(super) fn fuse_tuple_rects(cx: TyCtx<'_>, mut rects: Vec<Rect>) -> Vec<Rect> {
-    if rects.len() < 2 {
-        return rects;
-    }
+pub(super) fn fuse_tuple_rects(cx: TyCtx<'_>, rects: Vec<Rect>) -> Vec<Rect> {
+    let mut ops = DirectTupleRectOps { cx };
+    normalize_tuple_rects_with(&mut ops, rects)
+}
+
+pub(super) fn normalize_tuple_rects_with<R: Clone>(
+    ops: &mut impl TupleRectOps<R>,
+    mut rects: Vec<Vec<R>>,
+) -> Vec<Vec<R>> {
     loop {
-        let fused = fuse_one_coordinate_unions(cx, &mut rects);
-        let widened = widen_to_axis_union(cx, &mut rects);
+        let fused = fuse_one_coordinate_unions_with(ops, &mut rects);
+        let widened = widen_to_axis_union_with(ops, &mut rects);
         if !fused && !widened {
             return rects;
         }
@@ -802,68 +800,75 @@ pub(super) fn fuse_tuple_rects(cx: TyCtx<'_>, mut rects: Vec<Rect>) -> Vec<Rect>
 }
 
 /// `{A,C} ∨ {B,C} = {A∨B, C}`, to fixpoint. Reports whether anything merged.
-fn fuse_one_coordinate_unions(cx: TyCtx<'_>, rects: &mut Vec<Rect>) -> bool {
+fn fuse_one_coordinate_unions_with<R>(ops: &mut impl TupleRectOps<R>, rects: &mut Vec<Vec<R>>) -> bool {
     let mut fused = false;
-    while let Some((left, right, coord)) = next_fusible_pair(cx, rects) {
-        let grown = rects[left][coord].descr(cx).union(cx, &rects[right][coord].descr(cx));
-        rects[left][coord] = Coord::Built(Box::new(grown));
+    loop {
+        let mut candidate = None;
+        'pairs: for left in 0..rects.len() {
+            for right in (left + 1)..rects.len() {
+                if rects[left].len() != rects[right].len() {
+                    continue;
+                }
+                let mut differing = (0..rects[left].len())
+                    .filter(|coordinate| !ops.same(&rects[left][*coordinate], &rects[right][*coordinate]));
+                let Some(coordinate) = differing.next() else {
+                    continue;
+                };
+                if differing.next().is_none()
+                    && let Some(grown) = ops.union(&rects[left][coordinate], &rects[right][coordinate])
+                {
+                    candidate = Some((left, right, coordinate, grown));
+                    break 'pairs;
+                }
+            }
+        }
+        let Some((left, right, coord, grown)) = candidate else {
+            return fused;
+        };
+        rects[left][coord] = grown;
         rects.remove(right);
         fused = true;
     }
-    fused
-}
-
-/// The first pair agreeing on every coordinate but one, with that coordinate.
-/// A pair agreeing on ALL coordinates is a duplicate, which the axis absorber
-/// owns, so it is not reported here.
-fn next_fusible_pair(cx: TyCtx<'_>, rects: &[Rect]) -> Option<(usize, usize, usize)> {
-    for left in 0..rects.len() {
-        for right in (left + 1)..rects.len() {
-            if rects[left].len() != rects[right].len() {
-                continue;
-            }
-            let mut differing = (0..rects[left].len()).filter(|k| !rects[left][*k].same_as(&rects[right][*k], cx));
-            let Some(coord) = differing.next() else {
-                continue;
-            };
-            if differing.next().is_none() {
-                return Some((left, right, coord));
-            }
-        }
-    }
-    None
 }
 
 /// Grow coordinates to the axis union while the rectangle stays inside it.
 /// Reports whether anything grew.
-fn widen_to_axis_union(cx: TyCtx<'_>, rects: &mut [Rect]) -> bool {
+fn widen_to_axis_union_with<R: Clone>(ops: &mut impl TupleRectOps<R>, rects: &mut [Vec<R>]) -> bool {
     let mut widened = false;
-    while let Some((index, coord, grown)) = next_widening(cx, rects) {
-        rects[index][coord] = Coord::Built(Box::new(grown));
+    while let Some((index, coord, grown)) = next_widening_with(ops, rects) {
+        rects[index][coord] = grown;
         widened = true;
     }
     widened
 }
 
-fn next_widening(cx: TyCtx<'_>, rects: &[Rect]) -> Option<(usize, usize, Descr)> {
-    let mats: Vec<Vec<Descr>> = rects
-        .iter()
-        .map(|rect| rect.iter().map(|coord| coord.descr(cx)).collect())
-        .collect();
-    for (index, rect) in mats.iter().enumerate() {
+fn next_widening_with<R: Clone>(ops: &mut impl TupleRectOps<R>, rects: &[Vec<R>]) -> Option<(usize, usize, R)> {
+    for (index, rect) in rects.iter().enumerate() {
         let arity = rect.len();
-        let siblings: Vec<&Vec<Descr>> = mats.iter().filter(|other| other.len() == arity).collect();
+        let siblings = rects
+            .iter()
+            .filter(|other| other.len() == arity)
+            .cloned()
+            .collect::<Vec<_>>();
         for coord in 0..arity {
-            let candidate = siblings
+            let candidate = siblings[1..]
                 .iter()
-                .fold(Descr::none(), |acc, sibling| acc.union(cx, &sibling[coord]));
-            if candidate == rect[coord] {
+                .try_fold(siblings[0][coord].clone(), |candidate, sibling| {
+                    if ops.same(&candidate, &sibling[coord]) {
+                        Some(candidate)
+                    } else {
+                        ops.union(&candidate, &sibling[coord])
+                    }
+                });
+            let Some(candidate) = candidate else {
+                continue;
+            };
+            if ops.same(&candidate, &rect[coord]) {
                 continue;
             }
             let mut trial = rect.clone();
             trial[coord] = candidate.clone();
-            let cover: Vec<Vec<Descr>> = siblings.iter().map(|sibling| (*sibling).clone()).collect();
-            if emptiness::phi_tuple(cx, &trial, &cover, &mut emptiness::Memo::default()) {
+            if ops.covered_by(&trial, &siblings) {
                 return Some((index, coord, candidate));
             }
         }

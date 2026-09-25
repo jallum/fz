@@ -9,7 +9,7 @@ use crate::fz_ir::FnId;
 use crate::compiler2::identity::ModuleId;
 use crate::modules::identity::ModuleName;
 
-use super::{CallableValueKind, MapKey, Sigma, Ty, Types};
+use super::{CallableValueKind, MapKey, Ty};
 
 /// Runtime identity of one record-family value. Plain maps and named structs
 /// share the record-field type algebra, but their tags are disjoint and travel
@@ -63,26 +63,32 @@ impl Ord for StructTag {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct TupleSig {
-    pub elems: Vec<Ty>,
+pub(crate) struct TupleSigOf<R> {
+    pub elems: Vec<R>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) type TupleSig = TupleSigOf<Ty>;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct ListSig {
+pub(crate) struct ListSigOf<R> {
     pub empty: bool,
-    pub elem: Option<Ty>,
+    pub elem: Option<R>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) type ListSig = ListSigOf<Ty>;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct ResourceSig {
-    pub payload: Ty,
+pub(crate) struct ResourceSigOf<R> {
+    pub payload: R,
 }
 
-impl ListSig {
+pub(crate) type ResourceSig = ResourceSigOf<Ty>;
+
+impl<R> ListSigOf<R> {
     pub(super) fn empty() -> Self {
         Self {
             empty: true,
@@ -90,14 +96,14 @@ impl ListSig {
         }
     }
 
-    pub(super) fn possibly_empty(elem: Ty) -> Self {
+    pub(super) fn possibly_empty(elem: R) -> Self {
         Self {
             empty: true,
             elem: Some(elem),
         }
     }
 
-    pub(super) fn non_empty(elem: Ty) -> Self {
+    pub(super) fn non_empty(elem: R) -> Self {
         Self {
             empty: false,
             elem: Some(elem),
@@ -136,43 +142,47 @@ impl ListSig {
 /// `captures` match. Lit-bearing clauses do not collapse with lit-free clauses
 /// under union — callable singletons are stricter than plain arrows, and the
 /// union keeps both to preserve singleton precision downstream.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct ClosureLit {
+pub(crate) struct ClosureLitOf<R> {
     pub kind: CallableValueKind,
-    /// The function the value was minted from, or `None` for an ANONYMOUS
-    /// literal: a closure of SOME function closed over exactly these capture
-    /// types, which is what a forwarder key leaves of a literal whose brand it
-    /// erased (fz-6gb, fz-kdt.127). An anonymous literal contains every
-    /// branded literal whose captures are inside its own, so it is never a
-    /// singleton and never names a call target. A literal with nothing left to
-    /// say — anonymous and capture-free — is not a literal at all: the erasure
-    /// drops it and leaves the bare arrow.
-    pub fn_id: Option<FnId>,
-    pub captures: Vec<Ty>,
+    /// The function the value was minted from. Every literal names one, so a
+    /// literal is always a singleton over its captures and always names a
+    /// call target.
+    pub fn_id: FnId,
+    pub captures: Vec<R>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) type ClosureLit = ClosureLitOf<Ty>;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct ArrowSig {
-    pub args: Vec<Ty>,
-    pub ret: Ty,
+pub(crate) struct ArrowSigOf<R> {
+    pub args: Vec<R>,
+    pub ret: R,
     /// `None` for ordinary arrows; `Some` for closure literals (fz-ul4.27.22.8).
-    pub lit: Option<ClosureLit>,
+    pub lit: Option<ClosureLitOf<R>>,
 }
+
+pub(crate) type ArrowSig = ArrowSigOf<Ty>;
 
 /// Open-shape map type: "any map containing AT LEAST these literal keys with
 /// values of the corresponding types." Keys are concrete singleton values
 /// (atoms, ints, strs); arbitrary-keyed maps fall back to `map_top`.
 ///
-/// Subtyping (open record): `s <: t` iff every field in `t` is in `s` with
-/// subtype value. More required keys = smaller set.
-#[derive(Clone, PartialEq, Eq, Hash)]
+/// Subtyping (open record): `s <: t` iff both signatures have the same tag and
+/// every field in `t` is in `s` with subtype value. More required keys make a
+/// smaller set. The full map axis also contains unbounded struct tags, so a
+/// finite collection of tagged or plain positive signatures cannot be every
+/// map.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct MapSig {
+pub(crate) struct MapSigOf<R> {
     pub(super) tag: MapTag,
-    pub fields: BTreeMap<MapKey, Ty>,
+    pub fields: BTreeMap<MapKey, R>,
 }
+
+pub(crate) type MapSig = MapSigOf<Ty>;
 
 /// The outcome of intersecting two same-axis positive sigs inside one clause.
 pub(crate) enum PosMeet<T> {
@@ -186,20 +196,54 @@ pub(crate) enum PosMeet<T> {
     Distinct,
 }
 
-/// Same-shape positive clauses in an intersection should collapse to one
-/// narrower clause. This keeps semantic meets stable instead of piling up
-/// conjunctive structure on every repeated refinement, and lets a merge that
-/// proves emptiness drop the clause instead of persisting garbage (fz-go4.24).
-pub(crate) trait MergeSig: Clone + PartialEq {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self>;
+/// Constructors that denote a fixed-arity Cartesian product. Subtracting
+/// another product splits into coordinate differences; unlike lists or
+/// callable arrows, no cross-coordinate condition survives the split.
+pub(super) trait ProductSig<R>: Clone {
+    fn coordinates(&self) -> &[R];
+    fn with_coordinate(&self, index: usize, value: R) -> Self;
 }
 
-impl MergeSig for ListSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
-        let elem = match (a.elem, b.elem) {
+impl<R: Clone> ProductSig<R> for TupleSigOf<R> {
+    fn coordinates(&self) -> &[R] {
+        &self.elems
+    }
+    fn with_coordinate(&self, index: usize, value: R) -> Self {
+        let mut result = self.clone();
+        result.elems[index] = value;
+        result
+    }
+}
+
+impl<R: Clone> ProductSig<R> for ResourceSigOf<R> {
+    fn coordinates(&self) -> &[R] {
+        std::slice::from_ref(&self.payload)
+    }
+    fn with_coordinate(&self, index: usize, value: R) -> Self {
+        debug_assert_eq!(index, 0);
+        Self { payload: value }
+    }
+}
+
+pub(super) trait ChildIntersection<R: Clone> {
+    fn intersect_child(&mut self, left: R, right: R) -> R;
+    fn child_is_empty(&self, child: &R) -> bool;
+}
+
+/// Same-shape positive clauses in an intersection should collapse to one
+/// narrower clause. The child domain is supplied by the caller: ordinary
+/// ground types intersect `Ty`s, while a regular Boolean walk can instead
+/// name one of its finite product states.
+pub(super) trait MergeSig<R: Clone + PartialEq>: Clone + PartialEq {
+    fn intersect_pos(ops: &mut impl ChildIntersection<R>, a: &Self, b: &Self) -> PosMeet<Self>;
+}
+
+impl<R: Clone + PartialEq> MergeSig<R> for ListSigOf<R> {
+    fn intersect_pos(ops: &mut impl ChildIntersection<R>, a: &Self, b: &Self) -> PosMeet<Self> {
+        let elem = match (a.elem.clone(), b.elem.clone()) {
             (Some(a), Some(b)) => {
-                let elem = types.intersect(a, b);
-                if types.is_empty(&elem) { None } else { Some(elem) }
+                let elem = ops.intersect_child(a, b);
+                if ops.child_is_empty(&elem) { None } else { Some(elem) }
             }
             _ => None,
         };
@@ -209,25 +253,25 @@ impl MergeSig for ListSig {
         if !empty && elem.is_none() {
             return PosMeet::Empty;
         }
-        PosMeet::Merged(ListSig { empty, elem })
+        PosMeet::Merged(ListSigOf { empty, elem })
     }
 }
 
-impl MergeSig for ResourceSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
+impl<R: Clone + PartialEq> MergeSig<R> for ResourceSigOf<R> {
+    fn intersect_pos(ops: &mut impl ChildIntersection<R>, a: &Self, b: &Self) -> PosMeet<Self> {
         // `res(A) ∩ res(B) = res(A ∩ B)`, and `res(∅) = ∅` (a resource always
         // carries a payload; `Types::resource` refuses an empty one).
-        let payload = types.intersect(a.payload, b.payload);
-        if types.is_empty(&payload) {
+        let payload = ops.intersect_child(a.payload.clone(), b.payload.clone());
+        if ops.child_is_empty(&payload) {
             PosMeet::Empty
         } else {
-            PosMeet::Merged(ResourceSig { payload })
+            PosMeet::Merged(ResourceSigOf { payload })
         }
     }
 }
 
-impl MergeSig for TupleSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
+impl<R: Clone + PartialEq> MergeSig<R> for TupleSigOf<R> {
+    fn intersect_pos(ops: &mut impl ChildIntersection<R>, a: &Self, b: &Self) -> PosMeet<Self> {
         // Tuples of different arity are disjoint products: `A₁×…×Aₙ ∩
         // B₁×…×Bₘ = ∅` for `n ≠ m` (a tuple value has exactly one arity —
         // the same rule `emptiness::tuple_clause_empty` decides by).
@@ -235,21 +279,21 @@ impl MergeSig for TupleSig {
             return PosMeet::Empty;
         }
         // `∏Aᵢ ∩ ∏Bᵢ = ∏(Aᵢ ∩ Bᵢ)`; a product with an empty factor is `∅`.
-        let elems: Vec<Ty> = a
+        let elems: Vec<R> = a
             .elems
             .iter()
             .zip(b.elems.iter())
-            .map(|(x, y)| types.intersect(*x, *y))
+            .map(|(x, y)| ops.intersect_child(x.clone(), y.clone()))
             .collect();
-        if elems.iter().any(|e| types.is_empty(e)) {
+        if elems.iter().any(|e| ops.child_is_empty(e)) {
             return PosMeet::Empty;
         }
-        PosMeet::Merged(TupleSig { elems })
+        PosMeet::Merged(TupleSigOf { elems })
     }
 }
 
-impl MergeSig for ArrowSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
+impl<R: Clone + PartialEq> MergeSig<R> for ArrowSigOf<R> {
+    fn intersect_pos(ops: &mut impl ChildIntersection<R>, a: &Self, b: &Self) -> PosMeet<Self> {
         // An unmergeable arrow pair stays Distinct, never Empty: a conjunction
         // of arrows is an overload, which is inhabited in general.
         if a.args.len() != b.args.len() {
@@ -257,89 +301,61 @@ impl MergeSig for ArrowSig {
         }
         match (&a.lit, &b.lit) {
             (Some(la), Some(lb)) => {
-                // An anonymous literal is every brand at once, so meeting it
-                // with a branded one keeps the brand; two brands that differ
-                // name disjoint values and stay Distinct.
-                let fn_id = match (la.fn_id, lb.fn_id) {
-                    (Some(a), Some(b)) if a != b => return PosMeet::Distinct,
-                    (Some(a), _) => Some(a),
-                    (None, b) => b,
-                };
+                // Two brands that differ name disjoint values and stay
+                // Distinct.
+                if la.fn_id != lb.fn_id {
+                    return PosMeet::Distinct;
+                }
                 if la.kind != lb.kind || la.captures.len() != lb.captures.len() {
                     return PosMeet::Distinct;
                 }
-                PosMeet::Merged(ArrowSig {
-                    args: a
-                        .args
-                        .iter()
-                        .zip(b.args.iter())
-                        .map(|(x, y)| types.union(*x, *y))
-                        .collect(),
-                    ret: types.intersect(a.ret, b.ret),
-                    lit: Some(ClosureLit {
+                // A shared closure identity does not make two observed
+                // callable domains interchangeable. Keep distinct surfaces as
+                // overload factors; only an equal domain can share one
+                // result/capture refinement without erasing provenance.
+                if a.args != b.args {
+                    return PosMeet::Distinct;
+                }
+                PosMeet::Merged(ArrowSigOf {
+                    args: a.args.clone(),
+                    ret: ops.intersect_child(a.ret.clone(), b.ret.clone()),
+                    lit: Some(ClosureLitOf {
                         kind: la.kind,
-                        fn_id,
+                        fn_id: la.fn_id,
                         captures: la
                             .captures
                             .iter()
                             .zip(lb.captures.iter())
-                            .map(|(x, y)| types.intersect(*x, *y))
+                            .map(|(x, y)| ops.intersect_child(x.clone(), y.clone()))
                             .collect(),
                     }),
                 })
             }
             (Some(_), None) | (None, Some(_)) => {
-                let (literal, surface) = if a.lit.is_some() { (a, b) } else { (b, a) };
-                let (args, ret) = specialize_surface(types, (&literal.args, literal.ret), (&surface.args, surface.ret));
-                PosMeet::Merged(ArrowSig {
-                    args,
-                    ret,
-                    lit: literal.lit.clone(),
-                })
+                // A literal's args/result are mint-owned placeholders, not a
+                // second identity for the closure value.  The observed arrow
+                // belongs to the activation-input carrier; intersecting it
+                // with the value type therefore leaves the literal's one
+                // denotation unchanged.
+                PosMeet::Merged(if a.lit.is_some() { a.clone() } else { b.clone() })
             }
-            (None, None) => PosMeet::Merged(ArrowSig {
-                args: a
-                    .args
-                    .iter()
-                    .zip(b.args.iter())
-                    .map(|(x, y)| types.union(*x, *y))
-                    .collect(),
-                ret: types.intersect(a.ret, b.ret),
+            (None, None) if a.args == b.args => PosMeet::Merged(ArrowSigOf {
+                args: a.args.clone(),
+                ret: ops.intersect_child(a.ret.clone(), b.ret.clone()),
                 lit: None,
             }),
+            (None, None) => {
+                // `(D -> R₁) ∩ (D -> R₂) = D -> (R₁ ∩ R₂)`. Different
+                // domains instead describe an overload. Pointwise unioning
+                // their coordinates invents tuple rows and intersecting their
+                // results loses which result belongs to each input region.
+                PosMeet::Distinct
+            }
         }
     }
 }
 
-/// One callable read at the surface it is being viewed through: the
-/// substitution its own params and result take against that surface, applied
-/// to them.
-///
-/// A closure literal is minted carrying the surface vars its lambda owns, and
-/// every caller meets it with the surface its callsite states. The two meet in
-/// two places -- at CONSTRUCTION, where a positive meet folds a lit-free arrow
-/// into a literal's clause, and on READ, where `Types::callable_value_clauses`
-/// views a literal through a surface clause standing beside it -- and this is
-/// the whole computation both times, so neither can report a different shape
-/// for one literal at one surface.
-///
-/// Positions past the shorter side are not substituted through; every caller
-/// has already required the two arities to agree.
-pub(super) fn specialize_surface(types: &mut Types, callable: (&[Ty], Ty), surface: (&[Ty], Ty)) -> (Vec<Ty>, Ty) {
-    let (params, result) = callable;
-    let (witness_params, witness_result) = surface;
-    let mut sigma = Sigma::new();
-    for (pattern, witness) in params.iter().zip(witness_params.iter()) {
-        types.collect_instantiation_subst(pattern, witness, &mut sigma);
-    }
-    types.collect_instantiation_subst(&result, &witness_result, &mut sigma);
-    (
-        params.iter().map(|param| types.instantiate(param, &sigma)).collect(),
-        types.instantiate(&result, &sigma),
-    )
-}
-
-impl MergeSig for MapSig {
+impl<R: Clone + PartialEq> MergeSig<R> for MapSigOf<R> {
     // Always `Merged`, never `Empty`: a field intersected to `∅` (an
     // uninhabited required field) makes the whole merged clause `∅` and
     // ought to drop rather than persist, mirroring `TupleSig`'s empty-
@@ -354,7 +370,7 @@ impl MergeSig for MapSig {
     // tuples-axis fix was justified by one: a 60-clause tuple DNF with 54
     // provably-empty clauses). Re-measure before adding this if map-heavy
     // evidence-join traffic starts to matter.
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
+    fn intersect_pos(ops: &mut impl ChildIntersection<R>, a: &Self, b: &Self) -> PosMeet<Self> {
         if a.tag != b.tag {
             return PosMeet::Empty;
         }
@@ -362,10 +378,10 @@ impl MergeSig for MapSig {
         for (key, value) in &b.fields {
             fields
                 .entry(key.clone())
-                .and_modify(|current| *current = types.intersect(*current, *value))
-                .or_insert(*value);
+                .and_modify(|current| *current = ops.intersect_child(current.clone(), value.clone()))
+                .or_insert_with(|| value.clone());
         }
-        PosMeet::Merged(MapSig {
+        PosMeet::Merged(MapSigOf {
             tag: a.tag.clone(),
             fields,
         })

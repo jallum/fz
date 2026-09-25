@@ -431,6 +431,12 @@ where
             .any(|publisher| self.rebased.contains(publisher))
     }
 
+    /// Whether this one derivation's ground shifted: its standing answer was
+    /// concluded from facts that have since been replaced.
+    pub(crate) fn derivation_rebased(&self, publisher: &P) -> bool {
+        self.rebased.contains(publisher)
+    }
+
     pub fn pending_jobs(&self) -> usize {
         self.agenda.len()
     }
@@ -696,11 +702,11 @@ where
     /// replacing fact's content change, or any change concluded by a rebased
     /// publisher can invalidate what readers derived.
     ///
-    /// A readiness-only change (the finality flips this ticket added, and the
-    /// dirty/clean flips that were always here) reaches `Settled` subscribers
-    /// ONLY. Sending it to `Current` subscribers
-    /// would recompute a formula whose input content never moved, which is the
-    /// one-line "fix" fz-kdt.44 measured and rejected.
+    /// A readiness-only change propagates finality through all concluded readers,
+    /// but only a `Settled` waiter can be satisfied by its false-to-true edge.
+    /// Sending it to subscribers would recompute a formula whose input content
+    /// never moved, which is the one-line "fix" fz-kdt.44 measured and
+    /// rejected.
     fn dispatch_changes<Ctx>(
         &mut self,
         mut pending_changes: Vec<FactChange<F>>,
@@ -755,8 +761,8 @@ where
                         ctx,
                     );
                 }
-                if change.readiness_changed() {
-                    self.enqueue_dependents(
+                if change.readiness_changed() && change.new_settled {
+                    self.wake_satisfied_waiters(
                         FactUse::settled(change.key.clone()),
                         false,
                         &mut pending_changes,

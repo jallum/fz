@@ -4,6 +4,10 @@
 //! pattern/destructure steps, and compiler-generated lambda definitions, but
 //! it stops above old-world CPS IR and planner concerns.
 
+#[cfg(test)]
+#[path = "body_test.rs"]
+mod body_test;
+
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -54,7 +58,7 @@ impl CallSiteId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ControlEntryId(u32);
 
 impl ControlEntryId {
@@ -253,7 +257,8 @@ pub(crate) fn tail_used_values(tail: &LoweredTail, out: &mut Vec<ValueId>) {
 }
 
 /// Where one step sits in a lowered body: in a clause's projections, or in a
-/// control entry's steps.
+/// control entry's steps. Coordinates belong to that body revision; the
+/// owning function and revision are supplied by the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StepSite {
     Projection { clause: u32, index: u32 },
@@ -437,18 +442,24 @@ impl LoweredBody {
     /// The step that defines `value`, or `None` when the value arrives as a
     /// clause parameter, an entry parameter or a dispatch outcome argument.
     pub(crate) fn value_definition(&self, value: ValueId) -> Option<&LoweredStep> {
-        let Self::Clauses {
-            clauses,
-            entries,
-            tables,
-            ..
-        } = self
-        else {
+        self.value_definition_site(value).map(|site| self.step_at(site))
+    }
+
+    pub(crate) fn value_definition_site(&self, value: ValueId) -> Option<StepSite> {
+        let Self::Clauses { tables, .. } = self else {
             return None;
         };
-        match tables.definitions.get(&value)? {
-            StepSite::Projection { clause, index } => Some(&clauses[*clause as usize].projections[*index as usize]),
-            StepSite::Entry { entry, index } => Some(&entries[entry.as_u32() as usize].steps[*index as usize]),
+        tables.definitions.get(&value).copied()
+    }
+
+    /// Borrow a step at a coordinate belonging to this lowered body.
+    pub(crate) fn step_at(&self, site: StepSite) -> &LoweredStep {
+        let Self::Clauses { clauses, entries, .. } = self else {
+            panic!("only a clause body holds steps")
+        };
+        match site {
+            StepSite::Projection { clause, index } => &clauses[clause as usize].projections[index as usize],
+            StepSite::Entry { entry, index } => &entries[entry.as_u32() as usize].steps[index as usize],
         }
     }
 
@@ -686,6 +697,34 @@ impl ControlDispatch {
 }
 
 impl LoweredTail {
+    /// Intrafunction control targets in source order, including dispatch
+    /// misses and receive timeouts. This describes edges, not reachability;
+    /// repeated targets remain repeated, and calls name only their resume.
+    pub(crate) fn child_entries(&self) -> Vec<ControlEntryId> {
+        match self {
+            Self::Value { dest, .. } | Self::DirectCall { dest, .. } | Self::ClosureCall { dest, .. } => match dest {
+                ControlDestination::Return => Vec::new(),
+                ControlDestination::Deliver(entry) => vec![*entry],
+            },
+            Self::If {
+                then_entry, else_entry, ..
+            } => vec![*then_entry, *else_entry],
+            Self::Dispatch { dispatch, .. } => {
+                let mut children = dispatch.outcomes.iter().map(|edge| edge.target).collect::<Vec<_>>();
+                children.push(dispatch.miss_entry);
+                children
+            }
+            Self::Receive(receive) => {
+                let mut children = receive.outcomes.iter().map(|edge| edge.target).collect::<Vec<_>>();
+                if let Some(after) = &receive.after {
+                    children.push(after.entry);
+                }
+                children
+            }
+            Self::Halt { .. } => Vec::new(),
+        }
+    }
+
     pub(crate) fn outcome_edges(&self) -> &[OutcomeEdge] {
         match self {
             Self::Dispatch { dispatch, .. } => &dispatch.outcomes,

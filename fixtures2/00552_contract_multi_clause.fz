@@ -5,7 +5,6 @@
 # assert.metric.semantic.executables: 3
 # assert.metric.semantic.callsites: 11
 # assert.metric.call_edges.count: 11
-# assert.metric.return_type.widened: 0
 # assert.edge: fact/1[int] | @141-152 | direct | fact/1
 # assert.edge: main/0[] | @174-185 | direct | classify/1
 # assert.edge: main/0[] | @232-239 | direct | fact/1
@@ -24,3 +23,27 @@ def main() do
   dbg(classify(-3))
   dbg(fact(5))
 end
+
+# Paper answer.
+#
+#   classify/1[int] -> :negative | :positive | :zero
+#     Three clauses, one activation: the guard chooses among them and the return is
+#     the union of what the reachable clauses yield.
+#   fact/1[int] -> int
+#     Recursive, so it forms a component whose only member is itself.
+#   main/0[] -> int
+#
+# Kernel.dbg/1 is the identity on its argument, so it has one activation per distinct
+# argument type that reaches it. Two arrive here:
+#   Kernel.dbg/1[:negative | :positive | :zero] -> :negative | :positive | :zero
+#   Kernel.dbg/1[int]                           -> int
+#
+# Eleven call edges. An edge names the callee activation its span reaches, and the
+# edge's return is that activation's return. The fourth dbg call reaches
+# Kernel.dbg/1[int] and returns int. That holds whatever the three earlier dbg edges
+# returned: a sibling activation of the same function answers its own question and
+# never this one's.
+#
+# This answer sits below the code because the call_edges snapshot pins byte spans
+# measured from the first line after the frontmatter, so a comment above the code
+# would move every span in it.

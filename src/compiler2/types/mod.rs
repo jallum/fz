@@ -7,6 +7,7 @@ mod addressed;
 mod arrow_match;
 mod axis;
 mod bits;
+mod callable;
 mod canon;
 mod closure_surface_var;
 mod conj;
@@ -14,20 +15,24 @@ mod descr;
 mod dnf;
 mod emptiness;
 mod format;
+mod key_shape;
 mod order;
+mod regular;
+mod render_bindings;
 mod sigs;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::FnId;
 use crate::runtime_type_predicate::{
     CallableShape, CallableShapes, ListShape, ListShapes, RuntimeTypePredicate, TupleShapes,
 };
 
+use super::identity::{ActivationSignature, ModuleId};
 use super::protocol::{ProtocolDomainObligation, is_protocol_domain_tag};
 use crate::type_expr::opaque_owner_module;
 use crate::types::{
@@ -35,6 +40,7 @@ use crate::types::{
     VisibilityTypes as SharedVisibilityTypes,
 };
 use bits::BasicBits;
+use emptiness::Operand;
 
 pub use crate::types::{
     BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError,
@@ -46,21 +52,24 @@ pub use arrow_match::ArrowMatch;
 pub(crate) use canon::TyCanon;
 
 use crate::modules::identity::ModuleName;
-use addressed::AddrStep;
+pub(crate) use addressed::AddrStep;
 #[cfg(test)]
 pub(crate) use closure_surface_var::{ClosureSurfacePos, decode_closure_surface_var};
 use closure_surface_var::{closure_ret_var_id, closure_var_id};
 use conj::Conj;
-use descr::Descr;
 use descr::OpaqueTag;
+use descr::{BrandCase, Descr, Structure, StructureOf, canonical_brand_partition, union_of};
+pub(crate) use descr::{DescrOf, union_of as union_regular_bodies};
 use dnf::dnf_intersect_with;
+pub(crate) use regular::ComponentRef;
 use sigs::{
-    ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig, specialize_surface,
+    ArrowSig, ArrowSigOf, ChildIntersection, ClosureLit, ClosureLitOf, ListSig, ListSigOf, MapSig, MapSigOf, MapTag,
+    MergeSig, PosMeet, ResourceSig, ResourceSigOf, StructTag, TupleSig, TupleSigOf,
 };
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
-/// `(brand, captures, args, ret)`, the brand `None` for an anonymous literal.
-pub(crate) type LitArrowShape = (Option<FnId>, Vec<Ty>, Vec<Ty>, Ty);
+/// `(brand, captures, args, ret)`.
+pub(crate) type LitArrowShape = (FnId, Vec<Ty>, Vec<Ty>, Ty);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -91,6 +100,10 @@ pub struct Types {
     /// Memoized `value_lane_repr`: the transport-lane representative of a type.
     /// A derived fact about each type, computed once rather than on every lane.
     value_lane_reprs: HashMap<Ty, Ty>,
+    /// Memoized `list_family_class`: the type with every list it holds allowing
+    /// the empty list. A derived fact about each type, computed once rather
+    /// than at every call site that keys on it.
+    list_family_classes: HashMap<Ty, Ty>,
     /// Interned structural addresses (`a0`, `a1_0`, `r0`, ...). Keyed by the
     /// address path so the same address always yields the same `TypeVarId`,
     /// making the addressed arrow canonical by construction. See `addressed`.
@@ -154,9 +167,120 @@ impl Default for Types {
 #[derive(Default)]
 struct TypeInterner {
     arena: Vec<Descr>,
-    index: HashMap<Descr, Ty>,
+    index: HashMap<InternKey, Ty>,
+    regular: HashSet<Ty>,
     #[cfg(test)]
     work: InterningWork,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum InternKey {
+    Direct(Descr),
+    Regular(Box<regular::RegularKey>),
+}
+
+pub(super) trait ProductCoordinateOps<R: Clone> {
+    fn is_subtype(&self, positive: &R, negative: &R) -> bool;
+    fn has_vars(&self, reference: &R) -> bool;
+    fn difference(&mut self, positive: R, negative: R) -> Option<R>;
+}
+
+pub(super) trait CallableSurfaceOps<R: Clone> {
+    fn named_arg(&mut self, fn_id: FnId, position: usize) -> R;
+    fn named_ret(&mut self, fn_id: FnId) -> R;
+}
+
+impl ProductCoordinateOps<Ty> for Types {
+    fn is_subtype(&self, positive: &Ty, negative: &Ty) -> bool {
+        Types::is_subtype(self, positive, negative)
+    }
+
+    fn has_vars(&self, reference: &Ty) -> bool {
+        Types::has_vars(self, reference)
+    }
+
+    fn difference(&mut self, positive: Ty, negative: Ty) -> Option<Ty> {
+        Some(Types::difference(self, positive, negative))
+    }
+}
+
+impl ChildIntersection<Ty> for Types {
+    fn intersect_child(&mut self, left: Ty, right: Ty) -> Ty {
+        self.intersect(left, right)
+    }
+
+    fn child_is_empty(&self, child: &Ty) -> bool {
+        self.is_empty(child)
+    }
+}
+
+impl CallableSurfaceOps<Ty> for Types {
+    fn named_arg(&mut self, fn_id: FnId, position: usize) -> Ty {
+        self.type_var(closure_var_id(fn_id, position))
+    }
+
+    fn named_ret(&mut self, fn_id: FnId) -> Ty {
+        self.type_var(closure_ret_var_id(fn_id))
+    }
+}
+
+/// A product minus a product is the union of products differing in at least
+/// one coordinate. Apply each excluded rectangle to that union in turn.
+/// Nominal variables retain their deferred form until substitution.
+fn normalize_product_difference_with<R: Clone, S: sigs::ProductSig<R>>(
+    ops: &mut impl ProductCoordinateOps<R>,
+    clause: Conj<S>,
+) -> Vec<Conj<S>> {
+    let [positive] = clause.pos.as_slice() else {
+        return vec![clause];
+    };
+    if clause.neg.is_empty()
+        || clause
+            .pos
+            .iter()
+            .chain(&clause.neg)
+            .flat_map(|sig| sig.coordinates())
+            .any(|reference| ops.has_vars(reference))
+    {
+        return vec![clause];
+    }
+    let mut rectangles = vec![positive.clone()];
+    for negative in &clause.neg {
+        let mut residual = Vec::new();
+        for positive in rectangles {
+            if positive.coordinates().len() != negative.coordinates().len() {
+                residual.push(positive);
+                continue;
+            }
+            for (index, (p, n)) in positive.coordinates().iter().zip(negative.coordinates()).enumerate() {
+                if ops.is_subtype(p, n) {
+                    continue;
+                }
+                let Some(difference) = ops.difference(p.clone(), n.clone()) else {
+                    return vec![clause];
+                };
+                residual.push(positive.with_coordinate(index, difference));
+            }
+        }
+        rectangles = residual;
+    }
+    rectangles.into_iter().map(Conj::pos_of).collect()
+}
+
+fn normalize_literal_callable_surfaces_with<R: Clone>(ops: &mut impl CallableSurfaceOps<R>, d: &mut StructureOf<R>) {
+    for sig in d
+        .funcs
+        .iter_mut()
+        .flat_map(|clause| clause.pos.iter_mut().chain(&mut clause.neg))
+    {
+        let Some(lit) = &sig.lit else {
+            continue;
+        };
+        let arity = sig.args.len();
+        let fn_id = lit.fn_id;
+        sig.args = (0..arity).map(|position| ops.named_arg(fn_id, position)).collect();
+        sig.ret = ops.named_ret(fn_id);
+    }
 }
 
 /// Test-only accounting for the sole type persistence boundary.
@@ -274,6 +398,10 @@ pub(crate) struct ComparisonCacheStats {
 #[derive(Clone, Copy)]
 pub(super) struct TyCtx<'a> {
     arena: &'a [Descr],
+    /// Descriptors being classified before regular interning. Their synthetic
+    /// ids begin immediately after `arena`, so the ordinary semantic readers
+    /// can follow local recursive references without publishing an identity.
+    local: &'a [Descr],
     /// The address reverse table (path per address id), so display can render a
     /// structural address as `a1_0`/`r0`. Empty for the interner-internal ctx,
     /// which only resolves descriptors and never renders.
@@ -282,9 +410,16 @@ pub(super) struct TyCtx<'a> {
 
 impl<'a> TyCtx<'a> {
     fn descr(&self, t: &Ty) -> &'a Descr {
-        self.arena
-            .get(t.0 as usize)
-            .unwrap_or_else(|| panic!("unknown interned type id {}", t.0))
+        let index = t.0 as usize;
+        let descriptor = if index < self.arena.len() {
+            self.arena.get(index)
+        } else {
+            self.local.get(index - self.arena.len())
+        };
+        match descriptor {
+            Some(descr) => descr,
+            None => panic!("unknown interned type id {}", t.0),
+        }
     }
 
     /// Render one type variable: a structural address (`a0`, `a1_0`, `r0`) when
@@ -311,7 +446,7 @@ impl TypeInterner {
         {
             self.work.canonical_index_probes += 1;
         }
-        if let Some(ty) = self.index.get(&d) {
+        if let Some(ty) = self.index.get(&InternKey::Direct(d.clone())) {
             return *ty;
         }
         #[cfg(debug_assertions)]
@@ -320,7 +455,7 @@ impl TypeInterner {
         assert!(u32::try_from(raw).is_ok(), "type interner exhausted ids");
         let ty = Ty(raw as u32);
         self.arena.push(d.clone());
-        self.index.insert(d, ty);
+        self.index.insert(InternKey::Direct(d), ty);
         #[cfg(test)]
         {
             self.work.inserted += 1;
@@ -332,17 +467,68 @@ impl TypeInterner {
     ///
     /// A descriptor the index holds was normalized on its way in, and
     /// normalization is a pure function of the descriptor — every step reads
-    /// the descriptor's own bytes and the immutable descriptors of the ids it
-    /// names, and nothing else (`super::order` states the one rule that makes
-    /// this true of clause order). So the normal form it was given then is the
-    /// normal form it would be given now, and the id can be returned without
-    /// re-deriving it.
+    /// the descriptor's own bytes, the immutable descriptors of the ids it
+    /// names, and the stable identity that resolves a completed structural tie
+    /// (`super::order` states the one rule that makes this true of clause
+    /// order). So the normal form it was given then is the normal form it would
+    /// be given now, and the id can be returned without re-deriving it.
     fn lookup(&mut self, d: &Descr) -> Option<Ty> {
         #[cfg(test)]
         {
             self.work.raw_index_probes += 1;
         }
-        self.index.get(d).copied()
+        self.index.get(&InternKey::Direct(d.clone())).copied()
+    }
+
+    fn len(&self) -> usize {
+        self.arena.len()
+    }
+
+    fn lookup_regular(&self, key: &regular::RegularKey) -> Option<Ty> {
+        self.index.get(&InternKey::Regular(Box::new(key.clone()))).copied()
+    }
+
+    /// Whether this id names a state of a recursive automaton. The regular
+    /// keys in the index answer the other direction, from key to id; a cluster
+    /// that mentions a handle needs this one, from id back to "that handle has
+    /// states of its own".
+    fn is_regular(&self, ty: Ty) -> bool {
+        self.regular.contains(&ty)
+    }
+
+    fn intern_regular(&mut self, keys: Vec<regular::RegularKey>, descriptors: Vec<Descr>) -> Vec<Ty> {
+        assert_eq!(keys.len(), descriptors.len(), "regular keys and descriptors must align");
+        assert!(
+            keys.iter().all(|key| self.lookup_regular(key).is_none()),
+            "regular component insertion raced an existing identity"
+        );
+        let first = self.arena.len();
+        let last = first
+            .checked_add(descriptors.len())
+            .expect("type interner exhausted ids");
+        assert!(
+            u32::try_from(last.saturating_sub(1)).is_ok(),
+            "type interner exhausted ids"
+        );
+        let tys = (first..last).map(|raw| Ty(raw as u32)).collect::<Vec<_>>();
+
+        for (ty, descriptor) in tys.iter().copied().zip(descriptors.iter()) {
+            assert!(
+                !self.index.contains_key(&InternKey::Direct(descriptor.clone())),
+                "regular component body was already interned directly"
+            );
+            self.arena.push(descriptor.clone());
+            self.index.insert(InternKey::Direct(descriptor.clone()), ty);
+        }
+        for (key, ty) in keys.into_iter().zip(tys.iter().copied()) {
+            assert!(self.index.insert(InternKey::Regular(Box::new(key)), ty).is_none());
+        }
+        self.regular.extend(tys.iter().copied());
+        #[cfg(test)]
+        {
+            self.work.inserted += tys.len();
+        }
+        tys
     }
 
     fn normalized(&mut self) {
@@ -355,6 +541,15 @@ impl TypeInterner {
     fn ctx(&self) -> TyCtx<'_> {
         TyCtx {
             arena: &self.arena,
+            local: &[],
+            addresses: &[],
+        }
+    }
+
+    fn ctx_with_local_descriptors<'a>(&'a self, local: &'a [Descr]) -> TyCtx<'a> {
+        TyCtx {
+            arena: &self.arena,
+            local,
             addresses: &[],
         }
     }
@@ -364,24 +559,30 @@ impl TypeInterner {
     }
 
     /// The debug half of the interned-DNF invariant: a descriptor that reaches
-    /// the index carries no provably-empty clause on any axis, nothing left to
-    /// absorb on the four denotational axes, and no exact duplicate on the
-    /// callable axis. This runs on an index MISS, so it costs one sweep per
-    /// distinct descriptor.
+    /// the index carries no provably-empty clause, no missed absorption on a
+    /// literal-free axis, and no exact duplicate on a literal-bearing callable
+    /// axis. This runs on an index MISS, so it costs one sweep per distinct
+    /// descriptor.
     #[cfg(debug_assertions)]
     fn debug_assert_dnf_axes_hygienic(&self, d: &Descr) {
         let cx = self.ctx();
-        debug_assert_no_empty_clauses(cx, &d.tuples, emptiness::tuple_clause_empty, "tuples");
-        debug_assert_no_empty_clauses(cx, &d.lists, emptiness::list_clause_empty, "lists");
-        debug_assert_no_empty_clauses(cx, &d.resources, emptiness::resource_clause_empty, "resources");
-        debug_assert_no_empty_clauses(cx, &d.funcs, emptiness::func_clause_empty, "funcs");
-        debug_assert_no_empty_clauses(cx, &d.maps, emptiness::map_clause_empty, "maps");
-        debug_assert_absorbed(cx, &d.tuples, "tuple", &axis::TUPLES);
-        debug_assert_absorbed(cx, &d.lists, "list", &axis::LISTS);
-        debug_assert_absorbed(cx, &d.resources, "resource", &axis::RESOURCES);
-        debug_assert_absorbed(cx, &d.maps, "map", &axis::MAPS);
-        debug_assert_lists_merged(&d.lists);
-        debug_assert_no_exact_duplicates(&d.funcs, "funcs");
+        for case in &d.cases {
+            let d = &case.structure;
+            debug_assert_no_empty_clauses(cx, &d.tuples, emptiness::tuple_clause_empty, "tuples");
+            debug_assert_no_empty_clauses(cx, &d.lists, emptiness::list_clause_empty, "lists");
+            debug_assert_no_empty_clauses(cx, &d.resources, emptiness::resource_clause_empty, "resources");
+            debug_assert_no_empty_clauses(cx, &d.funcs, emptiness::func_clause_empty, "funcs");
+            debug_assert_no_empty_clauses(cx, &d.maps, emptiness::map_clause_empty, "maps");
+            debug_assert_absorbed(cx, &d.tuples, "tuple", &axis::TUPLES);
+            debug_assert_absorbed(cx, &d.lists, "list", &axis::LISTS);
+            debug_assert_absorbed(cx, &d.resources, "resource", &axis::RESOURCES);
+            debug_assert_absorbed(cx, &d.maps, "map", &axis::MAPS);
+            if callable_axis_is_literal_free(&d.funcs) {
+                debug_assert_absorbed(cx, &d.funcs, "callable", &axis::FUNCS);
+            }
+            debug_assert_lists_merged(&d.lists);
+            debug_assert_no_exact_duplicates(&d.funcs, "funcs");
+        }
     }
 }
 
@@ -392,25 +593,27 @@ impl TypeInterner {
 #[cfg(debug_assertions)]
 fn debug_assert_lists_merged(clauses: &[Conj<ListSig>]) {
     let mut merged = clauses.to_vec();
-    axis::merge_empty_list_clause(&mut merged);
+    axis::normalize_list_empty_shape(&mut merged);
     debug_assert!(
         merged == clauses,
         "interned list axis still has an empty-list clause to merge"
     );
 }
 
-/// `A ∨ A = A` on the callable axis, the one axis absorption does not reach
-/// ([`axis`] states why).
+fn callable_axis_is_literal_free(clauses: &[Conj<ArrowSig>]) -> bool {
+    clauses
+        .iter()
+        .flat_map(|clause| clause.pos.iter().chain(&clause.neg))
+        .all(|sig| sig.lit.is_none())
+}
+
+/// `A ∨ A = A` on a literal-bearing callable axis.
 ///
-/// The four denotational axes get the stronger coverage rule; this one gets
-/// idempotence, which is the rule the ACTIVATION KEY depends on. A key is
-/// built by erasing what the key language cannot address — closure brands
-/// above all — and erasure runs IN PLACE, so a union that legitimately kept one
-/// clause per brand becomes `A ∨ A` the moment the brands go. Without this
-/// collapse `funcs = [A, A]` interns as a different `Ty` than `funcs = [A]`,
-/// the key stops being a join homomorphism, and a callsite reached down two
-/// rows publishes an edge naming neither activation its walk actually read
-/// (fz-kdt.80).
+/// Literal-free clauses get the stronger coverage rule. Erasure runs in place,
+/// so a union that legitimately kept one clause per closure brand can become
+/// `A ∨ A` when the brands go. Without this collapse `funcs = [A, A]` interns
+/// as a different `Ty` than `funcs = [A]`, and the key stops being a join
+/// homomorphism.
 ///
 /// First occurrence wins, so the canonical order the `order` pass just imposed
 /// survives this filter — which is the whole reason the two compose. The
@@ -465,7 +668,7 @@ fn debug_assert_absorbed<T: Clone + PartialEq + 'static>(
     // Runs on an index MISS only, so it asks both relations directly rather
     // than through the caches the boundary itself goes through.
     let subtype = &|narrower: &Ty, wider: &Ty| cx.descr(narrower).is_subtype(cx, cx.descr(wider));
-    let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
+    let covers = &|wider: &Structure, narrower: &Structure| narrower.is_subtype(cx, wider);
     // An axis its clauses cover is written as the ONE spelling of its top, the
     // contentless clause, which the early return above has already let through.
     // Reaching here saturated means the boundary left a second spelling.
@@ -527,6 +730,7 @@ impl Types {
             comparisons: RefCell::default(),
             binary_type_operations: BinaryTypeOperationResults::default(),
             value_lane_reprs: HashMap::new(),
+            list_family_classes: HashMap::new(),
             address_vars: HashMap::new(),
             address_paths: Vec::new(),
             callable_origins: order::CallableOrigins::new(),
@@ -589,9 +793,10 @@ impl Types {
     ///
     /// THE INDEX ANSWERS FIRST. An interned descriptor's normal form is a pure
     /// function of the descriptor: every pass below reads the descriptor's own
-    /// bytes and the immutable descriptors of the ids it names, and storage
-    /// clause order reads nothing outside them either (`order`'s module doc
-    /// carries that rule and why the callable axis is where it had to be won).
+    /// bytes, the immutable descriptors of the ids it names, and the stable
+    /// identity that resolves a completed structural tie. Storage clause order
+    /// reads nothing mutable outside them either (`order`'s module doc carries
+    /// that rule and why the callable axis is where it had to be won).
     /// A descriptor the index already holds is therefore its own normal form,
     /// and the id it was given is the id the whole pass below would arrive at,
     /// so the lookup returns it and the derivation is skipped. That is the
@@ -599,9 +804,9 @@ impl Types {
     /// re-present a descriptor the arena already has.
     ///
     /// TUPLE NORMALIZATION first, the one rule that reaches a different
-    /// CARVING of one type. A ground tuple difference whose cover differs in
-    /// exactly one coordinate is still one rectangle, and the axis's plain
-    /// rectangles are then fused and widened to the one union of products both
+    /// CARVING of one type. A ground tuple difference becomes a union of
+    /// rectangles over coordinate differences, and those plain rectangles
+    /// are then fused and widened to the one union of products both
     /// carvings reach: `{A,C} ∨ {B,C}` is `{A∨B, C}`, so
     /// `{[int], :false} ∨ {[int], :true}` and `{[int], :false | :true}` are one
     /// descriptor before identity is assigned. Fusion mints the coordinate it
@@ -635,11 +840,8 @@ impl Types {
     /// nothing but the set they denote: a clause the union of its surviving
     /// siblings already covers is dropped, and an axis its clauses between
     /// them cover collapses to that axis's one top spelling, the clause with no
-    /// factors. The callable axis is the one exception ([`axis`] states why),
-    /// so it gets IDEMPOTENCE alone, exact duplicates collapsed. The coverage
-    /// walk and the dedupe only ever remove, and both visit in index order, so
-    /// what they leave is still sorted; a saturated axis is REPLACED by that
-    /// one clause, and one clause is sorted whatever it is.
+    /// factors. Literal-bearing callable clauses retain their construction
+    /// layout and get exact duplicate removal after their surfaces normalize.
     ///
     /// The BOTTOM COLLAPSE closes the pass. The empty set is reachable by many
     /// descriptor shapes — an empty brand slot, empty kind axes under a slot
@@ -667,16 +869,84 @@ impl Types {
             return ty;
         }
         self.interner.normalized();
-        self.normalize_tuple_axis(&mut d);
-        self.normalize_list_clauses(&mut d);
-        self.order_clauses(&mut d);
-        self.drop_empty_clauses(&mut d);
-        self.absorb_covered_clauses(&mut d);
-        dedupe_exact_clauses(&mut d.funcs);
+        d = self.normalize_brand_partition(d);
         if d.looks_empty() {
             d = Descr::none();
         }
         self.interner.intern(d)
+    }
+
+    fn normalize_structure(&mut self, structure: &mut Structure) {
+        self.normalize_tuple_axis(structure);
+        self.normalize_list_clauses(structure);
+        structure.resources = std::mem::take(&mut structure.resources)
+            .into_iter()
+            .flat_map(|clause| normalize_product_difference_with(self, clause))
+            .collect();
+        self.normalize_literal_callable_surfaces(structure);
+        self.order_clauses(structure);
+        self.drop_empty_clauses(structure);
+        self.absorb_covered_clauses(structure);
+        dedupe_exact_clauses(&mut structure.funcs);
+    }
+
+    /// Canonicalize the one authoritative correlated representation.  Each
+    /// mentioned brand becomes a singleton cell and all other brands share one
+    /// residual cell.  A cell receives the union of exactly the structures its
+    /// input cases admit; equal normalized payloads are then reassembled into
+    /// finite or cofinite brand sets.  Thus overlap, input order, and rectangle
+    /// carving cannot affect a `Ty` identity.
+    fn normalize_brand_partition(&mut self, d: Descr) -> Descr {
+        canonical_brand_partition(d, |structure| self.normalize_structure(structure))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn intern_regular_component(
+        &mut self,
+        count: usize,
+        build: impl FnOnce(&[ComponentRef]) -> Vec<DescrOf<ComponentRef>>,
+    ) -> Vec<Ty> {
+        regular::intern(self, count, build)
+    }
+
+    pub(crate) fn intern_regular_bodies(&mut self, bodies: Vec<DescrOf<ComponentRef>>) -> Vec<Ty> {
+        regular::intern_bodies(self, bodies)
+    }
+
+    pub(crate) fn regular_published(&self, ty: Ty) -> DescrOf<ComponentRef> {
+        self.descr(&ty).clone().map_children(ComponentRef::Published)
+    }
+
+    pub(crate) fn intern_ground_regular_body(&mut self, body: DescrOf<ComponentRef>) -> Option<Ty> {
+        let mut has_local = false;
+        let body = body.map_children(|reference| match reference {
+            ComponentRef::Published(ty) => ty,
+            ComponentRef::Local(_) => {
+                has_local = true;
+                self.any()
+            }
+        });
+        (!has_local).then(|| self.intern(body))
+    }
+
+    pub(crate) fn regular_brand(mut body: DescrOf<ComponentRef>, name: &str) -> DescrOf<ComponentRef> {
+        for case in &mut body.cases {
+            case.brands = FiniteSet::lit(name.to_string());
+        }
+        body
+    }
+
+    pub(crate) fn regular_struct_map(
+        &mut self,
+        module: ModuleId,
+        name: ModuleName,
+        fields: impl IntoIterator<Item = (String, ComponentRef)>,
+    ) -> DescrOf<ComponentRef> {
+        let fields = fields
+            .into_iter()
+            .map(|(field, ty)| (MapKey::Atom(field), ty))
+            .collect::<BTreeMap<_, _>>();
+        DescrOf::struct_map(StructTag { module, name }, fields)
     }
 
     /// Return an input whose operation has proved unchanged before any
@@ -690,10 +960,17 @@ impl Types {
 
     /// The list axis rewritten to the one normal form in [`axis`], clause by
     /// clause and then across the set.
-    fn normalize_list_clauses(&mut self, d: &mut Descr) {
+    fn normalize_list_clauses(&mut self, d: &mut Structure) {
         let clauses = std::mem::take(&mut d.lists);
         d.lists = clauses.into_iter().map(|c| self.list_normal_form(c)).collect();
-        axis::merge_empty_list_clause(&mut d.lists);
+        axis::normalize_list_empty_shape(&mut d.lists);
+    }
+
+    /// Direct callable observations are activation coordinates, not value
+    /// identity. Every literal names a function, and that function has one
+    /// reproducible owner template.
+    fn normalize_literal_callable_surfaces(&mut self, d: &mut Structure) {
+        normalize_literal_callable_surfaces_with(self, d)
     }
 
     /// One list clause rewritten to what it denotes.
@@ -750,7 +1027,7 @@ impl Types {
             .any(|elem| self.has_vars(&elem))
     }
 
-    fn order_clauses(&self, d: &mut Descr) {
+    fn order_clauses(&self, d: &mut Structure) {
         self.clause_order().sort_axes(d);
     }
 
@@ -805,17 +1082,62 @@ impl Types {
         a.len().cmp(&b.len())
     }
 
+    /// Total typed order for the coordinate record that specializes one body.
+    ///
+    /// An activation is not an arrow value: its inputs and pending result are
+    /// planner-owned coordinates. Keep their ordering beside the existing
+    /// typed `Ty` order rather than re-packing them onto the callable axis.
+    pub(crate) fn cmp_activation_signature(
+        &self,
+        left: &ActivationSignature,
+        right: &ActivationSignature,
+    ) -> std::cmp::Ordering {
+        self.cmp_activation_tys(&left.inputs, &right.inputs)
+            .then_with(|| self.cmp_activation_ty(left.result, right.result))
+    }
+
+    /// Total typed order for the direct callable observations attached to an
+    /// activation key.  `BTreeSet`'s raw `Ty` order is only a storage detail;
+    /// sorting each set through the owning interner keeps emitted-product order
+    /// semantic and stable across allocation histories.
+    pub(crate) fn cmp_activation_callable_surfaces(
+        &self,
+        left: &[BTreeSet<ActivationSignature>],
+        right: &[BTreeSet<ActivationSignature>],
+    ) -> std::cmp::Ordering {
+        for (left_slot, right_slot) in left.iter().zip(right) {
+            let mut left_surfaces = left_slot.iter().collect::<Vec<_>>();
+            let mut right_surfaces = right_slot.iter().collect::<Vec<_>>();
+            left_surfaces.sort_by(|a, b| self.cmp_activation_signature(a, b));
+            right_surfaces.sort_by(|a, b| self.cmp_activation_signature(a, b));
+            for (left_surface, right_surface) in left_surfaces.iter().zip(&right_surfaces) {
+                let order = self.cmp_activation_signature(left_surface, right_surface);
+                if order != std::cmp::Ordering::Equal {
+                    return order;
+                }
+            }
+            let order = left_surfaces.len().cmp(&right_surfaces.len());
+            if order != std::cmp::Ordering::Equal {
+                return order;
+            }
+        }
+        left.len().cmp(&right.len())
+    }
+
     fn assert_activation_origins_registered(&self, root: Ty) {
         self.activation_reachable(root, |ty| {
             let d = self.descr(&ty);
-            for sig in d.funcs.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
-                if let Some(lit) = &sig.lit
-                    && let Some(fn_id) = lit.fn_id
-                {
+            for sig in d
+                .cases
+                .iter()
+                .flat_map(|case| case.structure.funcs.iter())
+                .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+            {
+                if let Some(lit) = &sig.lit {
                     assert!(
-                        self.callable_origins.contains_key(&fn_id),
+                        self.callable_origins.contains_key(&lit.fn_id),
                         "activation arrow names unregistered callable {}",
-                        fn_id.0
+                        lit.fn_id.0
                     );
                 }
             }
@@ -831,27 +1153,48 @@ impl Types {
             }
             visit(ty);
             let d = self.descr(&ty);
-            for sig in d.tuples.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+            for sig in d
+                .cases
+                .iter()
+                .flat_map(|case| case.structure.tuples.iter())
+                .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+            {
                 pending.extend(sig.elems.iter().copied());
             }
-            for sig in d.lists.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+            for sig in d
+                .cases
+                .iter()
+                .flat_map(|case| case.structure.lists.iter())
+                .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+            {
                 pending.extend(sig.elem);
             }
             for sig in d
-                .resources
+                .cases
                 .iter()
+                .flat_map(|case| case.structure.resources.iter())
                 .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
             {
                 pending.push(sig.payload);
             }
-            for sig in d.funcs.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+            for sig in d
+                .cases
+                .iter()
+                .flat_map(|case| case.structure.funcs.iter())
+                .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+            {
                 pending.extend(sig.args.iter().copied());
                 pending.push(sig.ret);
                 if let Some(lit) = &sig.lit {
                     pending.extend(lit.captures.iter().copied());
                 }
             }
-            for sig in d.maps.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+            for sig in d
+                .cases
+                .iter()
+                .flat_map(|case| case.structure.maps.iter())
+                .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+            {
                 pending.extend(sig.fields.values().copied());
             }
         }
@@ -863,32 +1206,37 @@ impl Types {
     /// substitution) with one pass, and keeps garbage from accumulating across
     /// fixpoint iterations or doubling `dnf_neg` factors downstream. Tuple
     /// coordinates are asked through the memoized `Types::is_empty`.
-    fn drop_empty_clauses(&self, d: &mut Descr) {
+    fn drop_empty_clauses(&self, d: &mut Structure) {
         axis::drop_empty_clauses(self.ctx(), d, &|ty| self.is_empty(ty));
     }
 
-    /// The four axes a denotation fully describes, absorbed by the one rule in
-    /// [`axis`]. The callable axis is left out, for the reason stated there.
-    fn absorb_covered_clauses(&self, d: &mut Descr) {
+    /// Every literal-free axis is absorbed by the shared rule in [`axis`].
+    ///
+    /// A closure literal retains its capture layout until the value reaches
+    /// the transport projection; the layout is evidence about construction,
+    /// not an alternative spelling of a bare callable value.
+    fn absorb_covered_clauses(&self, d: &mut Structure) {
         self.absorb_one_axis(&mut d.tuples, &axis::TUPLES);
         self.absorb_one_axis(&mut d.lists, &axis::LISTS);
         self.absorb_one_axis(&mut d.resources, &axis::RESOURCES);
         self.absorb_one_axis(&mut d.maps, &axis::MAPS);
+        if callable_axis_is_literal_free(&d.funcs) {
+            self.absorb_one_axis(&mut d.funcs, &axis::FUNCS);
+        }
     }
 
     fn absorb_one_axis<T: Clone + 'static>(&self, clauses: &mut Vec<Conj<T>>, view: &axis::AxisView<T>) {
         let cx = self.ctx();
         let subtype = &|narrower: &Ty, wider: &Ty| self.is_subtype(narrower, wider);
-        let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
+        let covers = &|wider: &Structure, narrower: &Structure| narrower.is_subtype(cx, wider);
         axis::absorb_axis(cx, clauses, subtype, covers, view);
     }
 
     /// The tuple axis's own normal form, in two steps.
     ///
-    /// First each clause alone: a ground difference whose cover differs in
-    /// exactly one coordinate is still one rectangle, so it is rewritten to
-    /// one — which also turns a clause that was carrying a negative into a
-    /// plain rectangle the step below can carve.
+    /// First each clause alone: subtract each excluded product by splitting
+    /// into coordinate differences. This turns ground negative factors into
+    /// plain rectangles the step below can carve.
     ///
     /// Then the axis as a whole: its plain rectangles go through
     /// [`axis::fuse_tuple_rects`], which fuses and widens until one union of
@@ -900,15 +1248,16 @@ impl Types {
     /// here, so a coordinate is a `Ty` by the time the descriptor reaches the
     /// index. That recursion terminates for the same reason the rest of the
     /// boundary does: a coordinate names only types interned before it.
-    fn normalize_tuple_axis(&mut self, d: &mut Descr) {
+    fn normalize_tuple_axis(&mut self, d: &mut Structure) {
         let clauses = std::mem::take(&mut d.tuples);
         let mut complex = Vec::with_capacity(clauses.len());
         let mut rects: Vec<axis::Rect> = Vec::with_capacity(clauses.len());
         for clause in clauses {
-            let clause = self.normalize_tuple_coordinate_difference(clause);
-            match (clause.pos.as_slice(), clause.neg.as_slice()) {
-                ([sig], []) => rects.push(sig.elems.iter().map(|ty| axis::Coord::Interned(*ty)).collect()),
-                _ => complex.push(clause),
+            for clause in normalize_product_difference_with(self, clause) {
+                match (clause.pos.as_slice(), clause.neg.as_slice()) {
+                    ([sig], []) => rects.push(sig.elems.iter().map(|ty| Operand::Ty(*ty)).collect()),
+                    _ => complex.push(clause),
+                }
             }
         }
         let rects = axis::fuse_tuple_rects(self.ctx(), rects);
@@ -917,63 +1266,20 @@ impl Types {
             let elems = rect
                 .into_iter()
                 .map(|coord| match coord {
-                    axis::Coord::Interned(ty) => ty,
-                    axis::Coord::Built(descr) => self.intern(*descr),
+                    Operand::Ty(ty) => ty,
+                    Operand::Built(descr) => {
+                        self.intern(Rc::try_unwrap(descr).unwrap_or_else(|descr| (*descr).clone()))
+                    }
                 })
                 .collect();
             d.tuples.push(Conj::pos_of(TupleSig { elems }));
         }
     }
 
-    /// `P₀ × … × Pₖ × … × Pₙ \ N₀ × … × Nₖ × … × Nₙ` is one rectangle
-    /// whenever every coordinate except `k` is contained in its cover:
-    ///
-    /// `P₀ × … × (Pₖ \ Nₖ) × … × Pₙ`.
-    ///
-    /// The descriptor kernel represents the left form as one positive and one
-    /// negative tuple signature. It is semantically exact but structurally
-    /// distinct from the right form, so it must collapse before `Ty` identity
-    /// is assigned. More than one differing coordinate needs a union of
-    /// rectangles and deliberately stays in its existing DNF form.
-    fn normalize_tuple_coordinate_difference(&mut self, clause: Conj<TupleSig>) -> Conj<TupleSig> {
-        let ([positive], [negative]) = (clause.pos.as_slice(), clause.neg.as_slice()) else {
-            return clause;
-        };
-        if positive.elems.len() != negative.elems.len() {
-            return clause;
-        }
-        // This changes which side of the enclosing tuple's negative polarity
-        // owns a child. Ground coordinates describe the same rectangle either
-        // way. A variable does not: `runtime_envelope` deliberately removes a
-        // finite negative variable before it descends, so moving it inside the
-        // child would also remove the concrete exclusions beside it.
-        if positive
-            .elems
-            .iter()
-            .chain(&negative.elems)
-            .any(|elem| self.has_vars(elem))
-        {
-            return clause;
-        }
-        let differing = positive
-            .elems
-            .iter()
-            .zip(&negative.elems)
-            .enumerate()
-            .filter_map(|(index, (positive, negative))| (!self.is_subtype(positive, negative)).then_some(index))
-            .collect::<Vec<_>>();
-        let [index] = differing.as_slice() else {
-            return clause;
-        };
-
-        let mut elems = positive.elems.clone();
-        elems[*index] = self.difference(elems[*index], negative.elems[*index]);
-        Conj::pos_of(TupleSig { elems })
-    }
-
     fn ctx(&self) -> TyCtx<'_> {
         TyCtx {
             arena: &self.interner.arena,
+            local: &[],
             addresses: &self.address_paths,
         }
     }
@@ -1037,34 +1343,34 @@ impl Types {
         repr
     }
 
+    /// `[h | t]` and `[] | [h | t]` are the one type here: every list this type
+    /// holds, at every depth, is widened to admit the empty list.
+    ///
+    /// An activation key reads this wherever the callee's dispatch demand on a
+    /// slot is a list-shape question. Such a question is answered by a runtime
+    /// test on the value that arrives, so the empty/non-empty refinement is
+    /// not something the key has to name, and a seed handing a cons and the
+    /// recursion handing that cons's tail are one position of one body. The
+    /// element type is untouched: a list demand that descends still asks about
+    /// what the list holds.
+    ///
+    /// Memoized -- a derived fact about the type, not recomputed per call site.
+    pub(crate) fn list_family_class(&mut self, ty: Ty) -> Ty {
+        regular::list_family_class(self, ty)
+    }
+
     /// Every type the arena holds, in mint order.
     ///
     /// Comparison-only: the canon faithfulness ratchet sweeps the whole
     /// interned population, and needs the census rather than any particular id.
     #[cfg(test)]
     pub(crate) fn interned_tys(&self) -> Vec<Ty> {
-        (0..self.interner.arena.len() as u32).map(Ty).collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn activation_order_evidence_for_test(&self, left: Ty, right: Ty) -> String {
-        format!(
-            "left={left:?} right={right:?}; left_descr={:?}; right_descr={:?}; \
-             activation=({:?}, {:?}); storage=({:?}, {:?}); address_paths={:?}; callable_origins={:?}",
-            self.descr(&left),
-            self.descr(&right),
-            self.cmp_activation_ty(left, right),
-            self.cmp_activation_ty(right, left),
-            self.cmp_ty(left, right),
-            self.cmp_ty(right, left),
-            self.address_paths,
-            self.callable_origins,
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn activation_reachable_tys(&self, root: Ty) -> HashSet<Ty> {
-        self.activation_reachable(root, |_| {})
+        self.interner
+            .arena
+            .iter()
+            .enumerate()
+            .map(|(index, _)| Ty(index as u32))
+            .collect()
     }
 
     /// The two identity inventories demand-formula evaluation must leave
@@ -1345,7 +1651,9 @@ impl Types {
 
     pub fn mint_brand(&mut self, inner: Ty, name: &str) -> Ty {
         let mut d = self.descr(&inner).clone();
-        d.brands = FiniteSet::lit(name.to_string());
+        for case in &mut d.cases {
+            case.brands = FiniteSet::lit(name.to_string());
+        }
         self.intern(d)
     }
 
@@ -1362,10 +1670,9 @@ impl Types {
     }
 
     pub(crate) fn nominal_protocol_target(&mut self, name: ModuleName) -> Ty {
-        self.intern(Descr {
-            opaques: FiniteSet::lit(OpaqueTag::ProtocolTarget(name)),
-            ..Descr::unbranded()
-        })
+        let mut d = Descr::unbranded();
+        d.cases[0].structure.opaques = FiniteSet::lit(OpaqueTag::ProtocolTarget(name));
+        self.intern(d)
     }
 
     pub(crate) fn struct_map(
@@ -1404,7 +1711,7 @@ impl Types {
     }
 
     pub fn has_list_shape(&self, a: &Ty) -> bool {
-        !self.descr(a).lists.is_empty()
+        self.descr(a).cases.iter().any(|case| !case.structure.lists.is_empty())
     }
 
     pub fn resource_payload_type(&mut self, a: &Ty) -> Option<Ty> {
@@ -1450,6 +1757,10 @@ impl Types {
         self.descr(a).max_tuple_arity()
     }
 
+    pub(crate) fn exclusive_tuple_root_arity(&self, a: &Ty) -> Option<usize> {
+        exclusive_tuple_root_arity(self.descr(a))
+    }
+
     pub fn refine_map_field(&mut self, a: &Ty, key: &MapKey, v: &Ty) -> Ty {
         let Some(d) = self.descr(a).refine_map_field(key, *v) else {
             return self.unchanged(*a);
@@ -1478,437 +1789,6 @@ impl Types {
         })
     }
 
-    pub fn convergence_class(&mut self, a: &Ty) -> Ty {
-        let descr = self.descr(a).clone();
-        let any = self.any();
-        if descr.as_pure_list(any).is_some() {
-            self.list(any)
-        } else if let Some(tuple) = descr.pure_tuple() {
-            let elems = tuple
-                .elems
-                .iter()
-                .map(|elem| self.convergence_class(elem))
-                .collect::<Vec<_>>();
-            self.tuple(&elems)
-        } else if let Some(resource) = descr.pure_resource(any) {
-            let payload = self.convergence_class(&resource.payload);
-            self.resource(payload)
-        } else if descr.is_pure_callable() {
-            self.intern(Descr::fun_top())
-        } else if let Some(record) = descr.pure_record() {
-            let fields = record
-                .fields
-                .iter()
-                .map(|(key, value)| (key.clone(), self.convergence_class(value)))
-                .collect::<Vec<_>>();
-            self.intern(Descr::record(record.tag.clone(), fields))
-        } else {
-            *a
-        }
-    }
-
-    /// The ADDRESSED convergence class of `ty` at structural address `path`: the
-    /// same family collapse as [`convergence_class`], but a pure list's element
-    /// and a pure callable become a RESOLVABLE address var at their structural
-    /// address (`P_e`, `P`) rather than the `any`/`fun_top` fallback
-    /// (fz-f98.14.10.2). Breadth is still one address per position, so the
-    /// interner folds same-shape arrows to one key exactly as `list(any)` did and
-    /// fz-y6w termination holds. Depth is capped for LIST families: past
-    /// `ADDRESS_COLLAPSE_DEPTH` nested addressing steps the element tops out at
-    /// `any` (the earned depth ⊤) so a self-nesting list can never grow the
-    /// address path without bound. The cap is checked inside the
-    /// `is_pure_list_family` branch alone; the tuple, resource and map branches
-    /// recurse on the type that arrives, so their depth is bounded by that type
-    /// rather than by this function.
-    ///
-    /// `keep_elements` says DEMAND reached this position (fz-kdt.183): the value
-    /// here is one some body on the forwarding chain asks about, so its own
-    /// structure decides which callee activation -- and therefore which return
-    /// -- this key names, and a ground element is the key's meaning rather than
-    /// freight. It is set only under a demanded list's element; every other
-    /// caller passes `false` and gets the freight collapse unchanged.
-    fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep], keep_elements: bool) -> Ty {
-        const ADDRESS_COLLAPSE_DEPTH: usize = 8;
-        let descr = self.descr(a).clone();
-        if descr.is_pure_list_family() {
-            if path.len() >= ADDRESS_COLLAPSE_DEPTH {
-                let any = self.any();
-                return self.list(any);
-            }
-            let mut child = path.to_vec();
-            child.push(AddrStep::Elem);
-            let elem = if keep_elements {
-                let elem_descr = list_element_type(self.ctx(), &descr);
-                let elem = self.intern(elem_descr);
-                self.convergence_class_at(&elem, &child, true)
-            } else {
-                self.address_var(&child)
-            };
-            self.list(elem)
-        } else if descr.is_pure_callable() {
-            // A clause-less `fun_top` is the unresolvable fallback; the address
-            // var keeps the slot resolvable (`has_vars` true) so the indirect
-            // reducer still narrows at its call.
-            self.address_var(path)
-        } else if let Some(tuple) = descr.pure_tuple() {
-            let elems = tuple
-                .elems
-                .iter()
-                .enumerate()
-                .map(|(j, elem)| {
-                    let mut child = path.to_vec();
-                    child.push(AddrStep::Field(j as u16));
-                    self.convergence_class_at(elem, &child, keep_elements)
-                })
-                .collect::<Vec<_>>();
-            self.tuple(&elems)
-        } else if let Some(resource) = descr.pure_resource(self.any()) {
-            let payload = resource.payload;
-            let mut child = path.to_vec();
-            child.push(AddrStep::Payload);
-            let payload = self.convergence_class_at(&payload, &child, keep_elements);
-            self.resource(payload)
-        } else if let Some(record) = descr.pure_record() {
-            let fields = record
-                .fields
-                .iter()
-                .enumerate()
-                .map(|(j, (key, value))| {
-                    let mut child = path.to_vec();
-                    child.push(AddrStep::MapField(j as u16));
-                    (key.clone(), self.convergence_class_at(value, &child, keep_elements))
-                })
-                .collect::<Vec<_>>();
-            self.intern(Descr::record(record.tag.clone(), fields))
-        } else if keep_elements && self.has_vars(a) {
-            // A kept leaf that still carries a free variable is replaced by the
-            // canonical address var for its position, never kept verbatim: the
-            // collapsed arrow must be canonically ADDRESSED so re-addressing it
-            // through `address_inputs` is the identity (fz-hwn.27,
-            // fz-go4.18.3.2.1). Ground leaves are the key's meaning and survive.
-            self.address_var(path)
-        } else {
-            *a
-        }
-    }
-
-    /// Derive a recursive activation's KEY from its precise evidence arrow by
-    /// widening every UNDEMANDED subtree to its convergence class, so the
-    /// recursive ascent settles (fz-y6w bounded specialization). The mask is
-    /// `InputDemand::forwarded_dispatch`: what this body asks about a slot,
-    /// joined with what every callee it forwards the slot to asks (fz-kdt.183).
-    /// Demand is type-shaped: a tuple tag can remain precise while its payload
-    /// collapses.
-    ///
-    /// `list(int)` and `list(any)` share one recursive key only where the list
-    /// is FREIGHT -- nothing on the forwarding chain reads it. A list some body
-    /// downstream splits into head and tail keeps its element, because the
-    /// element decides which callee activation is reached and therefore what
-    /// this activation publishes as its return. A `Whole` slot has no collapse
-    /// at all, and forwarding can hand a `Whole` up from a callee that tests a
-    /// literal; fz-y6w's termination argument does not cover a slot with no
-    /// collapse.
-    ///
-    /// This is ONE whole-arrow operation on the interned arrow (fz-hwn.27.7) — it
-    /// replaces a per-input `convergence_class` pre-pass run before the inputs
-    /// were addressed. The two agree because `convergence_class` only collapses
-    /// pure lists (`list(τ) -> list(any)`), which is invariant under the
-    /// variable-addressing `from_inputs` applies. The arrow remains the PRECISE
-    /// evidence surface (carried by `ActivationInputs`); the collapse is a derived
-    /// dispatch key, and key != evidence is intentional.
-    pub(crate) fn convergence_collapse(
-        &mut self,
-        arrow: Ty,
-        mask: &[DispatchDemand],
-        returned: &[DispatchDemand],
-    ) -> Ty {
-        let Some(sig) = self.descr(&arrow).pure_arrow() else {
-            return arrow;
-        };
-        let params = sig.args.clone();
-        let ret = sig.ret;
-        let collapsed = params
-            .iter()
-            .enumerate()
-            .map(|(slot, param)| {
-                let demand = mask.get(slot).unwrap_or(&DispatchDemand::Whole);
-                let result = returned.get(slot).unwrap_or(&DispatchDemand::Ignore);
-                let path = [AddrStep::Param(slot as u16)];
-                self.convergence_collapse_ty(*param, demand, result, &path, true)
-            })
-            .collect::<Vec<_>>();
-        self.arrow(&collapsed, ret)
-    }
-
-    /// The transported-callable key collapse (fz-6gb, fz-kdt.127): erase
-    /// closure BRANDS from the arrow's non-dispatch slots, leaving everything
-    /// else -- data types, callable surfaces, CAPTURE TYPES, dispatch-relevant
-    /// slots -- exactly as the evidence stated it. Two closures of the same
-    /// shape then key one activation of a function that only carries them,
-    /// while a slot the function dispatches on keeps brand identity, and two
-    /// capture types through one slot stay two keys because the body a key
-    /// names grounds its callees' capture lanes. Unlike
-    /// [`convergence_collapse`], no slot becomes an address var: this erasure
-    /// is value-language throughout, so nothing key-shaped can leak into
-    /// evidence.
-    ///
-    /// The mask is `InputDemand::local_dispatch`, never the forwarded half: the
-    /// question is "does a clause of THIS body test this slot", and a body that
-    /// merely hands a callable to a callee that tests it still cannot tell two
-    /// same-shape lambdas apart itself (fz-kdt.183).
-    ///
-    /// Keeping the capture tuple is the conservative context-free rule
-    /// (fz-kdt.169). Whole-tuple or arity-only erasure would also merge one
-    /// lambda closed over one `int` with that lambda closed over one `float`;
-    /// preserving dispatch-free static grounding while erasing more therefore
-    /// requires a flow-sensitive non-observability proof.
-    pub(crate) fn erase_transported_closure_identities(&mut self, arrow: Ty, mask: &[DispatchDemand]) -> Ty {
-        let Some(sig) = self.descr(&arrow).pure_arrow() else {
-            return arrow;
-        };
-        if !sig
-            .args
-            .iter()
-            .enumerate()
-            .any(|(slot, _)| matches!(mask.get(slot), Some(DispatchDemand::Ignore)))
-        {
-            return self.unchanged(arrow);
-        }
-        let params = sig.args.clone();
-        let ret = sig.ret;
-        let erased = params
-            .iter()
-            .enumerate()
-            .map(|(slot, param)| match mask.get(slot).unwrap_or(&DispatchDemand::Whole) {
-                DispatchDemand::Ignore => self.erase_closure_identity(param),
-                _ => *param,
-            })
-            .collect::<Vec<_>>();
-        self.arrow(&erased, ret)
-    }
-
-    pub(crate) fn convergence_collapse_evidence_inputs(&mut self, inputs: &[Ty], mask: &[DispatchDemand]) -> Vec<Ty> {
-        inputs
-            .iter()
-            .enumerate()
-            .map(|(slot, input)| {
-                let demand = mask.get(slot).unwrap_or(&DispatchDemand::Whole);
-                let path = [AddrStep::Param(slot as u16)];
-                // EVIDENCE reads the dispatch axis alone. The `returned` axis
-                // asks the key to KEEP a position, and evidence already keeps
-                // every ground position verbatim (the `Ignore` arm widens only
-                // what carries variables), so there is nothing for it to say
-                // here (fz-kdt.199).
-                self.convergence_collapse_ty(*input, demand, &DispatchDemand::Ignore, &path, false)
-            })
-            .collect()
-    }
-
-    fn convergence_collapse_ty(
-        &mut self,
-        ty: Ty,
-        demand: &DispatchDemand,
-        returned: &DispatchDemand,
-        path: &[AddrStep],
-        collapse_concrete_ignored: bool,
-    ) -> Ty {
-        // The two axes ask for two collapses and the DISPATCH axis wins where
-        // they meet: `Whole` there means a question reads the value itself, so
-        // the key keeps it verbatim, which is at least as precise as the class
-        // the `returned` axis would keep (fz-kdt.199).
-        if !matches!(demand, DispatchDemand::Whole)
-            && let Some(collapsed) = self.convergence_collapse_returned(ty, demand, returned, path)
-        {
-            return collapsed;
-        }
-        match demand {
-            DispatchDemand::Ignore => {
-                // KEY path (`collapse_concrete_ignored`) collapses an ignored slot
-                // to its ADDRESSED convergence class: a pure list becomes
-                // `list(<P_e var>)` and a pure callable an addressed surface var,
-                // so the slot stays RESOLVABLE at its structural address instead of
-                // bottoming out at `any`/`fun_top` (fz-f98.14.10.2). Breadth is
-                // still var-bounded (one address per position) so fz-y6w
-                // termination holds; depth is capped in `convergence_class_at`.
-                // The EVIDENCE path keeps a var-bearing pure callable verbatim and
-                // collapses every other var-bearing type to its (path-blind) class.
-                if collapse_concrete_ignored {
-                    self.convergence_class_at(&ty, path, false)
-                } else if self.has_vars(&ty) && !self.descr(&ty).is_pure_callable() {
-                    self.convergence_class(&ty)
-                } else {
-                    ty
-                }
-            }
-            DispatchDemand::Whole => ty,
-            DispatchDemand::TupleFields(fields) => self.convergence_collapse_tuple_fields(
-                ty,
-                fields,
-                returned_fields(returned),
-                path,
-                collapse_concrete_ignored,
-            ),
-            DispatchDemand::ListShape(elem_demand) => self.convergence_collapse_list_shape(
-                ty,
-                elem_demand,
-                returned_element(returned),
-                path,
-                collapse_concrete_ignored,
-            ),
-        }
-    }
-
-    /// The `returned` axis's own answer at one position, or `None` when the
-    /// dispatch axis is the only one that has anything to say here.
-    ///
-    /// `Whole` on this axis means "the activation's published return IS this
-    /// value", and the key keeps its ADDRESSED CONVERGENCE CLASS: list families
-    /// normalise to `list(elem)` with the element kept at every depth and
-    /// capped at `ADDRESS_COLLAPSE_DEPTH`, and closure brands still erase to
-    /// their addressed surface -- the same bounded collapse fz-kdt.183 gives a
-    /// demanded list, one axis over. It is deliberately NOT `Whole`'s verbatim
-    /// keep, which has no collapse at all and no fz-y6w termination argument
-    /// (fz-kdt.200). The cap is a LIST-family cap:
-    /// [`Types::convergence_class_at`] checks it only in its
-    /// `is_pure_list_family` branch, so a tuple, map or resource nest at a
-    /// returned position recurses on the type that arrives with no depth bound
-    /// of its own.
-    ///
-    /// Where the two axes descend into DIFFERENT kinds at one position -- a
-    /// union of a tuple and a list, one axis reading each -- the class keeps
-    /// both, which is the same bounded answer and never the verbatim type.
-    fn convergence_collapse_returned(
-        &mut self,
-        ty: Ty,
-        demand: &DispatchDemand,
-        returned: &DispatchDemand,
-        path: &[AddrStep],
-    ) -> Option<Ty> {
-        match (demand, returned) {
-            (_, DispatchDemand::Ignore) => None,
-            (_, DispatchDemand::Whole)
-            | (DispatchDemand::TupleFields(_), DispatchDemand::ListShape(_))
-            | (DispatchDemand::ListShape(_), DispatchDemand::TupleFields(_)) => {
-                Some(self.convergence_class_at(&ty, path, true))
-            }
-            (DispatchDemand::Ignore, DispatchDemand::TupleFields(fields)) => {
-                Some(self.convergence_collapse_tuple_fields(ty, &BTreeMap::new(), Some(fields), path, true))
-            }
-            (DispatchDemand::Ignore, DispatchDemand::ListShape(elem)) => {
-                Some(self.convergence_collapse_list_shape(ty, &DispatchDemand::Ignore, Some(elem), path, true))
-            }
-            (DispatchDemand::TupleFields(_) | DispatchDemand::ListShape(_) | DispatchDemand::Whole, _) => None,
-        }
-    }
-
-    fn convergence_collapse_tuple_fields(
-        &mut self,
-        ty: Ty,
-        fields: &BTreeMap<u32, DispatchDemand>,
-        returned_fields: Option<&BTreeMap<u32, DispatchDemand>>,
-        path: &[AddrStep],
-        collapse_concrete_ignored: bool,
-    ) -> Ty {
-        let mut d = self.descr(&ty).clone();
-        if d.tuples.is_empty() {
-            return self.convergence_collapse_ignored_leaf(&ty, path, collapse_concrete_ignored);
-        }
-        // Discriminate tuple alternatives by their `Variant(k)` step exactly as
-        // the canonical addresser does (`address_remap_children`): when a slot is
-        // a union of more than one tuple alternative, each alternative's fields
-        // address under `Variant(k)` so the collapsed arrow is CANONICALLY
-        // addressed and round-trips through `from_inputs` by construction
-        // (fz-hwn.27 — `address_inputs` is the single source of truth). Without
-        // this the mint emits `a_..._j` where re-addressing emits `a_..._uk_j`,
-        // so `executable_key_for_transport_position` reconstructs a distinct key
-        // (fz-go4.18.3.2.1).
-        let tuple_alternatives = d
-            .tuples
-            .iter()
-            .map(|conj| conj.pos.len() + conj.neg.len())
-            .sum::<usize>();
-        let discriminate_tuple_alternatives = tuple_alternatives > 1;
-        let mut tuple_alternative = 0_u16;
-        for conj in &mut d.tuples {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                let alternative = tuple_alternative;
-                tuple_alternative = tuple_alternative.saturating_add(1);
-                for (index, elem) in sig.elems.iter_mut().enumerate() {
-                    let demand = fields.get(&(index as u32)).unwrap_or(&DispatchDemand::Ignore);
-                    let returned = returned_fields
-                        .and_then(|returned| returned.get(&(index as u32)))
-                        .unwrap_or(&DispatchDemand::Ignore);
-                    let mut child = path.to_vec();
-                    if discriminate_tuple_alternatives {
-                        child.push(AddrStep::Variant(alternative));
-                    }
-                    child.push(AddrStep::Field(index as u16));
-                    *elem = self.convergence_collapse_ty(*elem, demand, returned, &child, collapse_concrete_ignored);
-                }
-            }
-        }
-        self.intern(d)
-    }
-
-    fn convergence_collapse_list_shape(
-        &mut self,
-        ty: Ty,
-        elem_demand: &DispatchDemand,
-        returned_elem: Option<&DispatchDemand>,
-        path: &[AddrStep],
-        collapse_concrete_ignored: bool,
-    ) -> Ty {
-        let mut d = self.descr(&ty).clone();
-        if d.lists.is_empty() {
-            return self.convergence_collapse_ignored_leaf(&ty, path, collapse_concrete_ignored);
-        }
-        let mut child = path.to_vec();
-        child.push(AddrStep::Elem);
-        if collapse_concrete_ignored {
-            let elem_descr = list_element_type(self.ctx(), &d);
-            let elem = self.intern(elem_descr);
-            // Demand reached this list's SHAPE, so the element is meaning, not
-            // freight -- at every depth, because nothing here can say how far
-            // down the forwarding chain that reads it looks (fz-kdt.183). An
-            // element the demand names further (`ListShape(Whole)`, a tuple
-            // field) is still collapsed by that demand; an element it stops at
-            // is KEPT.
-            let returned_elem = returned_elem.unwrap_or(&DispatchDemand::Ignore);
-            let elem =
-                if matches!(elem_demand, DispatchDemand::Ignore) && matches!(returned_elem, DispatchDemand::Ignore) {
-                    self.convergence_class_at(&elem, &child, true)
-                } else {
-                    self.convergence_collapse_ty(elem, elem_demand, returned_elem, &child, collapse_concrete_ignored)
-                };
-            return self.list(elem);
-        }
-        for conj in &mut d.lists {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                if let Some(elem) = sig.elem {
-                    sig.elem = Some(self.convergence_collapse_ty(
-                        elem,
-                        elem_demand,
-                        returned_elem.unwrap_or(&DispatchDemand::Ignore),
-                        &child,
-                        collapse_concrete_ignored,
-                    ));
-                }
-            }
-        }
-        self.intern(d)
-    }
-
-    /// The collapse for an ignored slot that did not match the demanded shape:
-    /// KEY path uses the addressed class (stays resolvable); EVIDENCE path the
-    /// path-blind class (its earned ⊤).
-    fn convergence_collapse_ignored_leaf(&mut self, ty: &Ty, path: &[AddrStep], collapse_concrete_ignored: bool) -> Ty {
-        if collapse_concrete_ignored {
-            self.convergence_class_at(ty, path, false)
-        } else {
-            self.convergence_class(ty)
-        }
-    }
-
     pub fn union(&mut self, a: Ty, b: Ty) -> Ty {
         if a == b {
             return self.unchanged(a);
@@ -1925,6 +1805,11 @@ impl Types {
             BinaryTypeOperation::Union(b, a)
         };
         self.binary_type_operation(key, |types| {
+            // A union that can reach a cycle is built over the whole component
+            // it reaches, because the answer exists only as a cycle of its own.
+            if types.interner.is_regular(a) || types.interner.is_regular(b) {
+                return regular::union(types, a, b);
+            }
             let d = {
                 let cx = types.ctx();
                 cx.descr(&a).union(cx, cx.descr(&b))
@@ -1947,6 +1832,10 @@ impl Types {
             if types.is_subtype(&b, &a) {
                 return b;
             }
+            if types.interner.is_regular(a) || types.interner.is_regular(b) {
+                let body = types.regular_published(a).intersect(&types.regular_published(b));
+                return types.intern_regular_bodies(vec![body])[0];
+            }
             let left = types.descr(&a).clone();
             let right = types.descr(&b).clone();
             let d = intersect_descr(types, &left, &right);
@@ -1965,6 +1854,10 @@ impl Types {
             return a;
         }
         self.binary_type_operation(BinaryTypeOperation::Difference(a, b), |types| {
+            if types.interner.is_regular(a) || types.interner.is_regular(b) {
+                let body = types.regular_published(a).diff(&types.regular_published(b));
+                return types.intern_regular_bodies(vec![body])[0];
+            }
             let d = types.descr(&a).diff(types.descr(&b));
             types.intern(d)
         })
@@ -2020,7 +1913,15 @@ impl Types {
     }
 
     pub fn key_var_count(&self, key: &[Ty]) -> usize {
-        key.iter().map(|t| self.descr(t).vars.finite_len().unwrap_or(0)).sum()
+        key.iter()
+            .map(|t| {
+                self.descr(t)
+                    .cases
+                    .iter()
+                    .map(|case| case.structure.vars.finite_len().unwrap_or(0))
+                    .sum::<usize>()
+            })
+            .sum()
     }
 
     pub fn key_subsumes_with(&self, query: &Ty, key: &Ty, sigma: &mut Sigma<Ty>) -> bool {
@@ -2164,45 +2065,48 @@ impl Types {
             return;
         }
         let descr = self.descr(&ty);
-        for conj in &descr.tuples {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                for elem in &sig.elems {
-                    self.collect_struct_modules(*elem, seen, modules);
-                }
-            }
-        }
-        for conj in &descr.lists {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                if let Some(elem) = sig.elem {
-                    self.collect_struct_modules(elem, seen, modules);
-                }
-            }
-        }
-        for conj in &descr.resources {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                self.collect_struct_modules(sig.payload, seen, modules);
-            }
-        }
-        for conj in &descr.funcs {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                for arg in &sig.args {
-                    self.collect_struct_modules(*arg, seen, modules);
-                }
-                self.collect_struct_modules(sig.ret, seen, modules);
-                if let Some(lit) = &sig.lit {
-                    for capture in &lit.captures {
-                        self.collect_struct_modules(*capture, seen, modules);
+        for case in &descr.cases {
+            let descr = &case.structure;
+            for conj in &descr.tuples {
+                for sig in conj.pos.iter().chain(&conj.neg) {
+                    for elem in &sig.elems {
+                        self.collect_struct_modules(*elem, seen, modules);
                     }
                 }
             }
-        }
-        for conj in &descr.maps {
-            for sig in conj.pos.iter().chain(&conj.neg) {
-                if let MapTag::Struct(tag) = &sig.tag {
-                    modules.insert(tag.module);
+            for conj in &descr.lists {
+                for sig in conj.pos.iter().chain(&conj.neg) {
+                    if let Some(elem) = sig.elem {
+                        self.collect_struct_modules(elem, seen, modules);
+                    }
                 }
-                for field in sig.fields.values() {
-                    self.collect_struct_modules(*field, seen, modules);
+            }
+            for conj in &descr.resources {
+                for sig in conj.pos.iter().chain(&conj.neg) {
+                    self.collect_struct_modules(sig.payload, seen, modules);
+                }
+            }
+            for conj in &descr.funcs {
+                for sig in conj.pos.iter().chain(&conj.neg) {
+                    for arg in &sig.args {
+                        self.collect_struct_modules(*arg, seen, modules);
+                    }
+                    self.collect_struct_modules(sig.ret, seen, modules);
+                    if let Some(lit) = &sig.lit {
+                        for capture in &lit.captures {
+                            self.collect_struct_modules(*capture, seen, modules);
+                        }
+                    }
+                }
+            }
+            for conj in &descr.maps {
+                for sig in conj.pos.iter().chain(&conj.neg) {
+                    if let MapTag::Struct(tag) = &sig.tag {
+                        modules.insert(tag.module);
+                    }
+                    for field in sig.fields.values() {
+                        self.collect_struct_modules(*field, seen, modules);
+                    }
                 }
             }
         }
@@ -2218,50 +2122,53 @@ impl Types {
             return;
         }
         let descr = self.descr(&ty);
-        if let Some(tags) = descr.opaques.finite_elems() {
-            obligations.extend(tags.filter_map(|tag| {
-                let OpaqueTag::Named(tag) = tag else {
-                    return None;
-                };
-                is_protocol_domain_tag(&tag).then(|| ProtocolDomainObligation::from_marker_tag(tag))
-            }));
-        }
-        for conj in &descr.tuples {
-            for sig in &conj.pos {
-                for elem in &sig.elems {
-                    self.collect_protocol_domain_obligations(*elem, seen, obligations);
-                }
+        for case in &descr.cases {
+            let descr = &case.structure;
+            if let Some(tags) = descr.opaques.finite_elems() {
+                obligations.extend(tags.filter_map(|tag| {
+                    let OpaqueTag::Named(tag) = tag else {
+                        return None;
+                    };
+                    is_protocol_domain_tag(&tag).then(|| ProtocolDomainObligation::from_marker_tag(tag))
+                }));
             }
-        }
-        for conj in &descr.lists {
-            for sig in &conj.pos {
-                if let Some(elem) = sig.elem {
-                    self.collect_protocol_domain_obligations(elem, seen, obligations);
-                }
-            }
-        }
-        for conj in &descr.resources {
-            for sig in &conj.pos {
-                self.collect_protocol_domain_obligations(sig.payload, seen, obligations);
-            }
-        }
-        for conj in &descr.funcs {
-            for sig in &conj.pos {
-                for arg in &sig.args {
-                    self.collect_protocol_domain_obligations(*arg, seen, obligations);
-                }
-                self.collect_protocol_domain_obligations(sig.ret, seen, obligations);
-                if let Some(lit) = &sig.lit {
-                    for capture in &lit.captures {
-                        self.collect_protocol_domain_obligations(*capture, seen, obligations);
+            for conj in &descr.tuples {
+                for sig in &conj.pos {
+                    for elem in &sig.elems {
+                        self.collect_protocol_domain_obligations(*elem, seen, obligations);
                     }
                 }
             }
-        }
-        for conj in &descr.maps {
-            for sig in &conj.pos {
-                for field in sig.fields.values() {
-                    self.collect_protocol_domain_obligations(*field, seen, obligations);
+            for conj in &descr.lists {
+                for sig in &conj.pos {
+                    if let Some(elem) = sig.elem {
+                        self.collect_protocol_domain_obligations(elem, seen, obligations);
+                    }
+                }
+            }
+            for conj in &descr.resources {
+                for sig in &conj.pos {
+                    self.collect_protocol_domain_obligations(sig.payload, seen, obligations);
+                }
+            }
+            for conj in &descr.funcs {
+                for sig in &conj.pos {
+                    for arg in &sig.args {
+                        self.collect_protocol_domain_obligations(*arg, seen, obligations);
+                    }
+                    self.collect_protocol_domain_obligations(sig.ret, seen, obligations);
+                    if let Some(lit) = &sig.lit {
+                        for capture in &lit.captures {
+                            self.collect_protocol_domain_obligations(*capture, seen, obligations);
+                        }
+                    }
+                }
+            }
+            for conj in &descr.maps {
+                for sig in &conj.pos {
+                    for field in sig.fields.values() {
+                        self.collect_protocol_domain_obligations(*field, seen, obligations);
+                    }
                 }
             }
         }
@@ -2310,12 +2217,22 @@ impl Types {
             // codegen already implement the per-value membership check
             // and are reused live today for atom membership, so they need
             // no change to pick up real numeric value sets.
-            ints: if widen_non_structs || descr.basic.contains_all(BasicBits::INT) {
+            ints: if widen_non_structs
+                || descr
+                    .cases
+                    .iter()
+                    .any(|case| case.structure.basic.contains_all(BasicBits::INT))
+            {
                 FiniteSet::any()
             } else {
                 FiniteSet::none()
             },
-            floats: if widen_non_structs || descr.basic.contains_all(BasicBits::FLOAT) {
+            floats: if widen_non_structs
+                || descr
+                    .cases
+                    .iter()
+                    .any(|case| case.structure.basic.contains_all(BasicBits::FLOAT))
+            {
                 FiniteSet::any()
             } else {
                 FiniteSet::none()
@@ -2323,7 +2240,10 @@ impl Types {
             atoms: if widen_non_structs {
                 FiniteSet::any()
             } else {
-                descr.atoms.clone()
+                descr
+                    .cases
+                    .iter()
+                    .fold(FiniteSet::none(), |atoms, case| atoms.union(&case.structure.atoms))
             },
             lists: if widen_non_structs {
                 ListShapes::any()
@@ -2338,13 +2258,17 @@ impl Types {
             named_structs: named_structs.clone(),
             allow_other_structs: named_structs.cofinite,
             maps: widen_non_structs || plain_maps,
-            binaries: widen_non_structs || descr.basic.contains_all(BasicBits::BINARY),
+            binaries: widen_non_structs
+                || descr
+                    .cases
+                    .iter()
+                    .any(|case| case.structure.basic.contains_all(BasicBits::BINARY)),
             callables: if widen_non_structs {
                 CallableShapes::any()
             } else {
                 self.runtime_type_predicate_callables(descr)
             },
-            resources: widen_non_structs || !descr.resources.is_empty(),
+            resources: widen_non_structs || descr.cases.iter().any(|case| !case.structure.resources.is_empty()),
         }
     }
 
@@ -2370,8 +2294,9 @@ impl Types {
         if !shapes.contains(&ListShape::NonEmpty) {
             return ListShapes::exact(shapes, Vec::new());
         }
-        let mut heads = Vec::with_capacity(descr.lists.len());
-        for clause in &descr.lists {
+        let clauses = descr.cases.iter().flat_map(|case| case.structure.lists.iter());
+        let mut heads = Vec::new();
+        for clause in clauses {
             if clause.is_top() {
                 // The axis top is written as the clause with no factors
                 // (`types::axis`), so this clause is `[any]` and its head
@@ -2415,10 +2340,10 @@ impl Types {
     /// arity-only reading, which is what every clause answered before
     /// fz-kdt.119.
     fn runtime_type_predicate_tuples(&self, descr: &Descr) -> TupleShapes {
-        let mut shapes = Vec::with_capacity(descr.tuples.len());
-        for clause in &descr.tuples {
+        let mut shapes = Vec::new();
+        for clause in descr.cases.iter().flat_map(|case| case.structure.tuples.iter()) {
             if clause.pos.len() != 1 || !clause.neg.is_empty() {
-                return TupleShapes::arity_only(runtime_type_predicate_tuple_arities(descr));
+                return TupleShapes::arity_only(tuple_root_arities(descr));
             }
             shapes.push(
                 clause.pos[0]
@@ -2443,19 +2368,15 @@ impl Types {
     /// An interned callable clause pins exactly one literal. Equal-target
     /// literals merge at the type boundary; different targets make the clause
     /// empty and the boundary drops it. `callable_identity_literal` refuses
-    /// clauses that name no literal, subtract one, or name an anonymous
-    /// literal.
+    /// clauses that name no literal or subtract one.
     fn runtime_type_predicate_callables(&self, descr: &Descr) -> CallableShapes {
-        let mut shapes = Vec::with_capacity(descr.funcs.len());
-        for clause in &descr.funcs {
+        let mut shapes = Vec::new();
+        for clause in descr.cases.iter().flat_map(|case| case.structure.funcs.iter()) {
             let Some(lit) = callable_identity_literal(clause) else {
                 return CallableShapes::any();
             };
             shapes.push(CallableShape {
-                target: ClosureTarget::from(
-                    lit.fn_id
-                        .expect("callable_identity_literal accepted an anonymous literal"),
-                ),
+                target: ClosureTarget::from(lit.fn_id),
                 captures: lit
                     .captures
                     .iter()
@@ -2476,6 +2397,12 @@ impl Types {
             arrow_join_return(cx, cx.descr(a))
         };
         self.intern(d)
+    }
+
+    /// Apply a literal-free callable type at one ground input row. The
+    /// callable module owns the DNF/overload distinction and its trichotomy.
+    pub(super) fn callable_application(&mut self, callable: Ty, args: &[Ty]) -> callable::CallableApplication {
+        callable::return_on_inputs(self, callable, args)
     }
 
     #[cfg(test)]
@@ -2510,7 +2437,8 @@ impl Types {
     }
 
     pub fn has_vars(&self, a: &Ty) -> bool {
-        has_vars(self.ctx(), self.descr(a))
+        let mut seen = HashSet::new();
+        has_vars_ty(self.ctx(), *a, &mut seen)
     }
 
     /// Every free type-var id reachable from `a`, structural children
@@ -2519,14 +2447,14 @@ impl Types {
     /// their denotations compare.
     pub fn free_var_ids(&self, a: &Ty) -> BTreeSet<TypeVarId> {
         let mut ids = BTreeSet::new();
-        collect_free_vars(self.ctx(), self.descr(a), &mut ids);
+        let mut seen = HashSet::new();
+        collect_free_vars(self.ctx(), *a, &mut seen, &mut ids);
         ids
     }
 
     /// Every closure-literal arrow reachable from `a`, as
-    /// `(fn_id, captures, args, ret)`, sorted and deduped. The brand is `None`
-    /// for an anonymous literal, which is one shape like any other: two rows
-    /// whose literals differ only in brand are NOT the same shape.
+    /// `(fn_id, captures, args, ret)`, sorted and deduped. Two rows whose
+    /// literals differ only in brand are NOT the same shape.
     ///
     /// `args` and `ret` are in here because subtyping leaves them out:
     /// `emptiness::func_clause_empty` decides a negative closure-literal
@@ -2640,13 +2568,12 @@ impl Types {
     }
 
     pub fn runtime_envelope(&mut self, ty: Ty) -> Ty {
-        let descr = runtime_envelope(
+        runtime_envelope(
             self,
             ty,
             RuntimeEnvelopePolarity::Positive,
             RuntimeEnvelopePurpose::Projection,
-        );
-        self.intern(descr)
+        )
     }
 
     /// The static surface from which a runtime test and its projections are
@@ -2676,13 +2603,12 @@ impl Types {
     /// fz-kdt.125's defect one tuple deep, and leave a depth-0/depth-1 seam
     /// nothing in the runtime justifies.
     pub(crate) fn runtime_type_test_envelope(&mut self, ty: Ty) -> Ty {
-        let descr = runtime_envelope(
+        runtime_envelope(
             self,
             ty,
             RuntimeEnvelopePolarity::Positive,
             RuntimeEnvelopePurpose::Predicate,
-        );
-        self.intern(descr)
+        )
     }
 
     pub fn instantiate(&mut self, a: &Ty, sigma: &Sigma<Ty>) -> Ty {
@@ -2778,10 +2704,10 @@ impl Types {
         self.interner
             .arena
             .iter()
-            .flat_map(|d| d.funcs.iter())
+            .flat_map(|d| d.cases.iter().flat_map(|case| case.structure.funcs.iter()))
             .flat_map(|c| c.pos.iter().chain(c.neg.iter()))
             .filter_map(|sig| sig.lit.as_ref())
-            .filter_map(|lit| lit.fn_id)
+            .map(|lit| lit.fn_id)
             .filter(|fn_id| !self.callable_origins.contains_key(fn_id))
             .map(|fn_id| fn_id.0)
             .collect()
@@ -2793,18 +2719,17 @@ impl Types {
             .map(|pos| self.intern(Descr::var(closure_var_id(fn_id, pos))))
             .collect();
         let ret = self.intern(Descr::var(closure_ret_var_id(fn_id)));
-        self.intern(Descr {
-            funcs: vec![Conj::pos_of(ArrowSig {
-                args,
-                ret,
-                lit: Some(ClosureLit {
-                    kind: CallableValueKind::FnRef,
-                    fn_id: Some(fn_id),
-                    captures: Vec::new(),
-                }),
-            })],
-            ..Descr::unbranded()
-        })
+        let mut d = Descr::unbranded();
+        d.cases[0].structure.funcs = vec![Conj::pos_of(ArrowSig {
+            args,
+            ret,
+            lit: Some(ClosureLit {
+                kind: CallableValueKind::FnRef,
+                fn_id,
+                captures: Vec::new(),
+            }),
+        })];
+        self.intern(d)
     }
 
     pub fn closure_lit(&mut self, target: ClosureTarget, captures: Vec<Ty>, n_args: usize) -> Ty {
@@ -2813,26 +2738,49 @@ impl Types {
             .map(|pos| self.intern(Descr::var(closure_var_id(fn_id, pos))))
             .collect();
         let ret = self.intern(Descr::var(closure_ret_var_id(fn_id)));
-        self.intern(Descr {
-            funcs: vec![Conj::pos_of(ArrowSig {
-                args,
-                ret,
-                lit: Some(ClosureLit {
-                    kind: CallableValueKind::Closure,
-                    fn_id: Some(fn_id),
-                    captures,
-                }),
-            })],
-            ..Descr::unbranded()
-        })
+        let mut d = Descr::unbranded();
+        d.cases[0].structure.funcs = vec![Conj::pos_of(ArrowSig {
+            args,
+            ret,
+            lit: Some(ClosureLit {
+                kind: CallableValueKind::Closure,
+                fn_id,
+                captures,
+            }),
+        })];
+        self.intern(d)
     }
 
     pub fn closure_lit_parts(&self, a: &Ty) -> Option<ClosureLitInfo<Ty>> {
         let lit = self.descr(a).as_closure_lit()?;
         Some(ClosureLitInfo {
-            target: lit.fn_id?.into(),
+            target: lit.fn_id.into(),
             captures: lit.captures.clone(),
             kind: lit.kind,
+        })
+    }
+
+    /// The callable-surface variables owned by one literal before any caller
+    /// observes it. This is planner evidence, not part of the literal's value
+    /// denotation; semantic rows carry the returned coordinate record when a
+    /// literal needs a surface.
+    pub(crate) fn callable_literal_signature(&self, a: &Ty) -> Option<ActivationSignature> {
+        let sig = self.descr(a).pure_arrow()?;
+        sig.lit.as_ref()?;
+        Some(ActivationSignature {
+            inputs: sig.args.clone().into_boxed_slice(),
+            result: sig.ret,
+        })
+    }
+
+    /// Read an arrow coordinate record without treating it as a callable
+    /// value. Contracts use this to attach their matched callback surface to
+    /// an activation input rather than intersecting it into a closure `Ty`.
+    pub(crate) fn callable_signature(&self, a: &Ty) -> Option<ActivationSignature> {
+        let sig = self.descr(a).pure_arrow()?;
+        Some(ActivationSignature {
+            inputs: sig.args.clone().into_boxed_slice(),
+            result: sig.ret,
         })
     }
 
@@ -2840,53 +2788,41 @@ impl Types {
         callable_clauses(self.ctx(), self.descr(a))
     }
 
-    pub fn callable_value_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
-        let clauses = self.callable_clauses(a)?;
-        let surface_clauses = clauses
+    /// Exhaustive alternatives of a value whose callable identities are
+    /// closed. Unlike `callable_clauses`, this rejects other runtime axes and
+    /// reads one literal per canonical DNF clause, rather than flattening an
+    /// overloaded conjunction into apparently independent alternatives.
+    pub(crate) fn closed_callable_clauses(&self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
+        let descr = self.descr(a);
+        if !descr.is_pure_callable() {
+            return None;
+        }
+        descr
+            .cases
             .iter()
-            .filter(|clause| clause.closure.is_none())
-            .cloned()
-            .collect::<Vec<_>>();
-        if surface_clauses.is_empty() {
-            return Some(clauses);
-        }
-
-        let mut resolved = Vec::new();
-        for clause in clauses {
-            if clause.closure.is_none() {
-                continue;
-            }
-            let mut specialized = false;
-            for surface in surface_clauses
-                .iter()
-                .filter(|surface| surface.args.len() == clause.args.len())
-            {
-                specialized = true;
-                let (args, ret) = specialize_surface(self, (&clause.args, clause.ret), (&surface.args, surface.ret));
-                let resolved_clause = CallableClause {
-                    args,
-                    ret,
-                    closure: clause.closure.clone(),
-                };
-                if !resolved.contains(&resolved_clause) {
-                    resolved.push(resolved_clause);
-                }
-            }
-            if !specialized && !resolved.contains(&clause) {
-                resolved.push(clause);
-            }
-        }
-
-        if resolved.is_empty() {
-            Some(surface_clauses)
-        } else {
-            Some(resolved)
-        }
+            .flat_map(|case| &case.structure.funcs)
+            .map(|clause| {
+                let literal = callable_identity_literal(clause)?;
+                let arrow = clause.pos.iter().find(|arrow| arrow.lit.as_ref() == Some(literal))?;
+                Some(CallableClause {
+                    args: arrow.args.clone(),
+                    ret: arrow.ret,
+                    closure: Some(ClosureLitInfo {
+                        target: literal.fn_id.into(),
+                        captures: literal.captures.clone(),
+                        kind: literal.kind,
+                    }),
+                })
+            })
+            .collect()
     }
 
-    pub fn erase_closure_identity(&mut self, a: &Ty) -> Ty {
-        let d = erase_closure_identity(self, *a);
-        self.intern(d)
+    pub fn callable_value_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
+        // Call observations are carried beside the value by `ActivationInput`.
+        // This compatibility accessor therefore has no literal-specialization
+        // arm: every named closure has precisely the callable clauses its
+        // denotation owns.
+        self.callable_clauses(a)
     }
 }
 
@@ -2912,11 +2848,11 @@ impl Types {
 
 impl Types {
     pub fn display(&self, a: &Ty) -> String {
-        format::display(self.ctx(), self.descr(a))
+        format::display(self.ctx(), *a)
     }
 
     pub fn display_for_diag(&self, a: &Ty) -> String {
-        format::display_for_diag(self.ctx(), self.descr(a))
+        format::display_for_diag(self.ctx(), *a)
     }
 }
 
@@ -3064,10 +3000,6 @@ impl SharedTypes for Types {
         Types::refine_widen(self, a, b)
     }
 
-    fn convergence_class(&mut self, a: &Self::Ty) -> Self::Ty {
-        Types::convergence_class(self, a)
-    }
-
     fn union(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty {
         Types::union(self, a, b)
     }
@@ -3202,10 +3134,6 @@ impl SharedClosureTypes for Types {
     fn callable_clauses(&mut self, a: &Self::Ty) -> Option<Vec<CallableClause<Self::Ty>>> {
         Types::callable_clauses(self, a)
     }
-
-    fn erase_closure_identity(&mut self, a: &Self::Ty) -> Self::Ty {
-        Types::erase_closure_identity(self, a)
-    }
 }
 
 impl SharedVisibilityTypes for Types {
@@ -3224,12 +3152,26 @@ impl SharedRenderTypes for Types {
     }
 }
 
+fn exclusive_tuple_root_arity(descr: &Descr) -> Option<usize> {
+    if !has_only_tuple_runtime_roots(descr) {
+        return None;
+    }
+    let arities = tuple_root_arities(descr);
+    let mut arities = arities.finite_elems()?;
+    let arity = arities.next()?;
+    arities.next().is_none().then_some(arity)
+}
+
 fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
+    let [case] = d.cases.as_slice() else { return None };
+    if !case.brands.is_any() {
+        return None;
+    }
+    let d = &case.structure;
     let finite: Vec<TypeVarId> = d.vars.finite_elems()?.collect();
     let only_vars = d.basic.is_empty()
         && d.atoms.is_none()
         && d.opaques.is_none()
-        && d.brands.is_any()
         && d.tuples.is_empty()
         && d.lists.is_empty()
         && d.resources.is_empty()
@@ -3239,33 +3181,71 @@ fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
 }
 
 fn intersect_descr(types: &mut Types, a: &Descr, b: &Descr) -> Descr {
-    Descr {
+    intersect_descr_with(types, a, b)
+}
+
+/// Intersection over a caller-supplied child-reference domain. Ground type
+/// operations use [`Types`] itself; the regular kernel uses the same Boolean
+/// structure while naming finite product states at constructor children.
+fn intersect_descr_with<R: Clone + PartialEq>(
+    ops: &mut impl ChildIntersection<R>,
+    a: &DescrOf<R>,
+    b: &DescrOf<R>,
+) -> DescrOf<R> {
+    let mut cases = Vec::new();
+    for left in &a.cases {
+        for right in &b.cases {
+            let brands = left.brands.intersect(&right.brands);
+            if !brands.is_none() {
+                cases.push(BrandCase {
+                    brands,
+                    structure: intersect_structure_with(ops, &left.structure, &right.structure),
+                });
+            }
+        }
+    }
+    DescrOf { cases }
+}
+
+fn intersect_structure_with<R: Clone + PartialEq>(
+    ops: &mut impl ChildIntersection<R>,
+    a: &StructureOf<R>,
+    b: &StructureOf<R>,
+) -> StructureOf<R> {
+    StructureOf {
         basic: a.basic.intersect(b.basic),
         atoms: a.atoms.intersect(&b.atoms),
         opaques: a.opaques.intersect(&b.opaques),
-        brands: a.brands.intersect(&b.brands),
         vars: a.vars.intersect(&b.vars),
-        tuples: intersect_dnf(types, &a.tuples, &b.tuples),
-        lists: intersect_dnf(types, &a.lists, &b.lists),
-        resources: intersect_dnf(types, &a.resources, &b.resources),
-        funcs: intersect_dnf(types, &a.funcs, &b.funcs),
-        maps: intersect_dnf(types, &a.maps, &b.maps),
+        tuples: intersect_dnf_with(ops, &a.tuples, &b.tuples),
+        lists: intersect_dnf_with(ops, &a.lists, &b.lists),
+        resources: intersect_dnf_with(ops, &a.resources, &b.resources),
+        funcs: intersect_dnf_with(ops, &a.funcs, &b.funcs),
+        maps: intersect_dnf_with(ops, &a.maps, &b.maps),
     }
 }
 
-fn intersect_dnf<T: MergeSig>(types: &mut Types, a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
-    dnf_intersect_with(a, b, |c1, c2| intersect_clauses(types, c1, c2))
+fn intersect_dnf_with<R: Clone + PartialEq, T: MergeSig<R>>(
+    ops: &mut impl ChildIntersection<R>,
+    a: &[Conj<T>],
+    b: &[Conj<T>],
+) -> Vec<Conj<T>> {
+    dnf_intersect_with(a, b, |c1, c2| intersect_clauses_with(ops, c1, c2))
 }
 
 /// `None` means the merged clause is empty by construction (a positive-sig
 /// pair proved disjoint): `∅` contributes nothing to a DNF and must not
 /// persist — every garbage clause doubles a `dnf_neg` factor.
-fn intersect_clauses<T: MergeSig>(types: &mut Types, a: &Conj<T>, b: &Conj<T>) -> Option<Conj<T>> {
+fn intersect_clauses_with<R: Clone + PartialEq, T: MergeSig<R>>(
+    ops: &mut impl ChildIntersection<R>,
+    a: &Conj<T>,
+    b: &Conj<T>,
+) -> Option<Conj<T>> {
     let mut pos = a.pos.clone();
     for new_sig in &b.pos {
         let mut merged = false;
         for slot in pos.iter_mut() {
-            match T::intersect_pos(types, slot, new_sig) {
+            match T::intersect_pos(ops, slot, new_sig) {
                 PosMeet::Merged(narrowed) => {
                     *slot = narrowed;
                     merged = true;
@@ -3288,25 +3268,21 @@ fn intersect_clauses<T: MergeSig>(types: &mut Types, a: &Conj<T>, b: &Conj<T>) -
     Some(Conj { pos, neg })
 }
 
-/// The `returned` axis's per-field demand where it descends into a tuple, and
-/// nothing where it does not (fz-kdt.199).
-fn returned_fields(returned: &DispatchDemand) -> Option<&BTreeMap<u32, DispatchDemand>> {
-    match returned {
-        DispatchDemand::TupleFields(fields) => Some(fields),
-        _ => None,
-    }
-}
-
-/// The `returned` axis's element demand where it descends into a list, and
-/// nothing where it does not (fz-kdt.199).
-fn returned_element(returned: &DispatchDemand) -> Option<&DispatchDemand> {
-    match returned {
-        DispatchDemand::ListShape(elem) => Some(elem),
-        _ => None,
-    }
-}
-
 fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {
+    let relevant = d
+        .cases
+        .iter()
+        .filter(|case| !case.structure.lists.is_empty())
+        .collect::<Vec<_>>();
+    if relevant.is_empty() {
+        return Descr::any();
+    }
+    relevant.into_iter().fold(Descr::none(), |elem, case| {
+        elem.union(cx, &list_element_structure(cx, &case.structure))
+    })
+}
+
+fn list_element_structure(cx: TyCtx<'_>, d: &Structure) -> Descr {
     if d.lists.is_empty() {
         return Descr::any();
     }
@@ -3333,6 +3309,18 @@ fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {
 }
 
 fn resource_payload_type(cx: TyCtx<'_>, d: &Descr) -> Option<Descr> {
+    let mut payload = Descr::none();
+    let mut found = false;
+    for case in d.cases.iter().filter(|case| !case.structure.resources.is_empty()) {
+        if let Some(case_payload) = resource_payload_structure(cx, &case.structure) {
+            payload = payload.union(cx, &case_payload);
+            found = true;
+        }
+    }
+    found.then_some(payload)
+}
+
+fn resource_payload_structure(cx: TyCtx<'_>, d: &Structure) -> Option<Descr> {
     if d.resources.is_empty() {
         return None;
     }
@@ -3355,6 +3343,19 @@ fn resource_payload_type(cx: TyCtx<'_>, d: &Descr) -> Option<Descr> {
 }
 
 fn tuple_projections(cx: TyCtx<'_>, d: &Descr, arity: usize) -> Vec<Descr> {
+    let mut comps = vec![Descr::none(); arity];
+    let mut found = false;
+    for case in d.cases.iter().filter(|case| !case.structure.tuples.is_empty()) {
+        let projected = tuple_projections_structure(cx, &case.structure, arity);
+        for (out, case_out) in comps.iter_mut().zip(projected) {
+            *out = out.union(cx, &case_out);
+        }
+        found = true;
+    }
+    if found { comps } else { vec![Descr::any(); arity] }
+}
+
+fn tuple_projections_structure(cx: TyCtx<'_>, d: &Structure, arity: usize) -> Vec<Descr> {
     let mut comps = vec![Descr::none(); arity];
     let mut found = false;
     for conj in &d.tuples {
@@ -3383,6 +3384,20 @@ fn tuple_projections(cx: TyCtx<'_>, d: &Descr, arity: usize) -> Vec<Descr> {
 }
 
 fn tuple_field_type(cx: TyCtx<'_>, d: &Descr, index: usize) -> Descr {
+    let relevant = d
+        .cases
+        .iter()
+        .filter(|case| !case.structure.tuples.is_empty())
+        .collect::<Vec<_>>();
+    if relevant.is_empty() {
+        return Descr::none();
+    }
+    relevant.into_iter().fold(Descr::none(), |out, case| {
+        out.union(cx, &tuple_field_structure(cx, &case.structure, index))
+    })
+}
+
+fn tuple_field_structure(cx: TyCtx<'_>, d: &Structure, index: usize) -> Descr {
     let mut out = Descr::none();
     let mut found = false;
     for conj in &d.tuples {
@@ -3421,6 +3436,18 @@ fn tuple_field_type(cx: TyCtx<'_>, d: &Descr, index: usize) -> Descr {
 }
 
 fn map_field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
+    let mut acc = Descr::none();
+    let mut found = false;
+    for case in &d.cases {
+        if let Some(value) = map_field_structure(cx, &case.structure, key) {
+            acc = acc.union(cx, &value);
+            found = true;
+        }
+    }
+    found.then_some(acc)
+}
+
+fn map_field_structure(cx: TyCtx<'_>, d: &Structure, key: &MapKey) -> Option<Descr> {
     if d.maps.is_empty() {
         return None;
     }
@@ -3453,7 +3480,7 @@ fn map_field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
 
 fn map_known_keys(d: &Descr) -> Vec<MapKey> {
     let mut keys = BTreeSet::new();
-    for conj in &d.maps {
+    for conj in d.cases.iter().flat_map(|case| case.structure.maps.iter()) {
         for sig in &conj.pos {
             keys.extend(sig.fields.keys().cloned());
         }
@@ -3462,22 +3489,25 @@ fn map_known_keys(d: &Descr) -> Vec<MapKey> {
 }
 
 fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>> {
-    if d.funcs.is_empty() || d.funcs.iter().any(|c| !c.neg.is_empty() || c.pos.is_empty()) {
+    let funcs = d
+        .cases
+        .iter()
+        .flat_map(|case| case.structure.funcs.iter())
+        .collect::<Vec<_>>();
+    if funcs.is_empty() || funcs.iter().any(|c| !c.neg.is_empty() || c.pos.is_empty()) {
         return None;
     }
     Some(
-        d.funcs
-            .iter()
+        funcs
+            .into_iter()
             .flat_map(|conj| conj.pos.iter())
             .map(|arrow| CallableClause {
                 args: arrow.args.clone(),
                 ret: arrow.ret,
-                closure: arrow.lit.as_ref().and_then(|lit| {
-                    lit.fn_id.map(|fn_id| ClosureLitInfo {
-                        target: fn_id.into(),
-                        captures: lit.captures.clone(),
-                        kind: lit.kind,
-                    })
+                closure: arrow.lit.as_ref().map(|lit| ClosureLitInfo {
+                    target: lit.fn_id.into(),
+                    captures: lit.captures.clone(),
+                    kind: lit.kind,
                 }),
             })
             .filter(|clause| clause.args.iter().all(|arg| !cx.descr(arg).is_empty(cx)))
@@ -3486,20 +3516,22 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
 }
 
 fn runtime_type_predicate_widens_non_structs(descr: &Descr) -> bool {
-    descr.opaques.cofinite
-        || descr
-            .opaques
-            .values
-            .iter()
-            .any(|tag| matches!(tag, OpaqueTag::Builtin(_) | OpaqueTag::Named(_)))
-        || descr.vars.cofinite
-        || !descr.vars.values.is_empty()
+    descr.cases.iter().any(|case| {
+        let d = &case.structure;
+        d.opaques.cofinite
+            || d.opaques
+                .values
+                .iter()
+                .any(|tag| matches!(tag, OpaqueTag::Builtin(_) | OpaqueTag::Named(_)))
+            || d.vars.cofinite
+            || !d.vars.values.is_empty()
+    })
 }
 
 fn runtime_type_predicate_map_tags(descr: &Descr) -> (bool, FiniteSet<ModuleName>) {
     let mut plain = false;
     let mut structs = FiniteSet::none();
-    for clause in &descr.maps {
+    for clause in descr.cases.iter().flat_map(|case| case.structure.maps.iter()) {
         let positive = clause.pos.first().map(|sig| &sig.tag);
         if clause.pos.iter().skip(1).any(|sig| Some(&sig.tag) != positive) {
             continue;
@@ -3531,7 +3563,7 @@ fn runtime_type_predicate_map_tags(descr: &Descr) -> (bool, FiniteSet<ModuleName
 
 fn runtime_type_predicate_list_shapes(descr: &Descr) -> FiniteSet<ListShape> {
     let mut out = FiniteSet::none();
-    for clause in &descr.lists {
+    for clause in descr.cases.iter().flat_map(|case| case.structure.lists.iter()) {
         let mut allowed = FiniteSet::finite([ListShape::Empty, ListShape::NonEmpty]);
         for sig in &clause.pos {
             let sig_allowed = if sig.is_exact_empty() {
@@ -3567,9 +3599,9 @@ fn negative_swallows_the_fragment(clause: &Conj<ListSig>, negative: &ListSig) ->
     matches!(clause.pos.as_slice(), [positive] if positive.elem.is_some() && positive.elem == negative.elem)
 }
 
-fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
+fn tuple_root_arities(descr: &Descr) -> FiniteSet<usize> {
     let mut out = FiniteSet::none();
-    for clause in &descr.tuples {
+    for clause in descr.cases.iter().flat_map(|case| case.structure.tuples.iter()) {
         let mut allowed = if clause.pos.is_empty() {
             FiniteSet::any()
         } else {
@@ -3587,6 +3619,21 @@ fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
     out
 }
 
+fn has_only_tuple_runtime_roots(descr: &Descr) -> bool {
+    let (maps, named_structs) = runtime_type_predicate_map_tags(descr);
+    !runtime_type_predicate_widens_non_structs(descr)
+        && descr.cases.iter().all(|case| {
+            case.structure.basic.is_empty() && case.structure.atoms.is_none() && case.structure.opaques.is_none()
+        })
+        && runtime_type_predicate_list_shapes(descr).is_none()
+        && descr
+            .cases
+            .iter()
+            .all(|case| case.structure.resources.is_empty() && case.structure.funcs.is_empty())
+        && !maps
+        && named_structs.is_none()
+}
+
 /// Every callable a function axis admits, named the way the runtime tells them
 /// apart: by the code each was minted from. `None` when the axis admits
 /// callables this side cannot enumerate.
@@ -3598,50 +3645,26 @@ fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
 /// at the type boundary, while distinct identities made the clause empty and
 /// were dropped. If that invariant breaks, the exact reader below fails rather
 /// than making a runtime predicate for a state the type interner forbids.
-///
-/// An ANONYMOUS literal (fz-kdt.127) names no code at all, so it is that same
-/// unrestricted answer -- and this is the ONE place that decides it, for the
-/// predicate projection and for the envelope alike. It never actually arrives.
-/// An anonymous literal is minted in exactly one place,
-/// [`Types::erase_transported_closure_identities`], which puts it in the
-/// `arrow` of the ACTIVATION KEY of a non-recursive body that consumes no
-/// callable identity, and only in the slots the dispatch mask marks
-/// `DispatchDemand::Ignore`; a runtime test is asked of a VALUE's type -- a
-/// callsite's `CallTargetSummary::surface_inputs`, a lane's carrier -- never of
-/// a key. THAT is what makes an erased forwarder key and the construction axis
-/// compose: the keying rule holds the two apart, not any projection here. The
-/// `debug_assert!` is the gate on the rule; the `?` behind it keeps the sound
-/// unrestricted answer if the rule is ever broken.
 fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>> {
     let mut targets = BTreeSet::new();
     for clause in funcs {
-        targets.insert(
-            callable_identity_literal(clause)?
-                .fn_id
-                .expect("callable_identity_literal accepted an anonymous literal"),
-        );
+        targets.insert(callable_identity_literal(clause)?.fn_id);
     }
     Some(targets)
 }
 
 /// The one runtime-observable literal of an interned callable clause.
 ///
-/// An anonymous literal is valid only in a non-runtime activation key, so it
-/// asks the caller to take the unrestricted predicate path. Several literals
-/// mean the interner invariant was violated and must never be recovered into a
-/// lossy runtime test.
+/// `None` says this clause names no literal of its own: it subtracts one, or
+/// it pins none at all. Either way the caller takes the unrestricted predicate
+/// path. Several literals mean the interner invariant was violated and must
+/// never be recovered into a lossy runtime test.
 fn callable_identity_literal(clause: &Conj<ArrowSig>) -> Option<&ClosureLit> {
     if !clause.neg.is_empty() {
         return None;
     }
     let mut literals = clause.pos.iter().filter_map(|sig| sig.lit.as_ref());
     let literal = literals.next()?;
-    debug_assert!(
-        literal.fn_id.is_some(),
-        "an anonymous literal reached a runtime test: it can only have come from an \
-         activation key, and a key is never what a test is asked of (fz-kdt.127)"
-    );
-    literal.fn_id?;
     assert!(
         literals.next().is_none(),
         "Types::intern retained a callable clause with several literal identities"
@@ -3650,14 +3673,18 @@ fn callable_identity_literal(clause: &Conj<ArrowSig>) -> Option<&ClosureLit> {
 }
 
 fn runtime_type_predicate_named_structs(descr: &Descr, structs: FiniteSet<ModuleName>) -> FiniteSet<ModuleName> {
-    let nominal = if descr.opaques.cofinite {
-        FiniteSet::none()
-    } else {
-        FiniteSet::finite(descr.opaques.values.iter().filter_map(|tag| match tag {
-            OpaqueTag::ProtocolTarget(module) => Some(module.clone()),
-            OpaqueTag::Builtin(_) | OpaqueTag::Named(_) => None,
-        }))
-    };
+    let nominal = descr.cases.iter().fold(FiniteSet::none(), |acc, case| {
+        let opaques = &case.structure.opaques;
+        let names = if opaques.cofinite {
+            FiniteSet::none()
+        } else {
+            FiniteSet::finite(opaques.values.iter().filter_map(|tag| match tag {
+                OpaqueTag::ProtocolTarget(module) => Some(module.clone()),
+                OpaqueTag::Builtin(_) | OpaqueTag::Named(_) => None,
+            }))
+        };
+        acc.union(&names)
+    });
     nominal.union(&structs)
 }
 
@@ -3677,44 +3704,51 @@ where
 /// Collect every type-var id `d` mentions, mirroring `has_vars`' recursion:
 /// the same axes, the same structural children, including a closure literal's
 /// captures.
-fn collect_free_vars(cx: TyCtx<'_>, d: &Descr, ids: &mut BTreeSet<TypeVarId>) {
-    ids.extend(d.vars.values.iter().copied());
-    for c in &d.tuples {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for t in &sig.elems {
-                collect_free_vars(cx, cx.descr(t), ids);
-            }
-        }
+fn collect_free_vars(cx: TyCtx<'_>, ty: Ty, seen: &mut HashSet<Ty>, ids: &mut BTreeSet<TypeVarId>) {
+    if !seen.insert(ty) {
+        return;
     }
-    for c in &d.lists {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            if let Some(t) = sig.elem {
-                collect_free_vars(cx, cx.descr(&t), ids);
-            }
-        }
-    }
-    for c in &d.resources {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            collect_free_vars(cx, cx.descr(&sig.payload), ids);
-        }
-    }
-    for c in &d.funcs {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for t in &sig.args {
-                collect_free_vars(cx, cx.descr(t), ids);
-            }
-            collect_free_vars(cx, cx.descr(&sig.ret), ids);
-            if let Some(lit) = sig.lit.as_ref() {
-                for t in &lit.captures {
-                    collect_free_vars(cx, cx.descr(t), ids);
+    let d = cx.descr(&ty);
+    for case in &d.cases {
+        let d = &case.structure;
+        ids.extend(d.vars.values.iter().copied());
+        for c in &d.tuples {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                for t in &sig.elems {
+                    collect_free_vars(cx, *t, seen, ids);
                 }
             }
         }
-    }
-    for c in &d.maps {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for t in sig.fields.values() {
-                collect_free_vars(cx, cx.descr(t), ids);
+        for c in &d.lists {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                if let Some(t) = sig.elem {
+                    collect_free_vars(cx, t, seen, ids);
+                }
+            }
+        }
+        for c in &d.resources {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                collect_free_vars(cx, sig.payload, seen, ids);
+            }
+        }
+        for c in &d.funcs {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                for t in &sig.args {
+                    collect_free_vars(cx, *t, seen, ids);
+                }
+                collect_free_vars(cx, sig.ret, seen, ids);
+                if let Some(lit) = sig.lit.as_ref() {
+                    for t in &lit.captures {
+                        collect_free_vars(cx, *t, seen, ids);
+                    }
+                }
+            }
+        }
+        for c in &d.maps {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                for t in sig.fields.values() {
+                    collect_free_vars(cx, *t, seen, ids);
+                }
             }
         }
     }
@@ -3732,49 +3766,65 @@ fn collect_lit_arrow_shapes(cx: TyCtx<'_>, t: &Ty, seen: &mut HashSet<Ty>, shape
         return;
     }
     let d = cx.descr(t);
-    for c in &d.tuples {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for e in &sig.elems {
-                collect_lit_arrow_shapes(cx, e, seen, shapes);
-            }
-        }
-    }
-    for c in &d.lists {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            if let Some(e) = sig.elem {
-                collect_lit_arrow_shapes(cx, &e, seen, shapes);
-            }
-        }
-    }
-    for c in &d.resources {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            collect_lit_arrow_shapes(cx, &sig.payload, seen, shapes);
-        }
-    }
-    for c in &d.funcs {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            if let Some(lit) = sig.lit.as_ref() {
-                shapes.push((lit.fn_id, lit.captures.clone(), sig.args.clone(), sig.ret));
-                for capture in &lit.captures {
-                    collect_lit_arrow_shapes(cx, capture, seen, shapes);
+    for case in &d.cases {
+        let d = &case.structure;
+        for c in &d.tuples {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                for e in &sig.elems {
+                    collect_lit_arrow_shapes(cx, e, seen, shapes);
                 }
             }
-            for arg in &sig.args {
-                collect_lit_arrow_shapes(cx, arg, seen, shapes);
-            }
-            collect_lit_arrow_shapes(cx, &sig.ret, seen, shapes);
         }
-    }
-    for c in &d.maps {
-        for sig in c.pos.iter().chain(c.neg.iter()) {
-            for field in sig.fields.values() {
-                collect_lit_arrow_shapes(cx, field, seen, shapes);
+        for c in &d.lists {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                if let Some(e) = sig.elem {
+                    collect_lit_arrow_shapes(cx, &e, seen, shapes);
+                }
+            }
+        }
+        for c in &d.resources {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                collect_lit_arrow_shapes(cx, &sig.payload, seen, shapes);
+            }
+        }
+        for c in &d.funcs {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                if let Some(lit) = sig.lit.as_ref() {
+                    shapes.push((lit.fn_id, lit.captures.clone(), sig.args.clone(), sig.ret));
+                    for capture in &lit.captures {
+                        collect_lit_arrow_shapes(cx, capture, seen, shapes);
+                    }
+                }
+                for arg in &sig.args {
+                    collect_lit_arrow_shapes(cx, arg, seen, shapes);
+                }
+                collect_lit_arrow_shapes(cx, &sig.ret, seen, shapes);
+            }
+        }
+        for c in &d.maps {
+            for sig in c.pos.iter().chain(c.neg.iter()) {
+                for field in sig.fields.values() {
+                    collect_lit_arrow_shapes(cx, field, seen, shapes);
+                }
             }
         }
     }
 }
 
 fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {
+    let mut seen = HashSet::new();
+    has_vars_descr(cx, d, &mut seen)
+}
+
+fn has_vars_ty(cx: TyCtx<'_>, ty: Ty, seen: &mut HashSet<Ty>) -> bool {
+    seen.insert(ty) && has_vars_descr(cx, cx.descr(&ty), seen)
+}
+
+fn has_vars_descr(cx: TyCtx<'_>, d: &Descr, seen: &mut HashSet<Ty>) -> bool {
+    d.cases.iter().any(|case| has_vars_structure(cx, &case.structure, seen))
+}
+
+fn has_vars_structure(cx: TyCtx<'_>, d: &Structure, seen: &mut HashSet<Ty>) -> bool {
     if !d.vars.values.is_empty() {
         return true;
     }
@@ -3782,35 +3832,35 @@ fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {
         c.pos
             .iter()
             .chain(c.neg.iter())
-            .any(|sig| sig.elems.iter().any(|t| has_vars(cx, cx.descr(t))))
+            .any(|sig| sig.elems.iter().any(|t| has_vars_ty(cx, *t, seen)))
     }) || d.lists.iter().any(|c| {
         c.pos
             .iter()
             .chain(c.neg.iter())
-            .any(|sig| sig.elem.is_some_and(|t| has_vars(cx, cx.descr(&t))))
+            .any(|sig| sig.elem.is_some_and(|t| has_vars_ty(cx, t, seen)))
     }) || d.resources.iter().any(|c| {
         c.pos
             .iter()
             .chain(c.neg.iter())
-            .any(|sig| has_vars(cx, cx.descr(&sig.payload)))
+            .any(|sig| has_vars_ty(cx, sig.payload, seen))
     }) || d.funcs.iter().any(|c| {
         c.pos.iter().chain(c.neg.iter()).any(|sig| {
-            sig.args.iter().any(|t| has_vars(cx, cx.descr(t)))
-                || has_vars(cx, cx.descr(&sig.ret))
+            sig.args.iter().any(|t| has_vars_ty(cx, *t, seen))
+                || has_vars_ty(cx, sig.ret, seen)
                 || sig
                     .lit
                     .as_ref()
-                    .is_some_and(|lit| lit.captures.iter().any(|t| has_vars(cx, cx.descr(t))))
+                    .is_some_and(|lit| lit.captures.iter().any(|t| has_vars_ty(cx, *t, seen)))
         })
     }) || d.maps.iter().any(|c| {
         c.pos
             .iter()
             .chain(c.neg.iter())
-            .any(|sig| sig.fields.values().any(|t| has_vars(cx, cx.descr(t))))
+            .any(|sig| sig.fields.values().any(|t| has_vars_ty(cx, *t, seen)))
     })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum RuntimeEnvelopePolarity {
     Positive,
     Negative,
@@ -3836,51 +3886,245 @@ enum RuntimeEnvelopePurpose {
     Predicate,
 }
 
+/// The runtime envelope of one type, built over its whole reachable component.
+///
+/// A `Ty` graph is not always a tree: a regular type's descriptor names the
+/// type itself, so rebuilding each child on its own would descend a cycle
+/// forever. The envelope is therefore built the way the type layer builds
+/// every other recursive value -- one body per reachable `(type, polarity)`
+/// node, each read by the same per-node rules, handed to the regular interner
+/// which ties the knot. An acyclic input travels the same path: no node of it
+/// names a local sibling, so every node interns as it is finished and the root
+/// comes back already published.
 fn runtime_envelope(
     types: &mut Types,
     ty: Ty,
     polarity: RuntimeEnvelopePolarity,
     purpose: RuntimeEnvelopePurpose,
-) -> Descr {
-    let mut descr = types.descr(&ty).clone();
-    if !descr.vars.values.is_empty() {
-        match (polarity, descr.vars.cofinite) {
-            (RuntimeEnvelopePolarity::Positive, _) => return Descr::any(),
-            (RuntimeEnvelopePolarity::Negative, true) => return Descr::none(),
-            (RuntimeEnvelopePolarity::Negative, false) => descr.vars = FiniteSet::none(),
+) -> Ty {
+    let mut walk = RuntimeEnvelopeWalk {
+        purpose,
+        nodes: HashMap::new(),
+        bodies: Vec::new(),
+    };
+    match runtime_envelope_node(types, &mut walk, ty, polarity) {
+        ComponentRef::Published(ty) => ty,
+        // The root is the first node the walk opens, so it is body zero.
+        ComponentRef::Local(_) => types.intern_regular_bodies(walk.bodies)[0],
+    }
+}
+
+/// The nodes of one envelope under construction.
+struct RuntimeEnvelopeWalk {
+    purpose: RuntimeEnvelopePurpose,
+    nodes: HashMap<(Ty, RuntimeEnvelopePolarity), RuntimeEnvelopeNode>,
+    bodies: Vec<DescrOf<ComponentRef>>,
+}
+
+enum RuntimeEnvelopeNode {
+    /// Still on the walk's own stack. Reaching it again is the back edge that
+    /// makes the component recursive, and this is the body it closes onto.
+    Open(usize),
+    Settled(ComponentRef),
+}
+
+/// The reference standing for one coordinate's envelope.
+///
+/// A finished body naming no local sibling is interned at once, so the common
+/// acyclic input never reaches the regular interner, every emptiness question
+/// below is asked of a real type, and a coordinate reached twice is answered
+/// from the memo.
+fn runtime_envelope_node(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    ty: Ty,
+    polarity: RuntimeEnvelopePolarity,
+) -> ComponentRef {
+    match walk.nodes.get(&(ty, polarity)) {
+        Some(RuntimeEnvelopeNode::Settled(reference)) => return *reference,
+        Some(RuntimeEnvelopeNode::Open(index)) => return ComponentRef::local(*index),
+        None => {}
+    }
+    let index = walk.bodies.len();
+    walk.bodies.push(DescrOf::none());
+    walk.nodes.insert((ty, polarity), RuntimeEnvelopeNode::Open(index));
+    let body = runtime_envelope_body(types, walk, ty, polarity);
+    let reference = match types.intern_ground_regular_body(body.clone()) {
+        Some(ground) => ComponentRef::Published(ground),
+        None => ComponentRef::local(index),
+    };
+    walk.bodies[index] = body;
+    walk.nodes
+        .insert((ty, polarity), RuntimeEnvelopeNode::Settled(reference));
+    reference
+}
+
+/// One node's body: the same reading at every rung of a cycle as at the top of
+/// an acyclic type.
+fn runtime_envelope_body(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    ty: Ty,
+    polarity: RuntimeEnvelopePolarity,
+) -> DescrOf<ComponentRef> {
+    let mut cases = Vec::new();
+    for case in types.descr(&ty).clone().cases {
+        let BrandCase { brands, structure } = case;
+        let mut vars = structure.vars;
+        if !vars.values.is_empty() {
+            match (polarity, vars.cofinite) {
+                (RuntimeEnvelopePolarity::Positive, _) => return DescrOf::any(),
+                (RuntimeEnvelopePolarity::Negative, true) => return DescrOf::none(),
+                (RuntimeEnvelopePolarity::Negative, false) => vars = FiniteSet::none(),
+            }
+        }
+        // Only in a positive position: a construction clause drops the arrow and
+        // widens each capture by this same reading, so it names at least the
+        // callables the clause it replaces named -- the direction a test must err
+        // in, and the opposite of the direction a subtracted region may.
+        let funcs = if walk.purpose == RuntimeEnvelopePurpose::Predicate
+            && polarity == RuntimeEnvelopePolarity::Positive
+            && !structure.funcs.is_empty()
+        {
+            callable_identity_clauses(types, walk, &structure.funcs)
+        } else {
+            published_clauses(structure.funcs, published_arrow)
+        };
+        cases.push(BrandCase {
+            brands,
+            structure: StructureOf {
+                basic: structure.basic,
+                atoms: structure.atoms,
+                opaques: structure.opaques,
+                vars,
+                tuples: runtime_envelope_axis(types, walk, structure.tuples, polarity, runtime_tuple_sig),
+                lists: runtime_envelope_axis(types, walk, structure.lists, polarity, runtime_list_sig),
+                resources: runtime_envelope_axis(types, walk, structure.resources, polarity, runtime_resource_sig),
+                funcs,
+                maps: runtime_envelope_axis(types, walk, structure.maps, polarity, runtime_map_sig),
+            },
+        });
+    }
+    DescrOf { cases }
+}
+
+/// A coordinate holding no value at all empties the signature that holds it. A
+/// local reference is a rung the walk has not closed yet; it stands for a
+/// constructor, so it holds values.
+fn runtime_envelope_is_empty(types: &Types, reference: ComponentRef) -> bool {
+    match reference {
+        ComponentRef::Published(ty) => types.is_empty(&ty),
+        ComponentRef::Local(_) => false,
+    }
+}
+
+fn runtime_envelope_axis<T, U>(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    clauses: Vec<Conj<T>>,
+    polarity: RuntimeEnvelopePolarity,
+    transform: fn(&mut Types, &mut RuntimeEnvelopeWalk, T, RuntimeEnvelopePolarity) -> Option<U>,
+) -> Vec<Conj<U>> {
+    clauses
+        .into_iter()
+        .filter_map(|conj| runtime_structural_conj(types, walk, conj, polarity, transform))
+        .collect()
+}
+
+fn runtime_structural_conj<T, U>(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    conj: Conj<T>,
+    polarity: RuntimeEnvelopePolarity,
+    transform: fn(&mut Types, &mut RuntimeEnvelopeWalk, T, RuntimeEnvelopePolarity) -> Option<U>,
+) -> Option<Conj<U>> {
+    let mut pos = Vec::with_capacity(conj.pos.len());
+    for sig in conj.pos {
+        pos.push(transform(types, walk, sig, polarity)?);
+    }
+    let neg = conj
+        .neg
+        .into_iter()
+        .filter_map(|sig| transform(types, walk, sig, polarity.flipped()))
+        .collect();
+    Some(Conj { pos, neg })
+}
+
+fn runtime_tuple_sig(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    sig: TupleSig,
+    polarity: RuntimeEnvelopePolarity,
+) -> Option<TupleSigOf<ComponentRef>> {
+    let elems = sig
+        .elems
+        .into_iter()
+        .map(|ty| runtime_envelope_node(types, walk, ty, polarity))
+        .collect::<Vec<_>>();
+    (!elems.iter().any(|elem| runtime_envelope_is_empty(types, *elem))).then_some(TupleSigOf { elems })
+}
+
+fn runtime_list_sig(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    sig: ListSig,
+    polarity: RuntimeEnvelopePolarity,
+) -> Option<ListSigOf<ComponentRef>> {
+    let elem = sig.elem.map(|ty| runtime_envelope_node(types, walk, ty, polarity));
+    match elem {
+        Some(elem) if runtime_envelope_is_empty(types, elem) && !sig.empty => None,
+        Some(elem) if runtime_envelope_is_empty(types, elem) => Some(ListSigOf::empty()),
+        _ => Some(ListSigOf { empty: sig.empty, elem }),
+    }
+}
+
+fn runtime_resource_sig(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    sig: ResourceSig,
+    polarity: RuntimeEnvelopePolarity,
+) -> Option<ResourceSigOf<ComponentRef>> {
+    let payload = runtime_envelope_node(types, walk, sig.payload, polarity);
+    (!runtime_envelope_is_empty(types, payload)).then_some(ResourceSigOf { payload })
+}
+
+fn runtime_map_sig(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    sig: MapSig,
+    polarity: RuntimeEnvelopePolarity,
+) -> Option<MapSigOf<ComponentRef>> {
+    match (walk.purpose, &sig.tag, polarity) {
+        // A struct question observes the schema tag; its field layout is owned
+        // by the settled schema and lowered operation, not the question.
+        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Positive) => Some(MapSigOf {
+            tag: sig.tag,
+            fields: BTreeMap::new(),
+        }),
+        // A shaped struct negative cannot be tested exactly. Dropping it
+        // widens in the safe direction; a fieldless negative names the whole
+        // family.
+        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Negative)
+            if sig.fields.is_empty() =>
+        {
+            Some(MapSigOf {
+                tag: sig.tag,
+                fields: BTreeMap::new(),
+            })
+        }
+        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Negative) => None,
+        // Semantic projection retains both record families' field evidence.
+        // Plain maps also retain it in the runtime test surface.
+        _ => {
+            let fields = sig
+                .fields
+                .into_iter()
+                .map(|(key, ty)| (key, runtime_envelope_node(types, walk, ty, polarity)))
+                .collect::<BTreeMap<_, _>>();
+            (!fields.values().any(|field| runtime_envelope_is_empty(types, *field)))
+                .then_some(MapSigOf { tag: sig.tag, fields })
         }
     }
-    // Only in a positive position: a construction clause drops the arrow and
-    // widens each capture by this same reading, so it names at least the
-    // callables the clause it replaces named -- the direction a test must err
-    // in, and the opposite of the direction a subtracted region may.
-    if purpose == RuntimeEnvelopePurpose::Predicate
-        && polarity == RuntimeEnvelopePolarity::Positive
-        && !descr.funcs.is_empty()
-    {
-        descr.funcs = callable_identity_clauses(types, &descr.funcs);
-    }
-    descr.tuples = descr
-        .tuples
-        .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_tuple_sig))
-        .collect();
-    descr.lists = descr
-        .lists
-        .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_list_sig))
-        .collect();
-    descr.resources = descr
-        .resources
-        .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_resource_sig))
-        .collect();
-    descr.maps = descr
-        .maps
-        .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_map_sig))
-        .collect();
-    descr
 }
 
 /// The function axis reduced to the one question the runtime can ask of a
@@ -3899,31 +4143,28 @@ fn runtime_envelope(
 /// same interned one-literal clause it would have seen unenveloped. The
 /// persistence boundary rejects the impossible several-literal intersection,
 /// so this path never invents a coarse fallback or a capture layout.
-fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec<Conj<ArrowSig>> {
+fn callable_identity_clauses(
+    types: &mut Types,
+    walk: &mut RuntimeEnvelopeWalk,
+    funcs: &[Conj<ArrowSig>],
+) -> Vec<Conj<ArrowSigOf<ComponentRef>>> {
     if callable_identity_targets(funcs).is_none() {
-        return Descr::fun_top().funcs;
+        return published_clauses(Descr::fun_top().cases.remove(0).structure.funcs, published_arrow);
     }
-    let ret = types.any();
+    let ret = ComponentRef::Published(types.any());
     let mut clauses = Vec::with_capacity(funcs.len());
     for clause in funcs {
         let mut pos = Vec::with_capacity(clause.pos.len());
         for lit in clause.pos.iter().filter_map(|sig| sig.lit.as_ref()) {
-            let captures = lit
+            let captures: Vec<ComponentRef> = lit
                 .captures
                 .iter()
-                .map(|capture| {
-                    runtime_envelope_ty(
-                        types,
-                        *capture,
-                        RuntimeEnvelopePolarity::Positive,
-                        RuntimeEnvelopePurpose::Predicate,
-                    )
-                })
+                .map(|capture| runtime_envelope_node(types, walk, *capture, RuntimeEnvelopePolarity::Positive))
                 .collect();
-            pos.push(ArrowSig {
+            pos.push(ArrowSigOf {
                 args: Vec::new(),
                 ret,
-                lit: Some(ClosureLit {
+                lit: Some(ClosureLitOf {
                     kind: CallableValueKind::Closure,
                     fn_id: lit.fn_id,
                     captures,
@@ -3935,116 +4176,41 @@ fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec
     clauses
 }
 
-fn runtime_envelope_ty(
-    types: &mut Types,
-    ty: Ty,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-) -> Ty {
-    let descr = runtime_envelope(types, ty, polarity, purpose);
-    types.intern(descr)
-}
-
-fn runtime_structural_conj<T>(
-    types: &mut Types,
-    conj: Conj<T>,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-    transform: fn(&mut Types, T, RuntimeEnvelopePolarity, RuntimeEnvelopePurpose) -> Option<T>,
-) -> Option<Conj<T>> {
-    let mut pos = Vec::with_capacity(conj.pos.len());
-    for sig in conj.pos {
-        pos.push(transform(types, sig, polarity, purpose)?);
-    }
-    let neg = conj
-        .neg
+/// An axis the envelope leaves alone still changes reference kind: every
+/// coordinate of the descriptor it was read from is a published type.
+fn published_clauses<T, U>(clauses: Vec<Conj<T>>, mut published: impl FnMut(T) -> U) -> Vec<Conj<U>> {
+    clauses
         .into_iter()
-        .filter_map(|sig| transform(types, sig, polarity.flipped(), purpose))
-        .collect();
-    Some(Conj { pos, neg })
+        .map(|conj| Conj {
+            pos: conj.pos.into_iter().map(&mut published).collect::<Vec<_>>(),
+            neg: conj.neg.into_iter().map(&mut published).collect::<Vec<_>>(),
+        })
+        .collect()
 }
 
-fn runtime_tuple_sig(
-    types: &mut Types,
-    sig: TupleSig,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-) -> Option<TupleSig> {
-    let elems = sig
-        .elems
-        .into_iter()
-        .map(|ty| runtime_envelope_ty(types, ty, polarity, purpose))
-        .collect::<Vec<_>>();
-    (!elems.iter().any(|ty| types.is_empty(ty))).then_some(TupleSig { elems })
-}
-
-fn runtime_list_sig(
-    types: &mut Types,
-    sig: ListSig,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-) -> Option<ListSig> {
-    let elem = sig.elem.map(|ty| runtime_envelope_ty(types, ty, polarity, purpose));
-    match elem {
-        Some(elem) if types.is_empty(&elem) && !sig.empty => None,
-        Some(elem) if types.is_empty(&elem) => Some(ListSig::empty()),
-        _ => Some(ListSig { empty: sig.empty, elem }),
-    }
-}
-
-fn runtime_resource_sig(
-    types: &mut Types,
-    sig: ResourceSig,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-) -> Option<ResourceSig> {
-    let payload = runtime_envelope_ty(types, sig.payload, polarity, purpose);
-    (!types.is_empty(&payload)).then_some(ResourceSig { payload })
-}
-
-fn runtime_map_sig(
-    types: &mut Types,
-    sig: sigs::MapSig,
-    polarity: RuntimeEnvelopePolarity,
-    purpose: RuntimeEnvelopePurpose,
-) -> Option<sigs::MapSig> {
-    match (purpose, &sig.tag, polarity) {
-        // A struct question observes the schema tag; its field layout is owned
-        // by the settled schema and lowered operation, not the question.
-        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Positive) => {
-            Some(sigs::MapSig {
-                tag: sig.tag,
-                fields: BTreeMap::new(),
-            })
-        }
-        // A shaped struct negative cannot be tested exactly. Dropping it
-        // widens in the safe direction; a fieldless negative names the whole
-        // family.
-        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Negative)
-            if sig.fields.is_empty() =>
-        {
-            Some(sig)
-        }
-        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Negative) => None,
-        // Semantic projection retains both record families' field evidence.
-        // Plain maps also retain it in the runtime test surface.
-        _ => {
-            let fields = sig
-                .fields
-                .into_iter()
-                .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity, purpose)))
-                .collect::<BTreeMap<_, _>>();
-            (!fields.values().any(|ty| types.is_empty(ty))).then_some(sigs::MapSig { tag: sig.tag, fields })
-        }
+fn published_arrow(sig: ArrowSig) -> ArrowSigOf<ComponentRef> {
+    ArrowSigOf {
+        args: sig.args.into_iter().map(ComponentRef::Published).collect(),
+        ret: ComponentRef::Published(sig.ret),
+        lit: sig.lit.map(|lit| ClosureLitOf {
+            kind: lit.kind,
+            fn_id: lit.fn_id,
+            captures: lit.captures.into_iter().map(ComponentRef::Published).collect(),
+        }),
     }
 }
 
 fn arrow_join_return(cx: TyCtx<'_>, d: &Descr) -> Descr {
-    if d.funcs.is_empty() {
+    let funcs = d
+        .cases
+        .iter()
+        .flat_map(|case| case.structure.funcs.iter())
+        .collect::<Vec<_>>();
+    if funcs.is_empty() {
         return Descr::any();
     }
     let mut acc = Descr::none();
-    for c in &d.funcs {
+    for c in funcs {
         if !c.neg.is_empty() || c.pos.is_empty() {
             return Descr::any();
         }
@@ -4073,50 +4239,6 @@ fn is_literal(cx: TyCtx<'_>, a: &Ty) -> bool {
 
 // More recursive transforms live in this module so they can thread the owning
 // interner explicitly without exposing the private descriptor representation.
-/// Erase every closure literal's BRAND and keep its capture TYPES, at every
-/// depth (fz-6gb, fz-kdt.127).
-///
-/// A forwarder key must not fork on WHICH lambda travelled through it -- that
-/// is freight, and forking on it drags a private copy of every library
-/// function the lambda reaches. It must fork on what that lambda CLOSED OVER:
-/// a body keyed at one capture type grounds its callees' capture lanes to that
-/// type, so two capture types arriving through one key leave a choice no
-/// static key can pin and only a runtime test could answer. Keeping the
-/// capture types answers it by the key instead.
-///
-/// The captures are erased by this same rule, so brands nested inside a
-/// captured closure go too and same-typed literals still share one body. A
-/// literal with no captures has nothing left to say once its brand is gone, so
-/// it erases to the bare arrow it always did.
-fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
-    let base = t.descr(&a).clone();
-    let mut erased = map_recursive_inputs(t, base, erase_closure_identity);
-    for conj in &mut erased.funcs {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            let Some(lit) = sig.lit.take() else {
-                continue;
-            };
-            if lit.captures.is_empty() {
-                continue;
-            }
-            let captures = lit
-                .captures
-                .iter()
-                .map(|capture| {
-                    let capture = erase_closure_identity(t, *capture);
-                    t.intern(capture)
-                })
-                .collect();
-            sig.lit = Some(ClosureLit {
-                kind: lit.kind,
-                fn_id: None,
-                captures,
-            });
-        }
-    }
-    erased
-}
-
 /// Returns an interned `Ty`: every result is canonically interned in `Types`,
 /// so a widened type is never an un-interned `Descr` that a caller might compare
 /// or store without canonicalization.
@@ -4132,7 +4254,7 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
             .zip(r.elems.iter())
             .map(|(l, r)| t.refine_widen(l, r))
             .collect();
-        return t.intern(Descr::tuple_of(elems));
+        return t.intern(reapply_common_brand_partition(&lhs, &rhs, Descr::tuple_of(elems)));
     }
     let any = t.any();
     if let (Some(l), Some(r)) = (lhs.as_pure_list(any), rhs.as_pure_list(any)) {
@@ -4149,11 +4271,11 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
             }),
             None => Descr::empty_list(),
         };
-        return t.intern(d);
+        return t.intern(reapply_common_brand_partition(&lhs, &rhs, d));
     }
     if let (Some(l), Some(r)) = (lhs.pure_resource(any), rhs.pure_resource(any)) {
         let payload = t.refine_widen(&l.payload, &r.payload);
-        return t.resource(payload);
+        return t.intern(reapply_common_brand_partition(&lhs, &rhs, Descr::resource_of(payload)));
     }
     if let (Some(l), Some(r)) = (lhs.pure_arrow().cloned(), rhs.pure_arrow().cloned())
         && l.args.len() == r.args.len()
@@ -4187,10 +4309,9 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
         if let Some(lit) = merged_lit {
             let args: Vec<Ty> = l.args.iter().zip(r.args.iter()).map(|(l, r)| t.union(*l, *r)).collect();
             let ret = t.refine_widen(&l.ret, &r.ret);
-            return t.intern(Descr {
-                funcs: vec![Conj::pos_of(ArrowSig { args, ret, lit })],
-                ..Descr::unbranded()
-            });
+            let mut d = Descr::unbranded();
+            d.cases[0].structure.funcs = vec![Conj::pos_of(ArrowSig { args, ret, lit })];
+            return t.intern(reapply_common_brand_partition(&lhs, &rhs, d));
         }
     }
     if let (Some(l), Some(r)) = (lhs.pure_record().cloned(), rhs.pure_record().cloned())
@@ -4204,10 +4325,40 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
                 fields.insert(key.clone(), *rv);
             }
         }
-        return t.intern(Descr::record(l.tag, fields));
+        return t.intern(reapply_common_brand_partition(&lhs, &rhs, Descr::record(l.tag, fields)));
     }
 
     t.union(a, b)
+}
+
+/// Shape widening may rebuild a descriptor from one common pure payload. That
+/// reconstruction is valid only when the operands share their whole brand
+/// partition; otherwise their least upper bound is the correlated outer union,
+/// not an unbranded hull that cross-pairs payloads and brands.
+fn reapply_common_brand_partition(lhs: &Descr, rhs: &Descr, rebuilt: Descr) -> Descr {
+    let [payload] = rebuilt.cases.as_slice() else {
+        return union_of(lhs, rhs);
+    };
+    if !payload.brands.is_any()
+        || lhs.cases.len() != rhs.cases.len()
+        || lhs
+            .cases
+            .iter()
+            .zip(&rhs.cases)
+            .any(|(left, right)| left.brands != right.brands)
+    {
+        return union_of(lhs, rhs);
+    }
+    Descr {
+        cases: lhs
+            .cases
+            .iter()
+            .map(|case| BrandCase {
+                brands: case.brands.clone(),
+                structure: payload.structure.clone(),
+            })
+            .collect(),
+    }
 }
 
 fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
@@ -4216,20 +4367,26 @@ fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
         return d;
     }
     let mut substituted = Descr::none();
-    let mut base = d.clone();
-    if !base.vars.cofinite {
-        let mut new_set = BTreeSet::new();
-        for id in &d.vars.values {
-            match sigma.get(id) {
-                Some(replacement) => {
-                    substituted = substituted.union(t.ctx(), t.descr(replacement));
-                }
-                None => {
-                    new_set.insert(*id);
+    let mut base = d;
+    for case in &mut base.cases {
+        if !case.structure.vars.cofinite {
+            let mut new_set = BTreeSet::new();
+            for id in &case.structure.vars.values {
+                match sigma.get(id) {
+                    Some(replacement) => {
+                        let mut replacement = t.descr(replacement).clone();
+                        for replacement_case in &mut replacement.cases {
+                            replacement_case.brands = replacement_case.brands.intersect(&case.brands);
+                        }
+                        substituted = substituted.union(t.ctx(), &replacement);
+                    }
+                    None => {
+                        new_set.insert(*id);
+                    }
                 }
             }
+            case.structure.vars = FiniteSet::finite(new_set);
         }
-        base.vars = FiniteSet::finite(new_set);
     }
     let walked = map_recursive_inputs_with(t, base, &mut |t, nested| {
         let d = instantiate(t, nested, sigma);
@@ -4273,6 +4430,22 @@ fn collect_subst_into(
     target: BindingSide,
     sigma: &mut Sigma<Ty>,
 ) {
+    let mut seen = HashSet::new();
+    collect_subst_into_with(t, pattern, witness, side, target, sigma, &mut seen);
+}
+
+fn collect_subst_into_with(
+    t: &mut Types,
+    pattern: Ty,
+    witness: Ty,
+    side: BindingSide,
+    target: BindingSide,
+    sigma: &mut Sigma<Ty>,
+    seen: &mut HashSet<(Ty, Ty, BindingSide, BindingSide)>,
+) {
+    if !seen.insert((pattern, witness, side, target)) {
+        return;
+    }
     let pat = t.descr(&pattern).clone();
     let wit = t.descr(&witness).clone();
     if let Some(ids) = pure_var_ids(&pat) {
@@ -4287,69 +4460,69 @@ fn collect_subst_into(
         && ps.elems.len() == ws.elems.len()
     {
         for (p, w) in ps.elems.iter().zip(ws.elems.iter()) {
-            collect_subst_into(t, *p, *w, side, target, sigma);
+            collect_subst_into_with(t, *p, *w, side, target, sigma, seen);
         }
     }
     let any = t.any();
     if let (Some(ps), Some(ws)) = (pat.as_pure_list(any), wit.as_pure_list(any))
         && let (Some(p), Some(w)) = (ps.elem, ws.elem)
     {
-        collect_subst_into(t, p, w, side, target, sigma);
+        collect_subst_into_with(t, p, w, side, target, sigma, seen);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_resource(any), wit.pure_resource(any)) {
-        collect_subst_into(t, ps.payload, ws.payload, side, target, sigma);
+        collect_subst_into_with(t, ps.payload, ws.payload, side, target, sigma, seen);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_arrow(), wit.pure_arrow())
         && ps.args.len() == ws.args.len()
     {
         for (p, w) in ps.args.iter().zip(ws.args.iter()) {
-            collect_subst_into(t, *p, *w, side.flipped(), target, sigma);
+            collect_subst_into_with(t, *p, *w, side.flipped(), target, sigma, seen);
         }
-        collect_subst_into(t, ps.ret, ws.ret, side, target, sigma);
+        collect_subst_into_with(t, ps.ret, ws.ret, side, target, sigma, seen);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_record(), wit.pure_record())
         && ps.tag == ws.tag
     {
         for (key, p) in &ps.fields {
             if let Some(w) = ws.fields.get(key) {
-                collect_subst_into(t, *p, *w, side, target, sigma);
+                collect_subst_into_with(t, *p, *w, side, target, sigma, seen);
             }
         }
     }
 }
 
-fn map_recursive_inputs(t: &mut Types, d: Descr, f: fn(&mut Types, Ty) -> Descr) -> Descr {
-    map_recursive_inputs_with(t, d, &mut |t, nested| {
-        let d = f(t, nested);
-        t.intern(d)
-    })
-}
-
 fn map_recursive_inputs_with(t: &mut Types, mut d: Descr, f: &mut impl FnMut(&mut Types, Ty) -> Ty) -> Descr {
-    for conj in &mut d.tuples {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.elems = sig.elems.iter().map(|ty| f(t, *ty)).collect();
+    for case in &mut d.cases {
+        let d = &mut case.structure;
+        for conj in &mut d.tuples {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                sig.elems = sig.elems.iter().map(|ty| f(t, *ty)).collect();
+            }
         }
-    }
-    for conj in &mut d.lists {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.elem = sig.elem.map(|ty| f(t, ty));
+        for conj in &mut d.lists {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                sig.elem = sig.elem.map(|ty| f(t, ty));
+            }
         }
-    }
-    for conj in &mut d.resources {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.payload = f(t, sig.payload);
+        for conj in &mut d.resources {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                sig.payload = f(t, sig.payload);
+            }
         }
-    }
-    for conj in &mut d.funcs {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.args = sig.args.iter().map(|ty| f(t, *ty)).collect();
-            sig.ret = f(t, sig.ret);
+        for conj in &mut d.funcs {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                sig.args = sig.args.iter().map(|ty| f(t, *ty)).collect();
+                sig.ret = f(t, sig.ret);
+            }
         }
-    }
-    for conj in &mut d.maps {
-        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-            sig.fields = sig.fields.iter().map(|(k, v)| (k.clone(), f(t, *v))).collect();
+        for conj in &mut d.maps {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                sig.fields = sig
+                    .fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), f(t, *value)))
+                    .collect();
+            }
         }
     }
     d

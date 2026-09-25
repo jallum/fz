@@ -4,14 +4,14 @@
 //! Position-owned products retain these descriptors in each executable's ABI.
 //! Positions may mention semantic body evidence, but descriptor keys must not.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::Range;
 use std::rc::Rc;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
-use super::identity::{ExecutableNeed, FunctionId};
+use super::identity::{ActivationSignature, ExecutableKey, ExecutableNeed, FunctionId};
 use super::semantic::SemanticOrd;
 use super::types::{Ty, Types};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
@@ -53,6 +53,9 @@ pub struct PhysicalLane {
     pub structural: ShapeId,
     pub lane: LaneId,
     pub source: PhysicalLaneSource,
+    /// A closed callable's unselected environment carries padding in this
+    /// lane. Its ABI type must admit the representation-safe padding value.
+    pub may_be_inactive: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,8 +206,12 @@ pub struct LaneDescr {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ActivationSymbol {
     pub function: FunctionId,
-    pub arrow: Ty,
-    pub input: Box<[Ty]>,
+    pub signature: ActivationSignature,
+    /// The callable-observation coordinates that participate in the
+    /// activation identity.  Transport symbols are root-independent, but
+    /// they must retain the entire key or re-materialization could conflate
+    /// two executable bodies.
+    pub callable_surfaces: Box<[BTreeSet<ActivationSignature>]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -213,29 +220,97 @@ pub struct ExecutableSymbol {
     pub need: ExecutableNeed,
 }
 
+impl ExecutableSymbol {
+    pub(crate) fn from_key(executable: &ExecutableKey) -> Self {
+        Self {
+            activation: ActivationSymbol {
+                function: executable.activation.function,
+                signature: executable.activation.signature.clone(),
+                callable_surfaces: executable.activation.callable_surfaces.clone(),
+            },
+            need: executable.need,
+        }
+    }
+}
+
 impl SemanticOrd<Types> for ExecutableSymbol {
     fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
         self.activation
             .function
             .cmp(&other.activation.function)
-            .then_with(|| types.cmp_activation_ty(self.activation.arrow, other.activation.arrow))
-            .then_with(|| types.cmp_activation_tys(&self.activation.input, &other.activation.input))
+            .then_with(|| types.cmp_activation_signature(&self.activation.signature, &other.activation.signature))
+            .then_with(|| {
+                types.cmp_activation_callable_surfaces(
+                    &self.activation.callable_surfaces,
+                    &other.activation.callable_surfaces,
+                )
+            })
             .then_with(|| self.need.cmp(&other.need))
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// Physical callable shape. Construction annotations live on its captures,
-/// independently of this shared layout identity.
-pub struct CallableDescr {
-    pub function: Option<FunctionId>,
+/// One lexical callable and the capture specialization its selector names.
+/// Invocation arguments, results and executable identities are not part of it.
+pub struct CallableAlternative {
+    pub function: FunctionId,
     /// The callable's user-visible parameter count — what a rendered fun
     /// reports (`#fn<id/arity>`, Elixir's `#Function<.../arity>`). It is fixed
     /// by the source, unlike the physical capture layouts below, which demand
     /// may elide to nothing. Functionally determined by `function`, so it
     /// never splits an interner pool (fz-gk4).
     pub arity: u16,
+    pub capture_tys: Box<[Ty]>,
     pub capture_layouts: Box<[TransportLayout]>,
+}
+
+impl CallableAlternative {
+    pub fn same_identity(&self, other: &Self) -> bool {
+        self.function == other.function && self.capture_tys == other.capture_tys
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Direct values carry only their environment. Closed values prepend an
+/// integer selector to disjoint environments in semantic alternative order.
+/// Public values retain the existing opaque carrier representation.
+pub enum CallableDescr {
+    Opaque,
+    Direct {
+        alternative: CallableAlternative,
+    },
+    Closed {
+        selector: LaneId,
+        alternatives: Box<[CallableAlternative]>,
+    },
+}
+
+impl CallableDescr {
+    pub fn direct(&self) -> Option<&CallableAlternative> {
+        match self {
+            Self::Direct { alternative } => Some(alternative),
+            Self::Opaque | Self::Closed { .. } => None,
+        }
+    }
+
+    pub fn alternatives(&self) -> &[CallableAlternative] {
+        match self {
+            Self::Opaque => &[],
+            Self::Direct { alternative } => std::slice::from_ref(alternative),
+            Self::Closed { alternatives, .. } => alternatives,
+        }
+    }
+
+    pub fn alternative(&self, index: usize) -> Option<&CallableAlternative> {
+        self.alternatives().get(index)
+    }
+
+    pub fn selector(&self) -> Option<LaneId> {
+        match self {
+            Self::Closed { selector, .. } => Some(*selector),
+            Self::Opaque | Self::Direct { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -519,13 +594,16 @@ impl TransportInterners {
             ShapeDescr::Nothing => 0,
             ShapeDescr::Lane(_) => 1,
             ShapeDescr::Tuple(fields) => fields.iter().copied().map(|field| self.layout_width(field)).sum(),
-            ShapeDescr::Callable(callable) => self
-                .callable(*callable)
-                .capture_layouts
-                .iter()
-                .copied()
-                .map(|capture| self.layout_width(capture))
-                .sum(),
+            ShapeDescr::Callable(callable) => {
+                let descr = self.callable(*callable);
+                usize::from(descr.selector().is_some())
+                    + descr
+                        .alternatives()
+                        .iter()
+                        .flat_map(|alternative| alternative.capture_layouts.iter())
+                        .map(|capture| self.layout_width(*capture))
+                        .sum::<usize>()
+            }
         }
     }
 
@@ -569,6 +647,7 @@ impl TransportInterners {
                 structural: shape,
                 lane: *lane,
                 source: PhysicalLaneSource::Structural,
+                may_be_inactive: false,
             }),
             ShapeDescr::Tuple(fields) => {
                 for field in fields.iter().copied() {
@@ -576,8 +655,25 @@ impl TransportInterners {
                 }
             }
             ShapeDescr::Callable(callable) => {
-                for capture in self.callable(*callable).capture_layouts.iter().copied() {
-                    self.push_layout_physical_lanes(capture, lanes);
+                let descr = self.callable(*callable);
+                if let Some(selector) = descr.selector() {
+                    lanes.push(PhysicalLane {
+                        structural: shape,
+                        lane: selector,
+                        source: PhysicalLaneSource::Structural,
+                        may_be_inactive: false,
+                    });
+                }
+                let start = lanes.len();
+                for alternative in descr.alternatives() {
+                    for capture in alternative.capture_layouts.iter().copied() {
+                        self.push_layout_physical_lanes(capture, lanes);
+                    }
+                }
+                if descr.selector().is_some() {
+                    for lane in &mut lanes[start..] {
+                        lane.may_be_inactive = true;
+                    }
                 }
             }
         }
@@ -590,6 +686,7 @@ impl TransportInterners {
                 structural: layout.structural,
                 lane,
                 source: PhysicalLaneSource::Carrier,
+                may_be_inactive: false,
             }),
         }
     }
@@ -597,14 +694,16 @@ impl TransportInterners {
     /// The fields a composite shape is a sequence of, or `None` for a shape
     /// that has no fields.
     ///
-    /// Tuple fields and callable captures are the same sequence by two names,
-    /// so both are read here. Whether a callable's captures may stand in for a
-    /// tuple's fields is the caller's question, and `tuple_arity` is where it
-    /// is asked.
+    /// Tuple fields and direct callable captures are both unambiguous
+    /// sequences. Closed callable captures require `callable_capture_spans`
+    /// with a selected alternative; inactive environments are not fields.
     pub fn field_layouts(&self, shape: ShapeId) -> Option<&[TransportLayout]> {
         match self.shape(shape) {
             ShapeDescr::Tuple(fields) => Some(fields),
-            ShapeDescr::Callable(callable) => Some(&self.callable(*callable).capture_layouts),
+            ShapeDescr::Callable(callable) => self
+                .callable(*callable)
+                .direct()
+                .map(|alternative| alternative.capture_layouts.as_ref()),
             ShapeDescr::Nothing | ShapeDescr::Lane(_) => None,
         }
     }
@@ -622,6 +721,31 @@ impl TransportInterners {
             let end = offset
                 .checked_add(self.layout_width(layout))
                 .expect("transport layout lane span overflow");
+            let span = offset..end;
+            offset = end;
+            (layout, span)
+        }))
+    }
+
+    /// Capture views belong to one selected alternative. Their spans address
+    /// the complete callable lane vector, retaining capture order and nesting.
+    pub fn callable_capture_spans(
+        &self,
+        callable: CallableId,
+        alternative: usize,
+    ) -> Option<impl Iterator<Item = (TransportLayout, Range<usize>)> + '_> {
+        let descr = self.callable(callable);
+        let selected = descr.alternative(alternative)?;
+        let mut offset = usize::from(descr.selector().is_some())
+            + descr.alternatives()[..alternative]
+                .iter()
+                .flat_map(|member| member.capture_layouts.iter())
+                .map(|layout| self.layout_width(*layout))
+                .sum::<usize>();
+        Some(selected.capture_layouts.iter().copied().map(move |layout| {
+            let end = offset
+                .checked_add(self.layout_width(layout))
+                .expect("callable capture lane span overflow");
             let span = offset..end;
             offset = end;
             (layout, span)
@@ -653,6 +777,28 @@ impl TransportInterners {
     }
 
     pub fn intern_callable(&mut self, descr: CallableDescr) -> CallableId {
+        for alternative in descr.alternatives() {
+            assert_eq!(
+                alternative.capture_tys.len(),
+                alternative.capture_layouts.len(),
+                "a callable alternative retains one schema and layout per lexical capture"
+            );
+        }
+        if let CallableDescr::Closed { alternatives, .. } = &descr {
+            assert!(
+                alternatives.len() > 1,
+                "one callable alternative uses compact direct transport"
+            );
+            let identities = alternatives
+                .iter()
+                .map(|alternative| (alternative.function, &alternative.capture_tys))
+                .collect::<std::collections::HashSet<_>>();
+            assert_eq!(
+                identities.len(),
+                alternatives.len(),
+                "closed callable alternatives have distinct identities"
+            );
+        }
         self.callables.intern(descr)
     }
 

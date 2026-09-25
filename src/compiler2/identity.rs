@@ -1,5 +1,5 @@
 use crate::modules::identity::{ModuleDenotation, ModuleName};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::function_surface::FunctionSurface;
@@ -88,23 +88,35 @@ impl RootId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ActivationSignature {
+    pub inputs: Box<[Ty]>,
+    pub result: Ty,
+}
+
+impl ActivationSignature {
+    pub fn inputs(&self) -> &[Ty] {
+        &self.inputs
+    }
+
+    pub fn input_len(&self) -> usize {
+        self.inputs.len()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ActivationKey {
     pub root: RootId,
     pub function: FunctionId,
-    /// The canonical activation signature as an interned arrow `(a0, a1, …) -> r0`.
-    /// The dispatch identity is the params (input) side; the result slot is the
-    /// addressed result variable `r0` — "return not yet known", an unknown to be
-    /// resolved, NOT `none()` (⊥). `none`, like `any`, must be EARNED, never a
-    /// fallback for an unknown (fz-f98.14.10.1). Read the inputs via `inputs`.
-    pub arrow: Ty,
+    pub signature: ActivationSignature,
+    pub callable_surfaces: Box<[BTreeSet<ActivationSignature>]>,
 }
 
 impl ActivationKey {
     /// Construct a key from a raw input vector by whole-scope addressing: the
     /// inputs map into the param-address space `(a0, a1, …)` in one shared pass
-    /// (distinct positions stay distinct, repeats share). The arrow is canonical
-    /// the moment it is built, so the interner is the canonical form — there is
-    /// no separate normalization pass. The result slot is the addressed result
+    /// (distinct positions stay distinct, repeats share). The coordinates are
+    /// canonical the moment they are built; unlike a callable they need no
+    /// interner identity. The result slot is the addressed result
     /// var `r0` (an unknown, not `none`): a key is minted from inputs ONLY, so
     /// there is no concrete result to preserve input↔result identity against yet
     /// (a source-contract concern — the resolver seam, B). Dispatch is on the
@@ -113,25 +125,67 @@ impl ActivationKey {
     /// single mint shared by
     /// `World::canonical_activation_key` and every other key-construction site.
     pub fn from_inputs(root: RootId, function: FunctionId, inputs: &[Ty], types: &mut super::types::Types) -> Self {
+        let callable_surfaces = vec![BTreeSet::new(); inputs.len()];
+        Self::from_inputs_with_callable_surfaces(root, function, inputs, &callable_surfaces, types)
+    }
+
+    /// Construct a key from value denotations plus their independently
+    /// observed callable surfaces.  The two coordinate spaces are addressed
+    /// separately: input coordinates describe values entering this body,
+    /// while each nested signature describes a callable observation made of
+    /// one such value.
+    pub fn from_inputs_with_callable_surfaces(
+        root: RootId,
+        function: FunctionId,
+        inputs: &[Ty],
+        callable_surfaces: &[BTreeSet<ActivationSignature>],
+        types: &mut super::types::Types,
+    ) -> Self {
+        assert_eq!(
+            inputs.len(),
+            callable_surfaces.len(),
+            "every activation input must have one callable-surface coordinate set"
+        );
         let addressed = types.address_inputs(inputs);
+        let callable_surfaces = callable_surfaces
+            .iter()
+            .enumerate()
+            .map(|(input, surfaces)| {
+                surfaces
+                    .iter()
+                    .map(|surface| types.address_signature_at_input(input, surface))
+                    .collect()
+            })
+            .collect();
         // The result slot is the addressed result var `r0` — "return not yet
         // known", an unknown to resolve — NOT `none()` (⊥). `none`, like `any`,
         // must be earned, never a fallback for an unknown (fz-f98.14.10.1).
         let result = types.result_alpha();
-        let arrow = types.arrow(&addressed, result);
-        Self { root, function, arrow }
+        Self {
+            root,
+            function,
+            signature: ActivationSignature {
+                inputs: addressed.into_boxed_slice(),
+                result,
+            },
+            callable_surfaces,
+        }
     }
 
-    /// The canonical input vector — the params side of `arrow`. This is the
-    /// dispatch identity that every consumer reads; the field is an arrow only
-    /// to keep the key in the single arrow type language.
-    pub fn inputs(&self, types: &super::types::Types) -> Vec<Ty> {
-        types.arrow_params(&self.arrow)
+    /// The canonical input coordinates. This is the dispatch identity every
+    /// consumer reads.
+    pub fn inputs(&self) -> &[Ty] {
+        self.signature.inputs()
     }
 
-    /// Input arity without cloning the param vector.
-    pub fn input_len(&self, types: &super::types::Types) -> usize {
-        types.arrow_arity(&self.arrow)
+    /// Input arity without cloning the coordinate vector.
+    pub fn input_len(&self) -> usize {
+        self.signature.input_len()
+    }
+
+    /// Exact callable observations made of one input coordinate.
+    pub fn callable_surfaces(&self, input: usize) -> Option<&BTreeSet<ActivationSignature>> {
+        self.callable_surfaces.get(input)
     }
 }
 
@@ -247,22 +301,34 @@ pub enum FunctionState {
     },
 }
 
-impl FunctionState {
-    pub fn state_source_heap_id(&self) -> Option<usize> {
+/// Where a function's body text comes from.
+///
+/// A declared function is read from a quoted root, and expanding that root is
+/// how its surface is derived. A lambda has no text of its own: it is minted
+/// while its owner's body is lowered, and that lowering is the only thing that
+/// can say what it is. Naming the owner instead of carrying the owner's root
+/// is what keeps the two apart, so no job can re-derive a lambda's surface
+/// from a declaration it never had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FunctionBody {
+    Declared(QuotedSourceRoot),
+    Generated { owner: FunctionId },
+}
+
+impl FunctionBody {
+    /// The quoted root of a declared function. A generated function has none,
+    /// which is why its surface cannot be derived from source.
+    pub fn declared_root(&self) -> Option<&QuotedSourceRoot> {
         match self {
-            FunctionState::Placeholder => None,
-            FunctionState::Noted { source } | FunctionState::Defined { source, .. } => {
-                Some(source.source.key().heap_id)
-            }
+            FunctionBody::Declared(root) => Some(root),
+            FunctionBody::Generated { .. } => None,
         }
     }
 
-    pub fn state_source_root_word(&self) -> Option<u64> {
+    pub fn generated_owner(&self) -> Option<FunctionId> {
         match self {
-            FunctionState::Placeholder => None,
-            FunctionState::Noted { source } | FunctionState::Defined { source, .. } => {
-                Some(source.source.root().raw_word())
-            }
+            FunctionBody::Declared(_) => None,
+            FunctionBody::Generated { owner } => Some(*owner),
         }
     }
 }
@@ -275,7 +341,15 @@ pub struct FunctionSource {
     pub capture_params: Vec<String>,
     pub required_remote_macros: Vec<FunctionId>,
     pub variadic: bool,
-    pub source: QuotedSourceRoot,
+    pub body: FunctionBody,
+}
+
+impl FunctionSource {
+    /// The quoted root this function was declared from. A generated function
+    /// has none: its owner's lowering is what defines it.
+    pub fn declared_root(&self) -> Option<&QuotedSourceRoot> {
+        self.body.declared_root()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -753,6 +827,10 @@ impl TypeDeclMap {
     pub fn get(&self, name: &TypeName) -> Option<&NotedTypeDecl> {
         self.decls.get(name)
     }
+
+    pub fn remove(&mut self, name: &TypeName) -> bool {
+        self.decls.remove(name).is_some()
+    }
 }
 
 /// The type names each consumer references, recorded by the reference walk
@@ -802,6 +880,12 @@ impl TypeRefMap {
     // Consumed by DeriveTypeDef (fz-rh2.12.2); recorded one inch ahead.
     pub fn type_refs(&self, name: &TypeName) -> &[TypeName] {
         self.by_type.get(name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn remove_type(&mut self, name: &TypeName) -> bool {
+        let references = self.by_type.remove(name).is_some();
+        let structs = self.by_type_structs.remove(name).is_some();
+        references || structs
     }
 
     pub fn record_type_structs(&mut self, name: TypeName, refs: Vec<ModuleId>) -> bool {
@@ -991,7 +1075,15 @@ fn source_same(left: &FunctionSource, right: &FunctionSource) -> bool {
         && left.capture_params == right.capture_params
         && left.required_remote_macros == right.required_remote_macros
         && left.variadic == right.variadic
-        && left.source.semantically_eq(&right.source, Horizon::Full)
+        && body_same(&left.body, &right.body)
+}
+
+fn body_same(left: &FunctionBody, right: &FunctionBody) -> bool {
+    match (left, right) {
+        (FunctionBody::Declared(left), FunctionBody::Declared(right)) => left.semantically_eq(right, Horizon::Full),
+        (FunctionBody::Generated { owner: left }, FunctionBody::Generated { owner: right }) => left == right,
+        _ => false,
+    }
 }
 
 #[cfg(test)]

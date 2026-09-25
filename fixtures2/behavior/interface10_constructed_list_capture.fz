@@ -1,0 +1,12 @@
+#---
+# purpose: "regression: preserve a post-join closure when list capture rows have indistinguishable runtime predicates (currently fails)"
+#---
+def choose(n) do
+  cap = if n > 0, do: [1, 2], else: [1, :tail]
+  f = fn () -> cap end
+  f.()
+end
+def main() do
+  dbg(choose(1))
+  dbg(choose(0))
+end

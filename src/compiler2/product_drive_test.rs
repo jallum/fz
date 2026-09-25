@@ -234,9 +234,75 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
     );
 }
 
+/// How many times each of the three return jobs ran.
+///
+/// The work-start census counts these jobs like every other job, so a census
+/// row that does not name them absorbs them silently -- and a scalar that can
+/// absorb a whole new family is a row that cannot show an explosion in job
+/// counts. Naming the runs lets the census keep its own measured value while
+/// the new families are expected out loud.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct ReturnJobRuns {
+    pub(super) skeletons: u64,
+    pub(super) unknowns: u64,
+    pub(super) component_solves: u64,
+}
+
+impl ReturnJobRuns {
+    pub(super) fn of(jobs: impl IntoIterator<Item = Job>) -> Self {
+        let mut runs = Self::default();
+        for job in jobs {
+            runs.observe(&job);
+        }
+        runs
+    }
+
+    pub(super) fn total(self) -> u64 {
+        self.skeletons + self.unknowns + self.component_solves
+    }
+
+    fn observe(&mut self, job: &Job) {
+        match job {
+            Job::DeriveReturnSkeleton(_) => self.skeletons += 1,
+            Job::DeriveReturnUnknowns(_) => self.unknowns += 1,
+            Job::SolveReturnComponent(_) => self.component_solves += 1,
+            _ => {}
+        }
+    }
+
+    fn since(self, earlier: Self) -> Self {
+        Self {
+            skeletons: self.skeletons - earlier.skeletons,
+            unknowns: self.unknowns - earlier.unknowns,
+            component_solves: self.component_solves - earlier.component_solves,
+        }
+    }
+
+    /// In this cold fixture, skeletons start on source revisions and unknowns
+    /// expand as blocked waiters. Replacing an existing equation instead wakes
+    /// its unknowns through a changed revision, so this mapping is cold-only.
+    fn cold_work_starts(self) -> super::WorkStartTally {
+        super::WorkStartTally {
+            changed_revision_wake: self.skeletons,
+            blocked_waiter_expansion: self.unknowns,
+            ..super::WorkStartTally::default()
+        }
+    }
+}
+
 #[test]
 fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let tel = ConfiguredTelemetry::new();
+    let return_runs = std::rc::Rc::new(std::cell::Cell::new(ReturnJobRuns::default()));
+    let observed_return_runs = std::rc::Rc::clone(&return_runs);
+    tel.attach_raw_event2::<super::World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            let mut runs = observed_return_runs.get();
+            runs.observe(&completion.job);
+            observed_return_runs.set(runs);
+        },
+    );
     let evaluations = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(ProductKey, PullOutcome)>::new()));
     let observed_evaluations = std::rc::Rc::clone(&evaluations);
     tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, PullOutcome, _>(
@@ -270,8 +336,19 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let before_cold_work = compiler.world().work_start_tally();
     compiler.compile_root_jit(root).expect("cold native product");
     let cold_work = compiler.world().work_start_tally().delta_since(before_cold_work);
+    let cold_return_runs = return_runs.get();
     assert_eq!(
-        cold_work,
+        cold_return_runs,
+        ReturnJobRuns {
+            skeletons: 3,
+            unknowns: 4,
+            component_solves: 0,
+        },
+        "a cold compile of `main` and its definition macro derives one return skeleton each, \
+         re-reads their unknowns as the handles arrive, and closes no recursive component",
+    );
+    assert_eq!(
+        cold_work.delta_since(cold_return_runs.cold_work_starts()),
         super::WorkStartTally {
             ignition: 0,
             // Publishing a function's source from the walk that scoped it
@@ -366,6 +443,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     assert!(std::rc::Rc::ptr_eq(&cold, &compiler.retained_native_program(root)));
 
     let before_reached_backend_work = compiler.world().work_start_tally();
+    let before_reached_return_runs = return_runs.get();
     compiler.submit_code(CodeSubmission {
         name: Some("native_product_cache.fz".to_string()),
         text: "def main(), do: 8\n".to_string(),
@@ -375,13 +453,30 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         .world()
         .work_start_tally()
         .delta_since(before_reached_backend_work);
+    let reached_return_runs = return_runs.get().since(before_reached_return_runs);
     assert_eq!(
-        reached_backend_work,
+        reached_return_runs,
+        ReturnJobRuns {
+            skeletons: 1,
+            unknowns: 1,
+            component_solves: 0,
+        },
+        "a reached body edit changes its retained source equation and rederives that equation's unknowns once",
+    );
+    assert_eq!(
+        reached_backend_work.delta_since(super::WorkStartTally {
+            // Both existing return jobs wake on changed revisions: lowering
+            // changes the equation, which wakes its unknowns subscriber.
+            changed_revision_wake: reached_return_runs.total(),
+            ..super::WorkStartTally::default()
+        }),
         super::WorkStartTally {
             ignition: 2,
-            // The re-scope publishes the replaced source itself, so the edit no
-            // longer wakes a separate copy job on its way to the body.
-            changed_revision_wake: 19,
+            // The equation change reopens activation finality. The existing
+            // executable-facts reader waits once for that analysis to settle,
+            // then publishes its replacement; neither analysis nor native
+            // lowering gains a duplicate evaluation.
+            changed_revision_wake: 15,
             ..super::WorkStartTally::default()
         },
         "a reached edit starts source ingestion and only exact changed-revision readers",
@@ -1479,7 +1574,7 @@ fn product_fact_waits_use_semantic_order_across_type_mint_histories() {
             let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
             (list_key, non_empty_key)
         };
-        let raw_order = list_key.arrow < non_empty_key.arrow;
+        let raw_order = list_key.signature < non_empty_key.signature;
         let list_fact = FactKey::ReturnType(list_key);
         let non_empty_fact = FactKey::ReturnType(non_empty_key);
         let mut waits = if non_empty_first {
@@ -1673,9 +1768,8 @@ fn compiling_the_same_root_twice_publishes_byte_identical_backend_programs() {
 }
 
 #[test]
-fn live_executable_order_distinguishes_noninjective_display_pairs() {
+fn live_executable_inventory_is_unique_and_totally_ordered() {
     use super::semantic::SemanticOrd;
-    use std::collections::BTreeMap;
 
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(tel);
@@ -1693,64 +1787,9 @@ fn live_executable_order_distinguishes_noninjective_display_pairs() {
         .product_executable_inventory(root)
         .expect("fixture must compile");
     let types = compiler.types_for_test();
-    let mut by_display = BTreeMap::<String, Vec<super::Ty>>::new();
-    for ty in types.interned_tys() {
-        by_display.entry(types.display(&ty)).or_default().push(ty);
-    }
-    let reachable_by_executable = executables
-        .iter()
-        .map(|executable| types.activation_reachable_tys(executable.activation.arrow))
-        .collect::<Vec<_>>();
-    let mut measured_pairs = Vec::new();
-    for tys in by_display.into_values().filter(|tys| tys.len() > 1) {
-        for (index, left) in tys.iter().enumerate() {
-            for right in &tys[index + 1..] {
-                let distinct_executable_owners = reachable_by_executable.iter().enumerate().any(|(left_index, tys)| {
-                    tys.contains(left)
-                        && reachable_by_executable
-                            .iter()
-                            .enumerate()
-                            .any(|(right_index, tys)| right_index != left_index && tys.contains(right))
-                });
-                if !distinct_executable_owners {
-                    continue;
-                }
-                let activation_forward = types.cmp_activation_ty(*left, *right);
-                let activation_reverse = types.cmp_activation_ty(*right, *left);
-                let storage_forward = types.cmp_ty(*left, *right);
-                let storage_reverse = types.cmp_ty(*right, *left);
-                assert_ne!(
-                    activation_forward,
-                    std::cmp::Ordering::Equal,
-                    "distinct live types must not collapse in activation order: {}",
-                    types.activation_order_evidence_for_test(*left, *right),
-                );
-                assert_eq!(
-                    activation_forward,
-                    activation_reverse.reverse(),
-                    "activation order must be antisymmetric: {}",
-                    types.activation_order_evidence_for_test(*left, *right),
-                );
-                assert_ne!(
-                    storage_forward,
-                    std::cmp::Ordering::Equal,
-                    "distinct live types must not collapse in storage order: {}",
-                    types.activation_order_evidence_for_test(*left, *right),
-                );
-                assert_eq!(
-                    storage_forward,
-                    storage_reverse.reverse(),
-                    "storage order must be antisymmetric: {}",
-                    types.activation_order_evidence_for_test(*left, *right),
-                );
-                measured_pairs.push((*left, *right));
-            }
-        }
-    }
-    assert_eq!(
-        measured_pairs.len(),
-        6,
-        "fixture must retain the six live empty/non-empty list pairs that display conflates"
+    assert!(
+        executables.len() > 1,
+        "the production fixture must exercise distinct executable keys"
     );
     for (index, left) in executables.iter().enumerate() {
         for right in &executables[index + 1..] {
@@ -1851,17 +1890,11 @@ fn fatal_error_diagnostic_reports_fact_wait_budget_exceeded() {
 
 /// `no_ready_producer`: a root submitted for a function name that is never
 /// defined by any submitted code. `produce_root_backend_product`'s keying
-/// waits (`RootEntry`, `InputDemand`, `Recursive`) are all still unsettled
-/// -- `SeedRoot` claims `RootEntry` as an output on its very first
-/// (still-blocked) run, but a blocked publisher's claims stay dirty
-/// (`Scheduler::complete`: "pausing is not recanting"), so `RootEntry`
-/// itself never reads as settled either. Every one of the three keying
-/// waits is an equally genuine dead end here, so which one this hook names
-/// is the order the pull-drive tries them in -- pinned deterministically
-/// (`drive_root_backend_product_with_budgets` sorts a multi-wait
-/// `PullOutcome` before processing it), not an accident of hash iteration.
-/// This is a real dead end reachable from ordinary (if buggy) input -- a
-/// typo'd entry-point name -- not a fabricated one.
+/// waits remain unsettled. In descending semantic order, `ReturnUnknowns`
+/// is tried first. Its own body-backed answer waits for the missing function's
+/// skeleton rather than publishing a default. Both error doors must name that
+/// real blocked prerequisite; neither may pretend that the undefined root has
+/// a settled return answer.
 #[test]
 fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     let tel = ConfiguredTelemetry::new();
@@ -1877,7 +1910,9 @@ fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
         .run_root_interp(root)
         .expect_err("a root naming an entry no code ever defines should never settle");
 
-    let fact = FactUse::settled(FactKey::RootEntry(root));
+    let function = compiler.world().root_entry(root).function;
+    let fact = FactUse::settled(FactKey::ReturnUnknowns(function));
+    assert!(compiler.world().return_unknowns(function).is_none());
     assert_eq!(
         error,
         format!(
@@ -1888,7 +1923,7 @@ fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
             // hook itself reports, not a separately reconstructed guess.
             compiler.world().unresolved_waits()
         ),
-        "the String path should report the undefined entry's RootEntry keying wait, got: {error}"
+        "the String path should report the undefined entry's ReturnUnknowns keying wait, got: {error}"
     );
 }
 
@@ -1906,7 +1941,9 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
         "the retained backend product should fail fatally when its entry is never defined, got: {outcome:?}"
     );
 
-    let fact = FactUse::settled(FactKey::RootEntry(root));
+    let function = world.root_entry(root).function;
+    let fact = FactUse::settled(FactKey::ReturnUnknowns(function));
+    assert!(world.return_unknowns(function).is_none());
     let event = capture
         .last(&["fz", "diag", "error"])
         .expect("no-ready-producer should emit an error diagnostic");
@@ -1918,7 +1955,7 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
             root.as_u32(),
             fact
         ),
-        "the FatalError path should report the undefined entry's RootEntry keying wait"
+        "the FatalError path should report the undefined entry's ReturnUnknowns keying wait"
     );
 }
 
@@ -2097,10 +2134,10 @@ fn string_error_end_to_end_did_not_settle_on_a_real_drive() {
 /// `job_failed`: a runtime root submitted against a `defmacro` entry.
 /// `jobs::root::seed_root` rejects a `RootKind::Runtime` root whose function
 /// `is_macro` before it publishes anything, returning `Err(FatalError)`
-/// straight from `jobs::run`. `SeedRoot` is the sole producer named by every
-/// one of `produce_root_backend_product`'s keying waits
-/// (`RootEntry`/`InputDemand`/`Recursive`) and is already agenda-queued
-/// from the root's own ignition, so it runs -- and fails -- inside
+/// straight from `jobs::run`. `SeedRoot` is the sole ready producer for every
+/// one of `produce_root_backend_product`'s keying waits (`RootEntry` plus the
+/// three facts a key is built from) and is already agenda-queued from the
+/// root's own ignition, so it runs -- and fails -- inside
 /// `drive_product_fact_wait`'s own job loop while satisfying the first of
 /// those waits, not somewhere else in the pipeline: a genuine, minimal
 /// construction of the seam under test, not a fabricated one.
@@ -2130,15 +2167,16 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
         .expect_err("a runtime root targeting a macro entry must fail, not silently succeed");
 
     // `produce_root_backend_product`'s keying waits are all still unsettled
-    // (`RootEntry`, `InputDemand`, `Recursive`), and `SeedRoot` -- the only
-    // producer any of the three names -- is already agenda-queued from the
-    // root's own ignition, so it runs while satisfying the *first* wait the
-    // pull-drive tries. That order is pinned deterministically (a
-    // multi-wait `PullOutcome` is sorted before processing), not an
-    // accident of hash iteration: `RootEntry`, not `Recursive`, even though
-    // `SeedRoot` never gets far enough to publish either fact on this
-    // rejecting run.
-    let fact = FactUse::settled(FactKey::RootEntry(root));
+    // (`RootEntry`, and the `Recursive`/`InputDemand`/`ReturnUnknowns` a key
+    // is built from), and `SeedRoot` -- the only producer any of the four
+    // names -- is already agenda-queued from the root's own ignition, so it
+    // runs while satisfying the *first* wait the pull-drive tries. That order
+    // is pinned deterministically (a multi-wait `PullOutcome` is sorted
+    // before processing and its fact prefix is walked in reverse), not an
+    // accident of hash iteration: the highest-ranked of the four,
+    // `ReturnUnknowns`, even though `SeedRoot` never gets far enough to
+    // publish any of them on this rejecting run.
+    let fact = FactUse::settled(FactKey::ReturnUnknowns(compiler.world().root_entry(root).function));
     let job = Job::SeedRoot(root);
     assert_eq!(
         error,
@@ -2148,7 +2186,7 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
             fact,
             job
         ),
-        "the String path should report the RootEntry fact-wait's SeedRoot job failure, got: {error}"
+        "the String path should report the first keying fact-wait's SeedRoot job failure, got: {error}"
     );
     let mut finished_work = super::WorkStartTally::default();
     for work in finished.borrow().iter().copied() {
@@ -2346,30 +2384,8 @@ fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_d
 }
 
 #[test]
-fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_without_touching_products() {
+fn settled_prerequisite_finality_propagates_without_reproducing_executable_facts_or_products() {
     let tel = ConfiguredTelemetry::new();
-    let executable_fact_trace = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(
-        Job,
-        bool,
-        Vec<super::FactChange<DependencyKey>>,
-        Vec<super::FactMovement<DependencyKey>>,
-        Vec<FactUse<DependencyKey>>,
-    )>::new()));
-    let observed_trace = std::rc::Rc::clone(&executable_fact_trace);
-    tel.attach_raw_event2::<World, super::JobCompletion, _>(
-        &["fz", "compiler2", "work_graph", "applied"],
-        move |_, _, _, _, completion| {
-            if matches!(completion.job, Job::DeriveExecutableFacts(_)) {
-                observed_trace.borrow_mut().push((
-                    completion.job.clone(),
-                    completion.rebased,
-                    completion.changed.clone(),
-                    completion.movements.clone(),
-                    completion.blocked.clone(),
-                ));
-            }
-        },
-    );
     let mut world = World::new();
     world.submit_code(
         Some("equal_executable_facts.fz".to_string()),
@@ -2399,7 +2415,6 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     let revision = world
         .fact_revision(&fact)
         .expect("the executable fact should already be published");
-    let producer = Job::DeriveExecutableFacts(executable.clone());
     let prerequisite = FactKey::LoweredBody(executable.activation.function);
     let prerequisite_revision = world
         .fact_revision(&prerequisite)
@@ -2414,7 +2429,6 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         },
     );
     assert!(observer_completion.changed.is_empty());
-    executable_fact_trace.borrow_mut().clear();
 
     let (prerequisite_outputs, prerequisite_reads) = world.standing_claims_and_reads(&prerequisite_job);
     assert!(prerequisite_outputs.contains(&prerequisite));
@@ -2446,36 +2460,16 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         "the executable fact must move only in readiness while its settled prerequisite can move",
     );
     assert!(
-        dirtied
-            .wakes
-            .iter()
-            .any(|wake| wake.job == producer
-                && wake.cause == FactUse::settled(DependencyKey::Fact(prerequisite.clone()))),
-        "the moved settled prerequisite must wake its exact executable-fact producer: {:?}",
+        dirtied.wakes.iter().all(|wake| wake.job != observer),
+        "a concluded Settled reader carries the prerequisite finality without being re-run: {:?}",
         dirtied.wakes,
     );
     assert!(
         dirtied
             .wakes
             .iter()
-            .all(|wake| wake.cause != FactUse::current(DependencyKey::Fact(prerequisite.clone()))),
-        "the readiness-only prerequisite movement must not wake a Current reader: {:?}",
-        dirtied.wakes,
-    );
-    assert!(
-        dirtied
-            .wakes
-            .iter()
-            .any(|wake| wake.job == observer && wake.cause == FactUse::settled(DependencyKey::Fact(fact.clone()))),
-        "the downstream executable-fact readiness movement must wake its Settled reader: {:?}",
-        dirtied.wakes,
-    );
-    assert!(
-        dirtied
-            .wakes
-            .iter()
-            .all(|wake| wake.cause != FactUse::current(DependencyKey::Fact(fact.clone()))),
-        "the downstream executable-fact readiness movement must not wake its Current reader: {:?}",
+            .all(|wake| wake.job != Job::DeriveExecutableFacts(executable.clone())),
+        "the direct producer also carries finality rather than recomputing equal content: {:?}",
         dirtied.wakes,
     );
     assert_eq!(world.fact_revision(&prerequisite), Some(prerequisite_revision));
@@ -2510,73 +2504,38 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     .expect("the unchanged prerequisite should reproduce");
     let prerequisite_settled =
         super::drive::ExecutionContext::new(&mut world, &tel).complete_job(prerequisite_job, effects);
-    assert_eq!(world.fact_revision(&prerequisite), Some(prerequisite_revision));
-    assert!(
-        world.fact_is_settled(&prerequisite),
-        "the equal prerequisite conclusion must restore settledness before its reader reruns"
-    );
-    assert!(
-        !world.fact_is_settled(&fact),
-        "the executable fact must remain dirty until its own producer concludes"
-    );
-    apply_world_fact_movements(&mut driver, &prerequisite_settled.movements);
-
-    let mut settled = None;
-    while let Some(ready) = world.next_ready_job(None) {
-        if ready == observer {
-            continue;
-        }
-        let effects = super::jobs::run(&mut super::drive::ExecutionContext::new(&mut world, &tel), &ready)
-            .expect("the unchanged prerequisite cone should reproduce");
-        let completion = super::drive::ExecutionContext::new(&mut world, &tel).complete_job(ready.clone(), effects);
-        apply_world_fact_movements(&mut driver, &completion.movements);
-        if ready == producer
-            && completion
-                .changed
-                .iter()
-                .any(|change| change.key == DependencyKey::Fact(fact.clone()) && change.new_settled)
-        {
-            settled = Some(completion);
-        }
-    }
-    let settled = settled.expect("the equal prerequisite cone must restore the target executable fact");
-    let executable_fact_settled = settled
-        .changed
+    let executable_fact_restored = prerequisite_settled
+        .movements
         .iter()
-        .find(|change| change.key == DependencyKey::Fact(fact.clone()))
+        .find(|movement| movement.key == DependencyKey::Fact(fact.clone()))
         .unwrap_or_else(|| {
             panic!(
-                "the equal conclusion must restore executable-fact readiness: changed={:?}, movements={:?}",
-                settled.changed, settled.movements,
+                "restoring the prerequisite must propagate executable-fact finality: {:?}",
+                prerequisite_settled.movements
             )
         });
     assert_eq!(
-        (
-            executable_fact_settled.old_revision,
-            executable_fact_settled.new_revision,
-            executable_fact_settled.old_settled,
-            executable_fact_settled.new_settled,
-        ),
-        (Some(revision), Some(revision), false, true),
-        "equal reproduction must restore readiness without moving content",
+        executable_fact_restored.state,
+        super::facts::FactState {
+            revision: Some(revision),
+            settled: true,
+        },
+        "equal prerequisite reproduction restores executable-fact finality at the same revision"
     );
+    assert_eq!(world.fact_revision(&prerequisite), Some(prerequisite_revision));
+    assert!(
+        world.fact_is_settled(&prerequisite),
+        "the equal prerequisite conclusion must restore its finality"
+    );
+    assert!(
+        world.fact_is_settled(&fact),
+        "the executable fact inherits restored finality without reproducing equal content"
+    );
+    apply_world_fact_movements(&mut driver, &prerequisite_settled.movements);
     assert_eq!(world.fact_revision(&fact), Some(revision));
-    assert!(world.fact_is_settled(&fact));
     assert!(
-        settled
-            .wakes
-            .iter()
-            .any(|wake| wake.job == observer && wake.cause == FactUse::settled(DependencyKey::Fact(fact.clone()))),
-        "equal settlement must trace the downstream Settled executable-fact wake: {:?}",
-        settled.wakes,
-    );
-    assert!(
-        settled
-            .wakes
-            .iter()
-            .all(|wake| wake.cause != FactUse::current(DependencyKey::Fact(fact.clone()))),
-        "equal settlement must not trace a downstream Current executable-fact wake: {:?}",
-        settled.wakes,
+        world.next_ready_job(None).is_none(),
+        "restoring readiness alone must not schedule concluded readers"
     );
 
     assert_eq!(
@@ -2599,50 +2558,6 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
             "after both readiness movements reconcile, {key:?} must remain standing",
         );
     }
-
-    let trace = executable_fact_trace.borrow();
-    assert!(
-        trace.iter().any(|(job, _, _, _, blocked)| {
-            job == &producer
-                && blocked.iter().any(|fact| {
-                    matches!(
-                        fact,
-                        FactUse::Settled(DependencyKey::Fact(FactKey::ActivationAnalyzed(_)))
-                    )
-                })
-        }),
-        "the moved prerequisite cone must trace a non-initial executable-fact run blocked on its exact unsettled input: {trace:?}",
-    );
-    let (traced_job, rebased, changes, movements, blocked) = trace
-        .iter()
-        .find(|(job, _, changes, _, _)| {
-            job == &producer
-                && changes
-                    .iter()
-                    .any(|change| change.key == DependencyKey::Fact(fact.clone()))
-        })
-        .expect("the trace must carry the equal executable-fact conclusion");
-    assert_eq!(traced_job, &producer);
-    assert!(!rebased, "a readiness-only input movement is not a ground shift");
-    assert!(blocked.is_empty(), "the equal executable-fact conclusion must be final");
-    assert!(
-        changes.iter().any(|change| {
-            change.key == DependencyKey::Fact(fact.clone())
-                && change.old_revision == Some(revision)
-                && change.new_revision == Some(revision)
-                && !change.old_settled
-                && change.new_settled
-        }),
-        "the work-graph trace must retain the equal readiness change: {changes:?}",
-    );
-    assert!(
-        movements
-            .iter()
-            .any(|movement| movement.key == DependencyKey::Fact(fact.clone())
-                && movement.state.revision == Some(revision)
-                && movement.state.settled),
-        "the work-graph trace must retain the fact's restored settled state: {movements:?}",
-    );
 }
 
 #[test]

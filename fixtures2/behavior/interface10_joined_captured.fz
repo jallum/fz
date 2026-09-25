@@ -1,0 +1,16 @@
+#---
+# purpose: "joined callable alternatives retain their own capture environments"
+#---
+def choose(n, scale) do
+  if n > 0 do
+    fn x -> x + scale end
+  else
+    fn x -> x * scale end
+  end
+end
+def apply_one(f, x), do: f.(x)
+def main() do
+  dbg(apply_one(choose(1, 10), 2))
+  dbg(apply_one(choose(0, 10), 2))
+  dbg(apply_one(choose(1, 1), 2))
+end

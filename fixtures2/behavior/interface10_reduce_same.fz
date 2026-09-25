@@ -1,0 +1,8 @@
+#---
+# purpose: "repeating one reducer preserves the existing fold-sharing control"
+#---
+def main() do
+  add = fn (x, acc) -> acc + x end
+  dbg(Enum.reduce([1, 2, 3], 1, add))
+  dbg(Enum.reduce([1, 2, 3], 1, add))
+end

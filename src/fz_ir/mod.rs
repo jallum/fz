@@ -533,6 +533,12 @@ pub enum Prim {
         closure: Var,
         index: u32,
     },
+    /// Test the exact published construction boundary stored in a callable.
+    /// This is a physical transport discriminator, not language equality.
+    CallableConstructionIs {
+        callable: Var,
+        construction: FnId,
+    },
 }
 
 impl Prim {
@@ -632,6 +638,9 @@ impl Prim {
             }
             Prim::ClosureCapture { closure, .. } => {
                 used.insert(*closure);
+            }
+            Prim::CallableConstructionIs { callable, .. } => {
+                used.insert(*callable);
             }
         }
     }
@@ -1348,6 +1357,9 @@ impl fmt::Display for Prim {
                 write!(f, "runtime_type_test({}, {})", v, d)
             }
             Prim::ClosureCapture { closure, index } => write!(f, "closure_capture({closure}, {index})"),
+            Prim::CallableConstructionIs { callable, construction } => {
+                write!(f, "callable_construction_is({callable}, {construction})")
+            }
         }
     }
 }

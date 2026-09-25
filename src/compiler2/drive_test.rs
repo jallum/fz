@@ -3,6 +3,7 @@ use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendRet
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::{DependencyKey, JobEffects};
 use crate::compiler2::pull::{ProductKey, ProductSettlement, ProductValue, TransportCarrier};
+use crate::compiler2::types::DescrOf;
 use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
     CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
@@ -22,12 +23,57 @@ use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::telemetry::handler::{Event, EventKind};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
+
+#[test]
+fn compiler2_compatible_callbacks_share_apply_inference_and_body() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let analyses = ActivationAnalysisCapture::new();
+    analyses.install(&tel);
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("compatible_apply_callbacks.fz".into()),
+        text: "def apply_one(f, x), do: f.(x)\n\
+               def main() do\n\
+                 {apply_one(fn (x) -> x + 1 end, 2), apply_one(fn (x) -> x * 2 end, 2)}\n\
+               end\n"
+            .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "the real backend must receive the shared apply body");
+    let apply = function_id(&functions, "apply_one", 2);
+    let owners: HashSet<_> = analyses
+        .keys_for_root(root)
+        .into_iter()
+        .filter(|key| key.function == apply && compiler.world().activation_analysis(key).is_some())
+        .collect();
+    let program = backend.last(root).program;
+    let bodies = program
+        .executables()
+        .iter()
+        .filter(|body| body.key.activation.function == apply)
+        .count();
+    assert_eq!(
+        (owners.len(), bodies),
+        (1, 1),
+        "distinct int -> int callbacks need their own callback analysis, not duplicate apply inference or bodies"
+    );
+}
 
 #[test]
 fn compiler2_inline_dispatch_plan_is_shared_from_lowering_to_backend() {
@@ -675,8 +721,11 @@ fn compiler2_inline_bitstring_recipes_have_distinct_subjects() {
     );
 }
 
+/// A clause whose body is a `case` that binds the whole input and hands it
+/// back still counts as returning that input: the inlining that removes the
+/// binding must not remove the flow it stood for.
 #[test]
-fn compiler2_inline_forwarding_preserves_input_return_demand() {
+fn compiler2_inline_forwarding_preserves_return_flow() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -693,15 +742,249 @@ fn compiler2_inline_forwarding_preserves_input_return_demand() {
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42));
     let forward = function_id(&functions, "forward", 1);
-    assert_eq!(
+    assert!(
         compiler
             .world()
-            .input_demand(forward)
-            .expect("forward demand settled")
-            .returned,
-        [crate::dispatch_matrix::demand::DispatchDemand::Whole],
+            .return_unknowns(forward)
+            .expect("forward return unknowns settled")
+            .returns_input(0),
         "a winning whole-input binding forwards the original input into the return"
     );
+}
+
+/// A protocol callback has no lowered body of its own, but its return can be
+/// observed through the implementation selected at a real callsite. The
+/// static return graph must therefore carry this relation before the caller
+/// keys the implementation activation.
+#[test]
+fn compiler2_protocol_callback_return_flow_marks_constructed_argument_observable() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("protocol_callback_return_flow.fz".into()),
+        text: concat!(
+            "defprotocol ReturnThrough do\n",
+            "  def pick(value, fallback)\n",
+            "end\n\n",
+            "defimpl ReturnThrough, for: Integer do\n",
+            "  def pick(_value, fallback), do: fallback\n",
+            "end\n\n",
+            "def caller(x), do: ReturnThrough.pick(1, {:tag, x})\n",
+            "def main(), do: caller(3)\n",
+        )
+        .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(
+        compiler.drive(),
+        "the protocol implementation should resolve before observing caller return flow",
+    );
+
+    let caller = function_id(&functions, "caller", 1);
+    assert!(
+        compiler
+            .world()
+            .return_unknowns(caller)
+            .expect("caller return unknowns should settle")
+            .returns_input(0),
+        "the implementation returns a tuple containing caller/1's only input, so the callback return path must keep it observable",
+    );
+    let _ = root;
+}
+
+/// A provider may be known at scope time while its implementation module stays
+/// cold. That must not erase the return flow through the selected
+/// implementation, and explicitly loading the unrelated provider must leave
+/// that proven observability intact.
+#[test]
+fn compiler2_protocol_callback_return_flow_is_observable_with_known_or_loaded_impls() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    let root = world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
+    world.submit_code(
+        Some("protocol_callback_return_flow_sequencing.fz".into()),
+        concat!(
+            "defprotocol ReturnThrough do\n",
+            "  def pick(value, fallback)\n",
+            "end\n\n",
+            "defimpl ReturnThrough, for: Integer do\n",
+            "  def pick(_value, fallback), do: fallback\n",
+            "end\n\n",
+            "defimpl ReturnThrough, for: List do\n",
+            "  def pick(_value, _fallback), do: :discarded\n",
+            "end\n\n",
+            "def caller(x), do: ReturnThrough.pick(1, {:tag, x})\n",
+            "def main(), do: caller(3)\n",
+        )
+        .into(),
+    );
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "the Integer call should load only its selected implementation",
+    );
+
+    let protocol = world.reference_module(module_name("ReturnThrough"));
+    let integer = world.reference_module(module_name("Integer"));
+    let list = world.reference_module(module_name("List"));
+    let integer_impl = world.reference_protocol_impl_module(protocol, integer);
+    let list_impl = world.reference_protocol_impl_module(protocol, list);
+    assert!(
+        world.module_defined_revision(integer_impl).is_some(),
+        "the Integer receiver must load the selected implementation",
+    );
+    assert!(
+        world.protocol_impl_providers(protocol).contains(&(list, list_impl)),
+        "the List implementation should be known through the provider index before its body is demanded",
+    );
+    assert!(
+        world.module_defined_revision(list_impl).is_none(),
+        "an unrelated List implementation must remain unloaded",
+    );
+
+    let caller = world.reference_function(ModuleId::GLOBAL, "caller", 1);
+    assert!(
+        world
+            .return_unknowns(caller)
+            .expect("caller return unknowns should settle")
+            .returns_input(0),
+        "the selected Integer implementation returns the constructed fallback, even while the unrelated List provider stays cold",
+    );
+
+    assert!(
+        world.demand(Job::DefineModule(list_impl)),
+        "the known List implementation should be independently demandable"
+    );
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "loading the unrelated implementation should settle through the normal dispatch revision",
+    );
+    assert!(
+        world
+            .return_unknowns(caller)
+            .expect("caller return unknowns should remain settled")
+            .returns_input(0),
+        "loading a known unrelated provider cannot erase the selected implementation's return flow",
+    );
+    let _ = root;
+}
+
+/// The function whose own static return answer is requested is a body-backed
+/// program function, not an arbitrary transitive reference. Its first answer
+/// must therefore pull the ordinary body/skeleton chain before it can decide
+/// whether the constant return observes an input.
+#[test]
+fn compiler2_requested_return_skeleton_waits_for_its_body() {
+    let tel = ConfiguredTelemetry::new();
+    let publications = Rc::new(RefCell::new(Vec::<FactKey>::new()));
+    let observed_publications = Rc::clone(&publications);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, world, completion| {
+            if matches!(
+                completion.job,
+                Job::DeriveReturnSkeleton(_) | Job::DeriveReturnUnknowns(_)
+            ) {
+                observed_publications
+                    .borrow_mut()
+                    .extend(world.job_outputs(&completion.job));
+            }
+        },
+    );
+    let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    world.submit_code(
+        Some("late_discard_body.fz".into()),
+        "def discard(_value), do: 0\n".into(),
+    );
+    let discard = world.reference_function(ModuleId::GLOBAL, "discard", 1);
+
+    assert!(
+        world.demand(Job::DeriveReturnUnknowns(discard)),
+        "static return discovery should be demandable before a body"
+    );
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "the requested function's body and static return answer should settle together",
+    );
+    assert!(
+        world.return_skeleton(discard).is_some(),
+        "the requested answer must demand the known function's return skeleton",
+    );
+    assert!(
+        !world
+            .return_unknowns(discard)
+            .expect("the body-backed answer should settle")
+            .returns_input(0),
+        "the known constant-returning body proves its input is not observable",
+    );
+    let publications = publications.borrow();
+    let skeleton = publications
+        .iter()
+        .position(|fact| *fact == FactKey::ReturnSkeleton(discard))
+        .expect("the body chain must publish the requested return skeleton");
+    let unknowns = publications
+        .iter()
+        .position(|fact| *fact == FactKey::ReturnUnknowns(discard))
+        .expect("return unknowns must publish after the body chain");
+    assert!(
+        skeleton < unknowns,
+        "the first return answer cannot precede its skeleton"
+    );
+}
+
+#[test]
+fn compiler2_protocol_callback_return_skeleton_is_opaque_without_a_body_wait() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    let source = world.submit_code(
+        Some("bodyless_protocol_callback.fz".into()),
+        "defprotocol Bodyless do\n  def pass(value)\nend\n".into(),
+    );
+    assert!(world.demand(Job::ScopeCode(source)));
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "the protocol surface must register its bodyless callback before return discovery",
+    );
+    let protocol = world.reference_module(module_name("Bodyless"));
+    assert!(world.demand(Job::DefineModule(protocol)));
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "the defined protocol must publish its callback boundary",
+    );
+    let callback = world.reference_function(protocol, "pass", 1);
+    assert!(world.demand(Job::DeriveReturnUnknowns(callback)));
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "a protocol callback has no local body to wait for",
+    );
+    assert!(world.return_skeleton(callback).is_none());
+    assert!(
+        world
+            .return_unknowns(callback)
+            .expect("callback return answer should settle without a body")
+            .returns_input(0),
+    );
+    assert!(world.demand(Job::DeriveReturnSkeleton(callback)));
+    assert_resolved(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        "an explicitly requested callback skeleton is opaque rather than a body wait",
+    );
+    assert!(matches!(
+        world
+            .return_skeleton(callback)
+            .expect("callback return skeleton should settle")
+            .returns,
+        super::return_skeleton::Returns::Opaque
+    ));
 }
 
 #[test]
@@ -5477,10 +5760,11 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
                         saw_return_payload_flow = true;
                     }
                 }
-                BackendTail::ClosureCall {
-                    return_flow: Some(return_flow),
-                    ..
-                } if return_flow_is_distinct_return_payload(return_flow, &executable.abi.return_layout) => {
+                BackendTail::ClosureCall { target, .. }
+                    if backend_call_return_flows(target).into_iter().any(|return_flow| {
+                        return_flow_is_distinct_return_payload(return_flow, &executable.abi.return_layout)
+                    }) =>
+                {
                     saw_return_payload_flow = true;
                 }
                 _ => {}
@@ -6183,11 +6467,10 @@ fn compiler2_native_program_keeps_grounded_predicates_distinct_without_boxed_cap
         .filter(|entry| entry.key.activation.function == reducer_id)
         .collect::<Vec<_>>();
     assert_eq!(reducers.len(), 2, "both semantic predicate identities remain");
-    let types = compiler.types_for_test();
     assert_eq!(
         reducers
             .iter()
-            .map(|entry| entry.key.activation.inputs(types)[0])
+            .map(|entry| entry.key.activation.inputs()[0])
             .collect::<HashSet<_>>()
             .len(),
         2,
@@ -6259,6 +6542,8 @@ fn compiler2_native_program_keeps_grounded_predicates_distinct_without_boxed_cap
 
 #[test]
 fn compiler2_native_program_shares_runtime_selected_predicate_invocation_only() {
+    // The selectors can also return a non-callable atom, so these captured
+    // values require public transport. A closed callable join alone does not.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -6272,8 +6557,8 @@ fn compiler2_native_program_shares_runtime_selected_predicate_invocation_only() 
     );
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("boxed_predicate_cps_sharing.fz".into()),
-        text: include_str!("../../fixtures2/behavior/boxed_predicate_cps_sharing.fz").into(),
+        name: Some("boxed_predicate_public_cps_sharing.fz".into()),
+        text: include_str!("../../fixtures2/behavior/boxed_predicate_public_cps_sharing.fz").into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -6384,11 +6669,13 @@ fn native_no_return_call_does_not_emit_delivery_resume() {
     assert_native_helpers_are_referenced("def main() do\n  panic(:done)\n  42\nend\n");
 }
 
-/// Regenerate `.agent/measurements/fz-kdt.163-native-cps-sharing.txt` with:
+/// Prints the native CPS sharing census: per-fixture body, function and byte
+/// counts before and after sharing, the fixtures that moved, and the totals.
+/// Run it with:
 ///
 /// `cargo test --lib compiler2::drive_test::measure_native_cps_sharing_corpus -- --ignored --exact --nocapture`
 #[test]
-#[ignore = "full-corpus fz-kdt.163 native CPS sharing census"]
+#[ignore = "running this needs the whole fixture corpus: it compiles every fixtures2 and fixtures2/behavior fixture that defines main(), which is why it is not part of a gate run. It does not finish today -- about 80s in, compiling fixtures2/behavior/cross_kind_operators.fz, it overflows the test thread's stack and aborts the whole test binary"]
 fn measure_native_cps_sharing_corpus() {
     #[derive(Default, Debug)]
     struct Totals {
@@ -6706,6 +6993,8 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
     functions.install(&tel);
     let native = NativeProgramCapture::new();
     native.install(&tel);
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
@@ -6726,26 +7015,66 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
             .last(&["fz", "diag", "error"])
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
-        panic!("opaque joined function values should settle before native lowering: {outcome:?}; diagnostic={message}");
+        panic!("closed joined function values should settle before native lowering: {outcome:?}; diagnostic={message}");
     }
 
     let add_a_id = function_id(&functions, "add_a", 2);
     let add_b_id = function_id(&functions, "add_b", 2);
     let program = native.last(root_id).program;
     let callable_functions = program
-        .callable_boundaries
+        .executable_entries
         .iter()
-        .flat_map(|boundary| boundary.members.iter())
-        .map(|member| member.target.activation.function)
+        .map(|entry| entry.key.activation.function)
         .collect::<HashSet<_>>();
     assert!(
         callable_functions.contains(&add_a_id) && callable_functions.contains(&add_b_id),
-        "native callable inventory should include both concrete functions flowing through the case join",
+        "native executable inventory should include both concrete functions flowing through the case join",
     );
 
+    assert_eq!(
+        native_closure_call_count(&program),
+        0,
+        "the closed joined callable must dispatch without a public closure-call seam",
+    );
     assert!(
-        native_closure_call_count(&program) > 0,
-        "opaque joined function values should stay explicit closure-call seams instead of collapsing to direct calls",
+        program.callable_boundaries.is_empty(),
+        "called-only reducers need no public wrapper"
+    );
+    assert!(
+        backend.last(root_id).program.executables().iter().any(|executable| {
+            let BackendBody::Clauses { entries, .. } = &executable.body else {
+                return false;
+            };
+            entries.iter().any(|entry| {
+                let BackendTail::DirectCall {
+                    args,
+                    target: CallEdge::Dispatch(dispatch),
+                    ..
+                } = &entry.tail
+                else {
+                    return false;
+                };
+                args.iter().enumerate().any(|(index, arg)| {
+                    let structural = executable
+                        .abi
+                        .value_layouts
+                        .get(&arg.value)
+                        .map(|layout| layout.structural)
+                        .or_else(|| match &entry.origin {
+                            BackendEntryOrigin::DeliveredResume { value, layout } if *value == arg.value => {
+                                Some(layout.layout.structural)
+                            }
+                            _ => None,
+                        });
+                    dispatch.plan.required_input(index)
+                        && structural.is_some_and(|shape| {
+                            matches!(compiler.world().shape(shape), super::transport::ShapeDescr::Callable(callable)
+                            if compiler.world().callable(*callable).selector().is_some())
+                        })
+                })
+            })
+        }),
+        "the call dispatch must inspect the joined reducer's typed selector before invoking a concrete target"
     );
 }
 
@@ -10625,7 +10954,7 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
         panic!("the destructor lambda should lower to a top-level executable body");
     };
     assert_eq!(
-        key.activation.inputs(compiler.types_for_test()),
+        key.activation.inputs(),
         vec![int_ty],
         "the escaping destructor keys its activation at the grounded payload type carried by make_resource's boundary surface, not its own (t) template",
     );
@@ -10636,9 +10965,9 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
     );
 }
 
-/// fz-hwn.19.3 -- a typed-capture closure that the compiler resolves to a known
-/// target is dispatched DIRECTLY; it does not publish an opaque first-class
-/// callable boundary.
+/// A typed-capture closure that the compiler resolves to a known target is
+/// dispatched directly; it does not publish an opaque first-class callable
+/// boundary.
 ///
 /// `add_to(x, y)` returns `fn (z) -> x + y + z`, and `apply1(f, x)` calls `f.(x)`.
 /// Because the closure's producer and call site are both visible, transport
@@ -10646,15 +10975,10 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
 /// `boundary_publication_count == 0`); `apply1`'s `f.(z)` lowers to a direct
 /// call to the lambda body, passing the captured `[x, y]` lanes straight through.
 ///
-/// The previous form of this test asserted the opposite -- that the program
-/// publishes a widened `ValueRef` opaque callable boundary -- which is provably
-/// wrong for this fixture: compiler2 never makes this closure opaque, so no such
-/// boundary exists (verified: `callable_boundaries` is empty). The settled
-/// callable-boundary *selection* this red-worklist entry was reaching for is the
-/// rematerialization path, now covered by
+/// This fixture publishes no callable boundary at all, so it says nothing about
+/// how a settled boundary is selected. That selection is the rematerialization
+/// path, covered by
 /// `compiler2_native_callable_materialization_selects_the_callableid_fact_boundary`.
-/// fz-hwn.19.5 removed the native-codegen return-shape vocabulary that kept
-/// this fixture from reaching JIT execution.
 #[test]
 fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_published_boundary() {
     let tel = ConfiguredTelemetry::new();
@@ -11408,7 +11732,7 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
     let mut keys_by_function: BTreeMap<FunctionId, BTreeSet<Ty>> = BTreeMap::new();
     for executable in program.executables() {
         let activation = &executable.key.activation;
-        let Some(first) = activation.inputs(types).first().copied() else {
+        let Some(first) = activation.inputs().first().copied() else {
             continue;
         };
         keys_by_function.entry(activation.function).or_default().insert(first);
@@ -12570,9 +12894,11 @@ fn compiler2_dispatch_answers_the_same_under_a_permuted_arm_order() {
 /// now, so the settled order reads 0 as well -- but identical answers still are
 /// not the same claim as safe routing, and
 /// `compiler2_no_value_reaches_a_construction_member_that_never_named_it` holds
-/// the other half;
-/// `compiler2_a_permuted_wrapper_order_reseats_the_construction_members` is
-/// what proves the perturbation still lands.
+/// the other half. `enum_take_drop_split` itself no longer carries a wrapper
+/// surface: every callable target it reaches is known, so
+/// `compiler2_static_callable_fixture_has_no_wrapper_order_to_perturb` holds
+/// its collapse directly rather than treating its unchanged answer as evidence
+/// about a live selection.
 #[test]
 fn compiler2_dispatch_answers_the_same_under_a_permuted_wrapper_order() {
     assert_no_answer_moves(&WRAPPER_MEMBER_CENSUS, &WRAPPER_MEMBER_STRESSES);
@@ -12801,49 +13127,28 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
     ("fixtures2/behavior/dispatch_list_head_separates.fz", "", 4, 0),
 ];
 
-/// fz-kdt.141 / fz-kdt.136: the wrapper half of the stress has teeth.
+/// fz-kdt.98.3.17.7: static callable resolution removes this fixture's
+/// wrapper-order surface.
 ///
-/// A gate that asserts invariance is worth exactly what its perturbation
-/// reaches, and the instrument this replaces reached the construction wrappers
-/// not at all. So assert the perturbation lands: the same fixture, compiled to
-/// the same stage, renders a DIFFERENT canonical backend program under a
-/// permuted wrapper order -- and an identical one under no setting, which is
-/// the inertness claim on the same comparand.
+/// `enum_take_drop_split` used to be the fz-kdt.141/fz-kdt.136 witness that a
+/// wrapper-order permutation landed. Its reducer and generated-lambda targets
+/// now resolve to known activations, so lowering emits no callable construction
+/// wrappers at all. The old `assert_ne!` therefore printed two equal whole
+/// backend artifacts, not evidence that types had recursed.
 ///
-/// `enum_take_drop_split` is the subject because its wrappers carry members
-/// keyed on accumulator tuples that differ only at a list position -- pairs
-/// the tuple test COULD not separate before fz-kdt.138 (whichever the mint
-/// order put first took every value) and now separates by shape and head.
-/// Which member the mint order lists first is what this perturbation moves.
-/// On this fixture that choice is no longer a hazard -- fz-kdt.132 minted the
-/// covering rung every one of its members needed, and the tripwire reads 0 here
-/// at every setting -- but it is still a choice nothing but the interner makes,
-/// which is what this gate holds to one answer. Where a wrapper's members are
-/// NOT all covering, the mint order used to decide a routing (00277 read 12
-/// surface-membership escapes at the settled order before fz-kdt.179); member
-/// selection runs the drop and the covering seat now, so that no longer depends
-/// on the interner, and `compiler2_no_value_reaches_a_construction_member_that_never_named_it`
-/// holds it at 0 under every setting.
+/// The empty wrapper surface is the new fact. The construction wrapper is the
+/// only place `wrappers:1` can act, so no second complete compilation is needed
+/// to infer that this fixture contributes no wrapper-order signal. A fixture
+/// that regains a wrapper fails the compact structural assertion immediately.
 #[test]
-fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
-    use crate::compiler2::callsite_dispatch::dispatch_stress::{DispatchStressed, setting};
-
+fn compiler2_static_callable_fixture_has_no_wrapper_order_to_perturb() {
     let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
-    let settled = backend_canon(fixture);
-    assert_eq!(
-        backend_canon(fixture),
-        settled,
-        "the same fixture compiled twice with no setting must render the same artifact, or this \
-         gate's comparand is noise",
-    );
-    let permuted = {
-        let _stress = DispatchStressed::install(setting("wrappers:1"));
-        backend_canon(fixture)
-    };
-    assert_ne!(
-        permuted, settled,
-        "a permuted wrapper order must reseat the construction members it was built to perturb; \
-         a stress that cannot move them proves nothing about the order they arrived in",
+    let (_compiler, program) = driven_backend_program(fixture);
+    assert!(
+        program.construction_wrappers().is_empty(),
+        "every callable target in {fixture} resolves to a known activation, so no construction \
+         wrapper survives for a wrapper-order stress to perturb: {:?}",
+        program.construction_wrappers(),
     );
 }
 
@@ -13099,7 +13404,7 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
             "def odd(0), do: fn(x) -> x + 1 end\ndef odd(n), do: even(n - 1)\n",
         ),
     ];
-    fn settle(order: usize) -> (String, Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+    fn settle(order: usize, identity_observed: bool) -> (String, Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
         let tel = ConfiguredTelemetry::new();
         let runs = Rc::new(RefCell::new(Vec::<(ExecutableKey, String)>::new()));
         let run_sink = Rc::clone(&runs);
@@ -13123,7 +13428,14 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
         for (_, text) in &FUNCTIONS {
             source.push_str(text);
         }
-        source.push_str("def main(), do: dbg({left(1).(3), right(2).(4), count(3).(1), even(4).(1)})\n");
+        if identity_observed {
+            source.push_str(
+                "def main() do\n e = even(4)\n o = odd(4)\n \
+                 dbg({left(1).(3), right(2).(4), count(3).(1), e.(1)})\n dbg(e === o)\nend\n",
+            );
+        } else {
+            source.push_str("def main(), do: dbg({left(1).(3), right(2).(4), count(3).(1), even(4).(1)})\n");
+        }
         compiler.submit_code(CodeSubmission {
             name: Some("runtime_demand_order.fz".to_string()),
             text: source,
@@ -13212,10 +13524,17 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
                 "each formula must subscribe to exactly its direct and callable-flow targets",
             );
         }
-        assert!(
-            ["even", "odd"].iter().all(|name| construction_owners.contains(*name)),
-            "the mutually recursive closure producers must bootstrap through exact construction targets: {construction_owners:?}",
-        );
+        if identity_observed {
+            assert!(
+                ["even", "odd"].iter().all(|name| construction_owners.contains(*name)),
+                "identity-observed recursive closures must bootstrap through exact public construction targets: {construction_owners:?}",
+            );
+        } else {
+            assert!(
+                ["even", "odd"].iter().all(|name| !construction_owners.contains(*name)),
+                "closed called-only recursion needs direct targets, not public construction targets: {construction_owners:?}",
+            );
+        }
         let order = runs.iter().map(|(_, name)| name.clone()).collect();
         let mut work = runs
             .iter()
@@ -13236,31 +13555,34 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
         )
     }
 
-    let baseline = settle(0);
-    let alternatives = [settle(1), settle(2)];
-    assert_eq!(
-        baseline.1,
-        vec!["{4, 8, 1, 1}"],
-        "the settled artifact must execute correctly"
-    );
-    for alternative in alternatives {
-        assert_ne!(
-            baseline.2, alternative.2,
-            "each registration order must perturb reactive arrival"
-        );
-        assert_eq!(
-            baseline.0, alternative.0,
-            "arrival order must not move the canonical backend"
-        );
-        assert_eq!(baseline.1, alternative.1, "arrival order must not move runtime output");
-        assert_eq!(
-            baseline.3, alternative.3,
-            "arrival order must not move the exact executable RuntimeDemand work multiset",
-        );
-        assert_eq!(
-            baseline.4, alternative.4,
-            "arrival order must not move any settled RuntimeDemand semantic fact",
-        );
+    for identity_observed in [false, true] {
+        let baseline = settle(0, identity_observed);
+        let alternatives = [settle(1, identity_observed), settle(2, identity_observed)];
+        let expected = if identity_observed {
+            vec!["{4, 8, 1, 1}", "false"]
+        } else {
+            vec!["{4, 8, 1, 1}"]
+        };
+        assert_eq!(baseline.1, expected, "the settled artifact must execute correctly");
+        for alternative in alternatives {
+            assert_ne!(
+                baseline.2, alternative.2,
+                "each registration order must perturb reactive arrival"
+            );
+            assert_eq!(
+                baseline.0, alternative.0,
+                "arrival order must not move the canonical backend"
+            );
+            assert_eq!(baseline.1, alternative.1, "arrival order must not move runtime output");
+            assert_eq!(
+                baseline.3, alternative.3,
+                "arrival order must not move the exact executable RuntimeDemand work multiset",
+            );
+            assert_eq!(
+                baseline.4, alternative.4,
+                "arrival order must not move any settled RuntimeDemand semantic fact",
+            );
+        }
     }
 }
 
@@ -13887,7 +14209,7 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         .filter(|activation| activation.function == partition_id)
         .cloned()
         .collect::<Vec<_>>();
-    partition_activations.sort_by_key(|activation| activation.inputs(types));
+    partition_activations.sort_by_key(|activation| activation.inputs().to_vec());
     // Both qsort activations call partition with the same canonical
     // (pivot, rest) — hd/tl of a non-empty and a general list coincide — so
     // ONE partition activation is the tight answer. The historical second
@@ -13901,16 +14223,19 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     assert!(
         partition_activations
             .iter()
-            .all(|activation| activation.input_len(types) == 4),
+            .all(|activation| activation.input_len() == 4),
         "partition/4 should stay keyed on its four inputs"
     );
-    let partition_inputs = partition_activations[0].inputs(types);
-    // fz-f98.14.10.2: the two recursive accumulator slots collapse to their
-    // ADDRESSED convergence class — `[a2_e]` and `[a3_e]` — list-family slots
-    // whose element is a resolvable structural-address var, not the path-blind
-    // `list(any)`. They are distinct BY ADDRESS (param 2 vs param 3), which is
-    // correct: distinct parameter positions must not conflate. The win is that
-    // each slot folds to ONE key (no `[int] | []` over-spec survives).
+    let partition_inputs = partition_activations[0].inputs();
+    // The two accumulator slots are positions the fixpoint is still solving:
+    // each round conses onto the list the recursion hands back, so the
+    // caller's `destinations` shape for the slot is `List(Unknown)` and
+    // `KeyShape::coordinate` names the element by the variable that addresses
+    // it — `[a2_e]` and `[a3_e]`. The list constructor survives and the
+    // element is a resolvable structural address, not the path-blind
+    // `list(any)`. The two slots stay distinct BY ADDRESS (param 2 vs param
+    // 3), which is correct: distinct parameter positions must not conflate.
+    // Each slot folds to ONE key (no `[int] | []` over-spec survives).
     assert_eq!(types.display(&partition_inputs[2]), "[a2_e]");
     assert_eq!(types.display(&partition_inputs[3]), "[a3_e]");
     let append_activations = activations
@@ -13923,16 +14248,22 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         "root closure should collapse append/2 recursive list-family inputs to one activation key"
     );
     assert!(
-        append_activations
-            .iter()
-            .all(|activation| activation.input_len(types) == 2),
+        append_activations.iter().all(|activation| activation.input_len() == 2),
         "append/2 should stay keyed on its two inputs"
     );
     // fz-5xp.30: 17 -> 22. The three additions that total the observable heap
     // statistics now traverse ordinary Kernel arithmetic and its generic
     // result/status helper; all five extra activations are rooted and reached.
+    //
+    // fz-kdt.98.3.17.2: 22 -> 24. `dbg` and its extern, `fz_dbg_value`, stop
+    // sharing one erased activation across every call site: the extern's
+    // return now carries the caller's argument type (its declaration is
+    // `(t) :: t when t: any`), so the three `dbg` calls this program makes --
+    // on the sorted list, the stats, the heap byte count -- key on their
+    // three distinct types instead of one `any`. One generic activation each
+    // for `dbg` and `fz_dbg_value` becomes three plus two: +5, -1, net +4.
     assert!(
-        activations.len() <= 22,
+        activations.len() <= 24,
         "quicksort should settle within its bounded rooted activation frontier (main + the collapsed \
          qsort/partition/append keys + reached runtime helpers): {activations:?}"
     );
@@ -14807,10 +15138,107 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
          from its ascent -- a known-unbought split fz-kdt.213 owns, pinned so it cannot grow",
     );
     assert!(
-        build_activations
-            .iter()
-            .all(|activation| activation.input_len(compiler.types_for_test()) != 0),
+        build_activations.iter().all(|activation| activation.input_len() != 0),
         "the collapsed build/2 activation should still carry the recursive accumulator slot",
+    );
+}
+
+#[test]
+fn compiler2_recursive_keying_sees_recursion_through_function_references() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let source = "def main(), do: {ping(1), reference_only()}\n\
+                  def reference_only(), do: &pong/1\n\
+                  def ping(0), do: 0\n\
+                  def ping(n) do\n\
+                    next = &pong/1\n\
+                    next.(n)\n\
+                  end\n\
+                  def pong(0), do: 0\n\
+                  def pong(n) do\n\
+                    next = &ping/1\n\
+                    next.(n)\n\
+                  end\n";
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_function_reference_recursion.fz".to_string()),
+        text: source.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(
+        compiler.drive(),
+        "function-reference recursion should settle through recursive activation key facts",
+    );
+
+    let ping = function_id(&functions, "ping", 1);
+    let pong = function_id(&functions, "pong", 1);
+    for (caller, callee) in [(ping, pong), (pong, ping)] {
+        assert_eq!(
+            compiler.world().static_callees(caller),
+            &[callee],
+            "a named function reference is this body's only static construction edge"
+        );
+        assert!(
+            compiler
+                .world()
+                .body_keying(caller)
+                .expect("function-reference body keying")
+                .recursive,
+            "the function-reference cycle must be recursive"
+        );
+    }
+    assert_eq!(
+        compiler.world().call_graph_component(ping),
+        compiler.world().call_graph_component(pong),
+        "the function-reference cycle is one strong component"
+    );
+}
+
+#[test]
+fn compiler2_value_call_self_cycle_mints_one_activation_key() {
+    // def loop(_f, 0), do: :done
+    // def loop(f, n), do: f.(f, n - 1)
+    // def main(), do: dbg(loop(&loop/2, 2))
+    //
+    // main's call to `loop(&loop/2, 2)` addresses `f`'s callable surface
+    // fresh, nested under input slot 0 (`Types::address_signature_at_input`
+    // via `ActivationKey::from_inputs_with_callable_surfaces`). loop/2's own
+    // self call `f.(f, n - 1)` binds `f` by reading loop's own settled
+    // `ActivationInputs` row instead, so the very same activation must
+    // address that row's callable surface identically -- one function, one
+    // address, one key -- or the two producers fork the activation in two.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let analyses = ActivationAnalysisCapture::new();
+    analyses.install(&tel);
+
+    let (mut compiler, root) = submit_main_root(
+        tel,
+        "value_call_self_cycle.fz",
+        include_str!("../../fixtures2/behavior/value_call_self_cycle.fz"),
+    );
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("the self-cycle program reaches a backend program");
+
+    let loop_id = function_id(&functions, "loop", 2);
+    let loop_keys: HashSet<ActivationKey> = analyses
+        .keys_for_root(root)
+        .into_iter()
+        .filter(|key| key.function == loop_id)
+        .collect();
+    assert_eq!(
+        loop_keys.len(),
+        1,
+        "loop/2's entry surface and its own settled-input-row surface must address to the \
+         same activation key, not fork into two: {loop_keys:#?}",
     );
 }
 
@@ -15660,19 +16088,21 @@ fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
             continue;
         };
         for entry in entries {
-            let crate::compiler2::BackendTail::ClosureCall { return_flow, .. } = &entry.tail else {
+            let crate::compiler2::BackendTail::ClosureCall { target, .. } = &entry.tail else {
                 continue;
             };
-            let Some(crate::compiler2::artifact::BackendReturnFlow::Deliver { source, .. }) = return_flow else {
-                continue;
-            };
-            checked += 1;
-            assert!(
-                source.layout.reprs.is_empty(),
-                "no seam boxes this callable, so a discarded closure call publishes no return lanes; \
-                 it claimed {:?}",
-                source.layout.reprs,
-            );
+            for return_flow in backend_call_return_flows(target) {
+                let crate::compiler2::artifact::BackendReturnFlow::Deliver { source, .. } = return_flow else {
+                    continue;
+                };
+                checked += 1;
+                assert!(
+                    source.layout.reprs.is_empty(),
+                    "no seam boxes this callable, so a discarded closure call publishes no return lanes; \
+                     it claimed {:?}",
+                    source.layout.reprs,
+                );
+            }
         }
     }
     assert!(
@@ -15834,11 +16264,6 @@ end
 }
 
 #[test]
-// Triaged 2026-08-24: blocked on fz-k22, not awaiting triage. It fails with
-// that ticket's exact signature -- "backend value ValueId(0) ... must be bound
-// before runtime use" (native.rs's unbound-value invariant) -- so this test is
-// one of fz-k22's detectors and re-enables with it.
-#[ignore = "blocked on fz-k22: generic Enum HOF leaves a backend value unbound"]
 fn compiler2_jit_and_backend_interp_agree_on_list_retention_exit_counters() {
     let source = r#"
 def ping(x), do: x
@@ -16881,7 +17306,7 @@ fn compiler2_nested_guard_demand_names_only_caller_arguments() {
             .world()
             .input_demand(function_id(&functions, "choose", 3))
             .unwrap()
-            .local_dispatch,
+            .forwarded_dispatch,
         [
             crate::dispatch_matrix::demand::DispatchDemand::Ignore,
             crate::dispatch_matrix::demand::DispatchDemand::Ignore,
@@ -19153,7 +19578,11 @@ fn record_function_definition(
             .function_source(function_id)
             .and_then(|source| {
                 let source_map = world.source_map();
-                crate::compiler2::quoted_function::derive_function_surface(&source.source, &source_map.borrow()).ok()
+                crate::compiler2::quoted_function::derive_function_surface(
+                    source.declared_root().expect("a declared function carries its root"),
+                    &source_map.borrow(),
+                )
+                .ok()
             })
             .map_or(0, |surface| surface.clauses.len() as u64)
     } else {
@@ -19374,6 +19803,14 @@ fn native_function_contains_nil_const(program: &NativeProgram, fn_id: FnId) -> b
             .iter()
             .any(|stmt| matches!(stmt, IrStmt::Let(_, IrPrim::Const(crate::fz_ir::Const::Nil))))
     })
+}
+
+fn backend_call_return_flows(target: &CallEdge<ExecutableKey, BackendReturnFlow>) -> Vec<&BackendReturnFlow> {
+    match target {
+        CallEdge::Direct(edge) => vec![&edge.return_flow],
+        CallEdge::Dispatch(dispatch) => dispatch.arms.iter().map(|arm| &arm.return_flow).collect(),
+        CallEdge::Indirect(flow) => vec![flow],
+    }
 }
 
 fn return_flow_is_distinct_return_payload(flow: &BackendReturnFlow, caller: &BackendReturnLayout) -> bool {
@@ -19597,6 +20034,20 @@ pub(crate) fn assert_resolved(outcome: DriveOutcome<Job, DependencyKey>, message
 
 pub(crate) fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> FunctionId {
     capture.id(name, arity)
+}
+
+/// Every generated function the capture saw minted while `owner`'s body was
+/// lowered. `function.defined` carries the owner only for generated functions,
+/// so this is the whole set of lambdas one function owns.
+pub(crate) fn generated_function_ids(capture: &FunctionCapture, owner: FunctionId) -> Vec<FunctionId> {
+    let mut ids: Vec<FunctionId> = capture
+        .all()
+        .into_iter()
+        .filter(|record| record.owner_function_id == Some(owner))
+        .map(|record| record.function_id)
+        .collect();
+    ids.sort();
+    ids
 }
 
 pub(crate) fn module_function_id(capture: &FunctionCapture, module: &str, name: &str, arity: u64) -> FunctionId {
@@ -19858,19 +20309,18 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
 }
 
 #[test]
-fn compiler2_unproductive_deepening_settles_at_bottom_without_widening() {
+fn compiler2_unproductive_deepening_settles_at_bottom() {
     // def deep(x), do: [deep(x)] — the inner call must produce a value before
-    // the list ever exists, so this function NEVER returns: its least
-    // fixpoint is bottom. Under the old absent-reads-as-none lie this very
-    // program manufactured a divergent ascent (list(none), list(list(none)),
-    // …); honest paths never start the chain.
+    // the list ever exists, so no branch of deep/1 ever escapes the cycle.
+    // That is the middle of the solver's three states: branches, none of
+    // which escape. Its least fixed point is the empty type, and the solve
+    // publishes that — `none` is a computed fact, not an absence, and
+    // publishing it once is what lets the compile quiesce. Under the old
+    // absent-reads-as-none lie this very program manufactured a divergent
+    // ascent (list(none), list(list(none)), …); here the second solve finds
+    // bottom already standing and changes nothing.
     let tel = ConfiguredTelemetry::new();
-    let widened = Rc::new(Cell::new(false));
-    let widened_sink = Rc::clone(&widened);
-    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-        &["fz", "compiler2", "return_type", "widened"],
-        move |_, _, _, _, _| widened_sink.set(true),
-    );
+    let succession = Succession::record(&tel);
     let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("deep_unproductive.fz".to_string()),
@@ -19881,27 +20331,62 @@ fn compiler2_unproductive_deepening_settles_at_bottom_without_widening() {
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "an unproductive deepening program quiesces at bottom",
     );
-    assert!(
-        !widened.get(),
-        "no evidence ever ascends, so widening must never engage",
+
+    let table = succession.render(&world);
+    let one_member = ("deep/1".to_string(), vec!["deep/1".to_string()]);
+    assert_eq!(
+        succession.components(&world),
+        vec![one_member.clone(), one_member],
+        "deep/1's self edge makes it a one-member component, and both solves run over it{table}",
+    );
+    let row = succession
+        .rows(&world)
+        .get("deep/1")
+        .cloned()
+        .unwrap_or_else(|| panic!("deep/1 should have been analysed{table}"));
+    assert_eq!(
+        row,
+        SuccessionRow {
+            keys: 1,
+            walks: 2,
+            solves: 2,
+            definitions: 1,
+            clears: 0,
+        },
+        "one activation, one published return, no withdrawal: the first solve names bottom \
+         and the second recomputes it and changes nothing, which is the quiescence{table}",
+    );
+
+    let key = succession.sole_key(&world, "deep/1");
+    let published = world
+        .activation_return(&key)
+        .expect("the unproductive component publishes its least fixed point");
+    let t = world.types_mut();
+    let none = t.none();
+    assert_eq!(
+        published,
+        none,
+        "the least fixed point of a productive cycle with no base case is the empty type: {}",
+        t.display(&published),
     );
 }
 
 #[test]
-fn compiler2_productive_deepening_terminates_by_widening() {
+fn compiler2_productive_deepening_converges_by_component_solve() {
     // def deep(0), do: []
     // def deep(n), do: [deep(n - 1)]
-    // Every round produces REAL evidence one list deeper — the true value is
-    // the recursive type μt.([] | list(t)), which the lattice cannot
-    // express, so the precise ascent provably never lands. Termination must
-    // come from the widening operator, not from a timeout.
+    // deep/1 calls itself, so it forms its own recursive-return component
+    // (a self edge). The component solver names its true return directly
+    // from deep/1's own flattened branches, on its own evidence: the least
+    // fixed point of `X = [] | nonempty(X)`. Interning folds that pair of
+    // clauses into the one normal form the regular bodies admit — a single
+    // list clause carrying `empty` — so the answer IS the regular component
+    // `X = list(X)`, which is what the test asks the calculator for. Asking
+    // for a spelling instead would demand a string the interner can never
+    // hand back, and the display renders `list(X)` and `nonempty(X)` alike.
     let tel = ConfiguredTelemetry::new();
-    let widened = Rc::new(Cell::new(false));
-    let widened_sink = Rc::clone(&widened);
-    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-        &["fz", "compiler2", "return_type", "widened"],
-        move |_, _, _, _, _| widened_sink.set(true),
-    );
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
     let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("deep_productive.fz".to_string()),
@@ -19917,33 +20402,49 @@ fn compiler2_productive_deepening_terminates_by_widening() {
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "the productive deepening program must converge",
     );
+    let deep = function_id(&functions, "deep", 1);
+    let returns = world
+        .activation_keys()
+        .into_iter()
+        .filter(|key| key.function == deep)
+        .map(|key| world.activation_return(&key).expect("deep/1 returns"))
+        .collect::<Vec<_>>();
+    assert_eq!(returns.len(), 1, "deep/1 is reached at exactly one activation");
+    let solved = returns[0];
+
+    let t = world.types_mut();
+    let list_of_itself = t.intern_regular_component(1, |nodes| vec![DescrOf::list_of(nodes[0])])[0];
+    let empty = t.empty_list();
+    assert_eq!(
+        solved,
+        list_of_itself,
+        "the component solver names deep/1's recursive return exactly, with no approximation: \
+         the solved type IS the component `X = list(X)` (solved {}, component {})",
+        t.display(&solved),
+        t.display(&list_of_itself),
+    );
     assert!(
-        widened.get(),
-        "termination of a true divergent ascent must come from widening",
+        t.is_subtype(&empty, &solved),
+        "the base clause's `[]` is inside the solved return, carried by the surviving list \
+         clause's empty flag: {}",
+        t.display(&solved),
     );
 }
 
 #[test]
-fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
+fn compiler2_tuple_return_ladder_settles_via_component_solve() {
     // def build(0), do: :start
     // def build(n), do: {n, build(n - 1)}
-    // The true return is the recursive type mu t.(:start | {integer, t}). The
-    // lattice cannot name it, so every round joins one more level of nesting and
-    // the stored return climbs a ladder — {integer, :start}, then
-    // {integer, :start | {integer, :start}}, and so on — until the widening
-    // budget tops it out at `any`. Each rung re-analyzes the activation and
-    // revises its return. The counts below are that ladder as it stands, taken
-    // through the product pull every door makes, and they measure what recursive
-    // denotations remove rather than a target to keep.
+    // build/1 calls itself, so it forms its own recursive-return component
+    // (a self edge). The component solver names its true return directly —
+    // the regular equirecursive type mu t.(:start | {integer, t}) — from
+    // build/1's own flattened branches, on its own evidence: one solve, not
+    // a ladder of ever-deeper approximations. The counts below are that
+    // one-shot solve's cost, taken through the product pull every door
+    // makes.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
-    let widened = Rc::new(Cell::new(false));
-    let widened_sink = Rc::clone(&widened);
-    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-        &["fz", "compiler2", "return_type", "widened"],
-        move |_, _, _, _, _| widened_sink.set(true),
-    );
     let revisions: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
     let revision_sink = Rc::clone(&revisions);
     tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
@@ -19977,83 +20478,417 @@ fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
     assert_eq!(
         counts_for(&analyses.borrow(), build),
         vec![TUPLE_LADDER_BUILD_ANALYSES],
-        "build/1 has one activation, re-analyzed once per rung of the ladder",
+        "build/1 has one activation, and a component that is solved rather than climbed \
+         re-analyzes it a bounded number of times",
     );
     assert_eq!(
         counts_for(&revisions.borrow(), build),
         vec![TUPLE_LADDER_BUILD_RETURN_REVISIONS],
-        "each rung revises the activation's return with one more level of nesting",
+        "build/1's return is revised fewer times than its activation is analyzed: the solve \
+         names the recursive return, so most re-analyses find it already settled",
     );
-    // The caller pays for the ladder without climbing one. `main/0` sees a new
-    // argument type for `dbg/1` on every rung, so it is re-analyzed as often as
-    // `build/1` is, while its own return — what `dbg/1` gives back — moves
-    // twice. Re-analysis and ascent are separate costs and only one of them is
-    // the ladder.
+    // The caller pays for the callee's work without joining its component.
+    // `main/0` sees `build/1`'s argument and return move, so it is re-analyzed
+    // more often than `build/1` is, while its own return — what `dbg/1` gives
+    // back — moves fewer times still. Re-analysis and ascent are separate
+    // costs, and neither is a ladder here.
     let main = function_id(&functions, "main", 0);
     assert_eq!(
         counts_for(&analyses.borrow(), main),
         vec![TUPLE_LADDER_MAIN_ANALYSES],
-        "main/0 is re-analyzed once per rung, because each rung retypes its argument",
+        "main/0 is re-analyzed as its argument's type moves; the row is what an explosion in \
+         that re-analysis would show up in",
     );
     assert_eq!(
         counts_for(&revisions.borrow(), main),
         vec![TUPLE_LADDER_MAIN_RETURN_REVISIONS],
         "main/0's own return does not climb: it is not the recursive one",
     );
-    assert!(
-        widened.get(),
-        "the ladder never lands on its own denotation, so it ends at the widening budget",
+    let returns = compiler
+        .world()
+        .activation_keys()
+        .into_iter()
+        .filter(|key| key.function == build)
+        .map(|key| {
+            let world = compiler.world();
+            world
+                .types()
+                .display(&world.activation_return(&key).expect("build/1 returns"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        returns,
+        vec!["μX. :start | {int, X}".to_string()],
+        "the component solver names build/1's recursive return exactly, with no approximation",
     );
 }
 
 /// What `return_tuple_ladder.fz` costs today, through the product pull, on one
-/// cold compile. `RETURN_WIDENING_BUDGET` is 8 strict ascents before the join
-/// widens the growing spine and twice that before it stores `any`; the ladder
-/// climbs past both, so `build/1`'s one activation is analyzed 19 times and its
-/// return revised 17, and `main/0` is re-analyzed 22 times for a return that
-/// moves twice.
+/// cold compile. `build/1` forms its own recursive-return component (a self
+/// edge), so `SolveReturnComponent` names its return directly instead of
+/// climbing a ladder of ever-deeper approximations: its one activation is
+/// analyzed 4 times and its return revised 2, and `main/0` — which never
+/// joins the component, only reads its settled return — is re-analyzed 8
+/// times for a return that moves 3.
 ///
-/// These are whole-compile totals, not the ladder's own round counter. A rebase
-/// resets `ActivationSlot::ascents` to zero and starts the climb again, and
-/// every revision in the new epoch still fires `return_type.defined`, so a
-/// warm or re-driven world counts the epochs together while `ascents` does not.
-const TUPLE_LADDER_BUILD_ANALYSES: u64 = 19;
-const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 17;
-const TUPLE_LADDER_MAIN_ANALYSES: u64 = 22;
-const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 2;
+/// These are whole-compile totals, not a round counter. Every revision still
+/// fires `return_type.defined`, so a warm or re-driven world counts every
+/// pass together.
+const TUPLE_LADDER_BUILD_ANALYSES: u64 = 4;
+const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 2;
+const TUPLE_LADDER_MAIN_ANALYSES: u64 = 7;
+const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 3;
 
 #[test]
-fn compiler2_recursive_typedef_deadlocks_on_its_own_definition() {
-    // @type t :: :start | {integer, t} is a legal recursive declaration, and
-    // resolving it needs a type whose definition names itself. There is no such
-    // denotation, so DeriveTypeDef(t) waits on TypeDefined(t) — its own output —
-    // and the product pull every door makes fails on a stall rather than on a
-    // diagnostic. The stalled waits name the cycle.
+fn compiler2_recursive_typedef_resolves_to_one_mu_identity() {
     let (mut compiler, root) = submit_main_root(
         ConfiguredTelemetry::new(),
         "recursive_typedef.fz",
         include_str!("../../fixtures2/behavior/recursive_typedef.fz"),
     );
-    let outcome = compiler.drive_root_to_dump_stage(root, super::dump::DumpStage::Backend);
     assert!(
-        outcome.is_err(),
-        "a self-referential typedef must stall the product, not deliver one",
+        compiler
+            .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+            .is_ok(),
+        "a recursive declaration reaches backend materialization through the ordinary root path",
     );
-    let waits = compiler.world().unresolved_waits();
-    let self_wait = waits
-        .iter()
-        .find(|wait| {
-            wait.jobs
-                .iter()
-                .any(|job| matches!(job, Job::DeriveTypeDef(name) if name.name == "t"))
-        })
-        .expect("DeriveTypeDef(t) is among the stalled jobs");
-    let FactUse::Current(DependencyKey::Fact(FactKey::TypeDefined(awaited))) = &self_wait.fact else {
-        panic!("DeriveTypeDef(t) stalls on the current TypeDefined fact: {self_wait:?}");
+    let t = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "t".to_string(),
+        arity: 0,
     };
+    let ty = compiler
+        .world()
+        .type_def(&t)
+        .expect("the recursive declaration resolves")
+        .ty;
     assert_eq!(
-        awaited.name, "t",
-        "the fact DeriveTypeDef(t) waits on is the one it is itself the producer of",
+        compiler.world().types().display(&ty),
+        "μX. :start | {int, X}",
+        "the definition receives a finite recursive denotation",
+    );
+    let inventory = compiler.world().types().identity_inventory();
+    assert_resolved(compiler.drive(), "an unchanged root does no further type work");
+    assert_eq!(
+        compiler.world().types().identity_inventory(),
+        inventory,
+        "re-driving unchanged declarations preserves the recursive identity inventory",
+    );
+}
+
+#[test]
+fn compiler2_mutually_recursive_typedefs_resolve_together() {
+    let source = r#"
+@type odd :: :one | {integer, even}
+@type even :: {integer, odd}
+
+@spec main() :: odd
+def main(), do: :one
+"#;
+    let (mut compiler, root) = submit_main_root(ConfiguredTelemetry::new(), "mutual_typedefs.fz", source);
+    assert!(
+        compiler
+            .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+            .is_ok(),
+        "a mutually recursive declaration group reaches backend materialization",
+    );
+    let odd = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "odd".to_string(),
+        arity: 0,
+    };
+    let even = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "even".to_string(),
+        arity: 0,
+    };
+    let odd_ty = compiler.world().type_def(&odd).expect("odd resolves").ty;
+    let even_ty = compiler.world().type_def(&even).expect("even resolves").ty;
+    assert_eq!(
+        compiler.world().types().display(&odd_ty),
+        "μX. :one | {int, {int, X}}",
+        "the first declaration is rooted at its own canonical recursive identity",
+    );
+    assert_eq!(
+        compiler.world().types().display(&even_ty),
+        "μX. {int, :one | {int, X}}",
+        "the second declaration is a distinct root into the same regular component",
+    );
+}
+
+#[test]
+fn compiler2_mutual_typedef_member_demand_uses_its_component_owner() {
+    let source = r#"
+@type alpha :: :end | {integer, beta}
+@type beta :: {integer, alpha}
+
+@spec main() :: beta
+def main(), do: {0, :end}
+"#;
+    let (mut compiler, root) = submit_main_root(ConfiguredTelemetry::new(), "owned_mutual_typedefs.fz", source);
+    assert!(
+        compiler
+            .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+            .is_ok(),
+        "a demand for beta/0 resolves the alpha/beta component through its one owner",
+    );
+    let alpha = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "alpha".to_string(),
+        arity: 0,
+    };
+    let beta = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "beta".to_string(),
+        arity: 0,
+    };
+    let alpha_ty = compiler.world().type_def(&alpha).expect("alpha resolves").ty;
+    let beta_ty = compiler.world().type_def(&beta).expect("beta resolves").ty;
+    assert_eq!(
+        compiler.world().job_outputs(&Job::DeriveTypeDef(alpha.clone())),
+        vec![FactKey::TypeDefined(alpha.clone()), FactKey::TypeDefined(beta.clone())],
+        "the canonical component producer owns both facts",
+    );
+    assert!(
+        compiler
+            .world()
+            .job_outputs(&Job::DeriveTypeDef(beta.clone()))
+            .is_empty(),
+        "a member never becomes a competing component producer",
+    );
+
+    let revisions = [
+        compiler.world().fact_revision(&FactKey::TypeDefined(alpha.clone())),
+        compiler.world().fact_revision(&FactKey::TypeDefined(beta.clone())),
+    ];
+    assert!(
+        compiler.demand(Job::DeriveTypeDef(alpha.clone())),
+        "the owner can be re-driven"
+    );
+    assert_resolved(
+        compiler.drive(),
+        "an unchanged component owner re-derives its complete claim set",
+    );
+    assert_eq!(
+        compiler.world().fact_revision(&FactKey::TypeDefined(beta.clone())),
+        revisions[1],
+        "an owner re-drive retains beta's fact rather than retracting it",
+    );
+    assert_eq!(
+        compiler.world().type_def(&beta).expect("beta remains defined").ty,
+        beta_ty
+    );
+    assert_eq!(
+        compiler.world().type_def(&alpha).expect("alpha remains defined").ty,
+        alpha_ty
+    );
+}
+
+#[test]
+fn compiler2_module_source_replacement_withdraws_its_removed_type_declaration() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("type_declaration_before.fz".to_string()),
+        text: r#"
+defmodule M do
+  defstruct [:value]
+  @type u :: integer
+  @type t :: u
+  @type record :: %M{value: integer}
+  @spec main() :: t
+  def main(), do: 1
+end
+"#
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: Some("M".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(1));
+
+    let name = TypeName {
+        module: compiler.world_mut().reference_module(module_name("M")),
+        name: "t".to_string(),
+        arity: 0,
+    };
+    let record = TypeName {
+        module: name.module,
+        name: "record".to_string(),
+        arity: 0,
+    };
+    assert!(compiler.world().has_fact(&FactKey::TypeDeclared(name.clone())));
+    assert!(compiler.world().type_decl(&name).is_some());
+    assert!(compiler.world().type_def(&name).is_some());
+    assert_eq!(
+        compiler.world().type_def_refs(&name),
+        &[TypeName {
+            module: name.module,
+            name: "u".to_string(),
+            arity: 0,
+        }],
+        "the scoped declaration owns its recorded reference edge"
+    );
+    assert_eq!(compiler.world().type_def_struct_refs(&record), &[name.module]);
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("type_declaration_after.fz".to_string()),
+        text: r#"
+defmodule M do
+  def main(), do: 2
+end
+"#
+        .to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(2));
+    assert!(
+        !compiler.world().has_fact(&FactKey::TypeDeclared(name.clone())),
+        "the replaced module stops publishing its removed declaration"
+    );
+    assert!(
+        compiler.world().type_decl(&name).is_none(),
+        "the declaration store drops stale scope state"
+    );
+    assert!(
+        compiler.world().type_def_refs(&name).is_empty(),
+        "the declaration's reference contribution retracts with its source scope"
+    );
+    assert!(
+        compiler.world().type_def_struct_refs(&record).is_empty(),
+        "the declaration's struct-reference contribution retracts with its source scope"
+    );
+    assert!(
+        compiler.world().type_def(&name).is_none(),
+        "the derived definition retracts with its declaration"
+    );
+}
+
+#[test]
+fn compiler2_late_typedef_edge_rebuilds_its_existing_component_owner() {
+    use super::type_expr::{NominalKind, TypeDefBody, TypeExpr};
+    use super::{NamespaceSymbol, NotedTypeDecl};
+    use crate::source::Span;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let a = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "a".to_string(),
+        arity: 0,
+    };
+    let b = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "b".to_string(),
+        arity: 0,
+    };
+    let namespace = world.bind_namespace(Namespace::default(), "a", NamespaceSymbol::Type(a.clone()));
+    let namespace = world.bind_namespace(namespace, "b", NamespaceSymbol::Type(b.clone()));
+    let declaration = |reference: &str| NotedTypeDecl {
+        params: Vec::new(),
+        body: TypeDefBody {
+            kind: NominalKind::Plain,
+            inner: TypeExpr::Tuple(vec![TypeExpr::Name {
+                path: vec![reference.to_string()],
+                args: Vec::new(),
+            }]),
+        },
+        namespace,
+        span: Span::DUMMY,
+    };
+
+    assert!(world.note_type_decl(&a, declaration("b")));
+    assert!(world.record_type_def_refs(&a, vec![b.clone()]));
+    let a_source = super::SourceOwner::for_test(0);
+    world.complete_job(
+        Job::ScopeCode(a_source),
+        JobEffects {
+            outputs: vec![FactKey::TypeDeclared(a.clone())],
+            changed: vec![FactKey::TypeDeclared(a.clone())],
+            ..JobEffects::default()
+        },
+    );
+    assert!(world.demand(Job::DeriveTypeDef(a.clone())));
+    assert!(matches!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Unresolved { .. }
+    ));
+    assert!(
+        !world.has_fact(&FactKey::TypeDefined(a.clone())),
+        "a waits for b while only a -> b is available"
+    );
+
+    assert!(world.note_type_decl(&b, declaration("a")));
+    assert!(world.record_type_def_refs(&b, vec![a.clone()]));
+    let before = world.work_start_tally();
+    world.complete_job(
+        Job::ScopeCode(super::SourceOwner::for_test(1)),
+        JobEffects {
+            outputs: vec![FactKey::TypeDeclared(b.clone())],
+            changed: vec![FactKey::TypeDeclared(b.clone())],
+            ..JobEffects::default()
+        },
+    );
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "b's exact declaration movement wakes a, the canonical component owner",
+    );
+
+    assert!(world.has_fact(&FactKey::TypeDefined(a.clone())));
+    assert!(world.has_fact(&FactKey::TypeDefined(b.clone())));
+    assert_eq!(
+        world.job_outputs(&Job::DeriveTypeDef(a.clone())),
+        vec![FactKey::TypeDefined(a.clone()), FactKey::TypeDefined(b.clone())],
+        "the pre-existing canonical owner publishes the completed equation",
+    );
+    assert!(
+        world.job_outputs(&Job::DeriveTypeDef(b)).is_empty(),
+        "the late member never owns a competing component producer",
+    );
+    let work = world.work_start_tally().delta_since(before);
+    assert_eq!(
+        work.root_scans, 0,
+        "the edge fact wakes its exact subscriber without a root scan"
+    );
+    assert_eq!(
+        work.drain_discovery_sweeps, 0,
+        "the edge fact wakes its exact subscriber without a drain-time sweep"
+    );
+}
+
+#[test]
+fn compiler2_opaque_typedef_edge_does_not_force_a_regular_component() {
+    let source = r#"
+@type hidden :: opaque {integer, visible}
+@type visible :: {integer, hidden}
+
+@spec main() :: visible
+def main(), do: {0, :hidden}
+"#;
+    let (mut compiler, root) = submit_main_root(ConfiguredTelemetry::new(), "opaque_typedef_edge.fz", source);
+    let result = compiler.drive_root_to_dump_stage(root, super::dump::DumpStage::Backend);
+    assert!(
+        result.is_ok(),
+        "an opaque declaration cuts its discarded body edge before regular interning: {result:?}",
+    );
+    let hidden = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "hidden".to_string(),
+        arity: 0,
+    };
+    let visible = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "visible".to_string(),
+        arity: 0,
+    };
+    assert!(
+        compiler.world().type_def(&hidden).is_some(),
+        "the opaque name has its nominal denotation"
+    );
+    assert!(
+        compiler.world().type_def(&visible).is_some(),
+        "the visible type resolves through that nominal denotation"
     );
 }
 
@@ -20078,141 +20913,228 @@ fn submit_main_root(
     (compiler, root)
 }
 
-/// One activation's return ascent: the label the canon events name its function
-/// by — which carries the arity, so `build/1` and `Json.array_item/2` are whole
-/// identities — how many times that activation's `ReturnType` was revised, and
-/// whether the widening budget engaged on that same activation. The three
-/// describe one activation, so "something widened" can never be read as "this
-/// row widened".
+/// One activation's return revisions: the label the canon events name its
+/// function by -- which carries the arity, so `build/1` and
+/// `Json.array_item/2` are whole identities -- and how many times that
+/// activation's `ReturnType` moved over one cold compile.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ActivationAscent {
     function: String,
     revisions: u64,
-    widened: bool,
 }
 
-/// A return settles once its activation is analyzed and its callees' returns
-/// arrive; a handful of joins is the whole cost. Climbing past this is a return
-/// driven by the program's own shape — a recursive type the lattice cannot name.
-const RETURN_LADDER_CEILING: u64 = 5;
+/// One pinned activation: the canon function label and the revisions its
+/// return took.
+type PinnedAscent = (&'static str, u64);
 
-/// One climbing activation, as pinned: the canon function label (which carries
-/// the arity), the revisions its return took, and whether it widened.
-type PinnedAscent = (&'static str, u64, bool);
-
-/// One fixture's ladder: the fixture path, and every activation of it that
-/// climbs past `RETURN_LADDER_CEILING`.
+/// One fixture's return revisions: the fixture path and EVERY activation of it
+/// whose return moved at all.
 type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 
-/// Every activation that climbs past that ceiling in the two fixtures below,
-/// measured through the product pull on one cold compile.
+/// What each recursive-return shape costs, measured through the product pull
+/// on one cold compile.
 ///
-/// This is the ladder as it stands on the compiler the doors run, a defect
-/// measured rather than a budget to spend; recursive denotations delete the
-/// table along with the climb. The ladder is a population as much as a height.
-/// `return_tuple_ladder` is the bare case: one activation, seventeen revisions,
-/// widened. `json_roundtrip` is the goal program, and there the climb spreads
-/// sideways first — `Json.array_item/2` and `Json.array_next/2` each key a dozen
-/// activations, one per level of the recursive value type, and the returns they
-/// share climb to the ceiling on the evidence those levels publish. Reaching
-/// seventeen is not one outcome but two: a widened row ran out of budget and was
-/// coarsened, while an unwidened row arrived at its answer on its own evidence
-/// before the budget could fire.
+/// This is the whole population, not a tail past a ceiling: a return that is
+/// being solved is named in one step by its component's solve, so every row
+/// here is a small number and a row that grows is a defect with a cause, not a
+/// budget being spent. A return moves more than once when the walk that
+/// produced it ran before one of its callees had published anything -- the
+/// truncated system solves to the branches that had arrived, and the solve
+/// runs again on the complete one. A cycle a function closes by itself is
+/// complete on that first walk -- the walk names its own activation whether
+/// or not a return has been published for it -- so a self cycle's return
+/// moves exactly once, and a caller that waited only on that second rung
+/// loses a revision with it.
+///
+/// The shapes: `return_tuple_ladder` is the bare self cycle under a tuple,
+/// `self_guarded_nest` the same under a list, `mutual_tuple_states` the
+/// two-function mutual version, `false_embedding` a value that embeds an
+/// unrelated recursive call under a tuple without a recursive edge there,
+/// `alias_cycle_with_entry` an alias-only cycle reached from outside it,
+/// `unproductive_spin` a local cycle reachable only from a dead branch, and
+/// `return_fed_accumulator` a recursive result fed back in as an argument.
+///
+/// `behavior/json_roundtrip.fz` is deliberately absent. It is the composite --
+/// several of these shapes at once, over a genuinely heterogeneous value type
+/// -- so a per-activation table over it pins arithmetic nobody can check by
+/// hand. The fixture matrix already pins what is checkable there: that it
+/// terminates and prints its exact expected output.
+///
+/// `behavior/nesting_accumulator.fz` is absent for a different reason: its
+/// compile never reaches `DumpStage::Backend`, so it carries its own `defer:`
+/// rather than a row here.
 const RETURN_LADDERS: &[PinnedLadder] = &[
-    ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
     (
-        "fixtures2/behavior/json_roundtrip.fz",
+        "fixtures2/behavior/mutual_tuple_states.fz",
         &[
-            ("Json.array/2", 17, true),
-            ("Json.array_element/2", 17, true),
-            ("Json.array_item/2", 6, false),
-            ("Json.array_item/2", 7, false),
-            ("Json.array_item/2", 8, false),
-            ("Json.array_item/2", 9, false),
-            ("Json.array_item/2", 10, false),
-            ("Json.array_item/2", 11, false),
-            ("Json.array_item/2", 12, false),
-            ("Json.array_item/2", 13, false),
-            ("Json.array_item/2", 14, false),
-            ("Json.array_item/2", 15, false),
-            ("Json.array_item/2", 16, false),
-            ("Json.array_item/2", 17, false),
-            ("Json.array_item/2", 17, false),
-            ("Json.array_next/2", 6, false),
-            ("Json.array_next/2", 7, false),
-            ("Json.array_next/2", 8, false),
-            ("Json.array_next/2", 9, false),
-            ("Json.array_next/2", 10, false),
-            ("Json.array_next/2", 11, false),
-            ("Json.array_next/2", 12, false),
-            ("Json.array_next/2", 13, false),
-            ("Json.array_next/2", 14, false),
-            ("Json.array_next/2", 15, false),
-            ("Json.array_next/2", 16, false),
-            ("Json.array_next/2", 17, false),
-            ("Json.decode/1", 17, true),
-            ("Json.val/1", 17, true),
-            ("Json.value/1", 17, true),
+            ("Kernel.dbg/1", 1),
+            ("Kernel.fz_dbg_value/1", 1),
+            ("def/1", 1),
+            ("defp/1", 1),
+            ("even/1", 2),
+            ("main/0", 1),
+            ("odd/1", 2),
+        ],
+    ),
+    (
+        "fixtures2/behavior/return_tuple_ladder.fz",
+        &[
+            ("Kernel.-/2", 1),
+            ("Kernel.arithmetic_error/0", 1),
+            ("Kernel.arithmetic_result/1", 1),
+            ("Kernel.dbg/1", 1),
+            ("Kernel.fz_dbg_value/1", 1),
+            ("Kernel.fz_op_sub_ii/2", 1),
+            ("Kernel.fz_panic/1", 1),
+            ("Kernel.panic/1", 1),
+            ("build/1", 1),
+            ("def/1", 1),
+            ("defp/1", 1),
+            ("main/0", 1),
+        ],
+    ),
+    (
+        "fixtures2/behavior/self_guarded_nest.fz",
+        &[
+            ("Kernel.-/2", 1),
+            ("Kernel.arithmetic_error/0", 1),
+            ("Kernel.arithmetic_result/1", 1),
+            ("Kernel.dbg/1", 1),
+            ("Kernel.fz_dbg_value/1", 1),
+            ("Kernel.fz_op_sub_ii/2", 1),
+            ("Kernel.fz_panic/1", 1),
+            ("Kernel.panic/1", 1),
+            ("def/1", 1),
+            ("defp/1", 1),
+            ("main/0", 1),
+            ("nest/1", 1),
+        ],
+    ),
+    (
+        "fixtures2/behavior/alias_cycle_with_entry.fz",
+        &[
+            ("Kernel.dbg/1", 1),
+            ("Kernel.fz_dbg_value/1", 1),
+            ("cont/2", 1),
+            ("cont/2", 1),
+            ("def/1", 1),
+            ("defp/1", 1),
+            ("enter/1", 1),
+            ("main/0", 1),
+            ("step/2", 1),
+        ],
+    ),
+    (
+        "fixtures2/behavior/false_embedding.fz",
+        &[
+            ("Kernel.-/2", 1),
+            ("Kernel.arithmetic_error/0", 1),
+            ("Kernel.arithmetic_result/1", 1),
+            ("Kernel.dbg/1", 1),
+            ("Kernel.dbg/1", 1),
+            ("Kernel.fz_dbg_value/1", 1),
+            ("Kernel.fz_dbg_value/1", 1),
+            ("Kernel.fz_op_sub_ii/2", 1),
+            ("Kernel.fz_panic/1", 1),
+            ("Kernel.panic/1", 1),
+            ("def/1", 1),
+            ("defp/1", 1),
+            ("f/1", 2),
+            ("leaf/1", 1),
+            ("main/0", 2),
+        ],
+    ),
+    (
+        "fixtures2/behavior/unproductive_spin.fz",
+        &[
+            ("Kernel.+/2", 1),
+            ("Kernel.arithmetic_error/0", 1),
+            ("Kernel.arithmetic_result/1", 1),
+            ("Kernel.dbg/1", 1),
+            ("Kernel.fz_dbg_value/1", 1),
+            ("Kernel.fz_op_add_ii/2", 1),
+            ("Kernel.fz_panic/1", 1),
+            ("Kernel.panic/1", 1),
+            ("def/1", 1),
+            ("defp/1", 1),
+            ("main/0", 1),
+        ],
+    ),
+    (
+        "fixtures2/behavior/return_fed_accumulator.fz",
+        &[
+            ("Kernel.dbg/1", 1),
+            ("Kernel.dbg/1", 1),
+            ("Kernel.fz_dbg_value/1", 1),
+            ("Kernel.fz_dbg_value/1", 1),
+            ("def/1", 1),
+            ("defp/1", 1),
+            ("items/2", 1),
+            ("main/0", 1),
+            ("value/1", 1),
+            ("value/1", 1),
+            ("value/1", 1),
         ],
     ),
 ];
 
-/// The other four `json_*` fixtures share this one's decode loop and measure the
-/// same climb, so pinning the goal program pins them too.
 const RETURN_LADDER_FIXTURES: &[(&str, &str)] = &[
+    (
+        "fixtures2/behavior/mutual_tuple_states.fz",
+        include_str!("../../fixtures2/behavior/mutual_tuple_states.fz"),
+    ),
     (
         "fixtures2/behavior/return_tuple_ladder.fz",
         include_str!("../../fixtures2/behavior/return_tuple_ladder.fz"),
     ),
     (
-        "fixtures2/behavior/json_roundtrip.fz",
-        include_str!("../../fixtures2/behavior/json_roundtrip.fz"),
+        "fixtures2/behavior/self_guarded_nest.fz",
+        include_str!("../../fixtures2/behavior/self_guarded_nest.fz"),
+    ),
+    (
+        "fixtures2/behavior/alias_cycle_with_entry.fz",
+        include_str!("../../fixtures2/behavior/alias_cycle_with_entry.fz"),
+    ),
+    (
+        "fixtures2/behavior/false_embedding.fz",
+        include_str!("../../fixtures2/behavior/false_embedding.fz"),
+    ),
+    (
+        "fixtures2/behavior/unproductive_spin.fz",
+        include_str!("../../fixtures2/behavior/unproductive_spin.fz"),
+    ),
+    (
+        "fixtures2/behavior/return_fed_accumulator.fz",
+        include_str!("../../fixtures2/behavior/return_fed_accumulator.fz"),
     ),
 ];
 
 #[test]
-fn return_ladders_are_pinned_per_activation() {
+fn return_revisions_are_pinned_per_activation() {
     for (name, text) in RETURN_LADDER_FIXTURES {
         let measured = measure_return_ascents(name, text);
-        let (climbing, settled): (Vec<_>, Vec<_>) = measured
-            .into_iter()
-            .partition(|ascent| ascent.revisions > RETURN_LADDER_CEILING);
-        let settled_but_widened = settled.iter().filter(|ascent| ascent.widened).collect::<Vec<_>>();
-        assert!(
-            settled_but_widened.is_empty(),
-            "{name}: widening can only fire past the budget, so no settled return may carry it: {settled_but_widened:?}",
-        );
         let pinned = RETURN_LADDERS
             .iter()
             .find(|(pinned, _)| pinned == name)
             .map(|(_, rows)| {
                 rows.iter()
-                    .map(|(function, revisions, widened)| ActivationAscent {
+                    .map(|(function, revisions)| ActivationAscent {
                         function: (*function).to_string(),
                         revisions: *revisions,
-                        widened: *widened,
                     })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_else(|| panic!("{name} has no row in RETURN_LADDERS"));
-        assert_eq!(climbing, pinned, "{name}: the ladder moved");
+        assert_eq!(measured, pinned, "{name}: the return revisions moved");
     }
 }
 
-/// Drives one fixture the way every door does — pulling the root's
+/// Drives one fixture the way every door does -- pulling the root's
 /// `BackendProgram` product, the stage `run_root_interp` and `run_root_jit`
-/// reach before they execute anything — and reports every activation whose
+/// reach before they execute anything -- and reports every activation whose
 /// return was revised, sorted.
 fn measure_return_ascents(name: &str, text: &str) -> Vec<ActivationAscent> {
     let tel = ConfiguredTelemetry::new();
-    let widened: Rc<RefCell<HashSet<ActivationKey>>> = Rc::new(RefCell::new(HashSet::new()));
-    let widened_sink = Rc::clone(&widened);
-    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-        &["fz", "compiler2", "return_type", "widened"],
-        move |_, _, _, _, activation| {
-            widened_sink.borrow_mut().insert(activation.clone());
-        },
-    );
     let revisions: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
     let revision_sink = Rc::clone(&revisions);
     tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
@@ -20225,14 +21147,12 @@ fn measure_return_ascents(name: &str, text: &str) -> Vec<ActivationAscent> {
         .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
         .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
     let world = compiler.world();
-    let widened = widened.borrow();
     let mut ascents = revisions
         .borrow()
         .iter()
         .map(|(activation, revisions)| ActivationAscent {
             function: super::canon::function_label(world, activation.function),
             revisions: *revisions,
-            widened: widened.contains(activation),
         })
         .collect::<Vec<_>>();
     ascents.sort();
@@ -20330,7 +21250,7 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
                 (
                     world.function_ref(activation.function).display_name(),
                     activation
-                        .inputs(world.types())
+                        .inputs()
                         .iter()
                         .map(|ty| world.types().display(ty))
                         .collect::<Vec<_>>(),
@@ -20345,8 +21265,12 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
                 && names.contains("append")
         );
         assert!(!names.contains("foo"));
+        // fz-kdt.98.3.17.2: 22 -> 24, same cause as the sibling bound in
+        // `compiler2_quicksort_root_closes_with_a_finite_recursive_frontier` --
+        // `dbg`/`fz_dbg_value` stop sharing one erased activation, so this
+        // program's three `dbg` calls key on their three distinct types.
         assert!(
-            frontier.len() <= 22,
+            frontier.len() <= 24,
             "quicksort frontier exceeded the proven bound: {frontier:?}"
         );
         shapes.push((*jobs_ran.borrow(), normalized));
@@ -21116,6 +22040,8 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
 
 #[test]
 fn compiler2_connected_callable_returns_share_one_public_value_ref_contract() {
+    // Public identity is observed explicitly: a closed runtime join alone
+    // does not require the boxed callable convention.
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     let native = NativeProgramCapture::new();
@@ -21133,6 +22059,7 @@ def run(flag) do
   left = if flag, do: p, else: r
   a = left.(1)
   right = if flag, do: p, else: q
+  dbg(left === right)
   b = right.(2)
   {a, b, p}
 end
@@ -21202,7 +22129,7 @@ end
 
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(compiled.run_with_output(compiler.telemetry(), &dbg, program.entry), 0);
-    assert_eq!(dbg.lines(), ["{{:p, 1}, {:p, 2}, {:r, 1}, 2}"]);
+    assert_eq!(dbg.lines(), ["true", "false", "{{:p, 1}, {:p, 2}, {:r, 1}, 2}"]);
 }
 
 #[test]
@@ -21523,7 +22450,7 @@ fn compiler2_native_program_publishes_construction_owned_callable_wrappers() {
 }
 
 #[test]
-fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_mint_histories() {
+fn activation_executables_jobs_facts_and_uses_share_one_order_across_display_collisions_and_mint_histories() {
     use crate::compiler2::semantic::SemanticOrd;
 
     let ordered = |non_empty_first: bool| {
@@ -21545,8 +22472,18 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
             (list, non_empty, list_key, non_empty_key)
         };
         assert_eq!(types.display(&list), types.display(&non_empty));
-        let raw_order = list_key.arrow < non_empty_key.arrow;
+        let raw_order = list_key.signature < non_empty_key.signature;
 
+        let executables = [
+            ExecutableKey {
+                activation: list_key.clone(),
+                need: ExecutableNeed::Value,
+            },
+            ExecutableKey {
+                activation: non_empty_key.clone(),
+                need: ExecutableNeed::Value,
+            },
+        ];
         let jobs = [
             Job::AnalyzeActivation(list_key.clone()),
             Job::AnalyzeActivation(non_empty_key.clone()),
@@ -21579,7 +22516,20 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
         assert_ne!(job_order, std::cmp::Ordering::Equal);
         assert_ne!(fact_order, std::cmp::Ordering::Equal);
         assert_ne!(use_order, std::cmp::Ordering::Equal);
-        (raw_order, job_order, fact_order, use_order)
+        let executable_order = executables[0].semantic_cmp(&executables[1], &types);
+        assert_ne!(executable_order, std::cmp::Ordering::Equal);
+        assert_eq!(
+            executable_order,
+            executables[1].semantic_cmp(&executables[0], &types).reverse()
+        );
+        assert_eq!(executable_order, job_order);
+        let storage_order = types.cmp_ty(list, non_empty);
+        assert_ne!(storage_order, std::cmp::Ordering::Equal);
+        assert_eq!(storage_order, types.cmp_ty(non_empty, list).reverse());
+        (
+            raw_order,
+            [job_order, fact_order, use_order, executable_order, storage_order],
+        )
     };
 
     let list_first = ordered(false);
@@ -21589,9 +22539,8 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
         "the fixture must reverse raw activation-arrow order"
     );
     assert_eq!(
-        (list_first.1, list_first.2, list_first.3),
-        (non_empty_first.1, non_empty_first.2, non_empty_first.3),
-        "Job, FactKey, and FactUse must retain one semantic order"
+        list_first.1, non_empty_first.1,
+        "typed executable, job, fact, use, and storage orders must survive reversed mint histories"
     );
 }
 
@@ -21712,36 +22661,33 @@ const ASCENT_RUNG_FIXTURES: &[&str] = &[
     "fixtures2/behavior/dead_closure_capture_empty_list.fz",
 ];
 
-/// fz-kdt.183 / fz-kdt.124: an ascent rung never climbs a slot nothing demands.
+/// An ascent rung never climbs a position the fixpoint is still solving.
 ///
 /// A RUNG is two keys of one function where one is the other with a list
 /// position EMPTIED -- `empty_list()` where the sibling has a list family that
 /// contains it. It exists because `list_element_type([])` is `none`, so `[]`
-/// never converges with `list(τ)`, and a slot that keeps its element therefore
-/// keys the accumulator's first call apart from every later one. That is
-/// fz-kdt.124's ladder. The distinct empty/list inputs remain honest keys;
-/// fz-kdt.182 removes only redundant union representatives of a later rung.
+/// never converges with `list(t)`, and a slot that keeps its element therefore
+/// keys an accumulator's first call apart from every later one. Those distinct
+/// empty/list inputs are honest keys: each names a value the callee sees.
 ///
-/// What THIS gate holds is the boundary fz-kdt.183 drew and fz-kdt.199 widened
-/// by one axis. A slot BOTH axes leave at `Ignore` is FREIGHT: the collapse
-/// maps every list family reaching it to one addressed class, so `[]` and
-/// `list(τ)` cannot key apart there, and a rung on such a slot would mean the
-/// collapse did not run. The measured count is 0 and it is 0 by construction,
-/// which is why the assertion is an emptiness and not a number.
+/// What THIS gate holds is the boundary the one keying rule draws. A call
+/// site's coordinate for an argument comes from `KeyShape::coordinate`, asked
+/// of the callee's static return skeleton, and an argument the skeleton leaves
+/// wholly `Unknown` becomes that position's bare ADDRESS VARIABLE. An address
+/// variable is neither `[]` nor a list family, so on a slot every call site in
+/// the program leaves `Unknown` there is nothing for a rung to climb. The
+/// measured count is 0 and it is 0 by construction, which is why the assertion
+/// is an emptiness and not a number. A second pass putting structure back over
+/// an unknown position would read here as `[]` beside `list(a_e)`.
 ///
-/// The six rungs fz-kdt.183 ADDED are all on demanded slots and all honest:
-/// `Map.to_list/4` slot 3 and `Map.reverse/2` slot 0 (map.fz's `reverse(acc,
-/// [])` forwards the accumulator into `Map.reverse/2`'s dispatch slot),
-/// `Range.slice_from/5` slot 4 and `Range.reverse/2` slot 0 (range.fz the
-/// same), and `Kernel.dbg/1` / `Kernel.fz_dbg_value/1` on
-/// `00277_enum_tier0_fixture`, whose final mask is `[Ignore]` on a
-/// NON-recursive body -- the key is precise evidence there and no mask plays
-/// any part. `Range.reduce/5`'s rung retires in the same motion. One
-/// accumulator per function, not a product: bounded by the rule's own law.
+/// A slot whose shape is a LIST of an unknown element is a different fact:
+/// there the skeleton asserts the structure, `list(a1_e)` is what the rule
+/// mints, and it may stand beside `empty_list()` honestly.
 #[test]
-fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
+fn compiler2_no_ascent_rung_sits_on_an_unsolved_position() {
+    use crate::compiler2::return_unknowns::KeyShape;
     let mut readings = 0_usize;
-    let mut on_freight = Vec::new();
+    let mut on_unsolved = Vec::new();
     for fixture in ASCENT_RUNG_FIXTURES {
         let (compiler, program) = driven_backend_program(fixture);
         let world = compiler.world();
@@ -21756,7 +22702,7 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
         for executable in program.executables() {
             let activation = &executable.key.activation;
             let columns = activation
-                .inputs(types)
+                .inputs()
                 .iter()
                 .map(|input| canonical_type_body(&canon.render(types, *input)))
                 .collect::<Vec<_>>();
@@ -21765,15 +22711,56 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
                 seen.push(columns);
             }
         }
-        for (function, columns) in &columns_by_function {
-            if !world.body_keying(*function).is_some_and(|keying| keying.recursive) {
-                // A non-recursive key is precise evidence; no collapse runs and
-                // the demand plays no part in it.
-                continue;
+        // Whether every call site that feeds a slot leaves it wholly for the
+        // fixpoint to solve. Each caller answers for the value it writes, in
+        // its own reach, so the reading is those answers joined -- which is
+        // what `key_inputs_for_call` turns into a coordinate, one call at a
+        // time. A slot no named call site feeds is not a reading at all.
+        let mut reached: Vec<crate::compiler2::FunctionId> = columns_by_function.keys().copied().collect();
+        let mut next = 0;
+        while next < reached.len() {
+            for callee in world.static_callees(reached[next]).to_vec() {
+                if !reached.contains(&callee) {
+                    reached.push(callee);
+                }
             }
-            let demand = world
-                .input_demand(*function)
-                .expect("a keyed activation should have published its input demand");
+            next += 1;
+        }
+        let unsolved = |function: &crate::compiler2::FunctionId, slot: usize| {
+            let Some(input_len) = world.return_skeleton(*function).map(|skeleton| skeleton.input_len) else {
+                return false;
+            };
+            let mut fed = false;
+            let mut answer = KeyShape::Settled;
+            for caller in &reached {
+                let (Some(skeleton), Some(unknowns)) = (world.return_skeleton(*caller), world.return_unknowns(*caller))
+                else {
+                    continue;
+                };
+                for (callsite, invocation) in &skeleton.invocations {
+                    if invocation.callee.named() != Some(*function) {
+                        continue;
+                    }
+                    let Some(site) = unknowns.callsite(*callsite) else {
+                        continue;
+                    };
+                    let arguments = &invocation.arguments;
+                    for index in 0..arguments.len() {
+                        if crate::compiler2::body::CallInputMode::Direct.semantic_index(
+                            input_len,
+                            arguments.len(),
+                            index,
+                        ) == Some(slot)
+                        {
+                            fed = true;
+                            answer = answer.join(site.arguments[index].clone());
+                        }
+                    }
+                }
+            }
+            fed && matches!(answer, KeyShape::Unknown)
+        };
+        for (function, columns) in &columns_by_function {
             for low in columns {
                 for high in columns {
                     for (slot, (low, high)) in low.iter().zip(high.iter()).enumerate() {
@@ -21781,21 +22768,10 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
                             continue;
                         }
                         readings += 1;
-                        let ignored = |axis: &Vec<crate::dispatch_matrix::demand::DispatchDemand>| {
-                            matches!(
-                                axis.get(slot),
-                                None | Some(crate::dispatch_matrix::demand::DispatchDemand::Ignore)
-                            )
-                        };
-                        // A rung may sit on a slot EITHER axis names: the
-                        // dispatch axis keeps a demanded list's element, and
-                        // the `returned` axis keeps a returned position's
-                        // ground class (fz-kdt.199). Freight is the slot
-                        // neither names.
-                        if ignored(&demand.forwarded_dispatch) && ignored(&demand.returned) {
-                            on_freight.push(format!(
-                                "{fixture} {} slot {slot}: `{low}` keys apart from `{high}` on a slot \
-                                 nothing demands",
+                        if unsolved(function, slot) {
+                            on_unsolved.push(format!(
+                                "{fixture} {} slot {slot}: `{low}` keys apart from `{high}` on a position \
+                                 every call site leaves for the fixpoint to solve",
                                 crate::compiler2::canon::function_label(world, *function),
                             ));
                         }
@@ -21809,9 +22785,9 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
         ASCENT_RUNG_FIXTURES.len()
     );
     assert!(
-        on_freight.is_empty(),
-        "a freight slot collapses every list family to one addressed class, so a rung there means the \
-         collapse did not run: {on_freight:#?}",
+        on_unsolved.is_empty(),
+        "a position every call site leaves unsolved keys on its address variable, which is neither \
+         `[]` nor a list family, so a rung there means something minted structure over it: {on_unsolved:#?}",
     );
     assert!(
         readings > 0,
@@ -21907,69 +22883,66 @@ fn split_top_level(text: &str) -> Vec<&str> {
     parts
 }
 
-/// The keying laws fz-kdt.183 and fz-kdt.199 must hold in BOTH directions,
-/// each as the smallest program that states one: source, the function the law
-/// is about, and how many activations of it the program may key.
+/// The keying rule must hold in BOTH directions, each row the smallest
+/// program that states one: source, the function the law is about, and how
+/// many activations of it the program may key.
 ///
-/// The first four are the rules' LOWER bound -- a slot nothing demands and
-/// nothing returns is freight and must not split, which is what makes this a
-/// demand rule rather than "keep every element" (measured: keeping every list
-/// element splits `partition/4` 1 -> 4 and `split4/6` 1 -> 16, all bodies
-/// identical).
+/// There is ONE rule, and `key_inputs_for_call` is the only place it is
+/// applied. A call site asks two static questions of each argument. Is this
+/// position still climbing -- `KeyShape` from the callee's return skeleton?
+/// Then key on its ADDRESS, because what arrived is how far the ascent has
+/// got, not what the program denotes. Otherwise, can anything outside the
+/// activation observe what arrives here -- a dispatch question reaching the
+/// slot, or the callee's published return being built from it? Then key on
+/// the observed TYPE. A slot neither question reaches is freight, and keys on
+/// a bare address variable: every caller shares one activation.
 ///
-/// `tag/3`'s accumulator states fz-kdt.199's exclusion, and it is a COST law
-/// rather than a precision one. `tag/3` returns its accumulator, so the return
-/// does depend on a slot the key erases -- but the recursion SUPPLIES that
-/// slot, so the seed activation is the one every caller passes through and its
-/// `[]` is the same `[]` for all of them. Keying it mints one activation per
-/// ascent state (measured: three) and the seed still publishes the join, so the
-/// split is cost with nothing bought.
+/// The first four rows are the rule's LOWER bound. `carry/2`'s list is pure
+/// freight -- no clause tests it and no clause returns it -- and must not
+/// split, which is what makes this a demand rule rather than "keep every list
+/// element" (measured: keeping every element splits `partition/4` 1 -> 4 and
+/// `split4/6` 1 -> 16, all bodies identical).
 ///
-/// `fwd/2` is fz-6gb's law, and it is why `InputDemand`'s dispatch demand
-/// carries two halves. `fwd/2` only TRANSPORTS its callable: no clause of
-/// `fwd/2` tests it, so two same-shape lambdas must key one activation. But
-/// `apply2/2` -- which `fwd/2` forwards both slots to -- tests slot 0 against
-/// `:none`, so the FORWARDED demand on that slot is `Whole`. Erasing brands
-/// against the forwarded half would un-share `fwd/2` into one activation per
-/// lambda; erasing against the LOCAL half keeps fz-6gb's law intact while the
-/// key collapse still reads the forwarded demand.
+/// `tag/3`'s accumulator IS returned, so observability alone would key it.
+/// It stays at one because the first question answers first: each round conses
+/// onto it, so its position sits on a cycle crossing a constructor and is
+/// `KeyShape::Unknown`. Keying it on the arriving type would mint one
+/// activation per ascent state (measured: three), and the seed still publishes
+/// the join, so the split buys nothing. The row holds the CALLABLE fixed --
+/// one lambda, bound once, handed to both calls -- because `tag/3` calls what
+/// it is given, and a called slot is a question this body asks: two different
+/// lambdas there are two activations by the very rule under test, which would
+/// answer for the accumulator without ever asking about it. The two calls
+/// differ in their list alone. `split3/5` and `split4/6` say the same for
+/// three and four accumulators at once, with no callable in sight.
 ///
-/// The last three are the rules' UPPER bound: a position the activation
-/// RETURNS and the recursion does NOT supply must key its users apart, or one
-/// activation answers for both with the join of their returns (fz-kdt.199).
-/// `loop/2` states it at a whole slot and `walk/2` one tuple field down, where
-/// the key names the tag and the return IS the payload. `walk/2`'s four are two
-/// tags times two payload element types.
+/// `fwd/2` is why `InputDemand` carries two dispatch halves. `fwd/2` only
+/// TRANSPORTS its callable: no clause of `fwd/2` tests it, so two same-shape
+/// lambdas key one activation. `apply2/2` -- which `fwd/2` forwards both slots
+/// to -- does test slot 0 against `:none`, so the FORWARDED demand there is
+/// `Whole` and the slot is observable. The key therefore keeps the slot's
+/// type, and closure-brand erasure, which asks the LOCAL question, still
+/// erases the two lambdas' identities. Two questions, two answers, one key.
 ///
-/// `loop/2` is a CORRECTION of a landed law. fz-kdt.183 blessed exactly this
-/// program at ONE activation as its freight law. Measured on the tree that law
-/// landed on: `loop(0, junk), do: junk` keys one activation publishing
-/// `non_empty_list(binary) | non_empty_list(int)`, and a `@spec` consumer
-/// asking `[binary]` for the first user rejects the program with
-/// `error[spec/violation] ([binary] | [int])`. So the blessed row was pinning a
-/// live wrong-typing as correct: it was a COST law, not a correctness one, and
-/// this axis is what makes freight collapse safe. `carry/2` -- the same shape
-/// that does NOT return the slot -- is the true freight statement and stays
-/// at 1.
+/// The last three are the rule's UPPER bound: a position the activation hands
+/// back must key its users apart, or one activation answers for both with the
+/// JOIN of their returns. `loop/2` states it at a whole slot: one activation
+/// there publishes `non_empty_list(binary) | non_empty_list(int)`, and a
+/// `@spec` consumer asking `[binary]` for the first user rejects the program
+/// with `error[spec/violation] ([binary] | [int])`. `carry/2` -- the same
+/// shape that does NOT return the slot -- is the freight statement and stays
+/// at 1. `go/3` is a pure PERMUTATION whose base returns slot 1: the cycle
+/// crosses no constructor, so both slots are settled and the returned one keys.
+/// `walk/2` states it one tuple field down, where the key names the tag and
+/// the return IS the payload; its four are two tags times two payload element
+/// types.
 ///
-/// `go/3` states the exclusion's boundary. It is a pure PERMUTATION: each
-/// self-call hands a slot the value the caller held at the OTHER slot, so the
-/// recursion supplies neither and both stay carried. That is why the exclusion
-/// is a LEAST FIXPOINT over "held nowhere, or held only at supplied positions"
-/// rather than the eager "not held at this same position" -- the eager test
-/// marks both slots supplied here and re-blends the two users into the base's
-/// wrong diagnostic.
-///
-/// What these rows prove, stated exactly: for every shape here the published
-/// return depends only on what the key names. They do NOT prove the invariant
-/// in general. The exclusion reads SELF calls only, so a position supplied
-/// across a mutual cycle or through a generated lambda is keyed anyway (cost,
-/// never unsoundness -- fz-kdt.213), and the axis rides fz-kdt.183's dispatch
-/// edge set, which does not see a reconstructed or projected forwarding
-/// argument (a missed cure -- fz-kdt.214).
+/// Return flow composes on its own. It is reachability from `Return(f)` in the
+/// position graph, so a function that returns `g(x)` inherits whatever `g`
+/// does with its parameter without a second walk.
 const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
     (
-        "a slot no callee reads and the body does not return is freight",
+        "a slot nothing reads and nothing returns is freight",
         "carry/2",
         "def carry(0, junk), do: 0\n\
          def carry(n, junk), do: carry(n - 1, junk)\n\
@@ -21981,8 +22954,9 @@ const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
         "tag/3",
         "def tag(_f, [], acc), do: acc\n\
          def tag(f, [h | t], acc), do: tag(f, t, [f.(h) | acc])\n\
-         def main() do\n  dbg(tag(fn (_x) -> \"n\" end, [1, 2], []))\n\
-         \x20 dbg(tag(fn (x) -> x + 1 end, [1, 2], []))\nend\n",
+         def main() do\n  f = fn (x) -> x + 1 end\n\
+         \x20 dbg(tag(f, [1, 2], []))\n\
+         \x20 dbg(tag(f, [3, 4, 5], []))\nend\n",
         1,
     ),
     (
@@ -22045,7 +23019,7 @@ const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
 ];
 
 #[test]
-fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
+fn compiler2_keys_one_activation_where_nothing_can_observe_the_slot() {
     let mut moved = Vec::new();
     for (law, label, source, expected) in ONE_ACTIVATION_KEYING_LAWS {
         let tel = ConfiguredTelemetry::new();
@@ -22085,10 +23059,90 @@ fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
     }
     assert!(
         moved.is_empty(),
-        "a slot is keyed on DEMAND, not on structure, and demand has TWO axes: a dispatch question \
-         reaching it (fz-kdt.183) or the published return being built from it and the recursion not \
-         supplying it (fz-kdt.199). A slot NEITHER axis reaches stays collapsed, and brand erasure \
-         keeps asking the local question: {moved:#?}",
+        "a slot is keyed on what can be OBSERVED there, not on the structure that arrives: a \
+         position the fixpoint is still solving keys on its address, one a dispatch question or a \
+         published return reaches keys on its type, and one neither reaches stays collapsed while \
+         brand erasure keeps asking the local question: {moved:#?}",
+    );
+}
+
+/// The same law where the cycle is a SIBLING's, not the callee's own.
+///
+/// Both stdlib chains here end at `Enum.reverse_list/1`. `Enum.chunk_by` gets
+/// there carrying an accumulator it grows by consing, and `Enum.sort_by` gets
+/// there through a sort whose own recursion feeds that helper's slot back
+/// round through a cons -- so the slot sits on a guarded cycle the sort walk
+/// reaches and the chunk walk does not.
+///
+/// The slot's coordinate is decided by the slot, so only the sort chain names
+/// it by its address variable and the chunk chain keys on the integer list it
+/// observed. Deciding it from the climbing ARGUMENT instead names both chains
+/// with the one address variable every caller in the program shares: the two
+/// calls become one activation whose return is `[int | binary]`, that union
+/// rides the sort back into the mapper, and `String.length/1` is asked to
+/// accept an integer -- which its `@spec` refuses, so the program does not
+/// compile at all.
+#[test]
+fn compiler2_two_chains_through_one_helper_key_on_their_own_cycles() {
+    let tel = ConfiguredTelemetry::new();
+    let activations = ActivationAnalysisCapture::new();
+    activations.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("two_chains_one_helper.fz".to_string()),
+        text: concat!(
+            "def main() do\n",
+            "  Enum.chunk_by([1], fn (x) -> x end)\n",
+            "  Enum.sort_by([\"bbb\"], fn (s) -> String.length(s) end)\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root_id);
+    assert_resolved(
+        compiler.drive(),
+        "two chains through one shared helper must settle to a backend product",
+    );
+
+    let keys = activations.keys_for_root(root_id);
+    let world = compiler.world();
+    let census = |label: &str| -> Vec<String> {
+        let mut keyed: Vec<String> = keys
+            .iter()
+            .filter(|key| crate::compiler2::canon::function_label(world, key.function) == label)
+            .map(|key| {
+                key.inputs()
+                    .iter()
+                    .map(|input| world.types().display(input))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            })
+            .collect();
+        keyed.sort();
+        keyed.dedup();
+        keyed
+    };
+    assert_eq!(
+        census("Enum.reverse_list/1"),
+        vec!["[int]".to_string(), "a0".to_string()],
+        "the shared helper keys twice: the chunk chain on the list it was handed, the sort \
+         chain -- whose own recursion feeds this slot back round -- on the slot's address",
+    );
+    assert_eq!(
+        census("main/0#lambda@1/1"),
+        vec!["binary".to_string()],
+        "so the sort_by mapper is only ever handed a string",
+    );
+    assert_eq!(
+        census("String.length/1"),
+        vec!["binary".to_string()],
+        "and the length call it makes stays inside its @spec",
     );
 }
 
@@ -22174,8 +23228,13 @@ fn quoted_call_retains_the_provider_function_id() {
         .world()
         .expanded_function_source(run)
         .expect("expanded source for the macro caller");
-    let (spelling, retained) =
-        retained_quoted_call(&expanded.source.cursor()).expect("the expanded call retains its callable");
+    let (spelling, retained) = retained_quoted_call(
+        &expanded
+            .declared_root()
+            .expect("a declared function carries its root")
+            .cursor(),
+    )
+    .expect("the expanded call retains its callable");
     assert_eq!(
         retained, helper,
         "the quoted call keeps the callable the provider resolved, not a name to resolve again"
@@ -22410,4 +23469,413 @@ fn a_quoted_guard_helper_reifies_its_retained_callable() {
         compiler.run_root_interp(root).is_ok(),
         "both of the fixture's assertions hold"
     );
+}
+
+/// What a compile did, activation by activation.
+///
+/// A recursive return that one component solve settles shows up here as a
+/// short table with no clears in it: each member is analysed a handful of
+/// times, a single solve publishes every member's return, and nothing
+/// withdraws it. A return the walk iterates instead shows one activation
+/// walked and re-defined a rung at a time, and a return whose ownership
+/// flickers shows clears. Those three successions are what the recursive
+/// return work is about, and the counts are what tell them apart, so the
+/// tests below state the succession they expect rather than only asserting
+/// that a fixture compiles.
+/// How many times each activation reached one of the events below.
+type ActivationTally = Rc<RefCell<HashMap<ActivationKey, u64>>>;
+
+/// Each solve that ran, as its owner and the members it answered for.
+type SolvedComponents = Rc<RefCell<Vec<(ActivationKey, Vec<ActivationKey>)>>>;
+
+/// Walks and solves in the order the scheduler ran them.
+type SuccessionTimeline = Rc<RefCell<Vec<(SuccessionJob, ActivationKey)>>>;
+
+#[derive(Default)]
+struct Succession {
+    walks: ActivationTally,
+    solves: ActivationTally,
+    definitions: ActivationTally,
+    clears: ActivationTally,
+    components: SolvedComponents,
+    /// The counts say how much work happened; only the order says whether a
+    /// component was whole when its solve ran.
+    timeline: SuccessionTimeline,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SuccessionJob {
+    Walk,
+    Solve,
+}
+
+/// One function's line of a [`Succession`]: every activation key minted for
+/// it, and the work those keys attracted.
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+struct SuccessionRow {
+    keys: usize,
+    walks: u64,
+    solves: u64,
+    definitions: u64,
+    clears: u64,
+}
+
+impl Succession {
+    fn record(telemetry: &ConfiguredTelemetry) -> Self {
+        let recorder = Self::default();
+        let walks = Rc::clone(&recorder.walks);
+        let timeline = Rc::clone(&recorder.timeline);
+        telemetry.attach_raw_span1_0::<Job, _, _, _>(
+            &["fz", "compiler2", "job"],
+            move |_, _, _, job| {
+                if let Job::AnalyzeActivation(key) = job {
+                    *walks.borrow_mut().entry(key.clone()).or_default() += 1;
+                    timeline.borrow_mut().push((SuccessionJob::Walk, key.clone()));
+                }
+            },
+            |_, _, _, _| {},
+            |_, _, _, _| {},
+        );
+        let definitions = Rc::clone(&recorder.definitions);
+        telemetry.attach_raw_event2::<World, ActivationKey, _>(
+            &["fz", "compiler2", "return_type", "defined"],
+            move |_, _, _, _, activation| *definitions.borrow_mut().entry(activation.clone()).or_default() += 1,
+        );
+        let clears = Rc::clone(&recorder.clears);
+        telemetry.attach_raw_event2::<World, ActivationKey, _>(
+            &["fz", "compiler2", "return_type", "cleared"],
+            move |_, _, _, _, activation| *clears.borrow_mut().entry(activation.clone()).or_default() += 1,
+        );
+        let solves = Rc::clone(&recorder.solves);
+        let solve_timeline = Rc::clone(&recorder.timeline);
+        let components = Rc::clone(&recorder.components);
+        telemetry.attach(
+            &["fz", "compiler2", "return_component", "solved"],
+            Box::new(move |event: &Event<'_, '_, '_>| {
+                let (Some(owner), Some(members)) = (
+                    event
+                        .metadata
+                        .get("activation")
+                        .and_then(Value::downcast_ref::<ActivationKey>),
+                    event
+                        .metadata
+                        .get("members")
+                        .and_then(Value::downcast_ref::<Vec<ActivationKey>>),
+                ) else {
+                    return;
+                };
+                *solves.borrow_mut().entry(owner.clone()).or_default() += 1;
+                solve_timeline.borrow_mut().push((SuccessionJob::Solve, owner.clone()));
+                components.borrow_mut().push((owner.clone(), members.clone()));
+            }),
+        );
+        recorder
+    }
+
+    /// Every activation key this compile touched, in the order the canon
+    /// labels sort.
+    fn activations(&self) -> BTreeSet<ActivationKey> {
+        self.walks
+            .borrow()
+            .keys()
+            .chain(self.solves.borrow().keys())
+            .chain(self.definitions.borrow().keys())
+            .chain(self.clears.borrow().keys())
+            .cloned()
+            .collect()
+    }
+
+    fn rows(&self, world: &World) -> BTreeMap<String, SuccessionRow> {
+        let mut rows: BTreeMap<String, SuccessionRow> = BTreeMap::new();
+        for activation in self.activations() {
+            let row = rows
+                .entry(super::canon::function_label(world, activation.function))
+                .or_default();
+            row.keys += 1;
+            row.walks += self.walks.borrow().get(&activation).copied().unwrap_or_default();
+            row.solves += self.solves.borrow().get(&activation).copied().unwrap_or_default();
+            row.definitions += self.definitions.borrow().get(&activation).copied().unwrap_or_default();
+            row.clears += self.clears.borrow().get(&activation).copied().unwrap_or_default();
+        }
+        rows
+    }
+
+    /// The one key minted for `label`, for the assertions that need to ask
+    /// the world about it. Panics when the compile minted several, because
+    /// every fixture here predicts exactly one.
+    fn sole_key(&self, world: &World, label: &str) -> ActivationKey {
+        let mut keys = self
+            .activations()
+            .into_iter()
+            .filter(|activation| super::canon::function_label(world, activation.function) == label)
+            .collect::<Vec<_>>();
+        assert_eq!(keys.len(), 1, "{label} should have exactly one activation key");
+        keys.pop().expect("one key")
+    }
+
+    /// Whether `label` was walked before the first component actually
+    /// concluded (a `return_component.solved` event, not merely a dispatch
+    /// of the `SolveReturnComponent` job — a blocked gather never fires the
+    /// event and so never counts as a solve). A solve can only answer the
+    /// members the walks had already discovered, so this is how a test says
+    /// "the component was whole when it was solved".
+    fn walked_before_the_first_solve(&self, world: &World, label: &str) -> bool {
+        self.timeline
+            .borrow()
+            .iter()
+            .take_while(|(job, _)| *job != SuccessionJob::Solve)
+            .any(|(_, activation)| super::canon::function_label(world, activation.function) == label)
+    }
+
+    fn components(&self, world: &World) -> Vec<(String, Vec<String>)> {
+        self.components
+            .borrow()
+            .iter()
+            .map(|(owner, members)| {
+                (
+                    super::canon::function_label(world, owner.function),
+                    members
+                        .iter()
+                        .map(|member| super::canon::function_label(world, member.function))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// The measured table, for the failure message: a divergence from a held
+    /// prediction is only useful next to what actually happened.
+    fn render(&self, world: &World) -> String {
+        let mut out = String::from("\nactivation | keys | walks | solves | definitions | clears\n");
+        for (label, row) in self.rows(world) {
+            out.push_str(&format!(
+                "{label} | {} | {} | {} | {} | {}\n",
+                row.keys, row.walks, row.solves, row.definitions, row.clears
+            ));
+        }
+        for (owner, members) in self.components(world) {
+            out.push_str(&format!("component owner {owner} members {members:?}\n"));
+        }
+        out
+    }
+}
+
+/// Drives one behaviour fixture to its backend product with a [`Succession`]
+/// watching, and fails with the measured table when it does not get there.
+fn succession_of_fixture(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, Succession) {
+    let telemetry = ConfiguredTelemetry::new();
+    let succession = Succession::record(&telemetry);
+    let text = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}"));
+    let (mut compiler, root) = submit_main_root(telemetry, fixture, &text);
+    let reached = compiler.drive_root_to_dump_stage(root, super::dump::DumpStage::Backend);
+    if let Err(error) = reached {
+        let table = succession.render(compiler.world());
+        panic!("{fixture} should reach a backend program: {error}{table}");
+    }
+    (compiler, succession)
+}
+
+/// A recursive return handed straight to a wrapper. `dup/1` recurses and
+/// feeds its own result to `wrap/1`, so the two are one return component and
+/// only a solve over both can answer either.
+///
+/// The intent is that the program ANSWERS. That needs a call whose result
+/// position the fixpoint is still solving to deliver the ascent's bottom --
+/// no observation, addressed by the callee's own activation -- rather than
+/// reading the missing return as "this path yields nothing" and abandoning
+/// the whole clause. When the clause is abandoned, `wrap/1`'s activation is
+/// never named, the two never become one component, and the compile spins.
+///
+/// The twin fixture is the same program with its two functions declared in
+/// the other order. Ownership of a component is decided by `FunctionId`,
+/// which is declaration order, so a mechanism that only works when the
+/// incumbent happens to sort first would answer one of these two and spin on
+/// the other. Both must reach the same component.
+#[test]
+fn compiler2_a_wrapped_recursive_return_is_solved_as_one_component() {
+    for fixture in [
+        "fixtures2/behavior/wrapped_recursive_return.fz",
+        "fixtures2/behavior/wrapped_recursive_return_permuted.fz",
+    ] {
+        let (compiler, succession) = succession_of_fixture(fixture);
+        let world = compiler.world();
+        let table = succession.render(world);
+        let rows = succession.rows(world);
+
+        for label in ["main/0", "dup/1", "wrap/1"] {
+            let row = rows
+                .get(label)
+                .unwrap_or_else(|| panic!("{fixture}: {label} should have been analysed{table}"));
+            assert_eq!(row.keys, 1, "{fixture}: {label} should be reached at one key{table}");
+        }
+        // Which member owns the component follows declaration order, so the
+        // twins name different owners; what must not differ is that both
+        // programs end up solving ONE system containing both functions.
+        let settled = succession
+            .components(world)
+            .pop()
+            .map(|(_, members)| members.into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(
+            settled,
+            Some(BTreeSet::from(["dup/1".to_string(), "wrap/1".to_string()])),
+            "{fixture}: the component the compile settles on is both members{table}"
+        );
+    }
+}
+
+/// The succession the same two fixtures have: each activation walked an
+/// exact number of times, no return ever withdrawn, and the component solved
+/// in one dispatch regardless of ownership order.
+///
+/// `main/0` walks five times and `dup/1` four on both fixtures -- that comes
+/// from `AnalyzeActivation` reading back its own `ActivationInputs` row, a
+/// separate self-read this file does not narrow.
+///
+/// `solves` here counts `return_component.solved` events, not raw
+/// `SolveReturnComponent` dispatches, so a gather that blocks and publishes
+/// nothing is not a solve. Ownership still differs between the two
+/// fixtures -- a component's owner is whichever member's `FunctionId` sorts
+/// first, and an owner's first gather can only run once every member has an
+/// activation. `wrapped_recursive_return.fz` declares `wrap/1` first; by the
+/// time `dup/1`'s recursion has minted `wrap/1`'s activation, `wrap/1` (the
+/// owner) already has everything it needs and solves immediately. The
+/// permuted fixture declares `dup/1` first, so `dup/1` owns the component
+/// and its first gather blocks once, waiting on `wrap/1`'s not-yet-minted
+/// activation -- a real dispatch, but not a solve, since it concludes
+/// nothing. Once `wrap/1` exists, the one dispatch that follows gathers a
+/// whole component and settles it: the solve reads each member's call
+/// evidence at the granularity of its publishing edge, so a member's own
+/// walk republishing that same evidence never wakes the solve again.
+#[test]
+fn compiler2_a_wrapped_recursive_return_solves_its_component_once() {
+    for (fixture, solves) in [
+        ("fixtures2/behavior/wrapped_recursive_return.fz", 1),
+        ("fixtures2/behavior/wrapped_recursive_return_permuted.fz", 1),
+    ] {
+        let (compiler, succession) = succession_of_fixture(fixture);
+        let world = compiler.world();
+        let table = succession.render(world);
+        let rows = succession.rows(world);
+
+        for (label, walks) in [("main/0", 5), ("dup/1", 4), ("wrap/1", 2)] {
+            let row = rows
+                .get(label)
+                .unwrap_or_else(|| panic!("{fixture}: {label} should have been analysed{table}"));
+            assert_eq!(
+                row.walks, walks,
+                "{fixture}: {label} should walk exactly {walks} times{table}"
+            );
+            assert_eq!(
+                row.definitions, 1,
+                "{fixture}: {label} should define its return once{table}"
+            );
+            assert_eq!(
+                row.clears, 0,
+                "{fixture}: {label} should never have its return withdrawn{table}"
+            );
+        }
+
+        assert!(
+            succession.walked_before_the_first_solve(world, "wrap/1"),
+            "{fixture}: wrap/1 must be walked before the first solve, or the component is not whole{table}"
+        );
+        assert_eq!(
+            rows.values().map(|row| row.solves).sum::<u64>(),
+            solves,
+            "{fixture}: the component settles in exactly {solves} solve dispatches{table}"
+        );
+    }
+}
+
+#[test]
+fn compiler2_map_reduce_forwarder_solves_its_component_once() {
+    // A map-reduce loop reached through a forwarder. `mr_list/3` is the only
+    // member of its return component; `mr/3` calls it from outside, and the
+    // closure travels through both. The solver has to look at `mr/3`'s slot
+    // to close `mr_list/3`'s accumulator equation, and the only honest answer
+    // there is the evidence `mr/3`'s own walk contributed -- type AND the
+    // callable surface that names the closure. Reading `mr/3`'s KEY
+    // coordinate instead hands back the bare `fun` the key uses to stand for
+    // "some callable", the closure call finds no clauses behind it, the call
+    // earns `any`, and a second `mr_list/3` key is minted at `any` -- which is
+    // what this table's shape is here to rule out.
+    let (mut compiler, succession) = succession_of_fixture("fixtures2/behavior/map_reduce_forwarder.fz");
+    let any = compiler.world_mut().types_mut().any();
+    let world = compiler.world();
+    let table = succession.render(world);
+    let rows = succession.rows(world);
+
+    for (label, definitions) in [("main/0", 1), ("mr/3", 2), ("mr_list/3", 2), ("main/0#lambda@0/2", 1)] {
+        let row = rows
+            .get(label)
+            .unwrap_or_else(|| panic!("{label} should have been analysed{table}"));
+        assert_eq!(row.keys, 1, "{label} should be reached at one key{table}");
+        assert!(
+            row.definitions <= definitions,
+            "{label} should define its return at most {definitions} times{table}"
+        );
+        assert_eq!(row.clears, 0, "{label} should never have its return withdrawn{table}");
+    }
+
+    // `def/1` and `defp/1` take quoted source (`lib/runtime.fz`), which has
+    // no type to speak of; every other activation this fixture reaches is a
+    // value computation, and a value computation reached at `any` is the
+    // symptom itself -- `Kernel.+/2` at `any` answers `int | float`, and an
+    // integer fold reads back as `int | float`.
+    let keyed_at_any = succession
+        .activations()
+        .into_iter()
+        .filter(|activation| activation.inputs().contains(&any))
+        .map(|activation| super::canon::function_label(world, activation.function))
+        .filter(|label| label != "def/1" && label != "defp/1")
+        .collect::<Vec<_>>();
+    assert!(
+        keyed_at_any.is_empty(),
+        "no value computation is reached at `any`: {keyed_at_any:?}{table}"
+    );
+
+    assert_eq!(
+        succession.components(world),
+        vec![("mr_list/3".to_string(), vec!["mr_list/3".to_string()]); succession.components(world).len()],
+        "every solve is the one component, owned by its only member{table}"
+    );
+
+    let mr_list = succession.sole_key(world, "mr_list/3");
+    assert_eq!(
+        world
+            .activation_input_alternatives(&mr_list)
+            .map(|alternatives| alternatives.rows().len()),
+        Some(1),
+        "the solved row is one a walk could have published, so it collapses into the standing row{table}"
+    );
+}
+
+#[test]
+fn compiler2_local_assertion_controls_an_independent_return() {
+    for (argument, returns) in [(":atom", false), ("{1}", true)] {
+        let telemetry = ConfiguredTelemetry::new();
+        let analyses = ActivationAnalysisCapture::new();
+        analyses.install(&telemetry);
+        let source =
+            format!("def check_tuple(x) do\n  {{_}} = x\n  :done\nend\ndef main(), do: check_tuple({argument})");
+        let (mut compiler, root) = submit_main_root(telemetry, "assertion_completion.fz", &source);
+        compiler
+            .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+            .expect("a local assertion should compile whether it can succeed or not");
+        let world = compiler.world();
+        let targets = analyses
+            .keys_for_root(root)
+            .into_iter()
+            .filter(|activation| super::canon::function_label(world, activation.function) == "check_tuple/1")
+            .collect::<HashSet<_>>();
+        assert!(!targets.is_empty(), "the called definition must be analyzed");
+        for target in targets {
+            let answer = world.activation_return(&target);
+            assert_eq!(
+                answer.map(|ty| !world.types().is_empty(&ty)),
+                Some(returns),
+                "an independent :done still requires the earlier tuple assertion to succeed: {source}"
+            );
+        }
+    }
 }

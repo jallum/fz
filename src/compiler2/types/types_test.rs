@@ -1,15 +1,33 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::mem;
 use std::slice;
 
 use super::*;
 use crate::compiler2::ModuleId;
-use crate::dispatch_matrix::demand::DispatchDemand;
+use crate::compiler2::return_unknowns::KeyShape;
 use crate::finite_set::FiniteSet;
-use crate::runtime_type_predicate::{CallableShape, ListShape, ListShapes, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{ListShape, ListShapes, RuntimeTypePredicate};
 
 fn module_name(text: &str) -> ModuleName {
     ModuleName::parse_dotted(text).expect("test source module path")
+}
+
+fn predicate_exclusive_tuple_root_arity(t: &Types, ty: Ty) -> Option<usize> {
+    let predicate = t.runtime_type_predicate(&ty);
+    let mut arities = predicate.tuples.arities().finite_elems()?;
+    let arity = arities.next()?;
+    (arities.next().is_none()
+        && predicate.ints.is_none()
+        && predicate.floats.is_none()
+        && predicate.atoms.is_none()
+        && predicate.lists.shapes().is_none()
+        && predicate.named_structs.is_none()
+        && !predicate.allow_other_structs
+        && !predicate.maps
+        && !predicate.binaries
+        && predicate.callables.is_none()
+        && !predicate.resources)
+        .then_some(arity)
 }
 
 #[test]
@@ -28,6 +46,33 @@ fn factory_interns_equal_descriptors() {
 }
 
 #[test]
+fn arrow_subtyping_handles_a_wide_conjunction_without_a_partition_word_limit() {
+    let mut t = Types::new();
+    let any = t.any();
+    let int = t.int();
+    let atom = t.atom();
+    let mut constrained = any;
+    for arity in 1..=32 {
+        let positive = t.arrow(&vec![int; arity], int);
+        let not_positive = t.difference(any, positive);
+        constrained = t.difference(constrained, not_positive);
+    }
+
+    let unary_int_to_atom = t.arrow(&[int], atom);
+    assert!(
+        !t.is_subtype(&constrained, &unary_int_to_atom),
+        "a nonidentical unary negation must reach the arrow emptiness calculator without overflowing at 32 positives"
+    );
+
+    let int_or_atom = t.union(int, atom);
+    let unary_int_to_int_or_atom = t.arrow(&[int], int_or_atom);
+    assert!(
+        t.is_subtype(&constrained, &unary_int_to_int_or_atom),
+        "the unary positive constraint proves the wider return contract"
+    );
+}
+
+#[test]
 fn union_of_the_same_type_returns_before_it_probes_or_normalizes() {
     let mut t = Types::new();
     let int = t.int();
@@ -42,6 +87,25 @@ fn union_of_the_same_type_returns_before_it_probes_or_normalizes() {
         t.interning_work_stats(),
         expected,
         "identity union already has its canonical Ty; it must not probe or normalize a descriptor"
+    );
+}
+
+#[test]
+fn unbranded_union_reuses_a_raw_canonical_merge_before_normalization() {
+    let mut t = Types::new();
+    let a = t.atom_lit("a");
+    let b = t.atom_lit("b");
+    let ab = t.union(a, b);
+    let before = t.interning_work_stats();
+
+    assert_eq!(t.union(a, ab), ab);
+    assert_eq!(
+        t.interning_work_stats(),
+        InterningWorkStats {
+            raw_index_probes: before.raw_index_probes + 1,
+            ..before
+        },
+        "a union whose unconstrained structural merge is already interned must hit before normalization"
     );
 }
 
@@ -413,33 +477,928 @@ fn unchanged_instantiation_returns_before_it_probes_or_normalizes() {
 }
 
 #[test]
-fn closure_erasure_with_no_ignored_parameter_returns_before_it_rebuilds_the_arrow() {
+fn regular_component_replays_its_completed_descriptor() {
+    let mut t = Types::new();
+    let recursive = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
+    let inventory = t.identity_inventory();
+
+    assert_eq!(t.intern(Descr::tuple_of(vec![recursive])), recursive);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn exclusive_tuple_root_arity_does_not_descend_into_a_recursive_tuple_child() {
     let mut t = Types::new();
     let int = t.int();
-    let arrow = t.arrow(&[int], int);
-    let before = t.interning_work_stats();
+    let recursive = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.cases[0].structure.tuples.push(Conj::pos_of(TupleSigOf {
+            elems: vec![ComponentRef::Published(int), nodes[0]],
+        }));
+        vec![body]
+    })[0];
 
     assert_eq!(
-        t.erase_transported_closure_identities(arrow, &[DispatchDemand::Whole]),
-        arrow
+        t.exclusive_tuple_root_arity(&recursive),
+        None,
+        "the root atom alternative rejects tuple decomposition without reading the recursive child"
     );
-    let expected = InterningWorkStats {
-        identity_shortcuts: before.identity_shortcuts + 1,
-        ..before
-    };
+}
+
+#[test]
+fn exclusive_tuple_root_arity_preserves_exact_tuple_roots() {
+    let mut t = Types::new();
+    let int = t.int();
+    let exact = t.tuple(&[int, int]);
+    let branded = t.mint_brand(exact, "Pair");
+    let start = t.atom_lit("start");
+    let mixed = t.union(exact, start);
+
+    assert_eq!(t.exclusive_tuple_root_arity(&exact), Some(2));
+    assert_eq!(t.exclusive_tuple_root_arity(&branded), Some(2));
+    assert_eq!(t.exclusive_tuple_root_arity(&mixed), None);
+}
+
+#[test]
+fn exclusive_tuple_root_arity_matches_the_acyclic_runtime_projection() {
+    let mut t = Types::new();
+    let int = t.int();
+    let atom = t.atom_lit("start");
+    let tuple = t.tuple(&[int, int]);
+    let other_tuple = t.tuple(&[int]);
+    let branded_tuple = t.mint_brand(tuple, "Pair");
+    let mixed_tuple_arities = t.union(tuple, other_tuple);
+    let tuple_or_atom = t.union(tuple, atom);
+    let list = t.list(int);
+    let map = t.map(&[]);
+    let resource = t.resource(int);
+    let callable = t.arrow(&[int], int);
+    let opaque = t.opaque_of("opaque");
+    let tuple_or_opaque = t.union(tuple, opaque);
+    let tuple_with_opaque_child = t.tuple(&[opaque]);
+
+    for ty in [
+        int,
+        atom,
+        tuple,
+        other_tuple,
+        branded_tuple,
+        mixed_tuple_arities,
+        tuple_or_atom,
+        list,
+        map,
+        resource,
+        callable,
+        opaque,
+        tuple_or_opaque,
+        tuple_with_opaque_child,
+    ] {
+        assert_eq!(
+            t.exclusive_tuple_root_arity(&ty),
+            predicate_exclusive_tuple_root_arity(&t, ty),
+            "the root query keeps the existing transport answer for {}",
+            t.display(&ty)
+        );
+    }
+}
+
+#[test]
+fn renderers_bind_a_recursive_self_type() {
+    let mut t = Types::new();
+    let recursive = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.cases[0]
+            .structure
+            .tuples
+            .push(Conj::pos_of(TupleSigOf { elems: vec![nodes[0]] }));
+        vec![body]
+    })[0];
+    let labels = |_: FnId| String::new();
+    let mut canon = TyCanon::new(&labels);
+
+    assert_eq!(t.display(&recursive), "μX. :start | {X}");
+    assert_eq!(canon.render(&t, recursive).as_ref(), "fp[a:start;T] μX. :start | {X}");
+}
+
+#[test]
+fn renderers_name_independently_built_recursive_components_identically() {
+    let mut first = Types::new();
+    let first_root = first.intern_regular_component(1, |nodes| vec![recursive_tuple_body(nodes[0])])[0];
+
+    let mut second = Types::new();
+    second.atom_lit("unrelated");
+    let second_root = second.intern_regular_component(1, |nodes| vec![recursive_tuple_body(nodes[0])])[0];
+    let labels = |_: FnId| String::new();
+    let mut first_canon = TyCanon::new(&labels);
+    let mut second_canon = TyCanon::new(&labels);
+
+    assert_eq!(first.display(&first_root), second.display(&second_root));
     assert_eq!(
-        t.interning_work_stats(),
-        expected,
-        "a closure-erasure mask without an ignored parameter cannot change the arrow"
+        first_canon.render(&first, first_root),
+        second_canon.render(&second, second_root)
+    );
+}
+
+fn recursive_tuple_body(reference: ComponentRef) -> DescrOf<ComponentRef> {
+    recursive_tuple_body_named("start", reference)
+}
+
+fn recursive_list_body(reference: ComponentRef) -> DescrOf<ComponentRef> {
+    let mut descr = DescrOf::atom_lit("start");
+    descr.cases[0]
+        .structure
+        .lists
+        .push(Conj::pos_of(ListSigOf::possibly_empty(reference)));
+    descr
+}
+
+fn recursive_tuple_body_named(name: &str, reference: ComponentRef) -> DescrOf<ComponentRef> {
+    let mut descr = DescrOf::<ComponentRef>::atom_lit(name);
+    descr.cases[0]
+        .structure
+        .tuples
+        .push(Conj::pos_of(TupleSigOf { elems: vec![reference] }));
+    descr
+}
+
+fn recursive_tuple_descr(reference: Ty) -> Descr {
+    let mut descr = Descr::atom_lit("start");
+    descr.cases[0]
+        .structure
+        .tuples
+        .push(Conj::pos_of(TupleSig { elems: vec![reference] }));
+    descr
+}
+
+#[test]
+fn renderers_bind_mutually_recursive_types() {
+    let mut t = Types::new();
+    let roots = t.intern_regular_component(2, |nodes| {
+        vec![recursive_tuple_body(nodes[1]), DescrOf::list_of(nodes[0])]
+    });
+    let labels = |_: FnId| String::new();
+    let mut canon = TyCanon::new(&labels);
+
+    assert_eq!(t.display(&roots[0]), "μX. :start | {[X]}");
+    assert_eq!(t.display(&roots[1]), "μX. [:start | {X}]");
+    assert_eq!(
+        canon.render(&t, roots[0]).as_ref(),
+        "fp[a:start;T] μX. :start | {list(X)}"
+    );
+    assert_eq!(canon.render(&t, roots[1]).as_ref(), "fp[L] μX. list(:start | {X})");
+}
+
+#[test]
+fn canon_distinguishes_recursive_denotations_without_ids() {
+    let mut t = Types::new();
+    let tuple = t.intern_regular_component(1, |nodes| vec![recursive_tuple_body(nodes[0])])[0];
+    let list = t.intern_regular_component(1, |nodes| vec![recursive_list_body(nodes[0])])[0];
+    let labels = |_: FnId| String::new();
+    let mut canon = TyCanon::new(&labels);
+
+    let tuple = canon.render(&t, tuple);
+    let list = canon.render(&t, list);
+    assert_ne!(tuple, list);
+    assert!(!tuple.contains("Ty("));
+    assert!(!list.contains("Ty("));
+}
+
+/// `X`'s only path back to itself runs through a list clause's element:
+/// `X = :true | list(atoms) | list(X)`. Unlike `recursive_list_body` above,
+/// where the element happens to equal the whole active type, here the
+/// element is one factor of a union whose OTHER factor is the recursion.
+fn recursive_list_element_body(atoms: Ty, reference: ComponentRef) -> DescrOf<ComponentRef> {
+    let mut descr = DescrOf::atom_lit("true");
+    descr.cases[0]
+        .structure
+        .lists
+        .push(Conj::pos_of(ListSigOf::possibly_empty(ComponentRef::Published(atoms))));
+    descr.cases[0]
+        .structure
+        .lists
+        .push(Conj::pos_of(ListSigOf::possibly_empty(reference)));
+    descr
+}
+
+/// f8.fz's overflow, reduced to one interned shape. `X`'s recursion is
+/// reachable only as the element of `outer`'s list clause, never through `X`'s
+/// own axes directly, so the render must bind it exactly where the element is
+/// read, not only where a type is entered through `body()` on its own account.
+///
+/// Runs on a spawned thread with a small stack: the flattening this test
+/// exists to catch turns the render into an infinite loop, and on the test
+/// harness's default stack that takes real time to overflow. A small stack
+/// makes the wrong behavior fail fast, as a panic rather than a hang.
+#[test]
+fn canon_binds_a_recursive_element_reached_only_through_a_list_clause() {
+    let handle = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let mut t = Types::new();
+            let close = t.atom_lit("close");
+            let comma = t.atom_lit("comma");
+            let open = t.atom_lit("open");
+            let tok_t = t.atom_lit("t");
+            let atoms = t.union(close, comma);
+            let atoms = t.union(atoms, open);
+            let atoms = t.union(atoms, tok_t);
+
+            let x = t.intern_regular_component(1, |nodes| vec![recursive_list_element_body(atoms, nodes[0])])[0];
+            let outer = t.list(x);
+
+            let labels = |_: FnId| String::new();
+            let mut canon = TyCanon::new(&labels);
+            let rendered = canon.render(&t, outer);
+            assert_eq!(
+                rendered.as_ref(),
+                "fp[L] list(μX. :true | list(:close | :comma | :open | :t) | list(X))",
+                "the element's own recursion back to X must be spelled with X's binder, \
+                 not re-entered forever"
+            );
+        })
+        .expect("spawn probe thread");
+    handle
+        .join()
+        .expect("canon render must terminate without overflowing the probe stack");
+}
+
+/// A key that tells `[h | t]` from `[] | [h | t]` mints one activation for a
+/// recursive walker's seed and a second for the tail the walker hands itself,
+/// and the two compile the same body. The class is what makes those one
+/// coordinate, so it has to hold wherever a list sits -- alone, in a union, in
+/// a field, and under another list.
+#[test]
+fn list_family_class_folds_the_empty_refinement_wherever_a_list_sits() {
+    let mut t = Types::new();
+    let int = t.int();
+    let non_empty = t.non_empty_list(int);
+    let proper = t.list(int);
+    let done = t.atom_lit("done");
+
+    assert_eq!(t.list_family_class(non_empty), proper, "[int] keys as [int] | []");
+    assert_eq!(
+        t.list_family_class(proper),
+        proper,
+        "a list that already admits [] is a fixed point"
     );
 
-    let literal = t.closure_lit(ClosureTarget(7), vec![], 0);
-    let closure_arrow = t.arrow(&[literal], int);
-    let erased = t.erase_transported_closure_identities(closure_arrow, &[DispatchDemand::Ignore]);
-    assert_ne!(
-        erased, closure_arrow,
-        "an ignored closure parameter must still erase its construction identity"
+    let non_empty_or_done = t.union(non_empty, done);
+    let proper_or_done = t.union(proper, done);
+    assert_eq!(
+        t.list_family_class(non_empty_or_done),
+        proper_or_done,
+        "a union folds the list it holds and leaves the rest alone"
     );
+
+    let field_non_empty = t.tuple(&[int, non_empty]);
+    let field_proper = t.tuple(&[int, proper]);
+    assert_eq!(
+        t.list_family_class(field_non_empty),
+        field_proper,
+        "a tuple folds the list in its field"
+    );
+
+    let nested_non_empty = t.non_empty_list(non_empty);
+    let nested_proper = t.list(proper);
+    assert_eq!(
+        t.list_family_class(nested_non_empty),
+        nested_proper,
+        "the fold reaches every depth"
+    );
+
+    let empty = t.empty_list();
+    assert_eq!(
+        t.list_family_class(empty),
+        empty,
+        "the exact empty list holds no cons to widen"
+    );
+    assert_eq!(t.list_family_class(int), int, "a type holding no list is unchanged");
+}
+
+/// A recursive list type reaches itself, so folding it one state at a time
+/// descends forever: every rung is a type the fold has not been asked about
+/// yet. The class of `μX. :start | [X]` is the cycle whose every rung admits
+/// `[]`, tied as an automaton of its own rather than as one unfolding of the
+/// type it came from -- which is what makes the class of a class itself.
+#[test]
+fn list_family_class_ties_the_knot_on_a_recursive_list() {
+    let mut t = Types::new();
+    let non_empty = t.intern_regular_component(1, |nodes| vec![recursive_non_empty_list_body(nodes[0])])[0];
+    let proper = t.intern_regular_component(1, |nodes| vec![recursive_list_body(nodes[0])])[0];
+    assert_ne!(non_empty, proper, "the two cycles are distinct types to begin with");
+
+    let class = t.list_family_class(non_empty);
+    assert_eq!(class, proper, "every rung of the cycle admits []");
+    assert_eq!(t.list_family_class(class), class, "the class of a class is itself");
+}
+
+fn recursive_non_empty_list_body(reference: ComponentRef) -> DescrOf<ComponentRef> {
+    let mut descr = DescrOf::atom_lit("start");
+    descr.cases[0]
+        .structure
+        .lists
+        .push(Conj::pos_of(ListSigOf::non_empty(reference)));
+    descr
+}
+
+/// `{tag, payload}`, the shape a tagged recursive state is written in.
+fn tagged_tuple(tag: Ty, payload: ComponentRef) -> DescrOf<ComponentRef> {
+    DescrOf::tuple_of(vec![ComponentRef::Published(tag), payload])
+}
+
+/// A two-state mutual recursion over a tuple axis:
+///
+/// ```text
+/// A = {:a, base} | {:x, B}
+/// B = {:b, int}  | {:y, A}
+/// ```
+///
+/// Only `base` distinguishes one such pair from another, so two pairs built
+/// with different bases denote different sets while agreeing everywhere else.
+fn tagged_state_pair(t: &mut Types, base: Ty) -> Vec<Ty> {
+    let (a, b, x, y) = (t.atom_lit("a"), t.atom_lit("b"), t.atom_lit("x"), t.atom_lit("y"));
+    let int = t.int();
+    t.intern_regular_component(2, move |nodes| {
+        vec![
+            union_of(
+                &tagged_tuple(a, ComponentRef::Published(base)),
+                &tagged_tuple(x, nodes[1]),
+            ),
+            union_of(
+                &tagged_tuple(b, ComponentRef::Published(int)),
+                &tagged_tuple(y, nodes[0]),
+            ),
+        ]
+    })
+}
+
+/// A union over a tuple axis has to answer even when both operands are
+/// recursive.
+///
+/// Unioning two distinct recursive types meets the same coordinate at every
+/// rung: `{:x, B} | {:x, B'}` is one rectangle over `B | B'`, whose own
+/// `{:y, A} | {:y, A'}` is one rectangle over the union we started from. The
+/// unfolding never repeats a descriptor that has an identity yet, so the
+/// answer exists only as a cycle, and the construction that assigns it has to
+/// close that cycle rather than descend it.
+#[test]
+fn a_union_of_two_recursive_tuple_types_is_the_recursive_union() {
+    let mut t = Types::new();
+    let int = t.int();
+    let str_t = t.str_t();
+    let ints = tagged_state_pair(&mut t, int);
+    let strs = tagged_state_pair(&mut t, str_t);
+    assert_ne!(ints[0], strs[0], "different bases denote different recursive types");
+
+    let united = t.union(ints[0], strs[0]);
+
+    let int_or_str = t.union(int, str_t);
+    let expected = tagged_state_pair(&mut t, int_or_str);
+    assert_eq!(
+        united, expected[0],
+        "the union of two recursive states is the recursive state over their unioned bases"
+    );
+}
+
+/// A closure literal of one fixed function, capturing `capture` and declaring
+/// `result` as its return.
+fn recursive_capture_body(capture: ComponentRef, result: Ty) -> DescrOf<ComponentRef> {
+    let mut descr = DescrOf::unbranded();
+    descr.cases[0].structure.funcs.push(Conj::pos_of(ArrowSigOf {
+        args: Vec::new(),
+        ret: ComponentRef::Published(result),
+        lit: Some(ClosureLitOf {
+            kind: CallableValueKind::Closure,
+            fn_id: ClosureTarget(7).into(),
+            captures: vec![capture],
+        }),
+    }));
+    descr
+}
+
+#[test]
+fn regular_component_interns_bisimilar_unrollings_once() {
+    let mut t = Types::new();
+    let self_recursive = t.intern_regular_component(1, |nodes| vec![recursive_tuple_body(nodes[0])])[0];
+    let inventory = t.identity_inventory();
+
+    let mutual = t.intern_regular_component(2, |nodes| {
+        vec![recursive_tuple_body(nodes[1]), recursive_tuple_body(nodes[0])]
+    });
+
+    assert_eq!(mutual, vec![self_recursive, self_recursive]);
+    assert_eq!(t.identity_inventory(), inventory);
+    assert_eq!(t.intern(recursive_tuple_descr(self_recursive)), self_recursive);
+    let labels = |_: FnId| String::new();
+    let mut canon = TyCanon::new(&labels);
+    assert_eq!(t.display(&self_recursive), t.display(&mutual[0]));
+    assert_eq!(canon.render(&t, self_recursive), canon.render(&t, mutual[0]));
+}
+
+#[test]
+fn regular_components_follow_closure_captures() {
+    let mut t = Types::new();
+    let int = t.int();
+    let self_recursive = t.intern_regular_component(1, |nodes| vec![recursive_capture_body(nodes[0], int)])[0];
+    let inventory = t.identity_inventory();
+
+    let mutual = t.intern_regular_component(2, |nodes| {
+        vec![
+            recursive_capture_body(nodes[1], int),
+            recursive_capture_body(nodes[0], int),
+        ]
+    });
+
+    assert_eq!(mutual, vec![self_recursive, self_recursive]);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+/// A literal's declared signature is not its identity: interning restores the
+/// owner's surface template, so two components that differ only in the result
+/// the literal declared are one component.
+#[test]
+fn regular_components_normalize_literal_closure_surfaces() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let int_surface = t.intern_regular_component(1, |nodes| vec![recursive_capture_body(nodes[0], int)])[0];
+    let inventory = t.identity_inventory();
+
+    let float_surface = t.intern_regular_component(1, |nodes| vec![recursive_capture_body(nodes[0], float)])[0];
+
+    assert_eq!(float_surface, int_surface);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_absorb_a_recursive_tuple_clause() {
+    let mut t = Types::new();
+    let any = t.any();
+    let direct = t.tuple(&[any]);
+    let inventory = t.identity_inventory();
+
+    let component = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::unbranded();
+        body.cases[0].structure.tuples = vec![
+            Conj::pos_of(TupleSigOf { elems: vec![nodes[0]] }),
+            Conj::pos_of(TupleSigOf {
+                elems: vec![ComponentRef::Published(any)],
+            }),
+        ];
+        vec![body]
+    })[0];
+
+    assert_eq!(component, direct);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_fuse_tuple_carvings_through_a_recursive_coordinate() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let numeric = t.union(int, float);
+    let fused = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.cases[0].structure.tuples = vec![Conj::pos_of(TupleSigOf {
+            elems: vec![nodes[0], ComponentRef::Published(numeric)],
+        })];
+        vec![body]
+    })[0];
+    let inventory = t.identity_inventory();
+
+    let carved = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.cases[0].structure.tuples = vec![
+            Conj::pos_of(TupleSigOf {
+                elems: vec![nodes[0], ComponentRef::Published(int)],
+            }),
+            Conj::pos_of(TupleSigOf {
+                elems: vec![nodes[0], ComponentRef::Published(float)],
+            }),
+        ];
+        vec![body]
+    })[0];
+
+    assert_eq!(carved, fused);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_widen_tuple_carvings_through_a_recursive_coordinate() {
+    let mut t = Types::new();
+    let int = t.int();
+    let ints = t.list(int);
+    let empty = t.empty_list();
+    let non_empty = t.non_empty_list(int);
+    let wide = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.cases[0].structure.tuples = vec![
+            Conj::pos_of(TupleSigOf {
+                elems: vec![nodes[0], ComponentRef::Published(ints), ComponentRef::Published(empty)],
+            }),
+            Conj::pos_of(TupleSigOf {
+                elems: vec![nodes[0], ComponentRef::Published(empty), ComponentRef::Published(ints)],
+            }),
+        ];
+        vec![body]
+    })[0];
+    let inventory = t.identity_inventory();
+
+    let narrow = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.cases[0].structure.tuples = vec![
+            Conj::pos_of(TupleSigOf {
+                elems: vec![nodes[0], ComponentRef::Published(ints), ComponentRef::Published(empty)],
+            }),
+            Conj::pos_of(TupleSigOf {
+                elems: vec![
+                    nodes[0],
+                    ComponentRef::Published(empty),
+                    ComponentRef::Published(non_empty),
+                ],
+            }),
+        ];
+        vec![body]
+    })[0];
+
+    assert_eq!(narrow, wide);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_keep_distinct_published_children() {
+    let mut t = Types::new();
+    let self_recursive = t.intern_regular_component(1, |nodes| vec![recursive_tuple_body(nodes[0])])[0];
+    let int = t.int();
+
+    let with_int = t.intern_regular_component(1, |nodes| {
+        vec![DescrOf::tuple_of(vec![ComponentRef::Published(int), nodes[0]])]
+    })[0];
+
+    assert_ne!(self_recursive, with_int);
+}
+
+#[test]
+fn regular_components_normalize_empty_list_alternatives() {
+    let mut t = Types::new();
+    let direct = t.intern_regular_component(1, |nodes| vec![DescrOf::list_of(nodes[0])])[0];
+    let inventory = t.identity_inventory();
+
+    let split = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::unbranded();
+        body.cases[0].structure.lists = vec![
+            Conj::pos_of(ListSigOf::empty()),
+            Conj::pos_of(ListSigOf::non_empty(nodes[0])),
+        ];
+        vec![body]
+    })[0];
+
+    assert_eq!(split, direct);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_ignore_declaration_order() {
+    let mut t = Types::new();
+    let forward = t.intern_regular_component(2, |nodes| {
+        vec![
+            recursive_tuple_body_named("left", nodes[1]),
+            recursive_tuple_body_named("right", nodes[0]),
+        ]
+    });
+    let inventory = t.identity_inventory();
+
+    let reverse = t.intern_regular_component(2, |nodes| {
+        vec![
+            recursive_tuple_body_named("right", nodes[1]),
+            recursive_tuple_body_named("left", nodes[0]),
+        ]
+    });
+
+    assert_eq!(reverse, vec![forward[1], forward[0]]);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_ignore_declaration_order_after_refinement() {
+    let mut t = Types::new();
+    let variable = t.type_var(TypeVarId(91));
+    let forward = t.intern_regular_component(2, |nodes| {
+        vec![
+            DescrOf::tuple_of(vec![nodes[1]]),
+            DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(variable)]),
+        ]
+    });
+    let inventory = t.identity_inventory();
+
+    let reverse = t.intern_regular_component(2, |nodes| {
+        vec![
+            DescrOf::tuple_of(vec![nodes[1], ComponentRef::Published(variable)]),
+            DescrOf::tuple_of(vec![nodes[0]]),
+        ]
+    });
+
+    assert_eq!(reverse, vec![forward[1], forward[0]]);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn regular_components_normalize_one_coordinate_tuple_difference() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let direct = t.intern_regular_component(1, |nodes| {
+        vec![DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(int)])]
+    })[0];
+    let inventory = t.identity_inventory();
+
+    let carved = t.intern_regular_component(1, |nodes| {
+        let positive = TupleSigOf {
+            elems: vec![nodes[0], ComponentRef::Published(int)],
+        };
+        let negative = TupleSigOf {
+            elems: vec![nodes[0], ComponentRef::Published(float)],
+        };
+        let mut body = DescrOf::unbranded();
+        body.cases[0].structure.tuples = vec![Conj {
+            pos: vec![positive],
+            neg: vec![negative],
+        }];
+        vec![body]
+    })[0];
+
+    assert_eq!(carved, direct);
+    assert_eq!(t.identity_inventory(), inventory);
+}
+
+#[test]
+fn cyclic_readers_collect_the_finite_variable_and_substitution_result() {
+    let mut t = Types::new();
+    let alpha = TypeVarId(97);
+    let variable = t.type_var(alpha);
+    let int = t.int();
+    let self_recursive = t.intern_regular_component(1, |nodes| vec![DescrOf::list_of(nodes[0])])[0];
+    // The empty list supplies a finite base while the list/tuple back-edge
+    // still makes every reader close a two-node cycle.
+    let pattern = t.intern_regular_component(2, |nodes| {
+        vec![
+            DescrOf::list_of(nodes[1]),
+            DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(variable)]),
+        ]
+    })[0];
+    let witness = t.intern_regular_component(2, |nodes| {
+        vec![
+            DescrOf::list_of(nodes[1]),
+            DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(int)]),
+        ]
+    })[0];
+
+    assert!(!t.has_vars(&self_recursive));
+    assert!(!t.is_empty(&pattern));
+    assert!(!t.is_empty(&witness));
+    assert!(t.has_vars(&pattern));
+    assert_eq!(t.free_var_ids(&pattern), [alpha].into_iter().collect());
+
+    let mut sigma = Sigma::new();
+    t.collect_instantiation_subst(&pattern, &witness, &mut sigma);
+    assert_eq!(sigma, Sigma::from([(alpha, int)]));
+}
+
+#[test]
+fn types_emptiness_discharges_a_negation_bearing_cycle() {
+    let mut t = Types::new();
+    let recursive = t.intern_regular_component(1, |nodes| {
+        let sig = TupleSigOf { elems: vec![nodes[0]] };
+        let mut descr = DescrOf::<ComponentRef>::unbranded();
+        descr.cases[0].structure.tuples.push(Conj {
+            pos: vec![sig.clone()],
+            neg: vec![sig],
+        });
+        vec![descr]
+    })[0];
+
+    assert!(t.descr(&recursive).is_empty(t.ctx()));
+}
+
+/// A two-arm regular-component node: `{fst_tag, payload} | {snd_tag, other}`,
+/// the shape both `even`/`odd` states below share.
+fn two_arm_regular_body(fst_tag: Ty, payload: ComponentRef, snd_tag: Ty, other: ComponentRef) -> DescrOf<ComponentRef> {
+    let mut descr = DescrOf::<ComponentRef>::unbranded();
+    descr.cases[0].structure.tuples = vec![
+        Conj::pos_of(TupleSigOf {
+            elems: vec![ComponentRef::Published(fst_tag), payload],
+        }),
+        Conj::pos_of(TupleSigOf {
+            elems: vec![ComponentRef::Published(snd_tag), other],
+        }),
+    ];
+    descr
+}
+
+/// `E = {:even, int} | {:e, O}`, `O = {:odd, int} | {:o, E}`: the smallest
+/// mutual regular component, one node's payload arm naming the other node.
+fn even_odd_component(t: &mut Types) -> (Ty, Ty, Ty, Ty, Ty, Ty) {
+    let int = t.int();
+    let even = t.atom_lit("even");
+    let odd = t.atom_lit("odd");
+    let e_tag = t.atom_lit("e");
+    let o_tag = t.atom_lit("o");
+    let roots = t.intern_regular_component(2, |nodes| {
+        vec![
+            two_arm_regular_body(even, ComponentRef::Published(int), e_tag, nodes[1]),
+            two_arm_regular_body(odd, ComponentRef::Published(int), o_tag, nodes[0]),
+        ]
+    });
+    (roots[0], roots[1], int, even, odd, e_tag)
+}
+
+/// Union of a mutual regular component against one of its own arms must
+/// terminate and answer the interned component identity, exactly as the
+/// self-recursive case already does. Before the fix, `union(e, {:even, int})`
+/// recursed without bound.
+#[test]
+fn union_of_a_mutual_regular_component_absorbs_its_own_arm() {
+    let mut t = Types::new();
+    let (e, o, int, even, odd, e_tag) = even_odd_component(&mut t);
+    let o_tag = t.atom_lit("o");
+
+    let even_arm = t.tuple(&[even, int]);
+    assert_eq!(t.union(e, even_arm), e, "E already holds its {{:even, int}} arm");
+
+    let e_arm = t.tuple(&[e_tag, o]);
+    assert_eq!(t.union(e, e_arm), e, "E already holds its {{:e, O}} arm");
+
+    let odd_arm = t.tuple(&[odd, int]);
+    assert_eq!(t.union(o, odd_arm), o, "O already holds its {{:odd, int}} arm");
+
+    let o_arm = t.tuple(&[o_tag, e]);
+    assert_eq!(t.union(o, o_arm), o, "O already holds its {{:o, E}} arm");
+}
+
+/// A one-step unfolding of a mutual component's own arm re-derives the same
+/// `Ty` by identity, and unioning it back in is a no-op, exactly as an
+/// already-interned arm is.
+#[test]
+fn union_of_a_mutual_regular_component_absorbs_its_own_unfolding() {
+    let mut t = Types::new();
+    let (e, o, int, even, odd, e_tag) = even_odd_component(&mut t);
+    let o_tag = t.atom_lit("o");
+
+    let odd_arm = t.tuple(&[odd, int]);
+    let o_arm = t.tuple(&[o_tag, e]);
+    let o_unfolded = t.union(odd_arm, o_arm);
+    assert_eq!(o_unfolded, o, "unfolding O one step re-derives O by identity");
+    let even_arm = t.tuple(&[even, int]);
+    let e_arm = t.tuple(&[e_tag, o_unfolded]);
+    let e_unfolded = t.union(even_arm, e_arm);
+    assert_eq!(e_unfolded, e, "unfolding E one step re-derives E by identity");
+
+    assert_eq!(t.union(e, e_unfolded), e, "E absorbs its own one-step unfolding");
+    assert_eq!(t.union(o, o_unfolded), o, "O absorbs its own one-step unfolding");
+}
+
+/// Self-recursive `X = int | list(X)` already absorbs union with its own arms
+/// and its own one-step unfolding by identity. These guard the mutual-case
+/// fix above against regressing the case that already worked.
+#[test]
+fn union_of_a_self_recursive_regular_component_absorbs_its_own_arm_and_unfolding() {
+    let mut t = Types::new();
+    let int = t.int();
+    let x = t.intern_regular_component(1, |nodes| {
+        vec![union_regular_bodies(
+            &DescrOf::<ComponentRef>::int(),
+            &DescrOf::list_of(nodes[0]),
+        )]
+    })[0];
+
+    assert_eq!(t.union(x, int), x, "X already holds its int arm");
+    let list_x = t.list(x);
+    assert_eq!(t.union(x, list_x), x, "X already holds its list(X) arm");
+
+    let list_x_again = t.list(x);
+    let unfolded = t.union(int, list_x_again);
+    assert_eq!(unfolded, x, "unfolding X one step re-derives X by identity");
+    assert_eq!(t.union(x, unfolded), x, "X absorbs its own one-step unfolding");
+}
+
+fn regular_test_tys(t: &mut Types) -> Vec<Ty> {
+    let first_self = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
+    let second_self = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
+    let mut nodes = vec![t.any(), t.int(), first_self, second_self];
+    for graph in 0..27 {
+        let children = [graph % 3, graph / 3 % 3, graph / 9];
+        if !matches!(children, [1, 2, 0] | [2, 0, 1]) {
+            continue;
+        }
+        nodes.extend(t.intern_regular_component(3, |component| {
+            children
+                .into_iter()
+                .map(|child| DescrOf::tuple_of(vec![component[child]]))
+                .collect()
+        }));
+    }
+    nodes
+}
+
+#[test]
+fn types_order_equals_identity_on_regular_trees() {
+    let mut t = Types::new();
+    let nodes = regular_test_tys(&mut t);
+
+    for &left in &nodes {
+        for &right in &nodes {
+            let forward = t.cmp_ty(left, right);
+            assert_eq!(
+                forward == std::cmp::Ordering::Equal,
+                left == right,
+                "{left:?} and {right:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn types_order_is_total_on_cyclic_nodes() {
+    let mut t = Types::new();
+    let nodes = regular_test_tys(&mut t);
+
+    for &left in &nodes {
+        for &right in &nodes {
+            assert_eq!(
+                t.cmp_ty(left, right),
+                t.cmp_ty(right, left).reverse(),
+                "{left:?} and {right:?}"
+            );
+        }
+    }
+
+    for &left in &nodes {
+        for &middle in &nodes {
+            for &right in &nodes {
+                let left_middle = t.cmp_ty(left, middle);
+                let middle_right = t.cmp_ty(middle, right);
+                let left_right = t.cmp_ty(left, right);
+                assert!(
+                    !(left_middle.is_le() && middle_right.is_le() && left_right.is_gt()),
+                    "{left:?} <= {middle:?} <= {right:?}, but {left:?} > {right:?}",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn literal_callable_identity_ignores_an_instantiated_surface() {
+    let mut t = Types::new();
+    let literal = t.fn_ref_lit(ClosureTarget(3), 1);
+    let int = t.int();
+    let nil = t.nil();
+    let target = ClosureTarget(3).into();
+    let sigma = [(closure_var_id(target, 0), int), (closure_ret_var_id(target), nil)]
+        .into_iter()
+        .collect();
+    let inventory = t.identity_inventory();
+    let comparisons = t.comparison_cache_stats();
+
+    let instantiated = t.instantiate(&literal, &sigma);
+
+    assert_eq!(instantiated, literal);
+    assert_eq!(t.identity_inventory(), inventory);
+    assert_eq!(t.comparison_cache_stats(), comparisons);
+}
+
+fn assert_reuses_identity(types: &mut Types, expected: Ty, construction: impl FnOnce(&mut Types) -> Ty) {
+    let inventory = types.identity_inventory();
+    assert_eq!(construction(types), expected);
+    assert_eq!(types.identity_inventory(), inventory);
+}
+
+#[test]
+fn construction_order_reuses_identity_for_lists_tuples_and_literals() {
+    let mut t = Types::new();
+    let int = t.int();
+    let empty = t.empty_list();
+    let list = t.list(int);
+    let joined = t.union(empty, list);
+    assert_reuses_identity(&mut t, joined, |t| t.union(list, empty));
+
+    let false_ = t.bool_lit(false);
+    let true_ = t.bool_lit(true);
+    let left = t.tuple(&[list, false_]);
+    let right = t.tuple(&[list, true_]);
+    let carved = t.union(left, right);
+    let either = t.union(false_, true_);
+    assert_reuses_identity(&mut t, carved, |t| t.tuple(&[list, either]));
+
+    let any = t.any();
+    let fun = t.arrow(&[], any);
+    assert_reuses_identity(&mut t, fun, |t| t.arrow(&[int], any));
+
+    let left_brand = t.closure_lit(ClosureTarget(3), vec![int], 1);
+    let right_brand = t.closure_lit(ClosureTarget(4), vec![int], 1);
+    let both_brands = t.union(left_brand, right_brand);
+    assert_reuses_identity(&mut t, both_brands, |t| t.union(right_brand, left_brand));
 }
 
 #[test]
@@ -448,7 +1407,7 @@ fn structural_children_are_interned_handles() {
     let elem = t.int();
     let tuple = t.tuple(&[elem]);
     let d = t.descr(&tuple);
-    assert_eq!(d.tuples[0].pos[0].elems, vec![elem]);
+    assert_eq!(d.cases[0].structure.tuples[0].pos[0].elems, vec![elem]);
 }
 
 // fz-hwn.27.5 — the backend-boundary value-template predicate.
@@ -716,10 +1675,10 @@ fn runtime_type_predicate_preserves_typed_struct_exclusions_without_narrowing_ge
         "schema extraction must retain the named exclusion as an exact dependency"
     );
 
-    let generic_opaque_complement = t.intern(Descr {
-        opaques: FiniteSet::cofinite([OpaqueTag::Named("known".to_string())]),
-        ..Descr::unbranded()
-    });
+    let mut generic_opaque_complement_d = Descr::unbranded();
+    generic_opaque_complement_d.cases[0].structure.opaques =
+        FiniteSet::cofinite([OpaqueTag::Named("known".to_string())]);
+    let generic_opaque_complement = t.intern(generic_opaque_complement_d);
     let generic = t.runtime_type_predicate(&generic_opaque_complement);
     let mut every_non_struct = RuntimeTypePredicate::any();
     every_non_struct.named_structs = FiniteSet::none();
@@ -996,6 +1955,53 @@ fn semantic_struct_envelopes_keep_projectable_fields_and_predicate_envelopes_kee
 }
 
 #[test]
+fn runtime_envelopes_of_a_recursive_type_terminate_and_keep_the_cycle() {
+    let mut t = Types::new();
+    let recursive = t.intern_regular_component(1, |nodes| vec![recursive_list_body(nodes[0])])[0];
+    let int = t.int();
+    let carrier = t.tuple(&[recursive, int]);
+
+    assert_eq!(
+        t.runtime_envelope(recursive),
+        recursive,
+        "a ground recursive type carries no variable to widen, so it is its own runtime envelope"
+    );
+    assert_eq!(t.runtime_type_test_envelope(recursive), recursive);
+    assert_eq!(
+        t.runtime_envelope(carrier),
+        carrier,
+        "reaching the cycle through a tuple coordinate reaches the same fixed point"
+    );
+}
+
+#[test]
+fn a_runtime_envelope_widens_a_variable_under_a_recursive_type() {
+    let mut t = Types::new();
+    let var = t.type_var(TypeVarId(909));
+    let recursive = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.cases[0].structure.tuples.push(Conj::pos_of(TupleSigOf {
+            elems: vec![ComponentRef::Published(var), nodes[0]],
+        }));
+        vec![body]
+    })[0];
+    let any = t.any();
+    let expected = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::atom_lit("start");
+        body.cases[0].structure.tuples.push(Conj::pos_of(TupleSigOf {
+            elems: vec![ComponentRef::Published(any), nodes[0]],
+        }));
+        vec![body]
+    })[0];
+
+    assert_eq!(
+        t.runtime_envelope(recursive),
+        expected,
+        "the per-node rules apply at every rung of the cycle, not only at its entry"
+    );
+}
+
+#[test]
 fn substitution_descends_only_through_equal_record_tags() {
     use crate::compiler2::identity::ModuleId;
 
@@ -1042,7 +2048,7 @@ fn a_clause_pinning_two_closure_brands_is_the_bottom() {
     let any = t.any();
     let wider = t.closure_lit(ClosureTarget(66), vec![any], 1);
     let merged = t.intersect(over_int, wider);
-    let clauses = t.descr(&merged).funcs.clone();
+    let clauses = t.descr(&merged).cases[0].structure.funcs.clone();
     assert_eq!(clauses.len(), 1);
     assert_eq!(
         clauses[0].pos.iter().filter(|sig| sig.lit.is_some()).count(),
@@ -1077,62 +2083,11 @@ fn the_envelope_and_the_predicate_agree_on_a_callable_clause() {
     );
 }
 
-/// fz-kdt.127 -- WHY the erased forwarder key and the construction axis
-/// compose, stated from the side that actually decides it: the KEYING rule.
-///
-/// `erase_transported_closure_identities` anonymises only the slots the
-/// dispatch mask marks `Ignore` -- the ones no runtime test reads. A slot the
-/// body dispatches on keeps its brand, so it stays shapeable and a test can
-/// still name the construction, while the anonymous literal the erasure mints
-/// lives only in the activation KEY, which no test is ever asked of. Nothing
-/// in the projection has to arrange this; if it ever stops holding, the
-/// `debug_assert!` in `callable_identity_literal` is what fires.
-#[test]
-fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
-    let mut t = Types::new();
-    let int = t.int();
-    let surface = t.arrow(&[int], int);
-    let branded = t.closure_lit(ClosureTarget(3), vec![int], 1);
-    let branded = t.intersect(branded, surface);
-    let arrow = t.arrow(&[branded, branded], int);
-
-    let erased = t.erase_transported_closure_identities(arrow, &[DispatchDemand::Ignore, DispatchDemand::Whole]);
-    let params = t.arrow_params(&erased);
-    assert_eq!(params.len(), 2);
-    assert_ne!(
-        params[0], branded,
-        "the ignored slot is freight: the erasure takes its brand"
-    );
-    assert!(
-        t.display(&params[0]).contains("#?"),
-        "and what it leaves there is the ANONYMOUS literal, got {}",
-        t.display(&params[0])
-    );
-    assert_eq!(
-        params[1], branded,
-        "a slot the body dispatches on is untouched -- that is why an anonymous literal never \
-         reaches a runtime test"
-    );
-
-    let capturing = CallableShape {
-        target: ClosureTarget(3),
-        captures: vec![t.runtime_type_predicate(&int)],
-    };
-    assert!(
-        t.runtime_type_predicate(&params[1]).callables.admits(&capturing),
-        "and the dispatch slot still names its construction",
-    );
-}
-
-/// fz-kdt.127 -- a closure holds exactly one value per capture slot, so a
-/// literal whose capture TYPE is empty denotes nothing at all.
-///
-/// The anonymous literal is one way to build one: it is every brand at once,
-/// so it merges with a branded literal instead of staying distinct from it,
-/// and the merged literal's capture is the two captures' intersection. Two
-/// literals of the SAME brand at different capture types are the other way,
-/// and that hole predates the anonymous literal. One law in
-/// `func_clause_empty` closes both.
+/// A closure holds exactly one value per capture slot, so a literal whose
+/// capture TYPE is empty denotes nothing at all. Two literals of one brand at
+/// different capture types meet at an empty capture, and `func_clause_empty`
+/// is the law that reports the meet empty rather than a live closure with an
+/// uninhabited capture slot. Two brands over one surface are no value either.
 #[test]
 fn a_closure_literal_with_an_empty_capture_is_empty() {
     let mut t = Types::new();
@@ -1143,19 +2098,12 @@ fn a_closure_literal_with_an_empty_capture_is_empty() {
     let branded_int = t.intersect(branded_int, surface);
     let branded_float = t.closure_lit(ClosureTarget(4), vec![float], 1);
     let branded_float = t.intersect(branded_float, surface);
-    let anon_int = t.erase_closure_identity(&branded_int);
 
-    let meets_its_own_brand = t.intersect(anon_int, branded_int);
-    assert_eq!(
-        meets_its_own_brand, branded_int,
-        "an anonymous literal is every brand at once, so meeting one leaves that one",
-    );
-
-    let meets_another_brand = t.intersect(anon_int, branded_float);
+    let two_brands = t.intersect(branded_int, branded_float);
     assert!(
-        t.is_empty(&meets_another_brand),
+        t.is_empty(&two_brands),
         "a closure over an int and a closure over a float are not one value: {}",
-        t.display(&meets_another_brand)
+        t.display(&two_brands)
     );
 
     let branded_int_at_float = t.closure_lit(ClosureTarget(3), vec![float], 1);
@@ -1163,8 +2111,7 @@ fn a_closure_literal_with_an_empty_capture_is_empty() {
     let one_brand_two_captures = t.intersect(branded_int, branded_int_at_float);
     assert!(
         t.is_empty(&one_brand_two_captures),
-        "and the same holds for ONE brand at two capture types -- the hole the anonymous \
-         literal widened was already there: {}",
+        "and the same holds for ONE brand at two capture types: {}",
         t.display(&one_brand_two_captures)
     );
 }
@@ -1824,190 +2771,6 @@ macro_rules! semantic_helper_conformance_tests {
             }
 
             #[test]
-            fn convergence_class_unifies_all_list_shapes_but_separates_other_families() {
-                let mut t = $ctor;
-                let int = t.int();
-                let empty = t.empty_list();
-                let nonempty = t.non_empty_list(int.clone());
-                let list = t.list(int.clone());
-                let empty_class = t.convergence_class(&empty);
-                let nonempty_class = t.convergence_class(&nonempty);
-                let list_class = t.convergence_class(&list);
-                assert!(t.is_equivalent(&empty_class, &nonempty_class));
-                assert!(t.is_equivalent(&nonempty_class, &list_class));
-                let joined = t.union(empty, nonempty);
-                let joined_class = t.convergence_class(&joined);
-                assert!(
-                    t.is_equivalent(&joined_class, &list_class),
-                    "empty | non-empty list unions should share the recursive list convergence class"
-                );
-
-                let tagged = t.tuple(&[int.clone(), int.clone()]);
-                let tagged_class = t.convergence_class(&tagged);
-                assert!(!t.is_equivalent(&tagged_class, &list_class));
-
-                let int_class = t.convergence_class(&int);
-                assert!(!t.is_equivalent(&int_class, &list_class));
-            }
-
-            #[test]
-            fn convergence_class_collapses_nested_list_and_callable_runtime_detail() {
-                let mut t = $ctor;
-                let int = t.int();
-                let empty = t.empty_list();
-                let nonempty = t.non_empty_list(int.clone());
-                let cont = t.atom_lit("cont");
-                let halt = t.atom_lit("halt");
-                let callable_a = t.arrow(std::slice::from_ref(&int), cont);
-                let callable_b = t.arrow(std::slice::from_ref(&int), halt);
-                let tuple_a = t.tuple(&[empty, callable_a]);
-                let tuple_b = t.tuple(&[nonempty, callable_b]);
-
-                let class_a = t.convergence_class(&tuple_a);
-                let class_b = t.convergence_class(&tuple_b);
-
-                assert!(
-                    t.is_equivalent(&class_a, &class_b),
-                    "ignored recursive tuple slots should collapse nested list/callable detail while preserving tuple family"
-                );
-            }
-
-            #[test]
-            fn convergence_collapse_widens_only_non_dispatch_slots_of_the_arrow() {
-                // The dispatch KEY of a recursive activation is a whole-arrow
-                // collapse of its precise evidence arrow (fz-hwn.27.7): a
-                // non-dispatch list slot widens to its ADDRESSED convergence
-                // class so the recursive ascent settles, while dispatch slots and
-                // the result are preserved exactly. Here slot 0 dispatches and
-                // slot 1 does not, so slot 1's `list(int)` collapses to
-                // `list(a1_e)` — a resolvable element address var at the slot's
-                // structural address, not the path-blind `list(any)`
-                // (fz-f98.14.10.2). Breadth is still one address per position so
-                // fz-y6w termination holds.
-                let mut t = $ctor;
-                let int = t.int();
-                let list_int = t.list(int.clone());
-                let arrow = t.arrow(&[list_int.clone(), list_int.clone()], int.clone());
-                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::Whole, DispatchDemand::Ignore], &[]);
-
-                let params = t.arrow_params(&collapsed);
-                let ret = t.arrow_join_return(&collapsed);
-                assert_eq!(t.display(&params[0]), "[int]");
-                assert_eq!(t.display(&params[1]), "[a1_e]");
-                assert_eq!(t.display(&ret), "int");
-            }
-
-            #[test]
-            fn convergence_collapse_list_shape_keeps_element_but_not_recursive_list_shape() {
-                let mut t = $ctor;
-                let int = t.int();
-                let non_empty = t.non_empty_list(int.clone());
-                let list_int = t.list(int);
-                let joined_list_family = t.union(list_int, non_empty);
-                let sentinel = t.none();
-                let arrow = t.arrow(&[joined_list_family], sentinel.clone());
-                let collapsed = t.convergence_collapse(
-                    arrow,
-                    &[DispatchDemand::ListShape(Box::new(DispatchDemand::Whole))],
-                    &[],
-                );
-
-                let expected = t.arrow(&[list_int], sentinel);
-                assert!(
-                    t.is_equivalent(&collapsed, &expected),
-                    "recursive list-shape dispatch should converge joined list-family shape while preserving demanded element type"
-                );
-            }
-
-            #[test]
-            fn convergence_collapse_preserves_nested_dispatch_field_and_collapses_payload() {
-                let mut t = $ctor;
-                let elem = t.type_var(TypeVarId(0));
-                let payload = t.list(elem);
-                let tag = t.atom_lit("cont");
-                let state = t.tuple(&[tag, payload]);
-                let sentinel = t.none();
-                let arrow = t.arrow(&[state], sentinel);
-                let mut fields = BTreeMap::new();
-                fields.insert(0, DispatchDemand::Whole);
-                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)], &[]);
-
-                // The dispatch tag (field 0) is preserved exactly; the ignored
-                // payload (field 1) collapses to its ADDRESSED class — the list
-                // element addressed at `[Param(0), Field(1), Elem]`, displayed
-                // `a0_1_e` — not the path-blind `list(any)` (fz-f98.14.10.2).
-                let params = t.arrow_params(&collapsed);
-                assert_eq!(
-                    t.display(&params[0]),
-                    "{:cont, [a0_1_e]}",
-                    "nested dispatch demand should preserve the tag and collapse the payload to its addressed class: {}",
-                    t.display(&collapsed)
-                );
-                let _ = sentinel;
-            }
-
-            #[test]
-            fn convergence_collapse_tuple_union_arrow_roundtrips_through_address_inputs() {
-                // A multi-alternative tagged union slot collapsed by the recursive
-                // dispatch-key mint MUST round-trip through `address_inputs` (the
-                // canonical addresser, fz-hwn.27): the collapsed arrow is already
-                // canonically addressed, so re-addressing it is the identity. This
-                // fails if `convergence_collapse` omits the per-variant `Variant(k)`
-                // discriminator that `address_inputs` inserts when alternatives > 1
-                // (fz-go4.18.3.2.1).
-                let mut t = $ctor;
-                let elem = t.type_var(TypeVarId(0));
-                let payload = t.list(elem); // [T]
-                let cont = {
-                    let tag = t.atom_lit("cont");
-                    t.tuple(&[tag, payload])
-                };
-                let halt = {
-                    let tag = t.atom_lit("halt");
-                    t.tuple(&[tag, payload])
-                };
-                let union = t.union(cont, halt); // {:cont,[T]} | {:halt,[T]}
-                let sentinel = t.none();
-                let arrow = t.arrow(&[union], sentinel);
-                let mut fields = BTreeMap::new();
-                fields.insert(0, DispatchDemand::Whole); // tag dispatches, payload ignored
-                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)], &[]);
-
-                let params = t.arrow_params(&collapsed);
-                let readdressed = t.address_inputs(&params);
-                assert_eq!(
-                    readdressed, params,
-                    "collapsed union slot must be canonically addressed (round-trip): {} vs {}",
-                    t.display(&readdressed[0]),
-                    t.display(&params[0]),
-                );
-            }
-
-            #[test]
-            fn evidence_collapse_only_widens_variable_non_dispatch_payloads() {
-                let mut t = $ctor;
-                let int = t.int();
-                let concrete = t.list(int.clone());
-                let var = t.type_var(TypeVarId(0));
-                let variable = t.list(var);
-                let collapsed = t.convergence_collapse_evidence_inputs(
-                    &[concrete, variable],
-                    &[DispatchDemand::Ignore, DispatchDemand::Ignore],
-                );
-
-                let any = t.any();
-                let list_any = t.list(any);
-                assert!(
-                    t.is_equivalent(&collapsed[0], &concrete),
-                    "concrete non-dispatch evidence should stay precise"
-                );
-                assert!(
-                    t.is_equivalent(&collapsed[1], &list_any),
-                    "variable non-dispatch evidence should converge to list(any)"
-                );
-            }
-
-            #[test]
             fn refine_widen_recurses_into_tuple_fields() {
                 let mut t = $ctor;
                 let empty = t.empty_list();
@@ -2140,64 +2903,8 @@ macro_rules! closure_helper_conformance_tests {
         mod $mod_name {
             use super::*;
 
-            /// The erasure drops the BRAND and keeps the capture types: two
-            /// lambdas closed over the same thing become one key, one lambda
-            /// closed over two things stays two, and neither result is a
-            /// singleton any consumer could call directly (fz-kdt.127).
             #[test]
-            fn erase_closure_identity_drops_the_brand_and_keeps_the_captures() {
-                let mut t = $ctor;
-                let ten = t.int_lit(10);
-                let lit = t.closure_lit(ClosureTarget(3), vec![ten], 2);
-                let erased = t.erase_closure_identity(&lit);
-                assert!(
-                    t.closure_lit_parts(&erased).is_none(),
-                    "an erased literal names no target, so nothing may call it directly"
-                );
-                let clauses = t
-                    .callable_clauses(&erased)
-                    .expect("erased closure should remain callable");
-                assert_eq!(clauses.len(), 1);
-                assert_eq!(clauses[0].args.len(), 2);
-                assert!(clauses[0].closure.is_none());
-
-                // Compared over ONE declared surface, the way a key is: a raw
-                // literal's own arrow is written in the minting lambda's
-                // surface vars, which the key addresses away before erasing.
-                let int = t.int();
-                let surface = t.arrow(&[int, int], int);
-                let left = t.closure_lit(ClosureTarget(3), vec![int], 2);
-                let left = t.intersect(left, surface);
-                let left = t.erase_closure_identity(&left);
-                let right = t.closure_lit(ClosureTarget(4), vec![int], 2);
-                let right = t.intersect(right, surface);
-                let right = t.erase_closure_identity(&right);
-                assert_eq!(
-                    left, right,
-                    "two lambdas closed over the same type are one key: the brand is freight"
-                );
-
-                let float = t.float();
-                let other = t.closure_lit(ClosureTarget(3), vec![float], 2);
-                let other = t.intersect(other, surface);
-                let other = t.erase_closure_identity(&other);
-                assert_ne!(
-                    other, left,
-                    "one lambda closed over two types is two keys: the captures are meaning"
-                );
-
-                let bare = t.closure_lit(ClosureTarget(3), Vec::new(), 2);
-                let bare = t.intersect(bare, surface);
-                let erased_bare = t.erase_closure_identity(&bare);
-                assert_eq!(
-                    erased_bare, surface,
-                    "a capture-free literal has nothing left to say once its brand is gone, so \
-                     it erases to the bare arrow"
-                );
-            }
-
-            #[test]
-            fn callable_value_clauses_apply_surface_to_closure_vars() {
+            fn callable_value_clauses_keep_literal_denotations_unspecialized() {
                 let mut t = $ctor;
                 let closure = t.fn_ref_lit(ClosureTarget(3), 1);
                 let int = t.int();
@@ -2210,19 +2917,14 @@ macro_rules! closure_helper_conformance_tests {
                 assert_eq!(clauses.len(), 1);
                 let clause = &clauses[0];
                 assert!(clause.closure.is_some(), "value clauses should preserve closure identity");
-                assert!(t.is_integer(&clause.args[0]), "the surface should specialize the closure arg");
-                assert!(t.is_nil(&clause.ret), "the surface should specialize the closure return");
+                assert!(
+                    t.has_vars(&clause.args[0]) && t.has_vars(&clause.ret),
+                    "the literal owns one generic callable denotation; exact observations live in ActivationInput"
+                );
             }
 
-            /// Construction and read are ONE specialization.
-            ///
-            /// A literal and the surface it is viewed at meet in two places: a
-            /// `Types::intersect` folds the surface into the literal's clause,
-            /// and `callable_value_clauses` views a literal through a surface
-            /// clause standing beside it in a union. Both ask the same question
-            /// -- what does this callable's own arrow look like once the
-            /// surface's witnesses are substituted through it -- so they report
-            /// one shape, and a second implementation of it could drift.
+            /// A literal's construction and reads retain one denotation even
+            /// when a caller presents an exact arrow surface beside it.
             #[test]
             fn meeting_a_surface_and_reading_through_one_report_one_shape() {
                 let mut t = $ctor;
@@ -2243,9 +2945,9 @@ macro_rules! closure_helper_conformance_tests {
                 assert_eq!(
                     (met[0].args.clone(), met[0].ret),
                     (read[0].args.clone(), read[0].ret),
-                    "the meet and the read specialize the literal the same way",
+                    "the meet and the read retain the literal's one denotation",
                 );
-                assert!(t.is_integer(&read[0].args[0]) && t.is_nil(&read[0].ret));
+                assert!(t.has_vars(&read[0].args[0]) && t.has_vars(&read[0].ret));
             }
 
             #[test]
@@ -2270,10 +2972,10 @@ macro_rules! closure_helper_conformance_tests {
                     "same-target fn-ref widen should preserve callable identity instead of erasing to an opaque surface"
                 );
                 assert!(
-                    t.is_integer(&clause.args[0]),
-                    "same-target fn-ref widen should widen literal arg observations through the preserved callable clause"
+                    t.has_vars(&clause.args[0]),
+                    "same-target fn-ref widening keeps the one literal denotation; observations do not enter Ty"
                 );
-                assert!(t.is_nil(&clause.ret));
+                assert!(t.has_vars(&clause.ret));
             }
 
             #[test]
@@ -2613,7 +3315,7 @@ mod tuple_dnf_hygiene {
         // involving {str,str} or {float,float} has an empty coordinate.
         let d = t.descr(&meet);
         assert_eq!(
-            d.tuples.len(),
+            d.cases[0].structure.tuples.len(),
             2,
             "expected exactly the two live clauses {{int,any}} and {{any,int}}, got {}",
             t.display(&meet)
@@ -2631,7 +3333,7 @@ mod tuple_dnf_hygiene {
         let one = t.tuple(&[int]);
         let two = t.tuple(&[int, int]);
         let meet = t.intersect(one, two);
-        assert!(t.descr(&meet).tuples.is_empty(), "∅ must persist no tuple clause");
+        assert!(t.descr(&meet).cases.is_empty(), "∅ must persist no tuple clause");
         assert!(t.is_empty(&meet));
 
         // A mixed-arity union intersect keeps exactly the matching arity.
@@ -2639,7 +3341,7 @@ mod tuple_dnf_hygiene {
         let a = t.union(one, two);
         let b = t.union(two, three);
         let meet = t.intersect(a, b);
-        assert_eq!(t.descr(&meet).tuples.len(), 1);
+        assert_eq!(t.descr(&meet).cases[0].structure.tuples.len(), 1);
         assert!(t.is_equivalent(&meet, &two));
     }
 
@@ -2653,7 +3355,7 @@ mod tuple_dnf_hygiene {
         let a = t.tuple(&[int, int]);
         let b = t.tuple(&[str_t, int]);
         let meet = t.intersect(a, b);
-        assert!(t.descr(&meet).tuples.is_empty(), "∅ must persist no tuple clause");
+        assert!(t.descr(&meet).cases.is_empty(), "∅ must persist no tuple clause");
         assert!(t.is_empty(&meet));
     }
 
@@ -2670,12 +3372,16 @@ mod tuple_dnf_hygiene {
         let wide = t.tuple(&[wide_elem, any]);
 
         let joined = t.union(narrow, wide);
-        assert_eq!(t.descr(&joined).tuples.len(), 1, "narrow ⊆ wide ⇒ narrow ∨ wide = wide");
+        assert_eq!(
+            t.descr(&joined).cases[0].structure.tuples.len(),
+            1,
+            "narrow ⊆ wide ⇒ narrow ∨ wide = wide"
+        );
         assert!(t.is_equivalent(&joined, &wide));
 
         // Symmetric order: the wider clause survives regardless of position.
         let joined = t.union(wide, narrow);
-        assert_eq!(t.descr(&joined).tuples.len(), 1);
+        assert_eq!(t.descr(&joined).cases[0].structure.tuples.len(), 1);
         assert!(t.is_equivalent(&joined, &wide));
     }
 }
@@ -2715,35 +3421,35 @@ mod empty_clause_hygiene {
                 covered: t.tuple(&[int]),
                 survivor: t.tuple(&[float]),
                 cover: t.tuple(&[wide]),
-                clause_count: |d| d.tuples.len(),
+                clause_count: |d| d.cases.iter().map(|case| case.structure.tuples.len()).sum(),
             },
             AxisCase {
                 axis: "lists",
                 covered: t.non_empty_list(int),
                 survivor: t.non_empty_list(float),
                 cover: t.non_empty_list(wide),
-                clause_count: |d| d.lists.len(),
+                clause_count: |d| d.cases.iter().map(|case| case.structure.lists.len()).sum(),
             },
             AxisCase {
                 axis: "resources",
                 covered: t.resource(int),
                 survivor: t.resource(float),
                 cover: t.resource(wide),
-                clause_count: |d| d.resources.len(),
+                clause_count: |d| d.cases.iter().map(|case| case.structure.resources.len()).sum(),
             },
             AxisCase {
                 axis: "funcs",
                 covered: t.closure_lit(ClosureTarget(66), vec![int], 1),
                 survivor: t.closure_lit(ClosureTarget(68), vec![float], 1),
                 cover: t.closure_lit(ClosureTarget(66), vec![wide], 1),
-                clause_count: |d| d.funcs.len(),
+                clause_count: |d| d.cases.iter().map(|case| case.structure.funcs.len()).sum(),
             },
             AxisCase {
                 axis: "maps",
                 covered: t.map(&[(key.clone(), int)]),
                 survivor: t.map(&[(key.clone(), float)]),
                 cover: t.map(&[(key, wide)]),
-                clause_count: |d| d.maps.len(),
+                clause_count: |d| d.cases.iter().map(|case| case.structure.maps.len()).sum(),
             },
         ];
 
@@ -3116,78 +3822,6 @@ mod smoke {
     impl_smoke_suite!(types, Types::new());
 }
 
-/// fz-kdt.80 — the interned DNF carries no exact-duplicate clause on any axis.
-///
-/// The activation key is supposed to be a join homomorphism: keying the union
-/// of two evidence rows must give the same key as keying either row, whenever
-/// the key language cannot tell them apart. `erase_closure_identity` is the
-/// step that makes two branded closures indistinguishable — and the union it
-/// erases carries one funcs clause per brand. Erasing the brands in place
-/// leaves `A ∨ A`, which interns as a DIFFERENT `Ty` than `A` unless the
-/// persistence boundary collapses it.
-mod erased_closure_dnf_hygiene {
-    use super::*;
-    use crate::compiler2::identity::{ActivationKey, FunctionId, RootId};
-
-    /// Two closures over one declared surface, differing only in brand.
-    fn branded_pair(t: &mut Types) -> (Ty, Ty) {
-        let int = t.int();
-        let nil = t.nil();
-        let surface = t.arrow(&[int], nil);
-        let left = t.closure_lit(ClosureTarget(3), vec![], 1);
-        let right = t.closure_lit(ClosureTarget(4), vec![], 1);
-        let left = t.intersect(left, surface);
-        let right = t.intersect(right, surface);
-        (left, right)
-    }
-
-    #[test]
-    fn erasing_two_brands_of_one_surface_leaves_one_funcs_clause() {
-        let mut t = Types::new();
-        let (left, right) = branded_pair(&mut t);
-        let joined = t.union(left, right);
-        assert_eq!(
-            t.descr(&joined).funcs.len(),
-            2,
-            "the brands are distinguishable before erasure, so the union keeps both clauses"
-        );
-
-        let erased = t.erase_closure_identity(&joined);
-        assert_eq!(
-            t.descr(&erased).funcs.len(),
-            1,
-            "A ∨ A = A: erasing the only distinguishing field must not leave two copies, got {}",
-            t.display(&erased)
-        );
-        assert_eq!(
-            erased,
-            t.erase_closure_identity(&left),
-            "and the collapsed union must be the very same interned id as either erased arm"
-        );
-    }
-
-    #[test]
-    fn the_activation_key_of_an_erased_union_is_the_key_of_each_arm() {
-        let mut t = Types::new();
-        let (left, right) = branded_pair(&mut t);
-        let joined = t.union(left, right);
-
-        let key_of = |t: &mut Types, ty: Ty| {
-            let erased = t.erase_closure_identity(&ty);
-            ActivationKey::from_inputs(RootId::for_test(0), FunctionId::from_coordinate(0), &[erased], t)
-        };
-        let left_key = key_of(&mut t, left);
-        let right_key = key_of(&mut t, right);
-        let joined_key = key_of(&mut t, joined);
-
-        assert_eq!(left_key, right_key, "same surface, erased brand: one key");
-        assert_eq!(
-            joined_key, left_key,
-            "the key must be a join homomorphism where the key language cannot see the difference"
-        );
-    }
-}
-
 /// fz-kdt.105 — a union's interned identity is its DENOTATION, not the order
 /// its clauses arrived in.
 ///
@@ -3288,7 +3922,11 @@ mod tuple_carving_fusion {
             t.display(&carved),
             t.display(&fused)
         );
-        assert_eq!(t.descr(&carved).tuples.len(), 1, "and it is one rectangle");
+        assert_eq!(
+            t.descr(&carved).cases[0].structure.tuples.len(),
+            1,
+            "and it is one rectangle"
+        );
     }
 
     /// Two carvings that differ in BOTH coordinates meet only by widening a
@@ -3330,6 +3968,76 @@ mod tuple_carving_fusion {
 mod clause_absorption {
     use super::*;
 
+    const ORACLE_A: u8 = 0b01;
+    const ORACLE_B: u8 = 0b10;
+    const ORACLE_OTHER: u8 = 0b100;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum MapOracleTag {
+        Plain,
+        Foo,
+        Bar,
+    }
+
+    #[derive(Clone, Copy)]
+    struct MapOracleShape {
+        tag: MapOracleTag,
+        k: Option<u8>,
+        l: Option<u8>,
+        extra: Option<u8>,
+    }
+
+    fn map_oracle_accepts(shape: MapOracleShape, tag: MapOracleTag, fields: [Option<u8>; 3]) -> bool {
+        shape.tag == tag
+            && [shape.k, shape.l, shape.extra]
+                .into_iter()
+                .zip(fields)
+                .all(|(required, present)| {
+                    required.is_none_or(|allowed| present.is_some_and(|value| value & allowed != 0))
+                })
+    }
+
+    /// A deliberately finite, concrete map model. It knows nothing about the
+    /// descriptor calculator: a shape requires its listed keys, leaves every
+    /// other key optional, and compares tags before fields.
+    fn finite_map_union_covers(candidate: MapOracleShape, alternatives: &[MapOracleShape]) -> bool {
+        let values = [None, Some(ORACLE_A), Some(ORACLE_B), Some(ORACLE_OTHER)];
+        for tag in [MapOracleTag::Plain, MapOracleTag::Foo, MapOracleTag::Bar] {
+            for k in values {
+                for l in values {
+                    for extra in values {
+                        let fields = [k, l, extra];
+                        if map_oracle_accepts(candidate, tag, fields)
+                            && !alternatives.iter().any(|shape| map_oracle_accepts(*shape, tag, fields))
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn map_oracle_ty(t: &mut Types, shape: MapOracleShape, a: Ty, b: Ty, other: Ty) -> Ty {
+        let mut fields = Vec::new();
+        for (key, allowed) in [("k", shape.k), ("l", shape.l), ("extra", shape.extra)] {
+            let Some(allowed) = allowed else { continue };
+            let mut value = t.none();
+            for (class, atom) in [(ORACLE_A, a), (ORACLE_B, b), (ORACLE_OTHER, other)] {
+                if allowed & class != 0 {
+                    value = t.union(value, atom);
+                }
+            }
+            fields.push((MapKey::Atom(key.to_string()), value));
+        }
+        match shape.tag {
+            MapOracleTag::Plain => t.map(&fields),
+            MapOracleTag::Foo => t.struct_map(ModuleId::for_test(1), module_name("Pkg.Foo"), &fields),
+            MapOracleTag::Bar => t.struct_map(ModuleId::for_test(2), module_name("Pkg.Bar"), &fields),
+        }
+    }
+
     /// A clause no SINGLE sibling contains, but the two of them together do.
     /// This is what union coverage buys over pairwise containment, and it is
     /// the case a per-axis subsumption rule cannot see.
@@ -3351,7 +4059,7 @@ mod clause_absorption {
         let siblings = t.union(left, right);
         let joined = t.union(siblings, covered);
         assert_eq!(
-            t.descr(&joined).tuples.len(),
+            t.descr(&joined).cases[0].structure.tuples.len(),
             1,
             "the two siblings fuse and swallow the clause: {}",
             t.display(&joined)
@@ -3383,9 +4091,9 @@ mod clause_absorption {
         };
         assert_eq!(every_list, t.list(any), "one set of lists, one id");
         assert!(
-            t.descr(&every_list).lists.iter().all(Conj::is_top),
+            t.descr(&every_list).cases[0].structure.lists.iter().all(Conj::is_top),
             "the top is the contentless clause: {:?}",
-            t.descr(&every_list).lists
+            t.descr(&every_list).cases[0].structure.lists
         );
         assert_eq!(t.display(&every_list), "[any]", "and a type a user could write");
         assert_eq!(
@@ -3395,7 +4103,13 @@ mod clause_absorption {
         );
 
         let every_resource = t.resource(any);
-        assert!(t.descr(&every_resource).resources.iter().all(Conj::is_top));
+        assert!(
+            t.descr(&every_resource).cases[0]
+                .structure
+                .resources
+                .iter()
+                .all(Conj::is_top)
+        );
         assert_eq!(t.display(&every_resource), "resource(any)");
         assert_eq!(t.resource_payload_type(&every_resource), Some(any));
 
@@ -3403,11 +4117,17 @@ mod clause_absorption {
         // a positive tuple sig fixes an arity and a positive map sig fixes a
         // tag, and both are unbounded.
         let pair = t.tuple(&[any, any]);
-        assert_eq!(t.descr(&pair).tuples.len(), 1);
-        assert!(!t.descr(&pair).tuples[0].pos.is_empty(), "a tuple axis keeps its sig");
+        assert_eq!(t.descr(&pair).cases[0].structure.tuples.len(), 1);
+        assert!(
+            !t.descr(&pair).cases[0].structure.tuples[0].pos.is_empty(),
+            "a tuple axis keeps its sig"
+        );
         let key = MapKey::Atom("k".to_string());
         let open = t.map(&[(key, any)]);
-        assert!(!t.descr(&open).maps[0].pos.is_empty(), "a map axis keeps its sig");
+        assert!(
+            !t.descr(&open).cases[0].structure.maps[0].pos.is_empty(),
+            "a map axis keeps its sig"
+        );
     }
 
     /// One spelling means `any` stays `any`: unioning it with a type it already
@@ -3453,23 +4173,21 @@ mod clause_absorption {
             let non_empty = t.non_empty_list(any);
             t.union(empty, non_empty)
         };
-        let by_clause = t.intern(Descr {
-            lists: vec![Conj::top()],
-            ..Descr::unbranded()
-        });
+        let mut by_clause_d = Descr::unbranded();
+        by_clause_d.cases[0].structure.lists = vec![Conj::top()];
+        let by_clause = t.intern(by_clause_d);
         assert_eq!(by_sig, by_shapes);
         assert_eq!(by_sig, by_clause, "the widest sig IS the contentless clause");
 
         let resource_by_sig = t.resource(any);
-        let resource_by_clause = t.intern(Descr {
-            resources: vec![Conj::top()],
-            ..Descr::unbranded()
-        });
+        let mut resource_by_clause_d = Descr::unbranded();
+        resource_by_clause_d.cases[0].structure.resources = vec![Conj::top()];
+        let resource_by_clause = t.intern(resource_by_clause_d);
         assert_eq!(resource_by_sig, resource_by_clause);
     }
 
-    /// `any` has more than one descriptor, because the callable axis is left
-    /// unabsorbed at intern: `f ∨ ¬f` is every callable in two clauses, so a
+    /// `any` has more than one descriptor when a callable axis retains a
+    /// literal capture layout: `f ∨ ¬f` is every callable in two clauses, so a
     /// descriptor carrying it denotes everything without LOOKING full.
     ///
     /// A structural reading of "is this element everything" would then answer
@@ -3483,16 +4201,15 @@ mod clause_absorption {
     fn an_element_that_is_any_written_another_way_still_reaches_the_axis_top() {
         let mut t = Types::new();
         let any = t.any();
-        let int = t.int();
-        let arrow = t.arrow(&[int], int);
+        let literal = t.fn_ref_lit(ClosureTarget(3), 1);
         let every_value = {
-            let rest = t.difference(any, arrow);
-            t.union(rest, arrow)
+            let rest = t.difference(any, literal);
+            t.union(rest, literal)
         };
         assert_ne!(
-            t.descr(&every_value).funcs.len(),
+            t.descr(&every_value).cases[0].structure.funcs.len(),
             1,
-            "the reproducer needs the unabsorbed callable axis; got {}",
+            "the reproducer needs a retained literal callable axis; got {}",
             t.display(&every_value)
         );
         assert!(t.is_equivalent(&every_value, &any), "but it must still BE any");
@@ -3527,10 +4244,9 @@ mod clause_absorption {
         let any = t.any();
         let int = t.int();
 
-        let every_tuple = t.intern(Descr {
-            tuples: vec![Conj::top()],
-            ..Descr::unbranded()
-        });
+        let mut every_tuple_d = Descr::unbranded();
+        every_tuple_d.cases[0].structure.tuples = vec![Conj::top()];
+        let every_tuple = t.intern(every_tuple_d);
         let pair = t.tuple(&[any, any]);
         let carved = t.difference(every_tuple, pair);
         let joined = t.union(carved, pair);
@@ -3541,10 +4257,9 @@ mod clause_absorption {
             t.display(&joined)
         );
 
-        let every_map = t.intern(Descr {
-            maps: vec![Conj::top()],
-            ..Descr::unbranded()
-        });
+        let mut every_map_d = Descr::unbranded();
+        every_map_d.cases[0].structure.maps = vec![Conj::top()];
+        let every_map = t.intern(every_map_d);
         let open = t.map(&[(MapKey::Atom("k".to_string()), any)]);
         let carved = t.difference(every_map, open);
         let joined = t.union(carved, open);
@@ -3563,18 +4278,8 @@ mod clause_absorption {
         assert_eq!(joined, every_resource, "got {}", t.display(&joined));
     }
 
-    /// Absorption rewrites a descriptor to a semantically equal one, and
-    /// "equal" means equal under the relation the calculator answers with. On
-    /// the resource axis that relation is narrower than reading a resource as
-    /// a set of payloads: the kernel decides a resource clause carrying
-    /// negatives by asking whether a SINGLE negative swallows the payload
-    /// (`emptiness::resource_clause_empty`), never whether their union does.
-    /// So `resource(:a|:b)` is NOT inside
-    /// `resource(:a|:c) ∨ resource(:b|:c)`, and an axis rule that folded the
-    /// payloads would drop it and leave a union that does not contain its own
-    /// operand.
     #[test]
-    fn a_resource_union_keeps_a_clause_no_single_sibling_contains() {
+    fn resource_payload_union_is_collectively_covered_and_absorbed() {
         let mut t = Types::new();
         let a = t.atom_lit("a");
         let b = t.atom_lit("b");
@@ -3582,19 +4287,33 @@ mod clause_absorption {
         let (ab, ac, bc) = (t.union(a, b), t.union(a, c), t.union(b, c));
         let (rab, rac, rbc) = (t.resource(ab), t.resource(ac), t.resource(bc));
 
+        let ra = t.resource(a);
+        let rb = t.resource(b);
+        let disjoint_cover = t.union(ra, rb);
+        assert!(t.is_subtype(&rab, &disjoint_cover));
+        let disjoint_remainder = t.difference(rab, disjoint_cover);
+        assert!(
+            t.is_empty(&disjoint_remainder),
+            "got {}",
+            t.display(&disjoint_remainder)
+        );
+
         let siblings = t.union(rac, rbc);
         assert!(
-            !t.is_subtype(&rab, &siblings),
-            "the calculator's own relation: {} is not inside {}",
+            t.is_subtype(&rab, &siblings),
+            "the two negative payload alternatives cover {} inside {}",
             t.display(&rab),
             t.display(&siblings)
         );
+        let remainder = t.difference(rab, siblings);
+        assert!(t.is_empty(&remainder), "got {}", t.display(&remainder));
 
         let joined = t.union(siblings, rab);
-        assert_eq!(t.descr(&joined).resources.len(), 3, "got {}", t.display(&joined));
-        assert!(
-            t.is_subtype(&rab, &joined),
-            "a union must contain the operand it was built from"
+        assert_eq!(
+            joined,
+            siblings,
+            "the covered resource clause is absorbed: {}",
+            t.display(&joined)
         );
     }
 
@@ -3614,12 +4333,8 @@ mod clause_absorption {
         assert_eq!(joined, rabc, "got {}", t.display(&joined));
     }
 
-    /// And the axis top follows the same relation. `resource(int)` and
-    /// `resource(not int)` partition the payloads between them, but under the
-    /// kernel's containment their union is not every resource, so the axis
-    /// does not saturate and keeps both clauses.
     #[test]
-    fn two_resource_clauses_that_partition_the_payload_are_not_every_resource() {
+    fn resource_payload_partition_reaches_resource_top() {
         let mut t = Types::new();
         let any = t.any();
         let int = t.int();
@@ -3629,12 +4344,207 @@ mod clause_absorption {
             let rhs = t.resource(not_int);
             t.union(lhs, rhs)
         };
-        assert_eq!(t.descr(&split).resources.len(), 2, "got {}", t.display(&split));
-
         let every_resource = t.resource(any);
+        assert_eq!(split, every_resource, "got {}", t.display(&split));
+    }
+
+    #[test]
+    fn resource_collective_coverage_handles_a_productive_recursive_payload() {
+        let mut t = Types::new();
+        let a = t.atom_lit("a");
+        let int = t.int();
+        let recursive = t.intern_regular_component(1, |nodes| {
+            let mut body = DescrOf::atom_lit("leaf");
+            body.cases[0].structure.tuples.push(Conj::pos_of(TupleSigOf {
+                elems: vec![ComponentRef::Published(int), nodes[0]],
+            }));
+            vec![body]
+        })[0];
+        let payload = t.union(a, recursive);
+        let resource_payload = t.resource(payload);
+        let resource_a = t.resource(a);
+        let resource_recursive = t.resource(recursive);
+        let cover = t.union(resource_a, resource_recursive);
+
+        assert!(t.is_subtype(&resource_payload, &cover));
+        let remainder = t.difference(resource_payload, cover);
+        assert!(t.is_empty(&remainder), "got {}", t.display(&remainder));
+    }
+
+    #[test]
+    fn open_map_field_union_is_collectively_covered_without_erasing_correlations() {
+        let mut t = Types::new();
+        let a = t.atom_lit("a");
+        let b = t.atom_lit("b");
+        let ab = t.union(a, b);
+        let k = MapKey::Atom("k".to_string());
+        let l = MapKey::Atom("l".to_string());
+
+        let one_key = t.map(&[(k.clone(), ab)]);
+        let key_a = t.map(&[(k.clone(), a)]);
+        let key_b = t.map(&[(k.clone(), b)]);
+        let key_cover = t.union(key_a, key_b);
+        assert!(t.is_subtype(&one_key, &key_cover));
+        let remainder = t.difference(one_key, key_cover);
+        assert!(t.is_empty(&remainder), "got {}", t.display(&remainder));
+
+        let k_ab = t.map(&[(k.clone(), ab)]);
+        let l_ab = t.map(&[(l.clone(), ab)]);
+        let rectangle = t.intersect(k_ab, l_ab);
+        let diagonal_aa = t.map(&[(k.clone(), a), (l.clone(), a)]);
+        let diagonal_bb = t.map(&[(k, b), (l, b)]);
+        let diagonal = t.union(diagonal_aa, diagonal_bb);
+        assert!(t.is_subtype(&diagonal, &rectangle));
         assert!(
-            !t.is_subtype(&every_resource, &split),
-            "the calculator says the split is not every resource, so the axis must not say it is"
+            !t.is_subtype(&rectangle, &diagonal),
+            "the diagonal must not cover the full rectangular product"
+        );
+        let remainder = t.difference(rectangle, diagonal);
+        assert!(!t.is_empty(&remainder), "the off-diagonal witness was lost");
+    }
+
+    #[test]
+    fn finite_open_map_oracle_agrees_on_collective_and_absent_key_coverage() {
+        let plain_k_ab = MapOracleShape {
+            tag: MapOracleTag::Plain,
+            k: Some(ORACLE_A | ORACLE_B),
+            l: None,
+            extra: None,
+        };
+        let plain_k_a = MapOracleShape {
+            tag: MapOracleTag::Plain,
+            k: Some(ORACLE_A),
+            l: None,
+            extra: None,
+        };
+        let plain_k_b = MapOracleShape {
+            k: Some(ORACLE_B),
+            ..plain_k_a
+        };
+        let plain_k_ab_l_ab = MapOracleShape {
+            l: Some(ORACLE_A | ORACLE_B),
+            ..plain_k_ab
+        };
+        let plain_k_a_l_ab = MapOracleShape {
+            k: Some(ORACLE_A),
+            ..plain_k_ab_l_ab
+        };
+        let diagonal_a = MapOracleShape {
+            k: Some(ORACLE_A),
+            l: Some(ORACLE_A),
+            ..plain_k_ab
+        };
+        let diagonal_b = MapOracleShape {
+            k: Some(ORACLE_B),
+            l: Some(ORACLE_B),
+            ..plain_k_ab
+        };
+        let requires_extra_a = MapOracleShape {
+            k: Some(ORACLE_A),
+            extra: Some(ORACLE_A | ORACLE_B),
+            ..plain_k_ab
+        };
+        let requires_extra_b = MapOracleShape {
+            k: Some(ORACLE_B),
+            ..requires_extra_a
+        };
+        let zero_required = MapOracleShape { k: None, ..plain_k_ab };
+        let foo_k_ab = MapOracleShape {
+            tag: MapOracleTag::Foo,
+            ..plain_k_ab
+        };
+
+        let split = [plain_k_a, plain_k_b];
+        let diagonal = [diagonal_a, diagonal_b];
+        let requires_extra = [requires_extra_a, requires_extra_b];
+        let missing_l = [plain_k_a];
+        let zero = [zero_required];
+        let cases: &[(MapOracleShape, &[MapOracleShape])] = &[
+            (plain_k_ab, &split),
+            (plain_k_ab_l_ab, &diagonal),
+            (plain_k_ab, &requires_extra),
+            (plain_k_a_l_ab, &missing_l),
+            (plain_k_ab, &zero),
+            (foo_k_ab, &split),
+        ];
+
+        let mut t = Types::new();
+        let a = t.atom_lit("a");
+        let b = t.atom_lit("b");
+        let other = t.atom_lit("other");
+        for (candidate, alternatives) in cases {
+            let expected = finite_map_union_covers(*candidate, alternatives);
+            let candidate_ty = map_oracle_ty(&mut t, *candidate, a, b, other);
+            let mut alternatives = alternatives.iter().copied();
+            let first = alternatives.next().expect("the oracle table has a cover");
+            let mut cover_ty = map_oracle_ty(&mut t, first, a, b, other);
+            for alternative in alternatives {
+                let alternative_ty = map_oracle_ty(&mut t, alternative, a, b, other);
+                cover_ty = t.union(cover_ty, alternative_ty);
+            }
+            assert_eq!(
+                t.is_subtype(&candidate_ty, &cover_ty),
+                expected,
+                "the public map relation must match the finite witness oracle"
+            );
+        }
+    }
+
+    #[test]
+    fn open_map_collective_coverage_respects_required_keys_and_tags() {
+        let mut t = Types::new();
+        let a = t.atom_lit("a");
+        let b = t.atom_lit("b");
+        let ab = t.union(a, b);
+        let any = t.any();
+        let none = t.none();
+        let k = MapKey::Atom("k".to_string());
+        let extra = MapKey::Atom("extra".to_string());
+
+        let open = t.map(&[(k.clone(), ab)]);
+        let only_with_extra_a = t.map(&[(k.clone(), a), (extra.clone(), any)]);
+        let only_with_extra_b = t.map(&[(k.clone(), b), (extra, any)]);
+        let requires_extra_key = t.union(only_with_extra_a, only_with_extra_b);
+        assert!(
+            !t.is_subtype(&open, &requires_extra_key),
+            "an open map witness need not carry a key required by either negative"
+        );
+
+        let foo_module = ModuleId::for_test(1);
+        let foo_name = module_name("Pkg.Foo");
+        let foo_ab = t.struct_map(foo_module, foo_name.clone(), &[(k.clone(), ab)]);
+        let foo_a = t.struct_map(foo_module, foo_name.clone(), &[(k.clone(), a)]);
+        let foo_b = t.struct_map(foo_module, foo_name, &[(k.clone(), b)]);
+        let foo_cover = t.union(foo_a, foo_b);
+        assert!(t.is_subtype(&foo_ab, &foo_cover));
+
+        let plain_a = t.map(&[(k.clone(), a)]);
+        let plain_b = t.map(&[(k.clone(), b)]);
+        let plain_cover = t.union(plain_a, plain_b);
+        assert!(
+            !t.is_subtype(&foo_ab, &plain_cover),
+            "a plain map cannot cover a tagged struct"
+        );
+
+        let bar_module = ModuleId::for_test(2);
+        let bar_name = module_name("Pkg.Bar");
+        let bar_a = t.struct_map(bar_module, bar_name.clone(), &[(k.clone(), a)]);
+        let bar_b = t.struct_map(bar_module, bar_name, &[(k.clone(), b)]);
+        let bar_cover = t.union(bar_a, bar_b);
+        assert!(
+            !t.is_subtype(&foo_ab, &bar_cover),
+            "a different struct tag cannot contribute coverage"
+        );
+
+        assert_eq!(
+            t.map(&[(k, none)]),
+            none,
+            "an empty required field empties its open map"
+        );
+        let plain_map_top = t.map_top();
+        assert!(
+            !t.is_subtype(&foo_ab, &plain_map_top),
+            "plain-map top excludes every tagged struct family"
         );
     }
 }
@@ -3650,6 +4560,77 @@ mod clause_absorption {
 mod clause_factor_order {
     use super::*;
 
+    #[test]
+    fn distinct_arrow_domains_keep_their_overload_correlation() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let any = t.any();
+        let f = t.arrow(&[int], int);
+        let g = t.arrow(&[atom], atom);
+
+        let direct = t.intersect(f, g);
+        let not_g = t.difference(any, g);
+        let demorgan = t.difference(f, not_g);
+
+        assert!(
+            t.is_equivalent(&direct, &demorgan),
+            "the direct arrow meet must preserve the same overload as difference"
+        );
+        assert!(t.is_subtype(&direct, &f));
+        assert!(t.is_subtype(&direct, &g));
+    }
+
+    #[test]
+    fn equal_arrow_domains_merge_only_their_return_constraint() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let f = t.arrow(&[int], int);
+        let g = t.arrow(&[int], atom);
+
+        let direct = t.intersect(f, g);
+
+        assert_eq!(t.callable_clauses(&direct).map(|clauses| clauses.len()), Some(1));
+        assert_eq!(t.arrow_params(&direct), vec![int]);
+        assert_eq!(t.arrow_result(&direct), Some(t.none()));
+    }
+
+    #[test]
+    fn overlapping_arrow_domains_keep_both_constraints() {
+        let mut t = Types::new();
+        let any = t.any();
+        let int = t.int();
+        let atom = t.atom();
+        let f = t.arrow(&[any], int);
+        let g = t.arrow(&[int], atom);
+
+        let direct = t.intersect(f, g);
+        let not_g = t.difference(any, g);
+        let demorgan = t.difference(f, not_g);
+
+        assert!(t.is_equivalent(&direct, &demorgan));
+        assert_eq!(t.callable_clauses(&direct).map(|clauses| clauses.len()), Some(2));
+    }
+
+    #[test]
+    fn multi_argument_domains_do_not_expand_to_their_pointwise_hull() {
+        let mut t = Types::new();
+        let int = t.int();
+        let binary = t.str_t();
+        let atom = t.atom();
+        let any = t.any();
+        let f = t.arrow(&[int, binary], int);
+        let g = t.arrow(&[binary, int], atom);
+
+        let direct = t.intersect(f, g);
+        let not_g = t.difference(any, g);
+        let demorgan = t.difference(f, not_g);
+
+        assert!(t.is_equivalent(&direct, &demorgan));
+        assert_eq!(t.callable_clauses(&direct).map(|clauses| clauses.len()), Some(2));
+    }
+
     /// Two arrows of different arity cannot merge into one signature, so their
     /// meet keeps both as factors of one clause — an overload, and inhabited.
     #[test]
@@ -3662,7 +4643,7 @@ mod clause_factor_order {
         let forward = t.intersect(unary, binary);
         let backward = t.intersect(binary, unary);
 
-        let clauses = &t.descr(&forward).funcs;
+        let clauses = &t.descr(&forward).cases[0].structure.funcs;
         assert_eq!(clauses.len(), 1, "one clause");
         assert_eq!(clauses[0].pos.len(), 2, "holding both arrows as factors");
         assert_eq!(
@@ -3869,56 +4850,166 @@ mod brand_lattice_law {
         assert_eq!(result, int, "a := int; got {}", t.display(&result));
     }
 
-    /// KNOWN-WRONG PIN — the one place this encoding is not exact, owned by
-    /// fz-kdt.203.
-    ///
-    /// A descriptor holds ONE (structure, brand-slot) rectangle and `union` is
-    /// the pointwise hull of both factors. That is exact whenever the operands
-    /// agree on one factor (`Meters | int = int`, `Meters | Feet`), but ANY
-    /// union whose operands disagree on BOTH factors releases the slot to top
-    /// and loses the brand entirely. It takes only ONE brand to reach:
-    /// `utf8 | nil` is the shape every optional `@spec` is written in, and it
-    /// admits a bare binary. HEAD admits the same program, so this is strictly
-    /// smaller than the inverted order it replaces, and it is a missed
-    /// diagnostic rather than a miscompile (brands are erased before the
-    /// backend). The cure is a descriptor holding a union of rectangles — the
-    /// slot pushed down onto the per-axis DNF clauses — which is a data-model
-    /// change, not a patch: see fz-kdt.203, where these two `is_subtype`
-    /// answers flipping to `false` is the red-first signal.
+    /// A union preserves each arm's structural/brand correlation. In
+    /// particular, an optional utf8 binary is not an optional arbitrary
+    /// binary: the `nil` arm must not release the utf8 restriction from the
+    /// binary arm.
     #[test]
-    fn a_union_that_disagrees_on_both_factors_releases_the_brand_slot() {
+    fn union_preserves_structural_brand_correlation() {
         let mut t = Types::new();
         let int = t.int();
         let bin = t.str_t();
         let meters = t.mint_brand(int, "Meters");
         let utf8 = t.mint_brand(bin, "utf8");
 
-        // ONE brand is enough: `@spec take(utf8 | nil)` accepts a bare binary.
         let nil = t.nil();
         let optional = t.union(utf8, nil);
-        assert_eq!(t.display(&optional), "binary | :nil", "the slot is released to top");
         assert!(
-            t.is_subtype(&bin, &optional),
-            "KNOWN-WRONG (fz-kdt.203): a bare binary is inside {}",
-            t.display(&optional)
+            !t.is_subtype(&bin, &optional),
+            "unbranded binary must not enter utf8 | nil"
         );
+        assert!(t.is_subtype(&utf8, &optional));
+        assert!(t.is_subtype(&nil, &optional));
+        let remaining = t.difference(bin, optional);
+        assert!(!t.is_empty(&remaining));
 
-        // Two brands widen the same way, pairing each slot with each structure.
         let joined = t.union(meters, utf8);
-        assert_eq!(
-            t.display(&joined),
-            "(Meters | utf8)(int | binary)",
-            "the hull pairs both slots with both structures"
-        );
         assert!(t.is_subtype(&meters, &joined));
         assert!(t.is_subtype(&utf8, &joined));
         assert!(!t.is_subtype(&int, &joined));
         assert!(!t.is_subtype(&bin, &joined));
         let branded_binary = t.mint_brand(bin, "Meters");
-        assert!(
-            t.is_subtype(&branded_binary, &joined),
-            "KNOWN-WRONG (fz-kdt.203): Meters(binary) is admitted by Meters(int) | utf8(binary)"
+        let branded_int = t.mint_brand(int, "utf8");
+        assert!(!t.is_subtype(&branded_binary, &joined));
+        assert!(!t.is_subtype(&branded_int, &joined));
+    }
+
+    #[test]
+    fn brand_partitions_preserve_common_singleton_projections() {
+        let mut t = Types::new();
+        let ok = t.atom_lit("ok");
+        let meters_ok = t.mint_brand(ok, "Meters");
+        let feet_ok = t.mint_brand(ok, "Feet");
+        let same_value = t.union(meters_ok, feet_ok);
+        assert_eq!(t.as_atom_singleton(&meters_ok).as_deref(), Some("ok"));
+        assert_eq!(t.as_atom_singleton(&same_value).as_deref(), Some("ok"));
+
+        let error = t.atom_lit("error");
+        let distinct = t.union(meters_ok, error);
+        assert_eq!(t.as_atom_singleton(&distinct), None);
+    }
+
+    #[test]
+    fn brand_list_projection_ignores_atom_only_cases() {
+        let mut t = Types::new();
+        let int = t.int();
+        let list = t.list(int);
+        let atom = t.atom_lit("ok");
+        let a = t.mint_brand(list, "A");
+        let b = t.mint_brand(atom, "B");
+        let joined = t.union(a, b);
+        assert_eq!(t.list_element_type(&joined), int);
+    }
+
+    #[test]
+    fn brand_atom_literals_union_across_cases() {
+        let mut t = Types::new();
+        let a = t.atom_lit("a");
+        let b = t.atom_lit("b");
+        let a = t.mint_brand(a, "A");
+        let b = t.mint_brand(b, "B");
+        let joined = t.union(a, b);
+        assert_eq!(t.atom_literals(&joined), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn branded_variable_instantiation_preserves_brand() {
+        let mut t = Types::new();
+        let alpha = t.type_var(TypeVarId(77));
+        let branded = t.mint_brand(alpha, "Meters");
+        let int = t.int();
+        let result = t.instantiate(&branded, &Sigma::from([(TypeVarId(77), int)]));
+        assert_eq!(result, t.mint_brand(int, "Meters"));
+    }
+
+    #[test]
+    fn a_key_coordinate_never_invents_a_brand_element_pairing() {
+        // A slot whose value carries correlated brands -- `A` always over
+        // `[int]`, `B` always over `[atom]` -- must never key on a type that
+        // admits `A` over `[atom]`. There are exactly two coordinates a slot
+        // can get, and neither can invent the pairing: a settled position
+        // keys on what arrived, and an unsolved one keys on a bare address
+        // variable that mentions no brand at all.
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let list_int = t.list(int);
+        let list_atom = t.list(atom);
+        let a_int = t.mint_brand(list_int, "A");
+        let b_atom = t.mint_brand(list_atom, "B");
+        let joined = t.union(a_int, b_atom);
+        let a_atom = t.mint_brand(list_atom, "A");
+        let b_int = t.mint_brand(list_int, "B");
+
+        let mut path = vec![AddrStep::Param(0)];
+        let settled = KeyShape::Settled.coordinate(&mut t, joined, &mut path);
+        assert_eq!(settled, joined, "a settled position keys on exactly what arrived");
+        assert!(t.is_subtype(&a_int, &settled));
+        assert!(t.is_subtype(&b_atom, &settled));
+        assert!(!t.is_subtype(&a_atom, &settled));
+        assert!(!t.is_subtype(&b_int, &settled));
+
+        let unsolved = KeyShape::Unknown.coordinate(&mut t, joined, &mut path);
+        assert_eq!(
+            unsolved,
+            t.address_var(&[AddrStep::Param(0)]),
+            "an unsolved position keys on the variable that addresses it"
         );
+        assert!(
+            !t.is_subtype(&a_atom, &unsolved) || !t.is_subtype(&a_int, &unsolved),
+            "an address variable stands for one position, not a family of brandings: {}",
+            t.display(&unsolved)
+        );
+    }
+    #[test]
+    fn refine_widen_different_brand_partitions_keeps_correlated_union() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let list_int = t.list(int);
+        let list_atom = t.list(atom);
+        let red_int = t.mint_brand(list_int, "red");
+        let blue_atom = t.mint_brand(list_atom, "blue");
+
+        let widened = t.refine_widen(&red_int, &blue_atom);
+        assert_eq!(widened, t.union(red_int, blue_atom));
+        let red_atom = t.mint_brand(list_atom, "red");
+        let blue_int = t.mint_brand(list_int, "blue");
+        assert!(!t.is_subtype(&red_atom, &widened));
+        assert!(!t.is_subtype(&blue_int, &widened));
+    }
+
+    #[test]
+    fn regular_equivalent_brand_partitions_share_identity() {
+        let mut t = Types::new();
+        let direct = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
+        let split = t.intern_regular_component(1, |nodes| {
+            let mut body = DescrOf::tuple_of(vec![nodes[0]]);
+            let structure = body.cases.remove(0).structure;
+            body.cases = vec![
+                BrandCase {
+                    brands: FiniteSet::lit("A".to_owned()),
+                    structure: structure.clone(),
+                },
+                BrandCase {
+                    brands: FiniteSet::cofinite(["A".to_owned()]),
+                    structure,
+                },
+            ];
+            vec![body]
+        })[0];
+
+        assert_eq!(split, direct);
     }
 }
 
@@ -4191,11 +5282,9 @@ mod brand_lattice_algebra {
         assert!(t.is_value_disjoint(&bottom, &bottom));
     }
 
-    /// `diff`'s equal-structures case is SYNTACTIC. It is exact for every
-    /// shape `mint_brand` builds — the constructor clones its inner — and
-    /// falls back to returning the whole minuend otherwise, which is the
-    /// over-approximating side. Sound, deliberately imprecise, and the reason
-    /// there is no `is_equiv` call inside `diff`.
+    /// Outer case subtraction preserves both parts of a partial structural
+    /// overlap: the non-overlapping structure stays under its original brand
+    /// cell and the overlap remains under the brands not subtracted.
     #[test]
     fn the_equal_structures_case_is_syntactic() {
         let mut t = Types::new();
@@ -4214,8 +5303,8 @@ mod brand_lattice_algebra {
         let widened = t.difference(wider, branded);
         assert_eq!(
             t.display(&widened),
-            t.display(&wider),
-            "a structurally different minuend gets no slot subtraction at all"
+            "X(float) | not(X)(int | float | binary)",
+            "a partial overlap must retain its brand/structure correlation"
         );
     }
 }
@@ -4287,10 +5376,9 @@ mod normal_form_is_a_function_of_the_descriptor {
                     ret: nil,
                     lit: t.descr(&lit).as_closure_lit().cloned(),
                 };
-                t.intern(Descr {
-                    funcs: vec![Conj::pos_of(sig)],
-                    ..Descr::unbranded()
-                })
+                let mut d = Descr::unbranded();
+                d.cases[0].structure.funcs = vec![Conj::pos_of(sig)];
+                t.intern(d)
             };
             let two = arrow(&mut t, ordered_first);
             let ten = arrow(&mut t, ordered_second);
@@ -4518,7 +5606,7 @@ mod list_normal_form {
             cx.descr(&empty).union(cx, cx.descr(&non_empty))
         };
         assert_eq!(
-            joined.lists,
+            joined.cases[0].structure.lists,
             vec![
                 Conj::pos_of(ListSig::empty()),
                 Conj::pos_of(ListSig {
@@ -4544,6 +5632,50 @@ mod list_normal_form {
     /// canonical form, so the oracle counts this as one denotation holding two
     /// ids -- the finding -- instead of two renderings, which would hide it.
     /// Fix the meet and this test flips: the two become one id.
+    /// A clause the boundary stores as built keeps whatever factors it was
+    /// built from, and a POSITIVE intersection is one route to two of them: a
+    /// raw diff-of-double-negation (this module's `stacked_pos` idea,
+    /// inlined here for the list axis) stacks `non_empty_list(α0)` and
+    /// `non_empty_list(α0 | :b)` as two factors of one clause instead of
+    /// merging them, because α0 is a variable and the merge the kernel would
+    /// need reads a variable as disjoint from everything
+    /// (`.agent/docs/set-theoretic-types.md`). The element evidence's second
+    /// fold then intersects two operands that name no single `Ty`, so it
+    /// synthesizes one -- content whose own structure happens to equal α0's,
+    /// which is what proves the render reads a BUILT fragment's content
+    /// rather than assuming every element is a `Ty` to bind.
+    #[test]
+    fn a_built_intersection_element_renders_its_content() {
+        let mut t = Types::new();
+        let var = t.type_var(TypeVarId(0));
+        let atom_b = t.atom_lit("b");
+        let union_elem = t.union(var, atom_b);
+        let narrow = t.non_empty_list(var);
+        let wide = t.non_empty_list(union_elem);
+        let any = t.any();
+        let not_wide = t.difference(any, wide);
+        let intersected = t.difference(narrow, not_wide);
+
+        assert_ne!(
+            intersected, narrow,
+            "the raw stack keeps its own id, distinct from either operand it was built from"
+        );
+        assert_eq!(
+            t.descr(&intersected).cases[0].structure.lists[0].pos.len(),
+            2,
+            "two positive factors survive unmerged: this is what forces the element evidence \
+             to synthesize rather than name a Ty"
+        );
+
+        let labels = |_: FnId| String::new();
+        let mut canon = TyCanon::new(&labels);
+        assert_eq!(
+            canon.render(&t, intersected).as_ref(),
+            "fp[L] non_empty_list(α0)",
+            "the built fragment's own content renders, the same text α0 renders as when it names a Ty"
+        );
+    }
+
     #[test]
     fn a_var_bearing_list_difference_is_one_denotation_with_two_ids() {
         let mut t = Types::new();
@@ -4628,4 +5760,220 @@ mod list_normal_form {
             }
         }
     }
+}
+
+/// Restrictions are equation right-hand sides, not filters on an already
+/// published answer. Here Y's atom restriction stops X's tuple recursion.
+#[test]
+fn regular_ground_intersection_restricts_recursive_feedback() {
+    let mut t = Types::new();
+    let a = t.atom_lit("a");
+    let live = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(1)]),
+    );
+    let restricted = live.intersect(&t.regular_published(a));
+    let roots = t.intern_regular_bodies(vec![live, restricted]);
+    let tuple_a = t.tuple(&[a]);
+    let expected = t.union(a, tuple_a);
+    assert_eq!(roots, vec![expected, a]);
+}
+
+/// X = :a | {Y}; Y = X \ :a. Removing the only seed leaves Y = {Y},
+/// whose least finite-value solution is none. It must not acquire a second
+/// identity for emptiness merely because it was written recursively.
+#[test]
+fn regular_ground_difference_removes_recursive_seed() {
+    let mut t = Types::new();
+    let a = t.atom_lit("a");
+    let live = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(1)]),
+    );
+    let restricted = live.diff(&t.regular_published(a));
+    let roots = t.intern_regular_bodies(vec![live, restricted]);
+    assert_eq!(roots, vec![a, t.none()]);
+}
+
+#[test]
+fn regular_ground_difference_preserves_the_other_recursive_seed() {
+    let mut t = Types::new();
+    let a = t.atom_lit("a");
+    let seeds = union_regular_bodies(&DescrOf::atom_lit("a"), &DescrOf::atom_lit("b"));
+    let live = union_regular_bodies(&seeds, &DescrOf::tuple_of(vec![ComponentRef::local(1)]));
+    let restricted = live.diff(&t.regular_published(a));
+    let roots = t.intern_regular_bodies(vec![live, restricted]);
+    let b_cycle = t.intern_regular_bodies(vec![union_regular_bodies(
+        &DescrOf::atom_lit("b"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    )])[0];
+    assert_eq!(roots[1], b_cycle);
+    let expected = t.union(a, b_cycle);
+    assert_eq!(roots[0], expected);
+}
+
+/// A source-cell filter can constrain a child of a recursive value, not just
+/// its outer kind. The local reference must retain that ground restriction.
+#[test]
+fn regular_ground_intersection_restricts_a_recursive_child() {
+    let mut types = Types::new();
+    let a = types.atom_lit("a");
+    let tuple_a = types.tuple(&[a]);
+    let live = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    );
+    let restricted = live.intersect(&types.regular_published(tuple_a));
+    let roots = types.intern_regular_bodies(vec![live, restricted]);
+    assert!(types.is_subtype(&roots[1], &tuple_a));
+    assert!(types.is_subtype(&tuple_a, &roots[1]));
+    assert_eq!(
+        roots[1],
+        tuple_a,
+        "a recursive child filter must canonicalize: {} vs {}",
+        types.display(&roots[1]),
+        types.display(&tuple_a)
+    );
+}
+
+/// X=:a|{Y}; Y=X∩(:a|{:a}) has a finite, nonrecursive solution even though
+/// its source equations form a cycle. Restriction must remove that cycle.
+#[test]
+fn regular_ground_child_filter_closes_recursive_feedback() {
+    let mut types = Types::new();
+    let a = types.atom_lit("a");
+    let tuple_a = types.tuple(&[a]);
+    let allowed = types.union(a, tuple_a);
+    let nested = types.tuple(&[tuple_a]);
+    let expected_x = types.union(allowed, nested);
+    let live = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(1)]),
+    );
+    let restricted = live.intersect(&types.regular_published(allowed));
+    let roots = types.intern_regular_bodies(vec![live, restricted]);
+    assert!(types.is_subtype(&roots[0], &expected_x));
+    assert!(types.is_subtype(&expected_x, &roots[0]));
+    assert!(types.is_subtype(&roots[1], &allowed));
+    assert!(types.is_subtype(&allowed, &roots[1]));
+    assert_eq!(roots, vec![expected_x, allowed]);
+}
+
+#[test]
+fn regular_ground_filters_share_positive_constructor_meets() {
+    for kind in ["tuple", "list", "resource", "map"] {
+        let mut types = Types::new();
+        let a = types.atom_lit("a");
+        let field = MapKey::Atom("value".into());
+        let expected = match kind {
+            "tuple" => types.tuple(&[a]),
+            "list" => types.list(a),
+            "resource" => types.resource(a),
+            "map" => types.map(&[(field.clone(), a)]),
+            _ => unreachable!(),
+        };
+        let constructor = match kind {
+            "tuple" => DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+            "list" => DescrOf::list_of(ComponentRef::local(0)),
+            "resource" => DescrOf::resource_of(ComponentRef::local(0)),
+            "map" => DescrOf::map_of(std::collections::BTreeMap::from([(field, ComponentRef::local(0))])),
+            _ => unreachable!(),
+        };
+        let source = union_regular_bodies(
+            &DescrOf::atom_lit("a"),
+            &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+        );
+        let filtered = constructor.intersect(&types.regular_published(expected));
+        let roots = types.intern_regular_bodies(vec![source, filtered]);
+        assert_eq!(roots[1], expected, "{kind} must use the same child meet");
+    }
+}
+
+#[test]
+fn regular_ground_difference_refines_a_recursive_tuple_child() {
+    let mut types = Types::new();
+    let a = types.atom_lit("a");
+    let tuple_a = types.tuple(&[a]);
+    let source = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    );
+    let filtered = source.diff(&types.regular_published(tuple_a));
+    let roots = types.intern_regular_bodies(vec![source, filtered]);
+    let one = types.tuple(&[roots[0]]);
+    let two = types.tuple(&[one]);
+    let expected = types.union(a, two);
+    assert_eq!(roots[1], expected);
+}
+
+#[test]
+fn regular_list_difference_preserves_mixed_element_lists() {
+    let mut types = Types::new();
+    let a = types.atom_lit("a");
+    let tuple_a = types.tuple(&[a]);
+    let list_a = types.list(a);
+    let source = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    );
+    let filtered = DescrOf::list_of(ComponentRef::local(0)).diff(&types.regular_published(list_a));
+    let roots = types.intern_regular_bodies(vec![source, filtered]);
+    let mixed_elements = types.union(a, tuple_a);
+    let mixed_lists = types.list(mixed_elements);
+    let outside_a = types.difference(mixed_lists, list_a);
+    assert!(types.is_subtype(&outside_a, &roots[1]));
+    assert!(!types.is_subtype(&mixed_lists, &roots[1]));
+    let empty_list = types.empty_list();
+    assert!(!types.is_subtype(&empty_list, &roots[1]));
+}
+
+/// A child meet can be empty even when neither operand is empty. Lists still
+/// retain their empty value; required constructor children cannot do so.
+#[test]
+fn regular_ground_child_meet_preserves_only_the_empty_list() {
+    let mut types = Types::new();
+    let b = types.atom_lit("b");
+    let list_b = types.list(b);
+    let source = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    );
+    let filtered = DescrOf::list_of(ComponentRef::local(0)).intersect(&types.regular_published(list_b));
+    let roots = types.intern_regular_bodies(vec![source, filtered]);
+    let expected = types.empty_list();
+    assert_eq!(roots[1], expected);
+}
+
+/// A recursive ground predicate is still fixed: intersecting two unbounded
+/// chains closes onto a finite product rather than unfolding either chain.
+#[test]
+fn regular_ground_recursive_filter_closes_product_states() {
+    let mut types = Types::new();
+    let mask = types.intern_regular_bodies(vec![union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    )])[0];
+    let seeds = union_regular_bodies(&DescrOf::atom_lit("a"), &DescrOf::atom_lit("b"));
+    let source = union_regular_bodies(&seeds, &DescrOf::tuple_of(vec![ComponentRef::local(0)]));
+    let filtered = source.intersect(&types.regular_published(mask));
+    let roots = types.intern_regular_bodies(vec![source, filtered]);
+    assert_eq!(roots[1], mask);
+}
+
+#[test]
+fn regular_ground_recursive_exclusion_closes_product_states() {
+    let mut types = Types::new();
+    let mask = types.intern_regular_bodies(vec![union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    )])[0];
+    let expected = types.intern_regular_bodies(vec![union_regular_bodies(
+        &DescrOf::atom_lit("b"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    )])[0];
+    let seeds = union_regular_bodies(&DescrOf::atom_lit("a"), &DescrOf::atom_lit("b"));
+    let source = union_regular_bodies(&seeds, &DescrOf::tuple_of(vec![ComponentRef::local(0)]));
+    let filtered = source.diff(&types.regular_published(mask));
+    let roots = types.intern_regular_bodies(vec![source, filtered]);
+    assert_eq!(roots[1], expected);
 }

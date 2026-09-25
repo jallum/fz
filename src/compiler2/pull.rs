@@ -4875,8 +4875,8 @@ mod tests {
         super::super::transport::ExecutableSymbol {
             activation: super::super::transport::ActivationSymbol {
                 function: executable.activation.function,
-                arrow: executable.activation.arrow,
-                input: Box::default(),
+                signature: executable.activation.signature.clone(),
+                callable_surfaces: executable.activation.callable_surfaces.clone(),
             },
             need: executable.need,
         }
@@ -5008,10 +5008,13 @@ mod tests {
         let right_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 353));
         let replacement_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 354));
         let mut world = World::new();
-        let callable = world.intern_callable(super::super::transport::CallableDescr {
-            function: Some(FunctionId::from_coordinate(355)),
-            arity: 0,
-            capture_layouts: Box::default(),
+        let callable = world.intern_callable(super::super::transport::CallableDescr::Direct {
+            alternative: crate::compiler2::transport::CallableAlternative {
+                function: FunctionId::from_coordinate(355),
+                capture_tys: Box::default(),
+                arity: 0,
+                capture_layouts: Box::default(),
+            },
         });
         let boundary = BoundaryId::for_test(8);
         let layout = TransportLayout::structural(ShapeId::for_test(9));
@@ -5117,7 +5120,7 @@ mod tests {
         );
     }
 
-    type OwnerSymbolKey = (u32, super::super::types::Ty, Vec<super::super::types::Ty>, u8, usize);
+    type OwnerSymbolKey = (u32, super::super::identity::ActivationSignature, u8, usize);
     type OwnerPositionKey = (u8, OwnerSymbolKey, u64, u64, usize);
 
     fn owner_symbol_key(symbol: &ExecutableSymbol) -> OwnerSymbolKey {
@@ -5127,8 +5130,7 @@ mod tests {
         };
         (
             symbol.activation.function.as_u32(),
-            symbol.activation.arrow,
-            symbol.activation.input.to_vec(),
+            symbol.activation.signature.clone(),
             need.0,
             need.1,
         )
@@ -5567,7 +5569,7 @@ mod tests {
         let root = RootId::for_test(61);
         let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 610));
         let mut executable = executable_symbol_for_test(&fake_executable_with_function(root, 612));
-        executable.activation.input = vec![executable.activation.arrow; 32].into_boxed_slice();
+        executable.activation.signature.inputs = vec![executable.activation.signature.result; 32].into_boxed_slice();
         let external = ProductKey::TransportShape(TransportPosition::ExecutableReturn { executable });
         let dependencies = ProductDependencies {
             rooted_read: None,
@@ -5580,7 +5582,7 @@ mod tests {
         let ProductKey::TransportShape(position) = dependencies.products.get_index(0).unwrap().0 else {
             unreachable!()
         };
-        let input_storage = position.executable().activation.input.as_ptr();
+        let input_storage = position.executable().activation.signature.inputs.as_ptr();
         let membership_storage = dependencies.membership.get(&external).unwrap() as *const ProductKey;
         assert!(memo.begin(left.clone()));
         assert!(finish_test_entry(
@@ -5599,7 +5601,10 @@ mod tests {
         let ProductKey::TransportShape(position) = entry.dependencies.products.get_index(0).unwrap().0 else {
             unreachable!()
         };
-        assert_eq!(position.executable().activation.input.as_ptr(), input_storage);
+        assert_eq!(
+            position.executable().activation.signature.inputs.as_ptr(),
+            input_storage
+        );
         assert_eq!(
             entry.membership.get(&external).unwrap() as *const ProductKey,
             membership_storage
@@ -6003,11 +6008,7 @@ mod tests {
         assert!(ring_forward.1 <= 5 && ring_reverse.1 <= 5);
 
         let mut world = World::new();
-        let callable = world.intern_callable(super::super::transport::CallableDescr {
-            function: None,
-            arity: 0,
-            capture_layouts: Box::default(),
-        });
+        let callable = world.intern_callable(super::super::transport::CallableDescr::Opaque);
         for answer in pair_forward.0 {
             let ProductValue::CallableConstruction(answer) = answer.product_value(callable, BoundaryId::for_test(9))
             else {
@@ -6047,11 +6048,7 @@ mod tests {
         });
         let unrelated_parent = ProductKey::AbiExecutable(fake_executable_with_function(root, 372));
         let mut world = World::new();
-        let callable = world.intern_callable(super::super::transport::CallableDescr {
-            function: None,
-            arity: 0,
-            capture_layouts: Box::default(),
-        });
+        let callable = world.intern_callable(super::super::transport::CallableDescr::Opaque);
         let boundary = BoundaryId::for_test(10);
         let layout = TransportLayout {
             structural: ShapeId::for_test(101),
