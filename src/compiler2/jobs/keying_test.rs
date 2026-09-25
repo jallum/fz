@@ -563,3 +563,45 @@ fn an_inline_case_on_a_list_tail_preserves_shape_demand() {
         vec![DispatchDemand::ListShape]
     );
 }
+
+#[test]
+fn recursive_accumulator_inherits_whole_demand_without_an_activation() {
+    use crate::compiler2::drive::{ExecutionContext, Job};
+    use crate::compiler2::pull::ProductSessions;
+    use crate::compiler2::scheduler::DriveOutcome;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let mut sessions = ProductSessions::default();
+    let source = world.submit_code(
+        Some("interface10_forwarded_whole.fz".into()),
+        include_str!("../../../fixtures2/behavior/interface10_forwarded_whole.fz").into(),
+    );
+    world.demand(Job::ScopeCode(source));
+    let build = world.reference_function(ModuleId::GLOBAL, "build", 2);
+    world.demand(Job::DeriveInputDemand(build));
+    assert_eq!(
+        ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved,
+        "source demand must settle without executing the growing recursion"
+    );
+    let mut reads = Vec::new();
+    let mut waits = std::collections::HashSet::new();
+    let mut graph = BTreeMap::new();
+    super::collect_input_forwarding_graph(&world, build, &mut reads, &mut waits, &mut graph);
+    assert!(waits.is_empty());
+    assert_eq!(
+        graph[&build].local[1],
+        DispatchDemand::Ignore,
+        "build does not inspect its accumulator itself"
+    );
+    assert_eq!(
+        world.input_demand(build).unwrap().forwarded_dispatch[1],
+        DispatchDemand::Whole,
+        "finish's literal test reaches build through relay; the recursive slot cannot use Ignore collapse"
+    );
+    assert!(
+        !world.activation_keys().iter().any(|key| key.function == build),
+        "definition-owned demand must not require an activation of build"
+    );
+}

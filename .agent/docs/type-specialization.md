@@ -331,6 +331,18 @@ Three limits are known and stated rather than argued away. A `Whole` slot has NO
 collapse, and forwarding can hand a `Whole` up from a callee that tests a
 literal, so fz-y6w's termination argument does not cover such a slot
 (measured: 344 rows over 174 functions gain a forwarding-introduced `Whole`).
+
+The .10 fixture `behavior/interface10_forwarded_whole.fz` pins this gap:
+`build(n, acc)` forwards its base-case accumulator through `relay` to
+`finish`, whose literal clause inspects `:start`. The definition-only keying
+test proves that build's accumulator demand is locally Ignore but forwarded
+Whole, without creating any build activation. Runtime recursion wraps that
+accumulator in `{n, acc}` on each edge. Its three normal fixture-matrix modes
+currently time out before execution; their existing child-process guard keeps
+this failure from aborting the library suite. The expected result is
+`{:grown, {1, {2, {3, :start}}}}`. Finite cell/activation-count and exact static
+return gates still belong to the source/cell replacement.
+
 The returned axis does not widen that exposure: it never produces a verbatim
 slot, only an addressed class. A callable slot is blind only while it is merely
 TRANSPORTED: a body that calls it demands it `Whole`, and that answer forwards,

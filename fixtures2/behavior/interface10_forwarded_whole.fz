@@ -1,0 +1,9 @@
+#---
+# purpose: "forwarded Whole demand across recursive argument growth preserves the partitioned return"
+#---
+def finish(:start), do: {:seed, :start}
+def finish(acc), do: {:grown, acc}
+def relay(acc), do: finish(acc)
+def build(0, acc), do: relay(acc)
+def build(n, acc), do: build(n - 1, {n, acc})
+def main(), do: dbg(build(3, :start))
