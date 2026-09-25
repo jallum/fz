@@ -20,7 +20,7 @@ defmodule Kernel do
   for every other pair of values.
   """
 
-  extern "fz" defp fz_dbg_value(any) :: any
+  extern "fz" defp fz_dbg_value(t) :: t when t: any
   extern "fz" defp fz_panic(any) :: never
   extern "fz" defp fz_spawn(() -> any) :: pid
   extern "fz" defp fz_self() :: pid
