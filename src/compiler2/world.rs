@@ -1164,7 +1164,7 @@ impl World {
         }
     }
 
-    /// The owner and slot order of one discovered membership. `owner` is the
+    /// The owner and member order of one discovered membership. `owner` is the
     /// semantic minimum over the members -- a fold, not a sort, since
     /// nothing else needs the members in that order. `members` is still
     /// sorted into semantic order beneath it: `return_membership_test`'s
@@ -1172,10 +1172,10 @@ impl World {
     /// `dup/1`, though the walk finds `dup/1` first from a `dup/1` seed), so
     /// the sort stays even though ownership no longer depends on it.
     fn settle_return_membership(&self, membership: super::return_membership::Membership) -> ReturnMembership {
-        let (mut members, unknowns) = match membership {
+        let mut members = match membership {
             super::return_membership::Membership::Alone => return ReturnMembership::Alone,
             super::return_membership::Membership::Unknown(sites) => return ReturnMembership::Unknown(sites),
-            super::return_membership::Membership::Shared(members, unknowns) => (members, unknowns),
+            super::return_membership::Membership::Shared(members) => members,
         };
         let owner = members
             .iter()
@@ -1183,14 +1183,7 @@ impl World {
             .cloned()
             .expect("a return component has a member");
         members.sort_by(|a, b| a.semantic_cmp(b, &self.types));
-        let mut slots = unknowns.slots();
-        slots.sort_by(|a, b| a.0.semantic_cmp(&b.0, &self.types).then(a.1.cmp(&b.1)));
-        ReturnMembership::Shared(ReturnComponent {
-            owner,
-            members,
-            slots,
-            unknowns,
-        })
+        ReturnMembership::Shared(ReturnComponent { owner, members })
     }
 
     /// Whether `key` currently owes a `ReturnType` its own walk will not

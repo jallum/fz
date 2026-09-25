@@ -269,6 +269,13 @@ ground literal-free arrow sets. Neither supplies source binding/control or
 joint recursive restrictions. Reuse the existing source graph, evaluator,
 return solver, dispatch proof semantics, and contribution ledger.
 
+Membership discovery records shared-solve edges and member ownership only.
+The old `ComponentUnknowns` slot list and the second sorted copy on
+`ReturnComponent` are removed: the equation kernel's source-declared formal
+arity already owns the complete input interface, including unused ports.
+Membership therefore does not reconstruct closure capture offsets to discover
+slots that nobody reads.
+
 ## The next coherent implementation
 
 The current ticket's step 6 owns this cut. Exact recursive admission is deferred
@@ -281,6 +288,16 @@ Reuse the retained LoweredBody and `step_inputs`/`step_delta` evaluator. Source
 operation outputs use fixed body coordinates, not a second operation IR or
 nested transformation histories. A finite set of projection operations does
 not bound strings such as `tail^n`; recursion must be a graph backreference.
+
+Source refinement ports need a program point as well as a `ValueId`.
+`analyze_entry` clones its incoming semantic scope, and assertions can narrow
+the same operand differently in separate entries. Reuse `StepSite` plus the
+value coordinate, under the bound scope/cell. `BodyTables::value_definition`
+locates a value's original definition; it does not locate every later
+refinement. Clause parameters, entry parameters and delivered results already
+have coordinates in the retained body. A shared entry receives equations from
+its incoming contributions; its address must not grow a predecessor history.
+This addressing rule is required by the replacement, not implemented yet.
 
 Move the following as one production replacement:
 

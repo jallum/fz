@@ -8,11 +8,11 @@
 //!
 //! One rule draws every edge: a call is unsolved when it hands on an
 //! argument the fixpoint is still solving, or when what it yields is itself
-//! such a position. The argument case puts the callee's matching SLOT on the
-//! caller's cycle -- that is how `wrap`, which mentions nothing recursive,
-//! joins the cycle it is handed. The result case names no slot: a function
-//! that wraps a constructor around its own recursive result hands on nothing
-//! unsolved at all, and only its result says the two returns are one system.
+//! such a position. The argument case brings the callee into the caller's
+//! system -- that is how `wrap`, which mentions nothing recursive, joins
+//! the cycle it is handed. A function that wraps its own recursive result
+//! can join a system through that result alone. Membership records this
+//! edge once; source definitions declare every member's formal ports.
 //! Both halves of the rule are the STATIC answer, read from the caller's own
 //! `FunctionUnknowns`; nothing here re-derives it, and nothing here decides a
 //! key. That separation is what makes this settle: an answer that decided
@@ -71,25 +71,11 @@
 
 use std::collections::HashSet;
 
-use super::body::{CallInputMode, CallSiteId, callsite_input_modes};
+use super::body::{CallSiteId, callsite_input_modes};
 use super::drive::FactKey;
 use super::identity::ActivationKey;
 use super::semantic::{CallSiteKey, CallSiteResolution};
 use super::world::World;
-
-/// The parameter slots one system solves for, in the order the walk found
-/// them. A slot is one of these when a member hands it a value the fixpoint
-/// is still solving; the solver seeds exactly these as its input unknowns.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ComponentUnknowns {
-    slots: Vec<(ActivationKey, usize)>,
-}
-
-impl ComponentUnknowns {
-    pub(crate) fn slots(&self) -> Vec<(ActivationKey, usize)> {
-        self.slots.clone()
-    }
-}
 
 /// What a membership query says about one activation.
 ///
@@ -107,14 +93,14 @@ pub(crate) enum Membership {
     /// call site the walk found reached but unresolved: this is not a
     /// conclusion, it is what a solve still owed this answer waits on.
     Unknown(Vec<CallSiteKey>),
-    /// The activations this one solves its return with, and the positions
-    /// that solve is over.
-    Shared(Vec<ActivationKey>, ComponentUnknowns),
+    /// The activations this one solves its return with. Formal ports belong
+    /// to their definitions, not to the edges that discovered membership.
+    Shared(Vec<ActivationKey>),
 }
 
 /// The result of one local walk: every activation that JOINED the
-/// component (`members`), the slots found along the way, every call site
-/// that has reached but not yet named a target (`unresolved`), whether it
+/// component (`members`), every reached call site without a named target
+/// (`unresolved`), whether it
 /// met a call that returns to an activation already on the walk
 /// (`self_edge`), and every activation the walk TOUCHED regardless of
 /// whether it joined (`visited`). `visited` is `members` plus the `Callers`
@@ -126,7 +112,6 @@ pub(crate) enum Membership {
 struct Walk {
     members: Vec<ActivationKey>,
     visited: Vec<ActivationKey>,
-    slots: Vec<(ActivationKey, usize)>,
     unresolved: Vec<CallSiteKey>,
     self_edge: bool,
 }
@@ -223,7 +208,7 @@ fn membership_of(world: &World, seed: &ActivationKey, walk: Walk) -> Membership 
     let shared = owes || walk.members.len() > 1 || walk.self_edge;
     match (walk.unresolved.is_empty(), shared) {
         (false, _) => Membership::Unknown(walk.unresolved),
-        (true, true) => Membership::Shared(walk.members, ComponentUnknowns { slots: walk.slots }),
+        (true, true) => Membership::Shared(walk.members),
         (true, false) => Membership::Alone,
     }
 }
@@ -235,7 +220,6 @@ fn membership_of(world: &World, seed: &ActivationKey, walk: Walk) -> Membership 
 /// member first.
 fn walk(world: &World, seed: &ActivationKey) -> Walk {
     let mut members = vec![seed.clone()];
-    let mut slots: Vec<(ActivationKey, usize)> = Vec::new();
     let mut unresolved: Vec<CallSiteKey> = Vec::new();
     let mut self_edge = false;
     let mut rejected: Vec<ActivationKey> = Vec::new();
@@ -243,15 +227,8 @@ fn walk(world: &World, seed: &ActivationKey) -> Walk {
     while next < members.len() {
         let member = members[next].clone();
         next += 1;
-        walk_out_edges(
-            world,
-            &member,
-            &mut members,
-            &mut slots,
-            &mut unresolved,
-            &mut self_edge,
-        );
-        walk_in_edges(world, &member, &mut members, &mut slots, &mut self_edge, &mut rejected);
+        walk_out_edges(world, &member, &mut members, &mut unresolved, &mut self_edge);
+        walk_in_edges(world, &member, &mut members, &mut self_edge, &mut rejected);
     }
     let mut visited = members.clone();
     for candidate in rejected {
@@ -262,7 +239,6 @@ fn walk(world: &World, seed: &ActivationKey) -> Walk {
     Walk {
         members,
         visited,
-        slots,
         unresolved,
         self_edge,
     }
@@ -295,7 +271,6 @@ fn walk_out_edges(
     world: &World,
     member: &ActivationKey,
     members: &mut Vec<ActivationKey>,
-    slots: &mut Vec<(ActivationKey, usize)>,
     unresolved: &mut Vec<CallSiteKey>,
     self_edge: &mut bool,
 ) {
@@ -325,29 +300,11 @@ fn walk_out_edges(
             }
             Some(CallSiteResolution::Resolved(targets)) => targets,
         };
-        let shapes = &site.arguments;
         for target in &targets.targets {
-            let Some(callee) = target.activation.clone() else {
-                continue;
-            };
-            // A call site's positional arguments land at the END of a
-            // closure callee's input space, behind its captures.
-            let mode = match callee.input_len() == shapes.len() {
-                true => CallInputMode::Direct,
-                false => CallInputMode::Closure,
-            };
-            // The result edge names no slot: what this call yields is still
-            // being solved, so the callee's whole return is on the caller's
-            // cycle and nothing about the arguments says so.
-            if site.result {
-                record_edge(member, &callee, None, members, slots, self_edge);
-            }
-            for (index, shape) in shapes.iter().enumerate() {
-                if shape.is_settled() {
-                    continue;
-                }
-                let slot = mode.semantic_index(callee.input_len(), shapes.len(), index);
-                record_edge(member, &callee, slot, members, slots, self_edge);
+            if let Some(callee) = &target.activation {
+                // `site` is unsettled: at least one argument or its result
+                // needs the shared solve. Each target contributes one edge.
+                record_edge(member, callee, members, self_edge);
             }
         }
     }
@@ -365,7 +322,6 @@ fn walk_in_edges(
     world: &World,
     member: &ActivationKey,
     members: &mut Vec<ActivationKey>,
-    slots: &mut Vec<(ActivationKey, usize)>,
     self_edge: &mut bool,
     rejected: &mut Vec<ActivationKey>,
 ) {
@@ -373,12 +329,12 @@ fn walk_in_edges(
         return;
     };
     for site in callers.sites() {
-        let Some(caller_site) = unsettled_site(world, site) else {
+        if !is_unsettled_site(world, site) {
             if !rejected.contains(&site.activation) {
                 rejected.push(site.activation.clone());
             }
             continue;
-        };
+        }
         let names_member = matches!(
             world.callsite_target_resolution(site),
             Some(CallSiteResolution::Resolved(targets))
@@ -390,48 +346,19 @@ fn walk_in_edges(
             }
             continue;
         }
-        let shapes = &caller_site.arguments;
-        let mode = match member.input_len() == shapes.len() {
-            true => CallInputMode::Direct,
-            false => CallInputMode::Closure,
-        };
-        if caller_site.result {
-            record_edge(&site.activation, member, None, members, slots, self_edge);
-        }
-        for (index, shape) in shapes.iter().enumerate() {
-            if shape.is_settled() {
-                continue;
-            }
-            let slot = mode.semantic_index(member.input_len(), shapes.len(), index);
-            record_edge(&site.activation, member, slot, members, slots, self_edge);
-        }
+        record_edge(&site.activation, member, members, self_edge);
     }
 }
 
-/// One "this call leaves its callee's return to a shared solve" edge: `to`
-/// is the activation the slot belongs to, `from` is whoever hands it the
-/// value. Either end may be new to the walk, so both are queued when they
-/// are; a slot is recorded once, keyed by `to` and its index.
-fn record_edge(
-    from: &ActivationKey,
-    to: &ActivationKey,
-    slot: Option<usize>,
-    members: &mut Vec<ActivationKey>,
-    slots: &mut Vec<(ActivationKey, usize)>,
-    self_edge: &mut bool,
-) {
+/// Record a shared-solve edge. Either endpoint may be new to the walk;
+/// both are queued once, independent of which direction found the edge.
+fn record_edge(from: &ActivationKey, to: &ActivationKey, members: &mut Vec<ActivationKey>, self_edge: &mut bool) {
     if from == to {
         *self_edge = true;
     }
     for activation in [from, to] {
         if !members.contains(activation) {
             members.push(activation.clone());
-        }
-    }
-    if let Some(slot) = slot {
-        let key = (to.clone(), slot);
-        if !slots.contains(&key) {
-            slots.push(key);
         }
     }
 }
@@ -448,16 +375,12 @@ fn unsettled_out_sites(world: &World, member: &ActivationKey) -> Vec<CallSiteId>
         .collect()
 }
 
-/// `site`'s own `CallSiteUnknowns`, when its function still calls it
-/// unsettled.
+/// Whether the caller still assigns this site to a shared solve.
 fn is_unsettled_site(world: &World, site: &CallSiteKey) -> bool {
-    unsettled_site(world, site).is_some()
-}
-
-fn unsettled_site<'a>(world: &'a World, site: &CallSiteKey) -> Option<&'a super::return_unknowns::CallSiteUnknowns> {
-    let unknowns = world.return_unknowns(site.activation.function)?;
-    let site_unknowns = unknowns.callsite(site.callsite)?;
-    (!site_unknowns.is_settled()).then_some(site_unknowns)
+    world
+        .return_unknowns(site.activation.function)
+        .and_then(|unknowns| unknowns.callsite(site.callsite))
+        .is_some_and(|unknowns| !unknowns.is_settled())
 }
 
 #[cfg(test)]

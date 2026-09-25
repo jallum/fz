@@ -10,7 +10,6 @@ use std::hash::Hash;
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::facts::FactUse;
 use super::identity::{ActivationKey, ActivationSignature, ExecutableKey, ExecutableNeed, FunctionId};
-use super::return_membership::ComponentUnknowns;
 use super::return_skeleton::FunctionSkeleton;
 use super::types::{MapKey, Ty, Types};
 
@@ -825,11 +824,6 @@ impl ReturnMembership {
 pub(crate) struct ReturnComponent {
     pub(crate) owner: ActivationKey,
     pub(crate) members: Vec<ActivationKey>,
-    /// The parameter slots this system solves for, in semantic order.
-    pub(crate) slots: Vec<(ActivationKey, usize)>,
-    /// Every position the fixpoint is still solving. A call's key
-    /// coordinate asks this and nothing else.
-    pub(crate) unknowns: ComponentUnknowns,
 }
 
 /// The one layer a [`Skeleton::Project`](super::return_skeleton::Skeleton)
