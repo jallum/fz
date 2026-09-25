@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-p8p.3"
+  ],
   "blocks": [],
   "created": "2026-09-25T21:22:59Z",
   "description": "## Why\nfixture_purposes.tsv (attached to fz-p8p) drafts a purpose for all 433 numbered files. Files no earlier step touched still need processing.\n\n## What changes\nEach remaining file gets its purpose, a `main` if it has none (92 files lack one), and moves to `fixtures/`. Misdescribing stems are renamed (00510, 00298, 00524, 00287); one of the two 00556 files is renumbered; exact duplicates merge; unreferenced 00011, 00012, 00028 are deleted unless a claim adopts them.\n\n## Signal\nNo numbered .fz files left directly in fixtures2/.",
