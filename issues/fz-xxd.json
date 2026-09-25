@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-25T20:29:00Z",
+  "description": "develop @ d91cae495 declares fz_dbg_value(t) :: t when t: any, which is correct and exposes that an extern activation's return is its raw declared return, never instantiated. Two tests are red on develop. This epic makes an extern's return its contract applied to its row, resolves the declaration once, and fixes what that honesty surfaces. Diagnosis: scratchpad PAPER.md and the reader reports summarised in the children.",
+  "id": "fz-xxd",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "[EPIC] An extern's body is its contract",
+  "type": "epic",
+  "updated_at": "2026-09-25T20:29:00Z"
+}
