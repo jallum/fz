@@ -72,9 +72,18 @@ fn a_dead_tuple_port_overrides_an_unknown_sibling_in_either_order() {
         ..Bindings::default()
     };
     let observed = [
-        (Term::Settled(none), Term::Unobserved),
-        (Term::Unobserved, Term::Settled(none)),
-        (Term::Settled(int), Term::Unobserved),
+        (
+            Term::Settled(none),
+            Term::Shape(member.clone(), Skeleton::Ground(ValueId::from_u32(99))),
+        ),
+        (
+            Term::Shape(member.clone(), Skeleton::Ground(ValueId::from_u32(99))),
+            Term::Settled(none),
+        ),
+        (
+            Term::Settled(int),
+            Term::Shape(member.clone(), Skeleton::Ground(ValueId::from_u32(99))),
+        ),
         (Term::Settled(int), Term::Settled(ok)),
     ]
     .map(|(a, b)| {
@@ -99,7 +108,12 @@ fn explicit_and_simplified_projection_keep_dead_and_unknown_siblings() {
     let tag = ValueId::from_u32(1);
     let port = CallSiteId::from_u32(0);
     let observed = [false, true].map(|simplified| {
-        [Term::Settled(none), Term::Unobserved, Term::Settled(int)].map(|sibling| {
+        [
+            Term::Settled(none),
+            Term::Shape(member.clone(), Skeleton::Ground(ValueId::from_u32(99))),
+            Term::Settled(int),
+        ]
+        .map(|sibling| {
             let tuple = Skeleton::Tuple(vec![
                 Skeleton::Result {
                     callsite: port,
@@ -168,7 +182,11 @@ fn projecting_a_union_drops_dead_branches_but_preserves_unknown_alternatives() {
         results: HashMap::from([((member.clone(), right), vec![Term::Settled(int)])]),
         ..Bindings::default()
     };
-    let observed = [Term::Settled(none), Term::Unobserved].map(|left_result| {
+    let observed = [
+        Term::Settled(none),
+        Term::Shape(member.clone(), Skeleton::Ground(ValueId::from_u32(99))),
+    ]
+    .map(|left_result| {
         bindings.results.insert((member.clone(), left), vec![left_result]);
         answer(&member, &bindings, &mut types)
     });
@@ -256,4 +274,150 @@ fn a_source_frame_uses_declared_formal_arity_for_recursive_ports() {
     })[0];
     assert_eq!(solved.slots[&(frame.clone(), 0)].ty(), expected);
     assert_eq!(solved.returns[&frame], expected);
+}
+
+#[test]
+fn missing_observations_keep_their_source_port_addresses() {
+    let frame = SourceFrame(0);
+    let outside = SourceFrame(1);
+    let bindings = Bindings::default();
+    let equations = Equations::new(&[(frame.clone(), 0)], &bindings);
+    let missing = [
+        Term::Shape(frame.clone(), Skeleton::Ground(ValueId::from_u32(10))),
+        Term::Shape(frame.clone(), Skeleton::Ground(ValueId::from_u32(11))),
+        Term::Shape(
+            frame,
+            Skeleton::Result {
+                callsite: CallSiteId::from_u32(2),
+                value: ValueId::from_u32(12),
+            },
+        ),
+        Term::Evidence(outside.clone(), 0),
+        Term::Return(outside.clone()),
+    ];
+    for source in missing {
+        assert_eq!(
+            equations.bind(&source),
+            source,
+            "missing evidence must retain the port whose publisher can answer it"
+        );
+    }
+    assert_eq!(
+        equations.bind(&Term::Slot(outside.clone(), 0)),
+        Term::Evidence(outside, 0),
+        "an external input remains a named evidence port while absent"
+    );
+}
+
+#[test]
+fn named_missing_sources_survive_projection_and_answer_when_their_publisher_arrives() {
+    let mut types = Types::new();
+    let frame = SourceFrame(0);
+    let outside = SourceFrame(1);
+    let bridge = CallSiteId::from_u32(0);
+    let missing_call = CallSiteId::from_u32(1);
+    let value = ValueId::from_u32(10);
+    let sources = [
+        Term::Shape(frame.clone(), Skeleton::Ground(value)),
+        Term::Shape(
+            frame.clone(),
+            Skeleton::Result {
+                callsite: missing_call,
+                value,
+            },
+        ),
+        Term::Evidence(outside.clone(), 0),
+        Term::Return(outside),
+    ];
+    let int = types.int();
+    let tuple = types.tuple(&[int]);
+    let members = [(frame.clone(), 0)];
+    for source in sources {
+        let projected = Term::Shape(
+            frame.clone(),
+            Skeleton::Project {
+                of: Box::new(Skeleton::Result {
+                    callsite: bridge,
+                    value,
+                }),
+                step: ProjectStep::TupleField(0),
+            },
+        );
+        let mut bindings = Bindings {
+            returns: HashMap::from([(frame.clone(), vec![projected])]),
+            results: HashMap::from([((frame.clone(), bridge), vec![source.clone()])]),
+            ..Bindings::default()
+        };
+        let mut equations = Equations::new(&members, &bindings);
+        equations.build(vec![Unknown::Return(frame.clone())], &mut types, &NullTelemetry, &frame);
+        let node = equations.index[&Unknown::Return(frame.clone())];
+        assert_eq!(
+            equations.branches[node],
+            vec![source.clone()],
+            "the pending projection must retain exactly the source its alias awaits"
+        );
+        assert!(
+            !solve(&members, &bindings, &mut types, &NullTelemetry, &frame)
+                .returns
+                .contains_key(&frame),
+            "a named pending dependency is still unanswered, never none or any"
+        );
+
+        match &source {
+            Term::Shape(owner, Skeleton::Ground(value)) => {
+                bindings
+                    .value_types
+                    .entry(owner.clone())
+                    .or_default()
+                    .insert(*value, tuple);
+            }
+            Term::Shape(owner, Skeleton::Result { callsite, .. }) => {
+                bindings
+                    .results
+                    .insert((owner.clone(), *callsite), vec![Term::Settled(tuple)]);
+            }
+            Term::Evidence(owner, slot) => {
+                bindings
+                    .evidence
+                    .insert((owner.clone(), *slot), ActivationInput::new(tuple));
+            }
+            Term::Return(owner) => {
+                bindings.externals.insert(owner.clone(), tuple);
+            }
+            _ => unreachable!("the cases above are named source leaves"),
+        }
+        assert_eq!(
+            solve(&members, &bindings, &mut types, &NullTelemetry, &frame).returns[&frame],
+            int,
+            "the same source equation projects its publisher's arriving tuple"
+        );
+    }
+}
+
+#[test]
+fn empty_observations_are_distinct_from_missing_source_bindings() {
+    let mut types = Types::new();
+    let frame = SourceFrame(0);
+    let outside = SourceFrame(1);
+    let value = ValueId::from_u32(0);
+    let callsite = CallSiteId::from_u32(0);
+    let bindings = Bindings {
+        value_types: HashMap::from([(frame.clone(), HashMap::from([(value, types.none())]))]),
+        results: HashMap::from([((frame.clone(), callsite), Vec::new())]),
+        evidence: HashMap::from([((outside.clone(), 0), ActivationInput::new(types.none()))]),
+        externals: HashMap::from([(outside.clone(), types.none())]),
+        ..Bindings::default()
+    };
+    let equations = Equations::new(&[(frame.clone(), 0)], &bindings);
+    for source in [
+        Term::Shape(frame.clone(), Skeleton::Ground(value)),
+        Term::Shape(frame, Skeleton::Result { callsite, value }),
+        Term::Evidence(outside.clone(), 0),
+        Term::Return(outside),
+    ] {
+        assert!(
+            !equations.is_unobserved(&source),
+            "a publisher's empty answer is present; only absence is pending: {source:?}"
+        );
+    }
 }

@@ -93,13 +93,12 @@ use super::super::world::World;
 /// One value the solve talks about: a binding already resolved, or a shape
 /// still to be read in the frame named beside it. The equation kernel does
 /// not key or create an executable activation; its caller supplies the frame.
+/// A missing observation stays a named source leaf. Its binding table says
+/// whether it has an answer, without erasing which publisher owes that answer.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Term<Frame = ActivationKey> {
     /// No path reaches this position.
     Bottom,
-    /// A position nothing has observed yet. Not the empty type: a node
-    /// resting on one is not answerable at all.
-    Unobserved,
     /// A type settled outside this system.
     Settled(Ty),
     /// What one frame hands back.
@@ -160,7 +159,7 @@ impl<Frame: Clone + Eq + Hash> Bindings<Frame> {
     fn observed(&self, frame: &Frame, value: ValueId) -> Term<Frame> {
         match self.value_types.get(frame).and_then(|types| types.get(&value)) {
             Some(ty) => Term::Settled(*ty),
-            None => Term::Unobserved,
+            None => Term::Shape(frame.clone(), Skeleton::Ground(value)),
         }
     }
 }
@@ -696,13 +695,12 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
                     // One target is the ordinary case: the call site IS that
                     // activation's return, with no node of its own between.
                     Some(targets) if targets.len() == 1 => self.bind(&targets[0]),
-                    Some(_) => term.clone(),
-                    None => Term::Unobserved,
+                    _ => term.clone(),
                 }
             }
             Term::Return(key) if !self.members.contains(key) => match self.bindings.externals.get(key) {
                 Some(ty) => Term::Settled(*ty),
-                None => Term::Unobserved,
+                None => term.clone(),
             },
             other => other.clone(),
         }
@@ -713,10 +711,26 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
     fn slot_term(&self, frame: &Frame, slot: usize) -> Term<Frame> {
         match self.members.contains(frame) {
             true => Term::Slot(frame.clone(), slot),
-            false => match self.bindings.evidence.contains_key(&(frame.clone(), slot)) {
-                true => Term::Evidence(frame.clone(), slot),
-                false => Term::Unobserved,
-            },
+            false => Term::Evidence(frame.clone(), slot),
+        }
+    }
+
+    /// Absence is a property of a named input, never a replacement for its
+    /// address. Keeping the source term lets aliases and projections retain
+    /// the publisher that can eventually answer them.
+    fn is_unobserved(&self, term: &Term<Frame>) -> bool {
+        match term {
+            Term::Shape(frame, Skeleton::Ground(value)) => self
+                .bindings
+                .value_types
+                .get(frame)
+                .is_none_or(|values| !values.contains_key(value)),
+            Term::Shape(frame, Skeleton::Result { callsite, .. }) => {
+                !self.bindings.results.contains_key(&(frame.clone(), *callsite))
+            }
+            Term::Evidence(frame, slot) => !self.bindings.evidence.contains_key(&(frame.clone(), *slot)),
+            Term::Return(frame) => !self.members.contains(frame) && !self.bindings.externals.contains_key(frame),
+            _ => false,
         }
     }
 
@@ -836,6 +850,12 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
     /// reference contributes its referent node's current branches.
     fn expand_into(&mut self, term: &Term<Frame>, out: &mut Vec<Term<Frame>>, seen: &mut HashSet<Term<Frame>>) {
         let term = self.bind(term);
+        if self.is_unobserved(&term) {
+            if seen.insert(term.clone()) {
+                out.push(term);
+            }
+            return;
+        }
         match &term {
             Term::Bottom => {}
             Term::Return(key) => {
@@ -898,13 +918,15 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
     /// empty type. A subject nothing has observed keeps the projection
     /// unknown rather than answering for it.
     fn project_branch(&self, branch: &Term<Frame>, step: &ProjectStep, types: &mut Types) -> Term<Frame> {
+        if self.is_unobserved(branch) {
+            return branch.clone();
+        }
         match branch {
             Term::Bottom => Term::Bottom,
-            Term::Unobserved => Term::Unobserved,
             Term::Settled(ty) => project_concrete(*ty, step, types),
             Term::Evidence(activation, slot) => match self.bindings.evidence.get(&(activation.clone(), *slot)) {
                 Some(input) => project_concrete(input.ty(), step, types),
-                None => Term::Unobserved,
+                None => branch.clone(),
             },
             Term::Return(_) | Term::Slot(_, _) => Term::Bottom,
             Term::Shape(activation, shape) => {
@@ -958,8 +980,11 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
     /// everything else -- an in-component reference, a nested union, a
     /// nested constructor, a surviving projection -- is an equation node.
     fn child_unknown(&self, child: &Term<Frame>) -> Option<Unknown<Frame>> {
+        if self.is_unobserved(child) {
+            return None;
+        }
         match child {
-            Term::Bottom | Term::Unobserved | Term::Settled(_) | Term::Evidence(_, _) => None,
+            Term::Bottom | Term::Settled(_) | Term::Evidence(_, _) => None,
             Term::Return(key) => Some(Unknown::Return(key.clone())),
             Term::Slot(activation, slot) => Some(Unknown::Slot(activation.clone(), *slot)),
             Term::Shape(_, _) => Some(Unknown::Aux(child.clone())),
@@ -1028,8 +1053,11 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
     /// structure, never a raw reference), so only a reference already
     /// resolved to a concrete value escapes here.
     fn branch_escapes(&self, branch: &Term<Frame>, escapes: &[bool]) -> bool {
+        if self.is_unobserved(branch) {
+            return false;
+        }
         match branch {
-            Term::Bottom | Term::Unobserved => false,
+            Term::Bottom => false,
             Term::Settled(_) | Term::Evidence(_, _) => true,
             Term::Return(_) | Term::Slot(_, _) => false,
             Term::Shape(activation, shape) => match shape {
@@ -1047,8 +1075,10 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
 
     /// Whether a branch is still waiting on an unobserved leaf.
     fn branch_pending(&self, branch: &Term<Frame>, pending: &[bool]) -> bool {
+        if self.is_unobserved(branch) {
+            return true;
+        }
         match branch {
-            Term::Unobserved => true,
             Term::Bottom | Term::Settled(_) | Term::Evidence(_, _) => false,
             Term::Shape(_, _) => self
                 .branch_children(branch)
@@ -1063,16 +1093,21 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
     /// `ComponentRef`, not a `DescrOf`), so it escapes exactly when the node
     /// it names does. Mirrors [`Solver::child_ref`].
     fn child_escapes(&self, child: &Term<Frame>, escapes: &[bool]) -> bool {
+        if self.is_unobserved(child) {
+            return false;
+        }
         match child {
-            Term::Bottom | Term::Unobserved => false,
+            Term::Bottom => false,
             Term::Settled(_) | Term::Evidence(_, _) => true,
             other => self.at_node(other, escapes),
         }
     }
 
     fn child_pending(&self, child: &Term<Frame>, pending: &[bool]) -> bool {
+        if self.is_unobserved(child) {
+            return true;
+        }
         match child {
-            Term::Unobserved => true,
             Term::Bottom | Term::Settled(_) | Term::Evidence(_, _) => false,
             other => self.at_node(other, pending),
         }
@@ -1277,8 +1312,11 @@ impl<Frame: Clone + Eq + Hash + Any> Solver<'_, Frame> {
     /// is the empty type, computed; a node with no branches at all has no
     /// evidence, which drops the branch holding it.
     fn child_ref(&self, child: &Term<Frame>) -> Option<ComponentRef> {
+        if self.equations.is_unobserved(child) {
+            return None;
+        }
         match child {
-            Term::Bottom | Term::Unobserved => None,
+            Term::Bottom => None,
             Term::Settled(ty) => Some(ComponentRef::Published(*ty)),
             Term::Evidence(activation, slot) => self
                 .equations
@@ -1302,8 +1340,11 @@ impl<Frame: Clone + Eq + Hash + Any> Solver<'_, Frame> {
     }
 
     fn lower_branch(&mut self, branch: &Term<Frame>) -> Option<DescrOf<ComponentRef>> {
+        if self.equations.is_unobserved(branch) {
+            return None;
+        }
         match branch {
-            Term::Bottom | Term::Unobserved => None,
+            Term::Bottom => None,
             Term::Settled(ty) => Some(self.types.regular_published(*ty)),
             Term::Evidence(_, _) | Term::Return(_) | Term::Slot(_, _) => match self.child_ref(branch)? {
                 ComponentRef::Published(ty) => Some(self.types.regular_published(ty)),

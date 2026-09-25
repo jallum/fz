@@ -103,6 +103,15 @@ and express component-local recursion as equation edges. The closed-alias
 kernel regression remains red on the pushed compiler; its expected assertion
 is a requirement, not evidence that production already honors this contract.
 
+The kernel retains the address of missing observed leaves: source values,
+unresolved call results, external input evidence and external returns. Binding
+no longer replaces those references with an anonymous `Unobserved` term.
+Alias expansion and projection keep the missing source reference; absence is
+read from the immutable binding table, while a present empty answer remains
+observed. This supplies provenance within the equation graph, not new ledger
+readiness semantics. Closed aliases and strict dead/pending siblings still
+require the source/cell completion replacement.
+
 ## The complete formal interface
 
 Every formal input belongs to the component's equation system, even when the
