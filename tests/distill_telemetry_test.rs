@@ -6,14 +6,17 @@
 //! (`timeline`, `span names by inclusive time`, ...) are not asserted on
 //! here because their milliseconds vary run to run.
 //!
-//! `tests/distill_telemetry/rerun_census.jsonl` is the smallest real trace
-//! found (fz-afu.1) to carry all three shapes a reader needs to see:
-//! an ordinary enqueued re-run, a coalesced wake riding on an already-enqueued
-//! re-run, and a re-run with no matching wake at all. It was captured with:
+//! `tests/distill_telemetry/main_returns_one.jsonl` (`def main(), do: 1`) is
+//! the smallest program there is: 44 job starts over 26 subjects, 18
+//! re-runs, every one of them matched to an `enqueued` wake -- one of those
+//! wakes (`ScopeCode(17)` woken by the nested `def/1` macro root's
+//! `Product(root_backend_product)` settling) arrives on
+//! `work_graph.dependencies_moved`, not `work_graph.applied`, which is why
+//! the distiller reads all three step-carrying events. It was captured with:
 //!
 //!     cargo build
-//!     target/debug/fz2 --log-telemetry tests/distill_telemetry/rerun_census.jsonl \
-//!         interp tests/distill_telemetry/rerun_census.fz
+//!     target/debug/fz2 --log-telemetry tests/distill_telemetry/main_returns_one.jsonl \
+//!         interp tests/distill_telemetry/main_returns_one.fz
 //!
 //! Regenerate `expected_job_census.txt` / `expected_rerun_causes.txt` by
 //! running the distiller over that trace and copying the two sections named
@@ -25,7 +28,7 @@ use std::process::Command;
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/distill-telemetry.exs");
 const TRACE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/distill_telemetry/rerun_census.jsonl"
+    "/tests/distill_telemetry/main_returns_one.jsonl"
 );
 
 fn distill_stdout() -> String {
@@ -63,12 +66,14 @@ fn distiller_reports_job_runs_vs_subjects() {
     );
 }
 
-/// Every re-run's cause, read from `work_graph.applied`'s wakes rather than
-/// inferred: grouped by (job kind, changed fact + use, completing job kind,
+/// Every re-run's cause, read from the wakes on `work_graph.applied`,
+/// `work_graph.dependencies_moved` and `work_graph.quiesced` -- not inferred
+/// -- grouped by (job kind, changed fact + use, completing job kind,
 /// disposition). Only `enqueued` wakes count toward a re-run; `coalesced`
 /// wakes land on a re-run some other wake already enqueued and are reported
-/// separately. A re-run with no matching wake is a plain count, named next to
-/// the trace's session-summed `WorkStartTally`, never guessed at per row.
+/// separately. The distiller cross-checks its own count against the trace's
+/// session-summed `WorkStartTally` and halts loudly on a mismatch rather than
+/// printing an unexplained row.
 #[test]
 fn distiller_reports_the_cause_of_every_rerun() {
     let actual = distill_stdout();

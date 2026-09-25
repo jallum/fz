@@ -117,7 +117,7 @@ defmodule Distill do
   end
 
   # A job start whose subject already ran is a re-run; the first start for a
-  # subject is not. `job_census/2` and `wakes/4` both key off this.
+  # subject is not. `wakes/4` keys its wake matching off this.
   defp reruns_by_label(jobs) do
     jobs
     |> Enum.group_by(& &1.label)
@@ -150,44 +150,61 @@ defmodule Distill do
     |> table(["kind", "runs", "subjects", "excess", "max runs/subject"])
   end
 
-  # Why the most re-run jobs ran again: each work_graph.applied record lists
-  # the jobs a completion woke and the fact that caused each wake. Grouped by
-  # (job kind, changed fact + use, completing job kind, disposition) rather
-  # than free text, so the same shape of cause across many subjects collapses
-  # to one row instead of one row per subject.
+  # The scheduler emits one `AppliedStep` per step of the work graph, and a
+  # step's wakes ride on whichever of three events carries it:
+  # `work_graph.applied` (metadata.completion, an ordinary job completing),
+  # `work_graph.dependencies_moved` (metadata.step, a product
+  # settling), and `work_graph.quiesced` (metadata.step, a drain step). All three
+  # share the same `wakes` shape; reading only `applied` undercounts every
+  # re-run a product settlement or a drain step woke.
+  defp wake_events(records) do
+    for %{"name" => ["fz", "compiler2", "work_graph", event]} = r <- records,
+        event in ["applied", "dependencies_moved", "quiesced"] do
+      case event do
+        "applied" -> {r["metadata"]["completion"]["kind"], r["metadata"]["completion"]["wakes"] || []}
+        other -> {other, r["metadata"]["step"]["wakes"] || []}
+      end
+    end
+  end
+
+  # Why every re-run ran again: every wake across the three events
+  # above, grouped by (job kind, changed fact + use, completing job kind,
+  # disposition) rather than free text, so the same shape of cause across many
+  # subjects collapses to one row instead of one row per subject.
   defp wakes(records, jobs, names, top) do
     IO.puts("cause of every re-run")
 
     reruns = reruns_by_label(jobs)
-    total_reruns = reruns |> Map.values() |> Enum.sum()
 
     wake_rows =
-      for %{"name" => ["fz", "compiler2", "work_graph", "applied"], "metadata" => %{"completion" => c}} <- records,
-          wake <- c["wakes"] || [],
+      for {completing, wakes} <- wake_events(records),
+          wake <- wakes,
           target = {wake["job"]["kind"], subject(wake["job"], names)},
           Map.has_key?(reruns, target),
-          do: {wake["job"]["kind"], wake["cause"]["kind"], wake["cause"]["use"], c["kind"], wake["disposition"]}
+          do: {wake["job"]["kind"], wake["cause"]["kind"], wake["cause"]["use"], completing, wake["disposition"]}
 
     {enqueued, coalesced} = Enum.split_with(wake_rows, fn {_, _, _, _, d} -> d == "enqueued" end)
-    unattributed = total_reruns - length(enqueued)
 
     cause_table(enqueued, top)
     IO.puts("  coalesced: an additional cause landing on a re-run already enqueued by the row above, not a separate start")
     cause_table(coalesced, top)
 
     tally = work_start_tally(records)
+    total_subjects = jobs |> Enum.map(& &1.label) |> Enum.uniq() |> length()
 
-    IO.puts(
-      "  #{unattributed} re-run(s) with no matching enqueued wake " <>
-        "(session-summed work starts: ignition=#{tally.ignition} " <>
-        "changed_revision_wake=#{tally.changed_revision_wake} " <>
-        "activation_frontier=#{tally.activation_frontier} " <>
-        "blocked_waiter_expansion=#{tally.blocked_waiter_expansion} " <>
-        "unsanctioned=#{tally.unsanctioned})"
+    check!("matched enqueued wakes", length(enqueued), "work_starts_changed_revision_wake", tally.changed_revision_wake)
+
+    check!(
+      "ignition + activation_frontier + blocked_waiter_expansion",
+      tally.ignition + tally.activation_frontier + tally.blocked_waiter_expansion,
+      "distinct subjects",
+      total_subjects
     )
 
     IO.puts("")
   end
+
+  defp cause_table([], _top), do: IO.puts("  none\n")
 
   defp cause_table(rows, top) do
     rows
@@ -200,12 +217,24 @@ defmodule Distill do
     |> table(["job kind", "changed fact (use)", "completing job", "disposition", "count"])
   end
 
+  # Two invariants a correct census must hold: every re-run is a
+  # changed_revision_wake work start and nothing else, and every subject's
+  # first run is one of the other three reasons and nothing else. A mismatch
+  # means the census missed or double-counted a wake somewhere above -- never
+  # a table row to eyeball, a loud failure that stops the distiller.
+  defp check!(left_label, left, right_label, right) when left == right do
+    IO.puts("  #{left_label} (#{left}) == #{right_label} (#{right})")
+  end
+
+  defp check!(left_label, left, right_label, right) do
+    IO.puts("  MISMATCH: #{left_label} = #{left}, #{right_label} = #{right}")
+    System.halt(1)
+  end
+
   # `pull.session.finished` carries one session's cumulative WorkStartTally;
   # summed across every session in the stream this is the whole run's
-  # breakdown of why a job entered the agenda. `changed_revision_wake` is the
-  # wake-caused path `wakes/4` explains one row at a time; the other three
-  # reasons cover every job's first run plus any re-run this stream's wakes
-  # cannot name (see `wakes/4`'s unattributed count).
+  # breakdown of why a job entered the agenda. `wakes/4` cross-checks both
+  # halves of this tally against what it counted directly.
   defp work_start_tally(records) do
     zero = %{ignition: 0, changed_revision_wake: 0, activation_frontier: 0, blocked_waiter_expansion: 0, unsanctioned: 0}
 
