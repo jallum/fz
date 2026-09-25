@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-25T20:28:35Z",
+  "description": "Demand derivation discovers its inputs one per run: each run finds one more\nmissing fact, waits on it, and re-runs when it arrives, instead of\nregistering every wait it can know in one run.\n\nReduced case: `def main(), do: Enum.take([1, 2, 3], 2)`.\nMeasured: DeriveInputDemand 127 runs / 36 subjects; Enum.take/2 alone 16\nruns, woken by EntryDispatch of Enum.count/1, count/2, count_result/2,\ndrop_positive/2, reduce/3, ... one at a time (52 such wakes), plus\nStaticCallees (34). DeriveRuntimeDemand 158 / 40, woken by ExecutableFacts\nsettled (40) and RuntimeDemandInputs (74, 35 of them coalesced).\nPaper: a job knows its full read set from facts it already holds (the\nstatic callees, then their entry dispatches), so it waits on all of them at\nonce and runs again only when all are satisfied (the scheduler already\nre-runs a waiter only when ALL its waits are satisfied). Predicted:\nDeriveInputDemand runs \u003c= 2 per subject (discover, compute), unless a\ngenuinely new callee appears.\n\nSettle with a reader first: whether the serial shape is the job returning\nafter its first missing read, or waits being discovered through facts that\nonly exist after the previous wait resolves (a true chain). A true chain is\nlegitimate; the paper must say which links are.\n\nAcceptance: measured runs per subject match the paper for both kinds on the\nreduced case; no pin rises.",
+  "id": "fz-afu.3",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 1,
+  "status": "open",
+  "title": "Demand derivation discovers its waits one per run",
+  "type": "bug",
+  "updated_at": "2026-09-25T20:28:35Z"
+}
