@@ -3,11 +3,13 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use super::axis;
 use super::conj::Conj;
 use super::descr::{DescrOf, StructureOf, canonical_brand_partition};
+use super::dnf::{dnf_intersect, dnf_neg};
 use super::emptiness::Operand;
 use super::sigs::TupleSigOf;
+use super::sigs::{ChildIntersection, MergeSig};
 use super::{
-    BinaryTypeOperation, CallableSurfaceOps, TupleCoordinateOps, Ty, Types, normalize_literal_callable_surfaces_with,
-    normalize_tuple_coordinate_difference_with,
+    BinaryTypeOperation, CallableSurfaceOps, ProductCoordinateOps, Ty, Types, normalize_literal_callable_surfaces_with,
+    normalize_product_difference_with,
 };
 use crate::fz_ir::FnId;
 
@@ -232,6 +234,8 @@ fn resolved_classes(classes: &[usize], count: usize, handles: &[Ty], class_count
 /// leaf. The descriptor graph is therefore partitioned before each strongly
 /// connected piece enters the regular interner.
 pub(super) fn intern_bodies(types: &mut Types, bodies: Vec<DescrOf<ComponentRef>>) -> Vec<Ty> {
+    let root_count = bodies.len();
+    let bodies = normalize_local_boolean_children(types, bodies);
     let bodies = prune_empty_local_clauses(types, bodies);
     let components = strongly_connected_components(&bodies);
     let mut component_of = vec![0; bodies.len()];
@@ -278,8 +282,197 @@ pub(super) fn intern_bodies(types: &mut Types, bodies: Vec<DescrOf<ComponentRef>
     }
     resolved
         .into_iter()
+        .take(root_count)
         .map(|ty| ty.expect("every descriptor root resolves"))
         .collect()
+}
+
+/// Collapse constructor meets before assigning regular identities. Child
+/// Boolean operations name equations in this same forest; they never publish
+/// an approximation or open a second type store.
+fn normalize_local_boolean_children(types: &Types, bodies: Vec<DescrOf<ComponentRef>>) -> Vec<DescrOf<ComponentRef>> {
+    let needed = bodies.iter().flat_map(|body| &body.cases).any(|case| {
+        let s = &case.structure;
+        s.tuples
+            .iter()
+            .any(|c| c.pos.len() > 1 || (!c.neg.is_empty() && !c.pos.is_empty()))
+            || s.lists.iter().any(|c| c.pos.len() > 1)
+            || s.resources
+                .iter()
+                .any(|c| c.pos.len() > 1 || (!c.pos.is_empty() && !c.neg.is_empty()))
+            || s.maps.iter().any(|c| c.pos.len() > 1)
+            || s.funcs.iter().any(|c| c.pos.len() > 1)
+    });
+    if !needed {
+        return bodies;
+    }
+    let mut operands = LocalBooleanOperands {
+        types,
+        original: bodies.clone(),
+        bodies,
+        formulas: Vec::new(),
+        index: HashMap::new(),
+    };
+    let mut next = 0;
+    while next < operands.bodies.len() {
+        let mut body = operands.bodies[next].clone();
+        for case in &mut body.cases {
+            let s = &mut case.structure;
+            s.tuples = operands.meet_positives(std::mem::take(&mut s.tuples));
+            s.tuples = s
+                .tuples
+                .drain(..)
+                .flat_map(|clause| normalize_product_difference_with(&mut operands, clause))
+                .collect();
+            s.lists = operands.meet_positives(std::mem::take(&mut s.lists));
+            s.resources = operands.meet_positives(std::mem::take(&mut s.resources));
+            s.resources = s
+                .resources
+                .drain(..)
+                .flat_map(|clause| normalize_product_difference_with(&mut operands, clause))
+                .collect();
+            s.maps = operands.meet_positives(std::mem::take(&mut s.maps));
+            s.funcs = operands.meet_positives(std::mem::take(&mut s.funcs));
+        }
+        operands.bodies[next] = body;
+        next += 1;
+    }
+    operands.bodies
+}
+
+/// Formula atoms always name the original forest or an already-published
+/// child reachable from it. Generated references expand back to their formula
+/// before composition: ((X & A) & B) never creates a new atomic operand.
+/// Let N include the original local nodes and the finite transitive closure
+/// of their published child descriptors. At most 3^N consistent conjunctions
+/// and 2^(3^N) sorted clause sets exist. This is a finite worklist, not a truncation rule;
+/// the usual interner still prunes and minimizes the resulting graph.
+struct LocalBooleanOperands<'a> {
+    types: &'a Types,
+    original: Vec<DescrOf<ComponentRef>>,
+    bodies: Vec<DescrOf<ComponentRef>>,
+    formulas: Vec<Vec<Conj<ComponentRef>>>,
+    index: HashMap<Vec<Conj<ComponentRef>>, usize>,
+}
+
+impl LocalBooleanOperands<'_> {
+    fn formula(&self, reference: ComponentRef) -> Vec<Conj<ComponentRef>> {
+        match reference {
+            ComponentRef::Local(NodeId(node)) if node >= self.original.len() => {
+                self.formulas[node - self.original.len()].clone()
+            }
+            ComponentRef::Published(ty) if ty == self.types.core.none => Vec::new(),
+            ComponentRef::Published(ty) if ty == self.types.core.any => vec![Conj::top()],
+            original => vec![Conj::pos_of(original)],
+        }
+    }
+
+    fn original_body(&self, reference: ComponentRef) -> DescrOf<ComponentRef> {
+        match reference {
+            ComponentRef::Local(NodeId(node)) => self.original[node].clone(),
+            ComponentRef::Published(ty) => self.types.regular_published(ty),
+        }
+    }
+
+    fn operand(&mut self, mut formula: Vec<Conj<ComponentRef>>) -> ComponentRef {
+        normalize_axis(&mut formula);
+        formula.retain(|clause| !clause.pos.iter().any(|p| clause.neg.contains(p)));
+        if formula.is_empty() {
+            return ComponentRef::Published(self.types.core.none);
+        }
+        if formula.iter().any(Conj::is_top) {
+            return ComponentRef::Published(self.types.core.any);
+        }
+        if let [clause] = formula.as_slice()
+            && let ([reference], []) = (clause.pos.as_slice(), clause.neg.as_slice())
+        {
+            return *reference;
+        }
+        if let Some(&node) = self.index.get(&formula) {
+            return ComponentRef::local(node);
+        }
+        let mut body = DescrOf::none();
+        for clause in &formula {
+            let mut part = DescrOf::any();
+            for &positive in &clause.pos {
+                part = part.intersect(&self.original_body(positive));
+            }
+            for &negative in &clause.neg {
+                part = part.diff(&self.original_body(negative));
+            }
+            body = super::descr::union_of(&body, &part);
+        }
+        let node = self.bodies.len();
+        self.index.insert(formula.clone(), node);
+        self.formulas.push(formula);
+        self.bodies.push(body);
+        ComponentRef::local(node)
+    }
+
+    fn meet_positives<T: MergeSig<ComponentRef>>(&mut self, clauses: Vec<Conj<T>>) -> Vec<Conj<T>> {
+        clauses
+            .into_iter()
+            .filter_map(|clause| super::intersect_clauses_with(self, &Conj::top(), &clause))
+            .collect()
+    }
+}
+
+impl ChildIntersection<ComponentRef> for LocalBooleanOperands<'_> {
+    fn intersect_child(&mut self, left: ComponentRef, right: ComponentRef) -> ComponentRef {
+        let formula = dnf_intersect(&self.formula(left), &self.formula(right));
+        self.operand(formula)
+    }
+
+    fn child_is_empty(&self, child: &ComponentRef) -> bool {
+        match child {
+            ComponentRef::Published(ty) => self.types.is_empty(ty),
+            // The shared emptiness pass classifies local equations after the
+            // finite graph has been assembled, never from a partial body.
+            ComponentRef::Local(_) => false,
+        }
+    }
+}
+
+impl ProductCoordinateOps<ComponentRef> for LocalBooleanOperands<'_> {
+    fn is_subtype(&self, positive: &ComponentRef, negative: &ComponentRef) -> bool {
+        match (*positive, *negative) {
+            (_, ComponentRef::Published(ty)) if ty == self.types.core.any => true,
+            (ComponentRef::Published(a), ComponentRef::Published(b)) => self.types.is_subtype(&a, &b),
+            _ => positive == negative,
+        }
+    }
+
+    fn has_vars(&self, reference: &ComponentRef) -> bool {
+        let mut pending = vec![*reference];
+        let mut seen = BTreeSet::new();
+        while let Some(reference) = pending.pop() {
+            if !seen.insert(reference) {
+                continue;
+            }
+            match reference {
+                ComponentRef::Published(ty) if self.types.has_vars(&ty) => return true,
+                ComponentRef::Published(_) => {}
+                ComponentRef::Local(NodeId(node)) if node >= self.original.len() => {
+                    for clause in &self.formulas[node - self.original.len()] {
+                        pending.extend(clause.pos.iter().chain(&clause.neg).copied());
+                    }
+                }
+                ComponentRef::Local(NodeId(node)) => {
+                    let body = &self.original[node];
+                    if body.cases.iter().any(|case| !case.structure.vars.values.is_empty()) {
+                        return true;
+                    }
+                    visit_children(body, |child| pending.push(child));
+                }
+            }
+        }
+        false
+    }
+
+    fn difference(&mut self, positive: ComponentRef, negative: ComponentRef) -> Option<ComponentRef> {
+        let formula = dnf_intersect(&self.formula(positive), &dnf_neg(&self.formula(negative)));
+        Some(self.operand(formula))
+    }
 }
 
 /// Classify a descriptor forest against an unpublished suffix of the arena,
@@ -749,18 +942,22 @@ fn normalize_shape(types: &mut Types, body: DescrOf<RegularRef>) -> DescrOf<Regu
 }
 
 fn normalize_structure(types: &mut Types, body: &mut StructureOf<RegularRef>) {
-    let mut tuple_ops = RegularTupleOps { types };
+    let mut tuple_ops = RegularChildOps { types };
     body.tuples = std::mem::take(&mut body.tuples)
         .into_iter()
-        .map(|clause| normalize_tuple_coordinate_difference_with(&mut tuple_ops, clause))
+        .flat_map(|clause| normalize_product_difference_with(&mut tuple_ops, clause))
         .collect();
     normalize_tuple_rect_clauses(&mut tuple_ops, &mut body.tuples);
     normalize_axis(&mut body.tuples);
     absorb_regular_tuple_clauses(types, &mut body.tuples);
-    axis::merge_empty_list_clause(&mut body.lists);
+    axis::normalize_list_empty_shape(&mut body.lists);
     normalize_axis(&mut body.lists);
     let mut callable_ops = RegularCallableSurfaceOps { types };
     normalize_literal_callable_surfaces_with(&mut callable_ops, body);
+    body.resources = std::mem::take(&mut body.resources)
+        .into_iter()
+        .flat_map(|clause| normalize_product_difference_with(&mut RegularChildOps { types }, clause))
+        .collect();
     normalize_axis(&mut body.resources);
     normalize_axis(&mut body.funcs);
     normalize_axis(&mut body.maps);
@@ -849,7 +1046,7 @@ fn rectangles_cover<R: PartialEq>(
     )
 }
 
-struct RegularTupleOps<'a> {
+struct RegularChildOps<'a> {
     types: &'a mut Types,
 }
 
@@ -873,7 +1070,7 @@ impl CallableSurfaceOps<RegularRef> for RegularCallableSurfaceOps<'_> {
     }
 }
 
-impl TupleCoordinateOps<RegularRef> for RegularTupleOps<'_> {
+impl ProductCoordinateOps<RegularRef> for RegularChildOps<'_> {
     fn is_subtype(&self, positive: &RegularRef, negative: &RegularRef) -> bool {
         regular_ref_is_subtype(self.types, positive, negative)
     }
@@ -895,7 +1092,7 @@ impl TupleCoordinateOps<RegularRef> for RegularTupleOps<'_> {
     }
 }
 
-impl axis::TupleRectOps<RegularRef> for RegularTupleOps<'_> {
+impl axis::TupleRectOps<RegularRef> for RegularChildOps<'_> {
     fn same(&self, left: &RegularRef, right: &RegularRef) -> bool {
         left == right
     }

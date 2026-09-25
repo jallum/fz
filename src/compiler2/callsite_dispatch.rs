@@ -725,15 +725,9 @@ fn seating(
 /// ONE AND THE SAME QUESTION SEPARATES NOTHING, and this says so outright
 /// rather than leaving `overlaps` to agree with itself. Two arms asking the
 /// identical question at an input admit the identical set of values there,
-/// whatever that set is. Asking `overlaps` there would make the answer turn on
-/// a test being REALIZABLE, which not every one is: a tuple clause with a
-/// subtracted signature loses its whole arity in
-/// `runtime_type_predicate_tuple_arities`, so a surface holding every non-int
-/// pair projects to a test that admits nothing and does not overlap ITSELF.
-/// That is a defect in the projection and the projection's to cure; what it may
-/// not do is decide a seat, a drop or a column order, and stated this way it
-/// cannot -- `an_untested_position_is_not_a_separation` is the pair that proves
-/// it.
+/// whatever that set is. Even an empty question does not overlap itself,
+/// but its equality with the other question cannot establish a separation
+/// at a position the dispatch plan does not test.
 fn separated_at(early: &RuntimeTypePredicate, late: &RuntimeTypePredicate) -> bool {
     early != late && !early.overlaps(late)
 }
@@ -3144,32 +3138,11 @@ mod tests {
         }
     }
 
-    /// A position the plan does NOT test may not separate a pair, and the
-    /// separation check has to say so itself rather than trust that every
-    /// realizable test overlaps itself.
-    ///
-    /// [`dispatch_columns`] drops a position where every arm carries the
-    /// SAME observable surface -- the plan emits no test there at all -- so a
-    /// pair "separated" there is separated by nothing the runtime asks. The
-    /// projection makes that reachable: a tuple clause with a SUBTRACTED
-    /// signature loses its whole arity in
-    /// `runtime_type_predicate_tuple_arities`, so `{any, any} & not({int,
-    /// int})` holds every pair that is not two ints and yet projects to a test
-    /// admitting nothing, which does not overlap itself.
-    ///
-    /// Both arms below carry that surface at subject 1 and differ only at
-    /// subject 0, where `:ok` sits inside `:ok | :tail` on the ATOM axis --
-    /// separating, so coverage runs both ways and the precision preference
-    /// seats the narrow arm first. Read subject 1 through `overlaps` alone and
-    /// the pair is `Separated`, `seats_before(N, W)` is false, and the drop
-    /// takes the narrow arm for its stand-in: the callsite collapses to
-    /// `Direct(W)` and `(:ok, pair)` runs a body no arrival of these two arms
-    /// ever sent it to. That is the relative-soundness theorem
-    /// [`unroutable_alternatives`] rests on, broken by a question the plan
-    /// never puts.
-    ///
-    /// One and the same question separates nothing, so [`seating`] skips a
-    /// position the two arms ask identically, and the narrow arm survives.
+    /// Equal observable surfaces contribute no dispatch column. A shared
+    /// tuple exclusion must therefore leave the narrower atom arm first and
+    /// preserve both destinations. Tuple normalization now makes the shared
+    /// predicate realizable; the equal-empty-question check separately pins
+    /// the original rule that equality never establishes a separation.
     #[test]
     fn an_untested_position_is_not_a_separation() {
         let _tel = ConfiguredTelemetry::new();
@@ -3210,9 +3183,14 @@ mod tests {
             "subject 1 is the same surface on both arms, so the plan tests subject 0 and nothing else",
         );
         assert!(
-            !questions[0][1].overlaps(&questions[1][1]),
-            "the shared surface's own test does not overlap ITSELF -- the projection defect this gate \
-             refuses to let decide a routing",
+            questions[0][1].overlaps(&questions[1][1]),
+            "factoring the tuple exclusion must preserve a realizable shared predicate",
+        );
+        let empty_question = RuntimeTypePredicate::none();
+        assert!(!empty_question.overlaps(&empty_question));
+        assert!(
+            !separated_at(&empty_question, &empty_question),
+            "even identical empty questions cannot separate an untested position",
         );
         let types = world.types();
         assert_eq!(

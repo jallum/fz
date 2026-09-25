@@ -389,11 +389,24 @@ pub(super) fn list_clause_of(denotation: ListDenotation, intern: &mut dyn FnMut(
 /// merged `[]` away early still carries it in the clause it merged into, and
 /// the next member widens against that.
 ///
-/// A clause in the list normal form carries no negative that could hold `[]`,
-/// so reading the flags is exact. A clause the boundary left alone (its
-/// elements carry type variables) may, and one is neither widened nor read as
-/// holding `[]`.
-pub(super) fn merge_empty_list_clause<R>(clauses: &mut Vec<Conj<ListSigOf<R>>>) {
+/// First place each positive-bearing clause's empty membership on its
+/// positives alone. This uses only flags, so local references and nominal
+/// variables obey the same rule. Negative-only clauses retain their flags;
+/// `clause_holds_empty` reads their membership directly.
+pub(super) fn normalize_list_empty_shape<R>(clauses: &mut Vec<Conj<ListSigOf<R>>>) {
+    // Empty-list membership depends only on flags, even when elements are
+    // local equation references or unsubstituted variables. State that one
+    // fact on the positives; negative flags then carry no additional fact.
+    for clause in clauses.iter_mut().filter(|clause| !clause.pos.is_empty()) {
+        let holds_empty = emptiness::clause_holds_empty(clause);
+        for positive in &mut clause.pos {
+            positive.empty = holds_empty;
+        }
+        for negative in &mut clause.neg {
+            negative.empty = false;
+        }
+        clause.neg.retain(|negative| negative.elem.is_some());
+    }
     fn just_empty<R>(c: &Conj<ListSigOf<R>>) -> bool {
         plain_sig(c).is_some_and(ListSigOf::is_exact_empty)
     }

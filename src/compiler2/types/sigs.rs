@@ -9,7 +9,7 @@ use crate::fz_ir::FnId;
 use crate::compiler2::identity::ModuleId;
 use crate::modules::identity::ModuleName;
 
-use super::{CallableValueKind, MapKey, Ty, Types};
+use super::{CallableValueKind, MapKey, Ty};
 
 /// Runtime identity of one record-family value. Plain maps and named structs
 /// share the record-field type algebra, but their tags are disjoint and travel
@@ -196,20 +196,54 @@ pub(crate) enum PosMeet<T> {
     Distinct,
 }
 
-/// Same-shape positive clauses in an intersection should collapse to one
-/// narrower clause. This keeps semantic meets stable instead of piling up
-/// conjunctive structure on every repeated refinement, and lets a merge that
-/// proves emptiness drop the clause instead of persisting garbage (fz-go4.24).
-pub(crate) trait MergeSig: Clone + PartialEq {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self>;
+/// Constructors that denote a fixed-arity Cartesian product. Subtracting
+/// another product splits into coordinate differences; unlike lists or
+/// callable arrows, no cross-coordinate condition survives the split.
+pub(super) trait ProductSig<R>: Clone {
+    fn coordinates(&self) -> &[R];
+    fn with_coordinate(&self, index: usize, value: R) -> Self;
 }
 
-impl MergeSig for ListSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
-        let elem = match (a.elem, b.elem) {
+impl<R: Clone> ProductSig<R> for TupleSigOf<R> {
+    fn coordinates(&self) -> &[R] {
+        &self.elems
+    }
+    fn with_coordinate(&self, index: usize, value: R) -> Self {
+        let mut result = self.clone();
+        result.elems[index] = value;
+        result
+    }
+}
+
+impl<R: Clone> ProductSig<R> for ResourceSigOf<R> {
+    fn coordinates(&self) -> &[R] {
+        std::slice::from_ref(&self.payload)
+    }
+    fn with_coordinate(&self, index: usize, value: R) -> Self {
+        debug_assert_eq!(index, 0);
+        Self { payload: value }
+    }
+}
+
+pub(super) trait ChildIntersection<R: Clone> {
+    fn intersect_child(&mut self, left: R, right: R) -> R;
+    fn child_is_empty(&self, child: &R) -> bool;
+}
+
+/// Same-shape positive clauses in an intersection should collapse to one
+/// narrower clause. The child domain is supplied by the caller: ordinary
+/// ground types intersect `Ty`s, while a regular Boolean walk can instead
+/// name one of its finite product states.
+pub(super) trait MergeSig<R: Clone + PartialEq>: Clone + PartialEq {
+    fn intersect_pos(ops: &mut impl ChildIntersection<R>, a: &Self, b: &Self) -> PosMeet<Self>;
+}
+
+impl<R: Clone + PartialEq> MergeSig<R> for ListSigOf<R> {
+    fn intersect_pos(ops: &mut impl ChildIntersection<R>, a: &Self, b: &Self) -> PosMeet<Self> {
+        let elem = match (a.elem.clone(), b.elem.clone()) {
             (Some(a), Some(b)) => {
-                let elem = types.intersect(a, b);
-                if types.is_empty(&elem) { None } else { Some(elem) }
+                let elem = ops.intersect_child(a, b);
+                if ops.child_is_empty(&elem) { None } else { Some(elem) }
             }
             _ => None,
         };
@@ -219,25 +253,25 @@ impl MergeSig for ListSig {
         if !empty && elem.is_none() {
             return PosMeet::Empty;
         }
-        PosMeet::Merged(ListSig { empty, elem })
+        PosMeet::Merged(ListSigOf { empty, elem })
     }
 }
 
-impl MergeSig for ResourceSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
+impl<R: Clone + PartialEq> MergeSig<R> for ResourceSigOf<R> {
+    fn intersect_pos(ops: &mut impl ChildIntersection<R>, a: &Self, b: &Self) -> PosMeet<Self> {
         // `res(A) ∩ res(B) = res(A ∩ B)`, and `res(∅) = ∅` (a resource always
         // carries a payload; `Types::resource` refuses an empty one).
-        let payload = types.intersect(a.payload, b.payload);
-        if types.is_empty(&payload) {
+        let payload = ops.intersect_child(a.payload.clone(), b.payload.clone());
+        if ops.child_is_empty(&payload) {
             PosMeet::Empty
         } else {
-            PosMeet::Merged(ResourceSig { payload })
+            PosMeet::Merged(ResourceSigOf { payload })
         }
     }
 }
 
-impl MergeSig for TupleSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
+impl<R: Clone + PartialEq> MergeSig<R> for TupleSigOf<R> {
+    fn intersect_pos(ops: &mut impl ChildIntersection<R>, a: &Self, b: &Self) -> PosMeet<Self> {
         // Tuples of different arity are disjoint products: `A₁×…×Aₙ ∩
         // B₁×…×Bₘ = ∅` for `n ≠ m` (a tuple value has exactly one arity —
         // the same rule `emptiness::tuple_clause_empty` decides by).
@@ -245,21 +279,21 @@ impl MergeSig for TupleSig {
             return PosMeet::Empty;
         }
         // `∏Aᵢ ∩ ∏Bᵢ = ∏(Aᵢ ∩ Bᵢ)`; a product with an empty factor is `∅`.
-        let elems: Vec<Ty> = a
+        let elems: Vec<R> = a
             .elems
             .iter()
             .zip(b.elems.iter())
-            .map(|(x, y)| types.intersect(*x, *y))
+            .map(|(x, y)| ops.intersect_child(x.clone(), y.clone()))
             .collect();
-        if elems.iter().any(|e| types.is_empty(e)) {
+        if elems.iter().any(|e| ops.child_is_empty(e)) {
             return PosMeet::Empty;
         }
-        PosMeet::Merged(TupleSig { elems })
+        PosMeet::Merged(TupleSigOf { elems })
     }
 }
 
-impl MergeSig for ArrowSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
+impl<R: Clone + PartialEq> MergeSig<R> for ArrowSigOf<R> {
+    fn intersect_pos(ops: &mut impl ChildIntersection<R>, a: &Self, b: &Self) -> PosMeet<Self> {
         // An unmergeable arrow pair stays Distinct, never Empty: a conjunction
         // of arrows is an overload, which is inhabited in general.
         if a.args.len() != b.args.len() {
@@ -282,17 +316,17 @@ impl MergeSig for ArrowSig {
                 if a.args != b.args {
                     return PosMeet::Distinct;
                 }
-                PosMeet::Merged(ArrowSig {
+                PosMeet::Merged(ArrowSigOf {
                     args: a.args.clone(),
-                    ret: types.intersect(a.ret, b.ret),
-                    lit: Some(ClosureLit {
+                    ret: ops.intersect_child(a.ret.clone(), b.ret.clone()),
+                    lit: Some(ClosureLitOf {
                         kind: la.kind,
                         fn_id: la.fn_id,
                         captures: la
                             .captures
                             .iter()
                             .zip(lb.captures.iter())
-                            .map(|(x, y)| types.intersect(*x, *y))
+                            .map(|(x, y)| ops.intersect_child(x.clone(), y.clone()))
                             .collect(),
                     }),
                 })
@@ -305,9 +339,9 @@ impl MergeSig for ArrowSig {
                 // denotation unchanged.
                 PosMeet::Merged(if a.lit.is_some() { a.clone() } else { b.clone() })
             }
-            (None, None) if a.args == b.args => PosMeet::Merged(ArrowSig {
+            (None, None) if a.args == b.args => PosMeet::Merged(ArrowSigOf {
                 args: a.args.clone(),
-                ret: types.intersect(a.ret, b.ret),
+                ret: ops.intersect_child(a.ret.clone(), b.ret.clone()),
                 lit: None,
             }),
             (None, None) => {
@@ -321,7 +355,7 @@ impl MergeSig for ArrowSig {
     }
 }
 
-impl MergeSig for MapSig {
+impl<R: Clone + PartialEq> MergeSig<R> for MapSigOf<R> {
     // Always `Merged`, never `Empty`: a field intersected to `∅` (an
     // uninhabited required field) makes the whole merged clause `∅` and
     // ought to drop rather than persist, mirroring `TupleSig`'s empty-
@@ -336,7 +370,7 @@ impl MergeSig for MapSig {
     // tuples-axis fix was justified by one: a 60-clause tuple DNF with 54
     // provably-empty clauses). Re-measure before adding this if map-heavy
     // evidence-join traffic starts to matter.
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
+    fn intersect_pos(ops: &mut impl ChildIntersection<R>, a: &Self, b: &Self) -> PosMeet<Self> {
         if a.tag != b.tag {
             return PosMeet::Empty;
         }
@@ -344,10 +378,10 @@ impl MergeSig for MapSig {
         for (key, value) in &b.fields {
             fields
                 .entry(key.clone())
-                .and_modify(|current| *current = types.intersect(*current, *value))
-                .or_insert(*value);
+                .and_modify(|current| *current = ops.intersect_child(current.clone(), value.clone()))
+                .or_insert_with(|| value.clone());
         }
-        PosMeet::Merged(MapSig {
+        PosMeet::Merged(MapSigOf {
             tag: a.tag.clone(),
             fields,
         })

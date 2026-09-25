@@ -375,7 +375,7 @@ impl<'a> TyCanon<'a> {
         let mut resources = d.resources.clone();
         let mut maps = d.maps.clone();
         if matches!(provenance, Provenance::Synthesized) {
-            axis::merge_empty_list_clause(&mut lists);
+            axis::normalize_list_empty_shape(&mut lists);
             axis::absorb_axis(cx, &mut tuples, subtype, covers, &axis::TUPLES);
             axis::absorb_axis(cx, &mut lists, subtype, covers, &axis::LISTS);
             axis::absorb_axis(cx, &mut resources, subtype, covers, &axis::RESOURCES);

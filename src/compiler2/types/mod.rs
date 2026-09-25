@@ -62,8 +62,8 @@ pub(crate) use descr::{DescrOf, union_of as union_regular_bodies};
 use dnf::dnf_intersect_with;
 pub(crate) use regular::ComponentRef;
 use sigs::{
-    ArrowSig, ArrowSigOf, ClosureLit, ClosureLitOf, ListSig, ListSigOf, MapSig, MapSigOf, MapTag, MergeSig, PosMeet,
-    ResourceSig, ResourceSigOf, StructTag, TupleSig, TupleSigOf,
+    ArrowSig, ArrowSigOf, ChildIntersection, ClosureLit, ClosureLitOf, ListSig, ListSigOf, MapSig, MapSigOf, MapTag,
+    MergeSig, PosMeet, ResourceSig, ResourceSigOf, StructTag, TupleSig, TupleSigOf,
 };
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
@@ -178,7 +178,7 @@ enum InternKey {
     Regular(Box<regular::RegularKey>),
 }
 
-pub(super) trait TupleCoordinateOps<R: Clone> {
+pub(super) trait ProductCoordinateOps<R: Clone> {
     fn is_subtype(&self, positive: &R, negative: &R) -> bool;
     fn has_vars(&self, reference: &R) -> bool;
     fn difference(&mut self, positive: R, negative: R) -> Option<R>;
@@ -189,7 +189,7 @@ pub(super) trait CallableSurfaceOps<R: Clone> {
     fn named_ret(&mut self, fn_id: FnId) -> R;
 }
 
-impl TupleCoordinateOps<Ty> for Types {
+impl ProductCoordinateOps<Ty> for Types {
     fn is_subtype(&self, positive: &Ty, negative: &Ty) -> bool {
         Types::is_subtype(self, positive, negative)
     }
@@ -203,6 +203,16 @@ impl TupleCoordinateOps<Ty> for Types {
     }
 }
 
+impl ChildIntersection<Ty> for Types {
+    fn intersect_child(&mut self, left: Ty, right: Ty) -> Ty {
+        self.intersect(left, right)
+    }
+
+    fn child_is_empty(&self, child: &Ty) -> bool {
+        self.is_empty(child)
+    }
+}
+
 impl CallableSurfaceOps<Ty> for Types {
     fn named_arg(&mut self, fn_id: FnId, position: usize) -> Ty {
         self.type_var(closure_var_id(fn_id, position))
@@ -213,38 +223,47 @@ impl CallableSurfaceOps<Ty> for Types {
     }
 }
 
-pub(super) fn normalize_tuple_coordinate_difference_with<R: Clone>(
-    ops: &mut impl TupleCoordinateOps<R>,
-    clause: Conj<TupleSigOf<R>>,
-) -> Conj<TupleSigOf<R>> {
-    let ([positive], [negative]) = (clause.pos.as_slice(), clause.neg.as_slice()) else {
-        return clause;
+/// A product minus a product is the union of products differing in at least
+/// one coordinate. Apply each excluded rectangle to that union in turn.
+/// Nominal variables retain their deferred form until substitution.
+fn normalize_product_difference_with<R: Clone, S: sigs::ProductSig<R>>(
+    ops: &mut impl ProductCoordinateOps<R>,
+    clause: Conj<S>,
+) -> Vec<Conj<S>> {
+    let [positive] = clause.pos.as_slice() else {
+        return vec![clause];
     };
-    if positive.elems.len() != negative.elems.len()
-        || positive
-            .elems
+    if clause.neg.is_empty()
+        || clause
+            .pos
             .iter()
-            .chain(&negative.elems)
+            .chain(&clause.neg)
+            .flat_map(|sig| sig.coordinates())
             .any(|reference| ops.has_vars(reference))
     {
-        return clause;
+        return vec![clause];
     }
-    let differing = positive
-        .elems
-        .iter()
-        .zip(&negative.elems)
-        .enumerate()
-        .filter_map(|(index, (positive, negative))| (!ops.is_subtype(positive, negative)).then_some(index))
-        .collect::<Vec<_>>();
-    let [index] = differing.as_slice() else {
-        return clause;
-    };
-    let Some(difference) = ops.difference(positive.elems[*index].clone(), negative.elems[*index].clone()) else {
-        return clause;
-    };
-    let mut elems = positive.elems.clone();
-    elems[*index] = difference;
-    Conj::pos_of(TupleSigOf { elems })
+    let mut rectangles = vec![positive.clone()];
+    for negative in &clause.neg {
+        let mut residual = Vec::new();
+        for positive in rectangles {
+            if positive.coordinates().len() != negative.coordinates().len() {
+                residual.push(positive);
+                continue;
+            }
+            for (index, (p, n)) in positive.coordinates().iter().zip(negative.coordinates()).enumerate() {
+                if ops.is_subtype(p, n) {
+                    continue;
+                }
+                let Some(difference) = ops.difference(p.clone(), n.clone()) else {
+                    return vec![clause];
+                };
+                residual.push(positive.with_coordinate(index, difference));
+            }
+        }
+        rectangles = residual;
+    }
+    rectangles.into_iter().map(Conj::pos_of).collect()
 }
 
 fn normalize_literal_callable_surfaces_with<R: Clone>(ops: &mut impl CallableSurfaceOps<R>, d: &mut StructureOf<R>) {
@@ -573,7 +592,7 @@ impl TypeInterner {
 #[cfg(debug_assertions)]
 fn debug_assert_lists_merged(clauses: &[Conj<ListSig>]) {
     let mut merged = clauses.to_vec();
-    axis::merge_empty_list_clause(&mut merged);
+    axis::normalize_list_empty_shape(&mut merged);
     debug_assert!(
         merged == clauses,
         "interned list axis still has an empty-list clause to merge"
@@ -784,9 +803,9 @@ impl Types {
     /// re-present a descriptor the arena already has.
     ///
     /// TUPLE NORMALIZATION first, the one rule that reaches a different
-    /// CARVING of one type. A ground tuple difference whose cover differs in
-    /// exactly one coordinate is still one rectangle, and the axis's plain
-    /// rectangles are then fused and widened to the one union of products both
+    /// CARVING of one type. A ground tuple difference becomes a union of
+    /// rectangles over coordinate differences, and those plain rectangles
+    /// are then fused and widened to the one union of products both
     /// carvings reach: `{A,C} ∨ {B,C}` is `{A∨B, C}`, so
     /// `{[int], :false} ∨ {[int], :true}` and `{[int], :false | :true}` are one
     /// descriptor before identity is assigned. Fusion mints the coordinate it
@@ -859,6 +878,10 @@ impl Types {
     fn normalize_structure(&mut self, structure: &mut Structure) {
         self.normalize_tuple_axis(structure);
         self.normalize_list_clauses(structure);
+        structure.resources = std::mem::take(&mut structure.resources)
+            .into_iter()
+            .flat_map(|clause| normalize_product_difference_with(self, clause))
+            .collect();
         self.normalize_literal_callable_surfaces(structure);
         self.order_clauses(structure);
         self.drop_empty_clauses(structure);
@@ -939,7 +962,7 @@ impl Types {
     fn normalize_list_clauses(&mut self, d: &mut Structure) {
         let clauses = std::mem::take(&mut d.lists);
         d.lists = clauses.into_iter().map(|c| self.list_normal_form(c)).collect();
-        axis::merge_empty_list_clause(&mut d.lists);
+        axis::normalize_list_empty_shape(&mut d.lists);
     }
 
     /// Direct callable observations are activation coordinates, not value
@@ -1210,10 +1233,9 @@ impl Types {
 
     /// The tuple axis's own normal form, in two steps.
     ///
-    /// First each clause alone: a ground difference whose cover differs in
-    /// exactly one coordinate is still one rectangle, so it is rewritten to
-    /// one — which also turns a clause that was carrying a negative into a
-    /// plain rectangle the step below can carve.
+    /// First each clause alone: subtract each excluded product by splitting
+    /// into coordinate differences. This turns ground negative factors into
+    /// plain rectangles the step below can carve.
     ///
     /// Then the axis as a whole: its plain rectangles go through
     /// [`axis::fuse_tuple_rects`], which fuses and widens until one union of
@@ -1230,10 +1252,11 @@ impl Types {
         let mut complex = Vec::with_capacity(clauses.len());
         let mut rects: Vec<axis::Rect> = Vec::with_capacity(clauses.len());
         for clause in clauses {
-            let clause = self.normalize_tuple_coordinate_difference(clause);
-            match (clause.pos.as_slice(), clause.neg.as_slice()) {
-                ([sig], []) => rects.push(sig.elems.iter().map(|ty| Operand::Ty(*ty)).collect()),
-                _ => complex.push(clause),
+            for clause in normalize_product_difference_with(self, clause) {
+                match (clause.pos.as_slice(), clause.neg.as_slice()) {
+                    ([sig], []) => rects.push(sig.elems.iter().map(|ty| Operand::Ty(*ty)).collect()),
+                    _ => complex.push(clause),
+                }
             }
         }
         let rects = axis::fuse_tuple_rects(self.ctx(), rects);
@@ -1250,20 +1273,6 @@ impl Types {
                 .collect();
             d.tuples.push(Conj::pos_of(TupleSig { elems }));
         }
-    }
-
-    /// `P₀ × … × Pₖ × … × Pₙ \ N₀ × … × Nₖ × … × Nₙ` is one rectangle
-    /// whenever every coordinate except `k` is contained in its cover:
-    ///
-    /// `P₀ × … × (Pₖ \ Nₖ) × … × Pₙ`.
-    ///
-    /// The descriptor kernel represents the left form as one positive and one
-    /// negative tuple signature. It is semantically exact but structurally
-    /// distinct from the right form, so it must collapse before `Ty` identity
-    /// is assigned. More than one differing coordinate needs a union of
-    /// rectangles and deliberately stays in its existing DNF form.
-    fn normalize_tuple_coordinate_difference(&mut self, clause: Conj<TupleSig>) -> Conj<TupleSig> {
-        normalize_tuple_coordinate_difference_with(self, clause)
     }
 
     fn ctx(&self) -> TyCtx<'_> {
@@ -1829,6 +1838,10 @@ impl Types {
             if types.is_subtype(&b, &a) {
                 return b;
             }
+            if types.interner.is_regular(a) || types.interner.is_regular(b) {
+                let body = types.regular_published(a).intersect(&types.regular_published(b));
+                return types.intern_regular_bodies(vec![body])[0];
+            }
             let left = types.descr(&a).clone();
             let right = types.descr(&b).clone();
             let d = intersect_descr(types, &left, &right);
@@ -1847,6 +1860,10 @@ impl Types {
             return a;
         }
         self.binary_type_operation(BinaryTypeOperation::Difference(a, b), |types| {
+            if types.interner.is_regular(a) || types.interner.is_regular(b) {
+                let body = types.regular_published(a).diff(&types.regular_published(b));
+                return types.intern_regular_bodies(vec![body])[0];
+            }
             let d = types.descr(&a).diff(types.descr(&b));
             types.intern(d)
         })
@@ -3160,6 +3177,17 @@ fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
 }
 
 fn intersect_descr(types: &mut Types, a: &Descr, b: &Descr) -> Descr {
+    intersect_descr_with(types, a, b)
+}
+
+/// Intersection over a caller-supplied child-reference domain. Ground type
+/// operations use [`Types`] itself; the regular kernel uses the same Boolean
+/// structure while naming finite product states at constructor children.
+fn intersect_descr_with<R: Clone + PartialEq>(
+    ops: &mut impl ChildIntersection<R>,
+    a: &DescrOf<R>,
+    b: &DescrOf<R>,
+) -> DescrOf<R> {
     let mut cases = Vec::new();
     for left in &a.cases {
         for right in &b.cases {
@@ -3167,41 +3195,53 @@ fn intersect_descr(types: &mut Types, a: &Descr, b: &Descr) -> Descr {
             if !brands.is_none() {
                 cases.push(BrandCase {
                     brands,
-                    structure: intersect_structure(types, &left.structure, &right.structure),
+                    structure: intersect_structure_with(ops, &left.structure, &right.structure),
                 });
             }
         }
     }
-    Descr { cases }
+    DescrOf { cases }
 }
 
-fn intersect_structure(types: &mut Types, a: &Structure, b: &Structure) -> Structure {
-    Structure {
+fn intersect_structure_with<R: Clone + PartialEq>(
+    ops: &mut impl ChildIntersection<R>,
+    a: &StructureOf<R>,
+    b: &StructureOf<R>,
+) -> StructureOf<R> {
+    StructureOf {
         basic: a.basic.intersect(b.basic),
         atoms: a.atoms.intersect(&b.atoms),
         opaques: a.opaques.intersect(&b.opaques),
         vars: a.vars.intersect(&b.vars),
-        tuples: intersect_dnf(types, &a.tuples, &b.tuples),
-        lists: intersect_dnf(types, &a.lists, &b.lists),
-        resources: intersect_dnf(types, &a.resources, &b.resources),
-        funcs: intersect_dnf(types, &a.funcs, &b.funcs),
-        maps: intersect_dnf(types, &a.maps, &b.maps),
+        tuples: intersect_dnf_with(ops, &a.tuples, &b.tuples),
+        lists: intersect_dnf_with(ops, &a.lists, &b.lists),
+        resources: intersect_dnf_with(ops, &a.resources, &b.resources),
+        funcs: intersect_dnf_with(ops, &a.funcs, &b.funcs),
+        maps: intersect_dnf_with(ops, &a.maps, &b.maps),
     }
 }
 
-fn intersect_dnf<T: MergeSig>(types: &mut Types, a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
-    dnf_intersect_with(a, b, |c1, c2| intersect_clauses(types, c1, c2))
+fn intersect_dnf_with<R: Clone + PartialEq, T: MergeSig<R>>(
+    ops: &mut impl ChildIntersection<R>,
+    a: &[Conj<T>],
+    b: &[Conj<T>],
+) -> Vec<Conj<T>> {
+    dnf_intersect_with(a, b, |c1, c2| intersect_clauses_with(ops, c1, c2))
 }
 
 /// `None` means the merged clause is empty by construction (a positive-sig
 /// pair proved disjoint): `∅` contributes nothing to a DNF and must not
 /// persist — every garbage clause doubles a `dnf_neg` factor.
-fn intersect_clauses<T: MergeSig>(types: &mut Types, a: &Conj<T>, b: &Conj<T>) -> Option<Conj<T>> {
+fn intersect_clauses_with<R: Clone + PartialEq, T: MergeSig<R>>(
+    ops: &mut impl ChildIntersection<R>,
+    a: &Conj<T>,
+    b: &Conj<T>,
+) -> Option<Conj<T>> {
     let mut pos = a.pos.clone();
     for new_sig in &b.pos {
         let mut merged = false;
         for slot in pos.iter_mut() {
-            match T::intersect_pos(types, slot, new_sig) {
+            match T::intersect_pos(ops, slot, new_sig) {
                 PosMeet::Merged(narrowed) => {
                     *slot = narrowed;
                     merged = true;

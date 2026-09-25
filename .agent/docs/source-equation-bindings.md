@@ -36,11 +36,34 @@ from otherwise productive bodies. Merely giving an empty cycle a new regular
 handle would disagree with `Types::is_empty`, which relies on the unique
 `none` identity.
 
-Structural filters still have a canonicality gap, tracked in fz-kdt.98.3.17.10.1.
-For `X=:a|{X}`, the descriptor for `X & {:a}` is mutually subtype-equivalent
-to `{:a}` but receives a different interned ID. Top-level atom-filter tests
-do not prove canonical restriction beneath constructors; the source/cell
-replacement must complete that prerequisite before using filtered identities.
+Structural filters need child equations before identities are assigned. For
+`X=:a|{X}`, `X & {:a}` initially contains two tuple factors; their child meet
+is `X & :a`, so the answer must intern as `{:a}`. The regular kernel now uses
+the same constructor-meet rules as ground types, with local child references.
+Tuple and resource exclusions become unions of coordinate differences; for example,
+`(X,Y) \ (:a,:b)` is `(X\:a,Y) | (X,Y\:b)`. List exclusion keeps its existing
+meaning: `list(X) \ list(:a)` may contain mixed-element lists, and cannot be
+rewritten as `list(X\:a)`. Empty-list membership depends only on constructor
+flags, so the shared list normalizer can preserve it before local children
+are solved. In particular, `X=:a|list(Y); Y=X\[]` interns like the explicit
+feedback graph `X=:a|list(Y); Y=:a|non_empty_list(Y)`.
+
+Temporary child equations are keyed by Boolean formulas over the original
+local nodes and the finite reachable published descriptor graph. Generated
+references expand back to those atoms before composition. With N atoms,
+there are at most `3^N` consistent conjunctions and `2^(3^N)` clause sets;
+syntax can be redundant but cannot grow an unbounded chain of new operands.
+The existing emptiness pass and component interner then prune and minimize
+the complete graph. These formula keys are private construction machinery,
+not another persisted type identity or an assertion of full semantic
+canonicality for arbitrary descriptor spellings.
+
+Public intersection/difference of recursive types enter this same graph.
+Calling the ordinary ground operation recursively from a child meet can
+re-enter a pair before its completed-result cache is filled; the direct
+recursive-operation gates protect against that stack overflow. The child
+regressions also cover restricted feedback, recursive ground predicates,
+equivalent tuple-exclusion forms, and empty list elements.
 
 These are kernel obligations, not the cell solver: source restrictions,
 cell-addressed argument equations, pending dependencies and the ordinary

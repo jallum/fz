@@ -5811,3 +5811,169 @@ fn regular_ground_difference_preserves_the_other_recursive_seed() {
     let expected = t.union(a, b_cycle);
     assert_eq!(roots[0], expected);
 }
+
+/// A source-cell filter can constrain a child of a recursive value, not just
+/// its outer kind. The local reference must retain that ground restriction.
+#[test]
+fn regular_ground_intersection_restricts_a_recursive_child() {
+    let mut types = Types::new();
+    let a = types.atom_lit("a");
+    let tuple_a = types.tuple(&[a]);
+    let live = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    );
+    let restricted = live.intersect(&types.regular_published(tuple_a));
+    let roots = types.intern_regular_bodies(vec![live, restricted]);
+    assert!(types.is_subtype(&roots[1], &tuple_a));
+    assert!(types.is_subtype(&tuple_a, &roots[1]));
+    assert_eq!(
+        roots[1],
+        tuple_a,
+        "a recursive child filter must canonicalize: {} vs {}",
+        types.display(&roots[1]),
+        types.display(&tuple_a)
+    );
+}
+
+/// X=:a|{Y}; Y=X∩(:a|{:a}) has a finite, nonrecursive solution even though
+/// its source equations form a cycle. Restriction must remove that cycle.
+#[test]
+fn regular_ground_child_filter_closes_recursive_feedback() {
+    let mut types = Types::new();
+    let a = types.atom_lit("a");
+    let tuple_a = types.tuple(&[a]);
+    let allowed = types.union(a, tuple_a);
+    let nested = types.tuple(&[tuple_a]);
+    let expected_x = types.union(allowed, nested);
+    let live = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(1)]),
+    );
+    let restricted = live.intersect(&types.regular_published(allowed));
+    let roots = types.intern_regular_bodies(vec![live, restricted]);
+    assert!(types.is_subtype(&roots[0], &expected_x));
+    assert!(types.is_subtype(&expected_x, &roots[0]));
+    assert!(types.is_subtype(&roots[1], &allowed));
+    assert!(types.is_subtype(&allowed, &roots[1]));
+    assert_eq!(roots, vec![expected_x, allowed]);
+}
+
+#[test]
+fn regular_ground_filters_share_positive_constructor_meets() {
+    for kind in ["tuple", "list", "resource", "map"] {
+        let mut types = Types::new();
+        let a = types.atom_lit("a");
+        let field = MapKey::Atom("value".into());
+        let expected = match kind {
+            "tuple" => types.tuple(&[a]),
+            "list" => types.list(a),
+            "resource" => types.resource(a),
+            "map" => types.map(&[(field.clone(), a)]),
+            _ => unreachable!(),
+        };
+        let constructor = match kind {
+            "tuple" => DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+            "list" => DescrOf::list_of(ComponentRef::local(0)),
+            "resource" => DescrOf::resource_of(ComponentRef::local(0)),
+            "map" => DescrOf::map_of(std::collections::BTreeMap::from([(field, ComponentRef::local(0))])),
+            _ => unreachable!(),
+        };
+        let source = union_regular_bodies(
+            &DescrOf::atom_lit("a"),
+            &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+        );
+        let filtered = constructor.intersect(&types.regular_published(expected));
+        let roots = types.intern_regular_bodies(vec![source, filtered]);
+        assert_eq!(roots[1], expected, "{kind} must use the same child meet");
+    }
+}
+
+#[test]
+fn regular_ground_difference_refines_a_recursive_tuple_child() {
+    let mut types = Types::new();
+    let a = types.atom_lit("a");
+    let tuple_a = types.tuple(&[a]);
+    let source = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    );
+    let filtered = source.diff(&types.regular_published(tuple_a));
+    let roots = types.intern_regular_bodies(vec![source, filtered]);
+    let one = types.tuple(&[roots[0]]);
+    let two = types.tuple(&[one]);
+    let expected = types.union(a, two);
+    assert_eq!(roots[1], expected);
+}
+
+#[test]
+fn regular_list_difference_preserves_mixed_element_lists() {
+    let mut types = Types::new();
+    let a = types.atom_lit("a");
+    let tuple_a = types.tuple(&[a]);
+    let list_a = types.list(a);
+    let source = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    );
+    let filtered = DescrOf::list_of(ComponentRef::local(0)).diff(&types.regular_published(list_a));
+    let roots = types.intern_regular_bodies(vec![source, filtered]);
+    let mixed_elements = types.union(a, tuple_a);
+    let mixed_lists = types.list(mixed_elements);
+    let outside_a = types.difference(mixed_lists, list_a);
+    assert!(types.is_subtype(&outside_a, &roots[1]));
+    assert!(!types.is_subtype(&mixed_lists, &roots[1]));
+    let empty_list = types.empty_list();
+    assert!(!types.is_subtype(&empty_list, &roots[1]));
+}
+
+/// A child meet can be empty even when neither operand is empty. Lists still
+/// retain their empty value; required constructor children cannot do so.
+#[test]
+fn regular_ground_child_meet_preserves_only_the_empty_list() {
+    let mut types = Types::new();
+    let b = types.atom_lit("b");
+    let list_b = types.list(b);
+    let source = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    );
+    let filtered = DescrOf::list_of(ComponentRef::local(0)).intersect(&types.regular_published(list_b));
+    let roots = types.intern_regular_bodies(vec![source, filtered]);
+    let expected = types.empty_list();
+    assert_eq!(roots[1], expected);
+}
+
+/// A recursive ground predicate is still fixed: intersecting two unbounded
+/// chains closes onto a finite product rather than unfolding either chain.
+#[test]
+fn regular_ground_recursive_filter_closes_product_states() {
+    let mut types = Types::new();
+    let mask = types.intern_regular_bodies(vec![union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    )])[0];
+    let seeds = union_regular_bodies(&DescrOf::atom_lit("a"), &DescrOf::atom_lit("b"));
+    let source = union_regular_bodies(&seeds, &DescrOf::tuple_of(vec![ComponentRef::local(0)]));
+    let filtered = source.intersect(&types.regular_published(mask));
+    let roots = types.intern_regular_bodies(vec![source, filtered]);
+    assert_eq!(roots[1], mask);
+}
+
+#[test]
+fn regular_ground_recursive_exclusion_closes_product_states() {
+    let mut types = Types::new();
+    let mask = types.intern_regular_bodies(vec![union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    )])[0];
+    let expected = types.intern_regular_bodies(vec![union_regular_bodies(
+        &DescrOf::atom_lit("b"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    )])[0];
+    let seeds = union_regular_bodies(&DescrOf::atom_lit("a"), &DescrOf::atom_lit("b"));
+    let source = union_regular_bodies(&seeds, &DescrOf::tuple_of(vec![ComponentRef::local(0)]));
+    let filtered = source.diff(&types.regular_published(mask));
+    let roots = types.intern_regular_bodies(vec![source, filtered]);
+    assert_eq!(roots[1], expected);
+}
