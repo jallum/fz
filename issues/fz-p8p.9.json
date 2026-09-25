@@ -3,7 +3,8 @@
   "blocked_by": [
     "fz-p8p.3",
     "fz-p8p.4",
-    "fz-p8p.5"
+    "fz-p8p.5",
+    "fz-p8p.6"
   ],
   "blocks": [],
   "created": "2026-09-25T21:22:59Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Move the remaining numbered fixtures2 files to fixtures/",
   "type": "task",
-  "updated_at": "2026-09-25T21:22:59Z"
+  "updated_at": "2026-09-25T21:23:00Z"
 }
