@@ -38,6 +38,11 @@ Read the sections in order, each narrower than the last:
   on its own.
 - **jobs by kind**: which kind of work dominates. One kind at ninety percent is
   the usual answer.
+- **job runs vs subjects**: per kind, `runs` against distinct `subjects`,
+  `excess` (`runs - subjects`), and the worst single subject's run count.
+  `excess` at zero means that kind ran each of its subjects exactly once;
+  proportional compilation is every row's excess staying at zero. Sorted by
+  excess, so the kind doing the most repeated work leads.
 - **jobs by kind and subject**: which function that work was for, named.
 - **most re-run jobs**: a job that ran more than once for one subject was
   woken by a changed fact; the count is the number of climbs the fixpoint took
@@ -45,9 +50,22 @@ Read the sections in order, each narrower than the last:
 - **return-type revisions per activation**: how many rounds each activation's
   return type took and whether the widening budget ended the climb; an
   activation at the ceiling widened its answer instead of finding it.
-- **wake causes**: for each of those, which fact changed and which completion
-  changed it. This is where a ladder shows itself: one fact revised many
-  times, each revision waking the same callers.
+- **cause of every re-run**: every re-run in the stream (not just the hottest
+  subjects), grouped by (job kind, changed fact + use, completing job kind,
+  disposition) so the same shape of cause across many subjects is one row
+  instead of one per subject. Only `enqueued` wakes count toward a re-run — an
+  `enqueued` wake is what started it; a `coalesced` wake landed on a re-run
+  some other wake had already enqueued, so those are reported in their own
+  table underneath rather than double-counted. A job restarted by
+  `BlockedWaiterExpansion` or `ActivationFrontier` (the fact→producer map
+  discovering a stalled job's producer, or a fresh pull session's own
+  frontier) has no wake in `work_graph.applied` at all — that code path never
+  routes through `Scheduler::complete`'s wake propagation — so those re-runs
+  are printed as a plain count rather than guessed at, next to the trace's
+  session-summed `WorkStartTally` (`ignition`/`changed_revision_wake`/
+  `activation_frontier`/`blocked_waiter_expansion`/`unsanctioned`) for
+  context. This is where a ladder shows itself: one fact revised many times,
+  each revision waking the same callers.
 
 3. Corroborate the magnitude on the plain binary.
 
