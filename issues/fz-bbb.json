@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-25T23:29:57Z",
@@ -7,8 +7,8 @@
   "id": "fz-bbb",
   "labels": [],
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "lib: each extern defp sits directly after the def that uses it, in every module",
   "type": "task",
-  "updated_at": "2026-09-25T23:29:57Z"
+  "updated_at": "2026-09-25T23:47:35Z"
 }
