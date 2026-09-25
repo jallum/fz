@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-25T21:22:59Z",
+  "description": "## Why\n443 #[test]s live inline in 45 production modules (e.g. types/arrow_match.rs 83, pull.rs 44, runtime_type_predicate.rs 41); the house rule is sibling \u003cmodule\u003e_test.rs files mounted with #[path].\n\n## What changes\nEach module's inline tests move to its sibling _test.rs file.\n\n## Signal\nNo #[test] outside *_test.rs files.",
+  "id": "fz-p8p.11",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "Move inline #[test]s out of production modules",
+  "type": "task",
+  "updated_at": "2026-09-25T21:22:59Z"
+}
