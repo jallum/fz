@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-25T20:29:00Z",
+  "description": "Follows the extern-return fold in this epic. `refine_observed_return` (src/compiler2/jobs/semantic.rs:1805-1829)\nreads a free type variable two incompatible ways in one function:\n\n```rust\nlet observed_is_unconstrained = is_equivalent(observed, any) || has_vars(observed);\n...\nlet refined = intersect(observed, contract);\nif is_empty(refined) { observed } else { refined }\n```\n\n`has_vars(observed)` treats a var-carrying observation like `any` (let the\ncontract in), then `intersect` treats the same var as a disjoint `vars`-axis\nliteral (types/descr.rs:135), so `intersect(a0, int)` is empty and the\nfallback re-admits `a0`. This is how the extern leak by the extern-return fold survived every\ncaller's correct contract result.\n\nAfter that fold no declared variable can reach observed evidence by\nconstruction. Whether the disjunct is then dead is UNMEASURED: activation keys\nlegitimately carry closure surfaces with vars (`apply1/2[(a0_p0) -\u003e a0_r, int]`,\n00549/00550 snapshots), so var-carrying observations may still arrive from\nbodies.\n\n## Work\n\n1. Deletion probe: remove the `has_vars(observed)` disjunct (and separately\n   the `has_vars(contract)` early return), run the full gate, classify every\n   new red (pin improvement / outmoded holder / regression).\n2. If dead: delete, with the test that proves a var-carrying closure surface\n   still types correctly. If live: name the case in the paper, and make the two\n   readings agree (a var is either unconstrained or a literal, not both) --\n   decided with the owner before building.\n\nRelated seam, out of scope: fz-kdt.201 (the declared return refines the body's\nreturn but is never checked against it).",
+  "id": "fz-xxd.4",
+  "labels": [],
+  "parent": "fz-xxd",
+  "priority": 1,
+  "status": "open",
+  "title": "refine_observed_return reads a free variable two ways: probe, then delete or reconcile",
+  "type": "bug",
+  "updated_at": "2026-09-25T20:29:00Z"
+}
