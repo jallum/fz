@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-p8p.2",
     "fz-p8p.3"
   ],
   "blocks": [
@@ -18,5 +17,5 @@
   "status": "open",
   "title": "Retire the nine port_*_test.rs files",
   "type": "task",
-  "updated_at": "2026-09-25T21:23:09Z"
+  "updated_at": "2026-09-25T21:40:37Z"
 }

@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-p8p.4"
-  ],
+  "blocks": [],
   "created": "2026-09-25T21:22:29Z",
   "description": "## Symptom (verified at develop, fz2 debug build)\n\n`fixtures2/00430_opaque_value_accessor.fz`: module `A` with `@type t :: opaque resource(integer)`, `def make(), do: make_resource(7, \u0026dbg/1)`, `def get(h :: t), do: h.value`; `main` calls `A.get(A.make())`.\n\n- `fz2 run` exits 1: `function_clause: the root process halted through a fault trap`.\n- `fz2 interp` exits 1: `function_clause: no backend entry clause matched for executable ...`.\n\nBoth paths agree; there is no parity break. (An earlier version of this ticket said `run` printed 7 and passed: the 7 is the resource destructor `\u0026dbg/1` firing at heap drop, and the exit status was misread.)\n\n## Reduction\n\n8 lines, no resources (`scratchpad p8p2/v10_opaque_any.fz`): `@type t :: opaque any`; `def get(h :: t), do: :ok`; `main` calls `A.get(1)`. Fails identically on both paths. Adding `@spec make() :: t` to the constructor does not help. Without `opaque`, or without the annotation, everything runs.\n\n## Mechanism (reader, file:line verified against develop)\n\n- `resolve.rs:150-160`: an `opaque` type definition publishes `opaque_of(tag)` — a pure nominal tag; the inner `resource(integer)` is validated then dropped. This matches the documented design (.agent/docs/set-theoretic-types.md, \"Brands carry their inner; opaques are nominal tags\"): an opaque tag is lattice-disjoint from plain structural values.\n- `dispatch_reachability.rs:136-184` (called from `jobs/semantic.rs:193`) intersects the caller's argument type (`resource(a0)`) with `A::t`; the intersection is empty, so the clause is unreachable and `executable_facts.rs:487-501` materializes zero clauses. Native and interp both consume that one `ExecutableDispatch` (one implementation, shared upstream) and fault.\n- Nothing in the language produces a value of type `t`: no construct tags a value with an opaque name. So a parameter annotated with an opaque type can never match. No passing fixture annotates a parameter with an opaque type.\n\n## Open question (owner)\n\nWhat produces a value of an opaque type? Candidates: the declaring module's own functions (values built inside the module are `t`); a spec on the constructor; a tagged-construction form. The fix follows from that answer. `Types::mint_owned_resource_aliases` (types/mod.rs:1418-1429) looks like an earlier attempt at this and has no callers.\n\n## Found by\n\nfz-p8p census: the only test driving 00430 (`port_planner_test.rs::opaque_value_accessor_inside_declaring_module_types_as_inner`) asserts only that the drive resolves.",
   "id": "fz-p8p.2",
@@ -13,5 +11,5 @@
   "status": "open",
   "title": "A parameter annotated with an opaque type admits no value, so its clause is unreachable on every path",
   "type": "bug",
-  "updated_at": "2026-09-25T21:36:17Z"
+  "updated_at": "2026-09-25T21:40:37Z"
 }
