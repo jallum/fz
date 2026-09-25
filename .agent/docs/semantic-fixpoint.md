@@ -136,6 +136,11 @@ writes leaves unrelated values and metadata intact. The transfer forwards its
 fact reads and waits to the walker and retains no result across calls. An empty
 delta reports no writes, not successful execution.
 
+Reached call emissions carry the definition's local `CallSiteId`. The enclosing
+evaluation supplies their caller frame once, when publishing call facts. Rows
+and control arms coalesce by that local coordinate within one evaluation;
+callee argument contributions remain separate from the joined call summary.
+
 ## Executable demand is local semantic output
 
 `AnalyzeActivation(a)` follows `a`'s reachable clauses, infers value and return

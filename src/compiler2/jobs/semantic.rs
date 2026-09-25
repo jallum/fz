@@ -243,11 +243,12 @@ type ResolvedCall = (
     Option<Ty>,
 );
 
-/// A call the walk REACHED. It exists for every live call on a reached path;
-/// a call proven dead never happens and so has no emission at all.
+/// One reached call in the evaluated definition. The surrounding evaluation
+/// owns its frame; publication qualifies this local site with that owner.
+/// A call proven dead has no emission.
 #[derive(Debug, Clone)]
 struct CallEmission {
-    key: CallSiteKey,
+    callsite: CallSiteId,
     resolution: CallSiteResolution<CallSiteSummary>,
     activations: Vec<ActivationContribution>,
 }
@@ -579,19 +580,23 @@ fn commit_activation_evaluation(
     // the published fact never disagree about which sites are addressed.
     let mut addressed_callsites = HashSet::new();
     for call in &analysis_calls {
+        let key = CallSiteKey {
+            activation: activation.clone(),
+            callsite: call.callsite,
+        };
         // EVERY reached callsite publishes its edge, resolved or not: the
         // unresolved answer is a value, so the analysis's silence about a
         // callsite means the walk no longer reaches it and nothing here needs
         // preserving (fz-kdt.69.2).
-        let callsite_fact = FactKey::CallSiteSummary(call.key.clone());
+        let callsite_fact = FactKey::CallSiteSummary(key.clone());
         let callsite_changed = super::super::drive::ExecutionContext::new(world, tel)
-            .define_callsite_summary(call.key.clone(), call.resolution.clone());
+            .define_callsite_summary(key.clone(), call.resolution.clone());
         outputs.push(callsite_fact.clone());
         if callsite_changed {
             changed.push(callsite_fact);
         }
-        let targets_fact = FactKey::CallSiteTargets(call.key.clone());
-        let targets_changed = world.define_callsite_targets(call.key.clone(), CallSiteTargets::of(&call.resolution));
+        let targets_fact = FactKey::CallSiteTargets(key.clone());
+        let targets_changed = world.define_callsite_targets(key.clone(), CallSiteTargets::of(&call.resolution));
         outputs.push(targets_fact.clone());
         if targets_changed {
             changed.push(targets_fact);
@@ -599,7 +604,7 @@ fn commit_activation_evaluation(
         if let CallSiteResolution::Resolved(summary) = &call.resolution
             && summary.targets.iter().any(|target| target.activation.is_some())
         {
-            addressed_callsites.insert(call.key.callsite);
+            addressed_callsites.insert(call.callsite);
         }
         for callee_activation in &call.activations {
             if emitted_activations.insert(callee_activation.key.clone()) {
@@ -619,7 +624,7 @@ fn commit_activation_evaluation(
             // The call edge itself, keyed by the callee. Unlike the input
             // evidence just above, no dedup gate is needed: the value is a
             // set, so repeats of one site join to the same answer.
-            caller_contributions.push((callee_activation.key.clone(), call.key.clone()));
+            caller_contributions.push((callee_activation.key.clone(), key.clone()));
             // No wait+push pair here: `prepare_function_call` only `reads`
             // the callee's `ReturnType` (so mutual recursion cannot
             // deadlock), so nothing ever blocks on the callee's analysis
@@ -676,7 +681,7 @@ fn commit_activation_evaluation(
                 // see exactly what they always saw.
                 callsites: analysis_calls
                     .iter()
-                    .filter_map(|call| call.resolution.resolved().map(|_| call.key.callsite))
+                    .filter_map(|call| call.resolution.resolved().map(|_| call.callsite))
                     .collect(),
                 value_types,
                 addressed_callsites,
@@ -1289,7 +1294,7 @@ fn analyze_tail(
                 .map(|arg| values.get(&arg.value).cloned())
                 .collect::<Option<Vec<_>>>()
             else {
-                calls.push(reached_but_unresolved(activation, *callsite));
+                calls.push(reached_but_unresolved(*callsite));
                 return Ok(None);
             };
             let (emission, return_ty) =
@@ -1332,7 +1337,7 @@ fn analyze_tail(
                     .map(|arg| values.get(&arg.value).cloned())
                     .collect::<Option<Vec<_>>>(),
             ) else {
-                calls.push(reached_but_unresolved(activation, *callsite));
+                calls.push(reached_but_unresolved(*callsite));
                 return Ok(None);
             };
             let (emission, return_ty) =
@@ -1606,12 +1611,9 @@ fn entry_scope(
 /// The walk reached this callsite and could not even build its call: an
 /// operand on the path has no evidence yet. The edge still publishes — that
 /// is the law that lets an omitted edge mean "no longer reached".
-fn reached_but_unresolved(activation: &ActivationKey, callsite: CallSiteId) -> CallEmission {
+fn reached_but_unresolved(callsite: CallSiteId) -> CallEmission {
     CallEmission {
-        key: CallSiteKey {
-            activation: activation.clone(),
-            callsite,
-        },
+        callsite,
         resolution: CallSiteResolution::Unresolved,
         activations: Vec::new(),
     }
@@ -1685,10 +1687,7 @@ fn resolve_direct_call(
         resolve_function_call(world, tel, caller, function, 0, arg_inputs, callsite, reads, waits)?;
     Ok((
         Some(CallEmission {
-            key: CallSiteKey {
-                activation: caller.clone(),
-                callsite,
-            },
+            callsite,
             resolution,
             activations,
         }),
@@ -1751,11 +1750,11 @@ fn merge_value_types(world: &mut World, merged: &mut ValueTypes, observed: &Sema
 
 fn coalesce_call_emissions(world: &mut World, calls: Vec<CallEmission>) -> Result<Vec<CallEmission>, FatalError> {
     let mut order = Vec::new();
-    let mut grouped = HashMap::<CallSiteKey, CallEmission>::new();
+    let mut grouped = HashMap::<CallSiteId, CallEmission>::new();
     for call in calls {
-        match grouped.entry(call.key.clone()) {
+        match grouped.entry(call.callsite) {
             Entry::Vacant(entry) => {
-                order.push(call.key.clone());
+                order.push(call.callsite);
                 entry.insert(call);
             }
             Entry::Occupied(mut entry) => {
@@ -2136,16 +2135,12 @@ fn resolve_closure_call(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
-    let key = CallSiteKey {
-        activation: caller.clone(),
-        callsite,
-    };
     // A callee the ascent has not produced yet names no clauses to select
     // from, so this round resolves nothing and the next one will.
     let Some(callee_ty) = callee.ty() else {
         return Ok((
             Some(CallEmission {
-                key,
+                callsite,
                 resolution: CallSiteResolution::Unresolved,
                 activations: Vec::new(),
             }),
@@ -2164,7 +2159,7 @@ fn resolve_closure_call(
     let unresolved = |return_ty| {
         Ok((
             Some(CallEmission {
-                key: key.clone(),
+                callsite,
                 resolution: CallSiteResolution::Unresolved,
                 activations: Vec::new(),
             }),
@@ -2283,7 +2278,7 @@ fn resolve_closure_call(
     };
     Ok((
         Some(CallEmission {
-            key,
+            callsite,
             resolution: CallSiteResolution::Resolved(CallSiteSummary {
                 targets: selected_targets,
                 return_ty,
