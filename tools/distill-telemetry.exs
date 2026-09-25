@@ -23,6 +23,7 @@ defmodule Distill do
     by_name(spans, top)
     jobs = for {_id, %{name: "fz.compiler2.job"} = s} <- spans, do: s
     by_kind(jobs, top)
+    job_census(jobs, top)
     by_subject(jobs, top)
     reruns(jobs, top)
     return_revisions(records, names, top)
@@ -115,45 +116,110 @@ defmodule Distill do
     |> table(["activation", "revisions", "widened"])
   end
 
-  # Why the most re-run jobs ran again: each work_graph.applied record lists
-  # the jobs a completion woke and the fact that caused each wake.
-  defp wakes(records, jobs, names, top) do
-    IO.puts("wake causes of the most re-run jobs")
-    hot =
-      jobs
-      |> Enum.group_by(& &1.label)
-      |> Enum.map(fn {label, ss} -> {label, length(ss)} end)
-      |> Enum.filter(fn {_, n} -> n > 1 end)
-      |> Enum.sort_by(fn {_, n} -> -n end)
-      |> Enum.take(div(top, 3))
-      |> Map.new()
+  # A job start whose subject already ran is a re-run; the first start for a
+  # subject is not. `job_census/2` and `wakes/4` both key off this.
+  defp reruns_by_label(jobs) do
+    jobs
+    |> Enum.group_by(& &1.label)
+    |> Enum.filter(fn {_, ss} -> length(ss) > 1 end)
+    |> Map.new(fn {label, ss} -> {label, length(ss) - 1} end)
+  end
 
-    causes =
+  # Every job kind's work: how many times it ran, how many distinct subjects
+  # it ran for, the excess this leaves (runs a subject's first run didn't
+  # need), and the worst single subject. A kind with zero excess runs exactly
+  # once per subject; proportional compilation is excess staying at zero.
+  defp job_census(jobs, top) do
+    IO.puts("job runs vs subjects")
+
+    rows =
+      jobs
+      |> Enum.group_by(fn s -> elem(s.label, 0) end)
+      |> Enum.map(fn {kind, ss} ->
+        counts = ss |> Enum.frequencies_by(& &1.label) |> Map.values()
+        subjects = length(counts)
+        runs = Enum.sum(counts)
+        {kind, runs, subjects, runs - subjects, Enum.max(counts)}
+      end)
+      |> Enum.sort_by(fn {_, _, _, excess, _} -> -excess end)
+
+    total_runs = length(jobs)
+    total_subjects = jobs |> Enum.map(& &1.label) |> Enum.uniq() |> length()
+
+    (Enum.take(rows, top) ++ [{"TOTAL", total_runs, total_subjects, total_runs - total_subjects, nil}])
+    |> table(["kind", "runs", "subjects", "excess", "max runs/subject"])
+  end
+
+  # Why the most re-run jobs ran again: each work_graph.applied record lists
+  # the jobs a completion woke and the fact that caused each wake. Grouped by
+  # (job kind, changed fact + use, completing job kind, disposition) rather
+  # than free text, so the same shape of cause across many subjects collapses
+  # to one row instead of one row per subject.
+  defp wakes(records, jobs, names, top) do
+    IO.puts("cause of every re-run")
+
+    reruns = reruns_by_label(jobs)
+    total_reruns = reruns |> Map.values() |> Enum.sum()
+
+    wake_rows =
       for %{"name" => ["fz", "compiler2", "work_graph", "applied"], "metadata" => %{"completion" => c}} <- records,
           wake <- c["wakes"] || [],
-          key = {wake["job"]["kind"], subject(wake["job"], names)},
-          Map.has_key?(hot, key),
-          do: {key, cause(wake["cause"], c, names)}
+          target = {wake["job"]["kind"], subject(wake["job"], names)},
+          Map.has_key?(reruns, target),
+          do: {wake["job"]["kind"], wake["cause"]["kind"], wake["cause"]["use"], c["kind"], wake["disposition"]}
 
-    causes
-    |> Enum.group_by(fn {key, _} -> key end, fn {_, cause} -> cause end)
-    |> Enum.sort_by(fn {key, _} -> -Map.fetch!(hot, key) end)
-    |> Enum.each(fn {{kind, subject}, cs} ->
-      IO.puts("  #{kind} #{subject}: #{Map.fetch!(hot, {kind, subject})} runs")
-      cs
-      |> Enum.frequencies()
-      |> Enum.sort_by(fn {_, n} -> -n end)
-      |> Enum.take(6)
-      |> Enum.each(fn {cause, n} -> IO.puts("    #{String.pad_leading(Integer.to_string(n), 4)}  #{cause}") end)
-    end)
+    {enqueued, coalesced} = Enum.split_with(wake_rows, fn {_, _, _, _, d} -> d == "enqueued" end)
+    unattributed = total_reruns - length(enqueued)
+
+    cause_table(enqueued, top)
+    IO.puts("  coalesced: an additional cause landing on a re-run already enqueued by the row above, not a separate start")
+    cause_table(coalesced, top)
+
+    tally = work_start_tally(records)
+
+    IO.puts(
+      "  #{unattributed} re-run(s) with no matching enqueued wake " <>
+        "(session-summed work starts: ignition=#{tally.ignition} " <>
+        "changed_revision_wake=#{tally.changed_revision_wake} " <>
+        "activation_frontier=#{tally.activation_frontier} " <>
+        "blocked_waiter_expansion=#{tally.blocked_waiter_expansion} " <>
+        "unsanctioned=#{tally.unsanctioned})"
+    )
 
     IO.puts("")
   end
 
-  defp cause(cause, completion, names) do
-    fact = cause |> Map.drop(["use", "opaque_type"]) |> subject(names)
-    from = "#{completion["kind"]} #{completion |> Map.take(["function_id", "arrow", "root_id", "executable"]) |> subject(names)}"
-    "#{cause["kind"]} #{fact} (#{cause["use"]}) after #{from}"
+  defp cause_table(rows, top) do
+    rows
+    |> Enum.frequencies()
+    |> Enum.sort_by(fn {_, n} -> -n end)
+    |> Enum.take(top)
+    |> Enum.map(fn {{kind, fact_kind, fact_use, completing, disposition}, n} ->
+      {kind, "#{fact_kind} (#{fact_use})", completing, disposition, n}
+    end)
+    |> table(["job kind", "changed fact (use)", "completing job", "disposition", "count"])
+  end
+
+  # `pull.session.finished` carries one session's cumulative WorkStartTally;
+  # summed across every session in the stream this is the whole run's
+  # breakdown of why a job entered the agenda. `changed_revision_wake` is the
+  # wake-caused path `wakes/4` explains one row at a time; the other three
+  # reasons cover every job's first run plus any re-run this stream's wakes
+  # cannot name (see `wakes/4`'s unattributed count).
+  defp work_start_tally(records) do
+    zero = %{ignition: 0, changed_revision_wake: 0, activation_frontier: 0, blocked_waiter_expansion: 0, unsanctioned: 0}
+
+    for %{"name" => ["fz", "compiler2", "pull", "session", "finished"], "metadata" => %{"session" => s}} <- records,
+        reduce: zero do
+      acc ->
+        %{
+          ignition: acc.ignition + s["work_starts_ignition"],
+          changed_revision_wake: acc.changed_revision_wake + s["work_starts_changed_revision_wake"],
+          activation_frontier: acc.activation_frontier + s["work_starts_activation_frontier"],
+          blocked_waiter_expansion: acc.blocked_waiter_expansion + s["work_starts_blocked_waiter_expansion"],
+          unsanctioned: acc.unsanctioned + s["unsanctioned_work_starts"]
+        }
+    end
   end
 
   defp wall(records) do
