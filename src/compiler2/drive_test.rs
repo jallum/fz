@@ -23849,3 +23849,33 @@ fn compiler2_map_reduce_forwarder_solves_its_component_once() {
         "the solved row is one a walk could have published, so it collapses into the standing row{table}"
     );
 }
+
+#[test]
+fn compiler2_local_assertion_controls_an_independent_return() {
+    for (argument, returns) in [(":atom", false), ("{1}", true)] {
+        let telemetry = ConfiguredTelemetry::new();
+        let analyses = ActivationAnalysisCapture::new();
+        analyses.install(&telemetry);
+        let source =
+            format!("def check_tuple(x) do\n  {{_}} = x\n  :done\nend\ndef main(), do: check_tuple({argument})");
+        let (mut compiler, root) = submit_main_root(telemetry, "assertion_completion.fz", &source);
+        compiler
+            .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+            .expect("a local assertion should compile whether it can succeed or not");
+        let world = compiler.world();
+        let targets = analyses
+            .keys_for_root(root)
+            .into_iter()
+            .filter(|activation| super::canon::function_label(world, activation.function) == "check_tuple/1")
+            .collect::<HashSet<_>>();
+        assert!(!targets.is_empty(), "the called definition must be analyzed");
+        for target in targets {
+            let answer = world.activation_return(&target);
+            assert_eq!(
+                answer.map(|ty| !world.types().is_empty(&ty)),
+                Some(returns),
+                "an independent :done still requires the earlier tuple assertion to succeed: {source}"
+            );
+        }
+    }
+}

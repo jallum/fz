@@ -42,7 +42,8 @@ fn nested_tuple_assertion_preserves_refinement_ancestors_and_unrelated_pending_v
         value: witness,
     };
     let inputs = step_inputs(&step, &values);
-    let delta = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    let (delta, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(completion, StepCompletion::Ready);
     assert_eq!(
         delta.types.keys().copied().collect::<HashSet<_>>(),
         HashSet::from([outer, inner, field, witness])
@@ -208,7 +209,8 @@ fn a_step_delta_contains_only_its_result_and_excludes_unread_scope_values() {
     assert_eq!(inputs.types.len(), 1);
     assert!(inputs.get(&input).unwrap().callable_surfaces.is_empty());
     assert!(inputs.tuple_arities.is_empty());
-    let delta = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    let (delta, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(completion, StepCompletion::Ready);
     assert_eq!(delta.types.len(), 1);
     assert_eq!(value_ty(&delta, output), Some(int));
     assert!(!delta.contains_key(&input));
@@ -232,7 +234,8 @@ fn equal_tuple_assertion_remains_a_sparse_write() {
     scope.assert_tuple(source, 2);
     let step = LoweredStep::AssertTuple { source, arity: 2 };
     let inputs = step_inputs(&step, &scope);
-    let delta = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    let (delta, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(completion, StepCompletion::Ready);
     assert_eq!(value_ty(&delta, source), Some(tuple));
     assert_eq!(delta.tuple_arities.get(&source), Some(&2));
 }
@@ -247,24 +250,46 @@ fn equal_value_refinement_remains_a_sparse_write() {
     scope.insert(witness, int);
     let step = LoweredStep::AssertSame { source, value: witness };
     let inputs = step_inputs(&step, &scope);
-    let delta = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    let (delta, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(completion, StepCompletion::Ready);
     assert_eq!(value_ty(&delta, source), Some(int));
     assert_eq!(value_ty(&delta, witness), Some(int));
 }
 
 #[test]
-fn a_noop_bitstring_check_reads_no_semantic_value_and_returns_no_delta() {
+fn bitstring_done_reads_its_runtime_reader_but_produces_no_values() {
     let mut world = World::new();
     let reader = value(0);
     let mut scope = SemanticValues::default();
-    scope.insert_value(reader, SemanticValue::pending());
     let step = LoweredStep::AssertBitstringDone { reader };
     let inputs = step_inputs(&step, &scope);
     assert!(inputs.types.is_empty());
-    let delta = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    let (delta, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(
+        completion,
+        StepCompletion::Pending,
+        "an absent reader is distinct from a viable reader"
+    );
     assert!(delta.types.is_empty());
     assert!(delta.tuple_arities.is_empty());
     assert!(delta.tuple_fields.is_empty());
+    scope.insert_value(reader, SemanticValue::pending());
+    let inputs = step_inputs(&step, &scope);
+    assert_eq!(value_ty(&inputs, reader), None);
+    let (_, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(completion, StepCompletion::Pending);
+    scope.insert(reader, world.types_mut().str_t());
+    let inputs = step_inputs(&step, &scope);
+    let (_, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(
+        completion,
+        StepCompletion::Ready,
+        "a viable reader may finish even though its exhaustion is not statically known"
+    );
+    scope.insert(reader, world.types_mut().none());
+    let inputs = step_inputs(&step, &scope);
+    let (_, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(completion, StepCompletion::Dead);
 }
 
 #[test]
@@ -289,6 +314,127 @@ fn literal_map_keys_do_not_read_their_runtime_value_slot() {
     run_step(&mut world, &step, &mut values);
     assert_eq!(value_ty(&values, output), Some(int));
     assert_eq!(value_ty(&values, key), None);
+}
+
+#[test]
+fn assertions_complete_without_outputs_and_distinguish_missing_from_empty_inputs() {
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let none = world.types_mut().none();
+    let (source, witness) = (value(0), value(1));
+    let step = LoweredStep::AssertSame { source, value: witness };
+    let mut scope = SemanticValues::default();
+    scope.insert(source, int);
+    scope.insert(witness, int);
+    let inputs = step_inputs(&step, &scope);
+    let (writes, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(completion, StepCompletion::Ready);
+    assert_eq!(value_ty(&writes, source), Some(int));
+    assert_eq!(value_ty(&writes, witness), Some(int));
+
+    let mut missing = SemanticValues::default();
+    missing.insert(witness, int);
+    let inputs = step_inputs(&step, &missing);
+    let (_, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(completion, StepCompletion::Pending);
+
+    let mut empty = SemanticValues::default();
+    empty.insert(source, none);
+    empty.insert(witness, int);
+    let inputs = step_inputs(&step, &empty);
+    let (_, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(completion, StepCompletion::Dead);
+
+    let atom = world.types_mut().atom_lit("other");
+    let mut disjoint = SemanticValues::default();
+    disjoint.insert(source, int);
+    disjoint.insert(witness, atom);
+    let inputs = step_inputs(&step, &disjoint);
+    let (_, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(
+        completion,
+        StepCompletion::Dead,
+        "an assertion's own impossible refinement is dead"
+    );
+}
+
+#[test]
+fn a_dead_operand_dominates_a_pending_sibling_in_either_order() {
+    let mut world = World::new();
+    let none = world.types_mut().none();
+    let (dead, pending, output) = (value(0), value(1), value(2));
+    for items in [vec![dead, pending], vec![pending, dead]] {
+        let mut scope = SemanticValues::default();
+        scope.insert(dead, none);
+        scope.insert_value(pending, SemanticValue::pending());
+        let step = LoweredStep::Tuple {
+            value: output,
+            items: items.into_iter().map(crate::fz_ir::OwnershipUse::share).collect(),
+        };
+        let inputs = step_inputs(&step, &scope);
+        let (_, completion) = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+        assert_eq!(completion, StepCompletion::Dead);
+    }
+}
+
+#[test]
+fn bitstring_runtime_operands_gate_completion_even_when_their_types_do_not() {
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let none = world.types_mut().none();
+    let (field, size, reader, output, next_reader, ok) = (value(0), value(1), value(2), value(3), value(4), value(5));
+    let spec = crate::compiler2::body::LoweredBitFieldSpec {
+        ty: crate::ast::BitType::Integer,
+        size: Some(crate::compiler2::body::LoweredBitSize::Value(size)),
+        endian: crate::ast::Endian::Big,
+        signed: false,
+        unit: None,
+    };
+    let build = LoweredStep::Bitstring {
+        value: output,
+        fields: vec![crate::compiler2::body::LoweredBitField {
+            value: field,
+            spec: spec.clone(),
+        }],
+    };
+    let read = LoweredStep::BitstringRead {
+        ok,
+        value: output,
+        next_reader,
+        reader,
+        spec,
+        is_last: true,
+    };
+    let mut scope = SemanticValues::default();
+    scope.insert(field, int);
+    scope.insert(size, int);
+    scope.insert(reader, world.types_mut().str_t());
+    for step in [&build, &read] {
+        let inputs = step_inputs(step, &scope);
+        assert_eq!(
+            inputs.types.len(),
+            2,
+            "all runtime operands must be observed even when transfer typing ignores one"
+        );
+        let (_, completion) = step_delta(&mut world, step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+        assert_eq!(completion, StepCompletion::Ready);
+    }
+    let mut missing_size = SemanticValues::default();
+    missing_size.insert(field, int);
+    missing_size.insert(reader, world.types_mut().str_t());
+    for step in [&build, &read] {
+        let inputs = step_inputs(step, &missing_size);
+        let (_, completion) = step_delta(&mut world, step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+        assert_eq!(completion, StepCompletion::Pending);
+    }
+    let mut dead_size_with_missing_sibling = SemanticValues::default();
+    dead_size_with_missing_sibling.insert(size, none);
+    dead_size_with_missing_sibling.insert_value(field, SemanticValue::pending());
+    for step in [&build, &read] {
+        let inputs = step_inputs(step, &dead_size_with_missing_sibling);
+        let (_, completion) = step_delta(&mut world, step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+        assert_eq!(completion, StepCompletion::Dead);
+    }
 }
 
 #[test]
@@ -336,7 +482,9 @@ fn dynamic_map_keys_read_types_but_map_items_and_update_bases_keep_callable_surf
                 "a dynamic key reads its Ty; the same ValueId also used as an item must retain its surface"
             );
             assert_eq!(value_ty(&inputs, key), Some(atom));
-            let delta = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+            let (delta, completion) =
+                step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+            assert_eq!(completion, StepCompletion::Ready);
             let mut expected = BTreeSet::from([if aliased_item {
                 key_surface.clone()
             } else {
@@ -386,5 +534,23 @@ fn lambda_transfer_keeps_capture_order_and_inherited_callable_surfaces() {
         let clauses = world.types_mut().callable_value_clauses(&result.ty().unwrap()).unwrap();
         assert_eq!(clauses.len(), 1);
         assert_eq!(clauses[0].closure.as_ref().unwrap().captures, expected);
+    }
+}
+
+#[test]
+fn repeated_struct_assertions_keep_an_existing_schema_wait_pending() {
+    let mut world = World::new();
+    let module = world.reference_child_module(ModuleId::GLOBAL, "StillMissing");
+    let source = value(0);
+    let mut scope = SemanticValues::default();
+    scope.insert(source, world.types_mut().any());
+    let step = LoweredStep::AssertStruct { source, module };
+    let mut reads = Vec::new();
+    let mut waits = HashSet::new();
+    for _ in 0..2 {
+        assert_eq!(
+            evaluate_step(&mut world, &step, &mut scope, &mut reads, &mut waits).unwrap(),
+            StepCompletion::Pending
+        );
     }
 }

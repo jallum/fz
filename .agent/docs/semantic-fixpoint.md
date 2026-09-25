@@ -81,10 +81,13 @@ arrow from `fn_id` and captures alone and would otherwise let a template row
 absorb its own ground instances. The relation's own doc records that its
 termination argument is empirical, not proven.
 
-Past `ACTIVATION_INPUT_ROW_BUDGET` rows the set still widens to its single
-column-wise joined row, so termination stays a theorem. A fire now means
-genuine correlation width, and `ExecutionContext::complete_job` reports each
-one as `fz.compiler2.activation_inputs.budget_collapsed` carrying the count.
+Past `ACTIVATION_INPUT_ROW_BUDGET` rows the set widens to its single
+column-wise joined row. This bounds the number of retained rows, not the
+number of successively deeper input types or activation keys; it is not a
+termination proof for recursive argument inference. The source/cell replacement
+in fz-kdt.98.3.17.10 must solve those arguments as equations at finite addresses.
+`ExecutionContext::complete_job` reports each row-budget collapse as
+`fz.compiler2.activation_inputs.budget_collapsed` carrying the count.
 `correlated_input_rows_never_reach_the_widening_budget_on_the_lenses` GATES
 four fixtures at zero collapses; a sweep of all 577 `fixtures2` fixtures at
 fz-kdt.106 also found zero, but that number is a point-in-time measurement, not
@@ -135,6 +138,25 @@ asserting a projected field can also refine its containing tuple. Applying the
 writes leaves unrelated values and metadata intact. The transfer forwards its
 fact reads and waits to the walker and retains no result across calls. An empty
 delta reports no writes, not successful execution.
+
+The same transfer separately returns `StepCompletion`: `Ready` means the
+observed operands permit execution, `Dead` proves it cannot complete, and
+`Pending` names an unanswered prerequisite. This is not a guarantee that a
+value guard will succeed at runtime. Direct operand selection is shared with
+input binding; assertions additionally use their own refined-type emptiness.
+A schema query reports its readiness independently of whether another step
+already recorded the same wait. Bitstring field values, dynamic sizes and
+readers constrain execution even when their types do not affect the output
+shape.
+
+Required operands and ordered steps combine with `Dead` dominating `Pending`.
+The walk stops at a proven-dead step and reports `none`. Pending steps leave
+the remaining walk available for inference, but that path cannot publish a
+nonempty return yet. An independently proven empty result remains empty.
+This fixes a local assertion followed by an unrelated literal, such as
+`{_} = x; :done` when x is an atom. It does not establish recursive source
+completion: the component solver still needs these requirements bound at
+source/cell addresses, and singleton/component return ownership is still split.
 
 Reached call emissions carry the definition's local `CallSiteId`. The enclosing
 evaluation supplies their caller frame once, when publishing call facts. Rows

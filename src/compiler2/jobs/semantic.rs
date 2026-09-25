@@ -177,6 +177,36 @@ struct StepValues<'a> {
     writes: SemanticValues,
 }
 
+/// Whether a semantic step can execute for the operand evidence available in
+/// this ascent. This is separate from its writes: a successful assertion can
+/// have no result position, and a repeated refinement remains a write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepCompletion {
+    Ready,
+    Dead,
+    Pending,
+}
+
+impl StepCompletion {
+    /// Combine required runtime operands. An impossible operand makes the
+    /// entire operation impossible even if another operand is still pending.
+    fn required(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Dead, _) | (_, Self::Dead) => Self::Dead,
+            (Self::Pending, _) | (_, Self::Pending) => Self::Pending,
+            (Self::Ready, Self::Ready) => Self::Ready,
+        }
+    }
+
+    fn return_evidence(self, types: &mut Types, evidence: Option<Ty>) -> Option<Ty> {
+        match self {
+            Self::Ready => evidence,
+            Self::Dead => Some(types.none()),
+            Self::Pending => evidence.filter(|ty| types.is_empty(ty)),
+        }
+    }
+}
+
 impl<'a> StepValues<'a> {
     fn new(inputs: &'a SemanticValues) -> Self {
         Self {
@@ -481,7 +511,7 @@ fn evaluate_activation(
                 for (value, input) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
                     values.insert_value(value, SemanticValue::from_activation_input(input));
                 }
-                apply_steps(
+                let completion = apply_steps(
                     world,
                     tel,
                     &clause.projections,
@@ -495,6 +525,11 @@ fn evaluate_activation(
                     &mut waits,
                 )?;
                 merge_value_types(world, &mut value_types, &values);
+                if completion == StepCompletion::Dead {
+                    let none = world.types_mut().none();
+                    return_flow = join_evidence(world, return_flow, Some(none));
+                    continue;
+                }
                 let clause_return = analyze_entry(
                     world,
                     tel,
@@ -508,6 +543,7 @@ fn evaluate_activation(
                     &mut reads,
                     &mut waits,
                 )?;
+                let clause_return = completion.return_evidence(world.types_mut(), clause_return);
                 return_flow = join_evidence(world, return_flow, clause_return);
             }
         }
@@ -725,7 +761,7 @@ fn analyze_entry(
     reachable_entries.insert(entry_id);
     let entry = &entries[entry_id.as_u32() as usize];
     let mut local = values.clone();
-    apply_steps(
+    let completion = apply_steps(
         world,
         tel,
         &entry.steps,
@@ -736,13 +772,16 @@ fn analyze_entry(
         waits,
     )?;
     merge_value_types(world, value_types, &local);
+    if completion == StepCompletion::Dead {
+        return Ok(Some(world.types_mut().none()));
+    }
     tel.raw_event3(
         &["fz", "compiler2", "inference_work", "tail_transfer_attempt"],
         activation,
         &entry_id,
         &entry.tail,
     );
-    analyze_tail(
+    let returned = analyze_tail(
         world,
         tel,
         entries,
@@ -754,7 +793,8 @@ fn analyze_entry(
         activation,
         reads,
         waits,
-    )
+    )?;
+    Ok(completion.return_evidence(world.types_mut(), returned))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -767,7 +807,8 @@ fn apply_steps(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Result<(), FatalError> {
+) -> Result<StepCompletion, FatalError> {
+    let mut completion = StepCompletion::Ready;
     for (index, step) in steps.iter().enumerate() {
         tel.raw_event3(
             &["fz", "compiler2", "inference_work", "step_transfer_attempt"],
@@ -775,48 +816,19 @@ fn apply_steps(
             &site(index as u32),
             step,
         );
-        evaluate_step(world, step, values, reads, waits)?;
+        completion = completion.required(evaluate_step(world, step, values, reads, waits)?);
+        if completion == StepCompletion::Dead {
+            break;
+        }
     }
-    Ok(())
+    Ok(completion)
 }
 
 /// A step reads its operands, plus the tuple ancestors an assertion can
-/// refine. Runtime-only dependencies and unrelated path values are not inputs
-/// to this semantic transfer.
+/// refine. Runtime operands also determine execution feasibility even when
+/// they do not change the produced type; unrelated path values stay outside.
 fn step_inputs(step: &LoweredStep, scope: &SemanticValues) -> SemanticValues {
-    let mut used = Vec::new();
-    let mut type_only_operands = HashSet::new();
-    match step {
-        LoweredStep::Bitstring { .. } | LoweredStep::AssertBitstringDone { .. } => {}
-        LoweredStep::BitstringRead { reader, .. } => used.push(*reader),
-        LoweredStep::Map { entries, .. } | LoweredStep::MapUpdate { entries, .. } => {
-            if let LoweredStep::MapUpdate { base, .. } = step {
-                used.push(*base);
-            }
-            for (key, value) in entries {
-                if key.literal.is_none() {
-                    used.push(key.value);
-                    type_only_operands.insert(key.value);
-                }
-                used.push(*value);
-            }
-            // One slot can be both a key and a carried value. The latter
-            // use still reads its callable surfaces.
-            for (_, value) in entries {
-                type_only_operands.remove(value);
-            }
-            if let LoweredStep::MapUpdate { base, .. } = step {
-                type_only_operands.remove(base);
-            }
-        }
-        LoweredStep::MapIndex { base, key, .. } => {
-            used.push(*base);
-            if key.literal.is_none() {
-                used.push(key.value);
-            }
-        }
-        _ => super::super::body::step_used_values(step, &mut used),
-    }
+    let (mut used, type_only_operands) = direct_step_operands(step);
     let refines = matches!(
         step,
         LoweredStep::AssertLiteral { .. }
@@ -863,17 +875,54 @@ fn step_inputs(step: &LoweredStep, scope: &SemanticValues) -> SemanticValues {
     inputs
 }
 
+/// The direct operands the operation executes with. Assertions may read
+/// ancestor projections for refinement, but those are not operation inputs.
+fn direct_step_operands(step: &LoweredStep) -> (Vec<ValueId>, HashSet<ValueId>) {
+    let mut used = Vec::new();
+    let mut type_only_operands = HashSet::new();
+    match step {
+        LoweredStep::Map { entries, .. } | LoweredStep::MapUpdate { entries, .. } => {
+            if let LoweredStep::MapUpdate { base, .. } = step {
+                used.push(*base);
+            }
+            for (key, value) in entries {
+                if key.literal.is_none() {
+                    used.push(key.value);
+                    type_only_operands.insert(key.value);
+                }
+                used.push(*value);
+            }
+            // One slot can be both a key and a carried value. The latter
+            // use still reads its callable surfaces.
+            for (_, value) in entries {
+                type_only_operands.remove(value);
+            }
+            if let LoweredStep::MapUpdate { base, .. } = step {
+                type_only_operands.remove(base);
+            }
+        }
+        LoweredStep::MapIndex { base, key, .. } => {
+            used.push(*base);
+            if key.literal.is_none() {
+                used.push(key.value);
+            }
+        }
+        _ => super::super::body::step_used_values(step, &mut used),
+    }
+    (used, type_only_operands)
+}
+
 fn evaluate_step(
     world: &mut World,
     step: &LoweredStep,
     scope: &mut SemanticValues,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Result<(), FatalError> {
+) -> Result<StepCompletion, FatalError> {
     let inputs = step_inputs(step, scope);
-    let delta = step_delta(world, step, &inputs, reads, waits)?;
+    let (delta, completion) = step_delta(world, step, &inputs, reads, waits)?;
     scope.apply_delta(delta);
-    Ok(())
+    Ok(completion)
 }
 
 /// Run the existing evaluator against only its inputs. The caller receives
@@ -885,10 +934,10 @@ fn step_delta(
     inputs: &SemanticValues,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Result<SemanticValues, FatalError> {
+) -> Result<(SemanticValues, StepCompletion), FatalError> {
     let mut values = StepValues::new(inputs);
-    apply_step(world, step, &mut values, reads, waits)?;
-    Ok(values.into_writes())
+    let completion = apply_step(world, step, &mut values, reads, waits)?;
+    Ok((values.into_writes(), completion))
 }
 
 fn apply_step(
@@ -897,7 +946,12 @@ fn apply_step(
     values: &mut StepValues<'_>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Result<(), FatalError> {
+) -> Result<StepCompletion, FatalError> {
+    // This fold is over each operation's runtime operands, not over produced
+    // writes. In particular, an absent input is pending while an observed
+    // empty input makes the operation dead, and dead dominates a pending
+    // sibling regardless of operand order.
+    let mut completion = step_operand_completion(world, step, values);
     match step {
         LoweredStep::Const { value, literal } => {
             let literal_ty = literal_ty(world, literal);
@@ -909,7 +963,7 @@ fn apply_step(
                 .map(|item| values.get(&item.value).cloned())
                 .collect::<Option<Vec<_>>>()
             else {
-                return Ok(());
+                return Ok(completion);
             };
             // A field the ascent has not produced yet leaves the tuple
             // itself unobserved.
@@ -936,14 +990,14 @@ fn apply_step(
         }
         LoweredStep::MapUpdate { value, base, entries } => {
             let Some(mut map_ty) = values.ty(*base) else {
-                return Ok(());
+                return Ok(completion);
             };
             for (key, item) in entries {
                 let Some(key) = lowered_map_key(world, values, key) else {
-                    return Ok(());
+                    return Ok(completion);
                 };
                 let Some(item_ty) = values.ty(*item) else {
-                    return Ok(());
+                    return Ok(completion);
                 };
                 if let Some(key) = key {
                     map_ty = world.types_mut().refine_map_field(&map_ty, &key, &item_ty);
@@ -967,7 +1021,7 @@ fn apply_step(
                 .map(|(_, value)| values.ty(*value))
                 .collect::<Option<Vec<_>>>()
             else {
-                return Ok(());
+                return Ok(completion);
             };
             // `fields` is already ordered against the struct's schema by body
             // lowering (which waited on `StructDefined` before producing this
@@ -1003,10 +1057,10 @@ fn apply_step(
                 .map(|capture| values.get(capture).cloned())
                 .collect::<Option<Vec<_>>>()
             else {
-                return Ok(());
+                return Ok(completion);
             };
             let Some(capture_tys) = capture_values.iter().map(SemanticValue::ty).collect::<Option<Vec<_>>>() else {
-                return Ok(());
+                return Ok(completion);
             };
             let closure = world.closure_ty(*function, capture_tys);
             let surface = world
@@ -1021,7 +1075,7 @@ fn apply_step(
         }
         LoweredStep::BinaryOp { value, op, left, right } => {
             let (Some(left), Some(right)) = (values.get(left).cloned(), values.get(right).cloned()) else {
-                return Ok(());
+                return Ok(completion);
             };
             // Arithmetic has no structural rule of its own -- its result is
             // not a fold over its operands' companions, just a freshly
@@ -1029,25 +1083,25 @@ fn apply_step(
             // outright, same as it always was, regardless of whether
             // either operand still carries an open `Local`.
             let (Some(left), Some(right)) = (left.ty(), right.ty()) else {
-                return Ok(());
+                return Ok(completion);
             };
             values.insert(*value, lowered_binop_ty(world, *op, left, right));
         }
         LoweredStep::UnaryOp { value, op, input } => {
             let Some(input) = values.get(input).cloned() else {
-                return Ok(());
+                return Ok(completion);
             };
             let Some(input) = input.ty() else {
-                return Ok(());
+                return Ok(completion);
             };
             values.insert(*value, lowered_unop_ty(world, *op, input));
         }
         LoweredStep::MapIndex { value, base, key } => {
             let Some(base_val) = values.get(base).cloned() else {
-                return Ok(());
+                return Ok(completion);
             };
             let (Some(key), Some(base_ty)) = (lowered_map_key(world, values, key), base_val.ty()) else {
-                return Ok(());
+                return Ok(completion);
             };
             let field_ty = key
                 .as_ref()
@@ -1057,10 +1111,10 @@ fn apply_step(
         }
         LoweredStep::FieldAccess { value, base, field } => {
             let Some(base_val) = values.get(base).cloned() else {
-                return Ok(());
+                return Ok(completion);
             };
             let Some(base_ty) = base_val.ty() else {
-                return Ok(());
+                return Ok(completion);
             };
             let key = MapKey::Atom(field.clone());
             let field_ty = world
@@ -1071,26 +1125,29 @@ fn apply_step(
         }
         LoweredStep::AssertLiteral { source, literal } => {
             let Some(source_ty) = values.ty(*source) else {
-                return Ok(());
+                return Ok(completion);
             };
             let literal_ty = literal_ty(world, literal);
             let refined = world.types_mut().intersect(source_ty, literal_ty);
             refine_value(world, values, *source, refined);
+            completion = refinement_completion(world, completion, refined);
         }
         LoweredStep::AssertStruct { source, module } => {
             let Some(source_ty) = values.ty(*source) else {
-                return Ok(());
+                return Ok(completion);
             };
-            let asserted = struct_assertion_ty(world, *module, reads, waits);
+            let (asserted, schema_completion) = struct_assertion_ty(world, *module, reads, waits);
+            completion = completion.required(schema_completion);
             let refined = world.types_mut().intersect(source_ty, asserted);
             refine_value(world, values, *source, refined);
+            completion = refinement_completion(world, completion, refined);
         }
         LoweredStep::RequireMapValue { value, source, key } => {
             let Some(source_val) = values.get(source).cloned() else {
-                return Ok(());
+                return Ok(completion);
             };
             let Some(source_ty) = source_val.ty() else {
-                return Ok(());
+                return Ok(completion);
             };
             let literal_key = literal_map_key(key);
             let field_ty = literal_key
@@ -1105,17 +1162,18 @@ fn apply_step(
             // narrow. Only the narrowing needs an observation.
             values.assert_tuple(*source, *arity);
             let Some(source_ty) = values.ty(*source) else {
-                return Ok(());
+                return Ok(completion);
             };
             let any = world.types_mut().any();
             let fields = world.types_mut().repeat(any, *arity);
             let tuple = world.types_mut().tuple(&fields);
             let refined = world.types_mut().intersect(source_ty, tuple);
             refine_value(world, values, *source, refined);
+            completion = refinement_completion(world, completion, refined);
         }
         LoweredStep::TupleField { value, source, index } => {
             let Some(source_val) = values.get(source).cloned() else {
-                return Ok(());
+                return Ok(completion);
             };
             // A field of a tuple the ascent has not produced yet stays
             // unobserved until the tuple is observed.
@@ -1128,25 +1186,27 @@ fn apply_step(
         LoweredStep::AssertEmptyList { source } => {
             let empty = world.types_mut().empty_list();
             let Some(source_ty) = values.ty(*source) else {
-                return Ok(());
+                return Ok(completion);
             };
             let refined = world.types_mut().intersect(source_ty, empty);
             refine_value(world, values, *source, refined);
+            completion = refinement_completion(world, completion, refined);
         }
         LoweredStep::AssertSame { source, value } => {
             let (Some(source_ty), Some(value_ty)) = (values.ty(*source), values.ty(*value)) else {
-                return Ok(());
+                return Ok(completion);
             };
             let both = world.types_mut().intersect(source_ty, value_ty);
             refine_value(world, values, *source, both);
             refine_value(world, values, *value, both);
+            completion = refinement_completion(world, completion, both);
         }
         LoweredStep::SplitList { source, head, tail } => {
             let Some(source_val) = values.get(source).cloned() else {
-                return Ok(());
+                return Ok(completion);
             };
             let Some(source_ty) = source_val.ty() else {
-                return Ok(());
+                return Ok(completion);
             };
             let elem = world.types_mut().list_element_type(&source_ty);
             let rest = world.types_mut().list(elem);
@@ -1162,6 +1222,7 @@ fn apply_step(
             refine_value(world, values, *source, refined_source);
             values.insert_value(*head, SemanticValue::new(elem));
             values.insert_value(*tail, SemanticValue::new(rest));
+            completion = refinement_completion(world, completion, refined_source);
         }
         LoweredStep::BitstringInit { reader, source } => {
             if let Some(source_ty) = values.ty(*source) {
@@ -1184,7 +1245,26 @@ fn apply_step(
         }
         LoweredStep::AssertBitstringDone { reader: _ } => {}
     }
-    Ok(())
+    Ok(completion)
+}
+
+fn step_operand_completion(world: &World, step: &LoweredStep, values: &StepValues<'_>) -> StepCompletion {
+    let (required, _) = direct_step_operands(step);
+    required.into_iter().fold(StepCompletion::Ready, |completion, value| {
+        completion.required(match values.get(&value).and_then(SemanticValue::ty) {
+            None => StepCompletion::Pending,
+            Some(ty) if world.types().is_empty(&ty) => StepCompletion::Dead,
+            Some(_) => StepCompletion::Ready,
+        })
+    })
+}
+
+fn refinement_completion(world: &World, prerequisite: StepCompletion, refined: Ty) -> StepCompletion {
+    if world.types().is_empty(&refined) {
+        StepCompletion::Dead
+    } else {
+        prerequisite
+    }
 }
 
 /// A successful assertion on a tuple field is evidence about the tuple, not
@@ -3036,7 +3116,8 @@ fn struct_assertion_ty(
     module: ModuleId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Ty {
+) -> (Ty, StepCompletion) {
+    let mut completion = StepCompletion::Ready;
     // Honor the struct's declared field types (`@type t`) so a destructure
     // recovers them even after a value crossed a protocol boundary that erased
     // its concrete shape (fz-f98.8: an integer `Range` whose fields graduate to
@@ -3056,10 +3137,11 @@ fn struct_assertion_ty(
         if world.has_fact(&fact) {
             reads.push(fact);
             if let Some(declared) = world.declared_struct_value_ty(module) {
-                return declared;
+                return (declared, completion);
             }
         } else {
             waits.insert(fact);
+            completion = StepCompletion::Pending;
         }
     }
     // The field schema itself is fact-backed too: `module` is always a real
@@ -3075,12 +3157,16 @@ fn struct_assertion_ty(
         }
         None => {
             waits.insert(struct_fact);
+            completion = StepCompletion::Pending;
             Vec::new()
         }
     };
     let any = world.types_mut().any();
     let field_tys = vec![any; field_names.len()];
-    world.struct_module_value_ty(module, &field_names, &field_tys)
+    (
+        world.struct_module_value_ty(module, &field_names, &field_tys),
+        completion,
+    )
 }
 
 fn map_key_from_ty(world: &World, ty: Ty) -> Option<super::super::types::MapKey> {
