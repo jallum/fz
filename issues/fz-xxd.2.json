@@ -5,13 +5,13 @@
     "fz-xxd.3"
   ],
   "created": "2026-09-25T20:29:00Z",
-  "description": "`Kernel.send/2` is `@spec send(pid | integer, t) :: t when t: any` and\nforwards its first argument to `extern \"fz\" defp fz_send(pid, t) :: t when\nt: any` (lib/kernel.fz:27). A call `send(1, 42)`\n(fixtures2/behavior/concurrency_ping_pong.fz) builds the row fz_send[int, int],\noutside the extern's declared domain. The runtime accepts it (the fixture\npasses today), so the declaration is narrower than the definition.\n\nToday the raw declared return hides this. Once an extern's return is its\ncontract applied to its row, the row has no answer, the continuation becomes\nunreachable, and the program traps.\n\nWork: make the declaration truthful (verify in the runtime what fz_send\naccepts), and scan every extern in lib/*.fz for a declared domain narrower\nthan its wrapper's @spec; each one found is fixed at the declaration in the\nsame commit, or reported if the runtime genuinely rejects the wider domain.",
+  "description": "Kernel.send is specced (pid | integer, t) but the extern it forwards to, fz_send, is (pid, t). The extern is right: a pid is an opaque value from self() or spawn; the integer in send's spec lets programs address a process by its runtime index (send(1, ...)), which is not part of the language (Elixir's send never takes an integer).\n\nChange: @spec send(pid, t) :: t when t: any. User send(1, 42) becomes a compile-time spec/violation. Rewrite the 23 integer sends across 17 fixtures to thread real pids (parent = self() passed or captured; child = spawn(...) then send(child, x)); Kernel's @doc example becomes Kernel.send(self(), 42); specs.md's 'integer addressing is part of the callee's real domain' paragraph and the @doc raw-index sentence go. send_dead_unknown_pid's never-issued-pid assertion cannot be written with unforgeable pids (owner decision).\n\nTests that assert on these fixtures' compiled structure (transport_contract_test multi_relay, drive_test:5442, port_* tests) are checked against their intent; a rewrite that loses the shape a test covers is reported, not loosened.\n\nAcceptance: failing-first numbered error fixture for send(1, 42) on all three doors; every rewritten fixture keeps its expected output on interp/JIT/AOT; moved pins listed with cause, rises reported; gate at baseline. Proposal: ../fz-xxd.2.html",
   "id": "fz-xxd.2",
   "labels": [],
   "parent": "fz-xxd",
   "priority": 1,
   "status": "open",
-  "title": "fz_send declares a narrower domain than Kernel.send forwards",
+  "title": "send's receiver is a pid",
   "type": "bug",
-  "updated_at": "2026-09-25T20:29:00Z"
+  "updated_at": "2026-09-25T21:19:17Z"
 }
