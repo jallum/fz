@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-25T21:22:59Z",
+  "description": "## Why\nfixtures2/ drains as steps land; the harnesses' second discovery root and the harness's two-root fixture lookup exist only for the transition.\n\n## What changes\nDelete fixtures2/, the second discovery roots, the fallback lookup. A missing purpose: is an error for every fixture. Update tickets that name fixtures2/ paths (fz-afu.4, fz-xxd.1/.2/.3/.5 at time of writing) and remaining doc references.\n\n## Signal\nfixtures2/ does not exist; grep for fixtures2 in src, tests, docs finds nothing.",
+  "id": "fz-p8p.12",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "Delete fixtures2/ and the two-root scaffolding",
+  "type": "task",
+  "updated_at": "2026-09-25T21:22:59Z"
+}
