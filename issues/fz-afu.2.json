@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-afu.1"
+  ],
   "blocks": [],
   "created": "2026-09-25T20:28:35Z",
   "description": "Once-only jobs start before their inputs exist, run, find the input missing,\nwait, and run again when it arrives. Every function is defined twice.\n\nReduced case: `def main(), do: Enum.take([1, 2, 3], 2)` (see epic).\nPaper: a per-function job whose inputs are fixed facts of that function runs\nexactly once per subject: DefineFunction, LowerFunction, DeriveStaticCallees,\nDeriveCallGraphComponent, ExpandFunctionSource, PlanEntryDispatch,\nDeriveFunctionContract; DefineModule once per module.\nMeasured: DefineFunction 110 runs / 55 subjects, every re-run woken by\nExpandedFunctionSource; LowerFunction 112/60 (FunctionDefined);\nDeriveStaticCallees 125/63 (LoweredBody); DeriveCallGraphComponent 53/36\n(StaticCallees); DefineModule 15/5, one module 5 times (CodeIndexed,\nCodeScoped).\n\nQuestion to settle first (a reader, not a builder): who starts the first run\nof each — the demand that reaches the job (pull), a blocked-waiter expansion,\nor the activation frontier — and why it is started before the fact it reads\nfirst is present. The first run's only product is a wait; its existence is\nthe defect.\n\nAcceptance: the reduced case shows runs == subjects for every kind above; the\nfull-fixture job count drops; no pin rises.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Once-only jobs start before their inputs exist and run twice",
   "type": "bug",
-  "updated_at": "2026-09-25T20:28:35Z"
+  "updated_at": "2026-09-25T20:28:36Z"
 }
