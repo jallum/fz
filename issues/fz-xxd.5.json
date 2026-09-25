@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-xxd.3"
+  ],
   "created": "2026-09-25T20:29:31Z",
   "description": "Contract application answers no row that merely overlaps a clause's domain,\nso a truthfully declared extern called with an imprecise argument gets no\nreturn.\n\nFixtures (red once an extern's return is its contract applied to its row):\n- fixtures2 resource_claim: `Kernel.claim_resource/1(any) =\u003e none`. The handle\n  comes off `receive do handle -\u003e handle end`, typed `any`; the extern is\n  `fz_resource_claim(resource(t)) :: boolean when t: integer | c_pointer`,\n  and its wrapper's @spec agrees.\n- fixtures2 file_runtime: `libc::fclose/1(any) =\u003e none` via File.open -\u003e\n  Kernel.claim_resource -\u003e close_claim -\u003e libc::fclose. No mailbox involved:\n  claim_resource's success value types as {:ok, any} for a\n  resource(c_pointer) input, so the projection loses t. A separate question\n  (a reader should trace it): why the projection collapses t.\n\nPaper: `.agent/docs/specs.md` already states coverage answers a covered row\nwith the union of per-clause results on positionally NARROWED arguments.\n`any` intersects `resource(integer | c_pointer)`; the part of the row inside\nthe domain is the only part the extern can return from, so the answer is\nthe result on the narrowed row (`boolean` here). A row DISJOINT from every\nclause is a call that cannot return; see the sibling ticket on making that\nloud.\n\nSettle with a reader: where `FunctionContract::apply` / coverage requires\nsubset rather than overlap, whether the same rule already serves ordinary\n@spec'd calls (their body evidence masks it today), and that one calculator\nanswers both.",
   "id": "fz-xxd.5",

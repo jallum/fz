@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-xxd.1",
-    "fz-xxd.2"
+    "fz-xxd.2",
+    "fz-xxd.5"
   ],
   "blocks": [
     "fz-xxd.4"
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "An extern's return is its contract applied to its row; resolve the declaration once",
   "type": "bug",
-  "updated_at": "2026-09-25T20:29:00Z"
+  "updated_at": "2026-09-25T20:29:31Z"
 }
