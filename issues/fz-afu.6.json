@@ -3,7 +3,8 @@
   "blocked_by": [],
   "blocks": [
     "fz-afu.2",
-    "fz-afu.3"
+    "fz-afu.3",
+    "fz-afu.4"
   ],
   "created": "2026-09-25T21:05:14Z",
   "description": "The census that fz-afu.1 added matches a re-run to its wake by reading\n`work_graph.applied` only. Wakes arrive on three events, all carrying an\nAppliedStep:\n\n- `work_graph.applied` (metadata.completion): a job completion\n- `work_graph.dependencies_moved` (metadata.step): a nested product settles\n  (drive.rs apply_product_changes / publish_dependency_movements)\n- `work_graph.quiesced` (metadata.step): a drain step (flush_quiescence)\n\nOn `def main(), do: 1` the wake that re-runs ScopeCode(17) when the nested\ndef/1 compile settles is on `dependencies_moved`, so the merged census reports\nit as \"unattributed\", and the merged docs/commit explain the gap as telemetry\ndesign. It is not: counting all three events, matched wakes equal the tally's\nchanged_revision_wake exactly (18 = 18 here, 518 = 518 on Enum.take).\n\nChange:\n- The census reads wakes from all three events; \"completed by\" is the\n  completion kind for `applied`, the event name for the other two.\n- The \"unattributed\" row goes. The distiller cross-checks\n  matched enqueued wakes == summed work_starts_changed_revision_wake and\n  ignition + activation_frontier + blocked_waiter_expansion == distinct\n  subjects, and exits nonzero printing both numbers when either fails.\n- The checked-in fixture becomes `def main(), do: 1`: 44 starts, 26 subjects\n  (13 kinds x {main/0, def/1 macro root}), 18 re-runs, all attributed (11 main\n  side, 7 def/1 side).\n- `.agent/strategies/profile-a-compilation.md` describes the three events and\n  the loud cross-check.\n\nTest: the distiller test fails against the merged distiller (missing the\ndependencies_moved row) and passes after.",
