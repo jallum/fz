@@ -19,10 +19,6 @@ defmodule Utf8 do
 
   """
 
-  extern "C" defp fz_bitstring_valid_utf8(any) :: integer
-  extern "C" defp fz_bitstring_utf8_prefix(any) :: integer
-  extern "C" defp fz_brand_bitstring_as_utf8(any) :: any
-
   @doc """
   Returns whether `bytes` is byte-aligned, valid UTF-8.
 
@@ -37,6 +33,8 @@ defmodule Utf8 do
   """
   @spec valid?(binary) :: boolean
   def valid?(bytes), do: fz_bitstring_valid_utf8(bytes) == 1
+
+  extern "C" defp fz_bitstring_valid_utf8(any) :: integer
 
   @doc """
   Encodes one Unicode scalar value as UTF-8.
@@ -67,6 +65,8 @@ defmodule Utf8 do
   defp encode_codepoint(codepoint, true), do: {:ok, fz_brand_bitstring_as_utf8(<<codepoint :: utf8>>)}
   defp encode_codepoint(_codepoint, false), do: {:error, :invalid_codepoint}
 
+  extern "C" defp fz_brand_bitstring_as_utf8(any) :: any
+
   @doc """
   Validates and removes the first UTF-8 codepoint from `bytes`.
 
@@ -87,6 +87,8 @@ defmodule Utf8 do
   @spec next(binary) :: {:ok, utf8, binary} | {:error, binary} | nil
   def next(""), do: nil
   def next(bytes), do: next_result(bytes, fz_bitstring_utf8_prefix(bytes))
+
+  extern "C" defp fz_bitstring_utf8_prefix(any) :: integer
 
   @spec next_result(binary, integer) :: {:ok, utf8, binary} | {:error, binary} | nil
   defp next_result(bytes, status) do

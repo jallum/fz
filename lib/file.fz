@@ -19,31 +19,19 @@ defmodule File do
 
   @type t :: resource(c_pointer)
 
-  # `c_pointer` keeps the C `FILE *` distinct from an fd while using the native
-  # pointer-width C ABI lane.
-  extern "C" defp libc::fopen(c_string, c_string) :: c_pointer
-  extern "C" defp libc::fclose(c_pointer) :: c_int
-  extern "C" defp libc::fgetc(c_pointer) :: c_int
-  extern "C" defp libc::ferror(c_pointer) :: c_int
-  extern "C" defp libc::fwrite(binary, integer, integer, c_pointer) :: integer
-  extern "C" defp libc::fflush(c_pointer) :: c_int
-  extern "C" defp libc::access(c_string, c_int) :: c_int
-  extern "C" defp libc::mkdir(c_string, integer) :: c_int
-  extern "C" defp libc::rmdir(c_string) :: c_int
-  extern "C" defp libc::unlink(c_string) :: c_int
-  extern "C" defp libc::rename(c_string, c_string) :: c_int
-  extern "C" defp libc::link(c_string, c_string) :: c_int
-  extern "C" defp libc::symlink(c_string, c_string) :: c_int
-  extern "C" defp libc::chmod(c_string, integer) :: c_int
-  extern "fz" defp fz_make_resource(c_pointer, (c_pointer) -> nil) :: resource(c_pointer)
-
   @doc "Returns whether `path` exists, following symbolic links."
   @spec exists?(binary) :: boolean
   def exists?(path), do: libc::access(path, 0) == 0
 
+  extern "C" defp libc::access(c_string, c_int) :: c_int
+
   @doc "Reads the complete binary contents of `path`."
   @spec read(binary) :: {:ok, binary} | {:error, :io}
   def read(path), do: read_open(libc::fopen(path, "rb"))
+
+  # `c_pointer` keeps the C `FILE *` distinct from an fd while using the native
+  # pointer-width C ABI lane.
+  extern "C" defp libc::fopen(c_string, c_string) :: c_pointer
 
   @spec read!(binary) :: binary
   def read!(path), do: read_value!(read(path))
@@ -71,6 +59,8 @@ defmodule File do
   @spec mkdir(binary, integer) :: :ok | {:error, :io}
   def mkdir(path, mode), do: status(libc::mkdir(path, mode))
 
+  extern "C" defp libc::mkdir(c_string, integer) :: c_int
+
   @spec mkdir!(binary) :: :ok
   def mkdir!(path), do: result!(mkdir(path))
 
@@ -80,17 +70,23 @@ defmodule File do
   @spec rm(binary) :: :ok | {:error, :io}
   def rm(path), do: status(libc::unlink(path))
 
+  extern "C" defp libc::unlink(c_string) :: c_int
+
   @spec rm!(binary) :: :ok
   def rm!(path), do: result!(rm(path))
 
   @spec rmdir(binary) :: :ok | {:error, :io}
   def rmdir(path), do: status(libc::rmdir(path))
 
+  extern "C" defp libc::rmdir(c_string) :: c_int
+
   @spec rmdir!(binary) :: :ok
   def rmdir!(path), do: result!(rmdir(path))
 
   @spec rename(binary, binary) :: :ok | {:error, :io}
   def rename(source, destination), do: status(libc::rename(source, destination))
+
+  extern "C" defp libc::rename(c_string, c_string) :: c_int
 
   @spec rename!(binary, binary) :: :ok
   def rename!(source, destination), do: result!(rename(source, destination))
@@ -110,17 +106,23 @@ defmodule File do
   @spec ln(binary, binary) :: :ok | {:error, :io}
   def ln(source, destination), do: status(libc::link(source, destination))
 
+  extern "C" defp libc::link(c_string, c_string) :: c_int
+
   @spec ln!(binary, binary) :: :ok
   def ln!(source, destination), do: result!(ln(source, destination))
 
   @spec ln_s(binary, binary) :: :ok | {:error, :io}
   def ln_s(source, destination), do: status(libc::symlink(source, destination))
 
+  extern "C" defp libc::symlink(c_string, c_string) :: c_int
+
   @spec ln_s!(binary, binary) :: :ok
   def ln_s!(source, destination), do: result!(ln_s(source, destination))
 
   @spec chmod(binary, integer) :: :ok | {:error, :io}
   def chmod(path, mode), do: status(libc::chmod(path, mode))
+
+  extern "C" defp libc::chmod(c_string, integer) :: c_int
 
   @spec chmod!(binary, integer) :: :ok
   def chmod!(path, mode), do: result!(chmod(path, mode))
@@ -159,8 +161,13 @@ defmodule File do
     read_result(contents, libc::ferror(stream), libc::fclose(stream))
   end
 
+  extern "C" defp libc::fclose(c_pointer) :: c_int
+  extern "C" defp libc::ferror(c_pointer) :: c_int
+
   @spec read_bytes(c_pointer, binary) :: binary
   defp read_bytes(stream, contents), do: read_byte(stream, libc::fgetc(stream), contents)
+
+  extern "C" defp libc::fgetc(c_pointer) :: c_int
 
   @spec read_byte(c_pointer, integer, binary) :: binary
   defp read_byte(_stream, -1, contents), do: contents
@@ -181,6 +188,9 @@ defmodule File do
     write_result(written, bytes, flush, close)
   end
 
+  extern "C" defp libc::fwrite(binary, integer, integer, c_pointer) :: integer
+  extern "C" defp libc::fflush(c_pointer) :: c_int
+
   @spec write_result(integer, integer, integer, integer) :: :ok | {:error, :io}
   defp write_result(bytes, bytes, 0, 0), do: :ok
   defp write_result(_written, _bytes, _flush, _close), do: {:error, :io}
@@ -188,6 +198,8 @@ defmodule File do
   @spec wrap_open(c_pointer) :: {:ok, t} | {:error, :io}
   defp wrap_open(0), do: {:error, :io}
   defp wrap_open(stream), do: {:ok, fz_make_resource(stream, &dtor/1)}
+
+  extern "fz" defp fz_make_resource(c_pointer, (c_pointer) -> nil) :: resource(c_pointer)
 
   @spec dtor(c_pointer) :: nil
   defp dtor(stream) do

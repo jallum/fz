@@ -54,8 +54,6 @@ defimpl String.Chars, for: Atom do
 end
 
 defimpl String.Chars, for: Binary do
-  extern "C" defp fz_bitstring_is_binary(any) :: integer
-
   # fz's `binary` type does not require byte alignment -- `<<1::4>>` satisfies
   # a `s :: binary` clause head -- so whether a given bitstring is actually a
   # byte-aligned binary can only be answered at runtime, here.
@@ -70,6 +68,8 @@ defimpl String.Chars, for: Binary do
       Kernel.panic({:string_chars, :cannot_convert_a_bitstring_to_a_string, s})
     end
   end
+
+  extern "C" defp fz_bitstring_is_binary(any) :: integer
 end
 
 defimpl String.Chars, for: Integer do
