@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-25T23:29:57Z",
+  "description": "fz-odj placed each Kernel extern defp directly after the def that calls it. Do the same for the other lib modules that declare externs: atom, file, float, integer, map, process, string, string_chars, utf8.\n\nAn extern called by several defs sits after the first def (clause family) that uses it, where a reader first meets it; within a group, externs are listed in order of first use. Comments attached to an extern move with it.\n\nThis is a pure reordering: the set of declarations and every body are unchanged.",
+  "id": "fz-bbb",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "lib: each extern defp sits directly after the def that uses it, in every module",
+  "type": "task",
+  "updated_at": "2026-09-25T23:29:57Z"
+}
