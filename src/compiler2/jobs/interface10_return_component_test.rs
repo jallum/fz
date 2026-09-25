@@ -6,23 +6,21 @@ use super::*;
 use crate::compiler2::{FunctionId, RootId};
 use crate::telemetry::sink::NullTelemetry;
 
+/// A source/cell-shaped frame has no activation key or embedded input vector.
+/// The equation kernel receives its complete formal arity alongside it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SourceFrame(u8);
+
 fn member(types: &mut Types) -> ActivationKey {
     ActivationKey::from_inputs(RootId::for_test(0), FunctionId::from_coordinate(0), &[], types)
 }
 
 fn answer(member: &ActivationKey, bindings: &Bindings, types: &mut Types) -> Option<Ty> {
-    solve(
-        std::slice::from_ref(member),
-        &HashSet::from([member.clone()]),
-        bindings,
-        &[],
-        types,
-        &NullTelemetry,
-        member,
-    )
-    .returns
-    .get(member)
-    .copied()
+    let members = [(member.clone(), 0)];
+    solve(&members, bindings, types, &NullTelemetry, member)
+        .returns
+        .get(member)
+        .copied()
 }
 
 #[test]
@@ -179,4 +177,83 @@ fn projecting_a_union_drops_dead_branches_but_preserves_unknown_alternatives() {
         [Some(live), None],
         "an impossible source tuple contributes no tag; an unknown alternative keeps the union pending"
     );
+}
+
+#[test]
+fn an_argument_equation_keeps_fixed_ports_outside_its_return_dependencies() {
+    let mut types = Types::new();
+    let int = types.int();
+    let seed = types.atom_lit("seed");
+    let member = ActivationKey::from_inputs(
+        RootId::for_test(0),
+        FunctionId::from_coordinate(0),
+        &[int, seed],
+        &mut types,
+    );
+    // loop(n, acc) returns acc or calls loop(n-1, {acc}). The first
+    // input is fixed, but no return/constructor edge happens to visit it.
+    let mut bindings = Bindings {
+        returns: HashMap::from([(member.clone(), vec![Term::Slot(member.clone(), 1)])]),
+        slots: HashMap::from([
+            ((member.clone(), 0), vec![Term::Settled(int)]),
+            (
+                (member.clone(), 1),
+                vec![
+                    Term::Settled(seed),
+                    Term::Shape(member.clone(), Skeleton::Tuple(vec![Skeleton::Input(1)])),
+                ],
+            ),
+        ]),
+        ..Bindings::default()
+    };
+    let solved = solve(&[(member.clone(), 2)], &bindings, &mut types, &NullTelemetry, &member);
+    assert_eq!(
+        solved.slots.get(&(member.clone(), 0)).map(ActivationInput::ty),
+        Some(int),
+        "a component's input row includes fixed formal ports, not only result dependencies"
+    );
+    let expected = types.intern_regular_component(1, |nodes| {
+        vec![union_regular_bodies(
+            &DescrOf::atom_lit("seed"),
+            &DescrOf::tuple_of(vec![nodes[0]]),
+        )]
+    })[0];
+    assert_eq!(solved.slots[&(member.clone(), 1)].ty(), expected);
+    assert_eq!(solved.returns[&member], expected);
+
+    bindings.slots.remove(&(member.clone(), 0));
+    let missing = solve(&[(member.clone(), 2)], &bindings, &mut types, &NullTelemetry, &member);
+    assert!(
+        !missing.slots.contains_key(&(member.clone(), 0)),
+        "a formal port without an equation cannot borrow the activation key's type"
+    );
+    assert_eq!(missing.returns[&member], expected);
+}
+
+#[test]
+fn a_source_frame_uses_declared_formal_arity_for_recursive_ports() {
+    let mut types = Types::new();
+    let seed = types.atom_lit("seed");
+    let frame = SourceFrame(0);
+    let bindings = Bindings::<SourceFrame> {
+        returns: HashMap::from([(frame.clone(), vec![Term::Slot(frame.clone(), 0)])]),
+        slots: HashMap::from([(
+            (frame.clone(), 0),
+            vec![
+                Term::Settled(seed),
+                Term::Shape(frame.clone(), Skeleton::Tuple(vec![Skeleton::Input(0)])),
+            ],
+        )]),
+        ..Bindings::default()
+    };
+
+    let solved = solve(&[(frame.clone(), 1)], &bindings, &mut types, &NullTelemetry, &frame);
+    let expected = types.intern_regular_component(1, |nodes| {
+        vec![union_regular_bodies(
+            &DescrOf::atom_lit("seed"),
+            &DescrOf::tuple_of(vec![nodes[0]]),
+        )]
+    })[0];
+    assert_eq!(solved.slots[&(frame.clone(), 0)].ty(), expected);
+    assert_eq!(solved.returns[&frame], expected);
 }

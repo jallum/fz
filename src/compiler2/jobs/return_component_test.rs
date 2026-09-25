@@ -301,8 +301,7 @@ fn productive_cycle_with_no_base_case_publishes_none() {
 
     let a = ActivationKey::from_inputs(RootId::for_test(0), FunctionId::from_coordinate(0), &[], &mut types);
     let b = ActivationKey::from_inputs(RootId::for_test(0), FunctionId::from_coordinate(1), &[], &mut types);
-    let members = vec![a.clone(), b.clone()];
-    let member_set: HashSet<ActivationKey> = members.iter().cloned().collect();
+    let formal_members = vec![(a.clone(), 0), (b.clone(), 0)];
 
     // Each member's static shape: `{tag, <what my one call yields>}`. The
     // tag is a ground value, answered by what the walk observed at it; the
@@ -345,7 +344,7 @@ fn productive_cycle_with_no_base_case_publishes_none() {
                 .push((name.last().copied().unwrap(), owner.clone(), *nodes));
         },
     );
-    let solved = solve(&members, &member_set, &bindings, &[], &mut types, &tel, &a);
+    let solved = solve(&formal_members, &bindings, &mut types, &tel, &a);
     let iterations = iterations.borrow();
     assert!(iterations.iter().all(|(_, owner, nodes)| *owner == a && *nodes == 2));
     assert_eq!(

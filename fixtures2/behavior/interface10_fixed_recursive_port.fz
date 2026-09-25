@@ -1,0 +1,8 @@
+#---
+# purpose: "a recursive argument equation retains a fixed formal port outside its return dependencies"
+#---
+# n is a formal input even though only acc occurs in the recursive tuple.
+# Its equation is int; acc's equation is :start | {acc}.
+def build(0, acc), do: acc
+def build(n, acc), do: build(n - 1, {acc})
+def main(), do: dbg(build(3, :start))

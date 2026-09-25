@@ -70,7 +70,9 @@
 //! collapses two members whose bodies turn out identical, so this job never
 //! needs a separate closure-comparison step.
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::Hash;
 
 use crate::modules::identity::ModuleName;
 use crate::telemetry::TelemetryExt as _;
@@ -89,9 +91,10 @@ use super::super::types::{ComponentRef, DescrOf, MapKey, Ty, Types, union_regula
 use super::super::world::World;
 
 /// One value the solve talks about: a binding already resolved, or a shape
-/// still to be read in the frame of the activation named beside it.
+/// still to be read in the frame named beside it. The equation kernel does
+/// not key or create an executable activation; its caller supplies the frame.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Term {
+enum Term<Frame = ActivationKey> {
     /// No path reaches this position.
     Bottom,
     /// A position nothing has observed yet. Not the empty type: a node
@@ -99,49 +102,63 @@ enum Term {
     Unobserved,
     /// A type settled outside this system.
     Settled(Ty),
-    /// What one activation hands back.
-    Return(ActivationKey),
-    /// What arrives at one member's parameter slot: an unknown of this
+    /// What one frame hands back.
+    Return(Frame),
+    /// What arrives at one member's formal input: an unknown of this
     /// system.
-    Slot(ActivationKey, usize),
-    /// The input evidence already standing at one activation's slot.
-    Evidence(ActivationKey, usize),
-    /// A shape read in one activation's own vocabulary. Its children are
+    Slot(Frame, usize),
+    /// The input evidence already standing at one frame's slot.
+    Evidence(Frame, usize),
+    /// A shape read in one frame's source vocabulary. Its children are
     /// read in the same frame.
-    Shape(ActivationKey, Skeleton),
+    Shape(Frame, Skeleton),
 }
 
 /// What every leaf of every skeleton this solve reads resolves to, gathered
 /// while the world is still readable. A binding is never derived here: each
 /// one is a fact some other job already published, read at the address the
 /// skeleton names.
-#[derive(Debug, Default)]
-struct Bindings {
-    /// What each activation's walk observed standing at each of its values.
-    value_types: HashMap<ActivationKey, HashMap<ValueId, Ty>>,
-    /// What each call site yields: the activations it addressed, or -- when
-    /// it addressed none at all -- what the walk observed standing at the
+#[derive(Debug)]
+struct Bindings<Frame = ActivationKey> {
+    /// What each frame's walk observed standing at each of its values.
+    value_types: HashMap<Frame, HashMap<ValueId, Ty>>,
+    /// What each call site yields: the frames it addressed, or -- when it
+    /// addressed none at all -- what the walk observed standing at the
     /// value the call delivered.
-    results: HashMap<(ActivationKey, CallSiteId), Vec<Term>>,
-    /// Every member's return, one alternative per entry its activation
+    results: HashMap<(Frame, CallSiteId), Vec<Term<Frame>>>,
+    /// Every member's return, one alternative per entry its frame
     /// actually reaches.
-    returns: HashMap<ActivationKey, Vec<Term>>,
+    returns: HashMap<Frame, Vec<Term<Frame>>>,
     /// Every member slot's equation.
-    slots: HashMap<(ActivationKey, usize), Vec<Term>>,
+    slots: HashMap<(Frame, usize), Vec<Term<Frame>>>,
     /// The input evidence already standing at a slot.
-    evidence: HashMap<(ActivationKey, usize), ActivationInput>,
-    /// The return type of an activation outside this component.
-    externals: HashMap<ActivationKey, Ty>,
+    evidence: HashMap<(Frame, usize), ActivationInput>,
+    /// The return type of a frame outside this component.
+    externals: HashMap<Frame, Ty>,
     /// The name a struct brand carries into its solved type.
     module_names: HashMap<ModuleId, ModuleName>,
 }
 
-impl Bindings {
+impl<Frame> Default for Bindings<Frame> {
+    fn default() -> Self {
+        Self {
+            value_types: HashMap::new(),
+            results: HashMap::new(),
+            returns: HashMap::new(),
+            slots: HashMap::new(),
+            evidence: HashMap::new(),
+            externals: HashMap::new(),
+            module_names: HashMap::new(),
+        }
+    }
+}
+
+impl<Frame: Clone + Eq + Hash> Bindings<Frame> {
     /// What the walk observed standing at one value, which is the whole
     /// answer for a ground leaf. Nothing observed is an unknown, never `any`
     /// and never `none`.
-    fn observed(&self, activation: &ActivationKey, value: ValueId) -> Term {
-        match self.value_types.get(activation).and_then(|types| types.get(&value)) {
+    fn observed(&self, frame: &Frame, value: ValueId) -> Term<Frame> {
+        match self.value_types.get(frame).and_then(|types| types.get(&value)) {
             Some(ty) => Term::Settled(*ty),
             None => Term::Unobserved,
         }
@@ -211,7 +228,7 @@ pub(super) fn solve_return_component(
     // set standing in for one. It comes from the SAME walk that just
     // answered `component` above, not a second one.
     let mut reads: Vec<FactKey> = discovered_reads;
-    let (bindings, slot_order) = match gather(world, &members, &member_set, &mut reads) {
+    let (bindings, formal_members) = match gather(world, &members, &member_set, &mut reads) {
         Gathered::Waiting(waits) => {
             return Ok(JobEffects {
                 reads: current_uses(dedup(reads)),
@@ -219,12 +236,12 @@ pub(super) fn solve_return_component(
                 ..JobEffects::default()
             });
         }
-        Gathered::Ready(bindings, slot_order) => (bindings, slot_order),
+        Gathered::Ready(bindings, formal_members) => (bindings, formal_members),
     };
 
     let types = world.types_mut();
     tel.raw_event2(&["fz", "compiler2", "inference_work", "return_solve"], owner, &members);
-    let solved = solve(&members, &member_set, &bindings, &slot_order, types, tel, owner);
+    let solved = solve(&formal_members, &bindings, types, tel, owner);
 
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
@@ -261,13 +278,10 @@ pub(super) fn solve_return_component(
     // never forms. `ActivationInputAlternatives::insert_row` drops the
     // standing rungs the settled row dominates.
     //
-    // A row is one CORRELATED observation, so it exists only when the solve
-    // named every column of it; a member whose slots the system did not all
-    // reach contributes nothing here. Each column is the whole input the
-    // solve settled -- type and callable surfaces alike -- so the row is one
-    // the member's own walk could equally have published, and the ordinary
-    // evidence join recognises it as the row already standing rather than
-    // adding an alternative beside it.
+    // Publish only when every formal port has an answer. The current solve
+    // joins columns independently, so this row is a product approximation,
+    // not evidence that all combinations occurred together at a call site.
+    // Callable surfaces travel with their column's type.
     //
     // Contributed through the ordinary `activation_input_contributions`
     // field, the same one every other publisher uses: this job's own
@@ -322,6 +336,11 @@ fn gather(
 ) -> Gathered {
     let mut bindings = Bindings::default();
     let mut waits = Vec::new();
+    // The source skeleton owns semantic arity. In particular, a closure's
+    // captures are its leading formal ports, so this is the same arity the
+    // invocation-side `CallInputMode` maps arguments into. The activation
+    // key is only the temporary adapter frame for this solver call.
+    let mut formal_members: Vec<(ActivationKey, usize)> = Vec::new();
     // Each frame is one activation and the shapes read in its vocabulary,
     // which is what the leaf walk below needs addresses for.
     let mut frames: Vec<(ActivationKey, Vec<Skeleton>)> = Vec::new();
@@ -346,6 +365,12 @@ fn gather(
         let (Some(analysis), Some(skeleton)) = (analysis, skeleton) else {
             continue;
         };
+        debug_assert_eq!(
+            member.input_len(),
+            skeleton.input_len,
+            "an activation adapter must retain its source function's complete formal vector"
+        );
+        formal_members.push((member.clone(), skeleton.input_len));
         // WHICH entries an activation returns through is a property of that
         // activation, so the static shapes are joined against its own
         // reachability rather than folded flat in the skeleton.
@@ -526,22 +551,7 @@ fn gather(
         }
     }
 
-    // A slot is an unknown of this system when what feeds it names a member.
-    // A slot no member names is already settled by its callers, and seeding
-    // it would restate their (arbitrarily wide) evidence for nothing.
-    let mut slot_order = Vec::new();
-    for member in members {
-        for slot in 0..member.input_len() {
-            let key = (member.clone(), slot);
-            let Some(terms) = bindings.slots.get(&key) else {
-                continue;
-            };
-            if terms.iter().any(|term| names_member(term, &bindings, member_set)) {
-                slot_order.push(key);
-            }
-        }
-    }
-    Gathered::Ready(Box::new(bindings), slot_order)
+    Gathered::Ready(Box::new(bindings), formal_members)
 }
 
 /// Resolves every call site one shape reads through, and records the struct
@@ -620,39 +630,6 @@ fn collect_leaves(
     }
 }
 
-/// Whether a term reaches any activation in `members`, as a whole return or
-/// as one of their parameter slots. This is what makes a slot an unknown of
-/// the component's system rather than a value its callers have settled.
-fn names_member(term: &Term, bindings: &Bindings, members: &HashSet<ActivationKey>) -> bool {
-    match term {
-        Term::Bottom | Term::Unobserved | Term::Settled(_) | Term::Evidence(_, _) => false,
-        Term::Return(key) => members.contains(key),
-        Term::Slot(activation, _) => members.contains(activation),
-        Term::Shape(activation, shape) => names_member_shape(activation, shape, bindings, members),
-    }
-}
-
-fn names_member_shape(
-    activation: &ActivationKey,
-    shape: &Skeleton,
-    bindings: &Bindings,
-    members: &HashSet<ActivationKey>,
-) -> bool {
-    let names = |child: &Skeleton| names_member_shape(activation, child, bindings, members);
-    match shape {
-        Skeleton::Bottom | Skeleton::Ground(_) => false,
-        Skeleton::Input(_) => members.contains(activation),
-        Skeleton::Result { callsite, .. } => bindings
-            .results
-            .get(&(activation.clone(), *callsite))
-            .is_some_and(|terms| terms.iter().any(|term| names_member(term, bindings, members))),
-        Skeleton::Union(branches) | Skeleton::Tuple(branches) => branches.iter().any(names),
-        Skeleton::List { element, .. } => names(element),
-        Skeleton::Map(fields) | Skeleton::Struct(_, fields) => fields.iter().any(|(_, value)| names(value)),
-        Skeleton::Project { of, .. } => names(of),
-    }
-}
-
 /// One unknown of the component's equation system. A member's whole return
 /// and a member's parameter slot are the unknowns the component is named
 /// for. An auxiliary unknown stands for every other position that needs a
@@ -662,10 +639,10 @@ fn names_member_shape(
 /// node -- which is what makes unfolding a projection around a cycle
 /// terminate at the cycle instead of climbing it one rung at a time.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Unknown {
-    Return(ActivationKey),
-    Slot(ActivationKey, usize),
-    Aux(Term),
+enum Unknown<Frame = ActivationKey> {
+    Return(Frame),
+    Slot(Frame, usize),
+    Aux(Term<Frame>),
 }
 
 /// The equation system: one node per [`Unknown`], each carrying the
@@ -673,18 +650,18 @@ enum Unknown {
 /// branch makes at a structural-child position is itself a node here, so the
 /// whole system is a finite graph over subterms of the members' skeletons,
 /// ready to hand to `Types::intern_regular_bodies` in one call.
-struct Equations<'a> {
-    members: &'a HashSet<ActivationKey>,
-    bindings: &'a Bindings,
-    index: HashMap<Unknown, usize>,
-    nodes: Vec<Unknown>,
-    branches: Vec<Vec<Term>>,
+struct Equations<'a, Frame> {
+    members: HashSet<Frame>,
+    bindings: &'a Bindings<Frame>,
+    index: HashMap<Unknown<Frame>, usize>,
+    nodes: Vec<Unknown<Frame>>,
+    branches: Vec<Vec<Term<Frame>>>,
 }
 
-impl<'a> Equations<'a> {
-    fn new(members: &'a HashSet<ActivationKey>, bindings: &'a Bindings) -> Self {
+impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
+    fn new(members: &[(Frame, usize)], bindings: &'a Bindings<Frame>) -> Self {
         Self {
-            members,
+            members: members.iter().map(|(frame, _)| frame.clone()).collect(),
             bindings,
             index: HashMap::new(),
             nodes: Vec::new(),
@@ -692,7 +669,7 @@ impl<'a> Equations<'a> {
         }
     }
 
-    fn node(&mut self, unknown: Unknown) -> usize {
+    fn node(&mut self, unknown: Unknown<Frame>) -> usize {
         if let Some(&existing) = self.index.get(&unknown) {
             return existing;
         }
@@ -708,7 +685,7 @@ impl<'a> Equations<'a> {
     /// constructor. A skeleton says WHERE to look; a binding says what is
     /// there. Nothing observed at a leaf is an unknown, which is neither
     /// `any` nor `none`.
-    fn bind(&self, term: &Term) -> Term {
+    fn bind(&self, term: &Term<Frame>) -> Term<Frame> {
         match term {
             Term::Shape(_, Skeleton::Bottom) => Term::Bottom,
             Term::Shape(activation, Skeleton::Ground(value)) => self.bindings.observed(activation, *value),
@@ -733,11 +710,11 @@ impl<'a> Equations<'a> {
 
     /// A slot inside the component is an unknown the solve answers; a slot
     /// outside it is whatever evidence already stands there.
-    fn slot_term(&self, activation: &ActivationKey, slot: usize) -> Term {
-        match self.members.contains(activation) {
-            true => Term::Slot(activation.clone(), slot),
-            false => match self.bindings.evidence.contains_key(&(activation.clone(), slot)) {
-                true => Term::Evidence(activation.clone(), slot),
+    fn slot_term(&self, frame: &Frame, slot: usize) -> Term<Frame> {
+        match self.members.contains(frame) {
+            true => Term::Slot(frame.clone(), slot),
+            false => match self.bindings.evidence.contains_key(&(frame.clone(), slot)) {
+                true => Term::Evidence(frame.clone(), slot),
                 false => Term::Unobserved,
             },
         }
@@ -746,7 +723,7 @@ impl<'a> Equations<'a> {
     /// The equation a node's value is defined by: a member's own return
     /// shapes, a slot's joined argument shapes, or the auxiliary term the
     /// node stands for.
-    fn equation(&self, unknown: &Unknown) -> Vec<Term> {
+    fn equation(&self, unknown: &Unknown<Frame>) -> Vec<Term<Frame>> {
         match unknown {
             Unknown::Return(key) => self.bindings.returns.get(key).cloned().unwrap_or_default(),
             Unknown::Slot(key, slot) => self
@@ -774,10 +751,10 @@ impl<'a> Equations<'a> {
     /// finite universe of subterms, so the rounds are finite.
     fn build(
         &mut self,
-        seeds: Vec<Unknown>,
+        seeds: Vec<Unknown<Frame>>,
         types: &mut Types,
         tel: &impl crate::telemetry::Telemetry,
-        owner: &ActivationKey,
+        owner: &Frame,
     ) {
         for seed in seeds {
             self.node(seed);
@@ -797,8 +774,8 @@ impl<'a> Equations<'a> {
                 // keeping the order it grew in is what makes the whole system
                 // a function of the members' skeletons rather than of the
                 // round a branch happened to arrive in.
-                let standing: HashSet<&Term> = self.branches[next].iter().collect();
-                let arrived: Vec<Term> = computed
+                let standing: HashSet<&Term<Frame>> = self.branches[next].iter().collect();
+                let arrived: Vec<Term<Frame>> = computed
                     .into_iter()
                     .filter(|branch| !standing.contains(branch))
                     .collect();
@@ -809,7 +786,7 @@ impl<'a> Equations<'a> {
                 // Every structural child of a surviving branch is itself a
                 // node of this system, so the lowering walk never has to mint
                 // one: it only resolves.
-                let children: Vec<Unknown> = self.branches[next]
+                let children: Vec<Unknown<Frame>> = self.branches[next]
                     .clone()
                     .iter()
                     .flat_map(|branch| self.branch_children(branch))
@@ -827,7 +804,7 @@ impl<'a> Equations<'a> {
     }
 
     /// One node's branch set, recomputed from its equation and the memo.
-    fn expand_node(&mut self, unknown: &Unknown, types: &mut Types) -> Vec<Term> {
+    fn expand_node(&mut self, unknown: &Unknown<Frame>, types: &mut Types) -> Vec<Term<Frame>> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         if let Unknown::Aux(Term::Shape(activation, Skeleton::Project { of, step })) = unknown {
@@ -857,7 +834,7 @@ impl<'a> Equations<'a> {
     /// Adds what `term` denotes to `out`: a constructor or a value is itself
     /// a branch, a union contributes each alternative, and an unguarded
     /// reference contributes its referent node's current branches.
-    fn expand_into(&mut self, term: &Term, out: &mut Vec<Term>, seen: &mut HashSet<Term>) {
+    fn expand_into(&mut self, term: &Term<Frame>, out: &mut Vec<Term<Frame>>, seen: &mut HashSet<Term<Frame>>) {
         let term = self.bind(term);
         match &term {
             Term::Bottom => {}
@@ -904,7 +881,7 @@ impl<'a> Equations<'a> {
         }
     }
 
-    fn absorb(&self, node: usize, out: &mut Vec<Term>, seen: &mut HashSet<Term>) {
+    fn absorb(&self, node: usize, out: &mut Vec<Term<Frame>>, seen: &mut HashSet<Term<Frame>>) {
         for branch in &self.branches[node] {
             if seen.insert(branch.clone()) {
                 out.push(branch.clone());
@@ -920,7 +897,7 @@ impl<'a> Equations<'a> {
     /// different constructor promises no such layer at all, which is the
     /// empty type. A subject nothing has observed keeps the projection
     /// unknown rather than answering for it.
-    fn project_branch(&self, branch: &Term, step: &ProjectStep, types: &mut Types) -> Term {
+    fn project_branch(&self, branch: &Term<Frame>, step: &ProjectStep, types: &mut Types) -> Term<Frame> {
         match branch {
             Term::Bottom => Term::Bottom,
             Term::Unobserved => Term::Unobserved,
@@ -958,7 +935,7 @@ impl<'a> Equations<'a> {
     /// The structural-child positions of one flattened branch: the positions
     /// that lower to a `ComponentRef` rather than to a descriptor of their
     /// own. Each one is handed back bound, so callers never re-read leaves.
-    fn branch_children(&self, branch: &Term) -> Vec<Term> {
+    fn branch_children(&self, branch: &Term<Frame>) -> Vec<Term<Frame>> {
         let Term::Shape(activation, shape) = branch else {
             return Vec::new();
         };
@@ -980,7 +957,7 @@ impl<'a> Equations<'a> {
     /// something outside the component both carry their own answer already;
     /// everything else -- an in-component reference, a nested union, a
     /// nested constructor, a surviving projection -- is an equation node.
-    fn child_unknown(&self, child: &Term) -> Option<Unknown> {
+    fn child_unknown(&self, child: &Term<Frame>) -> Option<Unknown<Frame>> {
         match child {
             Term::Bottom | Term::Unobserved | Term::Settled(_) | Term::Evidence(_, _) => None,
             Term::Return(key) => Some(Unknown::Return(key.clone())),
@@ -995,7 +972,7 @@ impl<'a> Equations<'a> {
     /// never escapes is a productive cycle with no base case -- its value is
     /// the empty type. A node with no branches at all has no evidence yet,
     /// which is a different state entirely.
-    fn escapes(&self, tel: &impl crate::telemetry::Telemetry, owner: &ActivationKey) -> Vec<bool> {
+    fn escapes(&self, tel: &impl crate::telemetry::Telemetry, owner: &Frame) -> Vec<bool> {
         self.least_fixed_point(
             |equations, branch, reached| equations.branch_escapes(branch, reached),
             tel,
@@ -1009,7 +986,7 @@ impl<'a> Equations<'a> {
     /// answer yet -- as distinct from a branch no value reaches, which
     /// answers the empty type -- so the member holding it publishes nothing
     /// and keeps whatever its own climb has already reached.
-    fn pending(&self, tel: &impl crate::telemetry::Telemetry, owner: &ActivationKey) -> Vec<bool> {
+    fn pending(&self, tel: &impl crate::telemetry::Telemetry, owner: &Frame) -> Vec<bool> {
         self.least_fixed_point(
             |equations, branch, reached| equations.branch_pending(branch, reached),
             tel,
@@ -1020,9 +997,9 @@ impl<'a> Equations<'a> {
 
     fn least_fixed_point(
         &self,
-        holds: impl Fn(&Self, &Term, &[bool]) -> bool,
+        holds: impl Fn(&Self, &Term<Frame>, &[bool]) -> bool,
         tel: &impl crate::telemetry::Telemetry,
-        owner: &ActivationKey,
+        owner: &Frame,
         event: &[&'static str],
     ) -> Vec<bool> {
         let mut reached = vec![false; self.nodes.len()];
@@ -1050,7 +1027,7 @@ impl<'a> Equations<'a> {
     /// reference cannot become a whole descriptor (a `DescrOf` carries
     /// structure, never a raw reference), so only a reference already
     /// resolved to a concrete value escapes here.
-    fn branch_escapes(&self, branch: &Term, escapes: &[bool]) -> bool {
+    fn branch_escapes(&self, branch: &Term<Frame>, escapes: &[bool]) -> bool {
         match branch {
             Term::Bottom | Term::Unobserved => false,
             Term::Settled(_) | Term::Evidence(_, _) => true,
@@ -1069,7 +1046,7 @@ impl<'a> Equations<'a> {
     }
 
     /// Whether a branch is still waiting on an unobserved leaf.
-    fn branch_pending(&self, branch: &Term, pending: &[bool]) -> bool {
+    fn branch_pending(&self, branch: &Term<Frame>, pending: &[bool]) -> bool {
         match branch {
             Term::Unobserved => true,
             Term::Bottom | Term::Settled(_) | Term::Evidence(_, _) => false,
@@ -1085,7 +1062,7 @@ impl<'a> Equations<'a> {
     /// position, a reference here is a normal recursive edge (it lowers to a
     /// `ComponentRef`, not a `DescrOf`), so it escapes exactly when the node
     /// it names does. Mirrors [`Solver::child_ref`].
-    fn child_escapes(&self, child: &Term, escapes: &[bool]) -> bool {
+    fn child_escapes(&self, child: &Term<Frame>, escapes: &[bool]) -> bool {
         match child {
             Term::Bottom | Term::Unobserved => false,
             Term::Settled(_) | Term::Evidence(_, _) => true,
@@ -1093,7 +1070,7 @@ impl<'a> Equations<'a> {
         }
     }
 
-    fn child_pending(&self, child: &Term, pending: &[bool]) -> bool {
+    fn child_pending(&self, child: &Term<Frame>, pending: &[bool]) -> bool {
         match child {
             Term::Unobserved => true,
             Term::Bottom | Term::Settled(_) | Term::Evidence(_, _) => false,
@@ -1103,7 +1080,7 @@ impl<'a> Equations<'a> {
 
     /// What a flag says about the node a reference names, or `false` when
     /// the reference reaches no node of this system at all.
-    fn at_node(&self, term: &Term, flags: &[bool]) -> bool {
+    fn at_node(&self, term: &Term<Frame>, flags: &[bool]) -> bool {
         match self.child_unknown(term).and_then(|unknown| self.index.get(&unknown)) {
             Some(&node) => flags[node],
             None => false,
@@ -1119,7 +1096,10 @@ impl<'a> Equations<'a> {
 /// flattened branches answer this directly. The surfaces are contributed in
 /// the caller's frame, exactly as the walk contributes them; the evidence
 /// join addresses them at the member's own slot on the way in.
-fn slot_surfaces(branches: &[Term], bindings: &Bindings) -> BTreeSet<ActivationSignature> {
+fn slot_surfaces<Frame: Clone + Eq + Hash>(
+    branches: &[Term<Frame>],
+    bindings: &Bindings<Frame>,
+) -> BTreeSet<ActivationSignature> {
     branches
         .iter()
         .filter_map(|branch| match branch {
@@ -1136,7 +1116,7 @@ fn slot_surfaces(branches: &[Term], bindings: &Bindings) -> BTreeSet<ActivationS
 /// reaches this position -- so it contributes the empty type. Asking the
 /// calculator for the layer anyway answers `any`, which is how one base
 /// clause's `int` used to poison a whole system through a head read.
-fn project_concrete(ty: Ty, step: &ProjectStep, types: &mut Types) -> Term {
+fn project_concrete<Frame>(ty: Ty, step: &ProjectStep, types: &mut Types) -> Term<Frame> {
     let carries_the_layer = match step {
         ProjectStep::ListElement | ProjectStep::ListTail => types.has_list_shape(&ty),
         ProjectStep::TupleField(index) => types.max_tuple_arity(&ty) > *index,
@@ -1150,26 +1130,22 @@ fn project_concrete(ty: Ty, step: &ProjectStep, types: &mut Types) -> Term {
     }
 }
 
-fn solve(
-    members: &[ActivationKey],
-    member_set: &HashSet<ActivationKey>,
-    bindings: &Bindings,
-    member_slots: &[(ActivationKey, usize)],
+fn solve<Frame: Clone + Eq + Hash + std::fmt::Debug + Any>(
+    members: &[(Frame, usize)],
+    bindings: &Bindings<Frame>,
     types: &mut Types,
     tel: &impl crate::telemetry::Telemetry,
-    owner: &ActivationKey,
-) -> Solved {
-    let mut equations = Equations::new(member_set, bindings);
-    let seeds: Vec<Unknown> = members
-        .iter()
-        .map(|member| Unknown::Return(member.clone()))
-        .chain(
-            member_slots
-                .iter()
-                .map(|(activation, slot)| Unknown::Slot(activation.clone(), *slot)),
-        )
-        .collect();
-    equations.build(seeds, types, tel, owner);
+    owner: &Frame,
+) -> Solved<Frame> {
+    let mut equations = Equations::new(members, bindings);
+    // Formal ports belong to the component interface even when neither a
+    // return nor a recursive constructor reads them. Publication needs the
+    // complete input row, not just the return's dependency closure.
+    let seeds = members.iter().flat_map(|(frame, formal_arity)| {
+        std::iter::once(Unknown::Return(frame.clone()))
+            .chain((0..*formal_arity).map(|slot| Unknown::Slot(frame.clone(), slot)))
+    });
+    equations.build(seeds.collect(), types, tel, owner);
     let escapes = equations.escapes(tel, owner);
     let pending = equations.pending(tel, owner);
 
@@ -1240,14 +1216,14 @@ fn solve(
         }
     };
 
-    // Auxiliary unknowns stand for interior positions and are never read
-    // back: only whole activations have facts. Member returns become
-    // `ReturnType`, member slots become that member's own input evidence.
+    // Auxiliary unknowns are interior positions, not interface answers.
+    // The caller publishes member results and formal inputs in its own
+    // frame vocabulary.
     let mut result = Solved::default();
-    for member in members {
-        let node = equations.index[&Unknown::Return(member.clone())];
+    for (frame, _) in members {
+        let node = equations.index[&Unknown::Return(frame.clone())];
         if let Some(ty) = answer(node) {
-            result.returns.insert(member.clone(), ty);
+            result.returns.insert(frame.clone(), ty);
         }
     }
     for (node, unknown) in equations.nodes.iter().enumerate() {
@@ -1268,17 +1244,26 @@ fn solve(
 /// member's parameter slots. Both come out of the one equation system and
 /// the one `Types::intern_regular_bodies` call, so a member's accumulator
 /// and the return that feeds it share a single recursive type.
-#[derive(Debug, Default)]
-struct Solved {
-    returns: HashMap<ActivationKey, Ty>,
-    slots: HashMap<(ActivationKey, usize), ActivationInput>,
+#[derive(Debug)]
+struct Solved<Frame = ActivationKey> {
+    returns: HashMap<Frame, Ty>,
+    slots: HashMap<(Frame, usize), ActivationInput>,
+}
+
+impl<Frame> Default for Solved<Frame> {
+    fn default() -> Self {
+        Self {
+            returns: HashMap::new(),
+            slots: HashMap::new(),
+        }
+    }
 }
 
 /// Lowers already-flattened branches to `DescrOf<ComponentRef>`, one
 /// equation node at a time. Every structural child is already a node of the
 /// same system, so this walk mints nothing: it only resolves.
-struct Solver<'a> {
-    equations: &'a Equations<'a>,
+struct Solver<'a, Frame> {
+    equations: &'a Equations<'a, Frame>,
     escapes: &'a [bool],
     interned_index: &'a [Option<usize>],
     none_ty: Ty,
@@ -1286,12 +1271,12 @@ struct Solver<'a> {
     bodies: Vec<Option<DescrOf<ComponentRef>>>,
 }
 
-impl Solver<'_> {
+impl<Frame: Clone + Eq + Hash + Any> Solver<'_, Frame> {
     /// The reference a structural-child position lowers to. A node that
     /// escapes is a recursive edge; a node with branches that never escape
     /// is the empty type, computed; a node with no branches at all has no
     /// evidence, which drops the branch holding it.
-    fn child_ref(&self, child: &Term) -> Option<ComponentRef> {
+    fn child_ref(&self, child: &Term<Frame>) -> Option<ComponentRef> {
         match child {
             Term::Bottom | Term::Unobserved => None,
             Term::Settled(ty) => Some(ComponentRef::Published(*ty)),
@@ -1316,7 +1301,7 @@ impl Solver<'_> {
         }
     }
 
-    fn lower_branch(&mut self, branch: &Term) -> Option<DescrOf<ComponentRef>> {
+    fn lower_branch(&mut self, branch: &Term<Frame>) -> Option<DescrOf<ComponentRef>> {
         match branch {
             Term::Bottom | Term::Unobserved => None,
             Term::Settled(ty) => Some(self.types.regular_published(*ty)),

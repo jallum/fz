@@ -36,6 +36,12 @@ from otherwise productive bodies. Merely giving an empty cycle a new regular
 handle would disagree with `Types::is_empty`, which relies on the unique
 `none` identity.
 
+Structural filters still have a canonicality gap, tracked in fz-kdt.98.3.17.10.1.
+For `X=:a|{X}`, the descriptor for `X & {:a}` is mutually subtype-equivalent
+to `{:a}` but receives a different interned ID. Top-level atom-filter tests
+do not prove canonical restriction beneath constructors; the source/cell
+replacement must complete that prerequisite before using filtered identities.
+
 These are kernel obligations, not the cell solver: source restrictions,
 cell-addressed argument equations, pending dependencies and the ordinary
 compiler re-key gate still have to be connected through the existing evaluator.
@@ -73,6 +79,39 @@ external-substitution prerequisites with their existing fact coordinates,
 and express component-local recursion as equation edges. The closed-alias
 kernel regression remains red on the pushed compiler; its expected assertion
 is a requirement, not evidence that production already honors this contract.
+
+## The complete formal interface
+
+Every formal input belongs to the component's equation system, even when the
+return and recursive constructors never read it. For example:
+
+```elixir
+def build(0, acc), do: acc
+def build(n, acc), do: build(n - 1, {acc})
+```
+
+The input equations are `N=int` and `A=:start|{A}`, with return `A`. Discovering
+ports only through recursive dependencies omits `N` and prevents publication
+of the complete input vector. Seed all formal ports from the member's arity;
+an absent equation still has no answer. This eliminates `slot_order` and its
+separate `names_member` traversal.
+
+The solver's frame address and its formal arity are separate inputs. The
+retained `FunctionSkeleton.input_len` supplies the latter, including the
+capture prefix; an executable specialization key is not the definition of a
+function's input space. The kernel derives membership from this same ordered declaration; it no
+longer accepts a second membership set that can silently disagree with it.
+Its terms, bindings and unknowns are frame-independent. Production gathering
+still supplies activation frames; the source-frame test proves kernel
+independence, not migration of source-call admission.
+
+This is an interface obligation, not a termination proof for activation-owned
+inference. The ordinary `{acc}` fixture still times out with this correction,
+just as the original `{n,acc}` fixture does. The latter already discovers both
+ports through its tuple. Neither result licenses keeping activation-addressed
+input feedback in the source/cell replacement. The current solver publishes a
+product of column answers; it does not preserve an exact relation between
+those columns.
 
 ## Definitions, substitutions, and sharing
 
