@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-afu.1"
+    "fz-afu.1",
+    "fz-afu.6"
   ],
   "blocks": [],
   "created": "2026-09-25T20:28:36Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Every compile runs nested backend compiles for def/1 and defp/1",
   "type": "task",
-  "updated_at": "2026-09-25T20:28:36Z"
+  "updated_at": "2026-09-25T21:05:17Z"
 }
