@@ -303,6 +303,30 @@ pub(crate) struct CallSiteUnknowns {
 }
 
 impl CallSiteUnknowns {
+    /// Bind the source argument once for both admission and membership.
+    /// Destination cycles and inherited input coordinates decide the key;
+    /// argument cycles and those same coordinates decide the shared solve.
+    pub(crate) fn bind_inputs(&self, types: &Types, arguments: &[Skeleton], inputs: &[Ty]) -> Self {
+        assert_eq!(self.arguments.len(), arguments.len());
+        assert_eq!(self.destinations.len(), arguments.len());
+        let inherited = arguments
+            .iter()
+            .map(|argument| KeyShape::bind_inputs(types, argument, inputs))
+            .collect::<Vec<_>>();
+        let bind = |shapes: &[KeyShape]| {
+            shapes
+                .iter()
+                .zip(&inherited)
+                .map(|(shape, inherited)| shape.clone().join(inherited.clone()))
+                .collect()
+        };
+        Self {
+            arguments: bind(&self.arguments),
+            destinations: bind(&self.destinations),
+            result: self.result,
+        }
+    }
+
     /// Nothing about this call belongs to a solve.
     pub(crate) fn is_settled(&self) -> bool {
         !self.result && self.arguments.iter().all(KeyShape::is_settled)
@@ -361,6 +385,58 @@ impl KeyShape {
                 )
             }
             _ => KeyShape::Unknown,
+        }
+    }
+
+    /// Carry the caller's already-addressed input positions through the source
+    /// argument. A projection of an unknown input is still an unknown position;
+    /// it does not become settled just because this callee's own static cycle
+    /// contains no constructor. Ground operations and call results contribute
+    /// no input relationship here; their static destination shape still applies.
+    pub(crate) fn bind_inputs(types: &Types, argument: &Skeleton, inputs: &[Ty]) -> Self {
+        match argument {
+            Skeleton::Bottom | Skeleton::Ground(_) | Skeleton::Result { .. } => Self::Settled,
+            Skeleton::Input(slot) => types.input_key_shape(inputs[*slot]),
+            Skeleton::Union(branches) => branches
+                .iter()
+                .map(|branch| Self::bind_inputs(types, branch, inputs))
+                .fold(Self::Settled, Self::join),
+            Skeleton::Tuple(elements) => {
+                let shapes = elements
+                    .iter()
+                    .map(|element| Self::bind_inputs(types, element, inputs))
+                    .collect::<Vec<_>>();
+                settle(shapes.iter().all(Self::is_settled), Self::Tuple(shapes))
+            }
+            Skeleton::List { element, .. } => {
+                let shape = Self::bind_inputs(types, element, inputs);
+                settle(shape.is_settled(), Self::List(Box::new(shape)))
+            }
+            Skeleton::Map(fields) | Skeleton::Struct(_, fields) => {
+                let shapes = fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), Self::bind_inputs(types, value, inputs)))
+                    .collect::<Vec<_>>();
+                settle(shapes.iter().all(|(_, shape)| shape.is_settled()), Self::Map(shapes))
+            }
+            Skeleton::Project { of, step } => Self::bind_inputs(types, of, inputs).project(step),
+        }
+    }
+
+    fn project(self, step: &ProjectStep) -> Self {
+        match (self, step) {
+            (Self::Unknown, _) => Self::Unknown,
+            (Self::Tuple(elements), ProjectStep::TupleField(index)) => {
+                elements.get(*index).cloned().unwrap_or_default()
+            }
+            (Self::List(element), ProjectStep::ListElement) => *element,
+            (shape @ Self::List(_), ProjectStep::ListTail) => shape,
+            (Self::Map(fields), ProjectStep::MapField(key)) => fields
+                .into_iter()
+                .find(|(field, _)| field == key)
+                .map(|(_, shape)| shape)
+                .unwrap_or_default(),
+            _ => Self::Settled,
         }
     }
 

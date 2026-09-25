@@ -70,7 +70,15 @@
 //! collapses two members whose bodies turn out identical, so this job never
 //! needs a separate closure-comparison step.
 
+<<<<<<< Updated upstream
 use std::any::Any;
+=======
+#[path = "return_component_bindings.rs"]
+mod bound_bindings;
+#[path = "return_component_rows.rs"]
+mod bound_rows;
+
+>>>>>>> Stashed changes
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 
@@ -85,7 +93,7 @@ use super::super::identity::{ActivationKey, ActivationSignature, ModuleId};
 use super::super::return_skeleton::{Returns, Skeleton};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationInput, ActivationInputAlternatives, CallSiteKey, ProjectStep, SemanticOrd as _, join_contributions,
+    ActivationInput, ActivationInputAlternatives, CallSiteKey, ProjectStep, SemanticOrd as _,
 };
 use super::super::types::{ComponentRef, DescrOf, MapKey, Ty, Types, union_regular_bodies};
 use super::super::world::World;
@@ -105,10 +113,17 @@ enum Term<Frame = ActivationKey> {
     Return(Frame),
     /// What arrives at one member's formal input: an unknown of this
     /// system.
+<<<<<<< Updated upstream
     Slot(Frame, usize),
     /// The input evidence already standing at one frame's slot.
     Evidence(Frame, usize),
     /// A shape read in one frame's source vocabulary. Its children are
+=======
+    Slot(ActivationKey, usize),
+    /// The input evidence already standing at one activation's slot.
+    Evidence(ActivationInput),
+    /// A shape read in one activation's own vocabulary. Its children are
+>>>>>>> Stashed changes
     /// read in the same frame.
     Shape(Frame, Skeleton),
 }
@@ -127,6 +142,7 @@ struct Bindings<Frame = ActivationKey> {
     results: HashMap<(Frame, CallSiteId), Vec<Term<Frame>>>,
     /// Every member's return, one alternative per entry its frame
     /// actually reaches.
+<<<<<<< Updated upstream
     returns: HashMap<Frame, Vec<Term<Frame>>>,
     /// Every member slot's equation.
     slots: HashMap<(Frame, usize), Vec<Term<Frame>>>,
@@ -134,10 +150,19 @@ struct Bindings<Frame = ActivationKey> {
     evidence: HashMap<(Frame, usize), ActivationInput>,
     /// The return type of a frame outside this component.
     externals: HashMap<Frame, Ty>,
+=======
+    returns: HashMap<ActivationKey, Vec<Term>>,
+    /// Incoming edges bind all parameters together. A slot projection is a
+    /// derived view used only when lowering a value type.
+    input_rows: HashMap<ActivationKey, Vec<Vec<Term>>>,
+    /// The return type of an activation outside this component.
+    externals: HashMap<ActivationKey, Ty>,
+>>>>>>> Stashed changes
     /// The name a struct brand carries into its solved type.
     module_names: HashMap<ModuleId, ModuleName>,
 }
 
+<<<<<<< Updated upstream
 impl<Frame> Default for Bindings<Frame> {
     fn default() -> Self {
         Self {
@@ -153,6 +178,30 @@ impl<Frame> Default for Bindings<Frame> {
 }
 
 impl<Frame: Clone + Eq + Hash> Bindings<Frame> {
+=======
+impl Bindings {
+    fn insert_input_row(&mut self, activation: ActivationKey, row: Vec<Term>) {
+        assert_eq!(
+            row.len(),
+            activation.input_len(),
+            "an incoming edge binds the entire input row"
+        );
+        let rows = self.input_rows.entry(activation).or_default();
+        if !rows.contains(&row) {
+            rows.push(row);
+        }
+    }
+
+    fn input_projection(&self, activation: &ActivationKey, slot: usize) -> Vec<Term> {
+        self.input_rows
+            .get(activation)
+            .into_iter()
+            .flatten()
+            .filter_map(|row| row.get(slot).cloned())
+            .collect()
+    }
+
+>>>>>>> Stashed changes
     /// What the walk observed standing at one value, which is the whole
     /// answer for a ground leaf. Nothing observed is an unknown, never `any`
     /// and never `none`.
@@ -335,11 +384,15 @@ fn gather(
 ) -> Gathered {
     let mut bindings = Bindings::default();
     let mut waits = Vec::new();
+<<<<<<< Updated upstream
     // The source skeleton owns semantic arity. In particular, a closure's
     // captures are its leading formal ports, so this is the same arity the
     // invocation-side `CallInputMode` maps arguments into. The activation
     // key is only the temporary adapter frame for this solver call.
     let mut formal_members: Vec<(ActivationKey, usize)> = Vec::new();
+=======
+    let mut plans = HashMap::new();
+>>>>>>> Stashed changes
     // Each frame is one activation and the shapes read in its vocabulary,
     // which is what the leaf walk below needs addresses for.
     let mut frames: Vec<(ActivationKey, Vec<Skeleton>)> = Vec::new();
@@ -364,12 +417,19 @@ fn gather(
         let (Some(analysis), Some(skeleton)) = (analysis, skeleton) else {
             continue;
         };
+<<<<<<< Updated upstream
         debug_assert_eq!(
             member.input_len(),
             skeleton.input_len,
             "an activation adapter must retain its source function's complete formal vector"
         );
         formal_members.push((member.clone(), skeleton.input_len));
+=======
+        if matches!(skeleton.returns, Returns::Entries(_)) {
+            reads.push(FactKey::EntryDispatch(member.function));
+            plans.insert(member.clone(), world.entry_dispatch(member.function));
+        }
+>>>>>>> Stashed changes
         // WHICH entries an activation returns through is a property of that
         // activation, so the static shapes are joined against its own
         // reachability rather than folded flat in the skeleton.
@@ -431,21 +491,32 @@ fn gather(
                 if !member_set.contains(&callee) {
                     continue;
                 }
-                // A call site's positional arguments land at the END of a
-                // closure callee's input space, behind its captures.
-                let mode = match callee.input_len() == arguments.len() {
-                    true => CallInputMode::Direct,
-                    false => CallInputMode::Closure,
+                // Capture and positional producers belong to the same edge.
+                // Source arguments stay symbolic; captures retain the exact
+                // input observation emitted for this target and source row.
+                let mode = if callee.input_len() == arguments.len() {
+                    CallInputMode::Direct
+                } else {
+                    CallInputMode::Closure
                 };
-                for (index, argument) in arguments.iter().enumerate() {
-                    let Some(slot) = mode.semantic_index(callee.input_len(), arguments.len(), index) else {
-                        continue;
-                    };
-                    bindings
-                        .slots
-                        .entry((callee.clone(), slot))
-                        .or_default()
-                        .push(Term::Shape(caller.clone(), argument.clone()));
+                let target_rows = world
+                    .activation_analysis(caller)
+                    .into_iter()
+                    .flat_map(|analysis| &analysis.rows)
+                    .flat_map(|row| &row.calls)
+                    .filter(|call| call.callsite == *callsite)
+                    .flat_map(|call| &call.targets)
+                    .filter(|target| target.key == callee)
+                    .map(|target| target.inputs.clone())
+                    .collect::<Vec<_>>();
+                for inputs in target_rows {
+                    let mut row = inputs.into_iter().map(Term::Evidence).collect::<Vec<_>>();
+                    for (index, argument) in arguments.iter().enumerate() {
+                        if let Some(slot) = mode.semantic_index(callee.input_len(), arguments.len(), index) {
+                            row[slot] = Term::Shape(caller.clone(), argument.clone());
+                        }
+                    }
+                    bindings.insert_input_row(callee.clone(), row);
                 }
                 frames.push((caller.clone(), arguments.clone()));
             }
@@ -506,16 +577,14 @@ fn gather(
             member_evidence.push((member.clone(), cells));
         }
     }
-    let types = world.types_mut();
     for (member, cells) in member_evidence {
-        let standing = join_contributions(types, cells.iter()).joined().to_vec();
-        for (slot, input) in standing.into_iter().enumerate() {
-            bindings.evidence.insert((member.clone(), slot), input);
-            bindings
-                .slots
-                .entry((member.clone(), slot))
-                .or_default()
-                .insert(0, Term::Evidence(member.clone(), slot));
+        for cell in cells {
+            for row in cell.rows() {
+                bindings.insert_input_row(
+                    member.clone(),
+                    row.inputs().iter().cloned().map(Term::Evidence).collect(),
+                );
+            }
         }
     }
 
@@ -550,7 +619,67 @@ fn gather(
         }
     }
 
+<<<<<<< Updated upstream
     Gathered::Ready(Box::new(bindings), formal_members)
+=======
+    let row_bindings = bound_rows::gather_rows(&bindings, &plans, world.types_mut());
+    for (member, selected) in &row_bindings.dispatch {
+        bindings
+            .returns
+            .insert(member.clone(), restricted_returns(world, member, selected));
+    }
+
+    // Publishing a solved input row requires every column, including a
+    // settled counter beside recursive accumulators. All columns of an
+    // admitted family therefore enter the same solve; a settled column
+    // contributes its evidence directly without creating a recursive edge.
+    let slot_order = members
+        .iter()
+        .flat_map(|member| (0..member.input_len()).map(|slot| (member.clone(), slot)))
+        .collect();
+    Gathered::Ready(Box::new(bindings), slot_order)
+}
+
+/// Joint entry proofs can remove a clause, while source execution evidence
+/// still decides whether the clause reached each returning entry.
+fn restricted_returns(world: &World, member: &ActivationKey, selected: &bound_rows::MemberRows) -> Vec<Term> {
+    let skeleton = world
+        .return_skeleton(member.function)
+        .expect("gathered source equation");
+    let Returns::Entries(returns) = &skeleton.returns else {
+        unreachable!("only entry-return equations request joint dispatch")
+    };
+    let body = skeleton
+        .body
+        .as_ref()
+        .expect("analyzed source equation retains its body");
+    let super::super::body::LoweredBody::Clauses { clauses, entries, .. } = &**body else {
+        unreachable!("entry-return equations have source clauses")
+    };
+    let mut allowed = HashSet::new();
+    let mut pending = selected
+        .clauses
+        .iter()
+        .map(|clause| clauses[*clause as usize].entry)
+        .collect::<Vec<_>>();
+    while let Some(entry) = pending.pop() {
+        if allowed.insert(entry) {
+            pending.extend(entries[entry.as_u32() as usize].tail.child_entries());
+        }
+    }
+    let analysis = world.activation_analysis(member).expect("gathered analysis");
+    let mut terms = analysis
+        .reachable_entries
+        .iter()
+        .filter(|entry| allowed.contains(entry))
+        .filter_map(|entry| returns.get(entry))
+        .map(|shape| Term::Shape(member.clone(), shape.clone()))
+        .collect::<Vec<_>>();
+    if selected.pending {
+        terms.push(Term::Unobserved);
+    }
+    terms
+>>>>>>> Stashed changes
 }
 
 /// Resolves every call site one shape reads through, and records the struct
@@ -708,6 +837,7 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
 
     /// A slot inside the component is an unknown the solve answers; a slot
     /// outside it is whatever evidence already stands there.
+<<<<<<< Updated upstream
     fn slot_term(&self, frame: &Frame, slot: usize) -> Term<Frame> {
         match self.members.contains(frame) {
             true => Term::Slot(frame.clone(), slot),
@@ -731,6 +861,15 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
             Term::Evidence(frame, slot) => !self.bindings.evidence.contains_key(&(frame.clone(), *slot)),
             Term::Return(frame) => !self.members.contains(frame) && !self.bindings.externals.contains_key(frame),
             _ => false,
+=======
+    fn slot_term(&self, activation: &ActivationKey, slot: usize) -> Term {
+        match self.members.contains(activation) {
+            true => Term::Slot(activation.clone(), slot),
+            false => match self.bindings.input_projection(activation, slot).as_slice() {
+                [term] => term.clone(),
+                _ => Term::Unobserved,
+            },
+>>>>>>> Stashed changes
         }
     }
 
@@ -740,12 +879,7 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
     fn equation(&self, unknown: &Unknown<Frame>) -> Vec<Term<Frame>> {
         match unknown {
             Unknown::Return(key) => self.bindings.returns.get(key).cloned().unwrap_or_default(),
-            Unknown::Slot(key, slot) => self
-                .bindings
-                .slots
-                .get(&(key.clone(), *slot))
-                .cloned()
-                .unwrap_or_default(),
+            Unknown::Slot(key, slot) => self.bindings.input_projection(key, *slot),
             Unknown::Aux(term) => vec![term.clone()],
         }
     }
@@ -924,10 +1058,14 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
         match branch {
             Term::Bottom => Term::Bottom,
             Term::Settled(ty) => project_concrete(*ty, step, types),
+<<<<<<< Updated upstream
             Term::Evidence(activation, slot) => match self.bindings.evidence.get(&(activation.clone(), *slot)) {
                 Some(input) => project_concrete(input.ty(), step, types),
                 None => branch.clone(),
             },
+=======
+            Term::Evidence(input) => project_concrete(input.ty(), step, types),
+>>>>>>> Stashed changes
             Term::Return(_) | Term::Slot(_, _) => Term::Bottom,
             Term::Shape(activation, shape) => {
                 let of = |child: &Skeleton| Term::Shape(activation.clone(), child.clone());
@@ -984,7 +1122,11 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
             return None;
         }
         match child {
+<<<<<<< Updated upstream
             Term::Bottom | Term::Settled(_) | Term::Evidence(_, _) => None,
+=======
+            Term::Bottom | Term::Unobserved | Term::Settled(_) | Term::Evidence(_) => None,
+>>>>>>> Stashed changes
             Term::Return(key) => Some(Unknown::Return(key.clone())),
             Term::Slot(activation, slot) => Some(Unknown::Slot(activation.clone(), *slot)),
             Term::Shape(_, _) => Some(Unknown::Aux(child.clone())),
@@ -1057,8 +1199,13 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
             return false;
         }
         match branch {
+<<<<<<< Updated upstream
             Term::Bottom => false,
             Term::Settled(_) | Term::Evidence(_, _) => true,
+=======
+            Term::Bottom | Term::Unobserved => false,
+            Term::Settled(_) | Term::Evidence(_) => true,
+>>>>>>> Stashed changes
             Term::Return(_) | Term::Slot(_, _) => false,
             Term::Shape(activation, shape) => match shape {
                 Skeleton::Union(alternatives) => alternatives.iter().any(|alternative| {
@@ -1079,7 +1226,12 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
             return true;
         }
         match branch {
+<<<<<<< Updated upstream
             Term::Bottom | Term::Settled(_) | Term::Evidence(_, _) => false,
+=======
+            Term::Unobserved => true,
+            Term::Bottom | Term::Settled(_) | Term::Evidence(_) => false,
+>>>>>>> Stashed changes
             Term::Shape(_, _) => self
                 .branch_children(branch)
                 .iter()
@@ -1097,8 +1249,13 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
             return false;
         }
         match child {
+<<<<<<< Updated upstream
             Term::Bottom => false,
             Term::Settled(_) | Term::Evidence(_, _) => true,
+=======
+            Term::Bottom | Term::Unobserved => false,
+            Term::Settled(_) | Term::Evidence(_) => true,
+>>>>>>> Stashed changes
             other => self.at_node(other, escapes),
         }
     }
@@ -1108,7 +1265,12 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
             return true;
         }
         match child {
+<<<<<<< Updated upstream
             Term::Bottom | Term::Settled(_) | Term::Evidence(_, _) => false,
+=======
+            Term::Unobserved => true,
+            Term::Bottom | Term::Settled(_) | Term::Evidence(_) => false,
+>>>>>>> Stashed changes
             other => self.at_node(other, pending),
         }
     }
@@ -1131,14 +1293,18 @@ impl<'a, Frame: Clone + Eq + Hash + Any> Equations<'a, Frame> {
 /// flattened branches answer this directly. The surfaces are contributed in
 /// the caller's frame, exactly as the walk contributes them; the evidence
 /// join addresses them at the member's own slot on the way in.
+<<<<<<< Updated upstream
 fn slot_surfaces<Frame: Clone + Eq + Hash>(
     branches: &[Term<Frame>],
     bindings: &Bindings<Frame>,
 ) -> BTreeSet<ActivationSignature> {
+=======
+fn slot_surfaces(branches: &[Term]) -> BTreeSet<ActivationSignature> {
+>>>>>>> Stashed changes
     branches
         .iter()
         .filter_map(|branch| match branch {
-            Term::Evidence(activation, slot) => bindings.evidence.get(&(activation.clone(), *slot)),
+            Term::Evidence(input) => Some(input),
             _ => None,
         })
         .flat_map(|input| input.callable_surfaces().iter().cloned())
@@ -1266,7 +1432,7 @@ fn solve<Frame: Clone + Eq + Hash + std::fmt::Debug + Any>(
             continue;
         };
         if let Some(ty) = answer(node) {
-            let surfaces = slot_surfaces(&equations.branches[node], bindings);
+            let surfaces = slot_surfaces(&equations.branches[node]);
             result
                 .slots
                 .insert((activation.clone(), *slot), ActivationInput::from_parts(ty, surfaces));
@@ -1318,12 +1484,7 @@ impl<Frame: Clone + Eq + Hash + Any> Solver<'_, Frame> {
         match child {
             Term::Bottom => None,
             Term::Settled(ty) => Some(ComponentRef::Published(*ty)),
-            Term::Evidence(activation, slot) => self
-                .equations
-                .bindings
-                .evidence
-                .get(&(activation.clone(), *slot))
-                .map(|input| ComponentRef::Published(input.ty())),
+            Term::Evidence(input) => Some(ComponentRef::Published(input.ty())),
             other => {
                 let unknown = self.equations.child_unknown(other)?;
                 let node = *self.equations.index.get(&unknown)?;
@@ -1346,7 +1507,7 @@ impl<Frame: Clone + Eq + Hash + Any> Solver<'_, Frame> {
         match branch {
             Term::Bottom => None,
             Term::Settled(ty) => Some(self.types.regular_published(*ty)),
-            Term::Evidence(_, _) | Term::Return(_) | Term::Slot(_, _) => match self.child_ref(branch)? {
+            Term::Evidence(_) | Term::Return(_) | Term::Slot(_, _) => match self.child_ref(branch)? {
                 ComponentRef::Published(ty) => Some(self.types.regular_published(ty)),
                 // A bare reference to another node cannot become a whole
                 // descriptor on its own -- `DescrOf` carries structure,

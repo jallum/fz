@@ -13,6 +13,86 @@ use super::{
 use crate::telemetry::ConfiguredTelemetry;
 use std::time::Duration;
 
+#[test]
+fn synchronized_recursive_arguments_keep_equal_constructor_depths() {
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use super::{ActivationInputAlternatives, ActivationKey, FunctionId};
+    use crate::exec::runtime::DbgCapture;
+
+    let tel = ConfiguredTelemetry::new();
+    let observed_functions = Rc::new(Cell::new(None::<[FunctionId; 2]>));
+    let walks = Rc::new(RefCell::new(HashMap::<FunctionId, usize>::new()));
+    let functions = observed_functions.clone();
+    let counts = walks.clone();
+    tel.attach_raw_event2::<ActivationKey, ActivationInputAlternatives, _>(
+        &["fz", "compiler2", "inference_work", "activation_walk"],
+        move |_, _, _, key, _| {
+            if functions.get().is_some_and(|functions| functions.contains(&key.function)) {
+                let mut counts = counts.borrow_mut();
+                let count = counts.entry(key.function).or_default();
+                *count += 1;
+                // The paper product has a seed and one recurring paired row.
+                // This generous ceiling aborts runaway tuple-depth refinement;
+                // it is not a pin on the successful scheduler's exact count.
+                assert!(
+                    *count <= 64,
+                    "synchronized row inference must close its recurring substitution, not unfold tuple depths: function {:?} reached {} activation walks",
+                    key.function,
+                    count,
+                );
+            }
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    let grow = compiler.world_mut().reference_function(ModuleId::GLOBAL, "grow", 3);
+    let aligned = compiler.world_mut().reference_function(ModuleId::GLOBAL, "aligned", 2);
+    observed_functions.set(Some([grow, aligned]));
+    let output = DbgCapture::new();
+    compiler.set_output(output.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("interface10/synchronized_recursive_rows.fz".into()),
+        text: include_str!("../../fixtures2/behavior/interface10_synchronized_recursive_rows.fz").into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("the synchronized recursive relation must reach the ordinary backend product");
+    let ok = compiler.world_mut().types_mut().atom_lit("ok");
+    assert_return(
+        &compiler,
+        root,
+        ok,
+        "the two projections of one recursive row must never invent a mismatched-depth fallback",
+    );
+    compiler.run_root_interp(root).expect("the paired row must execute");
+    assert_eq!(output.lines(), [":ok"]);
+}
+
+#[test]
+fn aligned_dispatch_rejects_direct_mismatched_depths_in_either_column() {
+    use crate::exec::runtime::DbgCapture;
+
+    let (mut compiler, root) = compile(
+        include_str!("../../fixtures2/behavior/interface10_aligned_depth_control.fz"),
+        "aligned_depth_control",
+        0,
+    );
+    let output = DbgCapture::new();
+    compiler.set_output(output.sink());
+    compiler
+        .run_root_interp(root)
+        .expect("the direct depth controls must execute");
+    assert_eq!(output.lines(), [":ok", ":crossed", ":crossed"]);
+}
+
 fn compile(source: &str, name: &str, arity: usize) -> (Compiler2<ConfiguredTelemetry>, RootId) {
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.set_drive_timeout(Duration::from_secs(30));

@@ -108,6 +108,7 @@ fn propagate_tuple_step_demand(
     };
     let facts = ExecutableFacts {
         analysis: ActivationAnalysis {
+            rows: Vec::new(),
             input_rows: Vec::new(),
             entry_reachability: EntryReachability::new(Vec::new(), false),
             reachable_entries: Vec::new(),

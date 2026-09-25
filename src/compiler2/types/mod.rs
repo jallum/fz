@@ -15,6 +15,7 @@ mod descr;
 mod dnf;
 mod emptiness;
 mod format;
+mod key_shape;
 mod order;
 mod regular;
 mod render_bindings;
@@ -1757,14 +1758,7 @@ impl Types {
     }
 
     pub(crate) fn exclusive_tuple_root_arity(&self, a: &Ty) -> Option<usize> {
-        let descr = self.descr(a);
-        if !has_only_tuple_runtime_roots(descr) {
-            return None;
-        }
-        let arities = tuple_root_arities(descr);
-        let mut arities = arities.finite_elems()?;
-        let arity = arities.next()?;
-        arities.next().is_none().then_some(arity)
+        exclusive_tuple_root_arity(self.descr(a))
     }
 
     pub fn refine_map_field(&mut self, a: &Ty, key: &MapKey, v: &Ty) -> Ty {
@@ -3156,6 +3150,16 @@ impl SharedRenderTypes for Types {
     fn display_for_diag(&self, a: &Self::Ty) -> String {
         Types::display_for_diag(self, a)
     }
+}
+
+fn exclusive_tuple_root_arity(descr: &Descr) -> Option<usize> {
+    if !has_only_tuple_runtime_roots(descr) {
+        return None;
+    }
+    let arities = tuple_root_arities(descr);
+    let mut arities = arities.finite_elems()?;
+    let arity = arities.next()?;
+    arities.next().is_none().then_some(arity)
 }
 
 fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {

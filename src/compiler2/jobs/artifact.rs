@@ -2246,6 +2246,7 @@ mod tests {
         let call_returns = evidence.call_returns();
         let result_value = ValueId::from_u32(2);
         let analysis = ActivationAnalysis {
+            rows: Vec::new(),
             input_rows: Vec::new(),
             entry_reachability: EntryReachability::new(Vec::new(), false),
             reachable_entries: Vec::new(),

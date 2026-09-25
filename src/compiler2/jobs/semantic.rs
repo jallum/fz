@@ -29,8 +29,9 @@ use super::super::protocol::ProtocolCallbackImpl;
 use super::super::return_unknowns::KeyShape;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, ActivationInput, ActivationInputAlternatives, CallSiteKey, CallSiteResolution, CallSiteSummary,
-    CallSiteTargets, CallTargetSummary, SelectedCallee,
+    ActivationAnalysis, ActivationInput, ActivationInputAlternatives, ActivationRowAnalysis, ActivationRowCall,
+    ActivationRowTarget, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallTargetSummary,
+    SelectedCallee,
 };
 use super::super::types::{AddrStep, ClosureTarget, MapKey, Sigma, Ty, Types};
 use super::super::world::{ACTIVATION_KEY_FACTS_PROVEN, World};
@@ -283,20 +284,7 @@ struct CallEmission {
     activations: Vec<ActivationContribution>,
 }
 
-#[derive(Debug, Clone)]
-struct ActivationContribution {
-    key: ActivationKey,
-    inputs: Vec<ActivationInput>,
-    /// The Ty this walk actually assigned to the call's value for this
-    /// activation -- the same value that lands in the delivered
-    /// `SemanticValue`, after every refinement (contract, closure-clause
-    /// return arrow) the call site applies. NOT `ReturnType(key)`: that
-    /// published fact is the cumulative join across every round this
-    /// activation has ever seen (and, past the widening budget, a coarsened
-    /// class or `any`) -- strictly wider than what one walk consumed at one
-    /// call. `None` mirrors `return_ty`'s own absence (no evidence yet).
-    value_ty: Option<Ty>,
-}
+type ActivationContribution = ActivationRowTarget;
 
 /// What a walk over one activation's dispatch-reachable clauses determines,
 /// before any of it reaches `World`. Producing this value never writes a
@@ -305,6 +293,7 @@ struct ActivationContribution {
 /// `commit_activation_evaluation` turns it into published facts.
 struct ActivationEvaluation {
     activation: ActivationKey,
+    rows: Vec<ActivationRowAnalysis>,
     input_rows: Vec<Vec<Ty>>,
     entry_reachability: super::super::semantic::EntryReachability,
     reachable_entries: Vec<super::super::body::ControlEntryId>,
@@ -424,42 +413,140 @@ fn evaluate_activation(
         .return_skeleton(function)
         .and_then(|equation| equation.body.clone())
         .expect("an analyzed definition equation must retain its executable source body");
-    // Each correlated row is dispatched and analyzed on its own
-    // (fz-9i4.7.10.2): a row's columns arrived together and only ever bind a
-    // clause together. Only post-analysis results merge — reachable clauses
-    // by set union (`EntryReachability::new` performs the union and orders it
-    // by source), failure by OR, return evidence by join, call emissions by
-    // coalescing. No column of one row ever meets a column of another.
+    // Retain each complete substitution with its observations before joining
+    // the aggregate views consumed by transport and materialization.
+    let mut rows = Vec::new();
     let mut reachable_clauses = Vec::new();
     let mut fail_reachable = false;
-    let mut row_clause_inputs = Vec::new();
+    let mut analysis_calls = Vec::new();
+    let mut reachable_entries = HashSet::new();
+    let mut value_types = HashMap::new();
+    let mut return_evidence = None;
     for row in alternatives.rows() {
         tel.raw_event2(&["fz", "compiler2", "inference_work", "input_row"], activation, row);
         let row_types = row.tys();
-        let dispatch_reachability = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, &row_types);
-        fail_reachable |= dispatch_reachability.fail_reachable;
-        let clause_inputs = dispatch_reachability
+        let dispatch = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, &row_types);
+        let clause_inputs = dispatch
             .outcome_inputs
             .iter()
             .cloned()
             .filter_map(|(outcome, inputs)| {
                 entry_dispatch.outcome(outcome).map(|outcome| {
-                    let inputs: Vec<ActivationInput> = row
+                    let inputs = row
                         .inputs()
                         .iter()
                         .cloned()
                         .zip(inputs)
                         .map(|(input, ty)| input.with_ty(ty))
-                        .collect();
+                        .collect::<Vec<_>>();
                     (outcome.body_id, inputs)
                 })
             })
             .collect::<Vec<_>>();
-        reachable_clauses.extend(clause_inputs.iter().map(|(clause, _)| *clause));
-        row_clause_inputs.push(clause_inputs);
+        let row_reachability = super::super::semantic::EntryReachability::new(
+            clause_inputs.iter().map(|(clause, _)| *clause).collect(),
+            dispatch.fail_reachable,
+        );
+        let mut row_entries = HashSet::new();
+        let mut row_values = HashMap::new();
+        let mut row_calls = Vec::new();
+        let mut row_return = None;
+        match &*lowered_body {
+            LoweredBody::Extern { signature } => {
+                // The declaration is instantiated by this actual substitution,
+                // not the activation's potentially coarser sharing coordinate.
+                let mut sigma = Sigma::new();
+                for (pattern, witness) in signature.semantic_contract.params.iter().zip(&row_types) {
+                    world
+                        .types_mut()
+                        .collect_instantiation_subst(pattern, witness, &mut sigma);
+                }
+                row_return = Some(world.types_mut().instantiate(&signature.return_ty, &sigma));
+            }
+            LoweredBody::Clauses { clauses, entries, .. } => {
+                for (clause_id, clause_inputs) in &clause_inputs {
+                    let clause = &clauses[*clause_id as usize];
+                    // Incomplete evidence cannot bind the source parameters.
+                    if clause.params.len() > clause_inputs.len() {
+                        continue;
+                    }
+                    tel.raw_event3(
+                        &["fz", "compiler2", "inference_work", "clause_walk"],
+                        activation,
+                        clause_id,
+                        clause_inputs,
+                    );
+                    let mut values = SemanticValues::default();
+                    for (value, input) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
+                        values.insert_value(value, SemanticValue::from_activation_input(input));
+                    }
+                    apply_steps(
+                        world,
+                        tel,
+                        &clause.projections,
+                        |index| StepSite::Projection {
+                            clause: *clause_id,
+                            index,
+                        },
+                        &mut values,
+                        activation,
+                        &mut reads,
+                        &mut waits,
+                    )?;
+                    merge_value_types(world, &mut row_values, &values);
+                    let clause_return = analyze_entry(
+                        world,
+                        tel,
+                        entries,
+                        clause.entry,
+                        &values,
+                        &mut row_entries,
+                        &mut row_values,
+                        &mut row_calls,
+                        activation,
+                        &mut reads,
+                        &mut waits,
+                    )?;
+                    row_return = join_evidence(world, row_return, clause_return);
+                }
+            }
+        }
+        if let Some(contract) = activation_contract_return(world, tel, function, &row_types, &mut reads, &mut waits)? {
+            row_return = refine_call_return(world, row_return, Some(contract));
+        }
+        let mut row_entries = row_entries.into_iter().collect::<Vec<_>>();
+        row_entries.sort_by_key(|entry| entry.as_u32());
+        rows.push(ActivationRowAnalysis {
+            inputs: row.clone(),
+            entry_reachability: row_reachability.clone(),
+            reachable_entries: row_entries.clone(),
+            value_types: row_values.clone(),
+            calls: row_calls
+                .iter()
+                .map(|call| ActivationRowCall {
+                    callsite: call.key.callsite,
+                    resolution: call.resolution.clone(),
+                    targets: call.activations.clone(),
+                })
+                .collect(),
+            return_evidence: row_return,
+        });
+        reachable_clauses.extend(row_reachability.clauses());
+        fail_reachable |= row_reachability.fail_reachable();
+        reachable_entries.extend(row_entries);
+        for (value, ty) in row_values {
+            let joined = match value_types.get(&value) {
+                Some(previous) => world.types_mut().union(*previous, ty),
+                None => ty,
+            };
+            value_types.insert(value, joined);
+        }
+        analysis_calls.extend(row_calls);
+        return_evidence = join_evidence(world, return_evidence, row_return);
     }
     let entry_reachability = super::super::semantic::EntryReachability::new(reachable_clauses, fail_reachable);
 
+<<<<<<< Updated upstream
     let mut analysis_calls = Vec::new();
     let mut reachable_entries = HashSet::new();
     let mut value_types = HashMap::new();
@@ -558,6 +645,8 @@ fn evaluate_activation(
         }
     }
 
+=======
+>>>>>>> Stashed changes
     // Waits no longer bail: a waiting completion extends the job's standing
     // claims (it cannot retract), so partial evidence publishes safely and
     // the waits simply ride the final effects.
@@ -565,6 +654,7 @@ fn evaluate_activation(
 
     Ok(ActivationEvaluation {
         activation: activation.clone(),
+        rows,
         input_rows: alternatives.rows().iter().map(|row| row.tys()).collect(),
         entry_reachability,
         reachable_entries: {
@@ -593,6 +683,7 @@ fn commit_activation_evaluation(
 ) -> JobEffects {
     let ActivationEvaluation {
         activation,
+        rows,
         input_rows,
         entry_reachability,
         reachable_entries,
@@ -708,6 +799,7 @@ fn commit_activation_evaluation(
         .define_activation_analysis(
             &activation,
             ActivationAnalysis {
+                rows,
                 input_rows,
                 entry_reachability,
                 reachable_entries,
@@ -2711,6 +2803,12 @@ fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>)
 /// seed's cons, once for the tail the recursion hands back -- and the two
 /// activations compile the same body.
 ///
+/// The source argument also carries positions already named in the caller's
+/// signature. A downstream projection-only cycle need not be a constructor
+/// cycle itself: peeling `a0` still belongs to that input coordinate. Binding
+/// the argument shape through the caller's signature preserves this ownership
+/// while direct concrete calls retain their ordinary specializations.
+///
 /// `argument_offset` is how many of `arg_inputs` the call site did not
 /// write: a closure call's captures sit ahead of its positional arguments in
 /// the callee's input space, and they are values already closed over, so the
@@ -2718,7 +2816,7 @@ fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>)
 /// indexed by what it wrote, so the offset is taken off before reading it.
 fn key_inputs_for_call(
     world: &mut World,
-    caller: FunctionId,
+    caller: &ActivationKey,
     callsite: CallSiteId,
     callee: FunctionId,
     argument_offset: usize,
@@ -2730,13 +2828,25 @@ fn key_inputs_for_call(
     // keys move with it and this body has to be walked again.
     // `analyze_activation` waits on the fact before it evaluates anything,
     // so the answer is there to read.
-    reads.push(FactKey::ReturnUnknowns(caller));
-    let unknowns = world.return_unknowns(caller).expect(ACTIVATION_KEY_FACTS_PROVEN);
+    reads.push(FactKey::ReturnUnknowns(caller.function));
+    let unknowns = world
+        .return_unknowns(caller.function)
+        .expect(ACTIVATION_KEY_FACTS_PROVEN);
     // A body with no lowered definition has a published answer that names no
     // call site, and a call from it is keyed on what it hands over.
     let Some(site) = unknowns.callsite(callsite).cloned() else {
         return arg_inputs.to_vec();
     };
+    reads.push(FactKey::ReturnSkeleton(caller.function));
+    let arguments = world
+        .return_skeleton(caller.function)
+        .expect(ACTIVATION_KEY_FACTS_PROVEN)
+        .invocations
+        .get(&callsite)
+        .expect("a callsite unknown answer belongs to a source invocation")
+        .arguments
+        .clone();
+    let site = site.bind_inputs(world.types(), &arguments, caller.signature.inputs());
     let observable = world.observable_inputs(callee, arg_inputs.len());
     let mut path = Vec::new();
     arg_inputs
@@ -2788,15 +2898,7 @@ fn prepare_function_call(
     arg_inputs: &[ActivationInput],
     reads: &mut Vec<FactKey>,
 ) -> (ActivationKey, Option<Ty>) {
-    let key_inputs = key_inputs_for_call(
-        world,
-        caller.function,
-        callsite,
-        function,
-        argument_offset,
-        arg_inputs,
-        reads,
-    );
+    let key_inputs = key_inputs_for_call(world, caller, callsite, function, argument_offset, arg_inputs, reads);
     let activation = world.activation_key_for_inputs(caller.root, function, &key_inputs);
     tel.raw_event3(
         &["fz", "compiler2", "inference_work", "invocation_target_attempt"],
@@ -3259,6 +3361,10 @@ fn none_ty(world: &mut World) -> Ty {
 }
 
 #[cfg(test)]
+#[path = "key_inputs_test.rs"]
+mod key_inputs_test;
+
+#[cfg(test)]
 #[path = "step_transfer_test.rs"]
 mod step_transfer_test;
 
@@ -3416,6 +3522,168 @@ mod tests {
                 assert_ne!(
                     previous, equation,
                     "the retained literal operation changes the definition equation"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_extern_return_is_instantiated_from_each_actual_input_row() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        world.submit_code(
+            Some("extern_row_return_bindings.fz".into()),
+            "def main(), do: dbg(1)\n".into(),
+        );
+        world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
+        assert!(matches!(
+            ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ));
+        let module = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("Kernel").unwrap());
+        let function = world.reference_function(module, "fz_dbg_value", 1);
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let activation = world
+            .activation_keys()
+            .into_iter()
+            .find(|key| key.function == function)
+            .unwrap();
+        let mut inputs = ActivationInputAlternatives::from_row(vec![int]);
+        inputs.push_row(world.types_mut(), vec![float]);
+        let evaluation = evaluate_activation(&mut world, &tel, &activation, &inputs).unwrap();
+        assert_eq!(evaluation.rows.len(), 2);
+        for row in &evaluation.rows {
+            assert_eq!(row.return_evidence, Some(row.inputs.tys()[0]));
+        }
+        assert_eq!(evaluation.return_evidence, Some(world.types_mut().union(int, float)));
+    }
+
+    #[test]
+    fn row_evaluation_preserves_each_substitutions_return() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        world.submit_code(
+            Some("row_return_bindings.fz".into()),
+            "def first(x, _y), do: x\ndef main(), do: first(1, :seed)\n".into(),
+        );
+        let root = world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
+        assert!(matches!(
+            ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ));
+        let first = world.reference_function(ModuleId::GLOBAL, "first", 2);
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let binary = world.types_mut().str_t();
+        let activation = world
+            .activation_keys()
+            .into_iter()
+            .find(|key| key.function == first)
+            .unwrap();
+        assert_eq!(activation.root, root);
+        let mut inputs = ActivationInputAlternatives::from_row(vec![int, binary]);
+        inputs.push_row(world.types_mut(), vec![float, binary]);
+        // This calls the actual evaluator with two bindings of one definition;
+        // it does not depend on the old activation key admitting both types.
+        let evaluation = evaluate_activation(&mut world, &tel, &activation, &inputs).unwrap();
+        assert_eq!(evaluation.rows.len(), 2);
+        for row in &evaluation.rows {
+            assert_eq!(row.return_evidence, Some(row.inputs.tys()[0]));
+            assert!(row.calls.is_empty());
+            assert_eq!(row.entry_reachability.clauses(), &[0]);
+            assert_eq!(row.reachable_entries.len(), 1);
+        }
+        assert_eq!(evaluation.return_evidence, Some(world.types_mut().union(int, float)));
+    }
+
+    #[test]
+    fn row_evaluation_keeps_selected_target_inputs_with_their_source_row() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        world.submit_code(
+            Some("row_call_bindings.fz".into()),
+            "def sink(a,b), do: {a,b}\ndef relay(a,b), do: sink(a,b)\ndef main(), do: {relay(1,:left),relay(:right,2)}\n".into(),
+        );
+        world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
+        assert!(matches!(
+            ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ));
+        let relay = world.reference_function(ModuleId::GLOBAL, "relay", 2);
+        let sink = world.reference_function(ModuleId::GLOBAL, "sink", 2);
+        let int = world.types_mut().int();
+        let left = world.types_mut().atom_lit("left");
+        let right = world.types_mut().atom_lit("right");
+        let activation = world
+            .activation_keys()
+            .into_iter()
+            .find(|key| key.function == relay)
+            .unwrap();
+        let mut inputs = ActivationInputAlternatives::from_row(vec![int, left]);
+        inputs.push_row(world.types_mut(), vec![right, int]);
+        let evaluation = evaluate_activation(&mut world, &tel, &activation, &inputs).unwrap();
+        assert_eq!(evaluation.rows.len(), 2);
+        for row in &evaluation.rows {
+            let [call] = row.calls.as_slice() else {
+                panic!("each row reaches its one sink invocation")
+            };
+            let [target] = call.targets.as_slice() else {
+                panic!("each invocation selects one sink binding")
+            };
+            assert_eq!(target.key.function, sink);
+            assert_eq!(target.inputs, row.inputs.inputs());
+            let expected = world.types_mut().tuple(&row.inputs.tys());
+            assert_eq!(target.value_ty, Some(expected));
+            assert_eq!(row.return_evidence, Some(expected));
+        }
+    }
+
+    #[test]
+    fn published_analysis_retains_the_real_rows_before_callsite_aggregation() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        world.submit_code(
+            Some("published_row_bindings.fz".into()),
+            concat!(
+                "def sink(n,a,b), do: if n == 0, do: 0, else: sink(n-1,a,b)\n",
+                "def relay(n,a,b), do: if n == 0, do: sink(n,a,b), else: relay(n-1,a,b)\n",
+                "def main(), do: {relay(0,[1],[:left]),relay(0,[:right],[2])}\n",
+            )
+            .into(),
+        );
+        world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
+        assert!(matches!(
+            ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ));
+        let relay = world.reference_function(ModuleId::GLOBAL, "relay", 3);
+        let sink = world.reference_function(ModuleId::GLOBAL, "sink", 3);
+        let activation = world
+            .activation_keys()
+            .into_iter()
+            .find(|key| {
+                key.function == relay
+                    && world
+                        .activation_analysis(key)
+                        .is_some_and(|analysis| analysis.rows.len() == 2)
+            })
+            .expect("the real calls must contribute two rows to one relay analysis");
+        let analysis = world.activation_analysis(&activation).unwrap();
+        assert_eq!(analysis.input_rows.len(), 2);
+        for row in &analysis.rows {
+            let sink_targets = row
+                .calls
+                .iter()
+                .flat_map(|call| &call.targets)
+                .filter(|target| target.key.function == sink)
+                .collect::<Vec<_>>();
+            assert!(!sink_targets.is_empty());
+            for target in sink_targets {
+                assert_eq!(
+                    target.inputs,
+                    row.inputs.inputs(),
+                    "aggregation must not invent a mixed input row"
                 );
             }
         }

@@ -863,7 +863,40 @@ impl ProjectStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationRowTarget {
+    pub key: ActivationKey,
+    pub inputs: Vec<ActivationInput>,
+    /// The result observed at this call after its local refinements, which
+    /// can be narrower than the activation's cumulative return fact.
+    pub value_ty: Option<Ty>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationRowCall {
+    pub callsite: CallSiteId,
+    /// One path's resolution, before the aggregate callsite surface joins
+    /// targets reached through other rows or paths.
+    pub resolution: CallSiteResolution<CallSiteSummary>,
+    pub targets: Vec<ActivationRowTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationRowAnalysis {
+    pub inputs: ActivationInputRow,
+    pub entry_reachability: EntryReachability,
+    pub reachable_entries: Vec<ControlEntryId>,
+    pub value_types: HashMap<ValueId, Ty>,
+    /// Several reached paths can contribute the same callsite. Keeping those
+    /// emissions separate retains each selected target's complete input row.
+    pub calls: Vec<ActivationRowCall>,
+    pub return_evidence: Option<Ty>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationAnalysis {
+    /// Exact row observations are retained before deriving the aggregate
+    /// views below. A row's result belongs to its own substitution.
+    pub rows: Vec<ActivationRowAnalysis>,
     /// Correlated rows already read by the activation analysis.
     pub input_rows: Vec<Vec<Ty>>,
     pub entry_reachability: EntryReachability,
@@ -1509,17 +1542,47 @@ impl ActivationMap {
 /// -- no analysis published yet, or the function's skeleton not published yet
 /// -- reads as empty, the same as any other contribution that has not
 /// arrived.
+#[derive(Default, PartialEq, Eq)]
+struct ReturnSolveInputs {
+    reachable_entries: Vec<ControlEntryId>,
+    value_types: HashMap<ValueId, Ty>,
+    captures: Vec<(CallSiteId, ActivationKey, Vec<ActivationInput>)>,
+}
+
 fn return_solve_inputs(
     analysis: Option<&ActivationAnalysis>,
     skeleton: Option<&FunctionSkeleton>,
-) -> (Vec<ControlEntryId>, HashMap<ValueId, Ty>) {
+) -> ReturnSolveInputs {
     let (Some(analysis), Some(skeleton)) = (analysis, skeleton) else {
-        return (Vec::new(), HashMap::new());
+        return ReturnSolveInputs::default();
     };
-    (
-        analysis.reachable_entries.clone(),
-        skeleton.return_solve_inputs(&analysis.value_types, &analysis.addressed_callsites),
-    )
+    // Positional arguments are read from the source equation. Their current
+    // concrete approximation includes the solve's own Settled contribution,
+    // so subscribing to it would make the solve wake on its own publication.
+    // Only captures still require an observed row here.
+    let mut captures = Vec::new();
+    for row in &analysis.rows {
+        for call in &row.calls {
+            let Some(invocation) = skeleton.invocations.get(&call.callsite) else {
+                continue;
+            };
+            for target in &call.targets {
+                let offset = target.inputs.len().saturating_sub(invocation.arguments.len());
+                if offset == 0 {
+                    continue;
+                }
+                let captured = (call.callsite, target.key.clone(), target.inputs[..offset].to_vec());
+                if !captures.contains(&captured) {
+                    captures.push(captured);
+                }
+            }
+        }
+    }
+    ReturnSolveInputs {
+        reachable_entries: analysis.reachable_entries.clone(),
+        value_types: skeleton.return_solve_inputs(&analysis.value_types, &analysis.addressed_callsites),
+        captures,
+    }
 }
 
 impl<K, P, V> ContributionMap<K, P, V>

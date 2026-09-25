@@ -2772,6 +2772,7 @@ mod tests {
         demand_types.surfaces.insert(Vec::new(), owned.surface.clone());
         let mut evidence = ExecutableFacts {
             analysis: ActivationAnalysis {
+                rows: Vec::new(),
                 input_rows: Vec::new(),
                 entry_reachability: EntryReachability::new(Vec::new(), false),
                 reachable_entries: Vec::new(),
@@ -2844,6 +2845,7 @@ mod tests {
         let captures = [ValueId::from_u32(1), ValueId::from_u32(2), ValueId::from_u32(3)];
         let mut evidence = ExecutableFacts {
             analysis: ActivationAnalysis {
+                rows: Vec::new(),
                 input_rows: Vec::new(),
                 entry_reachability: EntryReachability::new(Vec::new(), false),
                 reachable_entries: Vec::new(),
@@ -3000,6 +3002,7 @@ mod tests {
         let atom_surface = CallableSurface::new(vec![atom], &mut types);
         let facts = ExecutableFacts {
             analysis: ActivationAnalysis {
+                rows: Vec::new(),
                 input_rows: Vec::new(),
                 entry_reachability: EntryReachability::new(Vec::new(), false),
                 reachable_entries: Vec::new(),

@@ -1,9 +1,10 @@
 //! What a function's static shape says before any activation exists.
 //!
-//! Every skeleton here is read off a body the ordinary lowering produced --
+//! Source skeletons are read off a body the ordinary lowering produced --
 //! the source is submitted and driven until its bodies exist, exactly as the
 //! compiler drives them -- so a shape asserted here is a shape keying will
-//! actually see.
+//! actually see. Algebra tests also bind these shapes through small frame
+//! graphs, without constructing activations or concrete type histories.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -13,6 +14,218 @@ use crate::compiler2::drive::{FactKey, Job};
 use crate::compiler2::world::World;
 use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
+
+#[test]
+fn a_branch_result_passed_to_a_call_is_a_union_argument() {
+    let all = skeletons(
+        "branch_union_argument.fz",
+        "def target(value), do: value\n\
+         def relay(flag, x, y) do\n\
+           value = if flag, do: x, else: y\n\
+           target(value)\n\
+         end\n\
+         def main(), do: relay(true, :left, :right)\n",
+    );
+    let relay = all.get("relay/3");
+    let call = relay
+        .invocations
+        .iter()
+        .find(|(site, _)| all.callee(relay, **site) == "target/1")
+        .expect("relay invokes target")
+        .1;
+    let [Skeleton::Union(branches)] = call.arguments.as_slice() else {
+        panic!("a delivered branch join is a union argument: {:?}", call.arguments);
+    };
+    assert_eq!(branches.len(), 2);
+    assert!(branches.contains(&Skeleton::Input(1)));
+    assert!(branches.contains(&Skeleton::Input(2)));
+}
+
+#[test]
+fn whole_row_unfolds_one_recursive_constructor_and_joint_projection_returns_to_its_family() {
+    let identity = Substitution::in_frame(0, &[Skeleton::Input(0), Skeleton::Input(1)]);
+    let wrapped = Substitution::in_frame(
+        0,
+        &[
+            Skeleton::Tuple(vec![Skeleton::Input(0)]),
+            Skeleton::Tuple(vec![Skeleton::Input(1)]),
+        ],
+    );
+    let projected = Substitution::in_frame(
+        0,
+        &[
+            Skeleton::project(Skeleton::Input(0), ProjectStep::TupleField(0)),
+            Skeleton::project(Skeleton::Input(1), ProjectStep::TupleField(0)),
+        ],
+    );
+    let mut rebind = |_: &u32, _: &Substitution<u32>| panic!("these spines substitute directly");
+    assert_eq!(identity.apply_once(&0, &wrapped, &mut rebind), wrapped);
+    assert_eq!(projected.apply_once(&0, &wrapped, &mut rebind), identity);
+    let twice = BoundSkeleton::new(
+        0,
+        Skeleton::project(projected.arguments[0].shape.clone(), ProjectStep::TupleField(0)),
+    );
+    assert_eq!(
+        twice.apply_once(&0, &wrapped, &mut rebind),
+        projected.arguments[0],
+        "one outer unfold does not choose the newly exposed inner recursive family again"
+    );
+}
+
+#[test]
+fn whole_row_application_rebinds_original_local_operations_but_preserves_inserted_producers() {
+    let ground = Skeleton::Ground(ValueId::from_u32(7));
+    let result = Skeleton::Result {
+        callsite: CallSiteId::from_u32(2),
+        value: ValueId::from_u32(3),
+    };
+    let replacement = Substitution {
+        arguments: vec![BoundSkeleton::new(2, ground.clone())],
+    };
+    let mut rebind = |frame: &u32, row: &Substitution<u32>| {
+        assert_eq!(*frame, 0);
+        assert_eq!(*row, replacement);
+        1
+    };
+    let original = Substitution::in_frame(0, &[Skeleton::Input(0), ground.clone(), result.clone()]);
+    assert_eq!(
+        original.apply_once(&0, &replacement, &mut rebind).arguments,
+        vec![
+            replacement.arguments[0].clone(),
+            BoundSkeleton::new(1, ground.clone()),
+            BoundSkeleton::new(1, result)
+        ]
+    );
+    let tuple = BoundSkeleton::new(0, Skeleton::Tuple(vec![Skeleton::Input(0), ground.clone()]));
+    let rebound = tuple.apply_once(&0, &replacement, &mut rebind);
+    assert_eq!(rebound, BoundSkeleton::new(1, tuple.shape.clone()));
+    let mut lookup = |frame: &u32, slot: usize| (*frame == 1).then(|| replacement.arguments[slot].clone());
+    assert_eq!(
+        rebound.project(ProjectStep::TupleField(0), &mut lookup),
+        replacement.arguments[0]
+    );
+    assert_eq!(
+        rebound.project(ProjectStep::TupleField(1), &mut lookup),
+        BoundSkeleton::new(1, ground)
+    );
+    assert_eq!(
+        BoundSkeleton::new(2, Skeleton::Input(0)).apply_once(&0, &replacement, &mut rebind),
+        BoundSkeleton::new(2, Skeleton::Input(0)),
+        "another source frame is not rebound"
+    );
+}
+
+#[test]
+fn one_source_first_equation_binds_to_each_calls_own_first_argument() {
+    let all = skeletons(
+        "bound_first.fz",
+        "def first(x, y), do: x\n\
+         def main() do\n first(2, :left)\n first(1.0, :right)\nend\n",
+    );
+    let first = all.get("first/2");
+    let calls: Vec<_> = all.get("main/0").invocations.values().collect();
+    assert_eq!(calls.len(), 2);
+    let arguments: Vec<_> = calls
+        .iter()
+        .map(|call| Substitution::in_frame(0, &call.arguments))
+        .collect();
+    let mut lookup = |frame: &usize, slot: usize| match *frame {
+        1 | 2 => Some(arguments[*frame - 1].arguments[slot].clone()),
+        _ => None,
+    };
+    let left = BoundSkeleton::new(1, joined(first)).resolve(&mut lookup);
+    let right = BoundSkeleton::new(2, joined(first)).resolve(&mut lookup);
+    assert_eq!(left, arguments[0].arguments[0]);
+    assert_eq!(right, arguments[1].arguments[0]);
+    assert_ne!(left, right, "one definition does not merge its distinct bound uses");
+}
+
+#[test]
+fn ordered_substitution_composes_swap_with_swap_to_identity() {
+    let swap = [Skeleton::Input(1), Skeleton::Input(0)];
+    let first = Substitution::in_frame(0, &swap);
+    let second = Substitution::in_frame(1, &swap);
+    let composed = second.compose(&mut |frame, slot| (*frame == 1).then(|| first.arguments[slot].clone()));
+    assert_eq!(
+        composed,
+        Substitution::in_frame(0, &[Skeleton::Input(0), Skeleton::Input(1)])
+    );
+    assert_eq!(
+        first.apply_once(&0, &first, &mut |_, _| panic!("a permutation only replaces inputs")),
+        composed,
+        "simultaneous application composes a permutation without chasing its newly inserted slots"
+    );
+}
+
+#[test]
+fn bound_projection_cancels_a_constructor_without_changing_its_producers_frame() {
+    let producer = BoundSkeleton::new(0, Skeleton::Ground(ValueId::from_u32(7)));
+    let mut lookup = |frame: &u32, slot| match (*frame, slot) {
+        (2, 0) => Some(BoundSkeleton::new(1, Skeleton::Tuple(vec![Skeleton::Input(0)]))),
+        (1, 0) => Some(producer.clone()),
+        _ => None,
+    };
+    assert_eq!(
+        BoundSkeleton::new(2, Skeleton::Input(0)).project(ProjectStep::TupleField(0), &mut lookup),
+        producer
+    );
+}
+
+#[test]
+fn bound_source_leaves_and_distinct_use_results_keep_their_frames() {
+    let result = Skeleton::Result {
+        callsite: CallSiteId::from_u32(2),
+        value: ValueId::from_u32(4),
+    };
+    let left = BoundSkeleton::new(0, result.clone());
+    let right = BoundSkeleton::new(1, result);
+    assert_ne!(left, right, "a source result port belongs to one bound use");
+    let supplied = Substitution {
+        arguments: vec![
+            left.clone(),
+            right.clone(),
+            BoundSkeleton::new(0, Skeleton::Ground(ValueId::from_u32(4))),
+        ],
+    };
+    assert_eq!(
+        Substitution::in_frame(2, &[Skeleton::Input(1), Skeleton::Input(0), Skeleton::Input(2)])
+            .compose(&mut |frame, slot| (*frame == 2).then(|| supplied.arguments[slot].clone()))
+            .arguments,
+        vec![right, left, supplied.arguments[2].clone()]
+    );
+}
+
+#[test]
+fn recursive_substitution_references_stay_finite_and_keep_their_anchor() {
+    let original = BoundSkeleton::new(0, Skeleton::Input(0));
+    let mut lookup = |frame: &u32, _slot| Some(BoundSkeleton::new(1 - *frame, Skeleton::Input(0)));
+    assert_eq!(original.resolve(&mut lookup), original);
+    let projected = BoundSkeleton::new(0, Skeleton::project(Skeleton::Input(0), ProjectStep::TupleField(0)));
+    assert_eq!(projected.resolve(&mut lookup), projected);
+    assert_eq!(
+        original.resolve(&mut |_, _| Some(projected.clone())),
+        original,
+        "a cyclic projected reference also stays anchored rather than growing a projection history"
+    );
+}
+
+#[test]
+fn substitution_is_lazy_under_constructors_and_does_not_claim_execution_completion() {
+    let shape = Skeleton::Tuple(vec![Skeleton::Input(0), Skeleton::Ground(ValueId::from_u32(3))]);
+    let bound = BoundSkeleton::new(0, shape.clone());
+    assert_eq!(
+        bound.resolve(&mut |_, _| panic!("constructor children remain source references")),
+        bound
+    );
+    assert_eq!(
+        bound.project(ProjectStep::TupleField(0), &mut |_, _| None),
+        BoundSkeleton::new(0, Skeleton::Input(0))
+    );
+    assert_eq!(
+        bound.shape, shape,
+        "value projection does not rewrite the source prerequisites"
+    );
+}
 
 #[test]
 fn invocation_equation_distinguishes_which_input_is_called() {

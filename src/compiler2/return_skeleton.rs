@@ -29,6 +29,7 @@
 //! return solver still binds these leaves to its observed types.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::Hash;
 use std::rc::Rc;
 
 use crate::dispatch_matrix::ProjectionKind;
@@ -88,6 +89,171 @@ pub(crate) enum Skeleton {
         of: Box<Skeleton>,
         step: ProjectStep,
     },
+}
+
+/// A source shape in one bound use of its definition. The owner supplies the
+/// frame graph: a frame identifies both the source vocabulary and that use's
+/// ordered input bindings. It must not be merely a function ID. In particular,
+/// two uses of the same local `Result` port need not denote the same result.
+///
+/// Constructors keep their original shape and frame; substituting does not
+/// copy the definition into its caller or build a chain of predecessor rows.
+/// Ground values and results therefore retain their source addresses.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct BoundSkeleton<Frame> {
+    pub(crate) frame: Frame,
+    pub(crate) shape: Skeleton,
+}
+
+impl<Frame: Clone + Eq + Hash> BoundSkeleton<Frame> {
+    pub(crate) fn new(frame: Frame, shape: Skeleton) -> Self {
+        Self { frame, shape }
+    }
+
+    /// Follow input references and cancel projections of known constructors.
+    /// Constructor children remain lazy references in their original frame.
+    /// An unresolved input is an open port; a recursive alias keeps the
+    /// original anchor, rather than unfolding a history of substitutions.
+    ///
+    /// This is value algebra only. Neither selecting a field nor returning a
+    /// shape proves that its source operation or strict prerequisites finish.
+    /// Those obligations remain with the retained body and its execution plan.
+    pub(crate) fn resolve(&self, lookup: &mut impl FnMut(&Frame, usize) -> Option<Self>) -> Self {
+        self.resolve_inner(lookup, &mut HashSet::new())
+            .unwrap_or_else(|()| self.clone())
+    }
+
+    pub(crate) fn project(&self, step: ProjectStep, lookup: &mut impl FnMut(&Frame, usize) -> Option<Self>) -> Self {
+        // Keep the projection until the subject's frame has been resolved.
+        // Eagerly rebinding its selected child to the caller would change the
+        // meaning of every local Ground/Result address in that child.
+        Self::new(
+            self.frame.clone(),
+            Skeleton::Project {
+                of: Box::new(self.shape.clone()),
+                step,
+            },
+        )
+        .resolve(lookup)
+    }
+
+    /// Apply one chosen whole-row alternative to this outer occurrence.
+    /// Unlike `resolve`, this never follows a newly inserted input: unfolding
+    /// `P = Seed | Wrap(P)` once must leave the inner `P` open.
+    ///
+    /// A constructor may mix original local operations with supplied values.
+    /// Keep its source shape lazy in a rebound frame rather than putting
+    /// foreign leaves into that source vocabulary. `rebind` must preserve the
+    /// source definition, install the ordered replacement, and canonicalize
+    /// by those contents, not retain a predecessor-environment chain. Original
+    /// Ground/Result leaves also use that environment; inserted leaves retain
+    /// their producer frames. Execution obligations remain separate.
+    pub(crate) fn apply_once(
+        &self,
+        target: &Frame,
+        replacement: &Substitution<Frame>,
+        rebind: &mut impl FnMut(&Frame, &Substitution<Frame>) -> Frame,
+    ) -> Self {
+        if &self.frame != target {
+            return self.clone();
+        }
+        match &self.shape {
+            Skeleton::Input(slot) => replacement
+                .arguments
+                .get(*slot)
+                .expect("a whole-row substitution supplies every referenced input")
+                .clone(),
+            Skeleton::Project { of, step } => {
+                let projected = Skeleton::project((**of).clone(), step.clone());
+                if projected != self.shape {
+                    // Cancel original constructors before substituting, so
+                    // a selected original input is still replaced once.
+                    return Self::new(self.frame.clone(), projected).apply_once(target, replacement, rebind);
+                }
+                let subject = Self::new(self.frame.clone(), (**of).clone()).apply_once(target, replacement, rebind);
+                // Cancel an inserted constructor without looking up any of
+                // its children: those are the residual producer's inputs.
+                Self::new(subject.frame, Skeleton::project(subject.shape, step.clone()))
+            }
+            _ => Self::new(rebind(&self.frame, replacement), self.shape.clone()),
+        }
+    }
+
+    fn resolve_inner(
+        &self,
+        lookup: &mut impl FnMut(&Frame, usize) -> Option<Self>,
+        active: &mut HashSet<(Frame, usize)>,
+    ) -> Result<Self, ()> {
+        match &self.shape {
+            Skeleton::Input(slot) => {
+                let address = (self.frame.clone(), *slot);
+                if !active.insert(address.clone()) {
+                    return Err(());
+                }
+                let resolved = match lookup(&self.frame, *slot) {
+                    Some(bound) => bound.resolve_inner(lookup, active),
+                    None => Ok(self.clone()),
+                };
+                active.remove(&address);
+                resolved
+            }
+            Skeleton::Project { of, step } => {
+                let subject = Self::new(self.frame.clone(), (**of).clone()).resolve_inner(lookup, active)?;
+                let projected = Self::new(subject.frame, Skeleton::project(subject.shape, step.clone()));
+                if matches!(projected.shape, Skeleton::Project { .. }) {
+                    Ok(projected)
+                } else {
+                    projected.resolve_inner(lookup, active)
+                }
+            }
+            _ => Ok(self.clone()),
+        }
+    }
+}
+
+/// One call's ordered arguments. Alternatives are separate substitutions,
+/// never independent unions of slots; the frame graph retains their shared
+/// producer relationship, including recursive edges.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Substitution<Frame> {
+    pub(crate) arguments: Vec<BoundSkeleton<Frame>>,
+}
+
+impl<Frame: Clone + Eq + Hash> Substitution<Frame> {
+    pub(crate) fn in_frame(frame: Frame, arguments: &[Skeleton]) -> Self {
+        Self {
+            arguments: arguments
+                .iter()
+                .map(|shape| BoundSkeleton::new(frame.clone(), shape.clone()))
+                .collect(),
+        }
+    }
+
+    /// Compose through the owner's existing input edges without cloning its
+    /// graph. Repeated arguments and argument order are significant.
+    pub(crate) fn compose(&self, lookup: &mut impl FnMut(&Frame, usize) -> Option<BoundSkeleton<Frame>>) -> Self {
+        Self {
+            arguments: self.arguments.iter().map(|argument| argument.resolve(lookup)).collect(),
+        }
+    }
+
+    /// Choose one alternative for all occurrences of the same outer row.
+    /// Each argument is substituted once; newly exposed recursive inputs
+    /// remain references to their original producer, shared by the whole row.
+    pub(crate) fn apply_once(
+        &self,
+        target: &Frame,
+        replacement: &Self,
+        rebind: &mut impl FnMut(&Frame, &Self) -> Frame,
+    ) -> Self {
+        Self {
+            arguments: self
+                .arguments
+                .iter()
+                .map(|argument| argument.apply_once(target, replacement, rebind))
+                .collect(),
+        }
+    }
 }
 
 impl Skeleton {

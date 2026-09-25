@@ -8,6 +8,7 @@
 //!
 //! One rule draws every edge: a call is unsolved when it hands on an
 //! argument the fixpoint is still solving, or when what it yields is itself
+<<<<<<< Updated upstream
 //! such a position. The argument case brings the callee into the caller's
 //! system -- that is how `wrap`, which mentions nothing recursive, joins
 //! the cycle it is handed. A function that wraps its own recursive result
@@ -17,6 +18,20 @@
 //! `FunctionUnknowns`; nothing here re-derives it, and nothing here decides a
 //! key. That separation is what makes this settle: an answer that decided
 //! keys would re-key the callee the moment it found one, the activation that
+=======
+//! such a position. The argument case puts the callee's matching SLOT on the
+//! caller's cycle -- that is how `wrap`, which mentions nothing recursive,
+//! joins the cycle it is handed. The result case names no slot: a function
+//! that wraps a constructor around its own recursive result hands on nothing
+//! unsolved at all, and only its result says the two returns are one system.
+//! Both halves bind the caller's static `FunctionUnknowns` through the
+//! source arguments and its already-addressed input signature, using the
+//! same `CallSiteUnknowns::bind_inputs` as key admission. A downstream
+//! projection cycle therefore retains the unknown coordinates handed to it.
+//! Nothing here uses discovered membership to decide a key. That separation
+//! is what makes this settle: an answer that decided keys would re-key the
+//! callee the moment it found one, the activation that
+>>>>>>> Stashed changes
 //! carried the evidence would vanish, and the discovery would undo itself
 //! forever.
 //!
@@ -71,7 +86,11 @@
 
 use std::collections::HashSet;
 
+<<<<<<< Updated upstream
 use super::body::{CallSiteId, callsite_input_modes};
+=======
+use super::body::{CallInputMode, CallSiteId};
+>>>>>>> Stashed changes
 use super::drive::FactKey;
 use super::identity::ActivationKey;
 use super::semantic::{CallSiteKey, CallSiteResolution};
@@ -163,6 +182,8 @@ pub(crate) fn reads_of(world: &World, members: &[ActivationKey]) -> Vec<FactKey>
     let member_set: HashSet<ActivationKey> = members.iter().cloned().collect();
     let mut reads = Vec::new();
     for member in members {
+        reads.push(FactKey::ReturnUnknowns(member.function));
+        reads.push(FactKey::ReturnSkeleton(member.function));
         for callsite in unsettled_out_sites(world, member) {
             reads.push(FactKey::CallSiteTargets(CallSiteKey {
                 activation: member.clone(),
@@ -174,6 +195,8 @@ pub(crate) fn reads_of(world: &World, members: &[ActivationKey]) -> Vec<FactKey>
             continue;
         };
         for site in callers.sites() {
+            reads.push(FactKey::ReturnUnknowns(site.activation.function));
+            reads.push(FactKey::ReturnSkeleton(site.activation.function));
             if member_set.contains(&site.activation) {
                 continue;
             }
@@ -244,22 +267,12 @@ fn walk(world: &World, seed: &ActivationKey) -> Walk {
     }
 }
 
-/// `activation`'s own static call sites, in stable position order. This is
-/// the one place a `CallSiteId` is minted from a function's lowered body,
-/// so it always carries the site's real span -- the span is part of a
-/// `CallSiteId`'s identity, and a dynamic fact like `CallSiteTargets` is
-/// keyed on the real one. (Reconstructing an id from `ReturnUnknowns`'
-/// bare-`u32` domain instead, via `CallSiteId::from_u32`, mints
-/// `Span::DUMMY` and so can never look up a fact published under the real
-/// site -- the walk would find no edges at all.)
+/// Source invocation identities retain their lowering spans, so discovery and
+/// published target facts name the same sites without a second body walk.
 fn static_callsites(world: &World, activation: &ActivationKey) -> Vec<CallSiteId> {
-    if !world.has_fact(&FactKey::LoweredBody(activation.function)) {
-        return Vec::new();
-    }
-    let body = world.lowered_body(activation.function);
-    let mut callsites: Vec<CallSiteId> = callsite_input_modes(&body).into_keys().collect();
-    callsites.sort();
-    callsites
+    world
+        .return_skeleton(activation.function)
+        .map_or_else(Vec::new, |skeleton| skeleton.invocations.keys().copied().collect())
 }
 
 /// Every call `member` itself makes that still owes its result or an
@@ -274,19 +287,13 @@ fn walk_out_edges(
     unresolved: &mut Vec<CallSiteKey>,
     self_edge: &mut bool,
 ) {
-    let Some(unknowns) = world.return_unknowns(member.function) else {
-        return;
-    };
     for callsite in static_callsites(world, member) {
-        let Some(site) = unknowns.callsite(callsite) else {
-            continue;
-        };
-        if site.is_settled() {
-            continue;
-        }
         let key = CallSiteKey {
             activation: member.clone(),
             callsite,
+        };
+        let Some(site) = unsettled_site(world, &key) else {
+            continue;
         };
         // Three answers, not two. No published targets at all is a call
         // site this walk does not reach, which is no edge; published-but-
@@ -366,21 +373,42 @@ fn record_edge(from: &ActivationKey, to: &ActivationKey, members: &mut Vec<Activ
 /// Every call site `member`'s own function can make that is not yet
 /// settled, in the function's stable position order.
 fn unsettled_out_sites(world: &World, member: &ActivationKey) -> Vec<CallSiteId> {
-    let Some(unknowns) = world.return_unknowns(member.function) else {
-        return Vec::new();
-    };
     static_callsites(world, member)
         .into_iter()
-        .filter(|&callsite| unknowns.callsite(callsite).is_some_and(|site| !site.is_settled()))
+        .filter(|&callsite| {
+            is_unsettled_site(
+                world,
+                &CallSiteKey {
+                    activation: member.clone(),
+                    callsite,
+                },
+            )
+        })
         .collect()
 }
 
 /// Whether the caller still assigns this site to a shared solve.
 fn is_unsettled_site(world: &World, site: &CallSiteKey) -> bool {
+<<<<<<< Updated upstream
     world
         .return_unknowns(site.activation.function)
         .and_then(|unknowns| unknowns.callsite(site.callsite))
         .is_some_and(|unknowns| !unknowns.is_settled())
+=======
+    unsettled_site(world, site).is_some()
+}
+
+fn unsettled_site(world: &World, site: &CallSiteKey) -> Option<super::return_unknowns::CallSiteUnknowns> {
+    let unknowns = world.return_unknowns(site.activation.function)?;
+    let skeleton = world.return_skeleton(site.activation.function)?;
+    let invocation = skeleton.invocations.get(&site.callsite)?;
+    let site_unknowns = unknowns.callsite(site.callsite)?.bind_inputs(
+        world.types(),
+        &invocation.arguments,
+        site.activation.signature.inputs(),
+    );
+    (!site_unknowns.is_settled()).then_some(site_unknowns)
+>>>>>>> Stashed changes
 }
 
 #[cfg(test)]
