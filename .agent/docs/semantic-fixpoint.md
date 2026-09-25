@@ -127,12 +127,14 @@ ancestors needed by an assertion's refinement. A primitive arithmetic operation
 reads operand types without carrying unrelated callable surfaces. A tuple or
 lambda construction retains the constituent evidence it actually uses.
 
-`apply_step` remains the evaluator. Its delta contains produced values, changed
-operand types, and changed tuple projection metadata. Applying it leaves the
-rest of the walker's scope intact. For example, asserting a projected field's
-type can narrow both the field and its containing tuple. The transfer forwards
-its fact reads and waits to the walker; it retains no result across calls.
-An empty delta reports no changed evidence, not successful execution.
+`apply_step` reads the sparse inputs through `StepValues` and records writes
+separately. Its delta contains produced values, operand refinements, and tuple
+metadata written by the operation, even when they equal their input evidence.
+For example, asserting an already-known tuple shape still writes that binding;
+asserting a projected field can also refine its containing tuple. Applying the
+writes leaves unrelated values and metadata intact. The transfer forwards its
+fact reads and waits to the walker and retains no result across calls. An empty
+delta reports no writes, not successful execution.
 
 ## Executable demand is local semantic output
 

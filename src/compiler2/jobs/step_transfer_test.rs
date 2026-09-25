@@ -26,8 +26,17 @@ fn nested_tuple_assertion_preserves_refinement_ancestors_and_unrelated_pending_v
     values.insert_value(unrelated, SemanticValue::pending());
     values.assert_tuple(outer, 1);
     values.assert_tuple(inner, 1);
-    values.project_tuple_field(inner, outer, 0);
-    values.project_tuple_field(field, inner, 0);
+    for (value, source) in [(inner, outer), (field, inner)] {
+        run_step(
+            &mut world,
+            &LoweredStep::TupleField {
+                value,
+                source,
+                index: 0,
+            },
+            &mut values,
+        );
+    }
     let step = LoweredStep::AssertSame {
         source: field,
         value: witness,
@@ -36,7 +45,7 @@ fn nested_tuple_assertion_preserves_refinement_ancestors_and_unrelated_pending_v
     let delta = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
     assert_eq!(
         delta.types.keys().copied().collect::<HashSet<_>>(),
-        HashSet::from([outer, inner, field])
+        HashSet::from([outer, inner, field, witness])
     );
     assert!(
         delta.tuple_fields.is_empty(),
@@ -210,6 +219,37 @@ fn a_step_delta_contains_only_its_result_and_excludes_unread_scope_values() {
     assert_eq!(value_ty(&scope, unrelated), Some(later));
     assert_eq!(scope.tuple_arities.get(&unrelated), Some(&2));
     assert_eq!(scope.get(&input).unwrap().callable_surfaces.len(), 1);
+}
+
+#[test]
+fn equal_tuple_assertion_remains_a_sparse_write() {
+    let mut world = World::new();
+    let any = world.types_mut().any();
+    let source = value(0);
+    let tuple = world.types_mut().tuple(&[any, any]);
+    let mut scope = SemanticValues::default();
+    scope.insert(source, tuple);
+    scope.assert_tuple(source, 2);
+    let step = LoweredStep::AssertTuple { source, arity: 2 };
+    let inputs = step_inputs(&step, &scope);
+    let delta = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(value_ty(&delta, source), Some(tuple));
+    assert_eq!(delta.tuple_arities.get(&source), Some(&2));
+}
+
+#[test]
+fn equal_value_refinement_remains_a_sparse_write() {
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let (source, witness) = (value(0), value(1));
+    let mut scope = SemanticValues::default();
+    scope.insert(source, int);
+    scope.insert(witness, int);
+    let step = LoweredStep::AssertSame { source, value: witness };
+    let inputs = step_inputs(&step, &scope);
+    let delta = step_delta(&mut world, &step, &inputs, &mut Vec::new(), &mut HashSet::new()).unwrap();
+    assert_eq!(value_ty(&delta, source), Some(int));
+    assert_eq!(value_ty(&delta, witness), Some(int));
 }
 
 #[test]

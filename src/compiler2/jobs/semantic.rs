@@ -149,14 +149,6 @@ impl SemanticValues {
         self.tuple_arities.insert(value, arity);
     }
 
-    fn project_tuple_field(&mut self, value: ValueId, source: ValueId, index: usize) {
-        let Some(&arity) = self.tuple_arities.get(&source) else {
-            return;
-        };
-        self.tuple_fields
-            .insert(value, TupleFieldProjection { source, index, arity });
-    }
-
     fn tuple_field(&self, value: ValueId) -> Option<TupleFieldProjection> {
         self.tuple_fields.get(&value).copied()
     }
@@ -169,20 +161,75 @@ impl SemanticValues {
         }
     }
 
-    fn delta_from(mut self, inputs: &Self) -> Self {
-        self.types
-            .retain(|value, observed| inputs.types.get(value) != Some(observed));
-        self.tuple_arities
-            .retain(|value, arity| inputs.tuple_arities.get(value) != Some(arity));
-        self.tuple_fields
-            .retain(|value, field| inputs.tuple_fields.get(value) != Some(field));
-        self
-    }
-
     fn apply_delta(&mut self, delta: Self) {
         self.types.extend(delta.types);
         self.tuple_arities.extend(delta.tuple_arities);
         self.tuple_fields.extend(delta.tuple_fields);
+    }
+}
+
+/// The one semantic step evaluator reads a sparse operand view and records
+/// every write separately. A write remains recorded when it repeats the
+/// observed type or tuple fact; the absence of a write says nothing about
+/// whether a source position has completed.
+struct StepValues<'a> {
+    inputs: &'a SemanticValues,
+    writes: SemanticValues,
+}
+
+impl<'a> StepValues<'a> {
+    fn new(inputs: &'a SemanticValues) -> Self {
+        Self {
+            inputs,
+            writes: SemanticValues::default(),
+        }
+    }
+
+    fn into_writes(self) -> SemanticValues {
+        self.writes
+    }
+
+    fn tuple_arity(&self, value: &ValueId) -> Option<usize> {
+        self.writes
+            .tuple_arities
+            .get(value)
+            .copied()
+            .or_else(|| self.inputs.tuple_arities.get(value).copied())
+    }
+
+    fn get(&self, value: &ValueId) -> Option<&SemanticValue> {
+        self.writes.get(value).or_else(|| self.inputs.get(value))
+    }
+
+    fn insert(&mut self, value: ValueId, ty: Ty) {
+        self.writes.insert(value, ty);
+    }
+
+    fn insert_value(&mut self, value: ValueId, semantic: SemanticValue) {
+        self.writes.insert_value(value, semantic);
+    }
+
+    fn assert_tuple(&mut self, value: ValueId, arity: usize) {
+        self.writes.assert_tuple(value, arity);
+    }
+
+    fn project_tuple_field(&mut self, value: ValueId, source: ValueId, index: usize) {
+        let Some(arity) = self.tuple_arity(&source) else {
+            return;
+        };
+        self.writes
+            .tuple_fields
+            .insert(value, TupleFieldProjection { source, index, arity });
+    }
+
+    fn tuple_field(&self, value: ValueId) -> Option<TupleFieldProjection> {
+        self.writes
+            .tuple_field(value)
+            .or_else(|| self.inputs.tuple_field(value))
+    }
+
+    fn ty(&self, value: ValueId) -> Option<Ty> {
+        self.get(&value).and_then(SemanticValue::ty)
     }
 }
 
@@ -834,15 +881,15 @@ fn step_delta(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<SemanticValues, FatalError> {
-    let mut outputs = inputs.clone();
-    apply_step(world, step, &mut outputs, reads, waits)?;
-    Ok(outputs.delta_from(inputs))
+    let mut values = StepValues::new(inputs);
+    apply_step(world, step, &mut values, reads, waits)?;
+    Ok(values.into_writes())
 }
 
 fn apply_step(
     world: &mut World,
     step: &LoweredStep,
-    values: &mut SemanticValues,
+    values: &mut StepValues<'_>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(), FatalError> {
@@ -883,14 +930,14 @@ fn apply_step(
             }
         }
         LoweredStep::MapUpdate { value, base, entries } => {
-            let Some(mut map_ty) = value_ty(values, *base) else {
+            let Some(mut map_ty) = values.ty(*base) else {
                 return Ok(());
             };
             for (key, item) in entries {
                 let Some(key) = lowered_map_key(world, values, key) else {
                     return Ok(());
                 };
-                let Some(item_ty) = value_ty(values, *item) else {
+                let Some(item_ty) = values.ty(*item) else {
                     return Ok(());
                 };
                 if let Some(key) = key {
@@ -912,7 +959,7 @@ fn apply_step(
         LoweredStep::Struct { value, module, fields } => {
             let Some(field_tys) = fields
                 .iter()
-                .map(|(_, value)| value_ty(values, *value))
+                .map(|(_, value)| values.ty(*value))
                 .collect::<Option<Vec<_>>>()
             else {
                 return Ok(());
@@ -1018,7 +1065,7 @@ fn apply_step(
             values.insert_value(*value, SemanticValue::new(field_ty));
         }
         LoweredStep::AssertLiteral { source, literal } => {
-            let Some(source_ty) = value_ty(values, *source) else {
+            let Some(source_ty) = values.ty(*source) else {
                 return Ok(());
             };
             let literal_ty = literal_ty(world, literal);
@@ -1026,7 +1073,7 @@ fn apply_step(
             refine_value(world, values, *source, refined);
         }
         LoweredStep::AssertStruct { source, module } => {
-            let Some(source_ty) = value_ty(values, *source) else {
+            let Some(source_ty) = values.ty(*source) else {
                 return Ok(());
             };
             let asserted = struct_assertion_ty(world, *module, reads, waits);
@@ -1052,7 +1099,7 @@ fn apply_step(
             // it is recorded whether or not the ascent has produced a type to
             // narrow. Only the narrowing needs an observation.
             values.assert_tuple(*source, *arity);
-            let Some(source_ty) = value_ty(values, *source) else {
+            let Some(source_ty) = values.ty(*source) else {
                 return Ok(());
             };
             let any = world.types_mut().any();
@@ -1075,14 +1122,14 @@ fn apply_step(
         }
         LoweredStep::AssertEmptyList { source } => {
             let empty = world.types_mut().empty_list();
-            let Some(source_ty) = value_ty(values, *source) else {
+            let Some(source_ty) = values.ty(*source) else {
                 return Ok(());
             };
             let refined = world.types_mut().intersect(source_ty, empty);
             refine_value(world, values, *source, refined);
         }
         LoweredStep::AssertSame { source, value } => {
-            let (Some(source_ty), Some(value_ty)) = (value_ty(values, *source), value_ty(values, *value)) else {
+            let (Some(source_ty), Some(value_ty)) = (values.ty(*source), values.ty(*value)) else {
                 return Ok(());
             };
             let both = world.types_mut().intersect(source_ty, value_ty);
@@ -1112,7 +1159,7 @@ fn apply_step(
             values.insert_value(*tail, SemanticValue::new(rest));
         }
         LoweredStep::BitstringInit { reader, source } => {
-            if let Some(source_ty) = value_ty(values, *source) {
+            if let Some(source_ty) = values.ty(*source) {
                 values.insert(*reader, source_ty);
             }
         }
@@ -1126,7 +1173,7 @@ fn apply_step(
         } => {
             values.insert(*ok, world.types_mut().bool());
             values.insert(*value, bitfield_value_ty(world, spec));
-            if let Some(reader_ty) = value_ty(values, *reader) {
+            if let Some(reader_ty) = values.ty(*reader) {
                 values.insert(*next_reader, reader_ty);
             }
         }
@@ -1138,7 +1185,7 @@ fn apply_step(
 /// A successful assertion on a tuple field is evidence about the tuple, not
 /// merely the temporary field value. Preserve that proof before a later
 /// sibling projection asks the tuple for its field type.
-fn refine_value(world: &mut World, values: &mut SemanticValues, value: ValueId, refined: Ty) {
+fn refine_value(world: &mut World, values: &mut StepValues<'_>, value: ValueId, refined: Ty) {
     let semantic = values
         .get(&value)
         .cloned()
@@ -1148,7 +1195,7 @@ fn refine_value(world: &mut World, values: &mut SemanticValues, value: ValueId, 
     let Some(projection) = values.tuple_field(value) else {
         return;
     };
-    let Some(source_ty) = value_ty(values, projection.source) else {
+    let Some(source_ty) = values.ty(projection.source) else {
         return;
     };
     let any = world.types_mut().any();
@@ -2908,7 +2955,7 @@ fn literal_ty(world: &mut World, literal: &GroundValue) -> Ty {
 /// yet leaves the list unobserved rather than stopping the walk here.
 fn list_value(
     world: &mut World,
-    values: &SemanticValues,
+    values: &StepValues<'_>,
     items: &[ValueId],
     tail: Option<ValueId>,
 ) -> Option<SemanticValue> {
@@ -2961,13 +3008,13 @@ fn list_value(
     Some(SemanticValue::composed(ty, parts))
 }
 
-fn map_ty(world: &mut World, values: &SemanticValues, entries: &[(LoweredMapKey, ValueId)]) -> Option<Ty> {
+fn map_ty(world: &mut World, values: &StepValues<'_>, entries: &[(LoweredMapKey, ValueId)]) -> Option<Ty> {
     let mut fields = BTreeMap::new();
     for (key, value) in entries {
         let Some(key) = lowered_map_key(world, values, key)? else {
             return Some(world.types_mut().map_top());
         };
-        fields.insert(key, value_ty(values, *value)?);
+        fields.insert(key, values.ty(*value)?);
     }
     Some(world.types_mut().map(&fields.into_iter().collect::<Vec<_>>()))
 }
@@ -2979,13 +3026,13 @@ fn map_ty(world: &mut World, values: &SemanticValues, entries: &[(LoweredMapKey,
 /// falling back to the observed singleton type.
 fn lowered_map_key(
     world: &mut World,
-    values: &SemanticValues,
+    values: &StepValues<'_>,
     key: &LoweredMapKey,
 ) -> Option<Option<super::super::types::MapKey>> {
     if let Some(literal) = &key.literal {
         return Some(literal_map_key(literal));
     }
-    let key_ty = value_ty(values, key.value)?;
+    let key_ty = values.ty(key.value)?;
     Some(map_key_from_ty(world, key_ty))
 }
 
