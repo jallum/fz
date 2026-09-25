@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-25T21:04:05Z",
+  "description": "## Why\n\n`budget.*` frontmatter is parsed by `fz-fixture-metadata` into `BudgetAssertion`s, but nothing reads them: the dump-budget trial it fed was removed with the old compiler front door. 50 fixtures under `fixtures2/behavior/` each declare 10 budget lines that look like pins and pin nothing. Owner decision 2026-09-25: toss them. Compiler-shape claims belong to contract metrics (`assert.metric.*`).\n\n## What changes\n\n- `fixture-metadata`: delete `BudgetAssertion`, `FixtureMatrixMetadata::budget_assertions`, the `budget.` parse arm and its `participates_in_matrix` clause. A `budget.*` key becomes an unknown-key error, so none can come back silently.\n- Delete the 500 `# budget.*` lines from the 50 fixtures.\n- Docs: drop budgets from `.agent/docs/fixtures.md`, `fixtures2/GOLDEN.md` (the budget medium and the Fixture Dump Budgets section) and README.\n\n## Signal\n\n`grep -rn 'budget\\.' fixtures2 fixture-metadata tests .agent/docs` finds nothing; full gate green.",
+  "id": "fz-p8p.1",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "Toss the unchecked budget.* fixture frontmatter",
+  "type": "task",
+  "updated_at": "2026-09-25T21:04:05Z"
+}
