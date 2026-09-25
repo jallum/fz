@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-25T20:28:35Z",
+  "description": "A non-recursive caller is re-analyzed on every revision of a callee's\ncurrent return, instead of once the returns it reads are settled.\n\nReduced cases: `def main(), do: Enum.take([1, 2, 3], 2)` (AnalyzeActivation\n130 runs / 41 subjects; 43 re-runs woken by callee ReturnType current, 22 by\nInputDemand, 16 by Recursive); fixtures2/behavior/enum_take_drop_split.fz,\na straight-line main/0 of 72 dbg(Enum...) calls, analyzes main/0 48 times,\neach woken by one callee's ReturnType revision.\nPaper: main/0 is in no recursive component; each callee return it reads\nsettles independently of main/0. main/0 needs one analysis to discover its\ncallsites and one per change in the argument rows it hands to its callees;\nits return is final once every callee return it reads is settled.\n\nConstraint recorded from earlier work: reading settled facts across a\nrecursive group was tried and refuted (unsound, oscillates). The paper must\nshow why a caller OUTSIDE every recursive component of its callees differs,\nand the reader must measure it, before any builder.\n\nAcceptance: main/0 analyses in enum_take_drop_split match the paper; no pin\nrises.",
+  "id": "fz-afu.4",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 1,
+  "status": "open",
+  "title": "A non-recursive caller re-analyzes on every current callee return",
+  "type": "bug",
+  "updated_at": "2026-09-25T20:28:35Z"
+}
