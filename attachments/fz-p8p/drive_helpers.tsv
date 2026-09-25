@@ -1,0 +1,146 @@
+name	kind	line	purpose	subject	used_by_files	use_count
+assert_list_retention_ownership	assert	226	drives a source under interp and native, asserting lowered list-retention permission and shared-ownership guards on list-reconstruction steps	lowering+native	src/compiler2/drive_test.rs	8
+assert_container_list_publication	assert	367	builds a program from list_ownership_edges.fz plus a call to the named function, asserting the interpreted result matches an expected struct/map+list tuple	lowering	src/compiler2/drive_test.rs	4
+module_name	lookup	760	resolves a module's display name from a captured record; the most widely shared naming lookup across the whole compiler2/port test suite	source	src/compiler2/product_drive_test.rs,src/compiler2/world_test.rs,src/compiler2/transport_contract_test.rs,src/compiler2/types/types_test.rs,src/compiler2/native_codegen/runtime_test.rs,src/compiler2/port_resolve_test.rs,src/compiler2/work_start_reason_test.rs,src/compiler2/compiler2_test.rs,src/compiler2/macro_product_test.rs,src/compiler2/canon_test.rs,src/compiler2/backend_program/contribution_test.rs,src/compiler2/port_frontend_test.rs,src/compiler2/port_type_infer_test.rs,src/compiler2/telemetry_dump_test.rs,src/compiler2/port_macros_test.rs,src/compiler2/fixture_contract_harness_test.rs,src/compiler2/semantic_analysis_test.rs,src/compiler2/port_lower_test.rs,src/compiler2/port_planner_test.rs,src/compiler2/transport_relation_incremental_test.rs,src/compiler2/drive_test.rs,src/compiler2/jobs/body_test.rs,src/compiler2/port_interp_test.rs,src/compiler2/closure_denotation_test.rs,src/compiler2/fixture_facts_test.rs,src/compiler2/port_misc_test.rs,src/compiler2/contract_test.rs,src/compiler2/port_codegen_test.rs,src/ir_interp/backend_test.rs,src/telemetry/public_trace_test.rs	795
+executable_entry_of	lookup	1034	extracts the owning function name from an executable's `__e<index>`-suffixed generated name	semantic	src/compiler2/drive_test.rs	2
+settle_native_product	setup	1219	drives a compiler to the Native dump stage, panicking unless the native product settles	native	src/compiler2/drive_test.rs	66
+RECEIVE_AFTER_DIVERGENT_DISPATCH	other	1395	program constant: an int/`:timeout` receive-then-dispatch fixture used to test post-receive divergent-arm typing	semantic+runtime	src/compiler2/drive_test.rs	3
+jit_compile_native_program	setup	1411	JIT-compiles a captured NativeProgram through the compiler's own native codegen, panicking on failure	native	src/compiler2/drive_test.rs	29
+presence	other	1420	tuple constructor pairing a FactKey with a changed flag, for job-effect assertions	drive-machinery	src/compiler2/product_drive_test.rs,src/compiler2/types/types_test.rs,src/compiler2/scheduler_test.rs,src/compiler2/source_publish_test.rs,src/compiler2/drive_test.rs,src/dispatch_matrix/dispatch_matrix_test.rs	31
+settled_fact	other	1424	wraps a FactKey as a settled FactUse, for job-read assertions	drive-machinery	src/compiler2/drive_test.rs	4
+output_facts	other	1428	converts JobEffects into an OutputFacts set of (fact, changed) pairs	drive-machinery	src/compiler2/drive_test.rs	2
+demand_backend_product	setup	1441	drives a compiler to the Backend dump stage, panicking unless the backend product settles	backend	src/compiler2/drive_test.rs	23
+drive_world_backend_product	setup	1447	drives a raw World/ProductSessions pair directly to a root's RootBackendProduct address, bypassing Compiler2	drive-machinery+backend	src/compiler2/drive_test.rs	9
+TypeReferenceCapture	capture	1618	records function/type type-reference telemetry and answers consumer-of/reference-count queries	semantic	src/compiler2/drive_test.rs	3
+RenderedTypeDef	other	1674	one captured type definition's name, arity, changed flag and rendered display text	semantic	src/compiler2/drive_test.rs	4
+NotedTypeRecord	other	1682	one `type noted` telemetry event's type name and namespace	semantic	src/compiler2/drive_test.rs	4
+NotedTypeCapture	capture	1687	records `type noted` telemetry events into NotedTypeRecord entries	semantic	src/compiler2/drive_test.rs	4
+rendered_type_defs	setup	1715	installs a `type defined` telemetry listener producing RenderedTypeDef records	semantic	src/compiler2/drive_test.rs	5
+assert_native_helpers_are_referenced	assert	6349	drives a source to native and asserts every emitted native helper function is actually referenced, with none unreachable	native	src/compiler2/drive_test.rs	3
+lowered_clif_text	setup	7949	drives a source with a requested-output CLIF sink installed, returning every lowered function's Cranelift IR text joined	backend+native	src/compiler2/drive_test.rs	4
+INDISTINGUISHABLE_ARM_POPULATION	other	11291	empty-by-construction ratchet naming known indistinguishable dispatch-arm groups; the fz-kdt.199 census proof that the class is now cured, not merely unmeasured	semantic	src/compiler2/drive_test.rs	3
+indistinguishable_dispatch_arms	lookup	11439	drives one fixture to its backend program and reports every dispatch-plan arm pair asking the identical runtime question	semantic	src/compiler2/drive_test.rs	2
+driven_backend_program	setup	11453	drives one fixture file, by path, to a settled BackendProgram, returning the compiler and program together	backend	src/compiler2/drive_test.rs	9
+ArtifactPlan	other	11617	one PatternDispatchPlan site in a BackendProgram (call-edge, entry, case, receive or wrapper selection) paired with its body-id list in site order	semantic	src/compiler2/drive_test.rs	7
+artifact_plans	lookup	11645	walks a BackendProgram exhaustively and returns every PatternDispatchPlan site it carries, of all five kinds	semantic	src/compiler2/drive_test.rs	8
+graph_first_match_bodies	lookup	11726	walks a dispatch plan's decision graph taking match-before-miss edges, returning the first-match body order execution actually takes	semantic	src/compiler2/drive_test.rs	2
+outcome_match_questions	lookup	11754	returns the positive region predicates whose conjunction routes a dispatch graph to one named outcome	semantic	src/compiler2/drive_test.rs	3
+BLIND_ESCAPE_CENSUS_STRESSES	other	11964	the one arm-order stress seed (`arms:6`) the blind-escape census is re-driven under, beside the settled arrival	semantic	src/compiler2/drive_test.rs	2
+BlindEscape	other	11984	one blind-escape census finding: its class, site, and the two surfaces that meet blind	semantic	src/compiler2/drive_test.rs	3
+BlindEscapeCensus	other	11993	a full blind-escape census pass: every escape found, plus per-site-kind plan and unreadable-plan counts	semantic	src/compiler2/drive_test.rs	6
+blind_escape_census	lookup	12038	walks every plan of the ARM_ORDER_CENSUS fixtures and records every blind (unseparated, unseated) arm pair as a BlindEscapeCensus	semantic	src/compiler2/drive_test.rs	3
+seated_escapes	lookup	12080	formats one EscapeClass's findings from a census as seated (early-before-late) strings	semantic	src/compiler2/drive_test.rs	3
+escaping_pairs	lookup	12096	formats a census's findings as unordered surface pairs, forgetting which arm was seated first	semantic	src/compiler2/drive_test.rs	2
+SOURCE_ORDER_BLIND_ESCAPES	other	12121	empty-by-construction pin of blind escapes found at source-order sites (a function's, a case's or a receive's own clause order)	semantic	src/compiler2/drive_test.rs	4
+SOURCE_ORDER_PLANS_ON_THE_CENSUS	other	12183	pins how many case/entry/receive plans the census walks and how many of those it cannot read, so the source-order zero states exactly what it covers	semantic	src/compiler2/drive_test.rs	5
+blind_escapes	lookup	12190	returns the subjects where seating one arm before another lets a value reach a body that never named it	semantic	src/compiler2/drive_test.rs	3
+seating	lookup	12246	mirrors production's callsite_dispatch::Seating relation, classifying two arms' surfaces as Separated, Covering or Escaping	semantic	src/compiler2/canon_test.rs,src/compiler2/drive_test.rs,src/telemetry/public_trace_test.rs	9
+unreadable_reason	lookup	12272	names the first non-Region::Type question variant (or broken body/arm weld) that stops the arm-surface census from reading a plan	semantic	src/compiler2/drive_test.rs	3
+seated_arm_surfaces	lookup	12319	reads a plan's bodies in site order as the Region::Type surface each arm's source questions put to every subject	semantic	src/compiler2/drive_test.rs	4
+indistinguishable_arms	lookup	12357	finds arm pairs in one dispatch plan whose runtime questions are the exact same question	semantic	src/compiler2/drive_test.rs	2
+ARM_ORDER_CENSUS	other	12418	the 22 fixtures the arm-order and blind-escape censuses walk	semantic	src/compiler2/drive_test.rs	5
+WRAPPER_MEMBER_CENSUS	other	12461	the 19 fixtures whose construction-wrapper member order is free: the artifact moves under a permuted wrapper order	semantic	src/compiler2/drive_test.rs	3
+ARM_ORDER_STRESSES	other	12497	the arrival-order settings (`arms:reverse`, seed 1, seed 6) the in-process arm-order permutation gate drives	semantic	src/compiler2/drive_test.rs	5
+WRAPPER_MEMBER_STRESSES	other	12502	the two construction-wrapper-member seed settings the in-process wrapper-order permutation gate drives	semantic	src/compiler2/drive_test.rs	3
+assert_no_answer_moves	assert	12582	drives each fixture's settled answer and asserts every listed stress setting reproduces it exactly; shared by both the arm-order and wrapper-order permutation-invariance gates	semantic	src/compiler2/drive_test.rs	3
+SURFACE_MEMBERSHIP_CENSUS	other	12780	the measured (fixture, arrival, observations, escapes) surface-membership population ratchet	semantic	src/compiler2/callsite_dispatch_test.rs,src/compiler2/drive_test.rs	5
+ARM_ORDER_ARTIFACT_CENSUS	other	13030	the 22 fixtures whose backend canon moved under a seeded arm permutation, used by the artifact-invariance gate	semantic+backend	src/compiler2/drive_test.rs	2
+ARM_ORDER_ARTIFACT_STRESSES	other	13061	the two seeds the backend-artifact permutation-invariance gate drives	semantic	src/compiler2/drive_test.rs	2
+backend_canon	setup	13065	drives one fixture path to a settled backend program and returns its canonical (--dump backend=) rendering	backend	src/compiler2/drive_test.rs	6
+settled_arm_order_answer	lookup	13625	returns the golden dbg lines for a fixture from its .expected.txt, or, absent one, this tree's own settled-order interpreted answer	runtime	src/compiler2/drive_test.rs	2
+interpreted_answer	setup	13634	drives one fixture path through the backend interpreter and returns its dbg output lines	runtime	src/compiler2/drive_test.rs	4
+rooted_reachable_frontier	lookup	13957	walks the settled call graph from a root's entry activation to derive the reachability-pruned live activation frontier, correcting for the monotone global activation-analysis cache that never retracts	semantic+drive-machinery	src/compiler2/drive_test.rs	9
+STATIC_CALL_GRAPH_SOURCE	other	14449	program source: a three-deep call chain plus a mutually recursive pair, for static call-graph reachability tests	semantic	src/compiler2/drive_test.rs	3
+ListRetentionRun	other	15431	one list-retention fixture run's construction/physical-capture/attempt/reuse counts, process-exit telemetry and dbg output	runtime+native	src/compiler2/drive_test.rs	3
+list_retention_run	setup	15442	JIT-runs a source end-to-end capturing list-retention telemetry, process-exit counters and the native program, into a ListRetentionRun	runtime+native	src/compiler2/drive_test.rs	3
+list_retention_source_and_rebuild_share_return	lookup	15488	checks whether a native program's list-producing source and its rebuild tail share one return representation	native	src/compiler2/drive_test.rs	2
+PROVIDER_ITEM_MACRO	other	17327	fixture source (via include_str!) where a module invokes its own macro mid-definition, before ModuleDefined exists for it	source+drive-machinery	src/compiler2/drive_test.rs	2
+OutputCapture	capture	18432	records generic drive-loop output/job-completion telemetry	drive-machinery	src/compiler2/drive_test.rs	35
+WorkGraphCapture	capture	18437	records work-graph applied-step telemetry	drive-machinery	src/compiler2/drive_test.rs	3
+JobSpanStop	other	18442	one recorded job-span-stop telemetry event	drive-machinery	src/compiler2/compiler2_test.rs,src/compiler2/drive_test.rs	9
+FunctionDefinedRecord	other	18449	one FunctionDefined fact telemetry record	source	src/compiler2/drive_test.rs	7
+CallsiteDefinedRecord	other	18459	one CallsiteDefined fact telemetry record	semantic	src/compiler2/drive_test.rs	4
+BackendProgramRecord	other	18465	one captured BackendProgram telemetry record for a root	backend	src/compiler2/drive_test.rs	5
+NativeProgramRecord	other	18472	one captured NativeProgram telemetry record for a root	native	src/compiler2/drive_test.rs	4
+ReturnTypeRecord	other	18478	one ReturnType-defined fact telemetry record	semantic	src/compiler2/drive_test.rs	5
+ActivationInputRecord	other	18484	one activation-input fact telemetry record	semantic	src/compiler2/drive_test.rs	5
+FunctionCapture	capture	18489	installs and indexes FunctionDefined telemetry; the primary lookup for resolving a function/module name and arity to a FunctionId	source	src/compiler2/port_type_infer_test.rs,src/compiler2/port_macros_test.rs,src/compiler2/semantic_analysis_test.rs,src/compiler2/drive_test.rs	121
+ModuleCapture	capture	18493	installs and indexes ModuleDefined/denotation telemetry	source	src/compiler2/port_type_infer_test.rs,src/compiler2/drive_test.rs	37
+CallsiteCapture	capture	18497	installs and indexes CallsiteDefined telemetry	semantic	src/compiler2/port_type_infer_test.rs,src/compiler2/semantic_analysis_test.rs,src/compiler2/drive_test.rs	14
+ReturnTypeCapture	capture	18501	installs and indexes ReturnType-defined telemetry per activation	semantic	src/compiler2/port_type_infer_test.rs,src/compiler2/drive_test.rs	17
+ActivationInputCapture	capture	18505	installs and indexes activation-input fact telemetry	semantic	src/compiler2/drive_test.rs	3
+BackendProgramCapture	capture	18509	installs and indexes BackendProgram-published telemetry per root	backend	src/compiler2/drive_test.rs	30
+NativeProgramCapture	capture	18513	installs and indexes NativeProgram-published telemetry per root	native	src/compiler2/drive_test.rs	69
+ListRetentionTelemetryCapture	capture	18517	installs and indexes list-retention compilation telemetry (constructions, physical captures)	native	src/compiler2/drive_test.rs	6
+EntryDispatchCapture	capture	18547	installs and indexes EntryDispatch plan telemetry per function	semantic	src/compiler2/drive_test.rs	8
+GuardDispatchCapture	capture	18551	installs and indexes guard-dispatch plan telemetry per function	semantic	src/compiler2/drive_test.rs	8
+LoweredBodyCapture	capture	18555	installs and indexes LoweredBody telemetry per function; the primary lookup for a function's lowered IR	lowering	src/compiler2/port_macros_test.rs,src/compiler2/drive_test.rs	36
+SourceNoteCapture	capture	19138	installs and indexes source-note/function-ref telemetry	source	src/compiler2/drive_test.rs	4
+record_function_definition	other	19142	shared push helper inserting one FunctionDefinedRecord into a FunctionDefs map	source	src/compiler2/drive_test.rs	3
+metadata_str	lookup	19175	reads one string-valued metadata field off a captured telemetry event	drive-machinery	src/compiler2/port_resolve_test.rs,src/compiler2/drive_test.rs	97
+assert_primary_span_contains	assert	19192	asserts a diagnostic's primary span source text contains an expected substring	source	src/compiler2/drive_test.rs	6
+guard_dispatch	lookup	19204	looks up the latest-or-only guard dispatch plan recorded for a function	semantic	src/compiler2/drive_test.rs	8
+entry_dispatch	lookup	19210	looks up the entry dispatch plan recorded for a function	semantic	src/compiler2/transport_contract_test.rs,src/compiler2/canon_test.rs,src/compiler2/drive_test.rs,src/compiler2/jobs/runtime_demand_test.rs,src/ir_interp/backend_test.rs	15
+latest_guard_dispatch	lookup	19216	looks up the most recently recorded guard dispatch plan for a function, for redefinition tests	semantic	src/compiler2/drive_test.rs	3
+latest_entry_dispatch	lookup	19222	looks up the most recently recorded entry dispatch plan for a function, for redefinition tests	semantic	src/compiler2/drive_test.rs	5
+lowered_body	lookup	19228	looks up the (first-or-only) lowered body recorded for a function	lowering	src/compiler2/world_test.rs,src/compiler2/transport_contract_test.rs,src/compiler2/macro_product_test.rs,src/compiler2/canon_test.rs,src/compiler2/semantic_analysis_test.rs,src/compiler2/drive_test.rs	43
+summary_has_callee	lookup	19234	checks whether a call-site summary names a given callee function	semantic	src/compiler2/drive_test.rs	2
+summary_is_single_callee	lookup	19238	checks whether a call-site summary names exactly one callee function	semantic	src/compiler2/drive_test.rs	8
+local_call_target	lookup	19242	extracts the direct local callee FunctionId a lowered clause body's tail calls	lowering	src/compiler2/drive_test.rs	4
+backend_executable	lookup	19251	looks up one executable in a BackendProgram by its activation key	backend	src/compiler2/drive_test.rs,src/telemetry/public_trace_test.rs	37
+backend_direct_call	lookup	19261	finds a direct-call tail targeting a given callee inside a backend executable's clauses	backend	src/compiler2/drive_test.rs	11
+backend_direct_call_in_entry	lookup	19275	finds a direct-call tail targeting a given callee within one entry of a backend executable	backend	src/compiler2/drive_test.rs	4
+native_function_contains_nil_const	lookup	19370	checks whether a native function body contains a nil-constant instruction	native	src/compiler2/drive_test.rs	3
+return_flow_is_distinct_return_payload	lookup	19379	checks a native return-flow value is its own distinct return payload rather than aliasing another	native	src/compiler2/drive_test.rs	3
+native_executable_functions	lookup	19383	returns every native module function belonging to one executable	native	src/compiler2/drive_test.rs	2
+native_executable_fn	lookup	19396	returns the (sole) native function for one executable	native	src/compiler2/drive_test.rs	2
+native_executable_body	lookup	19410	returns the statement body of one executable's native function	native	src/compiler2/drive_test.rs	8
+native_closure_call_count	lookup	19421	counts indirect/closure call instructions in a native program	native	src/compiler2/drive_test.rs	5
+native_exact_call_targets	lookup	19436	returns the exact direct-call targets a native function invokes	native	src/compiler2/drive_test.rs	2
+native_callable_boundary_uses	lookup	19453	counts uses of the callable-boundary (boxed apply wrapper) marshal in a native program	native	src/compiler2/drive_test.rs	3
+sorted_extern_marshals	lookup	19471	returns the sorted list of extern marshal names a native program declares	native	src/compiler2/drive_test.rs	2
+direct_call_in_body	lookup	19481	finds a direct-call tail to a given callee anywhere in a lowered body's clauses	lowering	src/compiler2/drive_test.rs	10
+direct_call_in_entry	lookup	19499	finds a direct-call tail to a given callee within one entry of a lowered body	lowering	src/compiler2/drive_test.rs	4
+lowered_direct_callee	lookup	19521	extracts the direct callee FunctionId of a lowered clause's tail call	lowering	src/compiler2/port_macros_test.rs,src/compiler2/drive_test.rs	8
+direct_callee_in_entry	lookup	19530	extracts the direct callee FunctionId within one entry of a lowered body	lowering	src/compiler2/drive_test.rs	5
+plan_has_nested_guard_dispatch	lookup	19544	checks whether a dispatch plan's outcomes nest a guard dispatch	semantic	src/compiler2/drive_test.rs	3
+plan_body_has_type_question	lookup	19548	checks whether a dispatch plan asks a Region::Type question anywhere	semantic	src/compiler2/drive_test.rs	2
+guard_dispatch_has_nested_dispatch	lookup	19560	checks whether a guard dispatch's expression nests another dispatch	semantic	src/compiler2/drive_test.rs	3
+expr_has_nested_dispatch	lookup	19564	recursively checks a guard expression tree for a nested dispatch node	semantic	src/compiler2/drive_test.rs	7
+guard_dispatch_has_binary_nested_input	lookup	19573	checks whether a guard dispatch's expression nests a binary op as a dispatch input	semantic	src/compiler2/drive_test.rs	2
+expr_has_binary_nested_input	lookup	19577	recursively checks a guard expression tree for a nested binary-op input	semantic	src/compiler2/drive_test.rs	7
+assert_resolved	assert	19594	asserts a DriveOutcome is Resolved; the single most shared assertion across the whole port/compiler2 test suite	drive-machinery	src/compiler2/world_test.rs,src/compiler2/port_resolve_test.rs,src/compiler2/port_frontend_test.rs,src/compiler2/port_type_infer_test.rs,src/compiler2/port_macros_test.rs,src/compiler2/semantic_analysis_test.rs,src/compiler2/port_lower_test.rs,src/compiler2/port_planner_test.rs,src/compiler2/drive_test.rs,src/compiler2/port_interp_test.rs,src/compiler2/fixture_facts_test.rs,src/compiler2/port_misc_test.rs,src/compiler2/port_codegen_test.rs	591
+function_id	lookup	19598	resolves a function's FunctionId from captured FunctionDefined records by name and arity	source	src/compiler2/scope_test.rs,src/compiler2/port_type_infer_test.rs,src/compiler2/port_macros_test.rs,src/compiler2/semantic_analysis_test.rs,src/compiler2/drive_test.rs,src/telemetry/public_trace_test.rs,src/telemetry/jsonl_test.rs	242
+module_function_id	lookup	19602	resolves a function's FunctionId scoped to a specific module	source	src/compiler2/port_macros_test.rs,src/compiler2/drive_test.rs	7
+try_module_function_id	lookup	19606	fallible variant of module_function_id, returning Option	source	src/compiler2/drive_test.rs	2
+ActivationAnalysisCapture	capture	19620	installs and indexes ActivationAnalyzed telemetry	semantic	src/compiler2/drive_test.rs	5
+generated_functions_owned_by	lookup	19649	returns every generated (non-source) FunctionId a lowering job attributes to an owner function	lowering	src/compiler2/drive_test.rs	14
+function_id_in_module	lookup	19657	resolves a FunctionId by name and arity restricted to one module id	source	src/compiler2/port_type_infer_test.rs,src/compiler2/drive_test.rs	44
+module_id	lookup	19676	resolves a ModuleId by dotted name from captured module records	source	src/compiler2/scope_test.rs,src/compiler2/drive_test.rs	46
+function_fq_name	lookup	19686	renders a function's fully-qualified, module-qualified display name	source	src/compiler2/drive_test.rs	18
+function_module_name	lookup	19698	returns the module name a function belongs to	source	src/compiler2/drive_test.rs	3
+module_indexed_ids	lookup	19704	returns every ModuleId recorded for a given module name, in recorded order	source	src/compiler2/drive_test.rs	8
+named_module_id	lookup	19714	resolves the ModuleId for one exact module name	source	src/compiler2/drive_test.rs	5
+sorted_strings	other	19723	sorts and returns a Vec<String>; a generic comparison helper	drive-machinery	src/compiler2/drive_test.rs	3
+TUPLE_LADDER_BUILD_ANALYSES	other	20020	pinned whole-compile analysis-count for the return_tuple_ladder fixture's build/1 activation	semantic	src/compiler2/drive_test.rs	2
+TUPLE_LADDER_BUILD_RETURN_REVISIONS	other	20021	pinned whole-compile return-revision count for the return_tuple_ladder fixture's build/1 activation	semantic	src/compiler2/drive_test.rs	2
+TUPLE_LADDER_MAIN_ANALYSES	other	20022	pinned whole-compile analysis-count for the return_tuple_ladder fixture's main/0 activation	semantic	src/compiler2/drive_test.rs	2
+TUPLE_LADDER_MAIN_RETURN_REVISIONS	other	20023	pinned whole-compile return-revision count for the return_tuple_ladder fixture's main/0 activation	semantic	src/compiler2/drive_test.rs	2
+submit_main_root	setup	20062	submits one source and its main/0 root the way every door does, before a product is ever demanded	drive-machinery	src/compiler2/drive_test.rs	4
+ActivationAscent	other	20088	one activation's return-ascent reading: its canon function label, its return's revision count, and whether widening engaged	semantic	src/compiler2/drive_test.rs	4
+RETURN_LADDER_CEILING	other	20097	the revision count past which a return is a climbing ladder rather than ordinary settling	semantic	src/compiler2/drive_test.rs	3
+RETURN_LADDERS	other	20121	pinned per-activation return-ascent ladders for the two goal fixtures (return_tuple_ladder, json_roundtrip)	semantic	src/compiler2/drive_test.rs	3
+RETURN_LADDER_FIXTURES	other	20162	the fixture path/source pairs the return-ladder census measures	semantic	src/compiler2/drive_test.rs	2
+measure_return_ascents	setup	20206	drives a fixture to a backend product while recording return-type widened/defined telemetry, returning sorted ActivationAscent readings	semantic	src/compiler2/drive_test.rs	2
+no_matching_clause_diagnostics	setup	20912	drives a source through a raw World/ExecutionContext, returning every TYPE_NO_MATCHING_CLAUSE diagnostic with its originating source name	semantic+source	src/compiler2/drive_test.rs	11
+reachable_clauses_for_source	lookup	20943	returns the reachable clause indices analyzed for one function in one source	semantic	src/compiler2/drive_test.rs	7
+semantic_reachability_for_source	setup	20947	drives a source and returns one function's reachable-clause indices plus a diagnostic message string	semantic	src/compiler2/drive_test.rs	3
+ASCENT_RUNG_FIXTURES	other	21707	the five fixtures the ascent-rung/freight-slot census walks	semantic	src/compiler2/drive_test.rs	4
+is_ascent_rung	lookup	21835	checks whether one canonical type body is another with one or more list positions emptied, at any structural depth	semantic	src/compiler2/drive_test.rs	2
+canonical_type_body	lookup	21882	strips the leading fingerprint off a canonical type rendering, leaving its structural body	semantic	src/compiler2/drive_test.rs	2
+split_top_level	lookup	21891	splits a comma-separated string into parts at bracket depth zero	semantic	src/compiler2/drive_test.rs	2
+ONE_ACTIVATION_KEYING_LAWS	other	21970	eight minimal programs proving the activation-keying freight/return laws in both directions (fz-kdt.183/.199)	semantic	src/compiler2/drive_test.rs	2
+retained_quoted_call	lookup	22197	finds the first quoted call under a QuotedSourceCursor that retains a bound callable, with its head spelling	semantic	src/compiler2/drive_test.rs	3
+QUOTED_HELPER_PROVIDER	other	22213	program source: a module defining a macro that expands to a call on itself, for provider/requester quoted-helper identity tests	source	src/compiler2/drive_test.rs	3
+QUOTED_HELPER_REQUESTER	other	22215	program source: a module requiring and invoking the provider's macro	source	src/compiler2/drive_test.rs	3
+quoted_helper_target	lookup	22219	submits two sources in a given order, drives once, and reports main's value plus the function App.run/1 ends up calling	semantic+drive-machinery	src/compiler2/drive_test.rs	3
