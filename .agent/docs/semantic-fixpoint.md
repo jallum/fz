@@ -941,6 +941,16 @@ member set, not a re-run of type inference:
    collapses two members whose bodies turn out identical (an alias pair), so
    the solve never needs a separate closure-comparison pass of its own.
 
+   Before discovering descriptor SCCs, the regular kernel removes semantically
+   empty clauses using the existing emptiness reader over a read-only view of
+   the unpublished local bodies. This matters when a ground restriction removes
+   a cycle's only seed: `X=:a|{Y}; Y=X\:a` denotes `X=:a, Y=none`. Empty
+   clauses must disappear before keying, including those inside an otherwise
+   productive body. Local references never acquire published identities during
+   this check. The ordinary descriptor intersection/difference algebra works
+   over those references as well as settled types; the source equation solver
+   must still supply fixed ground filters and preserve pending prerequisites.
+
 Every OTHER `Local` a member's expression names -- any activation outside the
 component, including one owned by a different component -- is an external
 dependency: its `ReturnType` is `reads`, never `waits`, mirroring

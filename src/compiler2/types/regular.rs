@@ -48,6 +48,7 @@ pub(super) struct RegularKey {
 /// already minimal, so a local can only join one by being bisimilar to it.
 /// What is left over is the genuinely new part of the cluster: it alone is
 /// keyed and minted, naming the resolved handles as ordinary children.
+#[cfg(test)]
 pub(super) fn intern(
     types: &mut Types,
     count: usize,
@@ -59,6 +60,14 @@ pub(super) fn intern(
         .collect::<Vec<_>>();
     let bodies = build(&nodes);
     assert_eq!(bodies.len(), count, "a regular component needs one body per node");
+    assert_strongly_connected(&bodies);
+    intern_bodies(types, bodies)
+}
+
+/// Intern one already-pruned strongly connected component.
+fn intern_scc(types: &mut Types, bodies: Vec<DescrOf<ComponentRef>>) -> Vec<Ty> {
+    let count = bodies.len();
+    assert!(count > 0, "a regular component needs at least one node");
     assert_strongly_connected(&bodies);
 
     let handles = mentioned_handle_states(types, &bodies);
@@ -223,6 +232,7 @@ fn resolved_classes(classes: &[usize], count: usize, handles: &[Ty], class_count
 /// leaf. The descriptor graph is therefore partitioned before each strongly
 /// connected piece enters the regular interner.
 pub(super) fn intern_bodies(types: &mut Types, bodies: Vec<DescrOf<ComponentRef>>) -> Vec<Ty> {
+    let bodies = prune_empty_local_clauses(types, bodies);
     let components = strongly_connected_components(&bodies);
     let mut component_of = vec![0; bodies.len()];
     for (component, members) in components.iter().enumerate() {
@@ -261,7 +271,7 @@ pub(super) fn intern_bodies(types: &mut Types, bodies: Vec<DescrOf<ComponentRef>
                 })
             })
             .collect::<Vec<_>>();
-        let tys = intern(types, members.len(), |_| component_bodies);
+        let tys = intern_scc(types, component_bodies);
         for (member, ty) in members.iter().copied().zip(tys) {
             resolved[member] = Some(ty);
         }
@@ -269,6 +279,54 @@ pub(super) fn intern_bodies(types: &mut Types, bodies: Vec<DescrOf<ComponentRef>
     resolved
         .into_iter()
         .map(|ty| ty.expect("every descriptor root resolves"))
+        .collect()
+}
+
+/// Classify a descriptor forest against an unpublished suffix of the arena,
+/// then erase every semantically empty axis clause before regular identities
+/// or SCCs are assigned.  The temporary `Ty`s cannot escape: they exist only
+/// in this read-only context and are mapped back to component references
+/// immediately afterward.
+fn prune_empty_local_clauses(types: &Types, bodies: Vec<DescrOf<ComponentRef>>) -> Vec<DescrOf<ComponentRef>> {
+    let first_local = types.interner.len();
+    let temporary = bodies
+        .iter()
+        .cloned()
+        .map(|body| {
+            body.map_children(|reference| match reference {
+                ComponentRef::Published(ty) => ty,
+                ComponentRef::Local(NodeId(index)) => {
+                    assert!(
+                        index < bodies.len(),
+                        "component body refers to a node outside its component forest"
+                    );
+                    Ty(first_local
+                        .checked_add(index)
+                        .and_then(|id| u32::try_from(id).ok())
+                        .expect("regular local descriptor id exceeds Ty's u32 range"))
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let cx = types.interner.ctx_with_local_descriptors(&temporary);
+    let mut pruned = temporary.clone();
+    for body in &mut pruned {
+        for case in &mut body.cases {
+            axis::drop_empty_clauses(cx, &mut case.structure, &|ty| cx.descr(ty).is_empty(cx));
+        }
+    }
+    pruned
+        .into_iter()
+        .map(|body| {
+            body.map_children(|ty| {
+                let index = ty.0 as usize;
+                if index < first_local {
+                    ComponentRef::Published(ty)
+                } else {
+                    ComponentRef::local(index - first_local)
+                }
+            })
+        })
         .collect()
 }
 

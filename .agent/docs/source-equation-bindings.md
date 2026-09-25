@@ -5,6 +5,41 @@ It records an unresolved design gate, not an implemented inference engine.
 The source equation now retains its lowered body and complete invocations.
 Calls still create activations before learning their results.
 
+
+The current design is maintained in [fz-kdt.98.3.17.10](https://github.com/jallum/fz/blob/beadwork/issues/fz-kdt.98.3.17.10.json).
+It supersedes the admission/ordering discussion below: .10 starts recursive
+components in the sound projected mode; exact recursive relations belong to
+.26. Step 6 must move solver frames and source-call admission to finite cells
+before argument-sensitive executable keying. Step 8 then supplies compatible
+interface sharing and executable grouping. Cells nested under activation keys
+would retain the forwarded-Whole input ladder.
+
+### Ground restrictions in the regular kernel
+
+The existing descriptor Boolean algebra also operates on local component
+references. Intersection/difference preserve those references rather than
+publishing an approximation of a recursive child. Equation restrictions must
+still use a fixed ground filter: `X \ ground` is monotone in X, whereas
+`X \ Y` with another ascending unknown is not.
+
+A restriction can remove the only seed of a cycle:
+
+```text
+X = :a | {Y}
+Y = X \ :a = {Y}
+```
+
+The least finite-value solution is `X=:a`, `Y=none`. The kernel must recognize
+empty recursive bodies before assigning identities, using the same semantic
+emptiness reader as ground descriptors. It must also remove empty alternatives
+from otherwise productive bodies. Merely giving an empty cycle a new regular
+handle would disagree with `Types::is_empty`, which relies on the unique
+`none` identity.
+
+These are kernel obligations, not the cell solver: source restrictions,
+cell-addressed argument equations, pending dependencies and the ordinary
+compiler re-key gate still have to be connected through the existing evaluator.
+
 ## Definitions, substitutions, and sharing
 
 ```elixir

@@ -1138,21 +1138,25 @@ fn cyclic_readers_collect_the_finite_variable_and_substitution_result() {
     let alpha = TypeVarId(97);
     let variable = t.type_var(alpha);
     let int = t.int();
-    let self_recursive = t.intern_regular_component(1, |nodes| vec![DescrOf::tuple_of(vec![nodes[0]])])[0];
+    let self_recursive = t.intern_regular_component(1, |nodes| vec![DescrOf::list_of(nodes[0])])[0];
+    // The empty list supplies a finite base while the list/tuple back-edge
+    // still makes every reader close a two-node cycle.
     let pattern = t.intern_regular_component(2, |nodes| {
         vec![
-            DescrOf::tuple_of(vec![nodes[1]]),
+            DescrOf::list_of(nodes[1]),
             DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(variable)]),
         ]
     })[0];
     let witness = t.intern_regular_component(2, |nodes| {
         vec![
-            DescrOf::tuple_of(vec![nodes[1]]),
+            DescrOf::list_of(nodes[1]),
             DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(int)]),
         ]
     })[0];
 
     assert!(!t.has_vars(&self_recursive));
+    assert!(!t.is_empty(&pattern));
+    assert!(!t.is_empty(&witness));
     assert!(t.has_vars(&pattern));
     assert_eq!(t.free_var_ids(&pattern), [alpha].into_iter().collect());
 
@@ -5756,4 +5760,54 @@ mod list_normal_form {
             }
         }
     }
+}
+
+/// Restrictions are equation right-hand sides, not filters on an already
+/// published answer. Here Y's atom restriction stops X's tuple recursion.
+#[test]
+fn regular_ground_intersection_restricts_recursive_feedback() {
+    let mut t = Types::new();
+    let a = t.atom_lit("a");
+    let live = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(1)]),
+    );
+    let restricted = live.intersect(&t.regular_published(a));
+    let roots = t.intern_regular_bodies(vec![live, restricted]);
+    let tuple_a = t.tuple(&[a]);
+    let expected = t.union(a, tuple_a);
+    assert_eq!(roots, vec![expected, a]);
+}
+
+/// X = :a | {Y}; Y = X \ :a. Removing the only seed leaves Y = {Y},
+/// whose least finite-value solution is none. It must not acquire a second
+/// identity for emptiness merely because it was written recursively.
+#[test]
+fn regular_ground_difference_removes_recursive_seed() {
+    let mut t = Types::new();
+    let a = t.atom_lit("a");
+    let live = union_regular_bodies(
+        &DescrOf::atom_lit("a"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(1)]),
+    );
+    let restricted = live.diff(&t.regular_published(a));
+    let roots = t.intern_regular_bodies(vec![live, restricted]);
+    assert_eq!(roots, vec![a, t.none()]);
+}
+
+#[test]
+fn regular_ground_difference_preserves_the_other_recursive_seed() {
+    let mut t = Types::new();
+    let a = t.atom_lit("a");
+    let seeds = union_regular_bodies(&DescrOf::atom_lit("a"), &DescrOf::atom_lit("b"));
+    let live = union_regular_bodies(&seeds, &DescrOf::tuple_of(vec![ComponentRef::local(1)]));
+    let restricted = live.diff(&t.regular_published(a));
+    let roots = t.intern_regular_bodies(vec![live, restricted]);
+    let b_cycle = t.intern_regular_bodies(vec![union_regular_bodies(
+        &DescrOf::atom_lit("b"),
+        &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+    )])[0];
+    assert_eq!(roots[1], b_cycle);
+    let expected = t.union(a, b_cycle);
+    assert_eq!(roots[0], expected);
 }

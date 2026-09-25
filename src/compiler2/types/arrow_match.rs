@@ -1009,11 +1009,21 @@ mod tests {
         let variable = t.type_var(alpha);
         let int = t.int();
         let pattern = t.intern_regular_component(1, |nodes| {
-            vec![DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(variable)])]
+            vec![super::super::union_regular_bodies(
+                &DescrOf::atom_lit("end"),
+                &DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(variable)]),
+            )]
         })[0];
         let witness = t.intern_regular_component(1, |nodes| {
-            vec![DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(int)])]
+            vec![super::super::union_regular_bodies(
+                &DescrOf::atom_lit("end"),
+                &DescrOf::tuple_of(vec![nodes[0], ComponentRef::Published(int)]),
+            )]
         })[0];
+        // A seed keeps these cyclic types inhabited; a seedless constructor
+        // cycle is none and cannot witness a substitution for alpha.
+        assert!(!t.is_empty(&pattern));
+        assert!(!t.is_empty(&witness));
         let mut bounds = MatchBounds::default();
 
         assert_eq!(

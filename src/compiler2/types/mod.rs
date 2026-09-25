@@ -378,6 +378,10 @@ pub(crate) struct ComparisonCacheStats {
 #[derive(Clone, Copy)]
 pub(super) struct TyCtx<'a> {
     arena: &'a [Descr],
+    /// Descriptors being classified before regular interning. Their synthetic
+    /// ids begin immediately after `arena`, so the ordinary semantic readers
+    /// can follow local recursive references without publishing an identity.
+    local: &'a [Descr],
     /// The address reverse table (path per address id), so display can render a
     /// structural address as `a1_0`/`r0`. Empty for the interner-internal ctx,
     /// which only resolves descriptors and never renders.
@@ -386,7 +390,13 @@ pub(super) struct TyCtx<'a> {
 
 impl<'a> TyCtx<'a> {
     fn descr(&self, t: &Ty) -> &'a Descr {
-        match self.arena.get(t.0 as usize) {
+        let index = t.0 as usize;
+        let descriptor = if index < self.arena.len() {
+            self.arena.get(index)
+        } else {
+            self.local.get(index - self.arena.len())
+        };
+        match descriptor {
             Some(descr) => descr,
             None => panic!("unknown interned type id {}", t.0),
         }
@@ -511,6 +521,15 @@ impl TypeInterner {
     fn ctx(&self) -> TyCtx<'_> {
         TyCtx {
             arena: &self.arena,
+            local: &[],
+            addresses: &[],
+        }
+    }
+
+    fn ctx_with_local_descriptors<'a>(&'a self, local: &'a [Descr]) -> TyCtx<'a> {
+        TyCtx {
+            arena: &self.arena,
+            local,
             addresses: &[],
         }
     }
@@ -1250,6 +1269,7 @@ impl Types {
     fn ctx(&self) -> TyCtx<'_> {
         TyCtx {
             arena: &self.interner.arena,
+            local: &[],
             addresses: &self.address_paths,
         }
     }

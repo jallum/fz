@@ -204,6 +204,53 @@ fn structure_looks_empty<R>(body: &StructureOf<R>) -> bool {
         && body.maps.is_empty()
 }
 
+// Boolean structure is independent of the child reference domain. In a
+// regular equation, local children remain references; these operations do
+// not unfold them or ask for their as-yet unpublished types.
+impl<R: Clone + PartialEq> DescrOf<R> {
+    pub(super) fn intersect(&self, other: &Self) -> Self {
+        let mut cases = Vec::new();
+        for left in &self.cases {
+            for right in &other.cases {
+                let brands = left.brands.intersect(&right.brands);
+                if !brands.is_none() {
+                    cases.push(BrandCase {
+                        brands,
+                        structure: left.structure.intersect(&right.structure),
+                    });
+                }
+            }
+        }
+        Self { cases }
+    }
+
+    pub(super) fn diff(&self, other: &Self) -> Self {
+        let mut cases = self.cases.clone();
+        for subtrahend in &other.cases {
+            let mut next = Vec::new();
+            for minuend in cases {
+                let outside = minuend.structure.diff(&subtrahend.structure);
+                if !structure_looks_empty(&outside) {
+                    next.push(BrandCase {
+                        brands: minuend.brands.clone(),
+                        structure: outside,
+                    });
+                }
+                let brands = minuend.brands.intersect(&subtrahend.brands.neg());
+                let overlap = minuend.structure.intersect(&subtrahend.structure);
+                if !brands.is_none() && !structure_looks_empty(&overlap) {
+                    next.push(BrandCase {
+                        brands,
+                        structure: overlap,
+                    });
+                }
+            }
+            cases = next;
+        }
+        Self { cases }
+    }
+}
+
 impl<R: Clone> DescrOf<R> {
     fn leaf(structure: StructureOf<R>) -> Self {
         Self {
@@ -257,6 +304,46 @@ impl<R> StructureOf<R> {
 }
 
 impl<R: Clone + PartialEq> StructureOf<R> {
+    /// Exact meet of two structural payloads. The outer descriptor meets their
+    /// brand sets separately, preserving the one-brand-per-value rule.
+    pub(super) fn intersect(&self, other: &Self) -> Self {
+        Self {
+            basic: self.basic.intersect(other.basic),
+            atoms: self.atoms.intersect(&other.atoms),
+            opaques: self.opaques.intersect(&other.opaques),
+            vars: self.vars.intersect(&other.vars),
+            tuples: dnf_intersect(&self.tuples, &other.tuples),
+            lists: dnf_intersect(&self.lists, &other.lists),
+            resources: dnf_intersect(&self.resources, &other.resources),
+            funcs: dnf_intersect(&self.funcs, &other.funcs),
+            maps: dnf_intersect(&self.maps, &other.maps),
+        }
+    }
+
+    /// The complement of one case's structural union. Outer descriptor
+    /// difference composes this with the brand partition, retaining both the
+    /// structural outside and the overlapping structure under remaining brands.
+    fn neg_structure(&self) -> Self {
+        Self {
+            basic: self.basic.neg(),
+            atoms: self.atoms.neg(),
+            opaques: self.opaques.neg(),
+            vars: self.vars.neg(),
+            tuples: dnf_neg(&self.tuples),
+            lists: dnf_neg(&self.lists),
+            resources: dnf_neg(&self.resources),
+            funcs: dnf_neg(&self.funcs),
+            maps: dnf_neg(&self.maps),
+        }
+    }
+
+    /// Structural subtraction for one rectangle.  Outer descriptor difference
+    /// keeps both rectangles in `(S, B) \ (S', B') = (S \ S', B) ∪
+    /// (S ∩ S', B \ B')`; this helper deliberately handles only the first.
+    pub(super) fn diff(&self, other: &Self) -> Self {
+        self.intersect(&other.neg_structure())
+    }
+
     /// Structural union before a caller's child-domain-specific normalization.
     /// It is shared by ground interning and regular-component construction;
     /// neither path may manufacture a second brand-partition meaning.
@@ -770,46 +857,6 @@ impl StructureOf<Ty> {
         self.union_raw(other)
     }
 
-    /// Exact meet of two structural payloads. The outer descriptor meets their
-    /// brand sets separately, preserving the one-brand-per-value rule.
-    pub(super) fn intersect(&self, other: &Structure) -> Structure {
-        Structure {
-            basic: self.basic.intersect(other.basic),
-            atoms: self.atoms.intersect(&other.atoms),
-            opaques: self.opaques.intersect(&other.opaques),
-            vars: self.vars.intersect(&other.vars),
-            tuples: dnf_intersect(&self.tuples, &other.tuples),
-            lists: dnf_intersect(&self.lists, &other.lists),
-            resources: dnf_intersect(&self.resources, &other.resources),
-            funcs: dnf_intersect(&self.funcs, &other.funcs),
-            maps: dnf_intersect(&self.maps, &other.maps),
-        }
-    }
-
-    /// The complement of one case's structural union. Outer descriptor
-    /// difference composes this with the brand partition, retaining both the
-    /// structural outside and the overlapping structure under remaining brands.
-    fn neg_structure(&self) -> Structure {
-        Structure {
-            basic: self.basic.neg(),
-            atoms: self.atoms.neg(),
-            opaques: self.opaques.neg(),
-            vars: self.vars.neg(),
-            tuples: dnf_neg(&self.tuples),
-            lists: dnf_neg(&self.lists),
-            resources: dnf_neg(&self.resources),
-            funcs: dnf_neg(&self.funcs),
-            maps: dnf_neg(&self.maps),
-        }
-    }
-
-    /// Structural subtraction for one rectangle.  Outer descriptor difference
-    /// keeps both rectangles in `(S, B) \ (S', B') = (S \ S', B) ∪
-    /// (S ∩ S', B \ B')`; this helper deliberately handles only the first.
-    pub(super) fn diff(&self, other: &Structure) -> Structure {
-        self.intersect(&other.neg_structure())
-    }
-
     fn as_all_brands(&self) -> Descr {
         Descr {
             cases: vec![BrandCase {
@@ -1019,48 +1066,6 @@ impl DescrOf<Ty> {
 
     pub(super) fn union(&self, _cx: TyCtx<'_>, other: &Descr) -> Descr {
         union_of(self, other)
-    }
-
-    pub(super) fn intersect(&self, other: &Descr) -> Descr {
-        let mut cases = Vec::new();
-        for left in &self.cases {
-            for right in &other.cases {
-                let brands = left.brands.intersect(&right.brands);
-                if !brands.is_none() {
-                    cases.push(BrandCase {
-                        brands,
-                        structure: left.structure.intersect(&right.structure),
-                    });
-                }
-            }
-        }
-        Descr { cases }
-    }
-
-    pub(super) fn diff(&self, other: &Descr) -> Descr {
-        let mut cases = self.cases.clone();
-        for subtrahend in &other.cases {
-            let mut next = Vec::new();
-            for minuend in cases {
-                let outside = minuend.structure.diff(&subtrahend.structure);
-                if !outside.looks_empty() {
-                    next.push(BrandCase {
-                        brands: minuend.brands.clone(),
-                        structure: outside,
-                    });
-                }
-                let brands = minuend.brands.intersect(&subtrahend.brands.neg());
-                let overlap = minuend.structure.intersect(&subtrahend.structure);
-                if !brands.is_none() && !overlap.looks_empty() {
-                    next.push(BrandCase {
-                        brands,
-                        structure: overlap,
-                    });
-                }
-            }
-            cases = next;
-        }
-        Descr { cases }
     }
 
     pub(super) fn is_empty(&self, cx: TyCtx<'_>) -> bool {

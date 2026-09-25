@@ -26,6 +26,79 @@ fn child_types(types: &Types, ty: Ty) -> Vec<Ty> {
 }
 
 #[test]
+fn an_empty_recursive_body_canonicalizes_to_none_before_it_receives_an_identity() {
+    let mut t = Types::new();
+    let atom = t.atom_lit("b");
+    let before = t.identity_inventory();
+    let recursive = t.intern_regular_component(1, |nodes| {
+        let mut body = DescrOf::unbranded();
+        body.cases[0].structure.tuples = vec![Conj {
+            pos: vec![
+                TupleSigOf { elems: vec![nodes[0]] },
+                TupleSigOf {
+                    elems: vec![ComponentRef::Published(atom)],
+                },
+            ],
+            neg: vec![],
+        }];
+        vec![body]
+    })[0];
+
+    assert_eq!(
+        recursive,
+        t.none(),
+        "X = {{X}} ∩ {{:b}} has no finite value and must not mint a regular identity"
+    );
+    assert_eq!(
+        t.identity_inventory(),
+        before,
+        "local proof states never enter the interner"
+    );
+}
+
+#[test]
+fn pruning_an_empty_recursive_sibling_keeps_the_live_recursive_identity_canonical() {
+    let mut t = Types::new();
+    let atom_b = t.atom_lit("b");
+    let expected = t.intern_regular_component(1, |nodes| {
+        vec![union_of(&DescrOf::atom_lit("a"), &DescrOf::tuple_of(vec![nodes[0]]))]
+    })[0];
+
+    let roots = t.intern_regular_bodies(vec![
+        union_of(
+            &DescrOf::atom_lit("a"),
+            &union_of(
+                &DescrOf::tuple_of(vec![ComponentRef::local(0)]),
+                &DescrOf::tuple_of(vec![ComponentRef::local(1)]),
+            ),
+        ),
+        {
+            let mut body = DescrOf::unbranded();
+            body.cases[0].structure.tuples = vec![Conj {
+                pos: vec![
+                    TupleSigOf {
+                        elems: vec![ComponentRef::local(1)],
+                    },
+                    TupleSigOf {
+                        elems: vec![ComponentRef::Published(atom_b)],
+                    },
+                ],
+                neg: vec![],
+            }];
+            body
+        },
+    ]);
+
+    assert_eq!(roots[0], expected, "{{Y}} contributes no alternative once Y is empty");
+    assert_eq!(roots[1], t.none(), "Y is the empty recursive branch");
+    assert_eq!(
+        child_types(&t, roots[0]),
+        vec![roots[0]],
+        "the canonical live body keeps only its own recursive child"
+    );
+}
+
+#[test]
 fn a_cluster_that_denotes_a_mentioned_handle_resolves_to_that_handle() {
     let mut t = Types::new();
     let handle = int_list_handle(&mut t);
