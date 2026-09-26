@@ -216,9 +216,16 @@ every implementation — a STATIC over-approximation of a runtime dispatch, so a
 unrelated `defimpl` that asks more about its argument raises the demand of every
 forwarder that reaches the callback.
 
-One job (`Job::DeriveInputDemand`) walks the forwarding cone, reads every fact
-it consults, and runs the Kleene iteration from the cone's LOCAL masks — never
-from another function's published demand, so there is no wait cycle.
+One job (`Job::DeriveInputDemand`) builds the demand from its callees'
+answers (`ForwardingWalk` in `jobs/keying.rs`). A callee's concluded
+`InputDemand` already is the join over everything that callee forwards to, so
+it enters the graph as a leaf and its body is never read. A callee that is
+already waiting on this job is a partner (`World::answer_use`): the two demands
+are one fixpoint, so the job walks the partner's body itself and the Kleene
+iteration solves the cycle in one run. Any other callee is waited for, and the
+job publishes nothing until every answer it needs has concluded. On a chain
+`main -> f -> g -> h`, `f` runs once to learn it needs `g`'s answer and once
+more to read it.
 `convergence_class_at` then keeps the element wherever demand reached the list's
 shape, at every depth; a list demand never reached is freight and collapses to
 one addressed class per position exactly as before.

@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path};
 
 use super::super::body::{CallInputMode, LoweredBody, LoweredStep, LoweredTail, ValueId};
-use super::super::drive::{FactKey, JobEffects, current_uses};
+use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, current_uses};
+use super::super::facts::FactUse;
 use super::super::identity::FunctionId;
 use super::super::keying::{BodyKeying, InputDemand};
 use super::super::scheduler::FatalError;
@@ -348,12 +349,18 @@ struct ForwardEdge {
 /// the demand on slot `i` of `f` is `f`'s own local demand on `i` joined with
 /// the demand on every position `g@j` that `f` forwards `i` to.
 ///
-/// Forwarding is cyclic (`reduce_cont/3` <-> `reduce_step/3`), so this is a
-/// least fixpoint, computed by Kleene iteration over the forwarding graph one walk
-/// discovers -- the same shape `derive_call_graph_component` uses for the
-/// strong component, and terminating for the same reason: the join is monotone
-/// and no join deepens a demand tree past the deepest local mask in the graph,
-/// which is a fixed finite depth once the graph is fixed.
+/// A callee's concluded `InputDemand` already is that join for the callee, so
+/// the demand composes from callee answers: a caller reads each answer once and
+/// never walks the callee's body ([`ForwardingWalk`]).
+///
+/// Forwarding is cyclic (`reduce_cont/3` <-> `reduce_step/3`), and neither half
+/// of a cycle can wait for the other's answer. The half that runs second finds
+/// the first already waiting on it -- a partner -- and walks the partner's body
+/// itself, so the whole cycle is one least fixpoint, computed by Kleene
+/// iteration over the graph that walk builds. It terminates because the join is
+/// monotone and no join deepens a demand tree past the deepest mask in the
+/// graph, which is a fixed finite depth once the graph is fixed. The partner
+/// then reads the published answer and concludes too.
 ///
 /// A slot NOT reached this way is freight: the body neither asks about it nor
 /// hands it to anyone who does. It stays collapsed, which is what keeps one
@@ -363,10 +370,9 @@ struct ForwardEdge {
 /// asks the local question and only the local question (see [`InputDemand`]).
 /// The facts `derive_input_demand` cannot conclude without, for `function`
 /// itself: its own static edges, then -- once neither a protocol callback nor
-/// a bodyless conclusion applies -- its own entry dispatch plan. A callee's
-/// own gates, reached by `collect_input_forwarding_graph`'s recursion below,
-/// are waits the walk DISCOVERS, not named here (same reasoning as
-/// `derive_call_graph_component_gates`).
+/// a bodyless conclusion applies -- its own entry dispatch plan. Callee
+/// answers, and a partner's body facts, are waits [`ForwardingWalk`]
+/// discovers, not named here.
 pub(super) fn derive_input_demand_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
     let callees = FactKey::StaticCallees(function);
     if !world.has_fact(&callees) {
@@ -391,14 +397,15 @@ pub(super) fn derive_input_demand(
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
 ) -> Result<JobEffects, FatalError> {
-    let mut reads = Vec::new();
-    let mut waits = HashSet::new();
-    let mut graph = BTreeMap::new();
-    collect_input_forwarding_graph(world, function, &mut reads, &mut waits, &mut graph);
+    let mut walk = ForwardingWalk::new(world, function);
+    walk.visit_body(function);
+    let ForwardingWalk {
+        reads, waits, graph, ..
+    } = walk;
     if !waits.is_empty() {
         return Ok(JobEffects {
-            reads: current_uses(reads),
-            waits: current_uses(waits),
+            reads,
+            waits: waits.into_iter().collect(),
             ..JobEffects::default()
         });
     }
@@ -411,150 +418,202 @@ pub(super) fn derive_input_demand(
     emit_input_demand_derived(tel, &function, &demand);
     let changed = world.define_input_demand(function, demand);
     Ok(JobEffects {
-        reads: current_uses(reads),
+        reads,
         outputs: vec![FactKey::InputDemand(function)],
         changed: changed.then_some(FactKey::InputDemand(function)).into_iter().collect(),
         ..JobEffects::default()
     })
 }
 
-/// Walks the input FORWARDING graph from `function`: only a callee that receives
-/// one of this body's parameters unchanged is entered, so the graph is a fraction
-/// of the call graph and a body that forwards nothing reads exactly the facts
-/// the local mask always needed.
-fn collect_input_forwarding_graph(
-    world: &World,
-    function: FunctionId,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    graph: &mut BTreeMap<FunctionId, DemandNode>,
-) {
-    if graph.contains_key(&function) {
-        return;
-    }
-    // `StaticCallees` is the fact whose producer scopes a runtime module and
-    // settles the provider-boundary question; waiting on it first means this
-    // walk never has to re-derive either.
-    let callees = FactKey::StaticCallees(function);
-    if !world.has_fact(&callees) {
-        waits.insert(callees);
-        return;
-    }
-    reads.push(callees);
-    if let Some(callback) = world.protocol_callback(function) {
-        collect_protocol_callback_node(world, function, callback.protocol, reads, waits, graph);
-        return;
-    }
-    let lowered = FactKey::LoweredBody(function);
-    if world.function_is_provider_boundary(function) || !world.has_fact(&lowered) {
-        // No body in this program: it asks nothing and forwards nothing. Every
-        // fact that conclusion rests on is READ -- including the module whose
-        // definition dissolves the provider boundary -- so a definition landing
-        // later grows the forwarding graph instead of leaving this answer frozen.
-        reads.push(FactKey::FunctionDefined(function));
-        reads.push(FactKey::ModuleDefined(world.function_module(function)));
-        reads.push(lowered);
-        graph.insert(function, DemandNode::default());
-        return;
-    }
-    let dispatch = FactKey::EntryDispatch(function);
-    if !world.has_fact(&dispatch) {
-        // `EntryDispatch`'s sole producer arm is `Job::PlanEntryDispatch`
-        // (`World::demand_fact_producer`).
-        waits.insert(dispatch);
-        return;
-    }
-    reads.push(dispatch);
-    reads.push(lowered);
-    // The plan states what it reads of its inputs; this walk only joins that
-    // across the bodies a value is forwarded to.
-    let local = world.entry_dispatch(function).input_demand().to_vec();
-    let local_result = return_flow_mask(world, function, local.len());
-    let forwards = forwarded_inputs(world, function, local.len());
-    let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
-    graph.insert(
-        function,
-        DemandNode {
-            local,
-            local_result,
-            forwards,
-        },
-    );
-    for callee in next {
-        collect_input_forwarding_graph(world, callee, reads, waits, graph);
-    }
+/// One run's walk of the input FORWARDING graph from the function whose demand
+/// it derives. Only a callee that receives one of a body's parameters
+/// unchanged is entered, so the graph is a fraction of the call graph and a
+/// body that forwards nothing reads exactly the facts its local mask needs.
+///
+/// A callee is met in one of three ways ([`World::answer_use`]):
+///
+/// - its `InputDemand` has concluded: that answer already is the join over
+///   everything the callee forwards to, so it becomes a leaf of this graph and
+///   the callee's body is never read;
+/// - it is a partner, already waiting on this job: the two demands are one
+///   fixpoint, so its body is walked here and the cycle is solved in this run;
+/// - otherwise this run waits for its answer and publishes nothing.
+struct ForwardingWalk<'w> {
+    world: &'w World,
+    reader: Job,
+    reads: Vec<FactUse<FactKey>>,
+    waits: HashSet<FactUse<FactKey>>,
+    graph: BTreeMap<FunctionId, DemandNode>,
 }
 
-/// A protocol callback has no body: it is a NAME for the set of implementations
-/// dispatch can reach. Every input is handed to every implementation unchanged,
-/// so its demand is the join over them -- the same forwarding edge, one per
-/// implementation.
-///
-/// This is a STATIC OVER-APPROXIMATION of a runtime dispatch, and the cost is
-/// anti-monotone in the program: an unrelated `defimpl` that asks more about
-/// its argument raises the demand of every forwarder that reaches the callback,
-/// because the static arm set names it whether or not any value can reach it.
-/// `ProtocolDispatch` is READ, so an implementation landing later grows this
-/// demand rather than leaving the conclusion frozen.
-fn collect_protocol_callback_node(
-    world: &World,
-    function: FunctionId,
-    protocol: super::super::identity::ModuleId,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    graph: &mut BTreeMap<FunctionId, DemandNode>,
-) {
-    // The same rung order as `semantic::resolve_protocol_call`: `ModuleDefined`
-    // first, because it is the arm-covered wait that can actually be produced;
-    // `ProtocolDispatch` is a co-output of the same `Job::DefineModule` run
-    // (`source_publish::publish_protocol_surface` pushes both into one
-    // `JobEffects`), so it carries no arm of its own in
-    // `World::demand_fact_producer` -- its demand rides `ModuleDefined`'s. A
-    // waiter re-runs only when ALL of its waits are satisfied, so an arm-less
-    // wait must never be the first rung.
-    let protocol_fact = FactKey::ModuleDefined(protocol);
-    if world.module_defined_revision(protocol).is_none() {
-        waits.insert(protocol_fact);
-        return;
-    }
-    reads.push(protocol_fact);
-    let dispatch_fact = FactKey::ProtocolDispatch(protocol);
-    let Some(dispatch) = world.protocol_dispatch(protocol) else {
-        // `ModuleDefined(protocol)` is proven `Some` above, so the run that
-        // claims this fact has already happened; defensive rather than
-        // provably dead, exactly as the twin, and a bare wait rather than an
-        // assert.
-        waits.insert(dispatch_fact);
-        return;
-    };
-    reads.push(dispatch_fact);
-    let arity = world.function_arity(function);
-    let mut forwards = Vec::new();
-    for arm in &dispatch.arms {
-        let Some(implementation) = arm.callbacks.get(&function).map(|target| target.function) else {
-            continue;
-        };
-        for slot in 0..arity.min(world.function_arity(implementation)) {
-            forwards.push(ForwardEdge {
-                slot,
-                callee: implementation,
-                callee_slot: slot,
-            });
+impl<'w> ForwardingWalk<'w> {
+    fn new(world: &'w World, function: FunctionId) -> Self {
+        Self {
+            world,
+            reader: Job::DeriveInputDemand(function),
+            reads: Vec::new(),
+            waits: HashSet::new(),
+            graph: BTreeMap::new(),
         }
     }
-    forwards.sort_unstable();
-    forwards.dedup();
-    let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
-    graph.insert(
-        function,
-        DemandNode {
-            local: vec![DispatchDemand::Ignore; arity],
-            local_result: vec![DispatchDemand::Ignore; arity],
-            forwards,
-        },
-    );
-    for callee in next {
-        collect_input_forwarding_graph(world, callee, reads, waits, graph);
+
+    fn read(&mut self, fact: FactKey) {
+        self.reads.push(FactUse::current(fact));
+    }
+
+    fn wait(&mut self, fact: FactKey) {
+        self.waits.insert(FactUse::current(fact));
+    }
+
+    fn visit_callee(&mut self, callee: FunctionId) {
+        if self.graph.contains_key(&callee) {
+            return;
+        }
+        let fact = FactKey::InputDemand(callee);
+        match self.world.answer_use(&self.reader, fact) {
+            AnswerUse::Concluded(read) => {
+                let answer = self
+                    .world
+                    .input_demand(callee)
+                    .expect("a concluded InputDemand is present");
+                let leaf = DemandNode {
+                    local: answer.forwarded_dispatch.clone(),
+                    local_result: answer.returned.clone(),
+                    forwards: Vec::new(),
+                };
+                self.reads.push(read);
+                self.graph.insert(callee, leaf);
+            }
+            AnswerUse::Partner(_) => self.visit_body(callee),
+            AnswerUse::Wait(wait) => {
+                self.waits.insert(wait);
+            }
+        }
+    }
+
+    fn visit_body(&mut self, function: FunctionId) {
+        if self.graph.contains_key(&function) {
+            return;
+        }
+        // `StaticCallees` is the fact whose producer scopes a runtime module and
+        // settles the provider-boundary question; waiting on it first means this
+        // walk never has to re-derive either.
+        let callees = FactKey::StaticCallees(function);
+        if !self.world.has_fact(&callees) {
+            self.wait(callees);
+            return;
+        }
+        self.read(callees);
+        if let Some(callback) = self.world.protocol_callback(function) {
+            self.visit_protocol_callback(function, callback.protocol);
+            return;
+        }
+        let lowered = FactKey::LoweredBody(function);
+        if self.world.function_is_provider_boundary(function) || !self.world.has_fact(&lowered) {
+            // No body in this program: it asks nothing and forwards nothing. Every
+            // fact that conclusion rests on is READ -- including the module whose
+            // definition dissolves the provider boundary -- so a definition landing
+            // later grows the forwarding graph instead of leaving this answer frozen.
+            self.read(FactKey::FunctionDefined(function));
+            self.read(FactKey::ModuleDefined(self.world.function_module(function)));
+            self.read(lowered);
+            self.graph.insert(function, DemandNode::default());
+            return;
+        }
+        let dispatch = FactKey::EntryDispatch(function);
+        if !self.world.has_fact(&dispatch) {
+            // `EntryDispatch`'s sole producer arm is `Job::PlanEntryDispatch`
+            // (`World::demand_fact_producer`).
+            self.wait(dispatch);
+            return;
+        }
+        self.read(dispatch);
+        self.read(lowered);
+        // The plan states what it reads of its inputs; this walk only joins that
+        // across the bodies a value is forwarded to.
+        let world = self.world;
+        let local = world.entry_dispatch(function).input_demand().to_vec();
+        let local_result = return_flow_mask(world, function, local.len());
+        let forwards = forwarded_inputs(world, function, local.len());
+        self.visit_node(
+            function,
+            DemandNode {
+                local,
+                local_result,
+                forwards,
+            },
+        );
+    }
+
+    /// A protocol callback has no body: it is a NAME for the set of
+    /// implementations dispatch can reach. Every input is handed to every
+    /// implementation unchanged, so its demand is the join over them -- the
+    /// same forwarding edge, one per implementation.
+    ///
+    /// This is a STATIC OVER-APPROXIMATION of a runtime dispatch, and the cost
+    /// is anti-monotone in the program: an unrelated `defimpl` that asks more
+    /// about its argument raises the demand of every forwarder that reaches the
+    /// callback, because the static arm set names it whether or not any value
+    /// can reach it. `ProtocolDispatch` is READ, so an implementation landing
+    /// later grows this demand rather than leaving the conclusion frozen.
+    fn visit_protocol_callback(&mut self, function: FunctionId, protocol: super::super::identity::ModuleId) {
+        // The same rung order as `semantic::resolve_protocol_call`: `ModuleDefined`
+        // first, because it is the arm-covered wait that can actually be produced;
+        // `ProtocolDispatch` is a co-output of the same `Job::DefineModule` run
+        // (`source_publish::publish_protocol_surface` pushes both into one
+        // `JobEffects`), so it carries no arm of its own in
+        // `World::demand_fact_producer` -- its demand rides `ModuleDefined`'s. A
+        // waiter re-runs only when ALL of its waits are satisfied, so an arm-less
+        // wait must never be the first rung.
+        let world = self.world;
+        let protocol_fact = FactKey::ModuleDefined(protocol);
+        if world.module_defined_revision(protocol).is_none() {
+            self.wait(protocol_fact);
+            return;
+        }
+        self.read(protocol_fact);
+        let dispatch_fact = FactKey::ProtocolDispatch(protocol);
+        let Some(dispatch) = world.protocol_dispatch(protocol) else {
+            // `ModuleDefined(protocol)` is proven `Some` above, so the run that
+            // claims this fact has already happened; defensive rather than
+            // provably dead, exactly as the twin, and a bare wait rather than an
+            // assert.
+            self.wait(dispatch_fact);
+            return;
+        };
+        self.read(dispatch_fact);
+        let arity = world.function_arity(function);
+        let mut forwards = Vec::new();
+        for arm in &dispatch.arms {
+            let Some(implementation) = arm.callbacks.get(&function).map(|target| target.function) else {
+                continue;
+            };
+            for slot in 0..arity.min(world.function_arity(implementation)) {
+                forwards.push(ForwardEdge {
+                    slot,
+                    callee: implementation,
+                    callee_slot: slot,
+                });
+            }
+        }
+        forwards.sort_unstable();
+        forwards.dedup();
+        self.visit_node(
+            function,
+            DemandNode {
+                local: vec![DispatchDemand::Ignore; arity],
+                local_result: vec![DispatchDemand::Ignore; arity],
+                forwards,
+            },
+        );
+    }
+
+    fn visit_node(&mut self, function: FunctionId, node: DemandNode) {
+        let next = node.forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
+        self.graph.insert(function, node);
+        for callee in next {
+            self.visit_callee(callee);
+        }
     }
 }
 

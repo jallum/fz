@@ -445,11 +445,12 @@ impl SemanticOrd<Types> for DependencyKey {
     }
 }
 
-/// How a reader may use an answer right now: read it at this use, or wait
-/// for it at this use.
+/// How a reader may use an answer right now: read a partner's answer as it
+/// stands, read a concluded answer, or wait for the answer to conclude.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AnswerUse {
-    Read(FactUse<FactKey>),
+    Partner(FactUse<FactKey>),
+    Concluded(FactUse<FactKey>),
     Wait(FactUse<FactKey>),
 }
 
@@ -705,9 +706,9 @@ impl World {
             .fact_producer(&fact)
             .is_some_and(|producer| self.waits_reach(&producer, reader));
         if partner {
-            AnswerUse::Read(FactUse::current(fact))
+            AnswerUse::Partner(FactUse::current(fact))
         } else if self.fact_is_concluded(&fact) {
-            AnswerUse::Read(FactUse::concluded(fact))
+            AnswerUse::Concluded(FactUse::concluded(fact))
         } else {
             AnswerUse::Wait(FactUse::concluded(fact))
         }
@@ -737,7 +738,7 @@ impl World {
             })
             .filter_map(|fact| match self.answer_use(job, fact) {
                 AnswerUse::Wait(wait) => Some(fact_dependency(wait)),
-                AnswerUse::Read(_) => None,
+                AnswerUse::Partner(_) | AnswerUse::Concluded(_) => None,
             })
             .collect()
     }

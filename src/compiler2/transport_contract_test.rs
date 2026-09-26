@@ -146,7 +146,10 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // fz-afu.3: 304 -> 296, all of it DeriveRuntimeDemand (37 -> 29). A run
 // missing a callee's answer waits for it instead of concluding on `ignore`,
 // so no caller re-runs to revise what it concluded.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 296;
+// fz-afu.10: 296 -> 290, all of it DeriveInputDemand (34 -> 28). A caller
+// reads each callee's concluded answer instead of walking the callee's
+// body, so it no longer re-runs once per callee fact that lands.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 290;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

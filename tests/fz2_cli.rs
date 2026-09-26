@@ -2164,17 +2164,27 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // nothing with them. One AnalyzeActivation run that reproduces
             // its answer now also concludes a fact it publishes, a change
             // `Concluded` readers hear, so zero-change falls 53 -> 47 in all.
-            evaluations: 296,
+            // fz-afu.10: 296 -> 290, all of it InputDemand (34 -> 28 runs).
+            // A caller reads each callee's concluded answer instead of
+            // walking the callee's body, so it no longer re-runs once per
+            // callee fact that lands: content-caused runs fall 91 -> 82,
+            // with 9 of their wakes and 10 blocked runs. Three callees the
+            // walk used to cross -- `Enumerable.reduce/3`, `fz_op_add_ff/2`
+            // and `fz_op_add_if/2` -- now derive answers of their own, so
+            // initial runs rise 205 -> 208, and with the runs that no longer
+            // re-walk to the same answer, changed outputs rise 249 -> 253
+            // and unchanged outputs fall 47 -> 37.
+            evaluations: 290,
             runtime_demand_evaluations: 31,
-            initial: 205,
-            content_caused: 91,
+            initial: 208,
+            content_caused: 82,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 249,
-            unchanged_outputs: 47,
-            wakes: 90,
-            blocked_completions: 74,
+            changed_outputs: 253,
+            unchanged_outputs: 37,
+            wakes: 81,
+            blocked_completions: 64,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
