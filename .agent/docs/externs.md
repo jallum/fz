@@ -369,6 +369,25 @@ What follows from the invariant:
 including both mixed orders — one alone cannot distinguish a correct table from
 one with the two mixed shapes transposed.
 
+## A variadic contract has a tail domain
+
+A variadic extern's `FunctionContract` carries a tail domain alongside its
+fixed parameters: the type every argument past the declared prefix must
+belong to, `integer | pid | reference | c_pointer | binary`.
+`extern_contract::variadic_tail_domain` builds it next to `ty_to_extern_ty`'s
+own raw-word union, so the domain and the wire alphabet can't drift apart.
+`FunctionContract::apply` widens a clause's parameter list by repeating the
+tail domain until it matches an observed row's length, then matches through
+the ordinary calculator (`Types::match_arrow`) exactly as it does for any
+other arrow; a row shorter than the fixed prefix is still refused.
+
+The domain decides whether a row FITS the declaration at all. Binary is in
+it because an ascribed binary reaches the wire; float is not, because the
+generated variadic call has nowhere to carry one. Once a row fits, the
+marshal classes below decide the narrower question of which physical lane
+each tail value crosses on — an un-ascribed binary is still refused there,
+because the lane depends on an ascription the contract's row can't see.
+
 ## Marshal classes resolve per call site
 
 The `ret` and fixed `params` are fixed by the declaration. A variadic call's

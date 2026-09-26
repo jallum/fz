@@ -57,6 +57,12 @@ Compiler2 owns the active contract path:
   pattern with that kind's component cleared (`witness_escapes_kind`) — a
   cross-kind union like `:first | {:acc, a}` accepts `:first` through its
   atom member but still rejects `:third`, which no member accepts.
+- A variadic extern's contract carries a tail domain alongside its fixed
+  parameters: the type every argument past the declared prefix must belong
+  to (`extern_contract::variadic_tail_domain`). `FunctionContract::apply`
+  widens the clause's parameter list by repeating the tail domain to the
+  observed row's length before calling `match_arrow`, so a longer row is not
+  an arity mismatch; a row shorter than the fixed prefix still is.
 - Arrow matching is polarity-aware. A `@spec` variable collects LOWER bounds
   from its covariant occurrences (list element, tuple field, map field, resource
   payload, arrow result) and UPPER bounds from its contravariant ones (under an
