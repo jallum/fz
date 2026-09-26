@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T00:24:33Z",
+  "description": "ExpandFunctionSource and DefineFunction answer one question in two jobs:\n\"what is this function's definition\". ExpandFunctionSource expands the\nfunction's source (running macros) and publishes ExpandedFunctionSource;\nDefineFunction reads it and publishes FunctionDefined. They always run back\nto back on the same subject with nothing else scheduled between them.\n\nEvidence (develop @ a41b6de3b):\n- ExpandedFunctionSource has exactly one reader: DefineFunction's wait\n  (jobs/source.rs:278-281, reads at :318-321). No other FactKey reader\n  (grep src; the rest is producer arm drive.rs:672, rank drive.rs:365,\n  telemetry jsonl.rs:2270/2492, and the unresolved-issue arm world.rs:2516).\n- The expanded source is stored twice: in World's\n  ExpandedFunctionSourceMap (world.rs:135, identity.rs:703) and again inside\n  the function definition (identity.rs:245, world.rs:3239-3242).\n- On `def main(), do: 1` (s1) both kinds run once per subject after\n  fz-afu.2; the pair is 4 of the 28 predicted runs. Ledger:\n  scratchpad wave2/r_s1_ledger/ledger.md.\n\nPaper: DefineFunction does the expansion itself -- it waits on what\nexpansion waits on today (FunctionSource / the scope facts named by\ndemand_function_scope; the macro product reads through\nFunctionSourceExpander's Blocked effects) and publishes FunctionDefined in\nthe same conclusion.\n\nRemoval ledger:\n- Job::ExpandFunctionSource and its producer arm (drive.rs:672)\n- FactKey::ExpandedFunctionSource (drive.rs:267, :317, :365; telemetry\n  jsonl.rs:2270, :2492; world.rs:2516)\n- ExpandedFunctionSourceMap and World::expanded_function_source /\n  note_expanded_function_source (identity.rs:703, world.rs:135/271)\nSurvivor: DefineFunction, and the expanded source kept once, inside the\nfunction definition.\n\nPrediction: s1 28 -\u003e 26 (one run per subject fewer). Every census pin that\ncounts ExpandFunctionSource or DefineFunction starts only drops; none rises.\nBefore building: count readers of the definition's expanded_source field\nand confirm FunctionDefined's revision moves exactly when the expansion\nchanges today (a re-expansion that yields the same source must not bump\nFunctionDefined).\n\nDepends on fz-afu.2 (measure on top of gated starts).\nAcceptance: s1 measured 26 runs / 26 subjects' worth minus the removed kind;\nfull gate green; pins only drop; docs that name ExpandFunctionSource\nupdated (grep .agent/).",
+  "id": "fz-afu.7",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 2,
+  "status": "open",
+  "title": "ExpandFunctionSource folds into DefineFunction",
+  "type": "task",
+  "updated_at": "2026-09-26T00:24:33Z"
+}
