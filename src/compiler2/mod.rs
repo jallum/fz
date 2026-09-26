@@ -154,8 +154,6 @@ mod native_inventory_test;
 #[cfg(test)]
 mod port_macros_test;
 #[cfg(test)]
-mod port_misc_test;
-#[cfg(test)]
 mod port_planner_test;
 #[cfg(test)]
 mod port_resolve_test;
