@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T18:08:25Z",
+  "description": "When a job blocks on a fact nobody has produced yet, the fact's producer is enqueued behind\nwhatever is already queued. Unrelated work runs first, and meanwhile more jobs block on the\nsame fact, each of which must be woken again when it lands.\n\nReduced case: fixtures2/behavior/return_tuple_ladder.fz on fz-afu.10 (debug interp,\n--log-telemetry). dbg/1's first activation blocks on FunctionContract(fz_dbg_value/1) and\nRecursive(fz_dbg_value/1) (applied step 142). DeriveFunctionContract and\nDeriveCallGraphComponent for fz_dbg_value/1 run at steps 194 and 197, behind about 36\nalternating main/0 \u003c-\u003e build/1 ladder analyses. Each rung mints a dbg/1 activation, and all\n17 block on the same two facts (steps 178-193). The Recursive wake then runs all 17, and\nfz_dbg_value's ReturnType wake runs them again: 3 runs per activation where 2 suffice.\ndbg/1 analyses 35 -\u003e 51 against fz-afu.3, where the analysis also waited on\nInputDemand(fz_dbg_value/1) and so blocked before the ladder was queued.\n\nThe same ordering shows up as single runs in fz-afu.10's pins (authorized 2026-09-26):\n- enum_predicate_search AnalyzeActivation 551 -\u003e 552: one List.reduce_while/3\n  ActivationInputs wake that used to coalesce into a queued run now arrives after it.\n- enum_take_drop_split AnalyzeActivation: Recursive wakes 47 -\u003e 49, zero-change 7 -\u003e 8.\n- 00420 activation frontier 265 -\u003e 266: Enum.drop_positive/2 is analyzed while its\n  accumulator is only empty_list(), minting an intermediate\n  Enum.drop_positive_finish/1 ({empty_list(), int}) activation.\n\nSignal: runs per subject and wake causes in work_graph.applied. Close when the ladder's\ndbg/1 activations analyze at most twice each (34 in all) and the order-caused runs above\nare gone. Needs a paper-first design: the order a scheduler runs demanded producers in is a\npolicy of the one agenda, not a per-fact priority.",
+  "id": "fz-afu.13",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 2,
+  "status": "open",
+  "title": "A blocked waiter's producers run ahead of unrelated queued work",
+  "type": "bug",
+  "updated_at": "2026-09-26T18:08:25Z"
+}
