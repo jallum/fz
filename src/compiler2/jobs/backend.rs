@@ -39,15 +39,20 @@ use super::super::world::World;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
-/// Reports `RootBackendProduct` pull-drive failures as `FatalError`,
-/// emitting the diagnostic the fatal-error contract requires for the ones
-/// nobody has spoken for yet — a wait with no producer, an exhausted budget,
-/// a drive that never settled.
+/// Reports `RootBackendProduct` pull-drive failures as `FatalError`.
 ///
-/// The three hooks that forward instead carry a failure that already said
-/// why: `FatalError` and `PullOutcome::Failed` both mean "diagnostic
-/// emitted". Restating one of those under the same code, phrased as a
-/// product key, buries the message that named the program's actual problem.
+/// The three hooks that forward carry a failure that already said why:
+/// `FatalError` and `PullOutcome::Failed` both mean "diagnostic emitted".
+/// Restating one of those under a different code buries the message that
+/// named the program's actual problem.
+///
+/// The other three -- a wait with no producer, an exhausted budget, a drive
+/// that never settled -- are the ones nobody has spoken for yet. They report
+/// through `ExecutionContext::report_unresolved_waits`, the same
+/// `World::unresolved_waits` -> specific-issue path the push drive
+/// (`Compiler2::drive`) uses, so a nested product pull's stall names the
+/// same unknown-module/unbound-function/etc. issue the top-level drive
+/// would have named for the identical stall.
 impl super::super::product_drive::ProductDriveError for FatalError {
     fn dependency_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
@@ -78,61 +83,34 @@ impl super::super::product_drive::ProductDriveError for FatalError {
     }
 
     fn no_ready_producer<T: crate::telemetry::Telemetry>(
-        _world: &World,
+        world: &mut World,
         tel: &T,
-        root: RootId,
-        fact: &FactUse<FactKey>,
+        _root: RootId,
+        _fact: &FactUse<FactKey>,
     ) -> Self {
-        emit_backend_product_error(
-            tel,
-            Span::DUMMY,
-            format!(
-                "compiler2 backend product for root {} waited on {:?} with no ready producer",
-                root.as_u32(),
-                fact
-            ),
-        )
+        super::super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
+        FatalError
     }
 
     fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
-        _world: &World,
+        world: &mut World,
         tel: &T,
-        root: RootId,
-        fact: &FactUse<FactKey>,
+        _root: RootId,
+        _fact: &FactUse<FactKey>,
     ) -> Self {
-        emit_backend_product_error(
-            tel,
-            Span::DUMMY,
-            format!(
-                "compiler2 backend product for root {} exceeded fact-wait budget for {:?}",
-                root.as_u32(),
-                fact
-            ),
-        )
+        super::super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
+        FatalError
     }
 
     fn did_not_settle<T: crate::telemetry::Telemetry>(
-        _world: &World,
+        world: &mut World,
         tel: &T,
-        root: RootId,
+        _root: RootId,
         _last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
-        emit_backend_product_error(
-            tel,
-            Span::DUMMY,
-            format!("compiler2 backend product for root {} did not settle", root.as_u32()),
-        )
+        super::super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
+        FatalError
     }
-}
-
-fn emit_backend_product_error(
-    tel: &impl crate::telemetry::Telemetry,
-    span: Span,
-    message: impl Into<String>,
-) -> FatalError {
-    let diagnostic = Diagnostic::error(codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN, message.into(), span);
-    emit_through(tel, std::slice::from_ref(&diagnostic));
-    FatalError
 }
 
 pub(crate) fn produce_root_backend_product(

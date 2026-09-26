@@ -5632,7 +5632,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
     }
 
     fn no_ready_producer<T: crate::telemetry::Telemetry>(
-        _world: &World,
+        _world: &mut World,
         _tel: &T,
         root: super::RootId,
         fact: &FactUse<FactKey>,
@@ -5641,7 +5641,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
     }
 
     fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
-        _world: &World,
+        _world: &mut World,
         _tel: &T,
         root: super::RootId,
         fact: &FactUse<FactKey>,
@@ -5650,7 +5650,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
     }
 
     fn did_not_settle<T: crate::telemetry::Telemetry>(
-        _world: &World,
+        _world: &mut World,
         _tel: &T,
         root: super::RootId,
         last_wait: Option<(&ProductKey, &[PullWait])>,
