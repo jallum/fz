@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T09:48:10Z",
+  "description": "fixtures2/00065: the CLI paths print a debug dump of unresolved waits instead of error[resolve/unknown-module]. The push drive (drive.rs:1089-1107) emits unresolved diagnostics (world.rs:2560-2576, 2963-2970, 3454-3459). The pull drive, used by every CLI path (compiler.rs:295-301, product_drive.rs:927-948), formats a string, and compiler.rs:512-517 says it 'emits no diagnostic of its own at all' (deferred in d5438ba08). Fix: the pull drive's Unresolved, no-producer and budget arms go through the same unresolved_waits -\u003e emit_unresolved_diagnostics path. Delete the debug-dump formatting (ProductDriveError for String, compiler.rs:519-556) and that comment. Done when 00065 is on the matrix with expect: diagnostic and diagnostic.code: resolve/unknown-module. Proposal: /Users/j5n/Workspace/fz-p8p.4-findings.html (approved 2026-09-26). One commit. The fixture moves to fixtures/ and its port test is deleted in the same commit.",
+  "id": "fz-p8p.18",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "The pull drive reports stalls as diagnostics, one implementation with the push drive",
+  "type": "bug",
+  "updated_at": "2026-09-26T09:48:10Z"
+}
