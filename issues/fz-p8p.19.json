@@ -4,14 +4,15 @@
   "blocks": [
     "fz-p8p.4"
   ],
+  "closed_at": "2026-09-26T13:03:18Z",
   "created": "2026-09-26T09:48:11Z",
   "description": "## Why\nElixir warns only about a clause that can never match (module/types/pattern.ex:183-250). A missing clause is a runtime FunctionClauseError / CaseClauseError, never a compile-time warning (checked with elixir). fz does the opposite: `type/no-matching-clause` fires on ordinary code (sum([]) / sum([h|t])), and about 45 goldens carry it, while fz has no redundancy warning. The first attempt read hand-built rows in source_diagnostics.rs that drop annotation preconditions and bail whenever a clause has a guard, and produced 9 false positives. Parked on branch fz-p8p.19/wip-v1 for reference only.\n\n## Approved design (../fz-p8p.19.html revision 3)\n- Delete the exhaustiveness warning everywhere: function heads, case, with-else, and spec'd functions. That removes TYPE_NO_MATCHING_CLAUSE, is_inexhaustive(_with_resolver), function_head_warning, inexhaustive_diag_at, contract_has_reachable_fail and check_head, plus their tests (source_diagnostics_test, source_test, drive_test.rs:19885, fz2_cli.rs:1807-1811), the goldens or golden lines that exist only for this warning, and the doc text (pattern-matching.md, quoted-source.md, guides/pattern-matching.html). The docs then state that a missing clause is a runtime error.\n- One redundancy check reads the compiled plan: unreachable rows, in plan_entry_dispatch (jobs/dispatch.rs:168) for heads, once per function, and in compile_match_dispatch (body.rs:2663) for case/with/receive. The warning is `type/redundant-clause`, worded \"this clause cannot match because a previous clause at line N always matches\".\n- Delete the hand-built rows and guard bail-outs in source_diagnostics.rs, the stub guard resolver in define_function (jobs/source.rs:296), the function_warnings / function_body_warnings split, and the cfg(test) find_unreachable_rows. source_diagnostics.rs keeps only what remains.\n\n## Done when\n- 00151 and 00152 pin redundant-clause, 00153 is clean, and wildcard_then_specific gains its golden.\n- New fixtures: f(x :: integer)/f(x :: atom) is clean; k(_) then k(_) when true flags clause 2; a spec'd function with a redundant clause is flagged.\n- The 9 former false positives are clean, and 00154/00155 still abort.\n- Every golden change is a removed no-matching-clause line, or a redundant-clause line confirmed as a true positive.",
   "id": "fz-p8p.19",
   "labels": [],
   "parent": "fz-p8p",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Clauses that can never match warn (type/redundant-clause); the exhaustiveness warning goes",
   "type": "feature",
-  "updated_at": "2026-09-26T11:49:44Z"
+  "updated_at": "2026-09-26T13:03:18Z"
 }
