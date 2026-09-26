@@ -96,10 +96,12 @@ Current content, the Current exact caller contribution, and Current exact
 first-class surfaces name exact
 `CallableConstructionTarget(owner, value, surface)` facts. A loaded target can
 expose another captured local callable, so the formula follows only those keys
-until the local read set stops growing. Missing values are bottom, so an owned
-formula publishes provisional demand and caller-local return contributions;
-peer-dependent capture/input contributions wait until every non-self target is
-present. Equal answers move no revision and wake no reader. The input sub-fact
+until the local read set stops growing. A callee's answer is read only once it
+has concluded, unless the callee is already waiting on this formula, in which
+case the two are one fixpoint and its present answer is read. Otherwise the
+formula waits: a callee that has not answered is never read as bottom (see
+`fact-engine.md`, "Executable facts and runtime demand"). Peer-dependent
+capture/input contributions wait until every non-self target is present. Equal answers move no revision and wake no reader. The input sub-fact
 is a revisioned view of the one stored `ExecutableRuntimeDemand`, not a cloned
 value or a second producer.
 Tuple-field demand may stop at its highest observed index. Transport applies

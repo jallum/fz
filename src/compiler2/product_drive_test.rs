@@ -652,12 +652,13 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
             .into_iter()
             .map(|read| match read {
                 FactUse::Current(fact) => FactUse::current(DependencyKey::Fact(fact)),
+                FactUse::Concluded(fact) => FactUse::concluded(DependencyKey::Fact(fact)),
                 FactUse::Settled(fact) => FactUse::settled(DependencyKey::Fact(fact)),
             })
             .collect::<std::collections::HashSet<_>>();
         let same_fact_after_presence = match cause {
             FactUse::Settled(fact) => final_reads.contains(&FactUse::current(fact.clone())),
-            FactUse::Current(_) => false,
+            FactUse::Current(_) | FactUse::Concluded(_) => false,
         };
         assert!(
             final_reads.contains(cause) || same_fact_after_presence,

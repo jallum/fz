@@ -61,8 +61,8 @@ use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap,
     CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap, CallableConstructionTargetKey,
-    ContributionMap, ContributionReplace, ExecutableRuntimeDemand, RuntimeDemandInputMap, RuntimeDemandTypeProjection,
-    TargetDemandContribution,
+    ContributionMap, ContributionReplace, ExecutableRuntimeDemand, RuntimeDemand, RuntimeDemandInputMap,
+    RuntimeDemandTypeProjection, TargetDemandContribution,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -159,6 +159,7 @@ pub struct World {
     callable_construction_targets: HashMap<CallableConstructionTargetKey, ExecutableKey>,
     runtime_demand_type_projections: HashMap<Ty, std::rc::Rc<RuntimeDemandTypeProjection>>,
     runtime_demands: HashMap<ExecutableKey, std::rc::Rc<ExecutableRuntimeDemand>>,
+    runtime_demand_inputs: HashMap<ExecutableKey, Vec<RuntimeDemand>>,
     runtime_demand_input_contributions: RuntimeDemandInputMap<Job>,
     incoming_input_contributions: ContributionMap<InputSlot, Job, IncomingInputSources>,
     roots: RootMap,
@@ -301,6 +302,7 @@ impl World {
             callable_construction_targets: HashMap::new(),
             runtime_demand_type_projections: HashMap::new(),
             runtime_demands: HashMap::new(),
+            runtime_demand_inputs: HashMap::new(),
             runtime_demand_input_contributions: RuntimeDemandInputMap::new(),
             incoming_input_contributions: ContributionMap::new(),
             roots: RootMap::new(),
@@ -657,26 +659,38 @@ impl World {
                 .extend(&mut self.types, job.clone(), effects.incoming_input_contributions)
         };
         let mut outputs = effects.outputs;
-        outputs.extend(incoming.output_keys.into_iter().map(FactKey::IncomingInputSlot));
+        let mut changed = effects.changed;
+        let contribution_derivations = if waits.is_empty() {
+            runtime_demand_contribution_derivations(
+                &job,
+                &reads,
+                effects.send_reads,
+                runtime_demand_input_outputs,
+                &runtime_demand_input_changed,
+                incoming.output_keys,
+                &incoming.changed_keys,
+            )
+        } else {
+            outputs.extend(incoming.output_keys.into_iter().map(FactKey::IncomingInputSlot));
+            outputs.extend(
+                runtime_demand_input_outputs
+                    .into_iter()
+                    .map(FactKey::RuntimeDemandInput),
+            );
+            changed.extend(incoming.changed_keys.into_iter().map(FactKey::IncomingInputSlot));
+            changed.extend(
+                runtime_demand_input_changed
+                    .into_iter()
+                    .map(FactKey::RuntimeDemandInput),
+            );
+            Vec::new()
+        };
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
-        outputs.extend(
-            runtime_demand_input_outputs
-                .into_iter()
-                .map(FactKey::RuntimeDemandInput),
-        );
         if waits.is_empty() && !rebased {
             outputs.extend(preserved_analysis_claims(&job, &previous_output_keys));
         }
         let outputs = dedupe_job_facts(outputs);
-        let mut changed = effects.changed;
-        changed.extend(incoming.changed_keys.into_iter().map(FactKey::IncomingInputSlot));
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
-        changed.extend(
-            runtime_demand_input_changed
-                .iter()
-                .cloned()
-                .map(FactKey::RuntimeDemandInput),
-        );
         let changed = dedupe_job_facts(changed);
         // Captured before `outputs` moves into `complete`: the two record
         // sites keep `activation_frontier` in lockstep with the fact table.
@@ -699,6 +713,7 @@ impl World {
             CompletionEffects {
                 derivations: reached
                     .into_iter()
+                    .chain(contribution_derivations)
                     .chain([super::scheduler::DerivationEffects {
                         publisher: super::drive::Derivation::of(job.clone(), super::drive::DerivationKey::Job),
                         reads,
@@ -1056,11 +1071,9 @@ impl World {
             .filter(|(key, _)| self.fact_revision(&FactKey::RuntimeDemand((*key).clone())).is_some())
     }
 
-    pub(crate) fn runtime_demand_inputs(&self, key: &ExecutableKey) -> Option<&[super::semantic::RuntimeDemand]> {
+    pub(crate) fn runtime_demand_inputs(&self, key: &ExecutableKey) -> Option<&[RuntimeDemand]> {
         self.fact_revision(&FactKey::RuntimeDemandInputs(key.clone()))?;
-        self.runtime_demands
-            .get(key)
-            .map(|demand| demand.input_demands.as_slice())
+        self.runtime_demand_inputs.get(key).map(Vec::as_slice)
     }
 
     pub(crate) fn runtime_demand_input(&self, key: &ExecutableKey) -> Option<&TargetDemandContribution> {
@@ -1957,6 +1970,13 @@ impl World {
         self.work_graph.facts().is_settled(&DependencyKey::Fact(key.clone()))
     }
 
+    /// Present, and no publisher is still deriving it.
+    pub fn fact_is_concluded(&self, key: &FactKey) -> bool {
+        self.work_graph
+            .facts()
+            .is_locally_settled(&DependencyKey::Fact(key.clone()))
+    }
+
     /// Terminal standing waits in the same faithful semantic order used by
     /// every live fact-wait boundary. `FactKey` deliberately has no raw `Ord`:
     /// only the owning World can interpret activation arrows through `Types`.
@@ -2723,6 +2743,56 @@ fn preserved_analysis_claims(job: &Job, previous_output_keys: &OrderedSet<FactKe
         .collect()
 }
 
+/// When a run concludes, the demand it sends to each callee and the sources
+/// it records for each input slot are answers of their own. A send stands on
+/// the reads the run names for it, or on everything the run read when it
+/// names none, so a caller's demand on a callee need not rest on that
+/// callee's reply, and an acyclic program's demand settles as it is published
+/// instead of waiting for the drain to break a read cycle.
+fn runtime_demand_contribution_derivations(
+    job: &Job,
+    run_reads: &HashSet<FactUse<DependencyKey>>,
+    mut send_reads: HashMap<ExecutableKey, Vec<FactUse<FactKey>>>,
+    sends: impl IntoIterator<Item = ExecutableKey>,
+    sends_changed: &HashSet<ExecutableKey>,
+    slots: impl IntoIterator<Item = InputSlot>,
+    slots_changed: &HashSet<InputSlot>,
+) -> Vec<super::scheduler::DerivationEffects<super::drive::Derivation, DependencyKey>> {
+    let derivation = |key: super::drive::DerivationKey,
+                      reads: HashSet<FactUse<DependencyKey>>,
+                      fact: FactKey,
+                      changed: bool| super::scheduler::DerivationEffects {
+        publisher: super::drive::Derivation::of(job.clone(), key),
+        reads,
+        outputs: vec![DependencyKey::Fact(fact.clone())],
+        changed: changed.then_some(DependencyKey::Fact(fact)).into_iter().collect(),
+    };
+    let mut derivations = Vec::new();
+    for callee in sends {
+        let reads = send_reads.remove(&callee).map_or_else(
+            || run_reads.clone(),
+            |reads| reads.into_iter().map(fact_dependency).collect(),
+        );
+        let changed = sends_changed.contains(&callee);
+        derivations.push(derivation(
+            super::drive::DerivationKey::Executable(callee.clone()),
+            reads,
+            FactKey::RuntimeDemandInput(callee),
+            changed,
+        ));
+    }
+    for slot in slots {
+        let changed = slots_changed.contains(&slot);
+        derivations.push(derivation(
+            super::drive::DerivationKey::InputSlot(slot.clone()),
+            run_reads.clone(),
+            FactKey::IncomingInputSlot(slot),
+            changed,
+        ));
+    }
+    derivations
+}
+
 /// Drop repeats, keep the order the job emitted them in.
 ///
 /// A job may name the same fact twice; the fact table refuses duplicates, so
@@ -3101,20 +3171,50 @@ impl World {
         true
     }
 
+    /// Records an executable's runtime demand; whether it changed.
     pub(crate) fn define_runtime_demand(
         &mut self,
         key: ExecutableKey,
         demand: std::rc::Rc<ExecutableRuntimeDemand>,
-    ) -> (bool, bool) {
+    ) -> bool {
         if self.runtime_demands.get(&key) == Some(&demand) {
-            return (false, false);
+            return false;
         }
-        let inputs_changed = self
-            .runtime_demands
-            .get(&key)
-            .is_none_or(|previous| previous.input_demands != demand.input_demands);
         self.runtime_demands.insert(key, demand);
-        (true, inputs_changed)
+        true
+    }
+
+    /// Records a concluded answer to how much of each input an executable
+    /// needs, replacing the one standing; whether it changed.
+    pub(crate) fn conclude_runtime_demand_inputs(&mut self, key: ExecutableKey, inputs: Vec<RuntimeDemand>) -> bool {
+        if self.runtime_demand_inputs.get(&key) == Some(&inputs) {
+            return false;
+        }
+        self.runtime_demand_inputs.insert(key, inputs);
+        true
+    }
+
+    /// Joins a waiting run's answer into the one standing; whether it changed.
+    /// A run still waiting on a callee derives its answer without that
+    /// callee's, so it can add to what the standing answer says but never
+    /// take anything back: only a concluded answer replaces another.
+    pub(crate) fn extend_runtime_demand_inputs(&mut self, key: ExecutableKey, inputs: Vec<RuntimeDemand>) -> bool {
+        let joined = match self.runtime_demand_inputs(&key) {
+            Some(standing) => {
+                assert_eq!(
+                    standing.len(),
+                    inputs.len(),
+                    "{key:?} answers for one fixed set of inputs"
+                );
+                standing
+                    .iter()
+                    .zip(&inputs)
+                    .map(|(standing, next)| standing.join(next))
+                    .collect()
+            }
+            None => inputs,
+        };
+        self.conclude_runtime_demand_inputs(key, joined)
     }
 
     pub(crate) fn run_macro_on_source_with(

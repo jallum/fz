@@ -399,7 +399,7 @@ defines those ids before the job's payload-free `span_stop`.
 
 `telemetry::causal` (`causal.rs`, `pub`, re-exported as `fz::causal`) replays a
 public log into a `CausalReport`: per canonical formula identity, evaluations
-classified `Initial`/`Content`/`Readiness`/`Uncaused` plus changed outputs,
+classified `Initial`/`Content`/`Readiness`/`Concluded`/`Uncaused` plus changed outputs,
 wakes and blocked completions; per canonical `ProductKey`, settlements,
 generations, the changed split, cache hits and displacements; the summed
 session tallies; per FACT KIND a `FactLifecycle` (distinct facts, first
@@ -411,7 +411,13 @@ blocked-set from its previous completion)` for which a movement appears in
 `[F's previous conclusion, t)`. Both boundaries are load-bearing and both are
 measured — `reads` alone false-flags wait-satisfied jobs as uncaused, and the
 window must INCLUDE the previous conclusion because a formula that writes a fact
-it also reads wakes itself. Raw ids are the within-run join key; the canon
+it also reads wakes itself. A fact concluding moves neither its revision nor
+its settled bit, so an evaluation whose inputs did not move but which was woken
+in that window by a wake whose cause use is `concluded` is `Concluded`: the
+answer it waited for became usable. A completion that applies several
+derivations can list one fact more than once in `changed`; the replay takes the
+first record's before-state and the last record's after-state. Raw ids are the
+within-run join key; the canon
 tables are applied at report time, which is what makes `canonical_multiset()`
 comparable across processes. Never infer identity or causality from counts: both
 are on the stream exactly.

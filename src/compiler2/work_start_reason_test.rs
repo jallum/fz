@@ -181,7 +181,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
                         }
                         super::FactUse::Settled(super::DependencyKey::Fact(FactKey::ExecutableFacts(_))) => 1,
                         super::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInput(_))) => 2,
-                        super::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInputs(_))) => 3,
+                        super::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInputs(_)))
+                        | super::FactUse::Concluded(super::DependencyKey::Fact(FactKey::RuntimeDemandInputs(_))) => 3,
                         super::FactUse::Current(super::DependencyKey::Fact(FactKey::ExecutableFacts(_))) => 4,
                         cause => panic!("unexpected RuntimeDemand wake prerequisite: {cause:?}"),
                     };
@@ -259,7 +260,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // run 3 times -- an ignition run that discovered its own gate, one
         // more rediscovering the second, then the real run -- and now runs
         // once, removing its two blocked-only applied steps.
-        (3168, 9, 19, 232),
+        // fz-afu.3: 3168 -> 2794. A run missing a callee's answer waits for it
+        // instead of concluding on `ignore`, so no caller re-runs to revise
+        // what it concluded.
+        (2794, 9, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -317,7 +321,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // missing, then wake once the fact lands (`Job::missing_gates`) --
         // the settled-executable-facts slot drops to zero since that wake
         // was entirely the discovery bounce.
-        (937, 705, [58, 0, 165, 482, 0]),
+        // fz-afu.3: (937, 705) -> (563, 331), every cause slot falling. A run
+        // missing a callee's answer waits for it instead of concluding on a
+        // guess, so the wakes that re-ran callers to revise their guesses
+        // are gone. A wait for a callee's concluded answer is counted in the
+        // whole-input-vector slot, since it names that vector.
+        (563, 331, [24, 0, 79, 228, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(

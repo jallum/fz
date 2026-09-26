@@ -13195,7 +13195,8 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
             let actual_peers = reads
                 .iter()
                 .filter_map(|read| match read {
-                    FactUse::Current(FactKey::RuntimeDemandInputs(peer)) => Some(peer.clone()),
+                    FactUse::Current(FactKey::RuntimeDemandInputs(peer))
+                    | FactUse::Concluded(FactKey::RuntimeDemandInputs(peer)) => Some(peer.clone()),
                     _ => None,
                 })
                 .collect::<HashSet<_>>();
@@ -13207,9 +13208,11 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
             }) {
                 construction_owners.insert(world.function_ref(executable.activation.function).display_name());
             }
+            // A call to itself is answered within the run, so it is no subscription.
+            expected_peers.remove(executable);
             assert_eq!(
                 actual_peers, expected_peers,
-                "each formula must subscribe to exactly its direct and callable-flow targets",
+                "each formula must subscribe to exactly its direct and callable-flow targets other than itself",
             );
         }
         assert!(
@@ -13299,7 +13302,8 @@ fn runtime_demand_discovers_nested_local_callable_dependencies_to_closure() {
         .job_reads(&Job::DeriveRuntimeDemand(main))
         .into_iter()
         .filter_map(|read| match read {
-            FactUse::Current(FactKey::RuntimeDemandInputs(key)) => Some(key.activation.function),
+            FactUse::Current(FactKey::RuntimeDemandInputs(key))
+            | FactUse::Concluded(FactKey::RuntimeDemandInputs(key)) => Some(key.activation.function),
             _ => None,
         })
         .collect::<HashSet<_>>();

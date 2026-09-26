@@ -33,26 +33,27 @@ struct TargetFixture {
 // inlined coercion, complete capture retention makes the predicate fixture's
 // late edges exact, and tuple-field demands join as prefixes so a field one
 // consumer reads stays distinct from a field another ignores instead of
-// coarsening the pair to `whole`.
+// coarsening the pair to `whole`. A run missing a callee's answer waits for
+// it rather than concluding on a guess that a later run has to revise.
 const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
-        runtime_demand_walks: 1114,
+        runtime_demand_walks: 620,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/enum_predicate_search.fz",
         golden: "fixtures2/behavior/enum_predicate_search.fz",
-        runtime_demand_walks: 589,
+        runtime_demand_walks: 474,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
         golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 234,
+        runtime_demand_walks: 145,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -1222,12 +1223,15 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
             })
             .sum::<u64>();
         assert_eq!(
-            // The sum of the three fixtures' own `runtime_demand_walks`
-            // (1114 + 589 + 234), read back out of the retained bundles. Both
-            // processes of a bundle must reach it, so a walk that depends on
-            // hash seeding or process order shows up here.
+            // The sum of the three fixtures' own `runtime_demand_walks`, read
+            // back out of the retained bundles. Both processes of a bundle
+            // must reach it, so a walk that depends on hash seeding or process
+            // order shows up here.
             aggregate_walks,
-            1937,
+            TARGET_FIXTURES
+                .iter()
+                .map(|target| target.runtime_demand_walks)
+                .sum::<u64>(),
             "the same retained observations own the aggregate work pin"
         );
         assert!(
@@ -2152,16 +2156,25 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // its own gate chain hop by hop, removing its two blocked-only
             // runs (the same two `transport_contract_test.rs`'s
             // `EXPECTED_00181_NO_DUMP_JOB_STARTS` drops for this fixture).
-            evaluations: 304,
-            runtime_demand_evaluations: 39,
+            // fz-afu.3: 304 -> 296, all of it RuntimeDemand (37 -> 29 runs,
+            // 39 -> 31 body walks). A run missing a callee's answer waits
+            // for it instead of concluding on a guess, so the eight content-
+            // caused re-runs that revised those guesses are gone, taking
+            // 23 of their wakes, one blocked run, and five runs that changed
+            // nothing with them. One AnalyzeActivation run that reproduces
+            // its answer now also concludes a fact it publishes, a change
+            // `Concluded` readers hear, so zero-change falls 53 -> 47 in all.
+            evaluations: 296,
+            runtime_demand_evaluations: 31,
             initial: 205,
-            content_caused: 99,
+            content_caused: 91,
             readiness_caused: 0,
+            concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 251,
-            unchanged_outputs: 53,
-            wakes: 113,
-            blocked_completions: 75,
+            changed_outputs: 249,
+            unchanged_outputs: 47,
+            wakes: 90,
+            blocked_completions: 74,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
