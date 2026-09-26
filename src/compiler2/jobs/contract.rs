@@ -8,7 +8,7 @@ use crate::ast::Attribute;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::extern_contract::{ExternContractError, extern_semantic_contract};
+use crate::extern_contract::{ExternContractError, extern_semantic_contract, variadic_tail_domain};
 
 use super::super::contract::FunctionContract;
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
@@ -111,7 +111,12 @@ pub(super) fn derive_function_contract(
             ),
         }
     }
-    let contract = FunctionContract::from_resolved(world.types_mut(), contract);
+    let contract = if surface.variadic {
+        let tail = variadic_tail_domain(world.types_mut());
+        FunctionContract::from_resolved_variadic(world.types_mut(), contract, tail)
+    } else {
+        FunctionContract::from_resolved(world.types_mut(), contract)
+    };
     if check_head && contract_has_reachable_fail(world, function, &contract) {
         let diagnostic = super::super::source_diagnostics::function_head_warning(&surface)
             .expect("a source function with clauses has a final clause");

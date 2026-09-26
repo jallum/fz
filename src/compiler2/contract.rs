@@ -63,6 +63,9 @@ pub struct ContractArrow {
     pub arrow: Ty,
     pub bounds: HashMap<TypeVarId, Ty>,
     pub protocol_domain_obligations: BTreeSet<ProtocolDomainObligation>,
+    /// A variadic extern's tail: the type every argument past the arrow's
+    /// declared parameters must belong to. `None` for an ordinary arrow.
+    pub variadic_tail: Option<Ty>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,7 +100,26 @@ impl FunctionContract {
         Self::from_classified_arrows(types, arrows)
     }
 
+    /// A variadic extern's contract: every clause additionally accepts any
+    /// number of arguments past its declared parameters, each drawn from
+    /// `tail` (`extern_contract::variadic_tail_domain`).
+    pub(crate) fn from_resolved_variadic(types: &mut Types, arrows: Vec<ResolvedSpecDecl<Ty>>, tail: Ty) -> Self {
+        let arrows = arrows
+            .into_iter()
+            .map(|decl| ResolvedContractArrow::classify(types, decl))
+            .collect();
+        Self::from_classified_arrows_with_tail(types, arrows, Some(tail))
+    }
+
     pub(crate) fn from_classified_arrows(types: &mut Types, arrows: Vec<ResolvedContractArrow>) -> Self {
+        Self::from_classified_arrows_with_tail(types, arrows, None)
+    }
+
+    fn from_classified_arrows_with_tail(
+        types: &mut Types,
+        arrows: Vec<ResolvedContractArrow>,
+        variadic_tail: Option<Ty>,
+    ) -> Self {
         Self {
             arrows: arrows
                 .into_iter()
@@ -108,6 +130,7 @@ impl FunctionContract {
                     arrow: types.arrow(&arrow.decl.params, arrow.decl.result),
                     bounds: arrow.decl.constraints,
                     protocol_domain_obligations: arrow.protocol_domain_obligations,
+                    variadic_tail,
                 })
                 .collect(),
         }
@@ -126,7 +149,7 @@ impl FunctionContract {
         for clause in &self.arrows {
             let clause_enforceable = clause.protocol_domain_obligations.is_empty();
             enforceable |= clause_enforceable;
-            let params = types.arrow_params(&clause.arrow);
+            let params = clause.matched_params(types, arg_tys.len());
             let clause_result = types
                 .arrow_result(&clause.arrow)
                 .expect("a contract clause is an arrow with a result slot");
@@ -250,6 +273,23 @@ impl FunctionContract {
 }
 
 impl ContractArrow {
+    /// The clause's parameter list, widened to a variadic row: a tail domain
+    /// repeats past the declared parameters until the lists are the same
+    /// length. A row no longer than the parameters is untouched, so
+    /// `match_arrow`'s own arity check still refuses one that is too short.
+    fn matched_params(&self, types: &Types, row_len: usize) -> Vec<Ty> {
+        let params = types.arrow_params(&self.arrow);
+        let Some(tail) = self.variadic_tail else {
+            return params;
+        };
+        if row_len <= params.len() {
+            return params;
+        }
+        let mut widened = params;
+        widened.resize(row_len, tail);
+        widened
+    }
+
     fn input_domain_row(&self, types: &mut Types) -> Vec<Ty> {
         types
             .arrow_params(&self.arrow)

@@ -7,7 +7,7 @@ use super::contract::{ContractArrow, ResolvedContractArrow};
 use super::protocol::ProtocolDomainObligation;
 use super::{
     CallableValueKind, ClosureTarget, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, FunctionContract,
-    MapKey, RootSubmission, TypeVarId, Types,
+    MapKey, ModuleId, RootSubmission, TypeVarId, Types,
 };
 
 #[test]
@@ -326,6 +326,7 @@ fn addressed_function_contract_keeps_reduce_halt_payload_free_until_callable_ret
             arrow,
             bounds: HashMap::new(),
             protocol_domain_obligations: BTreeSet::new(),
+            variadic_tail: None,
         }],
     };
 
@@ -1052,5 +1053,153 @@ fn kdt192_c4_none_argument_ground_contract() {
         ),
         "satisfied=true enforceable_satisfied=true",
         "C4 none argument, ground contract"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// fz-xxd.1: a variadic extern's contract carries its tail. These drive a real
+// extern declaration through the ordinary front end (indexing, scoping,
+// contract derivation) exactly as a fixture would, then apply the published
+// contract directly to a hand-built row, the way `FunctionContract::apply`'s
+// caller does.
+// ---------------------------------------------------------------------------
+
+/// Drives `source` to a settled program and hands back the named function's
+/// published contract, the way a real call site would find it.
+fn drive_extern_contract(
+    source: &str,
+    extern_name: &str,
+    fixed_arity: usize,
+) -> (Compiler2<ConfiguredTelemetry>, FunctionContract) {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some(format!("{extern_name}.fz")),
+        text: source.to_string(),
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Resolved),
+        "a variadic extern and its caller should resolve like any other program"
+    );
+    let function = compiler
+        .world_mut()
+        .reference_function(ModuleId::GLOBAL, extern_name, fixed_arity);
+    let contract = compiler
+        .world()
+        .function_contract(function)
+        .unwrap_or_else(|| panic!("{extern_name} should publish a function contract"))
+        .clone();
+    (compiler, contract)
+}
+
+#[test]
+fn variadic_open_contract_accepts_a_row_widened_from_its_tail_domain() {
+    let (mut compiler, contract) = drive_extern_contract(
+        "extern \"C\" defp libc::open(path :: c_string, flags :: c_int, ...) :: c_int\n\
+         def main() do\n  libc::open(\"/x\", 0, 0o644 :: integer)\nend\n",
+        "libc::open",
+        2,
+    );
+    let types = compiler.world_mut().types_mut();
+    let binary = types.str_t();
+    let int = types.int();
+
+    let applied = contract.apply(types, &[binary, int, int]);
+    assert!(
+        applied.enforceable_satisfied,
+        "open(path, flags, mode) is exactly the declared prefix plus one tail argument"
+    );
+    let result = applied.result.expect("a fully known row should publish a result");
+    assert!(
+        types.is_equivalent(&result, &int),
+        "open's declared return is integer: {}",
+        types.display(&result)
+    );
+}
+
+#[test]
+fn variadic_open_contract_rejects_a_row_shorter_than_its_fixed_prefix() {
+    let (mut compiler, contract) = drive_extern_contract(
+        "extern \"C\" defp libc::open(path :: c_string, flags :: c_int, ...) :: c_int\n\
+         def main() do\n  libc::open(\"/x\", 0, 0o644 :: integer)\nend\n",
+        "libc::open",
+        2,
+    );
+    let types = compiler.world_mut().types_mut();
+    let binary = types.str_t();
+
+    let applied = contract.apply(types, &[binary]);
+    assert!(
+        !applied.enforceable_satisfied,
+        "a row shorter than open's declared (path, flags) prefix is still Invalid"
+    );
+    assert!(applied.result.is_none());
+}
+
+#[test]
+fn variadic_printf_contract_accepts_any_number_of_integer_tail_arguments() {
+    let (mut compiler, contract) = drive_extern_contract(
+        "extern \"C\" defp libc::printf(fmt :: c_string, ...) :: c_int\n\
+         def main() do\n  libc::printf(\"%lld %lld %lld\\n\", 11, 22, 33)\nend\n",
+        "libc::printf",
+        1,
+    );
+    let types = compiler.world_mut().types_mut();
+    let binary = types.str_t();
+    let int = types.int();
+
+    let three_tail_args = contract.apply(types, &[binary, int, int, int]);
+    assert!(
+        three_tail_args.enforceable_satisfied,
+        "printf(fmt, 11, 22, 33) widens the tail to three integers"
+    );
+    let one_tail_arg = contract.apply(types, &[binary, int]);
+    assert!(
+        one_tail_arg.enforceable_satisfied,
+        "printf(fmt, 9) widens the tail to one integer"
+    );
+}
+
+#[test]
+fn variadic_printf_contract_rejects_a_float_tail_argument() {
+    let (mut compiler, contract) = drive_extern_contract(
+        "extern \"C\" defp libc::printf(fmt :: c_string, ...) :: c_int\n\
+         def main() do\n  libc::printf(\"%d\", 7)\nend\n",
+        "libc::printf",
+        1,
+    );
+    let types = compiler.world_mut().types_mut();
+    let binary = types.str_t();
+    let float = types.float();
+
+    let applied = contract.apply(types, &[binary, float]);
+    assert!(
+        !applied.enforceable_satisfied,
+        "a float tail argument is outside the declaration's tail domain: printf(fmt, 1.5) has no answer"
+    );
+    assert!(applied.result.is_none());
+}
+
+#[test]
+fn variadic_printf_contract_accepts_a_binary_tail_argument() {
+    let (mut compiler, contract) = drive_extern_contract(
+        "extern \"C\" defp libc::printf(fmt :: c_string, ...) :: c_int\n\
+         def main() do\n  libc::printf(\"%d\", 7)\nend\n",
+        "libc::printf",
+        1,
+    );
+    let types = compiler.world_mut().types_mut();
+    let binary = types.str_t();
+
+    let applied = contract.apply(types, &[binary, binary]);
+    assert!(
+        applied.enforceable_satisfied,
+        "an ascribed binary tail argument reaches the wire, so the contract must accept it: printf(fmt, s :: cstring)"
     );
 }
