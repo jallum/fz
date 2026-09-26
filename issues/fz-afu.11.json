@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T17:18:38Z",
+  "description": "A protocol callback's InputDemand is the join over the implementations DEFINED SO FAR\n(collect_protocol_callback_node reads ProtocolDispatch Current). An implementation module\nis defined only when some receiver needs it (resolve_protocol_call, jobs/semantic.rs\n~1311-1333), so the callback's answer rises as implementations land\n(ProtocolDispatch #1 -\u003e #2), and every forwarder's answer and every activation keyed on\nit moves after publication.\n\nMeasured on 00420: 5 InputDemand answers move after publication on fz-afu.3; 13 with\nfz-afu.10's composition (Enumerable.count/1, reduce/3, reduce_while/3 and their\nforwarders), costing AnalyzeActivation 888 -\u003e 898 (authorized raise, 2026-09-26).\n\nRefuted cure (probed): a callback waits for ModuleDefined of every provider in\nProtocolImplProviders. It removes every empty/flip-only AnalyzeActivation run\n(00420 888 -\u003e 877) but defines unused implementations: take 775 -\u003e 998 jobs,\n00181 296 -\u003e 504, predicate_search 1796 -\u003e 1913.\n\nThe honest answer is \"the implementations this caller's receivers can reach\", which\nstatic demand cannot know without semantic analysis, which needs the demand. Needs a\npaper-first design before any build. Close by restoring the 00420 work_start pin to at\nmost 2794.",
+  "id": "fz-afu.11",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 2,
+  "status": "open",
+  "title": "A protocol callback's demand rises as implementations land",
+  "type": "bug",
+  "updated_at": "2026-09-26T17:18:38Z"
+}
