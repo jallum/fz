@@ -190,6 +190,12 @@ pub struct World {
     activation_frontier: HashSet<ActivationKey>,
     #[cfg(test)]
     activation_frontier_starts: Vec<ActivationKey>,
+    /// Roots `submit_root` has minted whose `SeedRoot` job has not yet run:
+    /// the standing demand `drive::demand_root_frontier_seeds` expands, the
+    /// same shape as `activation_frontier` above for a published activation
+    /// without an analysis. `submit_root` is the sole insertion site; the
+    /// sweep itself retires a key once `SeedRoot` has run.
+    root_frontier: HashSet<RootId>,
     /// Readiness steps the drain arbiter produced since the last flush
     /// (`drive::settle_quiescent`). `World` owns the mutation; the execution
     /// context observes it — the same split `warning_diagnostics` uses, and
@@ -312,6 +318,7 @@ impl World {
             activation_frontier: HashSet::new(),
             #[cfg(test)]
             activation_frontier_starts: Vec::new(),
+            root_frontier: HashSet::new(),
             quiescence_steps: Vec::new(),
             work_graph: WorkGraph::new(),
             #[cfg(test)]
@@ -770,7 +777,7 @@ impl World {
     /// sources maintain exact nonempty indexes, so the common drained case is
     /// O(1) and does not clone or order either inventory.
     pub(crate) fn has_drain_demand(&self) -> bool {
-        !self.activation_frontier.is_empty() || self.work_graph.has_unresolved()
+        !self.activation_frontier.is_empty() || !self.root_frontier.is_empty() || self.work_graph.has_unresolved()
     }
 
     /// Drops a key `demand_activation_frontier_analyses` has determined no
@@ -778,6 +785,24 @@ impl World {
     /// settled).
     pub(crate) fn retire_activation_frontier(&mut self, key: &ActivationKey) {
         self.activation_frontier.remove(key);
+    }
+
+    /// The SOLE insertion point into `root_frontier`: every `submit_root`
+    /// call names its own new root id, which can never have run before this
+    /// moment.
+    fn note_root_frontier(&mut self, root: RootId) {
+        self.root_frontier.insert(root);
+    }
+
+    /// The roots `drive::demand_root_frontier_seeds` still needs to check.
+    pub(crate) fn root_frontier_keys(&self) -> Vec<RootId> {
+        self.root_frontier.iter().copied().collect()
+    }
+
+    /// Drops a root `demand_root_frontier_seeds` has determined no longer
+    /// needs first-run ignition: its `SeedRoot` job has run.
+    pub(crate) fn retire_root_frontier(&mut self, root: &RootId) {
+        self.root_frontier.remove(root);
     }
 
     /// The manual, unattributed demand entry point: nothing here names a
@@ -2955,8 +2980,17 @@ impl World {
             need,
             kind: RootKind::Runtime,
         });
-        self.work_graph
-            .enqueue(Job::SeedRoot(root_id), WorkStartReason::Ignition);
+        self.note_root_frontier(root_id);
+        // `SeedRoot` takes the same gate-checked demand path as every other
+        // job: a submitted root's very first spark is a demand for
+        // `RootEntry`, not a direct enqueue, so a root submitted before its
+        // function is even indexed redirects to the job that actually has
+        // work to do (`Job::missing_gates`) instead of running once just to
+        // discover that. `demand_root_frontier_seeds` (`drive.rs`) is the
+        // standing demand that keeps demanding this root across later
+        // drains, the same way `demand_activation_frontier_analyses` does
+        // for a published activation without an analysis.
+        self.demand_fact_producer(&FactKey::RootEntry(root_id), WorkStartReason::Ignition);
         root_id
     }
 

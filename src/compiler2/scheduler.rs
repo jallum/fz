@@ -40,6 +40,10 @@ impl<F> ExternalDependencyStates<F> for NoExternalDependencyStates {
 ///   subscription (read or wait) just changed. This is
 ///   the core pull mechanism: readers wake because their ground moved, never
 ///   because a producer pushed them by name.
+/// - `RootFrontier`: `drive::demand_root_frontier_seeds` expanding a
+///   submitted root's standing seed demand through the fact->producer map,
+///   on a later drain after `submit_root`'s own `Ignition` demand redirected
+///   to a gate that was still unmet.
 /// - `ActivationFrontier`: `drive::demand_activation_frontier_analyses`
 ///   expanding a published activation's standing analysis demand through the
 ///   fact->producer map. Root entries and caller-discovered callees use this
@@ -60,6 +64,7 @@ impl<F> ExternalDependencyStates<F> for NoExternalDependencyStates {
 pub enum WorkStartReason {
     Ignition,
     ChangedRevisionWake,
+    RootFrontier,
     ActivationFrontier,
     BlockedWaiterExpansion,
     #[default]
@@ -76,6 +81,7 @@ pub enum WorkStartReason {
 pub struct WorkStartTally {
     pub ignition: u64,
     pub changed_revision_wake: u64,
+    pub root_frontier: u64,
     pub activation_frontier: u64,
     pub blocked_waiter_expansion: u64,
     pub unclassified: u64,
@@ -101,6 +107,7 @@ impl WorkStartTally {
         Self {
             ignition: delta(self.ignition, earlier.ignition),
             changed_revision_wake: delta(self.changed_revision_wake, earlier.changed_revision_wake),
+            root_frontier: delta(self.root_frontier, earlier.root_frontier),
             activation_frontier: delta(self.activation_frontier, earlier.activation_frontier),
             blocked_waiter_expansion: delta(self.blocked_waiter_expansion, earlier.blocked_waiter_expansion),
             unclassified: delta(self.unclassified, earlier.unclassified),
@@ -112,6 +119,7 @@ impl WorkStartTally {
     pub(crate) fn add(&mut self, other: Self) {
         self.ignition += other.ignition;
         self.changed_revision_wake += other.changed_revision_wake;
+        self.root_frontier += other.root_frontier;
         self.activation_frontier += other.activation_frontier;
         self.blocked_waiter_expansion += other.blocked_waiter_expansion;
         self.unclassified += other.unclassified;
@@ -409,6 +417,7 @@ where
         WorkStartTally {
             ignition: count(WorkStartReason::Ignition),
             changed_revision_wake: count(WorkStartReason::ChangedRevisionWake),
+            root_frontier: count(WorkStartReason::RootFrontier),
             activation_frontier: count(WorkStartReason::ActivationFrontier),
             blocked_waiter_expansion: count(WorkStartReason::BlockedWaiterExpansion),
             unclassified: count(WorkStartReason::Unclassified),

@@ -68,6 +68,28 @@ pub(super) fn index_code(
     })
 }
 
+/// The facts `scope_code` cannot conclude without: its own parse, then each
+/// prelude it bases its namespace on, in the order it consults them. A
+/// missing prelude is named ALONE, one at a time — the same one-rung-at-a-time
+/// shape `demand_function_scope` uses, so the scheduler re-checks the next
+/// prelude the moment the current one scopes rather than bundling every
+/// remaining prelude into one AND-wait.
+pub(super) fn scope_code_gates(world: &World, source_owner: SourceOwner) -> Vec<FactKey> {
+    if world.code_source(source_owner).is_none() {
+        return vec![FactKey::CodeIndexed(source_owner)];
+    }
+    if world.is_runtime_prelude(source_owner) {
+        return Vec::new();
+    }
+    for prelude in world.preludes_to_await(source_owner) {
+        let prelude_fact = FactKey::CodeScoped(prelude);
+        if !world.has_fact(&prelude_fact) {
+            return vec![prelude_fact];
+        }
+    }
+    Vec::new()
+}
+
 /// Builds the namespace for top-level code after parsing has happened.
 ///
 /// If the code has not been indexed yet, this job waits on `CodeIndexed` and
@@ -78,23 +100,23 @@ pub(super) fn scope_code(
     products: Option<&super::super::pull::ProductSessions>,
     source_owner: SourceOwner,
 ) -> Result<JobEffects, FatalError> {
-    let Some(source) = world.code_source(source_owner) else {
-        return Ok(JobEffects::wait_on_current(FactKey::CodeIndexed(source_owner)));
-    };
+    if let Some(gate) = scope_code_gates(world, source_owner).into_iter().next() {
+        return Ok(JobEffects::wait_on_current(gate));
+    }
+    let source = world
+        .code_source(source_owner)
+        .expect("scope_code_gates confirmed CodeIndexed is present");
     let mut reads = Vec::new();
     let base_namespace = if world.is_runtime_prelude(source_owner) {
         Namespace::default()
     } else {
         // Every non-runtime-prelude submission bases off `prelude_head`, which
         // the runtime prelude and any registered extra prelude (e.g. the `fz2
-        // test` macro) advance as they scope. Wait on each so their bindings
-        // are layered into `prelude_head` before this code reads it.
+        // test` macro) advance as they scope. Each is already confirmed
+        // present by `scope_code_gates` above; read it here to publish the
+        // subscription.
         for prelude in world.preludes_to_await(source_owner) {
-            let prelude_fact = FactKey::CodeScoped(prelude);
-            if !world.has_fact(&prelude_fact) {
-                return Ok(JobEffects::wait_on_current(prelude_fact));
-            }
-            reads.push(prelude_fact);
+            reads.push(FactKey::CodeScoped(prelude));
         }
         world.prelude_head()
     };
@@ -270,19 +292,32 @@ pub(super) fn define_module_interface(
     })
 }
 
+/// The facts `define_function` cannot conclude without: the macro-expanded
+/// source, then the raw source it expanded from.
+pub(super) fn define_function_gates(world: &World, function_id: super::super::FunctionId) -> Vec<FactKey> {
+    if world.expanded_function_source(function_id).is_none() {
+        return vec![FactKey::ExpandedFunctionSource(function_id)];
+    }
+    if world.function_source(function_id).is_none() {
+        return vec![FactKey::FunctionSource(function_id)];
+    }
+    Vec::new()
+}
+
 pub(super) fn define_function(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     function_id: super::super::FunctionId,
 ) -> Result<JobEffects, FatalError> {
-    let Some(expanded_source) = world.expanded_function_source(function_id) else {
-        return Ok(JobEffects::wait_on_current(FactKey::ExpandedFunctionSource(
-            function_id,
-        )));
-    };
-    let Some(raw_source) = world.function_source(function_id) else {
-        return Ok(JobEffects::wait_on_current(FactKey::FunctionSource(function_id)));
-    };
+    if let Some(gate) = define_function_gates(world, function_id).into_iter().next() {
+        return Ok(JobEffects::wait_on_current(gate));
+    }
+    let expanded_source = world
+        .expanded_function_source(function_id)
+        .expect("define_function_gates confirmed ExpandedFunctionSource is present");
+    let raw_source = world
+        .function_source(function_id)
+        .expect("define_function_gates confirmed FunctionSource is present");
 
     let source_map = world.source_map();
     let surface =
@@ -328,6 +363,38 @@ pub(super) fn define_function(
     })
 }
 
+/// The one fact `expand_function_source` cannot conclude without: its own
+/// (unexpanded) source. Checked first, since `demand_function_scope`
+/// (consulted only when it is genuinely still missing) names the scope facts
+/// that would PRODUCE it, not facts proven still missing -- its own
+/// producer's conclusion co-publishes several functions' sources at once, and
+/// this one may not be the first such function this gate is asked about, so
+/// the fact it names can already be settled.
+///
+/// A settled fact it names is filtered out rather than trusted as a gate: a
+/// module that is already fully, finally defined without this function is
+/// the terminal dangling case (an unresolvable `Math.subtract` on a settled
+/// `Math`) -- `ModuleDefined(Math)` will never move again, so redirecting
+/// demand to its producer would be a permanent no-op. Once every fact
+/// `demand_function_scope` names is already settled, the gate reports ready
+/// so the job runs, finds its source still missing, and registers that dead
+/// wait itself -- the standing wait `unresolved_function_issue` later reads
+/// to diagnose the missing export.
+/// Narrows `demand_function_scope`'s named facts down to the ones genuinely
+/// still missing. A settled name is not a gate -- it will never move again,
+/// so treating it as one would ask the scheduler to wait on nothing.
+fn still_missing_scope(world: &World, facts: Vec<FactKey>) -> Vec<FactKey> {
+    facts.into_iter().filter(|fact| !world.has_fact(fact)).collect()
+}
+
+pub(super) fn expand_function_source_gates(world: &mut World, function_id: super::super::FunctionId) -> Vec<FactKey> {
+    if world.function_source(function_id).is_some() {
+        return Vec::new();
+    }
+    let scopes = world.demand_function_scope(function_id).unwrap_or_default();
+    still_missing_scope(world, scopes)
+}
+
 pub(super) fn expand_function_source(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -344,14 +411,18 @@ pub(super) fn expand_function_source(
         // `World::demand_fact_producer`, and each is wake-coherent: satisfying
         // it re-runs this job at the exact step the next scope fact appears,
         // and that scope publishes `FunctionSource` in the same conclusion.
-        let mut waits: Vec<FactKey> =
-            super::super::drive::ExecutionContext::new(world, tel).demand_function_scope(function_id)?;
+        let scopes = super::super::drive::ExecutionContext::new(world, tel).demand_function_scope(function_id)?;
+        let mut waits: Vec<FactKey> = still_missing_scope(world, scopes);
         if waits.is_empty() {
-            // The terminal case: no submitted code names this function's home,
-            // so there is no scope fact to name and the wait falls back to the
-            // source itself. Naming it ALONE matters -- the scheduler re-runs a
-            // waiter only when ALL its waits are satisfied, so bundling it with
-            // a `CodeIndexed`/`CodeScoped` wait would AND-block the wake.
+            // The terminal case, reached two ways: no submitted code names
+            // this function's home at all, or every home it names is already
+            // settled without ever producing this source (a call naming an
+            // export its settled module never defines). Either way there is
+            // no scope fact left to name, and the wait falls back to the
+            // source itself. Naming it ALONE matters -- the scheduler re-runs
+            // a waiter only when ALL its waits are satisfied, so bundling it
+            // with a `CodeIndexed`/`CodeScoped`/`ModuleDefined` wait would
+            // AND-block the wake on a fact that will never move again.
             // Whichever walk eventually publishes this source, first pass or a
             // later re-scope, moves the fact and rewakes this job through the
             // standing changed-revision path.

@@ -195,8 +195,8 @@ defmodule Distill do
     check!("matched enqueued wakes", length(enqueued), "work_starts_changed_revision_wake", tally.changed_revision_wake)
 
     check!(
-      "ignition + activation_frontier + blocked_waiter_expansion",
-      tally.ignition + tally.activation_frontier + tally.blocked_waiter_expansion,
+      "ignition + root_frontier + activation_frontier + blocked_waiter_expansion",
+      tally.ignition + tally.root_frontier + tally.activation_frontier + tally.blocked_waiter_expansion,
       "distinct subjects",
       total_subjects
     )
@@ -236,7 +236,14 @@ defmodule Distill do
   # breakdown of why a job entered the agenda. `wakes/4` cross-checks both
   # halves of this tally against what it counted directly.
   defp work_start_tally(records) do
-    zero = %{ignition: 0, changed_revision_wake: 0, activation_frontier: 0, blocked_waiter_expansion: 0, unsanctioned: 0}
+    zero = %{
+      ignition: 0,
+      changed_revision_wake: 0,
+      root_frontier: 0,
+      activation_frontier: 0,
+      blocked_waiter_expansion: 0,
+      unsanctioned: 0
+    }
 
     for %{"name" => ["fz", "compiler2", "pull", "session", "finished"], "metadata" => %{"session" => s}} <- records,
         reduce: zero do
@@ -244,6 +251,11 @@ defmodule Distill do
         %{
           ignition: acc.ignition + s["work_starts_ignition"],
           changed_revision_wake: acc.changed_revision_wake + s["work_starts_changed_revision_wake"],
+          # `work_starts_root_frontier` postdates every other key here
+          # (fz-afu.2's gated `submit_root`): a trace captured before that
+          # landed has no such wake by construction, so a missing key reads
+          # as zero rather than exploding a fixed historical fixture.
+          root_frontier: acc.root_frontier + Map.get(s, "work_starts_root_frontier", 0),
           activation_frontier: acc.activation_frontier + s["work_starts_activation_frontier"],
           blocked_waiter_expansion: acc.blocked_waiter_expansion + s["work_starts_blocked_waiter_expansion"],
           unsanctioned: acc.unsanctioned + s["unsanctioned_work_starts"]

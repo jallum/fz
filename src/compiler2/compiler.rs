@@ -443,13 +443,25 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         caller: fz_runtime::any_value::AnyValueRef,
         args: &[fz_runtime::any_value::AnyValueRef],
     ) -> Result<super::QuotedSourceRoot, String> {
-        if self.world.function_defined_revision(function).is_none() {
-            self.world.demand_fact_producer(
+        // A never-run gated job's demand redirects to its one missing gate's
+        // producer rather than starting the job itself
+        // (`World::demand_producer_if_needed`); the chain from here to
+        // `function`'s own definition can cross several such gates (source
+        // scoped, then expanded, then defined), each becoming demandable only
+        // once its predecessor's fact has actually landed. A job's own
+        // standing wait gets this re-check for free from the stall-pass sweep
+        // every drain (`demand_blocked_wait_producers`); this caller sits
+        // outside the job graph and has no standing wait of its own, so it
+        // repeats the demand itself, once per drive, until the definition
+        // lands or a round advances nothing.
+        while self.world.function_defined_revision(function).is_none() {
+            let demanded = self.world.demand_fact_producer(
                 &FactKey::FunctionDefined(function),
                 super::scheduler::WorkStartReason::BlockedWaiterExpansion,
             );
             let outcome = self.drive();
-            if !matches!(outcome, DriveOutcome::Resolved) || self.world.function_defined_revision(function).is_none() {
+            let still_undefined = self.world.function_defined_revision(function).is_none();
+            if !matches!(outcome, DriveOutcome::Resolved) || (still_undefined && demanded == 0) {
                 return Err(format!(
                     "compiler2 macro {} could not resolve its definition: {outcome:?}",
                     function.as_u32()

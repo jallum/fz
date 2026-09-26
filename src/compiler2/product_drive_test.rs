@@ -276,11 +276,22 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         cold_work,
         super::super::WorkStartTally {
             ignition: 0,
-            // Publishing a function's source from the walk that scoped it
-            // removes a wake and a blocked-waiter expansion per reached body.
-            changed_revision_wake: 18,
+            // A job gated on a fact its subject already carries never starts
+            // to discover that fact missing, then wake once the fact lands --
+            // it starts once, already carrying it (`Job::missing_gates`).
+            // fz-afu.2: 4 -> 2. `World::submit_root` no longer enqueues
+            // `SeedRoot` directly; `SeedRoot(main)`'s own gate chain no
+            // longer rediscovers itself hop by hop, so two of its
+            // changed-revision wakes never happen.
+            changed_revision_wake: 2,
+            // `SeedRoot(main)`'s gate chain now runs through
+            // `demand_root_frontier_seeds`'s standing demand instead of the
+            // blocked-waiter sweep below.
+            root_frontier: 10,
             activation_frontier: 2,
-            blocked_waiter_expansion: 22,
+            // fz-afu.2: 22 -> 12. The ten hops root_frontier now owns used to
+            // be rediscovered through this sweep instead.
+            blocked_waiter_expansion: 12,
             unclassified: 0,
             root_scans: 0,
             drain_discovery_sweeps: 0,
