@@ -12,7 +12,6 @@ mod literal;
 mod map;
 mod poly;
 mod render;
-mod visibility;
 
 pub use closure::{CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, ClosureTypes};
 pub use literal::LiteralTypes;
@@ -20,7 +19,6 @@ pub use map::MapKey;
 
 pub use poly::TypeVarId;
 pub use render::RenderTypes;
-pub use visibility::{OpaqueVisibilityError, VisibilityTypes};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BuiltinOpaque {
@@ -136,11 +134,6 @@ pub trait Types {
     /// identity / visibility) and the underlying axes.
     fn mint_brand(&mut self, inner: Self::Ty, name: &str) -> Self::Ty;
 
-    /// Nominal opaque type tagged `name`. Two opaques with different
-    /// `name`s are lattice-disjoint (this is the rule used by the
-    /// @type alias resolver for `opaque T` declarations).
-    fn opaque_of(&mut self, name: &str) -> Self::Ty;
-
     /// Project `a`'s list-axis element type. Returns `any` if `a` has
     /// no list axis or the list axis is unconstrained.
     fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty;
@@ -150,18 +143,6 @@ pub trait Types {
     fn has_list_shape(&self, a: &Self::Ty) -> bool;
 
     fn resource_payload_type(&mut self, a: &Self::Ty) -> Option<Self::Ty>;
-
-    /// Replace resource-shaped values with an opaque alias owned by `owner`
-    /// when one exact alias body exists. Implementations may recurse through
-    /// structural containers; the default is conservative.
-    fn mint_owned_resource_aliases(
-        &mut self,
-        a: Self::Ty,
-        _owner: &str,
-        _opaque_inners: &HashMap<String, Self::Ty>,
-    ) -> Self::Ty {
-        a
-    }
 
     /// Project `a`'s tuple-axis components at `arity`. Returns a vector
     /// of length `arity`; positions with no matching shape default to

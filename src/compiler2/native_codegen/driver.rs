@@ -3,7 +3,7 @@ use super::*;
 use crate::diag::Diagnostics;
 use crate::fz_ir::{BlockId, FnId, Module, Prim, Term};
 use crate::telemetry::{RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt as _};
-use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types, VisibilityTypes};
+use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilderContext;
@@ -737,7 +737,7 @@ fn declare_mid_flight_conts<M: cranelift_module::Module>(
 
 pub(crate) fn compile_with_backend_native_program<
     B: Backend,
-    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 >(
     t: &mut T,
     program: &crate::compiler2::NativeProgram,
@@ -916,7 +916,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
 
 pub(crate) fn compile_with_backend_surface<
     B: Backend,
-    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 >(
     t: &mut T,
     surface: &NativeCodegenSurface<'_>,

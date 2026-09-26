@@ -37,8 +37,8 @@ use super::drive::{ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
 use super::facts::FactUse;
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
-    FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl,
-    RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
+    FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleState, NotedTypeDecl, RootEntry, RootId,
+    RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{BodyKeying, BodyKeyingMap, CallGraphComponentMap, InputDemand, InputDemandMap, StaticCalleeMap};
@@ -50,7 +50,7 @@ use super::namespace::{CallableQualifier, Namespace, NamespaceStore, NamespaceSy
 use super::ordered_set::OrderedSet;
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
-    ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap, protocol_domain_tag,
+    ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap,
 };
 use super::quoted_expander::surface_read_diagnostic;
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
@@ -1405,25 +1405,10 @@ impl World {
         self.protocol_impl_providers.providers_for_protocol(protocol)
     }
 
-    pub(crate) fn is_protocol_domain_type(&self, name: &TypeName) -> bool {
-        name.name == "t"
-            && matches!(name.arity, 0 | 1)
-            && self
-                .modules
-                .get(name.module)
-                .source()
-                .is_some_and(|source| matches!(source.kind, ModuleSourceKind::Protocol(_)))
-    }
-
     /// The qualified tag a nominal `@type` (`refines` / `opaque`) brands under.
     /// A top-level type owns no module, so its tag is its bare name; a module
     /// type is tagged `Module.Path::name`.
     pub(crate) fn qualified_type_tag(&self, name: &TypeName) -> String {
-        if self.is_protocol_domain_type(name)
-            && let Some(protocol) = self.module_name(name.module)
-        {
-            return protocol_domain_tag(protocol.dotted());
-        }
         if name.module.is_global() {
             return name.name.clone();
         }

@@ -15,7 +15,10 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum OpaqueTag {
     Builtin(BuiltinOpaque),
-    Named(String),
+    /// `Protocol.t(...)`'s domain marker, minted by `Types::protocol_domain_of` —
+    /// the sole source-reachable producer of this axis now that a user
+    /// `refines`/`opaque` `@type` mints a brand instead.
+    ProtocolDomain(ModuleName),
     ProtocolTarget(ModuleName),
 }
 
@@ -23,7 +26,7 @@ impl std::fmt::Display for OpaqueTag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Builtin(builtin) => builtin.fmt(f),
-            Self::Named(name) => f.write_str(name),
+            Self::ProtocolDomain(module) => write!(f, "protocol::{module}.t"),
             Self::ProtocolTarget(module) => write!(f, "protocol-target({module})"),
         }
     }
@@ -100,12 +103,6 @@ impl Descr {
             funcs: Vec::new(),
             maps: Vec::new(),
         }
-    }
-
-    pub(super) fn opaque_of(name: impl Into<String>) -> Self {
-        let mut d = Self::unbranded();
-        d.opaques = FiniteSet::lit(OpaqueTag::Named(name.into()));
-        d
     }
 
     pub(super) fn builtin_opaque(builtin: BuiltinOpaque) -> Self {
@@ -251,11 +248,11 @@ impl Descr {
         (!self.atoms.cofinite).then(|| self.atoms.values.iter().cloned().collect())
     }
 
-    pub(super) fn as_opaque_singleton(&self) -> Option<&str> {
+    pub(super) fn as_opaque_singleton(&self) -> Option<String> {
         (!self.opaques.cofinite && self.opaques.values.len() == 1)
             .then(|| {
                 self.opaques.values.iter().next().and_then(|tag| match tag {
-                    OpaqueTag::Named(name) => Some(name.as_str()),
+                    OpaqueTag::ProtocolDomain(module) => Some(module.dotted()),
                     OpaqueTag::Builtin(_) | OpaqueTag::ProtocolTarget(_) => None,
                 })
             })

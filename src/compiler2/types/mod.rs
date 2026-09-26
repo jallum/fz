@@ -28,17 +28,12 @@ use crate::runtime_type_predicate::{
     CallableShape, CallableShapes, ListShape, ListShapes, RuntimeTypePredicate, TupleShapes,
 };
 
-use super::protocol::{ProtocolDomainObligation, is_protocol_domain_tag};
-use crate::type_expr::opaque_owner_module;
-use crate::types::{
-    ClosureTypes as SharedClosureTypes, RenderTypes as SharedRenderTypes, Types as SharedTypes,
-    VisibilityTypes as SharedVisibilityTypes,
-};
+use super::protocol::ProtocolDomainObligation;
+use crate::types::{ClosureTypes as SharedClosureTypes, RenderTypes as SharedRenderTypes, Types as SharedTypes};
 use bits::BasicBits;
 
 pub use crate::types::{
-    BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError,
-    Sigma, TypeVarId,
+    BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Sigma, TypeVarId,
 };
 
 pub use arrow_match::ArrowMatch;
@@ -1349,16 +1344,24 @@ impl Types {
         self.intern(d)
     }
 
-    pub fn opaque_of(&mut self, name: &str) -> Ty {
-        self.intern(Descr::opaque_of(name))
-    }
-
     pub fn builtin_opaque(&mut self, builtin: BuiltinOpaque) -> Ty {
         match builtin {
             BuiltinOpaque::Pid => self.core.pid,
             BuiltinOpaque::Ref => self.core.reference,
             BuiltinOpaque::CPointer => self.core.c_pointer,
         }
+    }
+
+    /// The pure nominal tag minted for `Protocol.t(...)`: no inner structure,
+    /// disjoint from every structural value including its own bare
+    /// representation. The domain marker is the sole source-reachable
+    /// producer of the `opaques` axis; see [`Self::mint_brand`] for what a
+    /// user `refines`/`opaque` `@type` mints instead.
+    pub(crate) fn protocol_domain_of(&mut self, protocol: ModuleName) -> Ty {
+        self.intern(Descr {
+            opaques: FiniteSet::lit(OpaqueTag::ProtocolDomain(protocol)),
+            ..Descr::unbranded()
+        })
     }
 
     pub(crate) fn nominal_protocol_target(&mut self, name: ModuleName) -> Ty {
@@ -1413,21 +1416,6 @@ impl Types {
             resource_payload_type(cx, cx.descr(a))?
         };
         Some(self.intern(d))
-    }
-
-    pub fn mint_owned_resource_aliases(&mut self, a: Ty, owner: &str, opaque_inners: &HashMap<String, Ty>) -> Ty {
-        let candidates = opaque_inners
-            .iter()
-            .filter_map(|(tag, inner)| {
-                let tag_owner = opaque_owner_module(tag)?;
-                (tag_owner == owner).then(|| (tag.clone(), self.descr(inner).clone()))
-            })
-            .collect::<Vec<_>>();
-        if candidates.is_empty() {
-            return a;
-        }
-        let d = mint_owned_resource_aliases_descr(self.ctx(), self.descr(&a), &candidates);
-        self.intern(d)
     }
 
     pub fn tuple_projections(&mut self, a: &Ty, arity: usize) -> Vec<Ty> {
@@ -2109,7 +2097,7 @@ impl Types {
     }
 
     pub fn opaque_singleton(&self, a: &Ty) -> Option<String> {
-        self.descr(a).as_opaque_singleton().map(String::from)
+        self.descr(a).as_opaque_singleton()
     }
 
     pub fn builtin_opaque_singleton(&self, a: &Ty) -> Option<BuiltinOpaque> {
@@ -2219,11 +2207,9 @@ impl Types {
         }
         let descr = self.descr(&ty);
         if let Some(tags) = descr.opaques.finite_elems() {
-            obligations.extend(tags.filter_map(|tag| {
-                let OpaqueTag::Named(tag) = tag else {
-                    return None;
-                };
-                is_protocol_domain_tag(&tag).then(|| ProtocolDomainObligation::from_marker_tag(tag))
+            obligations.extend(tags.filter_map(|tag| match tag {
+                OpaqueTag::ProtocolDomain(protocol) => Some(ProtocolDomainObligation::from_protocol(protocol)),
+                OpaqueTag::Builtin(_) | OpaqueTag::ProtocolTarget(_) => None,
             }));
         }
         for conj in &descr.tuples {
@@ -2891,26 +2877,6 @@ impl Types {
 }
 
 impl Types {
-    pub fn check_opaque_visibility(&self, a: &Ty, using_module: &str) -> Result<(), OpaqueVisibilityError> {
-        let Some(tag) = self.descr(a).as_opaque_singleton() else {
-            return Ok(());
-        };
-        let Some(owner) = opaque_owner_module(tag) else {
-            return Ok(());
-        };
-        if owner == using_module {
-            Ok(())
-        } else {
-            Err(OpaqueVisibilityError {
-                opaque: tag.to_string(),
-                owner_module: owner.to_string(),
-                using_module: using_module.to_string(),
-            })
-        }
-    }
-}
-
-impl Types {
     pub fn display(&self, a: &Ty) -> String {
         format::display(self.ctx(), self.descr(a))
     }
@@ -3007,10 +2973,6 @@ impl SharedTypes for Types {
         Types::mint_brand(self, inner, name)
     }
 
-    fn opaque_of(&mut self, name: &str) -> Self::Ty {
-        Types::opaque_of(self, name)
-    }
-
     fn builtin_opaque(&mut self, builtin: BuiltinOpaque) -> Self::Ty {
         Types::builtin_opaque(self, builtin)
     }
@@ -3025,15 +2987,6 @@ impl SharedTypes for Types {
 
     fn resource_payload_type(&mut self, a: &Self::Ty) -> Option<Self::Ty> {
         Types::resource_payload_type(self, a)
-    }
-
-    fn mint_owned_resource_aliases(
-        &mut self,
-        a: Self::Ty,
-        owner: &str,
-        opaque_inners: &HashMap<String, Self::Ty>,
-    ) -> Self::Ty {
-        Types::mint_owned_resource_aliases(self, a, owner, opaque_inners)
     }
 
     fn tuple_projections(&mut self, a: &Self::Ty, arity: usize) -> Vec<Self::Ty> {
@@ -3205,12 +3158,6 @@ impl SharedClosureTypes for Types {
 
     fn erase_closure_identity(&mut self, a: &Self::Ty) -> Self::Ty {
         Types::erase_closure_identity(self, a)
-    }
-}
-
-impl SharedVisibilityTypes for Types {
-    fn check_opaque_visibility(&self, a: &Self::Ty, using_module: &str) -> Result<(), OpaqueVisibilityError> {
-        Types::check_opaque_visibility(self, a, using_module)
     }
 }
 
@@ -3491,7 +3438,7 @@ fn runtime_type_predicate_widens_non_structs(descr: &Descr) -> bool {
             .opaques
             .values
             .iter()
-            .any(|tag| matches!(tag, OpaqueTag::Builtin(_) | OpaqueTag::Named(_)))
+            .any(|tag| matches!(tag, OpaqueTag::Builtin(_) | OpaqueTag::ProtocolDomain(_)))
         || descr.vars.cofinite
         || !descr.vars.values.is_empty()
 }
@@ -3655,7 +3602,7 @@ fn runtime_type_predicate_named_structs(descr: &Descr, structs: FiniteSet<Module
     } else {
         FiniteSet::finite(descr.opaques.values.iter().filter_map(|tag| match tag {
             OpaqueTag::ProtocolTarget(module) => Some(module.clone()),
-            OpaqueTag::Builtin(_) | OpaqueTag::Named(_) => None,
+            OpaqueTag::Builtin(_) | OpaqueTag::ProtocolDomain(_) => None,
         }))
     };
     nominal.union(&structs)
@@ -4353,15 +4300,6 @@ fn map_recursive_inputs_with(t: &mut Types, mut d: Descr, f: &mut impl FnMut(&mu
         }
     }
     d
-}
-
-fn mint_owned_resource_aliases_descr(cx: TyCtx<'_>, d: &Descr, candidates: &[(String, Descr)]) -> Descr {
-    for (tag, inner) in candidates {
-        if resource_payload_type(cx, d).is_some_and(|payload| payload.is_equiv(cx, inner)) {
-            return Descr::opaque_of(tag.clone());
-        }
-    }
-    d.clone()
 }
 
 #[cfg(test)]

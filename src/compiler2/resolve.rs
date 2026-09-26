@@ -132,9 +132,10 @@ impl World {
     /// Resolves a noted `@type` declaration to its [`TypeDef`]. Formal
     /// parameters take variable ids `0..params.len()` in declaration order, so a
     /// parametric body resolves to a template a use site instantiates by
-    /// substitution. A `refines` nominal brands the inner type under the type's
-    /// qualified tag; an `opaque` declaration validates its body but publishes a
-    /// pure nominal tag.
+    /// substitution. A `refines` or `opaque` nominal brands the inner type
+    /// under the type's qualified tag — an opaque type's values are its inner
+    /// type's values, exactly like a refinement; only a `ProtocolDomain`
+    /// marker publishes a pure nominal tag with no inner.
     pub(crate) fn resolve_type_def(&mut self, name: &TypeName, decl: &NotedTypeDecl) -> Result<TypeDef, TypeExprError> {
         let mut vars: HashMap<String, TypeVarId> = HashMap::new();
         let params: Vec<TypeVarId> = decl
@@ -150,13 +151,16 @@ impl World {
         let inner = self.resolve_ty(decl.namespace, &decl.body.inner, &mut vars)?;
         let ty = match decl.body.kind {
             NominalKind::Plain => inner,
-            NominalKind::Refines => {
+            NominalKind::Refines | NominalKind::Opaque => {
                 let tag = self.qualified_type_tag(name);
                 self.types_mut().mint_brand(inner, &tag)
             }
-            NominalKind::Opaque => {
-                let tag = self.qualified_type_tag(name);
-                self.types_mut().opaque_of(&tag)
+            NominalKind::ProtocolDomain => {
+                let protocol = self
+                    .module_name(name.module)
+                    .cloned()
+                    .expect("a protocol-domain marker is declared inside its own named protocol module");
+                self.types_mut().protocol_domain_of(protocol)
             }
         };
         Ok(TypeDef { ty, params })

@@ -115,8 +115,8 @@ pub use source::{
 pub(crate) use source::{META_SPAN_KEY, quoted_span_entries};
 pub(crate) use types::TyCanon;
 pub use types::{
-    BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError,
-    Sigma, Ty, TypeVarId, Types,
+    BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Sigma, Ty, TypeVarId,
+    Types,
 };
 pub(crate) use world::JobCompletion;
 pub use world::World;
@@ -153,8 +153,6 @@ mod namespace_test;
 mod native_inventory_test;
 #[cfg(test)]
 mod port_macros_test;
-#[cfg(test)]
-mod port_planner_test;
 #[cfg(test)]
 mod port_resolve_test;
 #[cfg(test)]

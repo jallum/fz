@@ -1,0 +1,13 @@
+#---
+# purpose: an opaque-typed parameter compiles with no diagnostic even when the value passed to it was made outside the type's declaring module, since opaque mints a brand rather than a module-visibility check
+#---
+defmodule A do
+  @type t :: opaque resource(integer)
+
+  def get(h :: t), do: h.value
+end
+
+def main() do
+  h = make_resource(5, &dbg/1)
+  assert(A.get(h) == 5)
+end

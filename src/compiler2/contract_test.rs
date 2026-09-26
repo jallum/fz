@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
+use crate::modules::identity::ModuleName;
 use crate::telemetry::ConfiguredTelemetry;
 use crate::type_expr::ResolvedSpecDecl;
 
@@ -9,6 +10,12 @@ use super::{
     CallableValueKind, ClosureTarget, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, FunctionContract,
     MapKey, RootSubmission, TypeVarId, Types,
 };
+
+/// The `Enumerable` protocol identity every domain-obligation test below
+/// resolves its marker against.
+fn enumerable_protocol() -> ModuleName {
+    ModuleName::parse_dotted("Enumerable").expect("protocol name parses")
+}
 
 #[test]
 fn function_contract_application_refines_callable_params_from_outer_bindings() {
@@ -522,7 +529,7 @@ fn function_contract_application_tracks_enforceable_arrows_separately_from_match
         vec![
             ResolvedContractArrow::with_obligations(
                 skipped,
-                BTreeSet::from([ProtocolDomainObligation::from_marker_tag("protocol::Enumerable.t")]),
+                BTreeSet::from([ProtocolDomainObligation::from_protocol(enumerable_protocol())]),
             ),
             ResolvedContractArrow::with_obligations(enforced, BTreeSet::new()),
         ],
@@ -544,7 +551,7 @@ fn function_contract_application_tracks_enforceable_arrows_separately_from_match
 #[test]
 fn function_contract_arrow_stores_direct_protocol_domain_obligations() {
     let mut types = Types::new();
-    let domain = types.opaque_of("protocol::Enumerable.t");
+    let domain = types.protocol_domain_of(enumerable_protocol());
     let int = types.int();
     let resolved = ResolvedSpecDecl {
         params: vec![domain],
@@ -555,7 +562,7 @@ fn function_contract_arrow_stores_direct_protocol_domain_obligations() {
 
     assert_eq!(
         contract.arrows[0].protocol_domain_obligations,
-        BTreeSet::from([ProtocolDomainObligation::from_marker_tag("protocol::Enumerable.t")]),
+        BTreeSet::from([ProtocolDomainObligation::from_protocol(enumerable_protocol())]),
         "the durable arrow should carry the resolved protocol marker"
     );
     let applied = contract.apply(&mut types, &[int]);
@@ -572,7 +579,7 @@ fn function_contract_arrow_stores_direct_protocol_domain_obligations() {
 #[test]
 fn function_contract_mixed_protocol_and_concrete_keeps_concrete_rejection_enforceable() {
     let mut types = Types::new();
-    let domain = types.opaque_of("protocol::Enumerable.t");
+    let domain = types.protocol_domain_of(enumerable_protocol());
     let float = types.float();
     let int = types.int();
     let protocol_arrow = ResolvedSpecDecl {
@@ -605,7 +612,7 @@ fn function_contract_arrow_stores_protocol_domain_obligations_from_when_bounds()
     let var = TypeVarId(0);
     let param = types.type_var(var);
     let int = types.int();
-    let domain = types.opaque_of("protocol::Enumerable.t");
+    let domain = types.protocol_domain_of(enumerable_protocol());
     let mut constraints = HashMap::new();
     constraints.insert(var, domain);
     let resolved = ResolvedSpecDecl {
@@ -617,7 +624,7 @@ fn function_contract_arrow_stores_protocol_domain_obligations_from_when_bounds()
 
     assert_eq!(
         contract.arrows[0].protocol_domain_obligations,
-        BTreeSet::from([ProtocolDomainObligation::from_marker_tag("protocol::Enumerable.t")]),
+        BTreeSet::from([ProtocolDomainObligation::from_protocol(enumerable_protocol())]),
         "protocol markers in bounds must be classified even when the arrow surface is only a variable"
     );
 }
@@ -757,7 +764,7 @@ fn dependent_contract_bounds_are_stable_across_fresh_type_worlds() {
 fn function_contract_ignores_protocol_markers_inside_nested_complements() {
     let mut types = Types::new();
     let any = types.any();
-    let domain = types.opaque_of("protocol::Enumerable.t");
+    let domain = types.protocol_domain_of(enumerable_protocol());
     let int = types.int();
     let tuple = types.tuple(&[domain]);
     let list = types.list(domain);
@@ -835,7 +842,7 @@ fn derive_function_contract_carries_protocol_domain_obligation_through_transitiv
     assert_eq!(contract.arrows.len(), 1);
     assert_eq!(
         contract.arrows[0].protocol_domain_obligations,
-        BTreeSet::from([ProtocolDomainObligation::from_marker_tag("protocol::Enumerable.t")]),
+        BTreeSet::from([ProtocolDomainObligation::from_protocol(enumerable_protocol())]),
         "transitive @type aliases should expand to the protocol marker before contract classification"
     );
 }
