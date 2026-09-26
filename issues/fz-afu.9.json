@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T10:06:08Z",
+  "description": "When the ready queue empties, next_ready_job (drive.rs:927-945) sweeps root_frontier and activation_frontier (drive.rs:866-918) whole: each set is cloned and sorted, and an entry that has not run is re-checked on every stall until it does. Nothing records how often that happens, so its cost cannot be measured. Peak sizes on Enum.take are small (activation_frontier 9, roots 3), but the pass count is unknown.\n\nAdd a drive.stalled telemetry event per sweep carrying the frontier sizes and how many entries started; teach tools/distill-telemetry.exs to report it; pin the count on the chain case and s1. If the count shows sweeps repeat over unrun entries, the fold of the two frontiers (proposed, not filed) gets a page.",
+  "id": "fz-afu.9",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 3,
+  "status": "open",
+  "title": "The drive counts its stall sweeps",
+  "type": "task",
+  "updated_at": "2026-09-26T10:06:08Z"
+}
