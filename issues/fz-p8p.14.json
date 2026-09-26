@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T09:48:10Z",
+  "description": "`receive ... after 0` always returns :miss in fz. The scheduler is cooperative (src/exec/runtime.rs:1-56, 281), so the spawned child never runs before the check. Elixir promises nothing for after 0 (special_forms.ex:2384-2390). With after 50, all three paths gave :ok on every one of 15 runs. Keep the claim as assert(... == :ok). Proposal: /Users/j5n/Workspace/fz-p8p.4-findings.html (approved 2026-09-26). One commit. The fixture moves to fixtures/ and its port test is deleted in the same commit.",
+  "id": "fz-p8p.14",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "Fixture 00515 receives with a positive timeout",
+  "type": "task",
+  "updated_at": "2026-09-26T09:48:10Z"
+}
