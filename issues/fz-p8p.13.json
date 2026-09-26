@@ -4,14 +4,16 @@
   "blocks": [
     "fz-p8p.4"
   ],
+  "closed_at": "2026-09-26T10:23:08Z",
+  "close_reason": "Committed on fz-p8p.4/findings",
   "created": "2026-09-26T09:48:10Z",
   "description": "00248-00251 name `_resource_test_dtor`, which exists only under cfg(test) (src/ir_interp/extern_call.rs:575-578,684-696; src/ir_codegen/backend.rs:99-104), so every standalone path fails with a symbol-not-found error. Switch them to `fz_resource_test_print_dtor` (runtime/src/resource.rs:136-147), which fixtures2/behavior/a-resource_aot_dtor.fz already proves on all three paths. Each \"destructor fired N times\" claim becomes an stdout golden: 00248 prints dtor:42; 00249 prints dtor:7 exactly once; 00250 prints two lines in LIFO order (probe the order); 00251 keeps assert(R.get_value(r) == 99) plus dtor:99. `_resource_test_dtor` stays, because drive_test.rs:16352 and 00026 still use it. Proposal: /Users/j5n/Workspace/fz-p8p.4-findings.html (approved 2026-09-26). One commit. The fixture moves to fixtures/ and its port test is deleted in the same commit.",
   "id": "fz-p8p.13",
   "labels": [],
   "parent": "fz-p8p",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Resource fixtures 00248-00251 use the production print destructor",
   "type": "task",
-  "updated_at": "2026-09-26T09:48:11Z"
+  "updated_at": "2026-09-26T10:23:08Z"
 }
