@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T09:48:10Z",
+  "description": "The fixtures write `@spec to_thing(value) :: atom`. `value` is not a type: fz fails with resolve/type-alias (resolve.rs:390-416), and Elixir rejects it as `type value/0 undefined`. Use a real argument type, as 00099/00100 do. Owner decision D2: fz does not check an impl's spec against its protocol's spec, and elixirc doesn't either. So correct .agent/docs/protocols.md:172-176, which describes that check in the present tense, and have the fixtures' purposes say plainly that the mismatch is accepted. Proposal: /Users/j5n/Workspace/fz-p8p.4-findings.html (approved 2026-09-26). One commit. The fixture moves to fixtures/ and its port test is deleted in the same commit.",
+  "id": "fz-p8p.16",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "Fixtures 00422/00423 use a real type; protocols.md states the impl-spec check does not exist",
+  "type": "task",
+  "updated_at": "2026-09-26T09:48:10Z"
+}
