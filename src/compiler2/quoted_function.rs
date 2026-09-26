@@ -443,13 +443,26 @@ fn decode_named_expr(
             Expr::Block(decode_exprs(occurrences, args, Some(span), sources)?),
             span,
         )),
-        ("if", 2) => decode_if(occurrences, args, span, sources),
-        ("case", 1 | 2) => decode_case(occurrences, args, span, sources),
-        ("cond", 1) => decode_cond(occurrences, args, span, sources),
-        ("with", _) => decode_with(occurrences, args, span, sources),
-        ("receive", 1) => decode_receive(occurrences, args, span, sources),
+        ("if", 2) if quoted_do_entry(&args[1]).is_some() => decode_if(occurrences, args, span, sources),
+        ("case", 1 | 2)
+            if args
+                .last()
+                .and_then(quoted_do_entry)
+                .is_some_and(|body| quoted_clause_list_shaped(&body, sources)) =>
+        {
+            decode_case(occurrences, args, span, sources)
+        }
+        ("cond", 1) if quoted_do_entry(&args[0]).is_some_and(|body| quoted_clause_list_shaped(&body, sources)) => {
+            decode_cond(occurrences, args, span, sources)
+        }
+        ("with", _) if args.last().is_some_and(|kw| quoted_do_entry(kw).is_some()) => {
+            decode_with(occurrences, args, span, sources)
+        }
+        ("receive", 1) if quoted_do_entry(&args[0]).is_some_and(|body| quoted_clause_list_shaped(&body, sources)) => {
+            decode_receive(occurrences, args, span, sources)
+        }
         ("fn", _) => decode_lambda(occurrences, args, span, sources),
-        ("quote", 1) => decode_quote(occurrences, args, span, sources),
+        ("quote", 1) if quoted_do_entry(&args[0]).is_some() => decode_quote(occurrences, args, span, sources),
         ("unquote", 1) => {
             let inner = decode_expr(occurrences, &args[0], Some(span), sources)?;
             Ok(Spanned::new(Expr::Unquote(Box::new(inner)), span))
@@ -616,12 +629,36 @@ fn decode_case(
     let Some((_, body)) = entries.into_iter().find(|(key, _)| key == "do") else {
         return Err(QuotedSourceError::new("quoted `case` is missing `do` clauses"));
     };
-    let clauses = body
-        .list_items()?
+    let clauses = decode_clause_list_or_empty_block(occurrences, &body, "case", sources)?;
+    Ok(Spanned::new(Expr::Case(subject.map(Box::new), clauses), span))
+}
+
+/// A clause-list `do` body, such as `case`'s, is ordinarily a list of `->`
+/// clauses. An *empty* body is the one exception: Elixir quotes `case x do
+/// end` with `{:__block__, [], []}` in that position rather than `[]`, since
+/// the same do-block grammar produces an empty block everywhere else. This
+/// reads either shape as the same empty clause list, so a case with no
+/// clauses compiles and only aborts if it is ever reached, matching Elixir.
+fn decode_clause_list_or_empty_block(
+    occurrences: &mut LambdaOccurrences,
+    body: &QuotedSourceCursor,
+    head: &str,
+    sources: &SourceMap,
+) -> Result<Vec<MatchClause>, QuotedSourceError> {
+    if let Some(node) = body.ast_node(sources)?
+        && atom_name(&node.head)? == "__block__"
+    {
+        if node.tail.list_items()?.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(QuotedSourceError::new(format!(
+            "quoted `{head}` body expects `->` clauses"
+        )));
+    }
+    body.list_items()?
         .into_iter()
         .map(|clause| decode_match_clause(occurrences, &clause, sources))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Spanned::new(Expr::Case(subject.map(Box::new), clauses), span))
+        .collect()
 }
 
 fn decode_cond(
@@ -1319,6 +1356,35 @@ fn decode_keyword_entries(cursor: &QuotedSourceCursor) -> Result<Vec<(String, Qu
         out.push((items[0].atom_name()?, items[1].clone()));
     }
     Ok(out)
+}
+
+/// The `do:` entry of a quoted keyword list, if the cursor is a keyword
+/// list at all and carries one. `decode_named_expr` asks this before
+/// handing a call named `if`/`case`/`cond`/`with`/`receive`/`quote` to its
+/// decoder: those decoders assume their trailing argument already has this
+/// shape, so a call that doesn't reach it — a bare value where a keyword
+/// list belongs, or a keyword list with no `do:` — is not that special
+/// form, whatever its name, and falls through to the ordinary call it
+/// looks like instead.
+fn quoted_do_entry(cursor: &QuotedSourceCursor) -> Option<QuotedSourceCursor> {
+    decode_keyword_entries(cursor)
+        .ok()?
+        .into_iter()
+        .find(|(key, _)| key == "do")
+        .map(|(_, value)| value)
+}
+
+/// Whether a quoted value is shaped like a `->` clause list: `case`,
+/// `cond` and `receive` all quote their `do:` body this way, either as an
+/// actual list or, for an empty `do ... end`, as `{:__block__, [], []}`
+/// (see `decode_clause_list_or_empty_block`). A `do:` value that is
+/// neither — a bare literal, say — means the call only looks like the
+/// special form; `decode_named_expr` treats it as the ordinary call it
+/// actually is rather than handing it to a decoder built to assume a
+/// clause list is already there.
+fn quoted_clause_list_shaped(cursor: &QuotedSourceCursor, sources: &SourceMap) -> bool {
+    cursor.is_list_like()
+        || matches!(cursor.ast_node(sources), Ok(Some(node)) if atom_name(&node.head).is_ok_and(|name| name == "__block__"))
 }
 
 fn decode_module_target(

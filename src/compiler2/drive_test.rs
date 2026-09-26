@@ -48,7 +48,7 @@ fn compiler2_inline_dispatch_plan_is_shared_from_lowering_to_backend() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("shared_inline_dispatch_plan.fz".to_string()),
-        text: "def main(), do: case 1 do\n  1 -> :one\n  _ -> :other\nend\n".to_string(),
+        text: "def main(), do: (case 1 do\n  1 -> :one\n  _ -> :other\nend)\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -690,7 +690,7 @@ fn compiler2_inline_forwarding_preserves_input_return_demand() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("inline_forwarding.fz".into()),
-        text: "def forward(x), do: case x do y -> y end\ndef main(), do: forward(42)\n".into(),
+        text: "def forward(x), do: (case x do y -> y end)\ndef main(), do: forward(42)\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,

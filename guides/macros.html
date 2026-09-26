@@ -98,6 +98,24 @@ string, or a small tuple &mdash; instead of a <code>quote</code> block. Both
 work; <code>quote do: 42</code> and a bare <code>42</code> mean the same
 thing.</p>
 
+<p>A macro call can take a trailing <code>do ... end</code> block the same
+way <code>if</code> or <code>case</code> can, with an <code>else</code>
+section if it needs one. The block arrives as one extra argument, a
+<code>[do: ..., else: ...]</code> keyword list, unevaluated like every other
+macro argument:</p>
+
+<pre><span class="kw">defmacro</span> pick(flag, [<span class="kw">do</span>: then_branch, <span class="kw">else</span>: else_branch]) <span class="kw">do</span>
+  <span class="kw">quote</span> <span class="kw">do</span>
+    <span class="kw">if</span> unquote(flag), <span class="kw">do</span>: unquote(then_branch), <span class="kw">else</span>: unquote(else_branch)
+  <span class="kw">end</span>
+<span class="kw">end</span>
+
+pick(ready) <span class="kw">do</span>
+  <span class="str">"go"</span>
+<span class="kw">else</span>
+  <span class="str">"wait"</span>
+<span class="kw">end</span></pre>
+
 <!-- ─────────────────────────────── 4 ─────────────────────────────── -->
 <h2 id="hygiene">4. Hygiene: a macro's variables are its own</h2>
 

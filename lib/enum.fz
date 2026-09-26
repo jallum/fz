@@ -595,7 +595,7 @@ defmodule Enum do
   def take_every(enumerable, nth) do
     take_every_finish(
       reduce_while(enumerable, {[], 0}, fn (entry, {acc, countdown}) ->
-        {:cont, if countdown == 0, do: {[entry | acc], nth - 1}, else: {acc, countdown - 1}}
+        {:cont, if(countdown == 0, do: {[entry | acc], nth - 1}, else: {acc, countdown - 1})}
       end)
     )
   end
@@ -664,7 +664,7 @@ defmodule Enum do
   def drop_every(enumerable, nth) do
     drop_every_finish(
       reduce_while(enumerable, {[], 0}, fn (entry, {acc, countdown}) ->
-        {:cont, if countdown == 0, do: {acc, nth - 1}, else: {[entry | acc], countdown - 1}}
+        {:cont, if(countdown == 0, do: {acc, nth - 1}, else: {[entry | acc], countdown - 1})}
       end)
     )
   end
@@ -729,7 +729,7 @@ defmodule Enum do
   def split_with(enumerable, fun) do
     split_pair_finish(
       reduce_while(enumerable, {[], []}, fn (entry, {left, right}) ->
-        {:cont, if fun.(entry), do: {[entry | left], right}, else: {left, [entry | right]}}
+        {:cont, if(fun.(entry), do: {[entry | left], right}, else: {left, [entry | right]})}
       end)
     )
   end
@@ -952,7 +952,7 @@ defmodule Enum do
   defp drop_positive(enumerable, amount) do
     drop_positive_finish(
       reduce_while(enumerable, {[], amount}, fn (entry, {acc, remaining}) ->
-        {:cont, if remaining > 0, do: {acc, remaining - 1}, else: {[entry | acc], 0}}
+        {:cont, if(remaining > 0, do: {acc, remaining - 1}, else: {[entry | acc], 0})}
       end)
     )
   end
@@ -970,7 +970,7 @@ defmodule Enum do
   defp split_positive(enumerable, count) do
     split_counted_finish(
       reduce_while(enumerable, {[], [], count}, fn (entry, {left, right, remaining}) ->
-        {:cont, if remaining > 0, do: {[entry | left], right, remaining - 1}, else: {left, [entry | right], 0}}
+        {:cont, if(remaining > 0, do: {[entry | left], right, remaining - 1}, else: {left, [entry | right], 0})}
       end)
     )
   end

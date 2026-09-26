@@ -120,6 +120,75 @@ macro receive operator heads such as
 `def (left :: integer) + (right :: integer), do: left + right` without a
 definition-only operand parser.
 
+## Special forms are ordinary calls
+
+`if`, `case`, `cond`, `with`, `receive`, `quote`, and `unquote` are plain
+identifiers to the lexer and the frontdoor Pratt parser. Nothing in
+`parse_prefix` or `parse_bp_tail` knows their names; each reaches
+`finish_call`, `parse_no_parens_args`, and `attach_trailing_do` the same way
+any other call does, so all three call spellings work for all of them:
+`case x do ... end`, `case x, do: ...`, and `case(x, do: ...)`. A user
+`defmacro` gets the identical treatment — a macro call may take a trailing
+`do ... end` (with `else`/`after` sections) exactly as `if` or `case` can,
+and receives it as the same `[do: ..., else: ..., after: ...]` keyword-list
+argument a built-in special form receives. Only `fn`, `do`, `end`, `else`,
+`after`, `when`, `not`, `and`, `or`, and `in` stay reserved; a program may
+name a variable or function `if`, `case`, or `receive`, matching Elixir.
+
+Shape rules — `case` needing `->` clauses, `if` needing a `do` section, and
+so on — are not parser concerns. They live in `quoted_function.rs`'s
+`decode_*` functions, which run after macro expansion and see the same
+`[do: ..., else: ...]` shape whether the call came from a built-in form, a
+user macro, or a manually built `quote`.
+
+`decode_named_expr` only hands a call to one of these decoders once its
+shape clears a minimal bar: a trailing keyword-list argument that actually
+holds a `do:` entry, and, for the clause-bodied forms (`case`, `cond`,
+`receive`), a `do:` value that itself looks like a clause list. A call
+named `if`, `case`, `cond`, `with`, `receive`, or `quote` that falls short
+of this — the wrong arity, no keyword list at all, or a keyword list
+missing `do:` — is not that special form after all, whatever its name, and
+decodes as the ordinary call it looks like, the same way `if(true)` (wrong
+arity) always has. It then fails later, at lowering, as an unresolved
+callee, matching Elixir's own "undefined function" for a same-shaped
+mismatch, rather than as a decode error blamed on the special form's
+decoder. This shape bar lives once at the dispatch site, not duplicated
+inside each decoder.
+
+## One parser for every trailing `do ... end`
+
+`attach_trailing_do` parses every trailing block the same way, through
+`parse_do_block`: a `do` section, an optional `else` section, and an
+optional `after` section, each ending at the next section keyword or `end`.
+Each section is decided independently by `parse_do_section`, using the same
+rule Elixir uses: parse the section's first statement, then look for a
+following `->`. Finding one turns the whole section into a list of
+`pattern -> body` clauses (`finish_clause_list`); anything else makes it an
+ordinary block, wrapping more than one statement in `__block__`. This one
+rule is what lets `if`, `case`, `cond`, `with`, and `receive` share a single
+do-block reader despite each wanting a different section shape — `case`'s
+`do` is always clause-shaped because its first statement is always a
+pattern followed by `->`, while `if`'s `do` is always block-shaped because
+it never is. A parenthesized grouping `(...)` gets the same clause check
+when it holds one bare clause, e.g. `case(1, do: (1 -> 1))`.
+
+## A no-parens call's own comma is not always its own
+
+`parse_no_parens_args` stops at a comma when `comma_bound` is set, so that
+`f(a, b)`'s no-parens-call argument `b` cannot swallow the comma that
+belongs to `f`'s own argument list. This flag is inherited through ordinary
+expression parsing, so an argument, list/tuple/map element, or keyword-entry
+value is comma-bound by the outer construct that contains it. Anything with
+its *own* unambiguous close token — a grouping `(...)`, a captured `&(...)`,
+an anonymous-function clause body, or a `do ... end` block — resets it with
+`with_comma_unbound` on entry: nothing inside can be mistaken for a sibling
+of whatever comma-separated list happens to contain it, so a bare `if cond,
+do: a, else: b` works as a lambda's clause body or inside a `do` block even
+when that lambda or block is itself one comma-separated argument or tuple
+element. A bare no-parens call used directly as a list, tuple, or call-argument
+*element* still needs parentheses around its own `do:`/`else:` tail, matching
+Elixir: `{:cont, if(x, do: a, else: b)}`, not `{:cont, if x, do: a, else: b}`.
+
 ## Heredocs are string literals
 
 `"""` opens a heredoc, which lexes to a single `Tok::Binary` holding its lines
