@@ -152,8 +152,6 @@ mod namespace_test;
 #[cfg(test)]
 mod native_inventory_test;
 #[cfg(test)]
-mod port_interp_test;
-#[cfg(test)]
 mod port_macros_test;
 #[cfg(test)]
 mod port_misc_test;

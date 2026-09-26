@@ -1,0 +1,16 @@
+#---
+# purpose: an opaque resource's .value accessor returns its payload, and its destructor fires once at process exit
+#---
+defmodule R do
+  @type t :: opaque resource(integer)
+
+  def get_value(h), do: h.value
+end
+
+extern "C" defp fz_resource_test_print_dtor(integer) :: nil
+def dwrap(x), do: fz_resource_test_print_dtor(x)
+
+def main() do
+  r = make_resource(99, &dwrap/1)
+  assert(R.get_value(r) == 99)
+end

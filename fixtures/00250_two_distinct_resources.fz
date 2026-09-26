@@ -1,0 +1,9 @@
+#---
+# purpose: two distinct resources each fire their own destructor exactly once, in reverse-allocation order
+#---
+extern "C" defp fz_resource_test_print_dtor(integer) :: nil
+def dwrap(x), do: fz_resource_test_print_dtor(x)
+def main() do
+  a = make_resource(11, &dwrap/1)
+  b = make_resource(22, &dwrap/1)
+end
