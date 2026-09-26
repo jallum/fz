@@ -263,10 +263,15 @@ pub enum Expr {
     },
 
     // macro support (fz-ul4.10):
-    /// `quote do: <e>` / `quote do <e> end`. Eval reifies `e` to a Value,
-    /// recursing through inner Unquote nodes which evaluate their inner
-    /// expression and splice the resulting Value in place.
-    Quote(Box<Spanned<Expr>>),
+    /// `quote do: <e>` / `quote do <e> end`. Holds the quoted-source cursor
+    /// for `<e>` itself, not a decoded `Expr`, plus every `unquote(...)`
+    /// inside it, already decoded in walk order and sharing the enclosing
+    /// function's `LambdaOccurrences` counter. Decoding stops at the quote's
+    /// own shape; an `unquote`'s content is ordinary code and decodes
+    /// eagerly, alongside it. Lowering (compiler2 jobs/body.rs) walks the
+    /// cursor directly, taking the next decoded splice at each `unquote` and
+    /// binding each call to its callable.
+    Quote(crate::compiler2::QuotedSourceCursor, Vec<Spanned<Expr>>),
     /// `unquote(<e>)`. Only meaningful inside a Quote; outside, evaluation
     /// errors. The macro expansion pass (.10.3) is also responsible for
     /// rejecting any leftover Unquote nodes after expansion completes.

@@ -252,8 +252,24 @@ and its ABI shape.
 ## How Macro Bodies Are Lowered
 
 Macro bodies decode through the same quoted-function reader as ordinary
-functions. `quoted_function.rs` turns quoted `quote` into `Expr::Quote(...)`
-and quoted `unquote` into `Expr::Unquote(...)`.
+functions, with one exception: decoding stops at `quote`. `quoted_function.rs`
+turns a quoted `quote do ... end` into `Expr::Quote(cursor, splices)`, holding
+the quoted-source cursor for the body untouched, rather than a decoded `Expr`
+tree, alongside every `unquote(e)` reachable inside that body, each already
+decoded into an ordinary `Expr` in the same walk (`collect_quoted_splices`,
+called from `decode_quote`) and in the same walk order lowering later
+revisits. The body inside a quote otherwise stays quoted data until something
+actually splices it in elsewhere; nothing about it but its `unquote` holes is
+decoded, resolved, or rejected while the quote itself is only being defined.
+Decoding an `unquote`'s content eagerly, alongside the quote, rather than
+lazily at lowering time, matters for two reasons: free-name collection (for
+lambda capture) can see into an `unquote` like any other expression instead of
+treating the whole quote as opaque, and every lambda literal anywhere in the
+enclosing function — whether inside an `unquote` or not — gets its occurrence
+number from one shared `LambdaOccurrences` counter instead of two independent
+ones. Quoted `unquote` outside a quote's body still decodes as an ordinary
+`Expr::Unquote(...)`, since an `unquote` only makes sense already inside a
+quote that is being lowered.
 
 `jobs/body.rs` then lowers macro bodies with one macro-specific rule:
 
@@ -262,19 +278,35 @@ and quoted `unquote` into `Expr::Unquote(...)`.
 
 The body lowerer keeps quote-specific work behind the dedicated
 `QuoteLowerer` helper in `jobs/body.rs`, so the ordinary body lowerer only
-hands off `Expr::Quote(...)` instead of owning the quoted-AST construction
-logic inline.
+hands off the cursor and its splices in `Expr::Quote(cursor, splices)`
+instead of owning the quoted-AST construction logic inline.
 
-That quote seam treats quote/unquote specially:
+`QuoteLowerer::lower` walks that cursor directly, as one recursive case per
+quoted-source shape rather than one case per language construct:
 
-- `Expr::Quote(inner)` hands off to the dedicated `QuoteLowerer`
-- `Expr::Unquote(inner)` is legal only inside `quote`
-- inside quote lowering, `unquote(...)` evaluates the inner expression and
-  splices its runtime value into the quoted tree being constructed
-- literal two-tuples lower directly to two-element tuples, matching Elixir's
-  quoted representation; every other tuple arity lowers to the `{}` AST form.
-  Keyword entries depend on this distinction because each `[key: value]`
-  element is a structural two-tuple rather than a tuple-literal AST node.
+- a literal (int, float, atom, bitstring) lowers to the matching constant
+- a list recurses over its items
+- a two-element tuple recurses over its two items and lowers to a two-element
+  tuple directly, matching Elixir's quoted representation; every other tuple
+  arity is never a bare tuple at this layer — it already arrived as the
+  three-item `{}` AST node, so it falls out of the next case instead. Keyword
+  entries depend on this distinction, because each `[key: value]` element is a
+  structural two-tuple rather than a tuple-literal AST node.
+- a `{head, meta, args}` AST node either:
+  - splices `unquote(e)` by taking the next already-decoded splice in walk
+    order and lowering it with the same `lower_expr` any other expression
+    goes through, exactly as if `e` had been written at that position
+    directly
+  - binds an atom-headed call to its callable through
+    `resolve_quoted_callable`/`lower_call_node`, the same pair every other
+    quoted call site uses
+  - or, when the node's tail is not list-shaped, builds a bare variable
+    reference
+
+Because this walk dispatches on quoted-source shape rather than on which
+language construct produced it, a `case`, an `fn`, a bitstring, a struct, or
+any other construct made only of these four shapes lowers through it too —
+there is no per-construct list to keep in sync.
 
 The result is a backend program that builds Fz-shaped AST values on the process
 heap. The backend interpreter then runs that program like any other backend

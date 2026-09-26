@@ -7,6 +7,7 @@ use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
 use crate::source::{SourceMap, Span};
 
+use super::identity::FunctionId;
 use super::quoted_surface::function_head_args;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::token_payload;
@@ -292,17 +293,6 @@ fn decode_expr(
         if let Some(module) = node.meta.module_denotation()? {
             return Ok(Spanned::new(Expr::Module(module), span));
         }
-        // A retained callable settles the target. The head beside it is the
-        // spelling the call was written with and says nothing about where the
-        // call goes, so it is never read back as source here.
-        if let Some(function) = node.meta.bound_callable()? {
-            if !is_list_like(&node.tail) {
-                return Err(QuotedSourceError::new("a retained callable needs an argument list"));
-            }
-            let args = decode_exprs(occurrences, &node.tail.list_items()?, Some(span), sources)?;
-            let callee = Spanned::new(Expr::BoundFunction(function), span);
-            return Ok(Spanned::new(Expr::Call(Box::new(callee), args), span));
-        }
         if !is_list_like(&node.tail) {
             return Ok(Spanned::new(Expr::Var(atom_name(&node.head)?), span));
         }
@@ -324,12 +314,26 @@ fn decode_expr(
                     return Ok(Spanned::new(Expr::Index(Box::new(base), Box::new(key)), span));
                 }
             }
-            let callee = decode_expr(occurrences, &node.head, Some(span), sources)?;
+            // This is an ordinary call with an expression callee (a remote
+            // call, most often). A retained callable settles its target; the
+            // head is then only the spelling the call was written with, and
+            // is never read back as source.
             let call_args = decode_exprs(occurrences, &args, Some(span), sources)?;
+            let callee = match node.meta.bound_callable()? {
+                Some(function) => Spanned::new(Expr::BoundFunction(function), span),
+                None => decode_expr(occurrences, &node.head, Some(span), sources)?,
+            };
             return Ok(Spanned::new(Expr::Call(Box::new(callee), call_args), span));
         }
 
-        return decode_named_expr(occurrences, atom_name(&node.head)?, &args, span, sources);
+        return decode_named_expr(
+            occurrences,
+            atom_name(&node.head)?,
+            node.meta.bound_callable()?,
+            &args,
+            span,
+            sources,
+        );
     }
 
     let span = fallback_span.unwrap_or(Span::DUMMY);
@@ -383,6 +387,7 @@ fn decode_expr(
 fn decode_named_expr(
     occurrences: &mut LambdaOccurrences,
     name: String,
+    bound: Option<FunctionId>,
     args: &[QuotedSourceCursor],
     span: Span,
     sources: &SourceMap,
@@ -453,7 +458,13 @@ fn decode_named_expr(
         ("<<>>", _) => decode_bitstring_expr(occurrences, args, span, sources),
         ("&", 1) => decode_fn_ref_expr(&args[0], span, sources),
         _ => {
-            let callee = Spanned::new(Expr::Var(name), span);
+            // An ordinary call named `name`. A retained callable settles its
+            // target; the head is then only the spelling the call was
+            // written with, and is never read back as source.
+            let callee = match bound {
+                Some(function) => Spanned::new(Expr::BoundFunction(function), span),
+                None => Spanned::new(Expr::Var(name), span),
+            };
             let call_args = decode_exprs(occurrences, args, Some(span), sources)?;
             Ok(Spanned::new(Expr::Call(Box::new(callee), call_args), span))
         }
@@ -764,10 +775,55 @@ fn decode_quote(
     let Some((_, body)) = entries.into_iter().find(|(key, _)| key == "do") else {
         return Err(QuotedSourceError::new("quoted `quote` is missing `do` body"));
     };
-    Ok(Spanned::new(
-        Expr::Quote(Box::new(decode_expr(occurrences, &body, Some(span), sources)?)),
-        span,
-    ))
+    let mut splices = Vec::new();
+    collect_quoted_splices(occurrences, &body, sources, &mut splices)?;
+    Ok(Spanned::new(Expr::Quote(body, splices), span))
+}
+
+/// Every `unquote(e)` inside a quote's body, each decoded as an ordinary
+/// expression with the same `LambdaOccurrences` counter the rest of the
+/// enclosing function uses, in the same depth-first order quote lowering
+/// later walks the same cursor. Everything else in the body stays quoted
+/// data, untouched, until the cursor or one of these splices is used.
+fn collect_quoted_splices(
+    occurrences: &mut LambdaOccurrences,
+    cursor: &QuotedSourceCursor,
+    sources: &SourceMap,
+    out: &mut Vec<Spanned<Expr>>,
+) -> Result<(), QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
+        return match cursor.root().tag() {
+            fz_runtime::any_value::ValueKind::LIST => {
+                for item in cursor.list_items()? {
+                    collect_quoted_splices(occurrences, &item, sources, out)?;
+                }
+                Ok(())
+            }
+            fz_runtime::any_value::ValueKind::STRUCT => {
+                for item in cursor.tuple_items()? {
+                    collect_quoted_splices(occurrences, &item, sources, out)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        };
+    };
+    if !is_list_like(&node.tail) {
+        return Ok(()); // a bare variable mention, nothing to splice
+    }
+    let args = node.tail.list_items()?;
+    if node.head.root().tag() == fz_runtime::any_value::ValueKind::ATOM {
+        if node.head.atom_name()? == "unquote" && args.len() == 1 {
+            out.push(decode_expr(occurrences, &args[0], node.span, sources)?);
+            return Ok(());
+        }
+    } else {
+        collect_quoted_splices(occurrences, &node.head, sources, out)?;
+    }
+    for arg in &args {
+        collect_quoted_splices(occurrences, arg, sources, out)?;
+    }
+    Ok(())
 }
 
 fn decode_map_expr(
