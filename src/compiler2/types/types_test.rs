@@ -4,13 +4,10 @@ use std::slice;
 
 use super::*;
 use crate::compiler2::ModuleId;
+use crate::compiler2::drive_harness::module_name;
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::finite_set::FiniteSet;
 use crate::runtime_type_predicate::{CallableShape, ListShape, ListShapes, RuntimeTypePredicate};
-
-fn module_name(text: &str) -> ModuleName {
-    ModuleName::parse_dotted(text).expect("test source module path")
-}
 
 #[test]
 fn ty_is_an_integer_handle() {

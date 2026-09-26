@@ -132,6 +132,10 @@ mod compiler2_test;
 #[cfg(test)]
 mod contract_test;
 #[cfg(test)]
+mod drive_harness;
+#[cfg(test)]
+mod drive_harness_test;
+#[cfg(test)]
 mod drive_test;
 #[cfg(test)]
 mod elixir_surface_fixtures_test;

@@ -481,7 +481,7 @@ world internals:
 ```sh
 rm -f /tmp/fz-00181.jsonl
 cargo run -q -- --log-telemetry /tmp/fz-00181.jsonl \
-  interp fixtures2/00181_enum_reduce_operator_ref.fz
+  interp fixtures/00181_enum_reduce_operator_ref.fz
 
 jq -sr '
   def nm: (.name | join("."));

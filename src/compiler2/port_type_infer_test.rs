@@ -1,5 +1,5 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
-use super::drive_test::{
+use super::drive_harness::{
     FunctionCapture, ModuleCapture, ReturnTypeCapture, assert_resolved, function_id, function_id_in_module,
 };
 use super::{CallableValueKind, CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission, Ty};

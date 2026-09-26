@@ -27,16 +27,6 @@ pub struct FixtureMetadata {
 }
 
 impl FixtureMetadata {
-    pub fn participates_in_matrix(&self) -> bool {
-        self.matrix.kind.is_some()
-            || self.matrix.expect.is_some()
-            || self.matrix.diagnostic_code.is_some()
-            || self.matrix.defer.is_some()
-            || !self.matrix.path_deferrals.is_empty()
-            || self.matrix.oracle.is_some()
-            || !self.matrix.path_timeouts.is_empty()
-    }
-
     pub fn participates_in_compiler_contracts(&self) -> bool {
         self.compiler.root.is_some()
             || !self.compiler.metric_assertions.is_empty()

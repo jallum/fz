@@ -1,0 +1,10 @@
+#---
+# purpose: a function returning a closure exposes the lambda's surface arrow in its return type
+#---
+def add(x) do
+  fn y -> x + y end
+end
+
+def main() do
+  add(1)
+end

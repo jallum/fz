@@ -1331,9 +1331,9 @@ fn demand_on_stall_names_the_exact_fact_and_closes_to_its_producer() {
 /// reduce bridge, a predicate search that halts early, and the take/drop/split
 /// suite whose 2.6k evaluations make it the widest causal surface in the tree.
 const TARGET_FIXTURES: [&str; 3] = [
-    "fixtures2/behavior/fz_f98_range_map_converges.fz",
-    "fixtures2/behavior/enum_predicate_search.fz",
-    "fixtures2/00420_enum_take_drop_split.fz",
+    "fixtures/00567_fz_f98_range_map_converges.fz",
+    "fixtures/00571_enum_predicate_search.fz",
+    "fixtures/00420_enum_take_drop_split.fz",
 ];
 
 const SCENARIOS: [&str; 5] = [
@@ -1699,7 +1699,7 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // A job gated on a fact its subject already carries never starts to
     // discover that fact missing, then wake once the fact lands
     // (`Job::missing_gates`).
-    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 61, 19, 63, 0),
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 61, 19, 63, 0),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -1709,7 +1709,7 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // A job gated on a fact its subject already carries never starts to
     // discover that fact missing, then wake once the fact lands
     // (`Job::missing_gates`).
-    ("fixtures2/behavior/enum_predicate_search.fz", 71, 8, 81, 0),
+    ("fixtures/00571_enum_predicate_search.fz", 71, 8, 81, 0),
     // fz-5xp.6: `Range.count` uses `div/2`, so fewer bodies are extracted.
     // fz-5xp.30: 126 -> 128 component evaluations. The reached arithmetic
     // result/status helpers are ordinary generic calls.
@@ -1730,7 +1730,7 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // link known only once the previous one is. That per-function reachable
     // walk is fz-afu.8's subject ("one walk per program, not one per
     // function"); recursive answers and compiled programs are unchanged.
-    ("fixtures2/behavior/enum_take_drop_split.fz", 128, 25, 133, 0),
+    ("fixtures/00420_enum_take_drop_split.fz", 128, 25, 133, 0),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -2058,7 +2058,7 @@ const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
 /// that number and its classification.
 const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
-        fixture: "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        fixture: "fixtures/00567_fz_f98_range_map_converges.fz",
         // fz-kdt.183: 71 -> 72 distinct with one FEWER retraction (5 -> 4),
         // first appearances flat. The withdrawn key was a joined one that
         // stopped being reachable once the demanded list element split its
@@ -2196,7 +2196,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         total_evaluations: 740,
     },
     AnalysisClaimRatchet {
-        fixture: "fixtures2/behavior/enum_predicate_search.fz",
+        fixture: "fixtures/00571_enum_predicate_search.fz",
         // fz-kdt.106: 174 -> 173. One key minted from a budget-collapsed row
         // set -- the wide `int | :false | :ok | :true` join -- is never minted,
         // because the row set no longer collapses.
@@ -2318,7 +2318,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         total_evaluations: 1165,
     },
     AnalysisClaimRatchet {
-        fixture: "fixtures2/behavior/enum_take_drop_split.fz",
+        fixture: "fixtures/00420_enum_take_drop_split.fz",
         // fz-kdt.106: 219 -> 211. Eight keys minted from a budget-collapsed
         // row set are never minted, because the row sets no longer collapse.
         // fz-kdt.132: 211 -> 250. A RISE, and it is the ascent this fixture
