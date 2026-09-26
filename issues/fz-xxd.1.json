@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-xxd.3"
+    "fz-xxd.3",
+    "fz-xxd.6"
   ],
   "created": "2026-09-25T20:29:00Z",
   "description": "A variadic extern's contract describes only its fixed parameters, so no call\nthat uses the variadic tail is inside it.\n\n`extern \"C\" defp libc::open(path :: c_string, flags :: c_int, ...) :: c_int`\nresolves to a two-parameter arrow; `libc::open(path, 0, 0o644 :: integer)`\nbuilds a three-column activation row; `Types::match_arrow`\n(src/compiler2/types/arrow_match.rs ~220) returns Invalid on the arity\nmismatch. Today this is invisible because an extern's return is its raw\ndeclared return. Once an extern's return is its contract applied to its row,\nevery tail-using call has no answer.\n\nFixtures: fixtures2/00015_variadic_open_jit.fz,\nfixtures2/behavior/c_int_negative_return.fz,\n`aot_variadic_open_creates_file_with_mode_bits`,\n`compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen`.\n\nPaper: the declaration is the definition, so its contract must accept exactly\nthe calls the declaration accepts: the fixed parameters, then any number of\ntail arguments each of the variadic domain `.agent/docs/externs.md` states\n(integer or pointer; floats refused). Settle with a reader, before a builder,\nhow an arrow expresses a tail in the Types data model and which existing\nauthorities (match_arrow, coverage, the wire derivation) read it — one\nrepresentation, not a row truncation at one call site.",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A variadic extern's contract does not describe its tail",
   "type": "bug",
-  "updated_at": "2026-09-25T20:29:00Z"
+  "updated_at": "2026-09-26T01:28:35Z"
 }
