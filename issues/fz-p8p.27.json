@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T15:13:21Z",
+  "description": "Elixir keeps a quote body as data. fz decodes it into Expr at macro compile time (quoted_function.rs:757-771), then QuoteLowerer (jobs/body.rs:1168-1310) rebuilds quoted data per Expr variant. The round trip covers part of the language: a macro call left of = dies in decode ('unsupported quoted pattern head', quoted_function.rs:509-511; blocks 00585 var!(t) = ... in a quote); non-variable match patterns error; case/cond/with/receive/fn/bitstring/struct/map-update/capture error with 'quote does not lower ... yet'. Fix: Expr::Quote holds the quoted source node; decode stops at quote. One generic walk over the four quoted shapes (literal, list, 2-tuple, {head, meta, args}) lowers it: splices unquote(e) as an ordinary expression, binds calls to their FunctionId (today's META_BOUND_CALLABLE_KEY behaviour), and builds variables through the one var-node constructor. Removed: QuoteLowerer's per-variant table and both 'not supported' diagnostics; decode_quote's recursion into decode_expr; Expr::Quote arms that only walk a decoded body (body.rs:630, 882, 4675; dispatch.rs:449), each kept only if it still has a job. Done when: new fixtures (a macro call left of = inside a quote; case, fn and a bitstring inside a quote) fail first, then pass; every macro fixture stays green. Proposal: /Users/j5n/Workspace/fz-p8p.22-blockers.html (approved 2026-09-26). One commit.",
+  "id": "fz-p8p.27",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "A quote body stays quoted data, and one walk lowers it",
+  "type": "bug",
+  "updated_at": "2026-09-26T15:13:21Z"
+}
