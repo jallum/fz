@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T17:18:38Z",
+  "description": "DerivationKey::Activation is declared but never published as a derivation; its only use\nis in DerivationKey ordering. Delete the variant and its ordering arm. Predates fz-afu.3.",
+  "id": "fz-afu.12",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 3,
+  "status": "open",
+  "title": "Delete DerivationKey::Activation",
+  "type": "task",
+  "updated_at": "2026-09-26T17:18:38Z"
+}
