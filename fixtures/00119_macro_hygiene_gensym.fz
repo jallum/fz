@@ -1,0 +1,13 @@
+#---
+# purpose: every occurrence of a macro-introduced name within one invocation maps to the same gensym
+#---
+defmacro double_via_temp(x) do
+  quote do
+t = unquote(x)
+t + t
+  end
+end
+def main() do
+  t = 100
+  assert(double_via_temp(21) == 42, "both occurrences of the macro's t resolve to one gensym: 21 + 21 == 42")
+end

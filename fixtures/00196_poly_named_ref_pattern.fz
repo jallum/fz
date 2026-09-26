@@ -1,0 +1,11 @@
+#---
+# purpose: a named reference to a pattern-matched function feeds each activation's argument into the matcher, leaving the dead catch-all uncontributed
+#---
+def pick(:left), do: :one
+def pick(:right), do: :two
+def pick(_), do: :other
+
+def main() do
+  f = &pick/1
+  {f.(:left), f.(:right)}
+end

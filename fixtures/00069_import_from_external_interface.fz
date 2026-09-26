@@ -1,0 +1,8 @@
+#---
+# purpose: an import resolves against a provider module's published interface even when that provider has no submitted source body; exercised only by a drive test that supplies the interface directly, since the module User references (Math) is never itself defined here.
+# defer: no standalone root: Math is supplied only via a hand-built ModuleInterface in module_interface_test.rs
+#---
+defmodule User do
+  import Math, only: [add: 2]
+  def run(x, y), do: add(x, y)
+end

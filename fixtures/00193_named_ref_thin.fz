@@ -1,0 +1,5 @@
+#---
+# purpose: a bare named-function reference infers as a thin FnRef callable with zero captures
+#---
+def id(x), do: x
+def main(), do: &id/1

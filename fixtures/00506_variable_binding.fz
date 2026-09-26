@@ -1,0 +1,9 @@
+#---
+# purpose: a local variable binding is visible to a later expression in the same block
+#---
+def main() do
+  x = 41
+  result = x + 1
+  assert(result == 42, "x=41; x + 1 evaluates to 42")
+  result
+end

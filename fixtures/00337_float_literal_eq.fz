@@ -1,0 +1,4 @@
+#---
+# purpose: identical float literals compare equal
+#---
+def main(), do: assert(1.5 == 1.5, "identical float literals compare equal")

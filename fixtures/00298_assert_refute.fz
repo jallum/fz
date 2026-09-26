@@ -1,0 +1,7 @@
+#---
+# purpose: assert and refute distinguish an integer payload from a bool kind, both returning nil on success
+#---
+def main() do
+  assert(assert(2) == nil, "assert with a truthy integer payload returns nil")
+  assert(refute(true == 1) == nil, "refute with a falsy comparison returns nil")
+end

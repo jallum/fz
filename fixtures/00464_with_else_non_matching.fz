@@ -1,0 +1,11 @@
+#---
+# purpose: a with-expression routes a non-matching pattern to its else clause
+#---
+def f(v) do
+  with {:ok, x} <- v do x else _ -> 0 end
+end
+def main() do
+  result = f(:err)
+  assert(result == 0, "with routes a non-matching value through the else clause to 0")
+  result
+end

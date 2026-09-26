@@ -1,0 +1,18 @@
+#---
+# purpose: Enum.sort with the default and a custom comparator preserves the stable order of equal keys
+#---
+def descending(left, right), do: left >= right
+def by_key(left, right) do
+  {left_key, _left_tag} = left
+  {right_key, _right_tag} = right
+  left_key <= right_key
+end
+
+def main() do
+  assert(Enum.sort([3, 1, 2, 1, 5, 4]) == [1, 1, 2, 3, 4, 5], "default sort is ascending")
+  assert(Enum.sort([3, 1, 2, 1, 5, 4], descending) == [5, 4, 3, 2, 1, 1], "custom comparator sorts descending")
+  assert(
+    Enum.sort([{2, :a}, {1, :a}, {2, :b}, {1, :b}], by_key) == [{1, :a}, {1, :b}, {2, :a}, {2, :b}],
+    "equal keys keep their original relative order (stable sort)"
+  )
+end

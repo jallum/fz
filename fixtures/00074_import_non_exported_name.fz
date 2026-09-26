@@ -1,0 +1,14 @@
+#---
+# purpose: importing a name not in a module's export list is an error.
+# expect: diagnostic
+# diagnostic.code: resolve/unknown-import
+#---
+defmodule Math do
+  def visible(), do: 1
+end
+defmodule User do
+  import Math, only: [hidden: 0]
+  def run(), do: hidden()
+end
+
+def main(), do: dbg(User.run())

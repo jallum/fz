@@ -1,0 +1,4 @@
+#---
+# purpose: ordered float comparison returns the correct result
+#---
+def main(), do: assert(1.5 < 2.0, "ordered float comparison returns the correct result")

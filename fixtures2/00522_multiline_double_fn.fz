@@ -1,4 +1,0 @@
-def double(x) do
-  x * 2
-end
-def main() do dbg(double(21)) end

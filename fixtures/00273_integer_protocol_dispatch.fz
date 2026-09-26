@@ -1,0 +1,12 @@
+#---
+# purpose: protocol dispatch over the Integer type calls the Integer impl
+#---
+defprotocol Integerish do
+  def id(value)
+end
+
+defimpl Integerish, for: Integer do
+  def id(value), do: value + 1
+end
+
+def main(), do: assert(Integerish.id(41) == 42, "protocol dispatch over Integer calls the correct impl")

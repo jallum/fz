@@ -1,0 +1,7 @@
+#---
+# purpose: the & capture shorthand desugars to a callable lambda
+#---
+def main() do
+  f = &(&1 + &2)
+  assert(f.(20, 22) == 42, "&(&1 + &2) desugars to a two-argument lambda")
+end

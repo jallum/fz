@@ -1,7 +1,0 @@
-def check() do
-  x = 10
-  _ = x + 5
-  x
-end
-
-def main(), do: check()

@@ -1,0 +1,6 @@
+#---
+# purpose: the expansion pipeline is a no-op on a program that defines no macros
+#---
+def main() do
+  assert(1 + 2 == 3, "plain arithmetic is unaffected by the (unused) expansion pipeline")
+end

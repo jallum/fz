@@ -1,0 +1,9 @@
+#---
+# purpose: map update syntax creates a new map, leaving the original unchanged
+#---
+def main() do
+  m = %{a: 1, b: 2}
+  m2 = %{m | a: 99}
+  assert(m == %{a: 1, b: 2}, "the original map is unchanged after an update")
+  assert(m2 == %{a: 99, b: 2}, "update syntax produces a new map with the field replaced")
+end

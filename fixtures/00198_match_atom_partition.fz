@@ -1,0 +1,9 @@
+#---
+# purpose: the same function called at two concrete atom inputs selects the matching decision-tree leaf per activation
+#---
+def pick(:left), do: :one
+def pick(:right), do: :two
+
+def main() do
+  {pick(:left), pick(:right)}
+end

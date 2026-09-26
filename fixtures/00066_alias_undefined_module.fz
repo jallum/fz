@@ -1,0 +1,9 @@
+#---
+# purpose: aliasing an undefined module path resolves without error as long as no call site actually uses the alias.
+#---
+defmodule User do
+  alias Missing.Path
+  def run(), do: nil
+end
+
+def main(), do: dbg(User.run())

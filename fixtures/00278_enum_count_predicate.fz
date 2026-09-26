@@ -1,0 +1,6 @@
+#---
+# purpose: Enum.count with a predicate closure filters before counting
+#---
+def main() do
+  assert(Enum.count([1, 2, 3, 4], fn (x) -> x > 2 end) == 2, "Enum.count with a predicate filters before counting")
+end

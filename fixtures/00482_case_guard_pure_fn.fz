@@ -1,0 +1,10 @@
+#---
+# purpose: a case guard calling a pure user fn compiles and dispatches without diagnostics
+#---
+def is_pos(n) do n > 0 end
+def main() do
+  case 5 do
+    n when is_pos(n) -> :pos
+    _ -> :neg
+  end
+end

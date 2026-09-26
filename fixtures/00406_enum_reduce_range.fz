@@ -1,0 +1,6 @@
+#---
+# purpose: Enum.reduce over a Range enumerable converges to a concrete integer return type.
+#---
+def main() do
+  dbg(Enum.reduce(1..3, 0, fn (x, a) -> x + a end))
+end

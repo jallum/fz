@@ -1,0 +1,8 @@
+#---
+# purpose: mutually recursive functions dispatch correctly across the call boundary
+#---
+def even(0), do: true
+def even(n), do: odd(n - 1)
+def odd(0), do: false
+def odd(n), do: even(n - 1)
+def main(), do: assert(even(10), "mutually recursive even/odd functions dispatch correctly")

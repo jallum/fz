@@ -1,0 +1,11 @@
+#---
+# purpose: a cascade of nested tuple/list patterns selects the correct leaf clause for each concrete input shape.
+#---
+def pick({:ok, []}), do: :empty
+def pick({:ok, [h | _t]}), do: h
+def pick(:error), do: :error
+def pick(_), do: :unreachable
+
+def main() do
+  {pick({:ok, []}), pick({:ok, [1]}), pick(:error)}
+end

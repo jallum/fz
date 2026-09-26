@@ -848,8 +848,8 @@ fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hi
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00111_macro_quote_unquote.fz".to_string()),
-        text: include_str!("../../fixtures2/00111_macro_quote_unquote.fz").to_string(),
+        name: Some("fixtures/00111_macro_quote_unquote.fz".to_string()),
+        text: include_str!("../../fixtures/00111_macro_quote_unquote.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,

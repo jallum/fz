@@ -1,0 +1,27 @@
+warning[type/no-matching-clause]: `case` clauses don't cover every input
+  --> fixtures/00176_fold_state_machine.fz:2:3
+   |
+2 |   case state do
+   |   ^^^^^^^^^^^^^ matched values may fall through here
+   |
+   = note: an input matched by no clause halts with `:case_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
+warning[type/no-matching-clause]: `case` clauses don't cover every input
+  --> fixtures/00176_fold_state_machine.fz:9:3
+   |
+9 |   case state do
+   |   ^^^^^^^^^^^^^ matched values may fall through here
+   |
+   = note: an input matched by no clause halts with `:case_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
+warning[type/no-matching-clause]: `case` clauses don't cover every input
+  --> fixtures/00176_fold_state_machine.fz:12:7
+   |
+12 |       case list do
+   |       ^^^^^^^^^^^^ matched values may fall through here
+   |
+   = note: an input matched by no clause halts with `:case_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+

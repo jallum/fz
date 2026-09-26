@@ -1,0 +1,4 @@
+#---
+# purpose: an atom literal interns as its name, retrievable through Atom.to_string
+#---
+def main(), do: assert(Atom.to_string(:ok) == "ok", "atom literal interns as its name")

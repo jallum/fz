@@ -1,0 +1,8 @@
+#---
+# purpose: receive in main returns the value sent by a spawned child
+#---
+def child(), do: send(1, 42)
+def main() do
+  spawn(child)
+  assert((receive do x -> x end) == 42, "receive in main returns the value sent by the spawned child")
+end

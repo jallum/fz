@@ -1,2 +1,0 @@
-def parse(<<n, rest::binary>>), do: {n, rest}
-def main(), do: dbg(parse(<<0xa5, 0x01, 0x02>>))

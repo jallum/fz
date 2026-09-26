@@ -1,0 +1,10 @@
+#---
+# purpose: multiple @spec overloads on one function are all attached in declaration order.
+#---
+defmodule M do
+  @spec add1(integer) :: integer
+  @spec add1(float) :: float
+  def add1(n), do: n + 1
+end
+
+def main(), do: dbg(M.add1(5))

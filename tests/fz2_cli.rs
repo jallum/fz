@@ -1170,8 +1170,8 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     // 1,523,747 bytes, and 00009 from 322 to 326 events. The bound is the
     // measured 3,114 plus the same headroom the old 3,012/3,060 pair carried.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_162, 1_600 * 1024),
-        ("fixtures2/00009_no_runtime.fz", 400, 192 * 1024),
+        ("fixtures/00181_enum_reduce_operator_ref.fz", 3_162, 1_600 * 1024),
+        ("fixtures/00009_no_runtime.fz", 400, 192 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
         let output = run_fz2(&[
@@ -1958,7 +1958,7 @@ end
 /// group just published without evaluating either producer again.
 #[test]
 fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation() {
-    let fixture = "fixtures2/00181_enum_reduce_operator_ref.fz";
+    let fixture = "fixtures/00181_enum_reduce_operator_ref.fz";
     let telemetry_path = unique_temp_path("fz2_quiesced", ".jsonl");
     let out = run_fz2(&[
         OsStr::new("--log-telemetry"),

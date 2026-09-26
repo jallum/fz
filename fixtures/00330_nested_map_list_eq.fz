@@ -1,0 +1,4 @@
+#---
+# purpose: a map containing a list compares recursively by value
+#---
+def main(), do: assert(%{x: [1, 2]} == %{x: [1, 2]}, "a nested map with a list compares recursively")

@@ -1,0 +1,12 @@
+#---
+# purpose: a defimpl callback defined at the wrong arity resolves without an arity-mismatch error.
+#---
+defprotocol P do
+  def each(x)
+end
+
+defimpl P, for: List do
+  def each(x, extra), do: x
+end
+
+def main(), do: dbg(P.__info__(:functions))

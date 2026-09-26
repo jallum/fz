@@ -1,7 +1,0 @@
-def pick(%{id: x}), do: x
-def pick(:none), do: :none
-def pick(_), do: :unreachable
-
-def main() do
-  {pick(%{id: 1}), pick(:none)}
-end

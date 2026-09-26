@@ -1,0 +1,4 @@
+#---
+# purpose: a string literal lowers to a utf8-branded bitstring whose brand is erased in the IR.
+#---
+def main(), do: "hi"

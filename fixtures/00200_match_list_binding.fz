@@ -1,0 +1,9 @@
+#---
+# purpose: a matcher-bound list head carries the input element's type into the leaf that returns it
+#---
+def pick([]), do: :empty
+def pick([h | _t]), do: h
+
+def main() do
+  {pick([]), pick([1])}
+end

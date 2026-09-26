@@ -1,0 +1,4 @@
+#---
+# purpose: a lambda with no free variables infers as a thin zero-capture closure
+#---
+def main(), do: fn(x) -> x end

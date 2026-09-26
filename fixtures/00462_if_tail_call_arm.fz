@@ -1,0 +1,9 @@
+#---
+# purpose: an if arm ending in a tail call returns the correct value at runtime
+#---
+def helper(), do: 7
+def pick(n) do if n == 0, do: helper(), else: 99 end
+def main() do
+  dbg(pick(0))
+  dbg(pick(1))
+end

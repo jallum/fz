@@ -1,0 +1,14 @@
+#---
+# purpose: a protocol call on a receiver type with no implementation surfaces a diagnostic naming the call.
+# expect: diagnostic
+# diagnostic.code: artifact/incomplete-semantic-plan
+#---
+defprotocol P do
+  def each(value)
+end
+
+defimpl P, for: List do
+  def each(value), do: value
+end
+
+def main(), do: P.each(42)

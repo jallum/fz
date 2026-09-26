@@ -1,0 +1,4 @@
+#---
+# purpose: if/else takes the true branch when the condition holds
+#---
+def main(), do: assert((if 1 < 2, do: 100, else: 200) == 100, "if/else takes the true branch when the condition holds")

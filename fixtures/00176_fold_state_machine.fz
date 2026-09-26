@@ -1,0 +1,28 @@
+#---
+# purpose: an Enum.reduce-shaped cont/halt state machine, hand-rolled with no protocol, settles to number
+#---
+def finish(state) do
+  case state do
+    {:done, acc} -> acc
+    {:halted, acc} -> acc
+  end
+end
+
+def loop(list, state, f) do
+  case state do
+    {:halt, acc} -> {:halted, acc}
+    {:cont, acc} ->
+      case list do
+        [] -> {:done, acc}
+        [h | t] -> loop(t, f.(h, acc), f)
+      end
+  end
+end
+
+def myreduce(list, acc, f) do
+  finish(loop(list, {:cont, acc}, fn (entry, inner) -> {:cont, f.(entry, inner)} end))
+end
+
+def main() do
+  dbg(myreduce([1, 2, 3], 0, fn (x, a) -> x + a end))
+end

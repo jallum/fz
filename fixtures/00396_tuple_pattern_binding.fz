@@ -1,0 +1,9 @@
+#---
+# purpose: a pattern that binds a tuple field types the binding as that field's type for the matched input.
+#---
+def pick({:ok, x}), do: x
+def pick(:error), do: :error
+
+def main() do
+  {pick({:ok, 1}), pick(:error)}
+end

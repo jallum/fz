@@ -100,32 +100,32 @@ fn pull_only_guard_holds_for_quicksort() {
 #[test]
 fn pull_only_guard_holds_for_enum_reduce_operator_ref() {
     assert_pull_only(
-        "fixtures2/00181_enum_reduce_operator_ref.fz",
-        include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz"),
+        "fixtures/00181_enum_reduce_operator_ref.fz",
+        include_str!("../../fixtures/00181_enum_reduce_operator_ref.fz"),
     );
 }
 
 #[test]
 fn pull_only_guard_holds_for_macro_quote_unquote() {
     assert_pull_only(
-        "fixtures2/00111_macro_quote_unquote.fz",
-        include_str!("../../fixtures2/00111_macro_quote_unquote.fz"),
+        "fixtures/00111_macro_quote_unquote.fz",
+        include_str!("../../fixtures/00111_macro_quote_unquote.fz"),
     );
 }
 
 #[test]
 fn pull_only_guard_holds_for_nested_call_from_outside_module() {
     assert_pull_only(
-        "fixtures2/00059_nested_call_from_outside.fz",
-        include_str!("../../fixtures2/00059_nested_call_from_outside.fz"),
+        "fixtures/00059_nested_call_from_outside.fz",
+        include_str!("../../fixtures/00059_nested_call_from_outside.fz"),
     );
 }
 
 #[test]
 fn pull_only_guard_holds_for_protocol_impl_dispatch() {
     assert_pull_only(
-        "fixtures2/00272_protocol_impl_dispatch.fz",
-        include_str!("../../fixtures2/00272_protocol_impl_dispatch.fz"),
+        "fixtures/00272_protocol_impl_dispatch.fz",
+        include_str!("../../fixtures/00272_protocol_impl_dispatch.fz"),
     );
 }
 

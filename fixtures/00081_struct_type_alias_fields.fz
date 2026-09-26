@@ -1,0 +1,9 @@
+#---
+# purpose: a defstruct whose @type t covers every field resolves the struct's typed record shape.
+#---
+defmodule Range do
+  defstruct [:first, :last, :step]
+  @type t :: %Range{first: integer, last: integer, step: integer}
+end
+
+def main(), do: %Range{first: 1, last: 10, step: 1}

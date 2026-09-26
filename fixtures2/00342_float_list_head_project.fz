@@ -1,2 +1,0 @@
-def first([h | _]), do: h
-def main(), do: first([2.5])

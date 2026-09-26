@@ -1,0 +1,9 @@
+#---
+# purpose: a pattern that binds a list's head element types the binding as the head's element type for cons input.
+#---
+def pick([]), do: :empty
+def pick([h | _t]), do: h
+
+def main() do
+  {pick([]), pick([1])}
+end

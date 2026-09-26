@@ -1,0 +1,18 @@
+#---
+# purpose: a reduce_cont/reduce_step clause pair threads the list parameter's element type through to the accumulator result.
+#---
+defmodule Probe do
+  @spec reduce_cont([a], b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
+  def reduce_cont([], acc, _reducer), do: {:done, acc}
+  def reduce_cont([head | tail], acc, reducer) do
+    reduce_step(tail, reducer.(head, acc), reducer)
+  end
+  @spec reduce_step([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
+  def reduce_step(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)
+  def reduce_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}
+  def reduce_step(list, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_cont(list, acc, reducer) end)}
+  end
+end
+
+def main(), do: dbg(Probe.reduce_cont([1, 2, 3], 0, fn(x, acc) -> {:cont, x + acc} end))

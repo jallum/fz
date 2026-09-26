@@ -1,0 +1,9 @@
+#---
+# purpose: a function matching on list shape (empty vs cons) selects the clause for that shape by concrete input.
+#---
+def pick([]), do: :empty
+def pick([_h | _t]), do: :cons
+
+def main() do
+  {pick([]), pick([1])}
+end

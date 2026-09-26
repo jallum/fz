@@ -1,4 +1,0 @@
-def partition(_, [], lo, hi), do: {lo, hi}
-def partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)
-def partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])
-def main() do dbg(partition(3, [1, 4, 2], [], [])) end

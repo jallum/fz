@@ -1,0 +1,7 @@
+#---
+# purpose: a call to an undefined function is a compile-time error
+# expect: diagnostic
+# diagnostic.code: lower/unbound
+#---
+def f(), do: nonesuch(1)
+def main() do f() end

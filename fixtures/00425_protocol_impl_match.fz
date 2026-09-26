@@ -1,0 +1,12 @@
+#---
+# purpose: a protocol call on a receiver type that has a matching implementation emits no diagnostic.
+#---
+defprotocol P do
+  def each(value)
+end
+
+defimpl P, for: List do
+  def each(value), do: value
+end
+
+def main(), do: P.each([1])

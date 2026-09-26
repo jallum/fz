@@ -1,5 +1,0 @@
-def even(0), do: true
-def even(n), do: odd(n - 1)
-def odd(0), do: false
-def odd(n), do: even(n - 1)
-def main(), do: even(10)

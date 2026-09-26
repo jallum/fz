@@ -1,0 +1,4 @@
+#---
+# purpose: a float literal preserves its bit-exact value
+#---
+def main(), do: assert(5.0 / 2.0 == 2.5, "a float literal preserves its bit-exact value")

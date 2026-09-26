@@ -1,0 +1,9 @@
+#---
+# purpose: Enum.reduce driven by a captured operator function reference (&+/2) propagates a concrete integer accumulator type.
+#---
+def main() do
+  {
+    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
+    Enum.reduce([1, 2, 3], 0, &+/2)
+  }
+end

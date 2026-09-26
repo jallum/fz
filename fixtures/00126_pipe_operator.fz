@@ -1,0 +1,5 @@
+#---
+# purpose: the pipe operator rewrites to a regular call at expansion time
+#---
+def add2(x), do: x + 2
+def main(), do: assert(1 |> add2() == 3, "1 |> add2() rewrites to add2(1)")

@@ -1,0 +1,4 @@
+#---
+# purpose: map equality is false when a value differs for a matching key
+#---
+def main(), do: refute(%{a: 1, b: 2} == %{a: 1, b: 3}, "map equality is false when values differ")

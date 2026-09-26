@@ -1,0 +1,12 @@
+#---
+# purpose: a protocol call on a receiver of statically known concrete type dispatches directly to that type's impl.
+#---
+defprotocol Collectable do
+  def id(value)
+end
+
+defimpl Collectable, for: List do
+  def id(value), do: value
+end
+
+def main(), do: Collectable.id([1])

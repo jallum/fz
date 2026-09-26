@@ -1,0 +1,9 @@
+#---
+# purpose: a sibling call inside a module is qualified to that module's own function.
+#---
+defmodule M do
+  def helper(x), do: x + 1
+  def use_helper(x), do: helper(x)
+end
+
+def main(), do: dbg(M.use_helper(1))

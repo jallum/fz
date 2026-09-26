@@ -1,5 +1,0 @@
-defmodule A do
-  defmodule B do
-    def f(x), do: x + 1
-  end
-end

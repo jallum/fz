@@ -1,0 +1,11 @@
+#---
+# purpose: a cross-module import resolves a call through the provider boundary and returns the provider's result
+#---
+defmodule Math do
+  def add(x, y), do: x + y
+end
+defmodule User do
+  import Math, only: [add: 2]
+  def run(), do: add(20, 22)
+end
+def main(), do: assert(User.run() == 42, "cross-module import resolves through the provider boundary")

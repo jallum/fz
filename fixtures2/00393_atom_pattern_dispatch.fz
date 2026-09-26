@@ -1,6 +1,0 @@
-def pick(:left), do: :one
-def pick(:right), do: :two
-
-def main() do
-  {pick(:left), pick(:right)}
-end

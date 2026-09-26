@@ -1,2 +1,0 @@
-extern "C" defp libc::open(path :: c_string, c_int, c_int) :: c_int
-def main() do libc::open("x", "x", 0, 0) end

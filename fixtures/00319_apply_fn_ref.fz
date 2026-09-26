@@ -1,0 +1,6 @@
+#---
+# purpose: a function reference passed as a value is called through closure application
+#---
+def double(x), do: x * 2
+def apply_f(f, n), do: f.(n)
+def main(), do: assert(apply_f(double, 21) == 42, "a function reference passed as a value is called via apply")

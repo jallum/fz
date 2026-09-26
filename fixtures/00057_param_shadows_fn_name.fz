@@ -1,0 +1,9 @@
+#---
+# purpose: a parameter that shadows a function name is not rewritten to the module-qualified call.
+#---
+defmodule M do
+  def helper(x), do: x
+  def shadow(helper), do: helper
+end
+
+def main(), do: dbg(M.shadow(5))

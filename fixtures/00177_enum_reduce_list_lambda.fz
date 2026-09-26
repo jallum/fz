@@ -1,0 +1,6 @@
+#---
+# purpose: Enum.reduce over a list devirtualizes through the Enumerable protocol to List.reduce and settles to int
+#---
+def main() do
+  dbg(Enum.reduce([1, 2, 3], 0, fn (x, a) -> x + a end))
+end

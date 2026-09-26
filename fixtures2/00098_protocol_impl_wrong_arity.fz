@@ -1,7 +1,0 @@
-defprotocol P do
-  def each(x)
-end
-
-defimpl P, for: List do
-  def each(x, extra), do: x
-end

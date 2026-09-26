@@ -653,7 +653,7 @@ fn a_reached_callsite_that_names_no_target_publishes_an_unresolved_edge() {
     let mut world = World::new();
     world.submit_code(
         Some("protocol_no_impl.fz".to_string()),
-        include_str!("../../fixtures2/00424_protocol_no_impl.fz").to_string(),
+        include_str!("../../fixtures/00424_protocol_no_impl.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     world.demand(Job::SeedRoot(root));

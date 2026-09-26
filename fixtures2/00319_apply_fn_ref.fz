@@ -1,3 +1,0 @@
-def double(x), do: x * 2
-def apply_f(f, n), do: f.(n)
-def main(), do: apply_f(double, 21)

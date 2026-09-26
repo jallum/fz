@@ -1,0 +1,7 @@
+error[resolve/unknown-import]: module `Math` does not export `add/2`
+  --> fixtures/00157_cross_module_import.fz:2:3
+   |
+2 |   import Math, only: [add: 2]
+   |   ^^^^^^
+   |
+

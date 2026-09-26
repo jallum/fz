@@ -1,0 +1,14 @@
+#---
+# purpose: a guard and its clause binding share a single list head extraction
+#---
+def positive(n), do: n > 0
+def classify(xs) do
+  case xs do
+    [h | _] when positive(h) -> h + h
+    _ -> 0
+  end
+end
+def main() do
+  assert(classify([3, 4]) == 6, "a positive guarded head dispatches to the doubling clause")
+  assert(classify([-1]) == 0, "a non-positive guarded head falls through to the default clause")
+end

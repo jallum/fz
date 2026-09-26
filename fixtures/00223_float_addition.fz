@@ -1,0 +1,4 @@
+#---
+# purpose: float addition produces the correct IEEE-754 result
+#---
+def main(), do: assert(1.5 + 2.5 == 4.0, "1.5 + 2.5 == 4.0")

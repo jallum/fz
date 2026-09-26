@@ -1,0 +1,13 @@
+#---
+# purpose: a multi-overload @spec whose arrows each cover their respective inferred specialization passes validation
+#---
+defmodule M do
+  @spec echo(integer) :: integer
+  @spec echo(float) :: float
+  def echo(x :: integer), do: x
+  def echo(x :: float), do: x
+end
+def main() do
+  dbg(M.echo(1))
+  dbg(M.echo(1.5))
+end

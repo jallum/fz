@@ -1,0 +1,19 @@
+#---
+# purpose: a protocol implementation provided by an external module remains a residual stub fallback in the dispatch, alongside a directly dispatched local implementation.
+#---
+defprotocol Sizer do
+  def size(value)
+end
+
+defimpl Sizer, for: Integer do
+  def size(value), do: 1
+end
+
+def describe(value), do: Sizer.size(value)
+
+def main() do
+  case [7, 1.0] do
+    [a, b] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end

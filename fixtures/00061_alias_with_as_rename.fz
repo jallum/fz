@@ -1,0 +1,14 @@
+#---
+# purpose: an alias declared with `as:` renames a module to a custom short name at call sites.
+#---
+defmodule Long do
+  defmodule Path do
+    def f(x), do: x
+  end
+end
+defmodule User do
+  alias Long.Path, as: P
+  def caller(), do: P.f(9)
+end
+
+def main(), do: dbg(User.caller())

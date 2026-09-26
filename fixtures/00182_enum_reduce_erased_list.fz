@@ -1,0 +1,7 @@
+#---
+# purpose: a broadly declared [any] parameter still carries its concrete caller witness through Enum.reduce to int
+#---
+@spec test([any]) :: integer
+def test(list), do: Enum.reduce(list, 0, &Kernel.+/2)
+
+def main(), do: test([1, 2, 3])

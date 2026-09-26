@@ -1,0 +1,16 @@
+#---
+# purpose: a protocol's domain type narrows to a concrete-element subtype at the call site.
+#---
+defprotocol Enumerable do
+  def reduce(enumerable, acc, reducer)
+end
+
+defimpl Enumerable, for: List do
+  def reduce(list, acc, reducer), do: acc
+end
+
+defmodule Consumer do
+  def use(xs), do: 1
+end
+
+def main(), do: dbg(Consumer.use([1, 2, 3]))

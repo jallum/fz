@@ -1,0 +1,4 @@
+#---
+# purpose: plain integer arithmetic does not trigger the opaque-arithmetic diagnostic.
+#---
+def main(), do: 1 + 1

@@ -1,0 +1,8 @@
+#---
+# purpose: a non-tail direct call to add1 is fused into the same block as its caller.
+#---
+def add1(n) do n + 1 end
+
+def main() do
+  dbg(add1(41))
+end

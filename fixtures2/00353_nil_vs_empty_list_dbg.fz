@@ -1,4 +1,0 @@
-def main() do
-  dbg(nil)
-  dbg([])
-end

@@ -1,9 +1,0 @@
-defprotocol P do
-  def each(value)
-end
-
-defimpl P, for: List do
-  def each(value), do: value
-end
-
-def main(), do: P.each(42)

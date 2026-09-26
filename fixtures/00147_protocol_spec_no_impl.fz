@@ -1,0 +1,16 @@
+#---
+# purpose: an @spec with a protocol-domain parameter type still resolves for an argument whose type has no known impl; protocol-domain membership is not currently enforced at spec-validation time
+#---
+defprotocol Enumerable do
+  def reduce(enumerable, acc, reducer)
+end
+
+defimpl Enumerable, for: List do
+  def reduce(list, acc, reducer), do: acc
+end
+
+defmodule M do
+  @spec use(Enumerable.t(integer)) :: integer
+  def use(xs), do: 1
+end
+def main(), do: dbg(M.use(1))

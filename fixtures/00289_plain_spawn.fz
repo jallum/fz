@@ -1,0 +1,7 @@
+#---
+# purpose: spawning a zero-arity function returns a pid identifying the child process
+#---
+def child(), do: nil
+def main() do
+  assert(spawn(child) == 2, "plain spawn of a zero-arity function returns a pid")
+end

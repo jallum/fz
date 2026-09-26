@@ -1,0 +1,14 @@
+#---
+# purpose: a receive inside a spawned lambda does not leak into the enclosing function
+#---
+def p(parent) do
+  spawn(fn () -> send(parent, receive do x -> x end) end)
+end
+def main() do
+  parent = self()
+  p(parent)
+  send(2, 55)
+  result = receive do x -> x end
+  assert(result == 55, "p/1 returns without blocking; the spawned lambda's own receive relays the value")
+  result
+end

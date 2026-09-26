@@ -1,0 +1,11 @@
+#---
+# purpose: a cross-module import whose provider module is never submitted leaves the root permanently unresolved
+# expect: diagnostic
+# diagnostic.code: resolve/unknown-import
+#---
+defmodule User do
+  import Math, only: [add: 2]
+  @spec run(integer, integer) :: integer
+  def run(x, y), do: add(x, y)
+end
+def main(), do: User.run(1, 2)

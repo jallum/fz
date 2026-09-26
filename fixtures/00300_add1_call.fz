@@ -1,0 +1,5 @@
+#---
+# purpose: a function call passes its argument and returns the computed result
+#---
+def add1(n), do: n + 1
+def main(), do: assert(add1(41) == 42, "a function call passes its argument and returns the computed result")

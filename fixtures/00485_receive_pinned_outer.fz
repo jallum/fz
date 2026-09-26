@@ -1,0 +1,14 @@
+#---
+# purpose: a pinned variable in a receive pattern resolves from the outer scope
+#---
+def rx_pinned(want) do
+  receive do
+    {^want, payload} -> payload
+  end
+end
+def main() do
+  send(self(), {:x, 42})
+  result = rx_pinned(:x)
+  assert(result == 42, "the pinned ^want resolves from rx_pinned's own parameter")
+  result
+end

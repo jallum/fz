@@ -1,0 +1,10 @@
+#---
+# purpose: a macro expansion splices a call to a regular function
+#---
+def helper(x) do x * 3 end
+defmacro use_helper(x) do
+  quote do: helper(unquote(x))
+end
+def main() do
+  assert(use_helper(7) == 21, "use_helper(7) splices helper(7)")
+end
