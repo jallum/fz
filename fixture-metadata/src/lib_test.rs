@@ -1,7 +1,7 @@
 use super::{
-    BudgetAssertion, EdgeAssertion, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata,
-    FixtureMatrixPath, FixtureMetadata, FixtureRoot, MetricAssertion, PathDeferral, PathTimeout,
-    fixture_matrix_paths_from_filename, parse_fixture_metadata,
+    EdgeAssertion, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata, FixtureMatrixPath,
+    FixtureMetadata, FixtureRoot, MetricAssertion, PathDeferral, PathTimeout, fixture_matrix_paths_from_filename,
+    parse_fixture_metadata,
 };
 use std::path::Path;
 
@@ -26,7 +26,6 @@ fn fixture_metadata_parser_reads_matrix_and_compiler_keys_together() {
 # defer.build: native tail delivery still red
 # oracle: closure.oracle.exs
 # timeout.interp_secs: 15
-# budget.codegen.instructions: 17
 # root: main/0
 # assert.metric.semantic.callsites: 2
 # assert.edge: main/0[] | @66-71 | closure | main/0::lambda[@14-33]/1
@@ -51,10 +50,6 @@ def main(), do: 42
                     rationale: "native tail delivery still red".to_string(),
                 }],
                 oracle: Some("closure.oracle.exs".to_string()),
-                budget_assertions: vec![BudgetAssertion {
-                    name: "budget.codegen.instructions".to_string(),
-                    expected: 17,
-                }],
                 path_timeouts: vec![PathTimeout {
                     path: FixtureMatrixPath::Interp,
                     seconds: 15,
@@ -149,6 +144,24 @@ fn fixture_metadata_parser_rejects_unknown_and_duplicate_keys() {
     assert!(
         err.to_string().contains("unknown fixtures2 frontmatter key"),
         "the grammar should stay explicit: {err}",
+    );
+}
+
+#[test]
+fn fixture_metadata_parser_rejects_budget_keys_because_nothing_checks_them() {
+    // A budget line read like a compiler-shape pin while pinning nothing.
+    // Shape claims are contract metrics (`assert.metric.*`) instead.
+    let err = parse_fixture_metadata(
+        r#"#---
+# budget.codegen.functions: 34
+#---
+"#,
+    )
+    .expect_err("a budget key is not part of the grammar");
+    assert!(
+        err.to_string()
+            .contains("unknown fixtures2 frontmatter key `budget.codegen.functions`"),
+        "a budget key should fail loudly rather than pose as a pin: {err}",
     );
 }
 

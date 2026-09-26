@@ -995,26 +995,5 @@ fn source_same(left: &FunctionSource, right: &FunctionSource) -> bool {
 }
 
 #[cfg(test)]
-mod reconcile_test {
-    use super::monotonic;
-
-    // The reconcile contract: the stored value is always the incoming one
-    // (fresh content is never dropped), and changed is true iff the new value
-    // differs from the current — where `None` ("not yet computed") always counts
-    // as a difference.
-    #[test]
-    fn monotonic_signals_changed_only_when_the_value_moves() {
-        let eq = |a: &u32, b: &u32| a == b;
-        assert_eq!(monotonic(None, 5, eq), (5, true), "first computation is always changed");
-        assert_eq!(
-            monotonic(Some(&5), 5, eq),
-            (5, false),
-            "an unchanged value is not changed"
-        );
-        assert_eq!(
-            monotonic(Some(&5), 7, eq),
-            (7, true),
-            "a different value is changed and stores the incoming value"
-        );
-    }
-}
+#[path = "identity_test.rs"]
+mod identity_test;

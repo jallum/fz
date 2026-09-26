@@ -1,6 +1,6 @@
-use super::identity::DeclaredCallableKind;
-use super::quoted_surface::ScopeSurface;
-use super::{
+use super::super::identity::DeclaredCallableKind;
+use super::super::quoted_surface::ScopeSurface;
+use super::super::{
     CodeMap, CodeState, FunctionMap, FunctionSource, FunctionState, Horizon, ModuleId, ModuleMap, ModuleState,
     NamespaceStore, NamespaceSymbol, QuotedCodeSource, QuotedSourceRoot, parse_quoted_program,
 };
@@ -66,7 +66,7 @@ fn function_denotation_is_retained_across_new_functions_and_generated_sites() {
 #[test]
 fn callable_origin_orders_by_source_fields_and_numeric_arity_independent_of_mint_order() {
     for reverse in [false, true] {
-        let mut world = super::World::new();
+        let mut world = super::super::World::new();
         let arities = if reverse { [10, 2] } else { [2, 10] };
         let ids = arities.map(|arity| world.reference_function(ModuleId::GLOBAL, "same", arity));
         let (two, ten) = if reverse { (ids[1], ids[0]) } else { (ids[0], ids[1]) };
@@ -257,7 +257,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     let peer = functions.reference_generated(add_def, math_def, crate::ast::LambdaOccurrence::from_u32(6), 1);
     assert_ne!(generated, peer, "same-range structural peers are distinct occurrences");
     let generated_ref = functions.reference_for(generated);
-    let super::identity::FunctionOrigin::Generated { owner, occurrence } = &generated_ref.origin else {
+    let super::super::identity::FunctionOrigin::Generated { owner, occurrence } = &generated_ref.origin else {
         panic!("generated callable has typed origin");
     };
     assert!(std::sync::Arc::ptr_eq(
@@ -604,9 +604,9 @@ fn compiler2_activation_key_from_inputs_results_in_addressed_result_alpha_not_no
     // `none`, like `any`, must be EARNED from evidence, never used as a fallback
     // for an unknown; a not-yet-computed return is a distinct cell (a var), not
     // the empty type. (fz-f98.14.10.1, [[unknown-is-not-none]].)
-    use super::ExecutableNeed;
-    use super::identity::{ActivationKey, FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
-    use super::types::Types;
+    use super::super::ExecutableNeed;
+    use super::super::identity::{ActivationKey, FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
+    use super::super::types::Types;
 
     let mut types = Types::new();
     let int = types.int();
@@ -681,4 +681,29 @@ fn a_declared_callable_kind_is_the_latest_declaration() {
         None,
         "declaring one key says nothing about another"
     );
+}
+
+#[cfg(test)]
+mod reconcile_test {
+    use super::super::monotonic;
+
+    // The reconcile contract: the stored value is always the incoming one
+    // (fresh content is never dropped), and changed is true iff the new value
+    // differs from the current — where `None` ("not yet computed") always counts
+    // as a difference.
+    #[test]
+    fn monotonic_signals_changed_only_when_the_value_moves() {
+        let eq = |a: &u32, b: &u32| a == b;
+        assert_eq!(monotonic(None, 5, eq), (5, true), "first computation is always changed");
+        assert_eq!(
+            monotonic(Some(&5), 5, eq),
+            (5, false),
+            "an unchanged value is not changed"
+        );
+        assert_eq!(
+            monotonic(Some(&5), 7, eq),
+            (7, true),
+            "a different value is changed and stores the incoming value"
+        );
+    }
 }
