@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
@@ -10,6 +8,26 @@ use super::super::identity::{ActivationKey, ExecutableKey, RootId, RootKind};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, TargetDemandContribution};
 use super::super::world::World;
+
+/// The facts `seed_root` cannot conclude without: the entry function's
+/// definition, then the two facts `activation_key` reads to mint the entry
+/// activation. Both rungs are named from the root alone, so the scheduler
+/// checks them before ever starting a never-run `SeedRoot`
+/// (`Job::missing_gates`).
+pub(super) fn seed_root_gates(world: &World, root_id: RootId) -> Vec<FactKey> {
+    let function = world.root_entry(root_id).function;
+    if world.function_defined_revision(function).is_none() {
+        return vec![FactKey::FunctionDefined(function)];
+    }
+    let mut gates = Vec::new();
+    if !world.has_fact(&FactKey::Recursive(function)) {
+        gates.push(FactKey::Recursive(function));
+    }
+    if !world.has_fact(&FactKey::InputDemand(function)) {
+        gates.push(FactKey::InputDemand(function));
+    }
+    gates
+}
 
 /// Seeds one semantic root once its entry definition exists.
 ///
@@ -23,26 +41,18 @@ pub(super) fn seed_root(
 ) -> Result<JobEffects, FatalError> {
     let root = world.root_entry(root_id);
     let root_fact = FactKey::RootEntry(root_id);
-    let mut reads = Vec::new();
-    let mut waits = HashSet::new();
     let mut outputs = vec![root_fact];
 
-    let function_fact = FactKey::FunctionDefined(root.function);
-    let Some(_function_revision) = world.function_defined_revision(root.function) else {
-        // `FunctionDefined`'s sole producer arm (`Job::DefineFunction`, in
-        // `World::demand_fact_producer`) covers this wait; this call site no
-        // longer forwards the push half of the returned effects.
-        let wait = world.wait_for_function_definition(root.function);
-        waits.extend(wait.waits.into_iter().map(|fact_use| fact_use.into_fact()));
+    let gates = seed_root_gates(world, root_id);
+    if !gates.is_empty() {
         return Ok(JobEffects {
-            reads: settled_uses(reads),
-            waits: settled_uses(waits),
+            waits: settled_uses(gates),
             outputs,
             ..JobEffects::default()
         });
-    };
+    }
 
-    reads.push(function_fact);
+    let mut reads = vec![FactKey::FunctionDefined(root.function)];
     let (_, surface) = world.function_definition(root.function);
     if root.kind == RootKind::Runtime && surface.is_macro {
         return Err(emit_root_error(
@@ -66,14 +76,8 @@ pub(super) fn seed_root(
             ),
         ));
     }
-    if !world.require_activation_key_facts(root.function, &mut reads, &mut waits) {
-        return Ok(JobEffects {
-            reads: settled_uses(reads),
-            waits: settled_uses(waits),
-            outputs,
-            ..JobEffects::default()
-        });
-    }
+    reads.push(FactKey::Recursive(root.function));
+    reads.push(FactKey::InputDemand(root.function));
 
     let entry_activation = world.activation_key(root_id, root.function, &root.input);
     let activation_fact = FactKey::Activation(entry_activation.clone());
@@ -85,8 +89,8 @@ pub(super) fn seed_root(
     };
     outputs.push(FactKey::Executable(entry_executable.clone()));
     // LowerFunction/PlanEntryDispatch are not re-emitted here: reaching this
-    // point means `require_activation_key_facts` above already observed both
-    // `Recursive(function)` and `InputDemand(function)` settled, and their
+    // point means `seed_root_gates` above already observed both
+    // `Recursive(function)` and `InputDemand(function)` present, and their
     // producers (`derive_call_graph_component`, `derive_input_demand`) only
     // conclude after `LoweredBody`/`EntryDispatch` exist -- so those jobs have
     // already run. First-run demand for them lives in

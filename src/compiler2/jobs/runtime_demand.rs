@@ -104,18 +104,32 @@ struct CallableFlowPlan {
     escape: bool,
 }
 
+/// The one fact `derive_runtime_demand_fact` cannot conclude without: the
+/// executable's own facts, SETTLED rather than merely present -- this
+/// derivation reads the executable's frozen shape, not a still-moving draft
+/// of it.
+pub(super) fn derive_runtime_demand_gates(world: &World, executable: &ExecutableKey) -> Vec<FactKey> {
+    let executable_fact = FactKey::ExecutableFacts(executable.clone());
+    if world.fact_is_settled(&executable_fact) {
+        Vec::new()
+    } else {
+        vec![executable_fact]
+    }
+}
+
 pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     world: &mut World,
     _tel: &T,
     executable: &ExecutableKey,
 ) -> Result<JobEffects, FatalError> {
-    let executable_fact = FactKey::ExecutableFacts(executable.clone());
-    if !world.fact_is_settled(&executable_fact) {
+    let gates = derive_runtime_demand_gates(world, executable);
+    if !gates.is_empty() {
         return Ok(JobEffects {
-            waits: settled_uses([executable_fact]),
+            waits: settled_uses(gates),
             ..JobEffects::default()
         });
     }
+    let executable_fact = FactKey::ExecutableFacts(executable.clone());
     let facts = Rc::clone(
         world
             .executable_facts(executable)

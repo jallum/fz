@@ -2144,16 +2144,24 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // removes one formula, one wake and one blocked prerequisite per
             // reached function; the readiness and runtime-demand classes are
             // untouched.
-            evaluations: 399,
+            // A job gated on a fact its subject already carries never
+            // starts to discover that fact missing, then wake once the
+            // fact lands (`Job::missing_gates`).
+            // fz-afu.2: 306 -> 304. `World::submit_root` no longer enqueues
+            // `SeedRoot` directly, so `SeedRoot(main)` no longer rediscovers
+            // its own gate chain hop by hop, removing its two blocked-only
+            // runs (the same two `transport_contract_test.rs`'s
+            // `EXPECTED_00181_NO_DUMP_JOB_STARTS` drops for this fixture).
+            evaluations: 304,
             runtime_demand_evaluations: 39,
             initial: 205,
-            content_caused: 194,
+            content_caused: 99,
             readiness_caused: 0,
             uncaused: 0,
-            changed_outputs: 254,
-            unchanged_outputs: 145,
-            wakes: 208,
-            blocked_completions: 170,
+            changed_outputs: 251,
+            unchanged_outputs: 53,
+            wakes: 113,
+            blocked_completions: 75,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );

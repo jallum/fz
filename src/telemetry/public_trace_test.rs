@@ -1212,6 +1212,7 @@ fn retained_session_work_is_reported_per_request_instead_of_replaying_the_cold_s
     assert_eq!(unchanged.producer_pokes, 0);
     assert_eq!(unchanged.ignition, 0);
     assert_eq!(unchanged.changed_revision_wake, 0);
+    assert_eq!(unchanged.root_frontier, 0);
     assert_eq!(unchanged.activation_frontier, 0);
     assert_eq!(unchanged.blocked_waiter_expansion, 0);
     assert_eq!(unchanged.unsanctioned_work_starts, 0);
@@ -1222,6 +1223,7 @@ fn retained_session_work_is_reported_per_request_instead_of_replaying_the_cold_s
     assert_eq!(run.sessions.producer_pokes, cold.producer_pokes);
     assert_eq!(run.sessions.ignition, cold.ignition);
     assert_eq!(run.sessions.changed_revision_wake, cold.changed_revision_wake);
+    assert_eq!(run.sessions.root_frontier, cold.root_frontier);
     assert_eq!(run.sessions.activation_frontier, cold.activation_frontier);
     assert_eq!(run.sessions.blocked_waiter_expansion, cold.blocked_waiter_expansion);
     assert_eq!(run.sessions.unsanctioned_work_starts, cold.unsanctioned_work_starts);
@@ -1233,17 +1235,29 @@ fn retained_session_work_is_reported_per_request_instead_of_replaying_the_cold_s
 /// `work_starts_blocked_waiter_expansion`) says how many work starts were a
 /// blocked-waiter expansion, but never which fact drove any one of them.
 /// This test pins the whole chain from the public log alone, for
-/// `TWO_FORMULA_SOURCE`'s deterministic first stall: `main/0` (function id
-/// 0, the root's own entry function) is submitted before its `FunctionDefined`
-/// fact exists, so the root's `SeedRoot` blocks on it and the very first
-/// stall pass demands its producer.
+/// `TWO_FORMULA_SOURCE`'s deterministic first stall that actually names a
+/// fact: `main/0` (function id 0) calls `helper/1` (function id 1) before
+/// `helper/1`'s own `FunctionDefined` fact exists, discovered while scoping
+/// `main/0`'s body, so a real waiter blocks on it and a stall pass demands
+/// its producer.
+///
+/// `main/0`'s own startup no longer stalls at all (fz-afu.2):
+/// `World::submit_root` demands `RootEntry` through the same gate-checked
+/// path every other job uses, so `SeedRoot(main)`'s gate chain is walked --
+/// and its bottom-most startable job enqueued -- synchronously at
+/// `submit_root` time, before `drive()` ever reaches a stall pass. The
+/// earliest `demand_on_stall` events in this trace are the standing
+/// `root_frontier`/`activation_frontier` sweeps re-poking that already-queued
+/// chain (`producer_pokes >= 1` with an empty `demanded_facts.facts`, since
+/// those two sweeps don't feed the blocked-waiter fact list); the first stall
+/// that actually names a fact is `helper/1`'s.
 ///
 /// (a) `demand_on_stall` is public at all (today it is not in the
 /// allowlist, so this alone is the red assertion), with at least one
 /// producer poked; (b) its `demanded_facts.facts` array names the exact
-/// fact — `{"kind":"FunctionDefined","function_id":0}` — with
+/// fact — `{"kind":"FunctionDefined","function_id":1}` — with
 /// `"reason":"blocked_waiter_expansion"`; (c) the chain closes: a later
-/// `work_graph.applied` event's `completion` is `DefineFunction(0)`, the
+/// `work_graph.applied` event's `completion` is `DefineFunction(1)`, the
 /// job `World::demand_fact_producer` maps `FunctionDefined` to
 /// (drive.rs's fact->producer map).
 #[test]
@@ -1252,11 +1266,20 @@ fn demand_on_stall_names_the_exact_fact_and_closes_to_its_producer() {
     assert!(matches!(trace.outcome, DriveOutcome::Resolved));
 
     let events = trace.events();
+    let pinned_fact = serde_json::json!({"kind": "FunctionDefined", "function_id": 1});
     let (stall_index, stall_event) = events
         .iter()
         .enumerate()
-        .find(|(_, ev)| named(ev, &["fz", "compiler2", "drive", "demand_on_stall"]))
-        .unwrap_or_else(|| panic!("expected a public fz.compiler2.drive.demand_on_stall event"));
+        .find(|(_, ev)| {
+            named(ev, &["fz", "compiler2", "drive", "demand_on_stall"])
+                && ev.metadata_key("demanded_facts").is_some_and(|demanded| {
+                    demanded
+                        .get("facts")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|facts| facts.contains(&pinned_fact))
+                })
+        })
+        .unwrap_or_else(|| panic!("expected a public fz.compiler2.drive.demand_on_stall event naming {pinned_fact}"));
 
     // (a) present, with a real producer poke.
     let producer_pokes = stall_event
@@ -1276,7 +1299,6 @@ fn demand_on_stall_names_the_exact_fact_and_closes_to_its_producer() {
         .get("facts")
         .and_then(|v| v.as_array())
         .unwrap_or_else(|| panic!("demanded_facts missing a facts array: {demanded_facts:?}"));
-    let pinned_fact = serde_json::json!({"kind": "FunctionDefined", "function_id": 0});
     assert!(
         facts.contains(&pinned_fact),
         "expected demand_on_stall's demanded_facts.facts to contain {pinned_fact}, got {facts:?}"
@@ -1288,20 +1310,20 @@ fn demand_on_stall_names_the_exact_fact_and_closes_to_its_producer() {
         stall_event.metadata_key("reason")
     );
 
-    // (c) the chain closes: the fact->producer map sends `FunctionDefined(0)`
-    // to `Job::DefineFunction(0)` — a later public work_graph.applied event
+    // (c) the chain closes: the fact->producer map sends `FunctionDefined(1)`
+    // to `Job::DefineFunction(1)` — a later public work_graph.applied event
     // must run exactly that job.
     let closes_to_producer = events[stall_index + 1..].iter().any(|ev| {
         named(ev, &["fz", "compiler2", "work_graph", "applied"])
             && ev.metadata_key("completion").is_some_and(|completion| {
                 completion.get("kind").and_then(|v| v.as_str()) == Some("DefineFunction")
-                    && completion.get("function_id").and_then(|v| v.as_u64()) == Some(0)
+                    && completion.get("function_id").and_then(|v| v.as_u64()) == Some(1)
             })
     });
     assert!(
         closes_to_producer,
-        "expected a work_graph.applied event after the stall pass running DefineFunction(0), \
-         the producer FunctionDefined(0) maps to"
+        "expected a work_graph.applied event after the stall pass running DefineFunction(1), \
+         the producer FunctionDefined(1) maps to"
     );
 }
 
@@ -1679,14 +1701,20 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // no `compare/2` activation is minted (its rows in `ANALYSIS_CLAIM_RATCHET`
     // say so) and the StaticCallees evaluations and blocks count only the
     // numeric families' callee layers.
-    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 67, 25, 127, 64),
+    // A job gated on a fact its subject already carries never starts to
+    // discover that fact missing, then wake once the fact lands
+    // (`Job::missing_gates`).
+    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 61, 19, 63, 0),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
     // `==` carries a typed clause per numeric pair, and this fixture reaches
     // four of them; the callees of each are derived once, so they add
     // StaticCallees work and no component work.
-    ("fixtures2/behavior/enum_predicate_search.fz", 75, 12, 170, 89),
+    // A job gated on a fact its subject already carries never starts to
+    // discover that fact missing, then wake once the fact lands
+    // (`Job::missing_gates`).
+    ("fixtures2/behavior/enum_predicate_search.fz", 71, 8, 81, 0),
     // fz-5xp.6: `Range.count` uses `div/2`, so fewer bodies are extracted.
     // fz-5xp.30: 126 -> 128 component evaluations. The reached arithmetic
     // result/status helpers are ordinary generic calls.
@@ -1695,7 +1723,10 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // Publishing a function's source one round earlier leaves it
     // present-but-dirty while the scope walk that published it is still
     // blocked; one extraction blocks once more on that earlier-visible body.
-    ("fixtures2/behavior/enum_take_drop_split.fz", 129, 26, 274, 141),
+    // A job gated on a fact its subject already carries never starts to
+    // discover that fact missing, then wake once the fact lands
+    // (`Job::missing_gates`).
+    ("fixtures2/behavior/enum_take_drop_split.fz", 122, 19, 133, 0),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -2127,7 +2158,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // causal work stays exact.
         // Deleting the source-copy job removes one semantic evaluation per
         // reached function.
-        total_evaluations: 1048,
+        // A job gated on a fact its subject already carries never starts to
+        // discover that fact missing, then wake once the fact lands
+        // (`Job::missing_gates`).
+        // fz-afu.2: 847 -> 845. `World::submit_root` no longer enqueues
+        // `SeedRoot` directly; `SeedRoot(main)`'s gate chain no longer
+        // rediscovers itself hop by hop, removing its two blocked-only runs.
+        total_evaluations: 845,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -2216,7 +2253,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // reached formulas to this total.
         // Deleting the source-copy job removes one semantic evaluation per
         // reached function.
-        total_evaluations: 1425,
+        // A job gated on a fact its subject already carries never starts to
+        // discover that fact missing, then wake once the fact lands
+        // (`Job::missing_gates`).
+        // fz-afu.2: 1172 -> 1170. `World::submit_root` no longer enqueues
+        // `SeedRoot` directly; `SeedRoot(main)`'s gate chain no longer
+        // rediscovers itself hop by hop, removing its two blocked-only runs.
+        total_evaluations: 1170,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2337,7 +2380,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // present-but-dirty while the scope walk that published it is still
         // blocked, where before it was absent; five more DeriveInputDemand
         // completions rebase on that earlier-visible, still-moving ground.
-        shifts: shifts(26, 85),
+        // A job gated on a fact its subject already carries never starts to
+        // discover that fact missing, then wake once the fact lands
+        // (`Job::missing_gates`).
+        shifts: shifts(26, 83),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
         // the same change bought: the accumulator that used to widen to
@@ -2406,8 +2452,20 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // one is counted here; equal reproductions stay at 15.
         // Two analyses fewer: their inputs settle without the intermediate
         // source-copy conclusion between them.
-        analyze_evaluations: 900,
+        // fz-afu.2: 900 -> 902. `List.reduce_while_cont/3` and
+        // `Range.reduce_while_cont/6` each gain one run. Before gating, two
+        // of a formula's blocked inputs happened to land in the same drain
+        // pass and woke it once for both; a gate now names and resolves each
+        // one independently, so the two arrivals wake it separately. Both
+        // formulas reach the exact same final `ActivationAnalyzed` revision
+        // and the same never-settled outcome either way -- the split adds a
+        // wake, not a different answer.
+        analyze_evaluations: 902,
         analyze_zero_change: 16,
+        // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
+        // still missing no longer starts to discover that fact missing --
+        // this fixture's deep call graph is where the removed starts pile
+        // up, dwarfing the two extra `AnalyzeActivation` wakes above.
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
         // typed ordering removes the fifteen analyses above.
@@ -2425,7 +2483,17 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // and no `binary` clause analyses; the claim populations stay put.
         // Deleting the source-copy job removes one semantic evaluation per
         // reached function.
-        total_evaluations: 2360,
+        // fz-afu.2: 1949 -> 1947. `World::submit_root` no longer enqueues
+        // `SeedRoot` directly; `SeedRoot(main)`'s gate chain no longer
+        // rediscovers itself hop by hop, removing its two blocked-only runs.
+        // `analyze_evaluations` (902) and `analyze_zero_change` (16) above
+        // are unaffected: `AnalyzeActivation` declares no gate at all
+        // (`jobs/mod.rs`'s `missing_gates` dispatch has no arm for it, so it
+        // falls into the empty-gates catch-all), so the two wakes that split
+        // 900 to 902 are ordinary changed-revision re-wakes from its own
+        // prior `reads`, ungated by construction -- not gates this ticket
+        // could have named.
+        total_evaluations: 1947,
     },
 ];
 

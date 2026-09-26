@@ -716,7 +716,17 @@ impl World {
     fn demand_producer_if_needed(&mut self, job: Job, target_fact: &FactKey, reason: WorkStartReason) -> bool {
         if !self.work_graph.has_run(&job) {
             // Never run: no wake source exists yet, so only a fresh demand
-            // can start it.
+            // can start it -- but only once its own gates are satisfied
+            // (`Job::missing_gates`). A job whose gate is missing is not
+            // started; the missing gate's producer is demanded instead, so
+            // the gate's own wake reaches this job the ordinary way once it
+            // lands, instead of spending a run to discover what was already
+            // knowable from the subject alone.
+            let gates = job.missing_gates(self);
+            if !gates.is_empty() {
+                let demanded: u64 = gates.iter().map(|gate| self.demand_fact_producer(gate, reason)).sum();
+                return demanded > 0;
+            }
             self.work_graph.enqueue(job, reason);
             return true;
         }
@@ -883,11 +893,36 @@ impl World {
         demanded
     }
 
-    /// Pops the next ready job, expanding the two standing demand sources when
-    /// the agenda has drained: published root-entry/caller-discovered-callee
-    /// activations and blocked waiters' fact->producer expansions. Every job
-    /// loop (the bare drive and the product fact-wait loops) pulls through this,
-    /// so first-run ignition is owned by the scheduler boundary, not by any
+    /// Expands the standing demand every submitted root carries: a root
+    /// whose `SeedRoot` job has never run is a standing demand for its own
+    /// gate chain, the same shape as `demand_activation_frontier_analyses`
+    /// above for a published activation without an analysis.
+    /// `World::submit_root` no longer enqueues `SeedRoot` directly — its own
+    /// call demands `RootEntry` through the same gate-checked path every
+    /// other job uses, and this sweep is what keeps demanding it on later
+    /// drains if that first demand redirected to a gate that was still
+    /// unmet. Retires each root once its `SeedRoot` has run. Returns how
+    /// many were demanded.
+    pub(crate) fn demand_root_frontier_seeds(&mut self) -> u64 {
+        let mut demanded = 0_u64;
+        let mut roots = self.root_frontier_keys();
+        roots.sort();
+        for root in roots {
+            if self.work_graph.has_run(&Job::SeedRoot(root)) {
+                self.retire_root_frontier(&root);
+                continue;
+            }
+            demanded += self.demand_fact_producer(&FactKey::RootEntry(root), WorkStartReason::RootFrontier);
+        }
+        demanded
+    }
+
+    /// Pops the next ready job, expanding the three standing demand sources
+    /// when the agenda has drained: submitted roots not yet seeded,
+    /// published root-entry/caller-discovered-callee activations, and
+    /// blocked waiters' fact->producer expansions. Every job loop (the bare
+    /// drive and the product fact-wait loops) pulls through this, so
+    /// first-run ignition is owned by the scheduler boundary, not by any
     /// job's follow-up.
     pub(crate) fn next_ready_job(&mut self, sessions: Option<&super::pull::ProductSessions>) -> Option<Job> {
         if let Some(job) = self.work_graph.pop() {
@@ -897,7 +932,7 @@ impl World {
         if let Some(job) = self.work_graph.pop() {
             return Some(job);
         }
-        let ignited = self.demand_activation_frontier_analyses();
+        let ignited = self.demand_root_frontier_seeds() + self.demand_activation_frontier_analyses();
         if ignited > 0
             && let Some(job) = self.work_graph.pop()
         {
@@ -1026,9 +1061,11 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                     ExecutionContext::new(world, tel).flush_reported_warnings();
                     break 'outcome DriveOutcome::Resolved;
                 }
-                // The agenda drained. Two standing demand sources remain, both
-                // pulls: every published activation not yet analyzed demands its
-                // own analysis (`demand_activation_frontier_analyses`), and every
+                // The agenda drained. Three standing demand sources remain,
+                // all pulls: every submitted root not yet seeded demands its
+                // own `SeedRoot` (`demand_root_frontier_seeds`), every
+                // published activation not yet analyzed demands its own
+                // analysis (`demand_activation_frontier_analyses`), and every
                 // blocked waiter's fact names its single producer through the
                 // fact->producer map — the same expansion the product drivers
                 // perform when a fact wait finds an empty agenda. Only a genuine
@@ -1052,7 +1089,8 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                 // before the demand expansions answers any settled questions
                 // left by the work that just quiesced.
                 world.settle_quiescent_waits(product_sessions.as_deref());
-                let mut producer_pokes = world.demand_activation_frontier_analyses();
+                let mut producer_pokes =
+                    world.demand_root_frontier_seeds() + world.demand_activation_frontier_analyses();
                 let unresolved = world.unresolved_waits();
                 for wait in &unresolved {
                     if let DependencyKey::Fact(fact) = wait.fact.fact()

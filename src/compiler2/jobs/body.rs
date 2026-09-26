@@ -233,6 +233,16 @@ enum ExprStep {
     },
 }
 
+/// The one fact `lower_function` cannot conclude without: the function's own
+/// definition.
+pub(super) fn lower_function_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
+    if world.function_defined_revision(function).is_none() {
+        vec![FactKey::FunctionDefined(function)]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Lowers one demanded function into Compiler2's structured body form.
 ///
 /// This job reads the frozen function definition and emits one reusable body
@@ -243,9 +253,9 @@ pub(super) fn lower_function(
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
 ) -> Result<JobEffects, FatalError> {
-    let Some(_) = world.function_defined_revision(function) else {
+    if !lower_function_gates(world, function).is_empty() {
         return Ok(world.wait_for_function_definition(function));
-    };
+    }
     let (source, surface) = world.function_definition(function);
 
     let mut reads = vec![FactKey::FunctionDefined(function)];

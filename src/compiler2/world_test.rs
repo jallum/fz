@@ -1400,9 +1400,16 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     let mut world = World::new();
     let mut sessions = super::pull::ProductSessions::default();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
-    // Take the submit-root ignition out of the agenda: this test isolates the
-    // stall pass, so nothing may be ready when the drive starts.
-    assert_eq!(world.work_graph.pop(), Some(Job::SeedRoot(root)));
+    // `submit_root` demands `RootEntry` through the same gate-checked path
+    // every other job uses (fz-afu.2): a submitted root now carries a
+    // standing demand (`drive::demand_root_frontier_seeds`) that keeps
+    // re-poking `SeedRoot`'s gate chain on every later stall until it has
+    // actually run, so `main/0` can no longer be starved by discarding its
+    // seed job once (that would leave it unresolved forever and pollute the
+    // isolated stall pass below). Defining it here settles it for real,
+    // before the isolated stall pass under test; `root` is otherwise used
+    // only as an identity namespace for the activation keys fabricated below.
+    world.submit_code(Some("main.fz".to_string()), "def main(), do: 0\n".to_string());
     world.submit_code(Some("stall.fz".to_string()), "def echoval(a), do: a\n".to_string());
     let function = world.reference_function(ModuleId::GLOBAL, "echoval", 1);
     // Settle echoval/1's own facts up front (outside the isolated stall pass
@@ -1475,9 +1482,17 @@ fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
     let mut world = World::new();
     let mut sessions = super::pull::ProductSessions::default();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
-    // The root's own seed is taken out of the agenda: this test isolates the
-    // producer map, so nothing but the manipulation below drives the world.
-    assert_eq!(world.work_graph.pop(), Some(Job::SeedRoot(root)));
+    // `submit_root` demands `RootEntry` through the same gate-checked path
+    // every other job uses (fz-afu.2): a submitted root now carries a
+    // standing demand (`drive::demand_root_frontier_seeds`) that keeps
+    // re-poking `SeedRoot`'s gate chain on every later stall until it has
+    // actually run, the same way `activation_frontier` does for a published
+    // activation -- so `main/0` can no longer be starved by discarding its
+    // seed job once. Defining it here, alongside the callee/caller pair,
+    // lets it settle for real through the ordinary pipeline instead of being
+    // artificially suppressed; the rest of this test only uses `root` as an
+    // identity namespace for the activation keys it fabricates below.
+    world.submit_code(Some("main.fz".to_string()), "def main(), do: 0\n".to_string());
     world.submit_code(
         Some("callee.fz".to_string()),
         "def echoval(a), do: a\n\ndef ask(a), do: echoval(a)\n".to_string(),

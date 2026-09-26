@@ -465,6 +465,7 @@ pub struct SessionWork {
     pub producer_pokes: u64,
     pub ignition: u64,
     pub changed_revision_wake: u64,
+    pub root_frontier: u64,
     pub activation_frontier: u64,
     pub blocked_waiter_expansion: u64,
     pub unsanctioned_work_starts: u64,
@@ -1625,6 +1626,7 @@ impl Replay {
         tally.producer_pokes += count("producer_pokes");
         tally.ignition += count("work_starts_ignition");
         tally.changed_revision_wake += count("work_starts_changed_revision_wake");
+        tally.root_frontier += count("work_starts_root_frontier");
         tally.activation_frontier += count("work_starts_activation_frontier");
         tally.blocked_waiter_expansion += count("work_starts_blocked_waiter_expansion");
         tally.unsanctioned_work_starts += count("unsanctioned_work_starts");
