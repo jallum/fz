@@ -814,7 +814,7 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
                         continue;
                     }
                     producer_pokes += world.demand_fact_producer(fact.fact(), WorkStartReason::BlockedWaiterExpansion);
-                    let job = world.work_graph.pop();
+                    let job = world.pop_runnable();
                     let Some(job) = job else {
                         return Err(E::no_ready_producer(world, tel, root, fact));
                     };
@@ -883,6 +883,7 @@ fn apply_quiescence<T: crate::telemetry::RawSpanTelemetry>(
 fn product_fact_wait_is_satisfied(world: &World, fact: &FactUse<FactKey>) -> bool {
     match fact.readiness() {
         FactReadiness::Current => world.fact_revision(fact.fact()).is_some(),
+        FactReadiness::Concluded => world.fact_is_concluded(fact.fact()),
         FactReadiness::Settled => world.fact_is_settled(fact.fact()),
     }
 }

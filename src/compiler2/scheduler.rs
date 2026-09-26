@@ -337,8 +337,18 @@ where
         let state = self.dependency_state(usage.fact(), external);
         match usage {
             FactUse::Current(_) => state.revision.is_some(),
+            FactUse::Concluded(key) => self.dependency_is_concluded(key, external),
             FactUse::Settled(_) => state.revision.is_some() && state.settled,
         }
+    }
+
+    /// Present with no publisher still deriving it. An external dependency
+    /// has no publishers here, so for it concluded and settled are one.
+    fn dependency_is_concluded(&self, key: &F, external: &impl ExternalDependencyStates<F>) -> bool {
+        external.external_state(key).map_or_else(
+            || self.facts.is_locally_settled(key),
+            |state| state.revision.is_some() && state.settled,
+        )
     }
 
     pub fn complete_ordered<Ctx>(
@@ -522,6 +532,11 @@ where
         self.deps.blocked(job)
     }
 
+    /// The waits `job`'s most recent completion left standing.
+    pub(crate) fn waits_for(&self, job: &P::Run) -> HashSet<FactUse<F>> {
+        self.deps.waits_for(job)
+    }
+
     pub fn waited_settled_facts(&self) -> Vec<F> {
         self.deps.waited_settled_facts()
     }
@@ -550,6 +565,12 @@ where
 
     pub fn pop(&mut self) -> Option<P::Run> {
         self.agenda.pop()
+    }
+
+    /// Leaves `job` waiting on `waits` without running it, as a run that
+    /// found those answers missing would have.
+    pub(crate) fn wait_without_running(&mut self, job: P::Run, waits: HashSet<FactUse<F>>) {
+        self.deps.replace_waits(job, waits);
     }
 
     /// Concluding replaces reads and claims; waiting extends them and leaves
@@ -705,6 +726,10 @@ where
     /// replacing fact's content change, or any change concluded by a rebased
     /// publisher can invalidate what readers derived.
     ///
+    /// A `Concluded` dependent hears a movement only once no publisher is
+    /// still deriving the fact: content that moves while a publisher is
+    /// deriving reaches it when that publisher concludes, as one movement.
+    ///
     /// A readiness-only change (the finality flips this ticket added, and the
     /// dirty/clean flips that were always here) reaches `Settled` subscribers
     /// ONLY. Sending it to `Current` subscribers
@@ -731,8 +756,10 @@ where
             // growing frontier on every iteration.
             let change =
                 take_next_fact_change(&mut pending_changes, ctx).expect("the non-empty change wave has a next fact");
-            if let Some(content_movement) = change.content_movement() {
-                let shift = content_movement == ContentMovement::Shift;
+            let content_shift = change
+                .content_movement()
+                .map(|movement| movement == ContentMovement::Shift);
+            if let Some(shift) = content_shift {
                 self.enqueue_dependents(
                     FactUse::current(change.key.clone()),
                     shift,
@@ -741,39 +768,48 @@ where
                     external,
                     ctx,
                 );
-                self.enqueue_dependents(
-                    FactUse::settled(change.key.clone()),
-                    shift,
+            } else if change.old_revision.is_none() && change.new_revision.is_some() {
+                // A cumulative fact's appearance at bottom moves no content,
+                // but it SATISFIES a `Current` wait (presence is the wait's
+                // whole question). Waiters only: subscribers read the value,
+                // and the value they would re-read is the same nothing.
+                self.wake_satisfied_waiters(
+                    FactUse::current(change.key.clone()),
                     &mut pending_changes,
                     &mut wakes,
                     external,
                     ctx,
                 );
-            } else {
-                // A cumulative fact's appearance at bottom moves no content,
-                // but it SATISFIES a `Current` wait (presence is the wait's
-                // whole question). Waiters only: subscribers read the value,
-                // and the value they would re-read is the same nothing.
-                if change.old_revision.is_none() && change.new_revision.is_some() {
-                    self.wake_satisfied_waiters(
-                        FactUse::current(change.key.clone()),
-                        false,
-                        &mut pending_changes,
-                        &mut wakes,
-                        external,
-                        ctx,
-                    );
-                }
-                if change.readiness_changed() {
-                    self.enqueue_dependents(
-                        FactUse::settled(change.key.clone()),
-                        false,
-                        &mut pending_changes,
-                        &mut wakes,
-                        external,
-                        ctx,
-                    );
-                }
+            }
+            if let Some(movement) = change.concluded_movement() {
+                self.enqueue_dependents(
+                    FactUse::concluded(change.key.clone()),
+                    movement == ContentMovement::Shift,
+                    &mut pending_changes,
+                    &mut wakes,
+                    external,
+                    ctx,
+                );
+            } else if change.conclusion_changed() && change.new_concluded {
+                // Concluding again with nothing moved tells a reader nothing
+                // new, but it satisfies a `Concluded` wait.
+                self.wake_satisfied_waiters(
+                    FactUse::concluded(change.key.clone()),
+                    &mut pending_changes,
+                    &mut wakes,
+                    external,
+                    ctx,
+                );
+            }
+            if content_shift.is_some() || change.readiness_changed() {
+                self.enqueue_dependents(
+                    FactUse::settled(change.key.clone()),
+                    content_shift.unwrap_or(false),
+                    &mut pending_changes,
+                    &mut wakes,
+                    external,
+                    ctx,
+                );
             }
             moved_keys.insert(change.key);
         }
@@ -1012,7 +1048,7 @@ where
     /// Edge-triggered transitive finality. `seeds` have just flipped quiet
     /// state; every JOB reading one of them gains or loses an unfinal
     /// read, and a job that flips takes its co-outputs with it.
-    /// A job reading both `Current(f)` and `Settled(f)` is adjusted twice,
+    /// A job reading `f` at several readiness levels is adjusted once per use,
     /// matching the fact uses counted by `count_unfinal_reads`.
     ///
     /// The wave is sign-uniform — a fact that just went unquiet can only make
@@ -1113,7 +1149,7 @@ where
             self.enqueue_step(job, &fact_use, shift, wakes);
         }
 
-        self.wake_satisfied_waiters(fact_use, shift, pending_changes, wakes, external, ctx);
+        self.wake_satisfied_waiters(fact_use, pending_changes, wakes, external, ctx);
     }
 
     /// The waiter half of a movement's dispatch, on its own so a PRESENCE
@@ -1122,10 +1158,13 @@ where
     /// presence (`revision.is_some()`), so a cumulative fact appearing at
     /// bottom satisfies it while moving no content -- the waiter must still
     /// run, or it is satisfied-and-asleep forever (fz-kdt.84 review).
+    ///
+    /// Satisfying a wait is never a shift: a waiter has not consumed the fact
+    /// it waits for. One that also read it is a subscriber, and the
+    /// subscriber half has already carried the shift.
     fn wake_satisfied_waiters<Ctx>(
         &mut self,
         fact_use: FactUse<F>,
-        shift: bool,
         pending_changes: &mut Vec<FactChange<F>>,
         wakes: &mut Vec<Wake<P::Run, F>>,
         external: &impl ExternalDependencyStates<F>,
@@ -1143,10 +1182,7 @@ where
             // it reopens that answer and no other.
             let own = P::of_run(&job);
             self.dirty_claims(&own, pending_changes, ctx);
-            if shift {
-                self.rebased.insert(own);
-            }
-            self.enqueue_step(job, &fact_use, shift, wakes);
+            self.enqueue_step(job, &fact_use, false, wakes);
         }
     }
 

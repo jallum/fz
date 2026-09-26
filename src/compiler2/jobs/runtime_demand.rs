@@ -6,7 +6,7 @@ use super::super::body::{
     LoweredEntry, LoweredStep, LoweredTail, ValueId, callsite_call_args, callsite_input_modes,
 };
 use super::super::callsite_dispatch::dispatch_stress;
-use super::super::drive::{FactKey, JobEffects, settled_uses};
+use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, settled_uses};
 use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, RuntimeDemandFacts};
 #[cfg(test)]
 use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
@@ -146,18 +146,14 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     let contribution = world.runtime_demand_input(executable).cloned();
     let has_owner = contribution.is_some();
     let contribution = contribution.unwrap_or_default();
+    let mut answers = CalleeAnswers::default();
     let peer_keys = direct_local_targets(&facts);
     let mut ordered_peers = peer_keys.into_iter().collect::<Vec<_>>();
     ordered_peers.sort_by(|left, right| left.semantic_cmp(right, world.types()));
     let mut peers = HashMap::new();
-    let mut peer_waits = Vec::new();
-    for peer in ordered_peers.iter().cloned() {
-        let fact = FactKey::RuntimeDemandInputs(peer.clone());
-        reads.push(FactUse::current(fact.clone()));
-        if let Some(demand) = world.runtime_demand_inputs(&peer) {
-            peers.insert(peer, demand.to_vec());
-        } else if peer != *executable {
-            peer_waits.push(FactUse::current(fact));
+    for peer in ordered_peers.iter() {
+        if let Some(demands) = answers.read(world, executable, peer, &mut reads) {
+            peers.insert(peer.clone(), demands);
         }
     }
     let own = RuntimeDemandOwnInput {
@@ -172,14 +168,14 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
             })
             .collect(),
     };
+    let mut calls_itself = ordered_peers.contains(executable);
     let mut input =
         RuntimeDemandFormulaInput::new(executable, &facts, world.runtime_demand_type_projections(), own, peers);
     let mut loaded_target_demands = ordered_peers.into_iter().collect::<HashSet<_>>();
     let mut callable_target_reads = HashSet::new();
     let mut runtime_demand_evaluations = 0;
-    let (mut derived, plans, unresolved_construction_targets, missing_target_demands) = loop {
-        runtime_demand_evaluations += 1;
-        let derived = derive_executable_runtime_demand(world.types(), &input);
+    let (mut derived, plans, unresolved_construction_targets) = loop {
+        let derived = derive_up_before_down(world.types(), &mut input, calls_itself, &mut runtime_demand_evaluations);
         let (plans, requested, unresolved) =
             plan_callable_flows(world, &input, &derived.callable_flows, &derived.demand);
         callable_target_reads.extend(requested);
@@ -200,7 +196,6 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
                 }
             }
         }
-        let mut missing_target_demands = HashSet::new();
         let mut exact_targets = plans
             .iter()
             .flat_map(|plan| plan.direct_edges.iter().chain(&plan.first_class_edges))
@@ -209,39 +204,37 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
         exact_targets.sort_by(|left, right| left.semantic_cmp(right, world.types()));
         exact_targets.dedup();
         for target in exact_targets {
-            if loaded_target_demands.insert(target.clone()) {
-                let fact = FactKey::RuntimeDemandInputs(target.clone());
-                reads.push(FactUse::current(fact));
-                if let Some(demand) = world.runtime_demand_inputs(&target) {
-                    input.current.target_inputs.insert(target, demand.to_vec());
-                    input_grew = true;
-                } else if target != *executable {
-                    missing_target_demands.insert(target);
-                }
-            } else if !input.current.target_inputs.contains_key(&target) && target != *executable {
-                missing_target_demands.insert(target);
+            if !loaded_target_demands.insert(target.clone()) {
+                continue;
+            }
+            if target == *executable {
+                calls_itself = true;
+                input_grew = true;
+            } else if let Some(demands) = answers.read(world, executable, &target, &mut reads) {
+                input.current.target_inputs.insert(target, demands);
+                input_grew = true;
             }
         }
         if input_grew {
             continue;
         }
-        break (derived, plans, unresolved, missing_target_demands);
+        break (derived, plans, unresolved);
     };
-    let return_contributions = call_return_demand_contributions(&input.facts, derived.call_return_demands);
+    let returns_awaiting_answers = callsite_returns_reaching(&input.facts, &answers.unanswered);
+    let return_contributions =
+        call_return_demand_contributions(&input.facts, derived.call_return_demands.clone(), &HashSet::new());
+    let provisional_returns =
+        call_return_demand_contributions(&input.facts, derived.call_return_demands, &returns_awaiting_answers);
     #[cfg(test)]
     let observed_return_contributions = return_contributions.clone();
+    let mut waits = std::mem::take(&mut answers.waits);
     for key in &callable_target_reads {
         let fact = FactKey::CallableConstructionTarget(key.clone());
         reads.push(FactUse::current(fact.clone()));
         if unresolved_construction_targets.contains(key) {
-            peer_waits.push(FactUse::current(fact));
+            waits.push(FactUse::current(fact));
         }
     }
-    peer_waits.extend(
-        missing_target_demands
-            .into_iter()
-            .map(|target| FactUse::current(FactKey::RuntimeDemandInputs(target))),
-    );
     finish_callable_flows(plans, &mut derived.demand);
     let retained_returns = derived
         .demand
@@ -250,7 +243,8 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
         .flat_map(|flow| &flow.first_class_edges)
         .map(|edge| edge.resolution.clone())
         .collect::<Vec<_>>();
-    let provisional_contributions =
+    let first_sends = target_return_demand_contributions(provisional_returns, retained_returns.iter().cloned());
+    let lower_bound_sends =
         target_return_demand_contributions(return_contributions.clone(), retained_returns.iter().cloned());
     let mut contributions = target_return_demand_contributions(return_contributions, retained_returns);
     for (target, index, demand) in callable_boundary_input_demand_contributions_product(&derived.demand) {
@@ -291,48 +285,303 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
         }
     });
     let demand = derived.demand;
-    let runtime_demand_input_contributions = if !has_owner {
-        Vec::new()
-    } else if peer_waits.is_empty() && unresolved_construction_targets.is_empty() {
-        contributions.into_iter().collect()
-    } else {
-        provisional_contributions.into_iter().collect()
-    };
+    let (waits, provisional_contributions) =
+        callees_in_answer_order(waits, &answers.unanswered, first_sends, lower_bound_sends);
+    let blocked = !waits.is_empty();
+    assert!(
+        blocked || answers.unanswered.is_empty(),
+        "{executable:?} would conclude without an answer from {:?}",
+        answers.unanswered
+    );
     let mut incoming = HashMap::new();
     if has_owner {
         collect_callsite_input_sources(world, executable, &facts, &mut incoming);
-        collect_callable_capture_input_sources(executable, &demand, &mut incoming);
+        if !blocked {
+            collect_callable_capture_input_sources(executable, &demand, &mut incoming);
+        }
     }
-    for semantic_index in 0..executable.activation.input_len(world.types()) {
-        incoming
-            .entry(InputSlot {
-                executable: executable.clone(),
-                semantic_index,
-            })
-            .or_default();
+    if !blocked {
+        for semantic_index in 0..executable.activation.input_len(world.types()) {
+            incoming
+                .entry(InputSlot {
+                    executable: executable.clone(),
+                    semantic_index,
+                })
+                .or_default();
+        }
     }
     let incoming_input_contributions = incoming
         .into_iter()
         .map(|(slot, sources)| (slot, IncomingInputSources::new(sources, world.types())))
         .collect();
-    let demand = Rc::new(demand);
-    let (changed, inputs_changed) = world.define_runtime_demand(executable.clone(), demand);
+    let runtime_demand_input_contributions = match (has_owner, blocked) {
+        (false, _) => Vec::new(),
+        (true, true) => provisional_contributions.into_iter().collect(),
+        (true, false) => contributions.into_iter().collect(),
+    };
+    let send_reads = send_reads_by_callee(
+        &input.facts,
+        &reads,
+        runtime_demand_input_contributions.iter().map(|(callee, _)| callee),
+    );
+    let inputs_changed = if blocked {
+        world.extend_runtime_demand_inputs(executable.clone(), demand.input_demands.clone())
+    } else {
+        world.conclude_runtime_demand_inputs(executable.clone(), demand.input_demands.clone())
+    };
+    let (outputs, changed) = if blocked {
+        (
+            vec![self_inputs_fact.clone()],
+            inputs_changed.then_some(self_inputs_fact).into_iter().collect(),
+        )
+    } else {
+        let changed = world.define_runtime_demand(executable.clone(), Rc::new(demand));
+        (
+            vec![self_fact.clone(), self_inputs_fact.clone()],
+            changed
+                .then_some(self_fact)
+                .into_iter()
+                .chain(inputs_changed.then_some(self_inputs_fact))
+                .collect(),
+        )
+    };
     Ok(JobEffects {
         runtime_demand_evaluations,
+        send_reads,
         reads,
-        outputs: vec![self_fact.clone(), self_inputs_fact.clone()],
-        changed: changed
-            .then_some(self_fact)
-            .into_iter()
-            .chain(inputs_changed.then_some(self_inputs_fact))
-            .collect(),
-        waits: peer_waits,
+        outputs,
+        changed,
+        waits,
         runtime_demand_input_contributions,
         incoming_input_contributions,
         ..JobEffects::default()
     })
 }
 
+/// The callees this run has no answer from, and the waits for their answers.
+#[derive(Default)]
+struct CalleeAnswers {
+    unanswered: HashSet<ExecutableKey>,
+    waits: Vec<FactUse<FactKey>>,
+}
+
+impl CalleeAnswers {
+    /// A callee's answer as this run may use it. A partner, one already
+    /// waiting on this executable, is one fixpoint with it: its present answer
+    /// is read, however unfinished. Anyone else's answer is used only once it
+    /// has concluded, and until then this run waits for it. The executable's
+    /// own answer is never read here; it is derived in this run.
+    fn read(
+        &mut self,
+        world: &World,
+        executable: &ExecutableKey,
+        callee: &ExecutableKey,
+        reads: &mut Vec<FactUse<FactKey>>,
+    ) -> Option<Vec<RuntimeDemand>> {
+        if callee == executable {
+            return None;
+        }
+        let reader = Job::DeriveRuntimeDemand(executable.clone());
+        match world.answer_use(&reader, FactKey::RuntimeDemandInputs(callee.clone())) {
+            AnswerUse::Read(read) => reads.push(read),
+            AnswerUse::Wait(wait) => {
+                self.waits.push(wait);
+                self.unanswered.insert(callee.clone());
+                return None;
+            }
+        }
+        world.runtime_demand_inputs(callee).map(<[RuntimeDemand]>::to_vec)
+    }
+}
+
+/// Derives the executable's answers, its own input demands first. A call to
+/// itself reads the answer this run is deriving, starting from `ignore` and
+/// climbing until it no longer moves; only then is the demand it sends down
+/// computed, from that stable answer.
+fn derive_up_before_down(
+    types: &Types,
+    input: &mut RuntimeDemandFormulaInput<'_>,
+    calls_itself: bool,
+    evaluations: &mut u64,
+) -> DerivedExecutableDemand {
+    loop {
+        *evaluations += 1;
+        let derived = derive_executable_runtime_demand(types, input);
+        if !calls_itself || input.current.target_inputs.get(input.member) == Some(&derived.demand.input_demands) {
+            return derived;
+        }
+        input
+            .current
+            .target_inputs
+            .insert(input.member.clone(), derived.demand.input_demands.clone());
+    }
+}
+
+/// What the demand sent to each callee stands on. How much of a callee's
+/// result is needed depends on the answers of the callees that consume that
+/// result, directly or through further calls, and on nothing any other callee
+/// says; so every other callee's answer is left out. A result that reaches a
+/// closure call has consumers this executable cannot name, and its send
+/// stands on everything the run read.
+fn send_reads_by_callee<'k>(
+    facts: &RuntimeDemandFacts<'_>,
+    reads: &[FactUse<FactKey>],
+    callees: impl IntoIterator<Item = &'k ExecutableKey>,
+) -> HashMap<ExecutableKey, Vec<FactUse<FactKey>>> {
+    let consumers = result_consumers(facts);
+    callees
+        .into_iter()
+        .map(|callee| {
+            let reads = match consumers_behind(&consumers, callee) {
+                Some(behind) => reads
+                    .iter()
+                    .filter(|read| match read.fact() {
+                        FactKey::RuntimeDemandInputs(other) => !consumers.contains_key(other) || behind.contains(other),
+                        _ => true,
+                    })
+                    .cloned()
+                    .collect(),
+                None => reads.to_vec(),
+            };
+            (callee.clone(), reads)
+        })
+        .collect()
+}
+
+/// Who consumes the result of a call to one local callee.
+enum ResultConsumers {
+    /// The local callees whose arguments that result reaches directly.
+    Named(HashSet<ExecutableKey>),
+    /// The result reaches a call whose callee is not statically known.
+    Unnamed,
+}
+
+fn result_consumers(facts: &RuntimeDemandFacts<'_>) -> HashMap<ExecutableKey, ResultConsumers> {
+    let targets_of = |callsite: &CallSiteId| {
+        let need = facts
+            .callsite_needs
+            .get(callsite)
+            .copied()
+            .unwrap_or(ExecutableNeed::Value);
+        facts
+            .callsites
+            .get(callsite)
+            .map(|summary| local_call_targets(summary, need))
+            .unwrap_or_default()
+    };
+    let mut consumers = HashMap::<ExecutableKey, ResultConsumers>::new();
+    for callsite in facts.callsites.keys() {
+        for callee in targets_of(callsite) {
+            consumers
+                .entry(callee)
+                .or_insert_with(|| ResultConsumers::Named(HashSet::new()));
+        }
+    }
+    for (callsite, args) in callsite_call_args(facts.body) {
+        let consumer_targets = targets_of(&callsite);
+        for arg in &args {
+            for producer_site in callsite_returns_feeding(facts, arg.value) {
+                for producer in targets_of(&producer_site) {
+                    let entry = consumers
+                        .entry(producer)
+                        .or_insert_with(|| ResultConsumers::Named(HashSet::new()));
+                    match entry {
+                        ResultConsumers::Named(named) if !consumer_targets.is_empty() => {
+                            named.extend(consumer_targets.iter().cloned())
+                        }
+                        _ => *entry = ResultConsumers::Unnamed,
+                    }
+                }
+            }
+        }
+    }
+    consumers
+}
+
+/// The callees whose answers a call's result waits on: its consumers, the
+/// consumers of their results, and so on. `None` when the chain reaches a
+/// consumer this executable cannot name.
+fn consumers_behind(
+    consumers: &HashMap<ExecutableKey, ResultConsumers>,
+    callee: &ExecutableKey,
+) -> Option<HashSet<ExecutableKey>> {
+    let mut behind = HashSet::new();
+    let mut pending = vec![callee];
+    while let Some(producer) = pending.pop() {
+        match consumers.get(producer)? {
+            ResultConsumers::Unnamed => return None,
+            ResultConsumers::Named(named) => {
+                for consumer in named {
+                    if behind.insert(consumer.clone()) {
+                        pending.push(consumer);
+                    }
+                }
+            }
+        }
+    }
+    Some(behind)
+}
+
+/// A callee answers only once it knows how much of its result is needed.
+/// Callees whose demand is already known go first: this run sends them
+/// demand and waits on them, while a callee it sent no demand to is waiting
+/// on this run and takes its turn after them. When every unanswered callee's
+/// result feeds another unanswered callee, no turn comes first: they are one
+/// fixpoint, so each is sent the lower bound and the run waits on all of them
+/// while they climb.
+fn callees_in_answer_order(
+    waits: Vec<FactUse<FactKey>>,
+    unanswered: &HashSet<ExecutableKey>,
+    first_sends: HashMap<ExecutableKey, TargetDemandContribution>,
+    lower_bound_sends: HashMap<ExecutableKey, TargetDemandContribution>,
+) -> (Vec<FactUse<FactKey>>, HashMap<ExecutableKey, TargetDemandContribution>) {
+    let waits_on_first = waits
+        .iter()
+        .filter(|wait| match wait.fact() {
+            FactKey::RuntimeDemandInputs(callee) if unanswered.contains(callee) => first_sends.contains_key(callee),
+            _ => true,
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if unanswered.is_empty() || !waits_on_first.is_empty() {
+        (waits_on_first, first_sends)
+    } else {
+        (waits, lower_bound_sends)
+    }
+}
+
+/// The callsites whose returned value reaches an argument of a call to a
+/// callee that has not answered yet. How much of that result is needed
+/// depends on the callee's answer, so the demand sent down to it waits too.
+fn callsite_returns_reaching(
+    facts: &RuntimeDemandFacts<'_>,
+    unanswered: &HashSet<ExecutableKey>,
+) -> HashSet<CallSiteId> {
+    let args = callsite_call_args(facts.body);
+    let mut awaiting = HashSet::new();
+    for (callsite, summary) in facts.callsites {
+        let need = facts
+            .callsite_needs
+            .get(callsite)
+            .copied()
+            .unwrap_or(ExecutableNeed::Value);
+        if !local_call_targets(summary, need)
+            .iter()
+            .any(|target| unanswered.contains(target))
+        {
+            continue;
+        }
+        for arg in args.get(callsite).into_iter().flatten() {
+            awaiting.extend(callsite_returns_feeding(facts, arg.value));
+        }
+    }
+    awaiting
+}
+
+/// Whether `callee` is already waiting, directly or through others, on
+/// `caller`'s answer. Then the two are one fixpoint: neither answer can come
+/// first, so the caller reads the callee's missing answer as bottom and
+/// climbs instead of waiting for it.
 fn target_return_demand_contributions(
     observed: impl IntoIterator<Item = (ExecutableKey, RuntimeDemand)>,
     retained: impl IntoIterator<Item = ExecutableKey>,
@@ -681,6 +930,7 @@ fn direct_local_targets(facts: &ExecutableFacts) -> HashSet<ExecutableKey> {
 fn call_return_demand_contributions(
     facts: &RuntimeDemandFacts<'_>,
     observed_returns: HashMap<CallSiteId, RuntimeDemand>,
+    returns_awaiting_answers: &HashSet<CallSiteId>,
 ) -> Vec<(ExecutableKey, RuntimeDemand)> {
     // A caller's contribution names EVERY local callee it calls, including the
     // ones whose return it discards -- so the iteration is over the static call
@@ -692,6 +942,9 @@ fn call_return_demand_contributions(
     // retained only where exact replacement and retraction need it.
     let mut out = Vec::new();
     for (callsite, summary) in facts.callsites {
+        if returns_awaiting_answers.contains(callsite) {
+            continue;
+        }
         let need = facts
             .callsite_needs
             .get(callsite)
@@ -1472,103 +1725,99 @@ fn tail_closure_callee(entry_id: &ControlEntryId, entries: &[LoweredEntry], valu
 }
 
 fn value_depends_on_callsite_return(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> bool {
-    let mut seen = HashSet::new();
-    value_depends_on_callsite_return_inner(facts, value, &mut seen)
+    !callsite_returns_feeding(facts, value).is_empty()
 }
 
-fn value_depends_on_callsite_return_inner(
-    facts: &RuntimeDemandFacts<'_>,
-    value: ValueId,
-    seen: &mut HashSet<ValueId>,
-) -> bool {
-    if !seen.insert(value) {
-        return false;
-    }
-    for join in facts.delivered_value_joins.values().filter(|join| join.value == value) {
-        for source in &join.sources {
-            match source {
-                DeliveredValueSource::CallsiteReturn(_) => return true,
-                DeliveredValueSource::LocalValue(source) => {
-                    if value_depends_on_callsite_return_inner(facts, *source, seen) {
-                        return true;
+/// Every callsite whose returned value flows into `value`, through delivered
+/// joins and the steps that build one value from others.
+fn callsite_returns_feeding(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> HashSet<CallSiteId> {
+    let mut seen = HashSet::new();
+    let mut feeding = HashSet::new();
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        if !seen.insert(value) {
+            continue;
+        }
+        for join in facts.delivered_value_joins.values().filter(|join| join.value == value) {
+            for source in &join.sources {
+                match source {
+                    DeliveredValueSource::CallsiteReturn(callsite) => {
+                        feeding.insert(*callsite);
                     }
+                    DeliveredValueSource::LocalValue(source) => pending.push(*source),
                 }
             }
         }
+        if let LoweredBody::Clauses { entries, .. } = &facts.body {
+            for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
+                pending.extend(step_sources_of(step, value));
+            }
+        }
     }
-    let LoweredBody::Clauses { entries, .. } = &facts.body else {
-        return false;
-    };
-    entries
-        .iter()
-        .flat_map(|entry| entry.steps.iter())
-        .any(|step| step_value_depends_on_callsite_return(facts, step, value, seen))
+    feeding
 }
 
-fn step_value_depends_on_callsite_return(
-    facts: &RuntimeDemandFacts<'_>,
-    step: &LoweredStep,
-    value: ValueId,
-    seen: &mut HashSet<ValueId>,
-) -> bool {
-    let mut depends = |source| value_depends_on_callsite_return_inner(facts, source, seen);
+/// The values `step` reads to define `value`; empty when `step` does not
+/// define it.
+fn step_sources_of(step: &LoweredStep, value: ValueId) -> Vec<ValueId> {
+    let size_value = |size: &Option<super::super::body::LoweredBitSize>| match size {
+        Some(super::super::body::LoweredBitSize::Value(size)) => Some(*size),
+        _ => None,
+    };
     match step {
         LoweredStep::Tuple { value: defined, items } if *defined == value => {
-            items.iter().map(|item| item.value).any(depends)
+            items.iter().map(|item| item.value).collect()
         }
         LoweredStep::List {
             value: defined,
             items,
             tail,
             ..
-        } if *defined == value => items.iter().copied().any(&mut depends) || tail.is_some_and(depends),
+        } if *defined == value => items.iter().copied().chain(*tail).collect(),
         LoweredStep::Map {
             value: defined,
             entries,
             ..
-        } if *defined == value => entries.iter().any(|(key, field)| depends(key.value) || depends(*field)),
+        } if *defined == value => entries.iter().flat_map(|(key, field)| [key.value, *field]).collect(),
         LoweredStep::MapUpdate {
             value: defined,
             base,
             entries,
-        } if *defined == value => {
-            depends(*base) || entries.iter().any(|(key, field)| depends(key.value) || depends(*field))
-        }
+        } if *defined == value => std::iter::once(*base)
+            .chain(entries.iter().flat_map(|(key, field)| [key.value, *field]))
+            .collect(),
         LoweredStep::Struct {
             value: defined, fields, ..
-        } if *defined == value => fields.iter().any(|(_, field)| depends(*field)),
-        LoweredStep::Bitstring { value: defined, fields } if *defined == value => fields.iter().any(|field| {
-            depends(field.value)
-                || matches!(
-                    field.spec.size,
-                    Some(super::super::body::LoweredBitSize::Value(size)) if depends(size)
-                )
-        }),
+        } if *defined == value => fields.iter().map(|(_, field)| *field).collect(),
+        LoweredStep::Bitstring { value: defined, fields } if *defined == value => fields
+            .iter()
+            .flat_map(|field| std::iter::once(field.value).chain(size_value(&field.spec.size)))
+            .collect(),
         LoweredStep::BinaryOp {
             value: defined,
             left,
             right,
             ..
-        } if *defined == value => depends(*left) || depends(*right),
+        } if *defined == value => vec![*left, *right],
         LoweredStep::UnaryOp {
             value: defined, input, ..
-        } if *defined == value => depends(*input),
+        } if *defined == value => vec![*input],
         LoweredStep::MapIndex {
             value: defined,
             base,
             key,
-        } if *defined == value => depends(*base) || depends(key.value),
+        } if *defined == value => vec![*base, key.value],
         LoweredStep::FieldAccess {
             value: defined, base, ..
-        } if *defined == value => depends(*base),
+        } if *defined == value => vec![*base],
         LoweredStep::RequireMapValue {
             value: defined, source, ..
-        } if *defined == value => depends(*source),
+        } if *defined == value => vec![*source],
         LoweredStep::TupleField {
             value: defined, source, ..
-        } if *defined == value => depends(*source),
-        LoweredStep::SplitList { source, head, tail } if *head == value || *tail == value => depends(*source),
-        LoweredStep::BitstringInit { reader, source } if *reader == value => depends(*source),
+        } if *defined == value => vec![*source],
+        LoweredStep::SplitList { source, head, tail } if *head == value || *tail == value => vec![*source],
+        LoweredStep::BitstringInit { reader, source } if *reader == value => vec![*source],
         LoweredStep::BitstringRead {
             ok,
             value: read_value,
@@ -1577,11 +1826,7 @@ fn step_value_depends_on_callsite_return(
             spec,
             ..
         } if *ok == value || *read_value == value || *next_reader == value => {
-            depends(*reader)
-                || matches!(
-                    spec.size,
-                    Some(super::super::body::LoweredBitSize::Value(size)) if depends(size)
-                )
+            std::iter::once(*reader).chain(size_value(&spec.size)).collect()
         }
         LoweredStep::Const { .. }
         | LoweredStep::FunctionRef { .. }
@@ -1606,7 +1851,7 @@ fn step_value_depends_on_callsite_return(
         | LoweredStep::TupleField { .. }
         | LoweredStep::SplitList { .. }
         | LoweredStep::BitstringInit { .. }
-        | LoweredStep::BitstringRead { .. } => false,
+        | LoweredStep::BitstringRead { .. } => Vec::new(),
     }
 }
 

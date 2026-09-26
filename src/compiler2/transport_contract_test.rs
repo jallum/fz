@@ -143,7 +143,10 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // fz-afu.2: 306 -> 304. `World::submit_root` no longer enqueues `SeedRoot`
 // directly, so `SeedRoot(main)` no longer rediscovers its own gate chain
 // hop by hop, removing its two blocked-only runs.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 304;
+// fz-afu.3: 304 -> 296, all of it DeriveRuntimeDemand (37 -> 29). A run
+// missing a callee's answer waits for it instead of concluding on `ignore`,
+// so no caller re-runs to revise what it concluded.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 296;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

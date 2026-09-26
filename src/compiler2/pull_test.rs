@@ -849,6 +849,7 @@ impl ProductProducers for FakeProducers {
                     let state = self.fact_state(&fact);
                     let ready = match fact.readiness() {
                         FactReadiness::Current => state.revision.is_some(),
+                        FactReadiness::Concluded => unreachable!("products read facts current or settled"),
                         FactReadiness::Settled => state.settled,
                     };
                     context.record_fact_state(fact.clone(), state);
@@ -874,6 +875,7 @@ impl ProductProducers for FakeProducers {
                     let state = self.fact_state(&fact);
                     let ready = match fact.readiness() {
                         FactReadiness::Current => state.revision.is_some(),
+                        FactReadiness::Concluded => unreachable!("products read facts current or settled"),
                         FactReadiness::Settled => state.settled,
                     };
                     context.record_fact_state(fact.clone(), state);

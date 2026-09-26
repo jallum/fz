@@ -2181,6 +2181,7 @@ impl<'s> ProductReadContext<'s> {
         .projected(&fact);
         let ready = match fact.readiness() {
             super::facts::FactReadiness::Current => state.revision.is_some(),
+            super::facts::FactReadiness::Concluded => world.fact_is_concluded(fact.fact()),
             super::facts::FactReadiness::Settled => state.settled,
         };
         self.dependencies.facts.insert(fact, state);

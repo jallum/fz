@@ -218,6 +218,9 @@ pub enum Cause {
     /// No revision moved; a dependency's SETTLEDNESS flipped — a wait became
     /// satisfiable.
     Readiness,
+    /// Nothing moved, but a fact the previous evaluation waited on concluded:
+    /// the answer it would not use while unfinished became usable.
+    Concluded,
     /// Nothing in the dependency set moved. Kept explicit so a causal gap is
     /// measured rather than silently assigned to an adjacent event.
     Uncaused,
@@ -232,6 +235,7 @@ pub struct FormulaWork {
     pub initial: u64,
     pub content_caused: u64,
     pub readiness_caused: u64,
+    pub concluded_caused: u64,
     pub uncaused: u64,
     pub changed_outputs: u64,
     pub unchanged_outputs: u64,
@@ -240,12 +244,13 @@ pub struct FormulaWork {
 }
 
 impl FormulaWork {
-    fn add(&mut self, work: &Self) {
+    pub(crate) fn add(&mut self, work: &Self) {
         self.evaluations += work.evaluations;
         self.runtime_demand_evaluations += work.runtime_demand_evaluations;
         self.initial += work.initial;
         self.content_caused += work.content_caused;
         self.readiness_caused += work.readiness_caused;
+        self.concluded_caused += work.concluded_caused;
         self.uncaused += work.uncaused;
         self.changed_outputs += work.changed_outputs;
         self.unchanged_outputs += work.unchanged_outputs;
@@ -953,6 +958,7 @@ struct Replay {
     canon: CanonTables,
     movements: HashMap<RawIdentity, Vec<Movement>>,
     settled_wakes: HashMap<RawIdentity, Vec<usize>>,
+    concluded_wakes: HashMap<RawIdentity, Vec<usize>>,
     named_facts: HashMap<String, HashSet<RawIdentity>>,
     history: HashMap<RawIdentity, FormulaHistory>,
     formula_work: HashMap<RawIdentity, FormulaWork>,
@@ -973,6 +979,7 @@ impl Replay {
             canon: CanonTables::from_stream(events),
             movements: HashMap::new(),
             settled_wakes: HashMap::new(),
+            concluded_wakes: HashMap::new(),
             named_facts: HashMap::new(),
             history: HashMap::new(),
             formula_work: HashMap::new(),
@@ -1132,9 +1139,13 @@ impl Replay {
             .get(&raw_formula)
             .and_then(|history| history.last_conclusion);
         let deps = self.dependency_set(&raw_formula, &reads);
-        let cause = match previous {
+        let movement = previous.map(|previous| self.cause(previous, position, &deps));
+        let cause = match movement {
             None => Cause::Initial,
-            Some(previous) => self.cause(previous, position, &deps),
+            Some(Cause::Uncaused) if self.woken_in_window(&self.concluded_wakes, &raw_formula, position) => {
+                Cause::Concluded
+            }
+            Some(cause) => cause,
         };
 
         let work = self.formula_work.entry(raw_formula.clone()).or_default();
@@ -1156,6 +1167,7 @@ impl Replay {
             Cause::Initial => work.initial += 1,
             Cause::Content => work.content_caused += 1,
             Cause::Readiness => work.readiness_caused += 1,
+            Cause::Concluded => work.concluded_caused += 1,
             Cause::Uncaused => work.uncaused += 1,
         }
 
@@ -1168,7 +1180,7 @@ impl Replay {
                 dependencies: names,
             });
         }
-        if matches!(cause, Cause::Readiness) && !self.woken_by_settled(&raw_formula, position) {
+        if matches!(cause, Cause::Readiness) && !self.woken_in_window(&self.settled_wakes, &raw_formula, position) {
             self.report.readiness_without_settled_wake.push(UncausedEvaluation {
                 position,
                 formula: raw_formula.canonical(&self.canon),
@@ -1262,13 +1274,18 @@ impl Replay {
         }
     }
 
-    fn woken_by_settled(&self, raw_formula: &RawIdentity, position: usize) -> bool {
+    fn woken_in_window(
+        &self,
+        wakes: &HashMap<RawIdentity, Vec<usize>>,
+        raw_formula: &RawIdentity,
+        position: usize,
+    ) -> bool {
         let previous = self
             .history
             .get(raw_formula)
             .and_then(|history| history.last_conclusion)
             .unwrap_or(0);
-        self.settled_wakes
+        wakes
             .get(raw_formula)
             .into_iter()
             .flatten()
@@ -1280,13 +1297,27 @@ impl Replay {
     /// carries the post-state of every fact the step touched, which is the
     /// wider set. A fact in `movements` with no `changed` record moved without
     /// changing either, so it can cause nothing.
+    ///
+    /// A completion applies each of its derivations in turn, so one fact can
+    /// carry several `changed` records, one per derivation that touched it.
+    /// The completion moved the fact from the first record's before-state to
+    /// the last record's after-state.
     fn record_movements(&mut self, position: usize, completion: &Json) {
-        let mut classified = HashMap::new();
+        let mut spans: HashMap<RawIdentity, (&Json, &Json)> = HashMap::new();
         for change in array(completion.get("changed")) {
-            let content = revision(change, "old_revision") != revision(change, "new_revision");
-            let readiness = change.get("old_settled") != change.get("new_settled");
-            classified.insert(RawIdentity::new(change), (content, readiness));
+            spans
+                .entry(RawIdentity::new(change))
+                .and_modify(|(_, last)| *last = change)
+                .or_insert((change, change));
         }
+        let classified: HashMap<_, _> = spans
+            .into_iter()
+            .map(|(key, (first, last))| {
+                let content = revision(first, "old_revision") != revision(last, "new_revision");
+                let readiness = first.get("old_settled") != last.get("new_settled");
+                (key, (content, readiness))
+            })
+            .collect();
         let mut seen = HashSet::new();
         for movement in array(completion.get("movements")) {
             let key = RawIdentity::new(movement);
@@ -1310,23 +1341,23 @@ impl Replay {
         }
     }
 
-    /// A wake whose cause is `Settled` is the readiness
-    /// evidence: agenda state no fact movement reconstructs.
+    /// A wake whose cause is a `Settled` or `Concluded` use is the readiness
+    /// evidence: agenda state no fact movement reconstructs. A fact concluding
+    /// moves neither its revision nor its settledness, so for a waiter on a
+    /// `Concluded` use the wake is the only record that its wait was met.
     fn record_wakes(&mut self, position: usize, completion: &Json) {
         for wake in array(completion.get("wakes")) {
-            let settled = wake
+            let wakes = match wake
                 .get("cause")
                 .and_then(|cause| cause.get("use"))
                 .and_then(Json::as_str)
-                == Some("settled");
-            if !settled {
-                continue;
-            }
+            {
+                Some("settled") => &mut self.settled_wakes,
+                Some("concluded") => &mut self.concluded_wakes,
+                _ => continue,
+            };
             if let Some(job) = wake.get("job") {
-                self.settled_wakes
-                    .entry(RawIdentity::new(job))
-                    .or_default()
-                    .push(position);
+                wakes.entry(RawIdentity::new(job)).or_default().push(position);
             }
         }
     }
