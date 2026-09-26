@@ -174,6 +174,8 @@ mod quoted_surface_test;
 #[cfg(test)]
 mod resolve_test;
 #[cfg(test)]
+mod runtime_demand_answers_test;
+#[cfg(test)]
 mod scheduler_test;
 #[cfg(test)]
 mod scope_test;

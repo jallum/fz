@@ -1553,10 +1553,14 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             // a field another ignores -- take/drop/split pays two extra cold
             // walks for that and saves eighteen on the replacement edit, which
             // no longer re-walks the bodies a coarsened whole-tuple demand
-            // reached.
+            // reached. A run missing a callee's answer waits for it rather
+            // than guessing; a waiting run only adds to the answers it already
+            // gave; and a job whose callee is being derived again waits for
+            // that answer before walking. So no body is walked again to revise
+            // a guess, and after an edit callees answer before their callers.
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                [[237, 0, 0, 9, 5], [592, 0, 0, 64, 6], [1117, 0, 0, 70, 6]][fixture_index][scenario],
+                [[148, 0, 0, 9, 5], [477, 0, 0, 64, 6], [623, 0, 0, 69, 6]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1574,8 +1578,8 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             );
             assert_eq!(
                 runtime_demand.evaluations,
-                runtime_demand.initial + runtime_demand.content_caused,
-                "{fixture} {name}: RuntimeDemand work must be initial or content-caused"
+                runtime_demand.initial + runtime_demand.content_caused + runtime_demand.concluded_caused,
+                "{fixture} {name}: RuntimeDemand work must be initial, content-caused, or caused by an answer it waited on concluding"
             );
             assert_eq!(
                 (
@@ -1641,16 +1645,7 @@ fn family_work(report: &CausalReport, kind: &str) -> (u64, FormulaWork) {
             continue;
         }
         formulas += 1;
-        totals.evaluations += work.evaluations;
-        totals.runtime_demand_evaluations += work.runtime_demand_evaluations;
-        totals.initial += work.initial;
-        totals.content_caused += work.content_caused;
-        totals.readiness_caused += work.readiness_caused;
-        totals.uncaused += work.uncaused;
-        totals.changed_outputs += work.changed_outputs;
-        totals.unchanged_outputs += work.unchanged_outputs;
-        totals.wakes += work.wakes;
-        totals.blocked_completions += work.blocked_completions;
+        totals.add(work);
     }
     (formulas, totals)
 }
@@ -2140,8 +2135,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-5xp.30: 206 -> 218. The four ordinary arithmetic helper
         // activations and their reached status branches each need analysis;
         // zero-change remains 9.
+        // fz-afu.3: zero-change 9 -> 3 on the same 218 runs. Six of those
+        // runs reproduce their answers and also conclude facts they publish:
+        // the fact's last publisher stops deriving it. `Concluded` readers
+        // hear that as a change, so the run no longer counts as producing
+        // nothing. The work is the same and the counting is more exact.
         analyze_evaluations: 218,
-        analyze_zero_change: 9,
+        analyze_zero_change: 3,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
         // the semantic total; every retained evaluation remains caused.
@@ -2232,7 +2232,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // its last run reproduces the answer.
         // fz-kdt.106: 6 -> 1, against a denominator that fell 552 -> 539.
         // fz-kdt.183: 1 -> 3, against a denominator that rose 538 -> 549.
-        analyze_zero_change: 3,
+        // fz-afu.3: 3 -> 1 on the same 551 runs. Two runs that reproduce
+        // their answers also conclude facts they publish, which `Concluded`
+        // readers hear as a change.
+        analyze_zero_change: 1,
         // 1364 -> 1363: the same single evaluation, seen from the whole-run
         // denominator. fz-kdt.106: 1363 -> 1350, the same thirteen.
         // fz-kdt.127: 1350 -> 1349, the same single evaluation.
@@ -2460,8 +2463,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // formulas reach the exact same final `ActivationAnalyzed` revision
         // and the same never-settled outcome either way -- the split adds a
         // wake, not a different answer.
+        // fz-afu.3: zero-change 16 -> 7 on the same 902 runs. Nine runs that
+        // reproduce their answers also conclude facts they publish, which
+        // `Concluded` readers hear as a change.
         analyze_evaluations: 902,
-        analyze_zero_change: 16,
+        analyze_zero_change: 7,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
         // this fixture's deep call graph is where the removed starts pile

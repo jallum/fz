@@ -6,6 +6,7 @@ use std::hash::Hash;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FactReadiness {
     Current,
+    Concluded,
     Settled,
 }
 
@@ -20,7 +21,13 @@ pub trait ClaimShape {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FactUse<F> {
+    /// Present: any publisher claims it, even one still deriving it.
     Current(F),
+    /// Present, and no publisher is still deriving it. A reader in this use
+    /// never sees a claim a waiting publisher has made on the way to its
+    /// answer; it sees the answer.
+    Concluded(F),
+    /// Concluded, and nothing any publisher read can still move.
     Settled(F),
 }
 
@@ -29,25 +36,42 @@ impl<F> FactUse<F> {
         Self::Current(fact)
     }
 
+    pub fn concluded(fact: F) -> Self {
+        Self::Concluded(fact)
+    }
+
     pub fn settled(fact: F) -> Self {
         Self::Settled(fact)
     }
 
+    /// One use of `fact` at each readiness level.
+    pub fn every_use(fact: F) -> [Self; 3]
+    where
+        F: Clone,
+    {
+        [
+            Self::current(fact.clone()),
+            Self::concluded(fact.clone()),
+            Self::settled(fact),
+        ]
+    }
+
     pub fn fact(&self) -> &F {
         match self {
-            Self::Current(fact) | Self::Settled(fact) => fact,
+            Self::Current(fact) | Self::Concluded(fact) | Self::Settled(fact) => fact,
         }
     }
 
     pub fn into_fact(self) -> F {
         match self {
-            Self::Current(fact) | Self::Settled(fact) => fact,
+            Self::Current(fact) | Self::Concluded(fact) | Self::Settled(fact) => fact,
         }
     }
 
     pub fn readiness(&self) -> FactReadiness {
         match self {
             Self::Current(_) => FactReadiness::Current,
+            Self::Concluded(_) => FactReadiness::Concluded,
             Self::Settled(_) => FactReadiness::Settled,
         }
     }
@@ -60,7 +84,10 @@ pub struct FactChange<F> {
     pub new_revision: Option<u64>,
     pub old_settled: bool,
     pub new_settled: bool,
+    pub old_concluded: bool,
+    pub new_concluded: bool,
     content_movement: Option<ContentMovement>,
+    concluded_movement: Option<ContentMovement>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,7 +117,10 @@ impl<F> FactChange<F> {
             new_revision,
             old_settled,
             new_settled,
+            old_concluded: old_settled,
+            new_concluded: new_settled,
             content_movement,
+            concluded_movement: content_movement,
         }
     }
 
@@ -110,8 +140,19 @@ impl<F> FactChange<F> {
         self.content_movement
     }
 
+    /// What a `Concluded` reader hears: everything that moved while a
+    /// publisher was still deriving the fact, as one movement once none is.
+    pub(crate) fn concluded_movement(&self) -> Option<ContentMovement> {
+        self.concluded_movement
+    }
+
     pub fn readiness_changed(&self) -> bool {
         self.old_settled != self.new_settled
+    }
+
+    /// Whether the fact gained or lost its last publisher still deriving it.
+    pub fn conclusion_changed(&self) -> bool {
+        self.old_concluded != self.new_concluded
     }
 }
 
@@ -124,7 +165,7 @@ pub struct FactState {
 impl FactState {
     pub fn projected<F>(self, fact: &FactUse<F>) -> Self {
         match fact {
-            FactUse::Current(_) => Self {
+            FactUse::Current(_) | FactUse::Concluded(_) => Self {
                 revision: self.revision,
                 settled: false,
             },
@@ -205,6 +246,9 @@ struct FactSlot<P> {
     dirty_publishers: HashSet<P>,
     unfinal_publishers: HashSet<P>,
     revision: u64,
+    /// Content that moved while a publisher was deriving the fact, which its
+    /// `Concluded` readers have not heard yet.
+    unheard_by_concluded: Option<ContentMovement>,
 }
 
 impl<P> Default for FactSlot<P> {
@@ -214,6 +258,7 @@ impl<P> Default for FactSlot<P> {
             dirty_publishers: HashSet::new(),
             unfinal_publishers: HashSet::new(),
             revision: 0,
+            unheard_by_concluded: None,
         }
     }
 }
@@ -229,6 +274,19 @@ impl<P> FactSlot<P> {
 
     fn is_locally_settled(&self) -> bool {
         !self.publishers.is_empty() && self.dirty_publishers.is_empty()
+    }
+
+    /// What `Concluded` readers hear of `movement`: nothing while a publisher
+    /// is still deriving the fact, and once none is, everything that moved
+    /// since they last heard, as one movement.
+    fn movement_for_concluded_readers(&mut self, movement: Option<ContentMovement>) -> Option<ContentMovement> {
+        let unheard = join_movements(self.unheard_by_concluded.take(), movement);
+        if self.publishers.is_empty() || self.is_locally_settled() {
+            unheard
+        } else {
+            self.unheard_by_concluded = unheard;
+            None
+        }
     }
 
     fn is_quiet(&self) -> bool {
@@ -310,6 +368,7 @@ where
     pub fn satisfies(&self, fact_use: &FactUse<F>) -> bool {
         match fact_use {
             FactUse::Current(key) => self.revision(key).is_some(),
+            FactUse::Concluded(key) => self.is_locally_settled(key),
             FactUse::Settled(key) => self.is_settled(key),
         }
     }
@@ -383,6 +442,7 @@ where
             let mut slot = self.slots.remove(&key).unwrap_or_default();
             let old_revision = slot.revision();
             let old_settled = slot.is_settled();
+            let old_concluded = slot.is_locally_settled();
             let withdrew_publisher = !output_keys.contains(&key) && slot.publishers.contains(publisher);
 
             if output_keys.contains(&key) {
@@ -407,24 +467,28 @@ where
 
             let new_revision = slot.revision();
             let new_settled = slot.is_settled();
+            let new_concluded = slot.is_locally_settled();
+            let movement = content_movement(&key, old_revision, new_revision, publisher_rebased, withdrew_publisher);
+            let concluded_movement = slot.movement_for_concluded_readers(movement);
             if !slot.publishers.is_empty() {
                 self.slots.insert(key.clone(), slot);
             }
 
-            if old_revision != new_revision || old_settled != new_settled {
+            if old_revision != new_revision
+                || old_settled != new_settled
+                || old_concluded != new_concluded
+                || concluded_movement.is_some()
+            {
                 changed.push(FactChange {
-                    content_movement: content_movement(
-                        &key,
-                        old_revision,
-                        new_revision,
-                        publisher_rebased,
-                        withdrew_publisher,
-                    ),
+                    content_movement: movement,
+                    concluded_movement,
                     key,
                     old_revision,
                     new_revision,
                     old_settled,
                     new_settled,
+                    old_concluded,
+                    new_concluded,
                 });
             }
         }
@@ -436,9 +500,9 @@ where
     /// The arm for a job that did not reach its own conclusion: listed
     /// keys gain the publisher (revision rules identical to `replace_outputs`),
     /// unlisted keys it previously claimed are left standing untouched.
-    /// Dirtiness is NOT cleared for the listed keys — an unreached job
-    /// is not vouching yet; the caller marks that job's full claim set
-    /// dirty after extending.
+    /// The publisher joins the listed keys dirty — an unreached job is not
+    /// vouching yet, so no change it emits reports a conclusion; the caller
+    /// marks the rest of that job's claim set dirty after extending.
     pub fn extend_outputs(
         &mut self,
         publisher: &P,
@@ -474,10 +538,12 @@ where
             let mut slot = self.slots.remove(key).unwrap_or_default();
             let old_revision = slot.revision();
             let old_settled = slot.is_settled();
+            let old_concluded = slot.is_locally_settled();
 
             let was_absent = slot.publishers.is_empty();
             let changed_listed = changed_keys_set.remove(key);
             slot.publishers.insert(publisher.clone());
+            slot.dirty_publishers.insert(publisher.clone());
             set_membership(&mut slot.unfinal_publishers, publisher, publisher_unfinal);
             if was_absent {
                 slot.revision = appearance_revision(key, changed_listed);
@@ -487,16 +553,26 @@ where
 
             let new_revision = slot.revision();
             let new_settled = slot.is_settled();
+            let new_concluded = slot.is_locally_settled();
+            let movement = content_movement(key, old_revision, new_revision, publisher_rebased, false);
+            let concluded_movement = slot.movement_for_concluded_readers(movement);
             self.slots.insert(key.clone(), slot);
 
-            if old_revision != new_revision || old_settled != new_settled {
+            if old_revision != new_revision
+                || old_settled != new_settled
+                || old_concluded != new_concluded
+                || concluded_movement.is_some()
+            {
                 changed.push(FactChange {
-                    content_movement: content_movement(key, old_revision, new_revision, publisher_rebased, false),
+                    content_movement: movement,
+                    concluded_movement,
                     key: key.clone(),
                     old_revision,
                     new_revision,
                     old_settled,
                     new_settled,
+                    old_concluded,
+                    new_concluded,
                 });
             }
         }
@@ -517,13 +593,17 @@ where
         set_membership(&mut slot.unfinal_publishers, publisher, unfinal);
         let new_settled = slot.is_settled();
         let revision = slot.revision();
+        let concluded = slot.is_locally_settled();
         (old_settled != new_settled).then(|| FactChange {
             key: key.clone(),
             old_revision: revision,
             new_revision: revision,
             old_settled,
             new_settled,
+            old_concluded: concluded,
+            new_concluded: concluded,
             content_movement: None,
+            concluded_movement: None,
         })
     }
 
@@ -538,23 +618,36 @@ where
             }
             let old_revision = slot.revision();
             let old_settled = slot.is_settled();
+            let old_concluded = slot.is_locally_settled();
             if !slot.dirty_publishers.insert(publisher.clone()) {
                 continue;
             }
             let new_revision = slot.revision();
             let new_settled = slot.is_settled();
-            if old_revision != new_revision || old_settled != new_settled {
+            let new_concluded = slot.is_locally_settled();
+            if old_revision != new_revision || old_settled != new_settled || old_concluded != new_concluded {
                 changed.push(FactChange {
                     key: key.clone(),
                     old_revision,
                     new_revision,
                     old_settled,
                     new_settled,
+                    old_concluded,
+                    new_concluded,
                     content_movement: None,
+                    concluded_movement: None,
                 });
             }
         }
         changed
+    }
+}
+
+fn join_movements(left: Option<ContentMovement>, right: Option<ContentMovement>) -> Option<ContentMovement> {
+    match (left, right) {
+        (Some(ContentMovement::Shift), _) | (_, Some(ContentMovement::Shift)) => Some(ContentMovement::Shift),
+        (Some(ContentMovement::Ascent), _) | (_, Some(ContentMovement::Ascent)) => Some(ContentMovement::Ascent),
+        (None, None) => None,
     }
 }
 
