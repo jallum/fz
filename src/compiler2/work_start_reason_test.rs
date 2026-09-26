@@ -250,7 +250,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // tally no longer double-counts layers re-arbitrated after they were
         // already proven final. Publishing a function's source from the walk
         // that scoped it removes one source job per reached function.
-        (3813, 11, 19, 232),
+        // The exhaustiveness check that used to run per function head is
+        // gone; redundancy is checked from the compiled dispatch plan
+        // instead, which removes its own source job from every function that
+        // declared a contract: 3813 -> 3789.
+        (3789, 11, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -265,7 +269,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // changed revision, and this fixture reaches `<` and `>`.
         // A function's source and its consumable fact are one publication now,
         // so each reached body costs one changed revision instead of two.
-        1192,
+        // The exhaustiveness check that used to run per function head is
+        // gone; redundancy is checked from the compiled dispatch plan
+        // instead, which removes its own changed revision from every
+        // function that declared a contract: 1192 -> 1168.
+        1168,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(

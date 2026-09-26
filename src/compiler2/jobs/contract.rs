@@ -11,7 +11,6 @@ use crate::diag::driver::emit_through;
 use crate::extern_contract::{ExternContractError, extern_semantic_contract};
 
 use super::super::contract::FunctionContract;
-use super::super::dispatch_reachability::calculate_dispatch_reachability;
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::FunctionId;
 use super::super::scheduler::FatalError;
@@ -73,15 +72,6 @@ pub(super) fn derive_function_contract(
             waits.push(fact);
         }
     }
-    let check_head = surface.extern_abi.is_none() && !surface.clauses.is_empty();
-    if check_head {
-        let fact = FactKey::EntryDispatch(function);
-        if world.has_fact(&fact) {
-            reads.push(fact);
-        } else {
-            waits.push(fact);
-        }
-    }
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads: current_uses(reads),
@@ -112,23 +102,7 @@ pub(super) fn derive_function_contract(
         }
     }
     let contract = FunctionContract::from_resolved(world.types_mut(), contract);
-    if check_head && contract_has_reachable_fail(world, function, &contract) {
-        let diagnostic = super::super::source_diagnostics::function_head_warning(&surface)
-            .expect("a source function with clauses has a final clause");
-        super::super::drive::ExecutionContext::new(world, tel).emit_warning_once(diagnostic);
-    }
     Ok(publish_contract(world, tel, function, reads, contract))
-}
-
-fn contract_has_reachable_fail(world: &mut World, function: FunctionId, contract: &FunctionContract) -> bool {
-    if contract.arrows.is_empty() {
-        return false;
-    }
-    let plan = world.entry_dispatch(function);
-    contract.input_domain_rows(world.types_mut()).into_iter().any(|params| {
-        params.len() == plan.input_count
-            && calculate_dispatch_reachability(world.types_mut(), &plan, &params).fail_reachable
-    })
 }
 
 fn publish_contract(

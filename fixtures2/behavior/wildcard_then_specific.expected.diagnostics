@@ -1,0 +1,14 @@
+warning[type/redundant-clause]: this clause cannot match because a previous clause at line 4 always matches
+  --> fixtures2/behavior/wildcard_then_specific.fz:2:1
+   |
+2 | def catch(0), do: :zero
+   | ^^^^^^^^^^^^^^^^^^^^^^^ unreachable
+   |
+
+warning[type/redundant-clause]: this clause cannot match because a previous clause at line 9 always matches
+  --> fixtures2/behavior/wildcard_then_specific.fz:7:5
+   |
+7 |     0 -> :zero
+   |     ^^^^^^^^^^ unreachable
+   |
+

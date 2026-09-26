@@ -29,6 +29,19 @@ fn row_with_guard_expr(patterns: Vec<Pattern>, body_id: PatternBodyId, guard: Ex
     }
 }
 
+/// Test-only convenience: compiles `patterns` with a resolver that answers no
+/// guard call, then reports its redundant rows. Production callers always
+/// pass their own already-compiled plan and their own real resolver.
+fn redundant_rows(patterns: &SourcePatternRows<Ty>) -> Vec<RedundantRow> {
+    let mut resolver = |_callee: &crate::ast::Callee, _arity: usize| Ok(None);
+    let plan = pattern_dispatch_from_source(patterns.clone()).expect("test patterns must compile");
+    find_redundant_rows_with_resolver(patterns, &plan, &mut resolver)
+}
+
+fn redundant_body_ids(patterns: &SourcePatternRows<Ty>) -> Vec<PatternBodyId> {
+    redundant_rows(patterns).into_iter().map(|row| row.body_id).collect()
+}
+
 #[test]
 fn source_pattern_rows_reject_non_monotonic_body_ids() {
     let patterns = SourcePatternRows::lexical(
@@ -50,7 +63,14 @@ fn source_pattern_rows_reject_non_monotonic_body_ids() {
 fn unreachable_row_after_wildcard_detected() {
     let patterns = SourcePatternRows::lexical(1, vec![row(vec![Pattern::Wildcard], 0), row(vec![Pattern::Int(42)], 1)]);
 
-    assert_eq!(find_unreachable_rows(&patterns), vec![1]);
+    let redundant = redundant_rows(&patterns);
+    assert_eq!(
+        redundant,
+        vec![RedundantRow {
+            body_id: 1,
+            always_matches: 0
+        }]
+    );
 }
 
 #[test]
@@ -67,8 +87,8 @@ fn duplicate_literal_rows_are_unreachable() {
         ],
     );
 
-    assert_eq!(find_unreachable_rows(&floats), vec![1]);
-    assert_eq!(find_unreachable_rows(&binaries), vec![1]);
+    assert_eq!(redundant_body_ids(&floats), vec![1]);
+    assert_eq!(redundant_body_ids(&binaries), vec![1]);
 }
 
 #[test]
@@ -81,30 +101,7 @@ fn guarded_row_does_not_dominate_later_row() {
         ],
     );
 
-    assert!(find_unreachable_rows(&patterns).is_empty());
-}
-
-#[test]
-fn guarded_reachability_does_not_lower_guard_expression() {
-    let unsupported_guard = Expr::Call(Box::new(sp(Expr::Var("opaque".to_string()))), vec![]);
-    let reachable = SourcePatternRows::lexical(
-        1,
-        vec![
-            row_with_guard_expr(vec![Pattern::Wildcard], 0, unsupported_guard),
-            row(vec![Pattern::Wildcard], 1),
-        ],
-    );
-    assert!(find_unreachable_rows(&reachable).is_empty());
-
-    let inexhaustive = SourcePatternRows::lexical(
-        1,
-        vec![row_with_guard_expr(
-            vec![Pattern::Wildcard],
-            0,
-            Expr::Call(Box::new(sp(Expr::Var("opaque".to_string()))), vec![]),
-        )],
-    );
-    assert!(is_inexhaustive(&inexhaustive));
+    assert!(redundant_rows(&patterns).is_empty());
 }
 
 #[test]
@@ -118,7 +115,8 @@ fn unguarded_wildcard_still_dominates_after_guarded_row() {
         ],
     );
 
-    assert_eq!(find_unreachable_rows(&patterns), vec![2]);
+    assert_eq!(redundant_body_ids(&patterns), vec![2]);
+    assert_eq!(redundant_rows(&patterns)[0].always_matches, 1);
 }
 
 #[test]
@@ -131,17 +129,13 @@ fn guarded_row_unreachable_under_unguarded_cover() {
         ],
     );
 
-    assert_eq!(find_unreachable_rows(&patterns), vec![1]);
-}
-
-#[test]
-fn exhaustiveness_tracks_dispatch_graph_fallthrough() {
-    let missing_wildcard =
-        SourcePatternRows::lexical(1, vec![row(vec![Pattern::Int(0)], 0), row(vec![Pattern::Int(1)], 1)]);
-    let covered = SourcePatternRows::lexical(1, vec![row(vec![Pattern::Int(0)], 0), row(vec![Pattern::Wildcard], 1)]);
-
-    assert!(is_inexhaustive(&missing_wildcard));
-    assert!(!is_inexhaustive(&covered));
+    assert_eq!(
+        redundant_rows(&patterns),
+        vec![RedundantRow {
+            body_id: 1,
+            always_matches: 0
+        }]
+    );
 }
 
 #[test]

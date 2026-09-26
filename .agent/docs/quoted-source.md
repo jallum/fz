@@ -174,10 +174,11 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
 - `FunctionDefined` now carries a compiler2-owned `FunctionSurface` decoded
   from grouped quoted source. Source-defined functions and generated lambdas
   both use that same callable-surface model.
-- `DefineFunction` runs compiler2-owned source diagnostics over that expanded
-  `FunctionSurface`. Partial `case` and `with else` surfaces emit
-  `type/no-matching-clause` warnings through the normal diagnostic telemetry
-  bus.
+- Redundant-clause diagnostics run later, once entry dispatch or a body's
+  match dispatch actually compiles a `FunctionSurface`'s clauses into a plan
+  (see [pattern-matching.md](pattern-matching.md#diagnostics)), not at
+  `DefineFunction` time. `DefineFunction` itself only derives the surface and
+  publishes it.
 - Diagnostics resolve exact versions through the World-held `SourceMap`.
   Quoted macro errors must retain the originating call span; a generated
   span is reserved for diagnostics with no user construct to locate.
