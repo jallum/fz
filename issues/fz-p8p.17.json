@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T09:48:10Z",
+  "description": "The purpose of fixtures/00436 mentions an `opaque-arithmetic` diagnostic, which does not exist and should not exist. pid and ref are BuiltinOpaque (types/mod.rs:520,563,1358), outside +/2's domain, and spec/violation is the correct code. Reword the purpose. One commit.",
+  "id": "fz-p8p.17",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "Fixture 00436's purpose names no phantom code",
+  "type": "task",
+  "updated_at": "2026-09-26T09:48:10Z"
+}
