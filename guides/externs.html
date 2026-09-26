@@ -421,17 +421,18 @@ opaque type:</p>
   <span class="kw">def</span> <span class="fn">fd</span>(h), <span class="kw">do:</span> h.value
 <span class="kw">end</span></pre>
 
-<p>Outside <code>NativeHandle</code>, nobody can fish the raw integer out of the
-handle — only <code>NativeHandle.fd/1</code> (defined inside the module) can.
-That means the handle can't be passed to a wrong
-function that expects a different kind of fd, and the dtor contract
-can't be bypassed.</p>
+<p><code>t</code> names the handle's nominal identity: a value of type <code>t</code>
+is exactly a <code>resource(integer)</code>, under its own brand. A plain
+<code>resource(integer)</code> is not the same type as <code>NativeHandle.t</code>,
+so a position declared <code>t</code> rejects a bare <code>resource(integer)</code>
+argument and vice versa — a handle can't be passed to a function that expects a
+different kind of fd by accident of type.</p>
 
-<p>Inside <code>NativeHandle</code>, <code>make_resource(fd, &amp;libc::close/1)</code>
-can satisfy the module's opaque <code>t</code> type. Outside
-<code>NativeHandle</code>, a plain <code>resource(integer)</code> is not the same
-thing as <code>NativeHandle.t</code>; the opaque handle is still owned by the
-module that declared it.</p>
+<p>Naming the type this way does not yet stop code outside
+<code>NativeHandle</code> from reading <code>h.value</code> directly; an opaque
+type's structure is not hidden from other modules. The convention above —
+routing every field read through an accessor defined in the declaring module —
+is a discipline the caller opts into, not something the compiler enforces.</p>
 
 <!-- ─────────────────────────────── 8. EXAMPLE ─────────────────────────────── -->
 <h2 id="example">8. A complete example: <code>FileHandle</code></h2>

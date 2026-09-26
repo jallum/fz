@@ -1875,7 +1875,7 @@ fn note_protocol_domain_type(
         NotedTypeDecl {
             params,
             body: TypeDefBody {
-                kind: NominalKind::Opaque,
+                kind: NominalKind::ProtocolDomain,
                 inner: TypeExpr::Wildcard,
             },
             namespace,

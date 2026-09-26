@@ -158,12 +158,14 @@ lookup table.
 
 ## The domain type
 
-`Protocol.t(...)` is a declaration-owned opaque marker:
-`opaque(protocol_domain_tag(protocol))`. Protocol publication notes `t/0` and
-`t/1` as normal type declarations; `DeriveTypeDef` resolves them only when a
-consumer demands their `TypeDefined` fact. `t/1` keeps its formal parameter, but
-the resolved hard type is the same interned marker as `t/0`; the impl set never
-widens or revises the type fact.
+`Protocol.t(...)` is a declaration-owned opaque marker. Its declaration carries
+its own `NominalKind::ProtocolDomain`, distinct from a user `refines`/`opaque`
+`@type` — resolving it mints a pure nominal tag with no inner structure,
+`OpaqueTag::ProtocolDomain(protocol)`, never a value's structural brand. Protocol
+publication notes `t/0` and `t/1` as normal type declarations; `DeriveTypeDef`
+resolves them only when a consumer demands their `TypeDefined` fact. `t/1` keeps
+its formal parameter, but the resolved hard type is the same interned marker as
+`t/0`; the impl set never widens or revises the type fact.
 
 This keeps the type layer separate from the dispatch layer. A protocol marker is
 not a dispatch matrix and is not the union of known implementations. Runtime
@@ -172,7 +174,7 @@ inside `resolve_protocol_call`.
 
 Function contracts classify protocol-domain obligations from this resolved
 marker, after aliases and bounds have become hard `Ty` values. The durable key is
-the marker tag (`protocol::<Name>.t`) wrapped as `ProtocolDomainObligation`.
+the marker's protocol `ModuleName`, wrapped as `ProtocolDomainObligation`.
 `collect_spec_refs` remains a source-publication dependency/wait tool; contract
 enforcement must not rewalk source refs or enumerate protocol implementations.
 
@@ -198,10 +200,11 @@ source_publish.rs    register_protocol_impl (scope tier) hoists each defimpl to 
                      provider index; publish_protocol_impl_surface (define tier,
                      run by DefineModule(impl_module)) lowers the callbacks
                      and revises the dispatch fact
-compiler2/protocol.rs  the ProtocolCallback / ProtocolImpl fact shapes + maps
+compiler2/protocol.rs  the ProtocolCallback / ProtocolImpl fact shapes + maps;
+                     ProtocolDomainObligation, keyed by the protocol's ModuleName
+compiler2/resolve.rs  NominalKind::ProtocolDomain mints the domain marker tag
 world.rs             define/read protocol facts; impl_target_ty;
-                     protocol_impl_providers (the discovery surface);
-                     protocol-domain tags for normal TypeDefined derivation
+                     protocol_impl_providers (the discovery surface)
 jobs/semantic.rs     resolve_protocol_call — the receiver-subtype selection above
 ```
 

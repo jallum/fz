@@ -2117,9 +2117,9 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     );
 
     let mut expect = Types::new();
-    let marker = expect.opaque_of(&crate::compiler2::protocol::protocol_domain_tag(
+    let marker = expect.protocol_domain_of(
         crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
-    ));
+    );
     let rendered = expect.display(&marker);
     assert_eq!(type_events[0].0, 0);
     assert!(type_events[0].1);
@@ -2133,11 +2133,9 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         vec![TypeVarId(0)],
         "t/1 should remain a parametric type definition",
     );
-    let world_marker = world
-        .types_mut()
-        .opaque_of(&crate::compiler2::protocol::protocol_domain_tag(
-            crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
-        ));
+    let world_marker = world.types_mut().protocol_domain_of(
+        crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
+    );
     assert_eq!(t0_def.ty, world_marker, "t/0 should resolve to the marker opaque");
     assert_eq!(
         t1_def.ty, world_marker,
