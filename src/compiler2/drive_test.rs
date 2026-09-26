@@ -2117,9 +2117,9 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     );
 
     let mut expect = Types::new();
-    let marker = expect.opaque_of(&crate::compiler2::protocol::protocol_domain_tag(
+    let marker = expect.protocol_domain_of(
         crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
-    ));
+    );
     let rendered = expect.display(&marker);
     assert_eq!(type_events[0].0, 0);
     assert!(type_events[0].1);
@@ -2133,11 +2133,9 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         vec![TypeVarId(0)],
         "t/1 should remain a parametric type definition",
     );
-    let world_marker = world
-        .types_mut()
-        .opaque_of(&crate::compiler2::protocol::protocol_domain_tag(
-            crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
-        ));
+    let world_marker = world.types_mut().protocol_domain_of(
+        crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
+    );
     assert_eq!(t0_def.ty, world_marker, "t/0 should resolve to the marker opaque");
     assert_eq!(
         t1_def.ty, world_marker,
@@ -19067,9 +19065,11 @@ const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 2;
 fn compiler2_recursive_typedef_deadlocks_on_its_own_definition() {
     // @type t :: :start | {integer, t} is a legal recursive declaration, and
     // resolving it needs a type whose definition names itself. There is no such
-    // denotation, so DeriveTypeDef(t) waits on TypeDefined(t) — its own output —
-    // and the product pull every door makes fails on a stall rather than on a
-    // diagnostic. The stalled waits name the cycle.
+    // denotation, so DeriveTypeDef(t) waits on TypeDefined(t) — its own output
+    // — and the product pull every door makes fails on that stall (the
+    // resolve/type-alias diagnostic World::unresolved_issue reports for it is
+    // a separate concern, covered by the recursive_typedef fixture; this test
+    // proves the stall's own shape in the fact graph).
     let (mut compiler, root) = submit_main_root(
         ConfiguredTelemetry::new(),
         "recursive_typedef.fz",
@@ -19700,285 +19700,6 @@ def main(), do: classify(:a)
         vec![0, 1],
         "guard predicates remain conservative in semantic reachability"
     );
-}
-
-#[test]
-fn compiler2_declared_domains_drive_function_head_exhaustiveness() {
-    let diagnostics = no_matching_clause_diagnostics(
-        "declared_domain_exhaustiveness.fz",
-        r#"
-@spec tuple_total({:a, :x} | {:b, :y}) :: atom
-def tuple_total({:a, :x}), do: :left
-def tuple_total({:b, :y}), do: :right
-
-@spec overload_total(:a, :x) :: atom
-@spec overload_total(:b, :y) :: atom
-def overload_total(:a, :x), do: :left
-def overload_total(:b, :y), do: :right
-
-@spec count_a([:a]) :: integer
-def count_a([]), do: 0
-def count_a([:a | tail]), do: 1 + count_a(tail)
-
-def main() do
-  {tuple_total({:a, :x}), overload_total(:b, :y), count_a([:a, :a])}
-end
-"#,
-    );
-
-    assert!(diagnostics.is_empty(), "total declared domains warned: {diagnostics:?}");
-}
-
-#[test]
-fn compiler2_declared_list_domain_recognizes_zero_one_and_two_plus_as_total() {
-    let diagnostics = no_matching_clause_diagnostics(
-        "list_length_partition_exhaustiveness.fz",
-        r#"
-@spec total([any]) :: integer
-def total([]), do: 0
-def total([_single]), do: 1
-def total([_first, _second | _tail]), do: 2
-
-@spec missing_one([any]) :: integer
-def missing_one([]), do: 0
-def missing_one([_first, _second | _tail]), do: 2
-
-def main(), do: {total([:a]), missing_one([])}
-"#,
-    );
-
-    assert_eq!(
-        diagnostics
-            .iter()
-            .map(|(source, diagnostic)| (source.as_str(), diagnostic.message.as_str()))
-            .collect::<Vec<_>>(),
-        vec![(
-            "list_length_partition_exhaustiveness.fz",
-            "function clauses don't cover every input",
-        )],
-        "only the genuinely partial list partition should warn: {diagnostics:?}",
-    );
-}
-
-#[test]
-fn compiler2_bounded_contract_domains_drive_function_head_exhaustiveness() {
-    let diagnostics = no_matching_clause_diagnostics(
-        "bounded_contract_exhaustiveness.fz",
-        r#"
-@spec bounded(t) :: atom when t: :a | :b
-def bounded(:a), do: :left
-def bounded(:b), do: :right
-
-@spec nested({:tag, t}) :: atom when t: :a | :b
-def nested({:tag, :a}), do: :left
-def nested({:tag, :b}), do: :right
-
-def main(), do: {bounded(:a), nested({:tag, :b})}
-"#,
-    );
-
-    assert!(
-        diagnostics.is_empty(),
-        "bounded declared domains warned: {diagnostics:?}"
-    );
-}
-
-#[test]
-fn compiler2_partial_bounded_contract_domain_still_warns() {
-    let diagnostics = no_matching_clause_diagnostics(
-        "partial_bounded_contract.fz",
-        r#"
-@spec partial(t) :: atom when t: :a | :b
-def partial(:a), do: :a
-
-def main(), do: partial(:a)
-"#,
-    );
-
-    assert_eq!(
-        diagnostics.len(),
-        1,
-        "the uncovered bounded atom must warn: {diagnostics:?}"
-    );
-    assert_eq!(diagnostics[0].1.message, "function clauses don't cover every input");
-}
-
-#[test]
-fn compiler2_partial_declared_domains_warn_with_and_without_guards() {
-    let diagnostics = no_matching_clause_diagnostics(
-        "partial_declared_domains.fz",
-        r#"
-@spec partial(:a | :b | :c) :: atom
-def partial(:a), do: :a
-def partial(:b), do: :b
-
-@spec guarded(:a | :b) :: atom
-def guarded(value) when value == :a, do: :a
-
-def main(), do: {partial(:a), guarded(:a)}
-"#,
-    );
-
-    assert_eq!(
-        diagnostics
-            .iter()
-            .map(|(_, diagnostic)| diagnostic.message.as_str())
-            .collect::<Vec<_>>(),
-        vec![
-            "function clauses don't cover every input",
-            "function clauses don't cover every input",
-        ],
-        "both real fallthroughs must warn: {diagnostics:?}",
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .all(|(source, _)| source == "partial_declared_domains.fz")
-    );
-}
-
-#[test]
-fn compiler2_contracted_functions_keep_nested_match_diagnostics() {
-    let diagnostics = no_matching_clause_diagnostics(
-        "contracted_nested_case.fz",
-        r#"
-@spec nested(:ok) :: integer
-def nested(:ok) do
-  case :a do
-    :a -> 1
-    :b -> 2
-  end
-end
-
-def main(), do: nested(:ok)
-"#,
-    );
-
-    assert_eq!(
-        diagnostics.len(),
-        1,
-        "only the nested case should warn: {diagnostics:?}"
-    );
-    assert_eq!(diagnostics[0].1.message, "`case` clauses don't cover every input");
-}
-
-#[test]
-fn compiler2_invalid_contract_does_not_invent_a_domain_warning() {
-    let diagnostics = no_matching_clause_diagnostics(
-        "invalid_contract_domain.fz",
-        r#"
-@spec invalid(Missing.t) :: atom
-def invalid(:a), do: :a
-def invalid(:b), do: :b
-
-def main(), do: invalid(:a)
-"#,
-    );
-
-    assert!(
-        diagnostics.is_empty(),
-        "an unresolved contract has no valid domain: {diagnostics:?}"
-    );
-}
-
-#[test]
-fn compiler2_enum_reduce_operator_ref_has_no_function_head_warnings() {
-    let diagnostics = no_matching_clause_diagnostics(
-        "fixtures/00181_enum_reduce_operator_ref.fz",
-        include_str!("../../fixtures/00181_enum_reduce_operator_ref.fz"),
-    );
-
-    assert!(
-        diagnostics.is_empty(),
-        "runtime reducers should be total in their contracts: {diagnostics:?}"
-    );
-}
-
-#[test]
-fn compiler2_enum_runtime_domains_are_total_without_hiding_user_partiality() {
-    for (source_name, source) in [
-        (
-            "fixtures/00568_enum_count_member_reduce.fz",
-            include_str!("../../fixtures/00568_enum_count_member_reduce.fz"),
-        ),
-        (
-            "fixtures2/behavior/enum_list_allocations.fz",
-            include_str!("../../fixtures2/behavior/enum_list_allocations.fz"),
-        ),
-        (
-            "fixtures2/behavior/membership_operator.fz",
-            include_str!("../../fixtures2/behavior/membership_operator.fz"),
-        ),
-        (
-            "fixtures/00420_enum_take_drop_split.fz",
-            include_str!("../../fixtures/00420_enum_take_drop_split.fz"),
-        ),
-        (
-            "fixtures/00571_enum_predicate_search.fz",
-            include_str!("../../fixtures/00571_enum_predicate_search.fz"),
-        ),
-        (
-            "fixtures2/behavior/with_index_users_key_apart_by_element.fz",
-            include_str!("../../fixtures2/behavior/with_index_users_key_apart_by_element.fz"),
-        ),
-    ] {
-        let runtime_diagnostics = no_matching_clause_diagnostics(source_name, source);
-        assert!(
-            runtime_diagnostics.is_empty(),
-            "Enum and List runtime domains should be exhaustive for {source_name}: {runtime_diagnostics:?}"
-        );
-    }
-
-    let user_diagnostics = no_matching_clause_diagnostics(
-        "user_partial_function.fz",
-        r#"
-@spec partial(:a | :b) :: atom
-def partial(:a), do: :a
-
-def main(), do: partial(:a)
-"#,
-    );
-    assert_eq!(
-        user_diagnostics.len(),
-        1,
-        "a genuine user fallthrough must still warn: {user_diagnostics:?}"
-    );
-    assert_eq!(user_diagnostics[0].0, "user_partial_function.fz");
-    assert_eq!(
-        user_diagnostics[0].1.message,
-        "function clauses don't cover every input"
-    );
-}
-
-fn no_matching_clause_diagnostics(source_name: &str, source: &str) -> Vec<(String, Diagnostic)> {
-    let tel = ConfiguredTelemetry::new();
-    let diagnostics = Capture::new();
-    diagnostics.install(&tel, &["fz", "diag"]);
-
-    let mut world = crate::compiler2::World::new();
-    let user_code = world.submit_code(Some(source_name.to_string()), source.to_string());
-    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    let outcome = super::drive::ExecutionContext::new(&mut world, &tel).drive();
-    assert!(
-        !matches!(outcome, DriveOutcome::Fatal { .. }),
-        "diagnostic fixture must not fail fatally: {outcome:?}; diagnostics: {:?}",
-        diagnostics.find(&["fz", "diag"]),
-    );
-
-    diagnostics
-        .find(&["fz", "diag"])
-        .into_iter()
-        .filter_map(|event| event.diagnostic)
-        .filter(|diagnostic| diagnostic.code == codes::TYPE_NO_MATCHING_CLAUSE)
-        .map(|diagnostic| {
-            let source = if Some(diagnostic.primary.span.source_version) == world.source_version(user_code) {
-                source_name.to_string()
-            } else {
-                "<runtime>".to_string()
-            };
-            (source, diagnostic)
-        })
-        .collect()
 }
 
 fn reachable_clauses_for_source(source_name: &str, source: &str, function_name: &str, arity: u64) -> Vec<u32> {

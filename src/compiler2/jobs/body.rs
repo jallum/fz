@@ -2668,6 +2668,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
         let source = SourcePatternRows::lexical(1, rows);
         let namespace = self.namespace;
+        let redundancy_check = (source.rows.len() > 1).then(|| source.clone());
         let mut resolver = super::super::dispatch::SourcePatternResolver {
             world: self.world,
             namespace,
@@ -2677,8 +2678,25 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 Ok(Some(world.guard_dispatch(callee)))
             },
         };
-        pattern_dispatch_from_source_with_resolver(source, &mut resolver)
-            .map_err(|error| emit_local_dispatch_error(self.telemetry, label, span, error))
+        let plan = pattern_dispatch_from_source_with_resolver(source, &mut resolver)
+            .map_err(|error| emit_local_dispatch_error(self.telemetry, label, span, error))?;
+        if let Some(source) = redundancy_check {
+            let redundant_rows = crate::dispatch_matrix::pattern::source::find_redundant_rows_with_resolver(
+                &source,
+                &plan,
+                &mut resolver,
+            );
+            for redundant in redundant_rows {
+                let always_matches_span = source.rows[redundant.always_matches as usize].patterns[0].span;
+                let always_matches_line = self.world.source_map().borrow().locate(always_matches_span).line;
+                let diagnostic = super::super::source_diagnostics::redundant_clause_diagnostic(
+                    source.rows[redundant.body_id as usize].patterns[0].span,
+                    always_matches_line,
+                );
+                super::super::drive::ExecutionContext::new(self.world, self.telemetry).emit_warning_once(diagnostic);
+            }
+        }
+        Ok(plan)
     }
 
     fn compile_single_pattern_dispatch(

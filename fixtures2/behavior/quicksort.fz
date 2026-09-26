@@ -29,10 +29,9 @@
 # proved here.
 #
 # The `append`, `partition`, and `qsort` clauses all use the standard
-# empty-list plus cons-list split. The pattern checker proves that shape
-# exhaustive when the typed subject domain is known to be a list, so this
-# fixture is also a regression against spurious `type/no-matching-clause`
-# diagnostics on list-total helpers.
+# empty-list plus cons-list split. The two clauses of each are disjoint, so
+# this fixture is also a regression against spurious `type/redundant-clause`
+# warnings on list-total helpers.
 #
 # After printing the sorted list, this fixture prints
 # `Process.heap_alloc_stats/0` and a `heap_bytes` headline computed from

@@ -139,7 +139,7 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // inliner, rather than an arithmetic exception, owns removing it later.
 // Publishing a function's source from the walk that scoped it removes one
 // job per reached function from the chain into every body.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 399;
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 395;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {
@@ -5619,7 +5619,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
     }
 
     fn no_ready_producer<T: crate::telemetry::Telemetry>(
-        _world: &World,
+        _world: &mut World,
         _tel: &T,
         root: super::RootId,
         fact: &FactUse<FactKey>,
@@ -5628,7 +5628,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
     }
 
     fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
-        _world: &World,
+        _world: &mut World,
         _tel: &T,
         root: super::RootId,
         fact: &FactUse<FactKey>,
@@ -5637,7 +5637,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
     }
 
     fn did_not_settle<T: crate::telemetry::Telemetry>(
-        _world: &World,
+        _world: &mut World,
         _tel: &T,
         root: super::RootId,
         last_wait: Option<(&ProductKey, &[PullWait])>,

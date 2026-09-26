@@ -1,0 +1,13 @@
+#---
+# purpose: a receive with a positive after timeout matches the spawned child's message before the timeout fires
+#---
+def main() do
+  parent = self()
+  spawn(fn () -> send(parent, [1, 2.5, :a]) end)
+  result = receive do
+    [1, 2.5, :a] -> :ok
+  after
+    50 -> :miss
+  end
+  assert(result == :ok, "the child's message arrives well within the 50ms timeout")
+end

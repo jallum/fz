@@ -4,8 +4,6 @@ use crate::ast::{Expr, Pattern, Spanned};
 use crate::dispatch_matrix::{DispatchNode, GraphNodeId};
 use crate::source::Span;
 
-#[cfg(test)]
-use super::pattern_dispatch_from_source;
 use super::{PatternDispatchPlan, PatternPinnedInput, PatternSubjectRef, PinnedKind};
 
 /// Opaque handle into the caller's body table. Source-pattern dispatch never
@@ -265,56 +263,73 @@ pub(crate) fn direct_bitfield_bindings(pattern: &Pattern) -> Vec<String> {
     }
 }
 
-/// Body ids that no path through the dispatch graph reaches. Guarded rows do
-/// not consume coverage: for diagnostics we replace concrete guards with
-/// `true`, compile one dispatch plan, and traverse both guard branches.
-#[cfg(test)]
-pub(crate) fn find_unreachable_rows<TypeHandle: Clone + PartialEq + Eq>(
-    patterns: &SourcePatternRows<TypeHandle>,
-) -> Vec<PatternBodyId> {
-    let row_bodies: BTreeSet<PatternBodyId> = patterns.rows.iter().map(|r| r.body_id).collect();
-    let plan = plan_for_analysis(normalize_guards_for_analysis(patterns.clone()));
-    let mut reached = BTreeSet::new();
-    collect_reachable_bodies_from_graph(&plan, plan.graph.root, &mut reached);
-    row_bodies.difference(&reached).copied().collect()
+/// A clause whose row the compiled plan proves no path reaches, paired with
+/// the earliest earlier row whose coverage already matches everything that
+/// row could see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RedundantRow {
+    pub(crate) body_id: PatternBodyId,
+    pub(crate) always_matches: PatternBodyId,
 }
 
-#[cfg(test)]
-pub(crate) fn is_inexhaustive<TypeHandle: Clone + PartialEq + Eq>(patterns: &SourcePatternRows<TypeHandle>) -> bool {
-    let normalized = normalize_guards_for_analysis(patterns.clone());
-    let plan = plan_for_analysis(normalized);
-    has_reachable_fail_in_graph(&plan, plan.graph.root)
-}
-
-pub(crate) fn is_inexhaustive_with_resolver<TypeHandle: Clone + PartialEq + Eq>(
+/// Body ids `plan` proves no path reaches, each paired with the earlier row
+/// that already matches everything it could see. `plan` is the caller's own
+/// compiled dispatch plan for `patterns` — real guards, real annotation
+/// preconditions, nothing normalized away — so a guarded row is never
+/// mistaken for redundant, and an annotation that actually partitions the
+/// input is never mistaken for overlap.
+pub(crate) fn find_redundant_rows_with_resolver<TypeHandle: Clone + PartialEq + Eq>(
     patterns: &SourcePatternRows<TypeHandle>,
+    plan: &PatternDispatchPlan<TypeHandle>,
     resolver: &mut impl super::PatternResolver<TypeHandle>,
-) -> bool {
-    let normalized = normalize_guards_for_analysis(patterns.clone());
-    let plan = super::pattern_dispatch_from_source_with_resolver(normalized, resolver)
-        .expect("resolved source-pattern dispatch analysis must compile");
-    has_reachable_fail_in_graph(&plan, plan.graph.root)
+) -> Vec<RedundantRow> {
+    let row_bodies: BTreeSet<PatternBodyId> = patterns.rows.iter().map(|r| r.body_id).collect();
+    let mut reached = BTreeSet::new();
+    collect_reachable_bodies_from_graph(plan, plan.graph.root, &mut reached);
+    row_bodies
+        .difference(&reached)
+        .map(|&body_id| RedundantRow {
+            body_id,
+            always_matches: earliest_row_that_already_matches(patterns, body_id, resolver),
+        })
+        .collect()
 }
 
-#[cfg(test)]
-fn plan_for_analysis<TypeHandle: Clone + PartialEq + Eq>(
-    patterns: SourcePatternRows<TypeHandle>,
-) -> PatternDispatchPlan<TypeHandle> {
-    pattern_dispatch_from_source(patterns).expect("source-pattern dispatch analysis must compile")
-}
-
-fn normalize_guards_for_analysis<TypeHandle>(
-    mut patterns: SourcePatternRows<TypeHandle>,
-) -> SourcePatternRows<TypeHandle> {
-    for row in &mut patterns.rows {
-        if row.guard.is_some() {
-            row.guard = Some(Spanned::dummy(Expr::Bool(true)));
+/// The earliest row before `body_id`'s row whose coverage, added to whatever
+/// precedes it, already matches everything that row could reach. Coverage
+/// only grows as earlier rows are added — each one can only intercept
+/// values, never release them back — so the first prefix that already
+/// renders `body_id` unreachable names the clause that completes its
+/// coverage.
+fn earliest_row_that_already_matches<TypeHandle: Clone + PartialEq + Eq>(
+    patterns: &SourcePatternRows<TypeHandle>,
+    body_id: PatternBodyId,
+    resolver: &mut impl super::PatternResolver<TypeHandle>,
+) -> PatternBodyId {
+    let index = patterns
+        .rows
+        .iter()
+        .position(|row| row.body_id == body_id)
+        .expect("a reported body id names a row in these patterns");
+    for prefix_end in 0..index {
+        let mut candidate_rows = patterns.rows[..=prefix_end].to_vec();
+        candidate_rows.push(patterns.rows[index].clone());
+        let candidate = SourcePatternRows {
+            input_count: patterns.input_count,
+            rows: candidate_rows,
+            prematch: patterns.prematch.clone(),
+        };
+        let plan = super::pattern_dispatch_from_source_with_resolver(candidate, resolver)
+            .expect("a prefix of already-compiled rows must still compile");
+        let mut reached = BTreeSet::new();
+        collect_reachable_bodies_from_graph(&plan, plan.graph.root, &mut reached);
+        if !reached.contains(&body_id) {
+            return patterns.rows[prefix_end].body_id;
         }
     }
-    patterns
+    unreachable!("row {body_id} was proved unreachable against the full row set, so some earlier prefix must too")
 }
 
-#[cfg(test)]
 fn collect_reachable_bodies_from_graph<TypeHandle>(
     plan: &PatternDispatchPlan<TypeHandle>,
     node: GraphNodeId,
@@ -333,19 +348,6 @@ fn collect_reachable_bodies_from_graph<TypeHandle>(
         DispatchNode::Test { on_match, on_miss, .. } => {
             collect_reachable_bodies_from_graph(plan, on_match.target, out);
             collect_reachable_bodies_from_graph(plan, on_miss.target, out);
-        }
-    }
-}
-
-fn has_reachable_fail_in_graph<TypeHandle>(plan: &PatternDispatchPlan<TypeHandle>, node: GraphNodeId) -> bool {
-    let Some(node_ref) = plan.graph.node(node) else {
-        return false;
-    };
-    match node_ref {
-        DispatchNode::Fail => true,
-        DispatchNode::Outcome { .. } => false,
-        DispatchNode::Test { on_match, on_miss, .. } => {
-            has_reachable_fail_in_graph(plan, on_match.target) || has_reachable_fail_in_graph(plan, on_miss.target)
         }
     }
 }

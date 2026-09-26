@@ -512,10 +512,13 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
 
 /// Reports `RootBackendProduct` pull-drive failures as plain `String`s for
 /// the in-memory front door (`run_root_interp`, `product_executable_inventory`,
-/// the CLI dump paths). This path emits no diagnostic of its own at all —
-/// not even for the exhausted-budget and no-producer cases the backend job's
-/// `FatalError` counterpart reports. It never has, and the drive-loop
-/// unification is not the place to change that.
+/// the CLI dump paths). The three hooks below that name a genuine stall
+/// (`no_ready_producer`, `fact_wait_budget_exceeded`, `did_not_settle`) emit
+/// the same specific diagnostic the push drive would for the identical
+/// unresolved fact, through `ExecutionContext::report_unresolved_waits`; the
+/// returned `String` is a plain fallback for the caller and for the rare
+/// case nothing in the frontier resolves to a named issue -- it names the
+/// wait's kind in plain terms, never the wait's own `Debug` form.
 impl super::product_drive::ProductDriveError for String {
     fn dependency_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
@@ -545,37 +548,45 @@ impl super::product_drive::ProductDriveError for String {
         )
     }
 
-    fn no_ready_producer<T: Telemetry>(world: &World, _tel: &T, root: RootId, fact: &FactUse<FactKey>) -> Self {
+    fn no_ready_producer<T: Telemetry>(world: &mut World, tel: &T, root: RootId, fact: &FactUse<FactKey>) -> Self {
+        super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
         format!(
-            "compiler2 root {} product path waited on {:?} with no ready producer; unresolved={:?}",
+            "compiler2 root {} product path waited on {} with no ready producer",
             root.as_u32(),
-            fact,
-            world.unresolved_waits()
+            fact.fact().kind_label()
         )
     }
 
     fn fact_wait_budget_exceeded<T: Telemetry>(
-        _world: &World,
-        _tel: &T,
+        world: &mut World,
+        tel: &T,
         root: RootId,
         fact: &FactUse<FactKey>,
     ) -> Self {
+        super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
         format!(
-            "compiler2 root {} product path exceeded fact-wait budget for {:?}",
+            "compiler2 root {} product path exceeded fact-wait budget for {}",
             root.as_u32(),
-            fact
+            fact.fact().kind_label()
         )
     }
 
     fn did_not_settle<T: Telemetry>(
-        _world: &World,
-        _tel: &T,
+        world: &mut World,
+        tel: &T,
         root: RootId,
         last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
-        format!(
-            "compiler2 root {} product backend did not settle; last wait: {last_wait:?}",
-            root.as_u32()
-        )
+        super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
+        match last_wait {
+            Some((key, waits)) => format!(
+                "compiler2 root {} product backend did not settle waiting on {}, with {} pending wait{}",
+                root.as_u32(),
+                key.kind(),
+                waits.len(),
+                if waits.len() == 1 { "" } else { "s" }
+            ),
+            None => format!("compiler2 root {} product backend did not settle", root.as_u32()),
+        }
     }
 }

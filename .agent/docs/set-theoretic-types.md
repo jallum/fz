@@ -471,19 +471,32 @@ yet" (see [`semantic-fixpoint`](semantic-fixpoint.md)). Compiler2 now owns
 contract-aware arrow matching; `src/specs` only carries the structural shape
 model described in [`specs`](specs.md).
 
-## Brands carry their inner; opaques are nominal tags
+## Brands carry their inner; opaques mint the same brand
 
-`brands` and `opaques` are **nominal refinements** over structural representations.
-They are carried differently because they mean different things. A brand `B`
-declared `@type B :: refines U` is the structural type `U` with the `brands` slot
-ALSO narrowed to `{B}` — the same values, fewer of them. An opaque is a pure
-nominal tag on its own kind axis: `opaque_of("T")` sets only the `opaques` axis, so
-the tag is not a subtype of the plain representation it hides.
+`brands` and `opaques` are both **nominal refinements**, but only one of them
+still means "pure tag, no structure." A user `@type` — `refines` or `opaque` —
+mints a brand over its structural inner: `@type B :: refines U` and
+`@type T :: opaque U` both call `mint_brand(inner, tag)`, so a value of either
+type IS `U`'s structure with the `brands` slot ALSO narrowed to `{tag}` — the
+same values, fewer of them. An opaque type is its inner type; nothing about
+`opaque` changes what values inhabit it. The compiler does not hide an opaque's
+structure from code outside its declaring module, so `opaque` and `refines`
+differ only in the name a reader gives the declaration.
+
+The `opaques` axis is reserved for the one shape a brand cannot express: a
+nominal tag with NO inner, disjoint from every structural value including its
+own bare representation. The compiler mints exactly one of these from source —
+`Protocol.t(...)`'s domain marker, `OpaqueTag::ProtocolDomain(ModuleName)` — plus
+the closed `BuiltinOpaque` identities (`pid`, `ref`, `c_pointer`) and
+`OpaqueTag::ProtocolTarget(ModuleName)`, a nominal protocol-impl receiver. No
+expression in the language can produce a value on the `opaques` axis directly;
+only a resolved `Protocol.t` reference, a builtin constructor, or a protocol
+dispatch receiver does.
 
 ```text
-mint_brand(binary, "utf8")  : { basic = binary, brands = {utf8} }
-plain binary                : { basic = binary, brands = any     }
-opaque_of("T")              : { opaques = {T},  brands = any     }
+mint_brand(binary, "utf8")            : { basic = binary, brands = {utf8} }
+plain binary                          : { basic = binary, brands = any     }
+protocol_domain_of(Enumerable)        : { opaques = {ProtocolDomain(Enumerable)}, brands = any }
 ```
 
 An unbranded type's slot is TOP, not empty: `binary` constrains nothing about
@@ -491,14 +504,20 @@ brands, so `utf8 <: binary` — dropping the refinement leaves a structural
 `binary` — while a plain `binary` is NOT a `utf8`, because `any ⊄ {utf8}`. The
 direction is the whole point: a `@spec` position declared `binary` accepts a
 `utf8` argument, and a position declared `utf8` rejects a bare `binary`
-(`spec/violation`). Opaque tags make two distinct opaque names lattice-disjoint,
-and disjoint from plain structural values unless a consumer explicitly combines
-the tag with structural axes.
+(`spec/violation`) — the identical rule governs an `opaque`-declared position,
+since it resolves through the same brand mechanism. Two distinct protocol-domain
+markers are lattice-disjoint, and disjoint from every structural value; a
+consumer can only combine the `opaques` axis with structural axes by
+constructing a descriptor directly, which no source-level expression does.
 
 A value carries at most ONE brand. That is a rule of the LANGUAGE, not an
 artefact: there is no intersection type expression, so `Positive and Even` is
 unwritable, and the lattice reads the meet of two brands over one inner as
-EMPTY. `Meters or int` is `int`, and `Meters and Feet` is `none`.
+EMPTY. `Meters or int` is `int`, and `Meters and Feet` is `none`. This is also
+the one-brand limit's sharp edge for `opaque`: `@type t :: opaque utf8` mints
+`mint_brand(binary, "t")` and REPLACES the `utf8` brand rather than adding to
+it, the same as `@type t :: refines utf8` does today. No fixture exercises this
+case; it is a known, written-down limit, not a fixed one.
 
 There is no complement operation on a descriptor, and that is by construction:
 `not Meters` is "not an int" OR "an int under another brand", two rectangles
@@ -552,12 +571,16 @@ looked up. `mint_brand(inner, name)` is the constructor that establishes a
 brand; it is called once, where the name is defined (see
 [`type-naming`](type-naming.md)), so the symbol is complete from birth. There is
 no constructor for a bare tag with no inner: a refinement of nothing denotes
-nothing. Opaque source definitions publish the tag itself. Structs are not
-opaques: a `MapSig` carries a `StructTag` and its fields in one atomic record
-leaf. The tag's parsed `ModuleName` owns equality, hashing, and order; its
-`ModuleId` identifies the World dependency. Nominal protocol targets use the
-typed `OpaqueTag::ProtocolTarget(ModuleName)` variant of the existing opaque
-set axis, distinct from ordinary `OpaqueTag::Named(String)` source names.
+nothing. A user `opaque` source definition publishes a brand, exactly like
+`refines` — only the compiler's own protocol-domain marker publishes a bare
+`opaques`-axis tag with no inner. Structs are not opaques: a `MapSig` carries a
+`StructTag` and its fields in one atomic record leaf. The tag's parsed
+`ModuleName` owns equality, hashing, and order; its `ModuleId` identifies the
+World dependency. Nominal protocol targets use the typed
+`OpaqueTag::ProtocolTarget(ModuleName)` variant of the opaque set axis, distinct
+from the compiler's own `OpaqueTag::ProtocolDomain(ModuleName)` domain-marker
+variant — once user opaques mint brands, those two are the axis's only
+producers besides `BuiltinOpaque`.
 
 **Brands carry no runtime witness.** There is no brand `ValueKind` (the runtime
 kinds are Bitstring/ProcBin/Struct/…; see [`any-value`](any-value.md)), and the

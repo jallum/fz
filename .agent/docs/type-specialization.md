@@ -308,10 +308,11 @@ program pins them too.
 Two companions fail from opposite ends. `behavior/recursive_typedef.fz` declares
 the type the ladder is reaching for, `@type t :: :start | {integer, t}`, and
 stalls before any return can climb: `DeriveTypeDef(t)` waits on the
-`TypeDefined(t)` it alone produces, so the product pull fails on a stall rather
-than on a diagnostic. `behavior/return_tuple_accumulator.fz` grows the same
-nesting in an argument instead, so each rung keys a new activation with a fresh
-budget and the drive does not terminate, which is why that fixture is deferred.
+`TypeDefined(t)` it alone produces, and `World::unresolved_issue` reports that
+self-reference as a `resolve/type-alias` diagnostic at the `@type` declaration.
+`behavior/return_tuple_accumulator.fz` grows the same nesting in an argument
+instead, so each rung keys a new activation with a fresh budget and the drive
+does not terminate, which is why that fixture is deferred.
 
 These counts are whole-compile totals on one cold compile, not the ladder's own
 round counter. `ActivationSlot::ascents` resets to zero when an activation is

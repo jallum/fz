@@ -41,7 +41,7 @@ pub const LOWER_UNBOUND: DiagCode = DiagCode("lower/unbound");
 
 // ----- planner (post-.11.24) -----
 
-pub const TYPE_NO_MATCHING_CLAUSE: DiagCode = DiagCode("type/no-matching-clause");
+pub const TYPE_REDUNDANT_CLAUSE: DiagCode = DiagCode("type/redundant-clause");
 pub const TYPE_NUMERIC_LITERAL_WIDENED: DiagCode = DiagCode("type/numeric-literal-widened");
 pub const SPEC_VIOLATION: DiagCode = DiagCode("spec/violation");
 

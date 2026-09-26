@@ -1,0 +1,11 @@
+#---
+# purpose: importing a module that is never defined anywhere is an error.
+# expect: diagnostic
+# diagnostic.code: resolve/unknown-module
+#---
+defmodule User do
+  import Missing
+  def run(), do: nil
+end
+
+def main(), do: dbg(User.run())

@@ -2127,7 +2127,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // causal work stays exact.
         // Deleting the source-copy job removes one semantic evaluation per
         // reached function.
-        total_evaluations: 1048,
+        // The exhaustiveness check that used to run per function head is
+        // gone; redundancy is checked from the compiled dispatch plan
+        // instead, which removes its own evaluation from every function that
+        // declared a contract: 1048 -> 1043.
+        total_evaluations: 1043,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2216,7 +2220,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // reached formulas to this total.
         // Deleting the source-copy job removes one semantic evaluation per
         // reached function.
-        total_evaluations: 1425,
+        // The exhaustiveness check that used to run per function head is
+        // gone; redundancy is checked from the compiled dispatch plan
+        // instead, which removes its own evaluation from every function that
+        // declared a contract: 1425 -> 1412.
+        total_evaluations: 1412,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2425,7 +2433,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // and no `binary` clause analyses; the claim populations stay put.
         // Deleting the source-copy job removes one semantic evaluation per
         // reached function.
-        total_evaluations: 2360,
+        // The exhaustiveness check that used to run per function head is
+        // gone; redundancy is checked from the compiled dispatch plan
+        // instead, which removes its own evaluation from every function that
+        // declared a contract: 2360 -> 2336.
+        total_evaluations: 2336,
     },
 ];
 

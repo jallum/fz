@@ -1,0 +1,7 @@
+warning[type/redundant-clause]: this clause cannot match because a previous clause at line 4 always matches
+  --> fixtures/00581_guardless_wildcard_hides_guarded_clause.fz:2:1
+   |
+2 | def k(_) when true, do: :second
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unreachable
+   |
+

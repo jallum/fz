@@ -227,6 +227,6 @@ fn value_to_halt(proc: *mut Process, v: AnyValue) -> i64 {
         AnyValue::Atom(v) => v as i64,
         AnyValue::EmptyList => 0,
         AnyValue::FnRef(..) => v.value(proc).expect("materialize fn ref halt value").raw() as i64,
-        AnyValue::Ref(v) => v.raw_word() as i64,
+        AnyValue::Ref(v) => v.raw().raw_word() as i64,
     }
 }

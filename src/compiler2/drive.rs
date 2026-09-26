@@ -303,6 +303,50 @@ impl SemanticOrd<Types> for FactKey {
 }
 
 impl FactKey {
+    /// A plain-English name for this fact's kind, for the rare fallback
+    /// text that names a wait `World::unresolved_issue` did not turn into a
+    /// diagnostic. Never the fact's own `Debug` form: that dumps internal
+    /// ids (`ExecutableKey { .. }`, `ModuleId(3)`) that name nothing any
+    /// source line wrote.
+    pub(crate) fn kind_label(&self) -> &'static str {
+        match self {
+            FactKey::CodeIndexed(_) => "a source unit's index",
+            FactKey::CodeScoped(_) => "a source unit's scope",
+            FactKey::ModuleIndexed(_) => "a module's index",
+            FactKey::ModuleDefined(_) => "a module definition",
+            FactKey::ModuleInterface(_) => "a module's interface",
+            FactKey::FunctionSource(_) => "a function's source",
+            FactKey::ExpandedFunctionSource(_) => "a function's expanded source",
+            FactKey::TypeDefined(_) => "a type definition",
+            FactKey::StructDefined(_) => "a struct definition",
+            FactKey::ProtocolDispatch(_) => "a protocol's dispatch",
+            FactKey::ProtocolImplProviders(_) => "a protocol's implementation providers",
+            FactKey::FunctionDefined(_) => "a function definition",
+            FactKey::FunctionContract(_) => "a function's contract",
+            FactKey::LoweredBody(_) => "a function's lowered body",
+            FactKey::GuardDispatch(_) => "a function's guard dispatch",
+            FactKey::EntryDispatch(_) => "a function's entry dispatch",
+            FactKey::StaticCallees(_) => "a function's static callees",
+            FactKey::CallGraphComponent(_) => "a function's call-graph component",
+            FactKey::Recursive(_) => "a function's recursion analysis",
+            FactKey::InputDemand(_) => "a function's input demand",
+            FactKey::RootEntry(_) => "a root's entry point",
+            FactKey::Activation(_) => "a call's activation",
+            FactKey::ActivationInputs(_) => "a call's activation inputs",
+            FactKey::ActivationAnalyzed(_) => "a call's activation analysis",
+            FactKey::ReturnType(_) => "a call's return type",
+            FactKey::CallSiteTargets(_) => "a call site's targets",
+            FactKey::CallSiteSummary(_) => "a call site's summary",
+            FactKey::Executable(_) => "an executable",
+            FactKey::ExecutableFacts(_) => "an executable's facts",
+            FactKey::CallableConstructionTarget(_) => "a callable's construction target",
+            FactKey::RuntimeDemandInput(_) => "an executable's runtime-demand input",
+            FactKey::RuntimeDemand(_) => "an executable's runtime demand",
+            FactKey::RuntimeDemandInputs(_) => "an executable's runtime-demand inputs",
+            FactKey::IncomingInputSlot(_) => "an incoming input slot",
+        }
+    }
+
     fn cmp_same_variant(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
         match (self, other) {
             (FactKey::CodeIndexed(left), FactKey::CodeIndexed(right))
@@ -1092,17 +1136,7 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                 ExecutionContext::new(world, tel).flush_reported_warnings();
                 DriveOutcome::Resolved
             } else {
-                let waits = world.unresolved_waits();
-                let fact_waits = waits
-                    .iter()
-                    .filter_map(|wait| {
-                        as_fact_use(wait.fact.clone()).map(|fact| super::deps::UnresolvedWait {
-                            fact,
-                            jobs: wait.jobs.clone(),
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                ExecutionContext::new(world, tel).emit_unresolved_diagnostics(&fact_waits);
+                let waits = ExecutionContext::new(world, tel).report_unresolved_waits();
                 ExecutionContext::new(world, tel).flush_reported_warnings();
                 DriveOutcome::Unresolved { waits }
             }

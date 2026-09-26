@@ -288,25 +288,6 @@ pub(super) fn define_function(
     let surface =
         crate::compiler2::quoted_function::derive_function_surface(&expanded_source.source, &source_map.borrow())
             .map_err(|error| emit_surface_read_error(tel, "quoted function decode failed", &error))?;
-    let declares_contract = surface.extern_abi.is_some()
-        || surface
-            .attrs
-            .iter()
-            .any(|attr| matches!(attr, crate::ast::Attribute::Spec(_)));
-    let mut resolver = super::super::dispatch::SourcePatternResolver {
-        world,
-        namespace: raw_source.namespace,
-        owner: raw_source.owner_module,
-        guard: |_world: &mut World, _callee: &crate::ast::Callee, _arity: usize| Ok(None),
-    };
-    let warnings = if declares_contract {
-        crate::compiler2::source_diagnostics::function_body_warnings(&surface, &mut resolver)
-    } else {
-        crate::compiler2::source_diagnostics::function_warnings(&surface, &mut resolver)
-    };
-    for diagnostic in warnings {
-        super::super::drive::ExecutionContext::new(world, tel).emit_warning_once(diagnostic);
-    }
     source_publish::record_function_type_refs(world, tel, function_id, &surface)?;
     let changed = super::super::drive::ExecutionContext::new(world, tel).define_function(
         function_id,

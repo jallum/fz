@@ -37,8 +37,8 @@ use super::drive::{ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
 use super::facts::FactUse;
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
-    FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl,
-    RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
+    FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleState, NotedTypeDecl, RootEntry, RootId,
+    RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{BodyKeying, BodyKeyingMap, CallGraphComponentMap, InputDemand, InputDemandMap, StaticCalleeMap};
@@ -50,7 +50,7 @@ use super::namespace::{CallableQualifier, Namespace, NamespaceStore, NamespaceSy
 use super::ordered_set::OrderedSet;
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
-    ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap, protocol_domain_tag,
+    ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap,
 };
 use super::quoted_expander::surface_read_diagnostic;
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
@@ -80,12 +80,13 @@ use super::types::{ClosureTarget, MapKey, Ty, Types};
 use crate::ir_interp::AnyValue as RuntimeValue;
 use fz_runtime::any_value::AnyValueRef;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum UnresolvedIssueKey {
     Module(ModuleId),
     Struct(ModuleId),
     Function(FunctionId),
     Export(FunctionId),
+    Type(TypeName),
 }
 
 struct UnresolvedIssue {
@@ -1405,25 +1406,10 @@ impl World {
         self.protocol_impl_providers.providers_for_protocol(protocol)
     }
 
-    pub(crate) fn is_protocol_domain_type(&self, name: &TypeName) -> bool {
-        name.name == "t"
-            && matches!(name.arity, 0 | 1)
-            && self
-                .modules
-                .get(name.module)
-                .source()
-                .is_some_and(|source| matches!(source.kind, ModuleSourceKind::Protocol(_)))
-    }
-
     /// The qualified tag a nominal `@type` (`refines` / `opaque`) brands under.
     /// A top-level type owns no module, so its tag is its bare name; a module
     /// type is tagged `Module.Path::name`.
     pub(crate) fn qualified_type_tag(&self, name: &TypeName) -> String {
-        if self.is_protocol_domain_type(name)
-            && let Some(protocol) = self.module_name(name.module)
-        {
-            return protocol_domain_tag(protocol.dotted());
-        }
         if name.module.is_global() {
             return name.name.clone();
         }
@@ -2498,13 +2484,12 @@ impl World {
                 issues.push(issue);
             }
         }
-        issues.sort_by_key(|issue| match issue.key {
-            UnresolvedIssueKey::Module(module) => (0_u8, module.as_u32()),
-            UnresolvedIssueKey::Struct(module) => (1_u8, module.as_u32()),
-            UnresolvedIssueKey::Function(function) => (2_u8, function.as_u32()),
-            UnresolvedIssueKey::Export(function) => (3_u8, function.as_u32()),
-        });
-        issues.dedup_by_key(|issue| issue.key);
+        // `UnresolvedIssueKey`'s derived `Ord` ranks by variant declaration
+        // order first (module, struct, function, export, type), then by
+        // each variant's own identity -- the same rank the old hand-written
+        // tuple gave the first four kinds.
+        issues.sort_by(|left, right| left.key.cmp(&right.key));
+        issues.dedup_by_key(|issue| issue.key.clone());
         issues
     }
 
@@ -2515,6 +2500,7 @@ impl World {
             FactKey::FunctionSource(function) => self.unresolved_function_issue(frontier, *function),
             FactKey::ExpandedFunctionSource(function) => self.unresolved_function_issue(frontier, *function),
             FactKey::FunctionDefined(function) => self.unresolved_function_issue(frontier, *function),
+            FactKey::TypeDefined(name) => self.unresolved_type_issue(name),
             _ => None,
         }
     }
@@ -2653,6 +2639,35 @@ impl World {
                     module_name,
                     function_ref.name(),
                     function_ref.arity
+                ),
+                span,
+            ),
+        })
+    }
+
+    /// A `TypeDefined(name)` wait that survives to the terminal frontier and
+    /// names itself among the type names its own body references is a
+    /// recursive denotation: `DeriveTypeDef` waits on the very fact it would
+    /// produce, so nothing ever runs it. The span is the `@type` declaration's
+    /// own, when one was noted; there is always one here, since a name can
+    /// only reference itself after its declaration recorded that reference.
+    ///
+    /// A `TypeDefined` wait that is not self-referential -- some other type
+    /// further down its reference chain never resolving -- is not diagnosed
+    /// here; `None` lets it fall through the way an unrecognized fact kind
+    /// already does.
+    fn unresolved_type_issue(&self, name: &TypeName) -> Option<UnresolvedIssue> {
+        if !self.type_def_refs(name).contains(name) {
+            return None;
+        }
+        let span = self.type_decl(name).map(|decl| decl.span).unwrap_or(Span::DUMMY);
+        Some(UnresolvedIssue {
+            key: UnresolvedIssueKey::Type(name.clone()),
+            diagnostic: Diagnostic::error(
+                codes::RESOLVE_TYPE_ALIAS,
+                format!(
+                    "type `{}` could not be resolved because its definition waits on itself",
+                    name.name
                 ),
                 span,
             ),
@@ -2962,7 +2977,7 @@ impl World {
 
     fn take_unresolved_diagnostics(&mut self, waits: &[UnresolvedWait<Job, FactKey>]) -> Vec<Diagnostic> {
         let issues = self.unresolved_issues(waits);
-        let next = issues.iter().map(|issue| issue.key).collect::<HashSet<_>>();
+        let next = issues.iter().map(|issue| issue.key.clone()).collect::<HashSet<_>>();
         let diagnostics = issues
             .into_iter()
             .filter(|issue| !self.reported_unresolved.contains(&issue.key))
@@ -3099,14 +3114,16 @@ impl World {
         ) -> (fz_runtime::process::Process, Result<RuntimeValue, String>),
     ) -> Result<QuotedSourceRoot, String> {
         let mut semantic_values = Vec::with_capacity(1 + args.len());
-        semantic_values.push(RuntimeValue::Ref(caller));
-        semantic_values.extend(args.iter().copied().map(RuntimeValue::Ref));
+        semantic_values.push(RuntimeValue::from_any_value_ref(caller)?);
+        for &arg in args {
+            semantic_values.push(RuntimeValue::from_any_value_ref(arg)?);
+        }
         let runtime_args =
             crate::ir_interp::encode_macro_entry_inputs(program, &self.types, &self.transport, &semantic_values)?;
         let value =
             source.lend_process(|process| run(&mut self.types, &self.transport, program, process, runtime_args))?;
         match value {
-            RuntimeValue::Ref(root) => Ok(source.subroot(root)),
+            RuntimeValue::Ref(root) => Ok(source.subroot(root.raw())),
             other => Err(format!(
                 "macro {} returned non-source value {}",
                 function.as_u32(),
@@ -3456,6 +3473,28 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         if !diagnostics.is_empty() {
             emit_through(self.telemetry, &diagnostics);
         }
+    }
+
+    /// The one path both compiler2 drives use to answer "the drive stalled;
+    /// say why": every currently-unresolved wait, narrowed to the ones that
+    /// name a fact, reported through whichever specific issue each one
+    /// names (an unknown module, an unbound function, a self-referential
+    /// type). Returns the unnarrowed snapshot so a caller building its own
+    /// outcome (the push drive's `DriveOutcome::Unresolved`) does not need
+    /// to call `unresolved_waits` a second time.
+    pub(crate) fn report_unresolved_waits(&mut self) -> Vec<UnresolvedWait<Job, DependencyKey>> {
+        let waits = self.world.unresolved_waits();
+        let fact_waits = waits
+            .iter()
+            .filter_map(|wait| {
+                super::drive::as_fact_use(wait.fact.clone()).map(|fact| UnresolvedWait {
+                    fact,
+                    jobs: wait.jobs.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        self.emit_unresolved_diagnostics(&fact_waits);
+        waits
     }
 
     pub(crate) fn emit_warning_once(&mut self, diagnostic: Diagnostic) {
