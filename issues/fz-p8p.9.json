@@ -11,7 +11,7 @@
     "fz-p8p.12"
   ],
   "created": "2026-09-25T21:22:59Z",
-  "description": "## Why\nfixture_purposes.tsv (attached to fz-p8p) drafts a purpose for all 433 numbered files. Files no earlier step touched still need processing.\n\n## What changes\nEach remaining file gets its purpose, a `main` if it has none (92 files lack one), and moves to `fixtures/`. Misdescribing stems are renamed (00510, 00298, 00524, 00287); one of the two 00556 files is renumbered; exact duplicates merge; unreferenced 00011, 00012, 00028 are deleted unless a claim adopts them.\n\n## Signal\nNo numbered .fz files left directly in fixtures2/.",
+  "description": "## Why\nfixture_purposes.tsv (attached to fz-p8p) drafts a purpose for all 433 numbered files. Files no earlier step touched still need processing.\n\n## What changes\nEach remaining file gets its purpose, a `main` if it has none (92 files lack one), and moves to `fixtures/`. Misdescribing stems are renamed (00510, 00298, 00524, 00287); one of the two 00556 files is renumbered; exact duplicates merge; unreferenced 00011, 00012, 00028 are deleted unless a claim adopts them.\n\nThree near-duplicate pairs already in `fixtures/` fold into their lower number (owner approved):\n- 00248_make_resource_dtor ← 00354_make_resource_dtor\n- 00249_aliased_resource_dtor ← 00355_aliased_resource_dtor\n- 00250_two_distinct_resources ← 00356_two_distinct_resources\n\nIn each pair, the only difference is that the higher number calls `dbg(:before)` before the resource drops, so its golden gains a leading `:before` line. That makes it a strict superset, because it also proves the destructor runs after the program's other output. The lower file takes the `dbg(:before)` line, its golden and a purpose naming both claims. 00354–00356 and their sidecars are deleted, and every reference is repointed.\n\n## Signal\nNo numbered .fz files are left directly in fixtures2/. Also, no two files in fixtures/ differ only by a `dbg` line.",
   "id": "fz-p8p.9",
   "labels": [],
   "parent": "fz-p8p",
@@ -19,5 +19,5 @@
   "status": "open",
   "title": "Move the remaining numbered fixtures2 files to fixtures/",
   "type": "task",
-  "updated_at": "2026-09-25T21:23:00Z"
+  "updated_at": "2026-09-26T10:26:41Z"
 }
