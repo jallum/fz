@@ -19065,9 +19065,11 @@ const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 2;
 fn compiler2_recursive_typedef_deadlocks_on_its_own_definition() {
     // @type t :: :start | {integer, t} is a legal recursive declaration, and
     // resolving it needs a type whose definition names itself. There is no such
-    // denotation, so DeriveTypeDef(t) waits on TypeDefined(t) — its own output —
-    // and the product pull every door makes fails on a stall rather than on a
-    // diagnostic. The stalled waits name the cycle.
+    // denotation, so DeriveTypeDef(t) waits on TypeDefined(t) — its own output
+    // — and the product pull every door makes fails on that stall (the
+    // resolve/type-alias diagnostic World::unresolved_issue reports for it is
+    // a separate concern, covered by the recursive_typedef fixture; this test
+    // proves the stall's own shape in the fact graph).
     let (mut compiler, root) = submit_main_root(
         ConfiguredTelemetry::new(),
         "recursive_typedef.fz",

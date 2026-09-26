@@ -2225,6 +2225,11 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
 /// fixtures stall). That makes the message unreadable as a comparand: a sweep
 /// cannot tell a real diagnostic movement from reshuffled text. Separate
 /// processes are the honest probe — each gets its own hash seed.
+///
+/// The rendered stall is the same specific diagnostic the push drive reports
+/// for an unresolved fact — here, `main/0` never being defined — not a dump
+/// of the standing waits themselves; the determinism this test pins comes
+/// from `World::unresolved_waits` sorting before either drive reads it.
 #[test]
 fn fz2_stall_diagnostic_is_byte_identical_across_runs() {
     let fixture = OsStr::new("fixtures2/00050_empty.fz");
@@ -2237,7 +2242,7 @@ fn fz2_stall_diagnostic_is_byte_identical_across_runs() {
         .collect::<Vec<_>>();
 
     assert!(
-        renderings[0].contains("no ready producer; unresolved="),
+        renderings[0].contains("error[resolve/unknown-function]: function `main/0` is not defined"),
         "the fixture must still reach the stall diagnostic for this pin to mean anything, got: {}",
         renderings[0]
     );

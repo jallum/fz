@@ -99,15 +99,19 @@ pub(crate) trait ProductDriveError: Sized {
         source: FatalError,
     ) -> Self;
     /// The fact-wait's agenda drained with no ready producer for `fact`.
+    /// Takes `&mut World` (unlike the other hooks) because it, and the two
+    /// below, report through `ExecutionContext::report_unresolved_waits`,
+    /// which dedups against `World::reported_unresolved` the same way the
+    /// push drive does.
     fn no_ready_producer<T: crate::telemetry::Telemetry>(
-        world: &World,
+        world: &mut World,
         tel: &T,
         root: RootId,
         fact: &FactUse<FactKey>,
     ) -> Self;
     /// The fact-wait for `fact` ran more jobs than the budget allows.
     fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
-        world: &World,
+        world: &mut World,
         tel: &T,
         root: RootId,
         fact: &FactUse<FactKey>,
@@ -116,7 +120,7 @@ pub(crate) trait ProductDriveError: Sized {
     /// product settled. `last_wait` is the last product key and waits observed,
     /// when any wait was ever recorded.
     fn did_not_settle<T: crate::telemetry::Telemetry>(
-        world: &World,
+        world: &mut World,
         tel: &T,
         root: RootId,
         last_wait: Option<(&ProductKey, &[PullWait])>,
@@ -945,9 +949,16 @@ fn interpret_request_drain(
             jobs_ran,
             pending_jobs
         )),
+        // `drain_pending_for` already ran this outcome's tail
+        // (`ExecutionContext::report_unresolved_waits`) before returning it,
+        // so whatever named issue exists has already reported through a
+        // diagnostic; this is only the plain fact of how many waits are
+        // still standing, not a second attempt to name them.
         DriveOutcome::Unresolved { waits } => Err(format!(
-            "compiler2 root {} could not apply queued work; unresolved={waits:?}",
-            root.as_u32()
+            "compiler2 root {} could not apply queued work with {} pending wait{} still unresolved",
+            root.as_u32(),
+            waits.len(),
+            if waits.len() == 1 { "" } else { "s" }
         )),
     }
 }

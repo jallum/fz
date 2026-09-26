@@ -10,15 +10,20 @@
 //! compiler2 test that drives a root to a backend product (`compiler2_test`,
 //! `transport_contract_test`, `drive_test`, ...), so the risk unique to this
 //! seam is the `ProductDriveError` dispatch — that is what those tests pin.
-//! Only `fact_wait_budget_exceeded` and `did_not_settle` keep a direct-call
-//! test per error type: their `*_end_to_end` counterparts below can only
-//! assert a message prefix (the exact `fact`/`last_wait` suffix they format
-//! at runtime bakes in incidental interned ids — `FunctionId`/`Ty` — that
-//! shift with unrelated compiler changes), so the direct tests are the only
-//! place the full `{:?}`-formatted template is pinned exactly. The other two
-//! error types (`no_ready_producer`, `job_failed`) have no such gap — their
-//! end-to-end counterparts already assert the full template exactly — so
-//! their direct-call tests were redundant and are deleted.
+//! Only `String`'s `fact_wait_budget_exceeded` and `did_not_settle` keep a
+//! direct-call test: their `*_end_to_end` counterparts below can only assert
+//! a message prefix (the exact `fact`/`last_wait` suffix they format at
+//! runtime bakes in incidental interned ids — `FunctionId`/`Ty` — that shift
+//! with unrelated compiler changes), so the direct tests are the only place
+//! the full plain-English fallback is pinned exactly. Every other
+//! direct-call test (`no_ready_producer`, `job_failed`, and `FatalError`'s
+//! `fact_wait_budget_exceeded`/`did_not_settle`) is redundant and deleted:
+//! `no_ready_producer` and `job_failed`'s end-to-end counterparts already
+//! assert their full template exactly, and the `FatalError` variants of the
+//! three genuine-stall hooks report through
+//! `ExecutionContext::report_unresolved_waits`, which reads the whole
+//! `World` frontier — there is nothing left for a hook-in-isolation call on
+//! a bare, empty `World` to pin, because nothing in it is ever unresolved.
 //!
 //! The second block (`*_end_to_end` below) proves the wiring itself: that a
 //! genuine failure inside the product drive reaches the hook with
@@ -26,7 +31,12 @@
 //! them correctly in isolation. `fact_wait_budget_exceeded` and
 //! `did_not_settle` go through `drive_root_backend_product_with_budgets`, a
 //! test-only budget seam (`product_drive.rs`). The retained production drive
-//! calls the same inner loop with the real 50,000-job budgets.
+//! calls the same inner loop with the real 50,000-job budgets. Since that
+//! seam trips its budget mid-progress rather than at a genuine dead end, the
+//! `add1`-rooted cases below assert no shared diagnostic fires — same as a
+//! genuinely unstuck push drive reports nothing either — while
+//! `no_ready_producer`'s undefined-entry case is a genuine dead end and does
+//! get the shared diagnostic, which both variants assert.
 
 use super::super::World;
 use super::super::drive::Job;
@@ -42,6 +52,7 @@ use super::super::pull::{
 };
 use super::super::scheduler::{DriveOutcome, FatalError};
 use super::super::{CodeSubmission, Compiler2, RootSubmission};
+use crate::diag::codes;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 
 fn drive_retained_backend_fatal(
@@ -85,6 +96,14 @@ fn diagnostic_message(event: &crate::telemetry::capture::OwnedEvent) -> &str {
         .diagnostic
         .as_ref()
         .map(|diagnostic| diagnostic.message.as_str())
+        .expect("diagnostic event missing diagnostic payload")
+}
+
+fn diagnostic_code(event: &crate::telemetry::capture::OwnedEvent) -> &str {
+    event
+        .diagnostic
+        .as_ref()
+        .map(|diagnostic| diagnostic.code.0)
         .expect("diagnostic event missing diagnostic payload")
 }
 
@@ -1784,18 +1803,18 @@ fn add1_world(_tel: &ConfiguredTelemetry) -> (World, RootId) {
 #[test]
 fn string_error_reports_fact_wait_budget_exceeded() {
     let tel = ConfiguredTelemetry::new();
-    let world = World::new();
+    let mut world = World::new();
     let root = RootId::for_test(7);
     let fact = some_fact();
 
-    let message = <String as ProductDriveError>::fact_wait_budget_exceeded(&world, &tel, root, &fact);
+    let message = <String as ProductDriveError>::fact_wait_budget_exceeded(&mut world, &tel, root, &fact);
 
     assert_eq!(
         message,
         format!(
-            "compiler2 root {} product path exceeded fact-wait budget for {:?}",
+            "compiler2 root {} product path exceeded fact-wait budget for {}",
             root.as_u32(),
-            fact
+            fact.fact().kind_label()
         )
     );
 }
@@ -1803,47 +1822,25 @@ fn string_error_reports_fact_wait_budget_exceeded() {
 #[test]
 fn string_error_reports_did_not_settle_with_last_wait() {
     let tel = ConfiguredTelemetry::new();
-    let world = World::new();
+    let mut world = World::new();
     let root = RootId::for_test(7);
     let last_wait = Some((ProductKey::RootBackendProduct(root), vec![PullWait::Fact(some_fact())]));
 
     let message = <String as ProductDriveError>::did_not_settle(
-        &world,
+        &mut world,
         &tel,
         root,
         last_wait.as_ref().map(|(key, waits)| (key, waits.as_slice())),
     );
 
+    let (key, waits) = last_wait.as_ref().expect("test built a Some last_wait");
     assert_eq!(
         message,
         format!(
-            "compiler2 root {} product backend did not settle; last wait: {last_wait:?}",
-            root.as_u32()
-        )
-    );
-}
-
-#[test]
-fn fatal_error_diagnostic_reports_fact_wait_budget_exceeded() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    capture.install(&tel, &[]);
-    let world = World::new();
-    let root = RootId::for_test(7);
-    let fact = some_fact();
-
-    <FatalError as ProductDriveError>::fact_wait_budget_exceeded(&world, &tel, root, &fact);
-
-    let event = capture
-        .last(&["fz", "diag", "error"])
-        .expect("fact-wait budget exhaustion should emit an error diagnostic");
-    let message = diagnostic_message(&event);
-    assert_eq!(
-        message,
-        format!(
-            "compiler2 backend product for root {} exceeded fact-wait budget for {:?}",
+            "compiler2 root {} product backend did not settle waiting on {}, with {} pending wait",
             root.as_u32(),
-            fact
+            key.kind(),
+            waits.len()
         )
     );
 }
@@ -1858,14 +1855,22 @@ fn fatal_error_diagnostic_reports_fact_wait_budget_exceeded() {
 /// (`Scheduler::complete`: "pausing is not recanting"), so `RootEntry`
 /// itself never reads as settled either. Every one of the three keying
 /// waits is an equally genuine dead end here, so which one this hook names
-/// is the order the pull-drive tries them in -- pinned deterministically
-/// (`drive_root_backend_product_with_budgets` sorts a multi-wait
-/// `PullOutcome` before processing it), not an accident of hash iteration.
-/// This is a real dead end reachable from ordinary (if buggy) input -- a
-/// typo'd entry-point name -- not a fabricated one.
+/// in its own (undiagnosed) fallback message is the order the pull-drive
+/// tries them in -- pinned deterministically (`drive_root_backend_product_with_budgets`
+/// sorts a multi-wait `PullOutcome` before processing it), not an accident
+/// of hash iteration. But the hook also shares
+/// `ExecutionContext::report_unresolved_waits`, which scans the whole
+/// frontier, not just that one keying wait -- and among these three, the
+/// one fact kind `World::unresolved_issue` recognizes is the function
+/// itself, so the diagnostic actually reported names the undefined
+/// function, not `RootEntry`. This is a real dead end reachable from
+/// ordinary (if buggy) input -- a typo'd entry-point name -- not a
+/// fabricated one.
 #[test]
 fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1882,14 +1887,21 @@ fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     assert_eq!(
         error,
         format!(
-            "compiler2 root {} product path waited on {:?} with no ready producer; unresolved={:?}",
+            "compiler2 root {} product path waited on {} with no ready producer",
             root.as_u32(),
-            fact,
-            // Read after the fact so the assertion mirrors exactly what the
-            // hook itself reports, not a separately reconstructed guess.
-            compiler.world().unresolved_waits()
+            fact.fact().kind_label()
         ),
-        "the String path should report the undefined entry's RootEntry keying wait, got: {error}"
+        "the String path's own fallback should still name the undefined entry's RootEntry keying wait, got: {error}"
+    );
+
+    let event = capture
+        .last(&["fz", "diag", "error"])
+        .expect("no-ready-producer should also emit the shared unresolved-function diagnostic");
+    assert_eq!(diagnostic_code(&event), codes::RESOLVE_UNKNOWN_FUNCTION.0);
+    assert_eq!(
+        diagnostic_message(&event),
+        "function `totally_undefined_entry/0` is not defined",
+        "the shared diagnostic should name the actual undefined function, not the RootEntry keying wait"
     );
 }
 
@@ -1907,19 +1919,14 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
         "the retained backend product should fail fatally when its entry is never defined, got: {outcome:?}"
     );
 
-    let fact = FactUse::settled(FactKey::RootEntry(root));
     let event = capture
         .last(&["fz", "diag", "error"])
-        .expect("no-ready-producer should emit an error diagnostic");
-    let message = diagnostic_message(&event);
+        .expect("no-ready-producer should emit the shared unresolved-function diagnostic");
+    assert_eq!(diagnostic_code(&event), codes::RESOLVE_UNKNOWN_FUNCTION.0);
     assert_eq!(
-        message,
-        format!(
-            "compiler2 backend product for root {} waited on {:?} with no ready producer",
-            root.as_u32(),
-            fact
-        ),
-        "the FatalError path should report the undefined entry's RootEntry keying wait"
+        diagnostic_message(&event),
+        "function `totally_undefined_entry/0` is not defined",
+        "the FatalError path should report the same shared diagnostic the String path does"
     );
 }
 
@@ -2052,16 +2059,14 @@ fn fatal_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive() {
         "a zero fact-wait budget should trip fatally on a real drive"
     );
 
-    let event = capture
-        .last(&["fz", "diag", "error"])
-        .expect("fact-wait budget exhaustion should emit an error diagnostic");
-    let message = diagnostic_message(&event);
-    assert!(
-        message.starts_with(&format!(
-            "compiler2 backend product for root {} exceeded fact-wait budget for",
-            root.as_u32()
-        )),
-        "should report the fact-wait budget exceeded template, got: {message}"
+    // `add1` is fully resolvable; a forced budget of zero cuts the loop off
+    // mid-progress, not at a genuine dead end, so `World::unresolved_waits`
+    // has nothing for `ExecutionContext::report_unresolved_waits` to name —
+    // same as a push drive that was never actually stuck reports nothing.
+    assert_eq!(
+        capture.count(&["fz", "diag", "error"]),
+        0,
+        "an artificially tiny budget on an otherwise-resolvable root should not fabricate a diagnostic"
     );
 }
 
@@ -2088,9 +2093,9 @@ fn string_error_end_to_end_did_not_settle_on_a_real_drive() {
     };
     assert!(
         error.starts_with(&format!(
-            "compiler2 root {} product backend did not settle; last wait: Some(",
+            "compiler2 root {} product backend did not settle waiting on ",
             root.as_u32()
-        )),
+        )) && error.contains("pending wait"),
         "should report did-not-settle with a populated last wait, got: {error}"
     );
 }
@@ -2219,15 +2224,14 @@ fn fatal_error_end_to_end_did_not_settle_on_a_real_drive() {
         "a product-stack budget of 3 should exhaust fatally before add1's product settles"
     );
 
-    let event = capture
-        .last(&["fz", "diag", "error"])
-        .expect("did-not-settle should emit an error diagnostic");
-    let message = diagnostic_message(&event);
-    // Unlike the interp front door's `String` error, the backend job's
-    // diagnostic never carries the `last_wait` detail -- preserved as-is.
+    // Same as `fatal_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive`:
+    // `add1` is fully resolvable, so an artificially small outer product-stack
+    // budget stops the pull mid-progress, not at a genuine dead end, and
+    // `ExecutionContext::report_unresolved_waits` has nothing to name.
     assert_eq!(
-        message,
-        format!("compiler2 backend product for root {} did not settle", root.as_u32())
+        capture.count(&["fz", "diag", "error"]),
+        0,
+        "an artificially tiny stack budget on an otherwise-resolvable root should not fabricate a diagnostic"
     );
 }
 
@@ -2844,7 +2848,7 @@ mod wait_frame_tests {
             panic!("unexpected job failure")
         }
         fn no_ready_producer<T: crate::telemetry::Telemetry>(
-            _: &World,
+            _: &mut World,
             _: &T,
             _: RootId,
             _: &FactUse<FactKey>,
@@ -2852,7 +2856,7 @@ mod wait_frame_tests {
             panic!("unexpected missing producer")
         }
         fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
-            _: &World,
+            _: &mut World,
             _: &T,
             _: RootId,
             _: &FactUse<FactKey>,
@@ -2871,7 +2875,7 @@ mod wait_frame_tests {
             panic!("unexpected dependency failure")
         }
         fn did_not_settle<T: crate::telemetry::Telemetry>(
-            world: &World,
+            world: &mut World,
             tel: &T,
             root: RootId,
             last_wait: Option<(&ProductKey, &[PullWait])>,
@@ -2933,9 +2937,11 @@ mod wait_frame_tests {
                 })
                 .collect::<Vec<_>>();
             let expected_message = format!(
-                "compiler2 root {} product backend did not settle; last wait: {:?}",
+                "compiler2 root {} product backend did not settle waiting on {}, with {} pending wait{}",
                 root.as_u32(),
-                Some((&root_key, &waits)),
+                root_key.kind(),
+                waits.len(),
+                if waits.len() == 1 { "" } else { "s" },
             );
             let mut waits = Some(waits);
             let mut driver = ProductDriver::new(&tel, root);
@@ -2997,9 +3003,11 @@ mod wait_frame_tests {
                 })
                 .collect::<Vec<_>>();
             let expected = format!(
-                "compiler2 root {} product backend did not settle; last wait: {:?}",
+                "compiler2 root {} product backend did not settle waiting on {}, with {} pending wait{}",
                 root.as_u32(),
-                Some((&child, &waits)),
+                child.kind(),
+                waits.len(),
+                if waits.len() == 1 { "" } else { "s" },
             );
             let mut waits = Some(waits);
             let mut selected_inputs = Vec::new();
@@ -3370,7 +3378,7 @@ mod wait_frame_tests {
             PRODUCT_DRIVE_BUDGET,
             |_, _, _| PullOutcome::Waiting(waits.clone()),
         );
-        let expected = <String as ProductDriveError>::no_ready_producer(&world, &tel, root, &expected_fact);
+        let expected = <String as ProductDriveError>::no_ready_producer(&mut world, &tel, root, &expected_fact);
         assert_eq!(
             result,
             Err(expected),

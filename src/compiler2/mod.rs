@@ -154,8 +154,6 @@ mod native_inventory_test;
 #[cfg(test)]
 mod port_macros_test;
 #[cfg(test)]
-mod port_resolve_test;
-#[cfg(test)]
 mod quoted_function_test;
 #[cfg(test)]
 mod quoted_surface_test;

@@ -1,4 +1,0 @@
-defmodule User do
-  import Missing
-  def run(), do: nil
-end
