@@ -180,9 +180,9 @@ enforcement must not rewalk source refs or enumerate protocol implementations.
 
 The two are checked in different places. The **callback surface** is validated at
 implementation time: an impl must define every required callback at the required
-arity and none the protocol never declared, and when both protocol and impl carry
-`@spec`s their arrows are compared per position, rejecting only on proved
-set-theoretic disjointness (so free variables and `any` never false-positive).
+arity and none the protocol never declared. An impl's own `@spec` is never
+checked against the protocol's `@spec`: when both declare one for the same
+callback, fz does not compare their arrows, and neither does `elixirc`.
 The **domain type** is a normal `TypeDefined` dependency: consumers that mention
 `P.t(...)` demand `DeriveTypeDef(P.t)` and read the protocol-owned marker. It is
 not revised by `defimpl`.
