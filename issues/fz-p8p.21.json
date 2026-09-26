@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-p8p.4"
+  ],
   "created": "2026-09-26T09:48:11Z",
   "description": "Elixir: 'function f/0 imported from both B and A, call is ambiguous', raised at the call, not the import (elixir_dispatch.erl:290-324, 365-367); unused conflicting imports compile. fz silently takes the last import, because NamespaceStore::bind always shadows (namespace.rs:68-101; source_publish.rs:1274-1352, 1898-1904). Fix: namespace bindings record import provenance; a call that resolves through more than one distinct-module import with no local override raises resolve/ambiguous-import. Ordinary shadowing (a local def over an import, 00064) is unchanged. fixtures/00075 flips to expect: diagnostic. Proposal: /Users/j5n/Workspace/fz-p8p.4-findings.html (approved 2026-09-26). One commit. The fixture moves to fixtures/ and its port test is deleted in the same commit.",
   "id": "fz-p8p.21",
