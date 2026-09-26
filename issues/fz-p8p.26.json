@@ -5,14 +5,15 @@
     "fz-p8p.22",
     "fz-p8p.27"
   ],
+  "closed_at": "2026-09-26T15:45:10Z",
   "created": "2026-09-26T15:13:21Z",
   "description": "In a macro, pick(false) takes the truthy branch of 'if flag'; case on false and 'not flag' also misfire, while 'flag == false' is true (Elixir: false is falsy). Cause: AnyValue holds an atom either inline (Atom(id)) or as Ref to a boxed atom (ir_interp/value.rs:18-29); is_truthy/is_false/is_nil (value.rs:117-130) see only the inline form. Every path normalises via interp_value_from_ref (value.rs:212) except the macro runner, which wraps args with a bare RuntimeValue::Ref (compiler2/world.rs:3117-3118). Fix: the macro runner builds inputs with AnyValue::from_any_value_ref, and Ref holds only heap objects by construction (its payload type's constructor in ir_interp refuses scalar kinds), so the bypass cannot be written again. Done when: a new fixture asserts pick(true)==1, pick(false)==2, pick(nil)==2 and a case on false in a macro takes the false arm; it fails first. Proposal: /Users/j5n/Workspace/fz-p8p.22-blockers.html (approved 2026-09-26). One commit.",
   "id": "fz-p8p.26",
   "labels": [],
   "parent": "fz-p8p",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A macro given false or nil sees false or nil",
   "type": "bug",
-  "updated_at": "2026-09-26T15:13:24Z"
+  "updated_at": "2026-09-26T15:45:10Z"
 }
