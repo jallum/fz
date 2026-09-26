@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-xxd.2"
+  ],
   "blocks": [
     "fz-xxd.3"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "An extern row outside its contract is a silent runtime trap, not a compile error",
   "type": "bug",
-  "updated_at": "2026-09-25T20:29:31Z"
+  "updated_at": "2026-09-26T01:28:35Z"
 }
