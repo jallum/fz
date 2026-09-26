@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-p8p.4"
+    "fz-p8p.4",
+    "fz-xxd.8"
   ],
   "created": "2026-09-25T21:40:35Z",
   "description": "## Symptom\n\n`fixtures2/00430_opaque_value_accessor.fz` fails on both `fz2 run` and `fz2 interp` with `function_clause`. Reduction: `@type t :: opaque any`; `def get(h :: t), do: :ok`; `main` calls `A.get(1)` — same failure. Without `opaque`, or without the annotation, it runs.\n\n## Mechanism\n\n- `resolve.rs:150-160` publishes an opaque type as `opaque_of(tag)`, a pure nominal tag; the inner type is dropped.\n- `dispatch_reachability.rs:136-184` intersects the argument type with that tag, gets empty, and `executable_facts.rs:487-501` materializes zero clauses.\n- Nothing in the language produces a value of type `t`, so a parameter annotated with an opaque type can never match.\n\n## How Elixir does it (`../elixir` 759443e72)\n\n`@opaque` is a typespec only (`lib/elixir/pages/references/typespecs.md:241`, `kernel/typespec.ex`): \"the internal structure of the type will not be visible, but the type is still public.\" There is no runtime tag. The value is its underlying structure; opacity is a contract enforced outside the defining module, and inside it the structure is visible.\n\n## Direction\n\nAn opaque type is its inner type with the structure hidden outside the declaring module, not a tag disjoint from every value. `Types::mint_owned_resource_aliases` (`types/mod.rs:1418-1429`) has no callers and is an earlier attempt at this; it goes or becomes the mechanism.\n\n## Done when\n\n00430 runs on run/interp/build without a deferral, and the reduction above runs.",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "An opaque-typed parameter admits no value, so its clause is unreachable",
   "type": "bug",
-  "updated_at": "2026-09-26T09:48:11Z"
+  "updated_at": "2026-09-26T10:35:29Z"
 }
