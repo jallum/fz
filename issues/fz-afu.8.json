@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T10:06:08Z",
+  "description": "DeriveCallGraphComponent walks every function reachable from its subject (collect_static_graph, keying.rs ~1018; strong_component keying.rs:1050-1067), so a program pays a whole reachable walk per function: quadratic. Measured on Enum.take on fz-afu.2: 48 runs, 520 StaticCallees reads, max 51 in one run (main/0 50, Enum.take/2 49). Chain case (h\u003c-g\u003c-f\u003c-main): per-run reads main [1,2,3,4], f 3, g 2, h 1.\n\nRefuted (fz-afu.3 reader, 2026-09-26): stopping the walk at a callee whose component is already known. Saves 472 -\u003e 451 reads on Enum.take and none on the chain, because callers run before callees; it cannot wait instead (f waits on g while g waits on f); and it is unsound when StaticCallees grows later (lambda targets / provider boundary, keying.rs:69-72, 106-133): if B later gains B -\u003e C -\u003e A with {A} already published, B's walk stops at A and never reads A -\u003e B.\n\nShapes to weigh on a page (needs the proposal method before any build):\n- one walk per root that finds every group at once, as annotate_back_edges (native.rs:4339-4387) does once per module; needs an answer for who publishes each function's CallGraphComponent and how a grown edge set re-opens it.\n- waits that follow call edges, a wait cycle read as a recursive group; puts cycle detection in the scheduler.\nThe same shape appears in statically_reaches (transport.rs:2223-2245), on a rare path; the page says whether it folds into the same answer.\n\nAcceptance: CallGraphComponent reads proportional to edges (not edges x functions) on Enum.take, pinned; Recursive answers unchanged on every fixture; a test where StaticCallees grows to close a new cycle.",
+  "id": "fz-afu.8",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 2,
+  "status": "open",
+  "title": "The recursive-group question costs one walk per program, not one per function",
+  "type": "bug",
+  "updated_at": "2026-09-26T10:06:08Z"
+}
