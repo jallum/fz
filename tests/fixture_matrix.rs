@@ -182,6 +182,11 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             fixture_telemetry_concurrent_spec_violations,
         ),
         ("fixtures2_single_file_matrix_smoke", fixtures2_single_file_matrix_smoke),
+        ("fixtures_describe_themselves", fixtures_describe_themselves),
+        (
+            "fixture_self_description_check_fails_on_violations",
+            fixture_self_description_check_fails_on_violations,
+        ),
         (
             "fixture_main_detection_follows_def_surface",
             fixture_main_detection_follows_def_surface,
@@ -303,6 +308,175 @@ end\n",
     let _ = fs::remove_file(dir.join("matrix_smoke.expected.txt"));
     let _ = fs::remove_file(&path);
     let _ = fs::remove_dir(&dir);
+}
+
+/// The known `00556` collision predates this trial: two unrelated
+/// `fixtures2/` contract fixtures already share a number. It is resolved by
+/// renumbering when those files move into `fixtures/`; until then it is an
+/// explicit, named exemption rather than a silent gap in the check below.
+const KNOWN_FIXTURE_NUMBER_COLLISION: &str = "00556";
+
+/// True when `stem` matches `^\d{5}_[a-z0-9][a-z0-9_-]*$` — five digits, an
+/// underscore, then a lowercase-alnum-led name (route codes like
+/// `00001_ja-name` are legal; see `fixture_matrix_paths_from_filename`).
+fn fixture_stem_is_numbered(stem: &str) -> bool {
+    let bytes = stem.as_bytes();
+    if bytes.len() < 7 || !bytes[..5].iter().all(u8::is_ascii_digit) || bytes[5] != b'_' {
+        return false;
+    }
+    let tail = &stem[6..];
+    match tail.chars().next() {
+        Some(first) if first.is_ascii_lowercase() || first.is_ascii_digit() => {}
+        _ => return false,
+    }
+    tail.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+fn record_fixture_number(
+    stem: &str,
+    path: &Path,
+    numbers: &mut std::collections::HashMap<String, PathBuf>,
+    violations: &mut Vec<String>,
+) {
+    let number = &stem[..5];
+    if number == KNOWN_FIXTURE_NUMBER_COLLISION {
+        return;
+    }
+    if let Some(first) = numbers.get(number) {
+        violations.push(format!(
+            "{}: number `{number}` reused (already used by {})",
+            path.display(),
+            first.display()
+        ));
+    } else {
+        numbers.insert(number.to_string(), path.to_path_buf());
+    }
+}
+
+/// Every self-description invariant a `fixtures/*.fz` file must uphold:
+/// parseable frontmatter carrying a `purpose`, and a `NNNNN_name` stem whose
+/// number does not collide with any other fixture — including the numbered
+/// homes in `number_only_dirs`, which are checked for uniqueness only. Those
+/// dirs are the `fixtures2` corpus mid-migration into `fixtures/`; they are
+/// not held to the purpose/stem rules, only asked not to collide with the
+/// numbers `fixtures/` is claiming. Returns every violation found rather
+/// than stopping at the first, so one failing trial reports the whole list.
+fn fixture_self_description_violations(described_dirs: &[&Path], number_only_dirs: &[&Path]) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut numbers: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
+
+    let mut described: Vec<PathBuf> = Vec::new();
+    for dir in described_dirs {
+        let Ok(entries) = fs::read_dir(dir) else { continue };
+        described.extend(
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "fz")),
+        );
+    }
+    described.sort();
+
+    for path in &described {
+        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+        if !fixture_stem_is_numbered(&stem) {
+            violations.push(format!(
+                "{}: stem `{stem}` does not match ^\\d{{5}}_[a-z0-9][a-z0-9_-]*$",
+                path.display()
+            ));
+            continue;
+        }
+        let source = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+        let purpose = parse_fixture_metadata(&source)
+            .unwrap_or_else(|e| panic!("parse frontmatter for {}: {e}", path.display()))
+            .and_then(|metadata| metadata.purpose);
+        if purpose.is_none() {
+            violations.push(format!("{}: frontmatter has no `purpose:`", path.display()));
+        }
+        record_fixture_number(&stem, path, &mut numbers, &mut violations);
+    }
+
+    for dir in number_only_dirs {
+        let Ok(entries) = fs::read_dir(dir) else { continue };
+        for path in entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "fz"))
+        {
+            let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+            if !fixture_stem_is_numbered(&stem) {
+                continue; // unnumbered: not part of the numbered corpus
+            }
+            record_fixture_number(&stem, &path, &mut numbers, &mut violations);
+        }
+    }
+
+    violations
+}
+
+fn fixtures_describe_themselves() {
+    let violations = fixture_self_description_violations(
+        &[Path::new("fixtures")],
+        &[Path::new("fixtures2"), Path::new("fixtures2/behavior")],
+    );
+    assert!(
+        violations.is_empty(),
+        "fixtures/*.fz must describe themselves (purpose, NNNNN_name stem, unique number):\n{}",
+        violations.join("\n")
+    );
+}
+
+fn fixture_self_description_check_fails_on_violations() {
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = temp_dir().join(format!("fz_fixture_self_description_{}_{}", id(), nonce));
+    fs::create_dir_all(&dir).expect("create self-description smoke dir");
+
+    // (a) missing purpose
+    fs::write(
+        dir.join("00001_no_purpose.fz"),
+        "#---\n# root: main/0\n#---\ndef main() do\nend\n",
+    )
+    .expect("write no-purpose fixture");
+    // (b) unnumbered name
+    fs::write(
+        dir.join("unnumbered_name.fz"),
+        "#---\n# purpose: unnumbered\n#---\ndef main() do\nend\n",
+    )
+    .expect("write unnumbered fixture");
+    // (c) reused number, both files otherwise well-formed
+    fs::write(
+        dir.join("00002_dup_a.fz"),
+        "#---\n# purpose: first of a reused number\n#---\ndef main() do\nend\n",
+    )
+    .expect("write dup_a fixture");
+    fs::write(
+        dir.join("00002_dup_b.fz"),
+        "#---\n# purpose: second of a reused number\n#---\ndef main() do\nend\n",
+    )
+    .expect("write dup_b fixture");
+
+    let violations = fixture_self_description_violations(&[&dir], &[]);
+
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(
+        violations.iter().any(|v| v.contains("no `purpose:`")),
+        "expected a missing-purpose violation, got: {violations:?}"
+    );
+    assert!(
+        violations.iter().any(|v| v.contains("does not match")),
+        "expected an unnumbered-name violation, got: {violations:?}"
+    );
+    assert!(
+        violations.iter().any(|v| v.contains("reused")),
+        "expected a reused-number violation, got: {violations:?}"
+    );
+    assert_eq!(
+        violations.len(),
+        3,
+        "expected exactly 3 violations, got: {violations:?}"
+    );
 }
 
 fn behavior_fixtures_route_via_filename_not_paths_frontmatter() {
@@ -449,7 +623,7 @@ impl FixtureCase {
     }
 
     fn canonical_source_name(&self) -> String {
-        format!("fixtures2/behavior/{}.fz", self.name())
+        self.path.to_string_lossy().into_owned()
     }
 
     fn normalize_expected_diagnostics(&self, text: &str) -> String {
@@ -650,16 +824,22 @@ fn header_from_fixture_metadata(path: &Path, source: &str, metadata: &FixtureMet
     })
 }
 
-/// Discover behavioural fixtures under the unified fixtures2 corpus.
+/// Discover behavioural fixtures under `fixtures/` — the flat, numbered,
+/// purpose-bearing home — plus `fixtures2/behavior`, the legacy corpus it is
+/// draining into `fixtures/`. Both roots are walked non-recursively; sorted
+/// by name so trial order (and BLESS diffs) stay stable across runs.
 fn discover() -> Vec<FixtureCase> {
-    let behavior_dir = Path::new("fixtures2/behavior");
-    let mut out: Vec<FixtureCase> = fs::read_dir(behavior_dir)
-        .expect("fixtures2/behavior should exist")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "fz"))
-        .map(FixtureCase::new)
-        .collect();
+    let mut out: Vec<FixtureCase> = Vec::new();
+    for dir in [Path::new("fixtures"), Path::new("fixtures2/behavior")] {
+        out.extend(
+            fs::read_dir(dir)
+                .unwrap_or_else(|e| panic!("{} should exist: {}", dir.display(), e))
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "fz"))
+                .map(FixtureCase::new),
+        );
+    }
     out.sort_by_key(|fixture| fixture.name());
     out
 }

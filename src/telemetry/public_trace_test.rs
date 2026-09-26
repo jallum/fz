@@ -1309,9 +1309,9 @@ fn demand_on_stall_names_the_exact_fact_and_closes_to_its_producer() {
 /// reduce bridge, a predicate search that halts early, and the take/drop/split
 /// suite whose 2.6k evaluations make it the widest causal surface in the tree.
 const TARGET_FIXTURES: [&str; 3] = [
-    "fixtures2/behavior/fz_f98_range_map_converges.fz",
-    "fixtures2/behavior/enum_predicate_search.fz",
-    "fixtures2/00420_enum_take_drop_split.fz",
+    "fixtures/00567_fz_f98_range_map_converges.fz",
+    "fixtures/00571_enum_predicate_search.fz",
+    "fixtures/00420_enum_take_drop_split.fz",
 ];
 
 const SCENARIOS: [&str; 5] = [
@@ -1679,14 +1679,14 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // no `compare/2` activation is minted (its rows in `ANALYSIS_CLAIM_RATCHET`
     // say so) and the StaticCallees evaluations and blocks count only the
     // numeric families' callee layers.
-    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 67, 25, 127, 64),
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 67, 25, 127, 64),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
     // `==` carries a typed clause per numeric pair, and this fixture reaches
     // four of them; the callees of each are derived once, so they add
     // StaticCallees work and no component work.
-    ("fixtures2/behavior/enum_predicate_search.fz", 75, 12, 170, 89),
+    ("fixtures/00571_enum_predicate_search.fz", 75, 12, 170, 89),
     // fz-5xp.6: `Range.count` uses `div/2`, so fewer bodies are extracted.
     // fz-5xp.30: 126 -> 128 component evaluations. The reached arithmetic
     // result/status helpers are ordinary generic calls.
@@ -1695,7 +1695,7 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // Publishing a function's source one round earlier leaves it
     // present-but-dirty while the scope walk that published it is still
     // blocked; one extraction blocks once more on that earlier-visible body.
-    ("fixtures2/behavior/enum_take_drop_split.fz", 129, 26, 274, 141),
+    ("fixtures/00420_enum_take_drop_split.fz", 129, 26, 274, 141),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -2023,7 +2023,7 @@ const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
 /// that number and its classification.
 const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
-        fixture: "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        fixture: "fixtures/00567_fz_f98_range_map_converges.fz",
         // fz-kdt.183: 71 -> 72 distinct with one FEWER retraction (5 -> 4),
         // first appearances flat. The withdrawn key was a joined one that
         // stopped being reachable once the demanded list element split its
@@ -2130,7 +2130,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         total_evaluations: 1048,
     },
     AnalysisClaimRatchet {
-        fixture: "fixtures2/behavior/enum_predicate_search.fz",
+        fixture: "fixtures/00571_enum_predicate_search.fz",
         // fz-kdt.106: 174 -> 173. One key minted from a budget-collapsed row
         // set -- the wide `int | :false | :ok | :true` join -- is never minted,
         // because the row set no longer collapses.
@@ -2219,7 +2219,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         total_evaluations: 1425,
     },
     AnalysisClaimRatchet {
-        fixture: "fixtures2/behavior/enum_take_drop_split.fz",
+        fixture: "fixtures/00420_enum_take_drop_split.fz",
         // fz-kdt.106: 219 -> 211. Eight keys minted from a budget-collapsed
         // row set are never minted, because the row sets no longer collapse.
         // fz-kdt.132: 211 -> 250. A RISE, and it is the ascent this fixture

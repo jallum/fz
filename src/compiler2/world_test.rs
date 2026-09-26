@@ -1647,7 +1647,7 @@ fn compiler2_scoping_publishes_each_function_source_it_walks() {
         "def first(), do: 1\ndef second(), do: 2\n".to_string(),
     );
     assert!(world.demand(Job::ScopeCode(owner)), "code scoping should be demandable");
-    super::drive_test::assert_resolved(
+    super::drive_harness::assert_resolved(
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "scoping two top-level functions should settle",
     );
@@ -1694,7 +1694,7 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
         "the pending code should be named as a CodeIndexed candidate, got {waits:?}"
     );
 
-    super::drive_test::assert_resolved(
+    super::drive_harness::assert_resolved(
         super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "indexing the sole code unit should settle",
     );
@@ -1718,7 +1718,7 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
         world.demand(Job::IndexCode(prelude)),
         "the prelude should be demandable"
     );
-    super::drive_test::assert_resolved(
+    super::drive_harness::assert_resolved(
         super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "indexing the prelude should settle",
     );
@@ -1768,7 +1768,7 @@ fn compiler2_function_source_consumer_wakes_when_a_pending_global_home_indexes()
         "def greet(name), do: name\n".to_string(),
     );
 
-    super::drive_test::assert_resolved(
+    super::drive_harness::assert_resolved(
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "indexing the pending home must wake the waiting consumer and settle, not relocate the deadlock",
     );

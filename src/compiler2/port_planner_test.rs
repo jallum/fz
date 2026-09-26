@@ -1,5 +1,5 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
-use super::drive_test::assert_resolved;
+use super::drive_harness::assert_resolved;
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -824,8 +824,8 @@ fn enum_reduce_runtime_graph_reducer_returns_non_empty_type() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00420_enum_take_drop_split.fz".to_string()),
-        text: include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
+        name: Some("fixtures/00420_enum_take_drop_split.fz".to_string()),
+        text: include_str!("../../fixtures/00420_enum_take_drop_split.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -846,8 +846,8 @@ fn take_positive_reduce_while_has_typed_callback_return() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00420_enum_take_drop_split.fz".to_string()),
-        text: include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
+        name: Some("fixtures/00420_enum_take_drop_split.fz".to_string()),
+        text: include_str!("../../fixtures/00420_enum_take_drop_split.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,

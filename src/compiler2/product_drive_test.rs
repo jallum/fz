@@ -31,6 +31,7 @@
 use super::super::World;
 use super::super::drive::Job;
 use super::super::drive::{DependencyKey, FactKey};
+use super::super::drive_harness::module_name;
 use super::super::dump::DumpStage;
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableNeed, RootId};
@@ -41,12 +42,7 @@ use super::super::pull::{
 };
 use super::super::scheduler::{DriveOutcome, FatalError};
 use super::super::{CodeSubmission, Compiler2, RootSubmission};
-use crate::modules::identity::ModuleName;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
-
-fn module_name(text: &str) -> ModuleName {
-    ModuleName::parse_dotted(text).unwrap()
-}
 
 fn drive_retained_backend_fatal(
     world: &mut World,
@@ -1537,8 +1533,8 @@ fn compiling_the_same_root_twice_through_the_jit_reaches_the_same_outcome() {
         let tel = ConfiguredTelemetry::new();
         let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
-            name: Some("fixtures2/behavior/enum_predicate_search.fz".to_string()),
-            text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+            name: Some("fixtures/00571_enum_predicate_search.fz".to_string()),
+            text: include_str!("../../fixtures/00571_enum_predicate_search.fz").to_string(),
         });
         let root = compiler.submit_root(RootSubmission {
             module_name: None,
@@ -1581,8 +1577,8 @@ fn compile_enum_predicate_search() -> (Vec<Job>, std::rc::Rc<super::super::Backe
     );
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/enum_predicate_search.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+        name: Some("fixtures/00571_enum_predicate_search.fz".to_string()),
+        text: include_str!("../../fixtures/00571_enum_predicate_search.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1685,8 +1681,8 @@ fn live_executable_order_distinguishes_noninjective_display_pairs() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/enum_predicate_search.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+        name: Some("fixtures/00571_enum_predicate_search.fz".to_string()),
+        text: include_str!("../../fixtures/00571_enum_predicate_search.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,

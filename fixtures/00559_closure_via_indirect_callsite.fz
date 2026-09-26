@@ -1,0 +1,9 @@
+#---
+# purpose: a closure passed through an indirect f.(x) callsite keeps a canonical call edge
+#---
+def apply1(f, x), do: f.(x)
+
+def main() do
+  add1 = fn x -> x + 1 end
+  apply1(add1, 41)
+end

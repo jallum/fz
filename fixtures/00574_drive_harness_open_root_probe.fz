@@ -1,0 +1,10 @@
+#---
+# purpose: "helper/1 that main/0 never calls, and a module-scoped @type main/0 never reaches, for drive_harness_test's proof that Drive::open_root and Drive::demand reach past the default root"
+#---
+def main(), do: 0
+
+defmodule Probe do
+  @type unreached :: integer
+end
+
+def helper(x), do: x + 1

@@ -207,8 +207,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     let mut compiler = Compiler2::new(telemetry);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00420_enum_take_drop_split.fz".to_string()),
-        text: include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
+        name: Some("fixtures/00420_enum_take_drop_split.fz".to_string()),
+        text: include_str!("../../fixtures/00420_enum_take_drop_split.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,

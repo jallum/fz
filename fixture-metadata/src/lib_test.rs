@@ -78,26 +78,7 @@ def main(), do: 42
 }
 
 #[test]
-fn fixture_metadata_participation_rules_are_explicit() {
-    let matrix_only = parse_fixture_metadata(
-        r#"#---
-# purpose: runtime behaviour
-# expect: success
-#---
-def main(), do: 42
-"#,
-    )
-    .expect("matrix-only frontmatter")
-    .expect("metadata should exist");
-    assert!(
-        matrix_only.participates_in_matrix(),
-        "matrix policy keys make the fixture a behavioural matrix participant"
-    );
-    assert!(
-        !matrix_only.participates_in_compiler_contracts(),
-        "without contract keys it should stay out of compiler snapshot harnesses"
-    );
-
+fn fixture_metadata_compiler_contract_participation_is_explicit() {
     let contract_only = parse_fixture_metadata(
         r#"#---
 # purpose: compiler shape
@@ -109,10 +90,6 @@ def main(), do: 42
     )
     .expect("contract-only frontmatter")
     .expect("metadata should exist");
-    assert!(
-        !contract_only.participates_in_matrix(),
-        "without matrix keys it should not be run by the behavioural matrix"
-    );
     assert!(
         contract_only.participates_in_compiler_contracts(),
         "compiler keys opt the file into compiler contract checks"
