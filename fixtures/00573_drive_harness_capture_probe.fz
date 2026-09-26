@@ -1,0 +1,13 @@
+#---
+# purpose: "a module, a call, and two dbg() calls, for drive_harness_test's proof that every capture Drive installs gets populated"
+#---
+defmodule Util do
+  def double(x), do: x * 2
+end
+
+def helper(x), do: x + 1
+
+def main() do
+  dbg(helper(1))
+  dbg(Util.double(2))
+end

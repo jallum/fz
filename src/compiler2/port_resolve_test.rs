@@ -2,7 +2,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::drive_test::assert_resolved;
+use super::drive_harness::assert_resolved;
 use super::{
     CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, InterfaceCallableKind, ModuleInterface,
     ModuleInterfaceCallable, RootSubmission,

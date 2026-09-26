@@ -1,58 +1,34 @@
-use super::super::drive_test::assert_resolved;
+use super::super::drive_harness::Drive;
 use super::super::fixture_facts::{canonical_call_edge_facts, render_canonical_call_edge_snapshot};
 use super::super::identity::ActivationKey;
-use super::super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission};
 use crate::source::Span;
-use crate::telemetry::ConfiguredTelemetry;
 
-/// Drives a fixture to its backend product and renders its canonical
+/// Drives fixture `number` to its backend product and renders its canonical
 /// call-edge snapshot over the product-path activation inventory — the same
 /// frontier the CLI semantic dump reads. Sourcing the inventory from the
 /// product (rather than an ambient fact scan) is what surfaces
 /// runtime-demand/callable-flow reached executables such as an escaped lambda
 /// passed through an `f.(x)` boundary.
-fn product_call_edge_snapshot(source: &str) -> String {
-    let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(tel);
-    let root = build_lambda_root(&mut compiler, source);
-    let inventory = compiler
+fn product_call_edge_snapshot(number: u32) -> String {
+    let mut settled = Drive::fixture(number).settle();
+    let root = settled.root();
+    let inventory = settled
+        .compiler_mut()
         .product_activation_inventory(root)
-        .expect("compiler2 should settle a simple lambda fixture through the product path");
-    render_canonical_call_edge_snapshot(&canonical_call_edge_facts(compiler.world(), root, &inventory))
-}
-
-fn build_lambda_root(compiler: &mut Compiler2<ConfiguredTelemetry>, source: &str) -> RootId {
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixture.fz".to_string()),
-        text: source.to_string(),
-    });
-    compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    })
+        .expect("compiler2 should settle the fixture through the product path");
+    render_canonical_call_edge_snapshot(&canonical_call_edge_facts(settled.world(), root, &inventory))
 }
 
 #[test]
 fn canonical_call_edge_facts_preserve_source_spans_and_hide_generated_ids() {
-    let source = r#"
-def apply1(f, x), do: f.(x)
-
-def main() do
-  add1 = fn x -> x + 1 end
-  apply1(add1, 41)
-end
-"#;
-
-    let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(tel);
-    let root = build_lambda_root(&mut compiler, source);
-    let inventory = compiler
+    let mut settled = Drive::fixture(559).settle();
+    let root = settled.root();
+    let inventory = settled
+        .compiler_mut()
         .product_activation_inventory(root)
-        .expect("compiler2 should settle a simple lambda fixture through the product path");
+        .expect("compiler2 should settle the fixture through the product path");
 
-    let facts = canonical_call_edge_facts(compiler.world(), root, &inventory);
+    let facts = canonical_call_edge_facts(settled.world(), root, &inventory);
     assert!(
         facts.iter().all(|fact| fact.callsite != "<generated>"),
         "user-authored callsites should retain their real source spans in canonical facts: {facts:?}",
@@ -71,17 +47,8 @@ end
 
 #[test]
 fn canonical_call_edge_snapshots_are_stable_across_reruns() {
-    let source = r#"
-def apply1(f, x), do: f.(x)
-
-def main() do
-  add1 = fn x -> x + 1 end
-  apply1(add1, 41)
-end
-"#;
-
-    let first = product_call_edge_snapshot(source);
-    let second = product_call_edge_snapshot(source);
+    let first = product_call_edge_snapshot(559);
+    let second = product_call_edge_snapshot(559);
     assert_eq!(
         first, second,
         "canonical call-edge snapshots should stay stable across harmless internal id drift"
@@ -110,16 +77,7 @@ fn closure_surface_vars_render_by_stable_owner_relative_provenance() {
     // defined ahead of the lambda. The fact must instead key the var on the
     // lambda's owner-relative source provenance, which is invariant under that
     // churn — stable by construction, no re-bless treadmill.
-    let source = r#"
-def add(x) do
-  fn y -> x + y end
-end
-
-def main() do
-  add(1)
-end
-"#;
-    let snapshot = product_call_edge_snapshot(source);
+    let snapshot = product_call_edge_snapshot(560);
 
     // The returned closure's argument and return vars carry owner-relative
     // provenance, keyed on its typed owner's structural source occurrence,
@@ -136,19 +94,9 @@ end
 
 #[test]
 fn lowered_callsites_keep_source_span_identity() {
-    let source = r#"
-def add1(x), do: x + 1
-
-def main(), do: add1(41)
-"#;
-    let tel = ConfiguredTelemetry::new();
-    let mut world = crate::compiler2::World::new();
-    world.submit_code(Some("fixture.fz".to_string()), source.to_string());
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    assert_resolved(
-        super::super::drive::ExecutionContext::new(&mut world, &tel).drive(),
-        "compiler2 should settle the direct-call fixture",
-    );
+    let mut settled = Drive::fixture(561).settle();
+    let root = settled.root();
+    let world = settled.compiler_mut().world_mut();
 
     let main_activation = ActivationKey::from_inputs(root, world.root_function(root), &[], world.types_mut());
     let analysis = world

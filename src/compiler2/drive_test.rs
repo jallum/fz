@@ -1,8 +1,17 @@
-use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
+use super::drive_harness::{
+    ActivationAnalysisCapture, ActivationInputCapture, ActivationInputRecord, BackendProgramCapture, CallsiteCapture,
+    EntryDispatchCapture, FunctionCapture, GuardDispatchCapture, ListRetentionTelemetryCapture, LoweredBodyCapture,
+    ModuleCapture, NativeProgramCapture, OutputCapture, ReturnTypeCapture, SourceNoteCapture, WorkGraphCapture,
+    assert_resolved, backend_executable, entry_dispatch, function_fq_name, function_id, function_id_in_module,
+    function_module_name, generated_functions_owned_by, guard_dispatch, latest_entry_dispatch, latest_guard_dispatch,
+    lowered_body, metadata_str, module_function_id, module_id, module_indexed_ids, module_name, named_module_id,
+    presence, try_module_function_id,
+};
+use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
-use crate::compiler2::drive::{DependencyKey, JobEffects};
-use crate::compiler2::pull::{ProductKey, ProductSettlement, ProductValue, TransportCarrier};
+use crate::compiler2::drive::DependencyKey;
+use crate::compiler2::pull::{ProductKey, TransportCarrier};
 use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
     CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
@@ -25,9 +34,6 @@ use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::Arc;
-
-type OutputFacts = Vec<(FactKey, bool)>;
 
 #[test]
 fn compiler2_inline_dispatch_plan_is_shared_from_lowering_to_backend() {
@@ -757,10 +763,6 @@ fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
     }
 }
 
-fn module_name(text: &str) -> ModuleName {
-    ModuleName::parse_dotted(text).unwrap()
-}
-
 #[test]
 fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
     use super::body::{SubjectOriginRoot, ValueRole};
@@ -1200,21 +1202,7 @@ fn equal_range_closure_replacement_keeps_one_typed_occurrence_identity() {
         "the same typed owner-relative occurrence remains one generated callable while its diagnostic version changes"
     );
 }
-type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
-type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, DependencyKey>>>>;
-type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<Rc<PatternDispatchPlan<Ty>>>>>>;
-type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<Arc<PatternGuardDispatch<Ty>>>>>>;
-type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
-type FunctionDefs = Rc<RefCell<HashMap<FunctionId, FunctionDefinedRecord>>>;
-type SourceNotes = Rc<RefCell<Vec<FunctionRef>>>;
-type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<ModuleDenotation>>>>;
-type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
-type BackendProgramDefs = Rc<RefCell<Vec<BackendProgramRecord>>>;
-type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
-type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
-type ActivationInputDefs = Rc<RefCell<Vec<ActivationInputRecord>>>;
 type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
-type ListRetentionCounts = Rc<RefCell<Vec<(crate::compiler2::RootId, u64, u64)>>>;
 
 fn settle_native_product(compiler: &mut Compiler2<ConfiguredTelemetry>, root: crate::compiler2::RootId) {
     compiler
@@ -1417,25 +1405,8 @@ fn jit_compile_native_program(
         .expect("compiler2-owned native codegen should compile a Compiler2 native program")
 }
 
-fn presence(fact: FactKey, changed: bool) -> (FactKey, bool) {
-    (fact, changed)
-}
-
 fn settled_fact(fact: FactKey) -> FactUse<FactKey> {
     FactUse::settled(fact)
-}
-
-fn output_facts(effects: &JobEffects) -> OutputFacts {
-    let changed = effects.changed.iter().cloned().collect::<HashSet<_>>();
-    effects
-        .outputs
-        .iter()
-        .cloned()
-        .map(|fact| {
-            let changed = changed.contains(&fact);
-            (fact, changed)
-        })
-        .collect()
 }
 
 fn demand_backend_product(compiler: &mut Compiler2<ConfiguredTelemetry>, root_id: crate::compiler2::RootId) {
@@ -7266,8 +7237,8 @@ fn compiler2_interp_runs_range_and_map_to_list_from_backend_artifacts() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/fz_f98_range_map_converges.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz").to_string(),
+        name: Some("fixtures/00567_fz_f98_range_map_converges.fz".to_string()),
+        text: include_str!("../../fixtures/00567_fz_f98_range_map_converges.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7311,8 +7282,8 @@ fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/fz_f98_range_map_converges.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz").to_string(),
+        name: Some("fixtures/00567_fz_f98_range_map_converges.fz".to_string()),
+        text: include_str!("../../fixtures/00567_fz_f98_range_map_converges.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -9750,8 +9721,8 @@ fn compiler2_native_actor_ring_delivers_resume_values_through_continuation_abi()
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/actor_ring.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/actor_ring.fz").to_string(),
+        name: Some("fixtures/00570_actor_ring.fz".to_string()),
+        text: include_str!("../../fixtures/00570_actor_ring.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -10312,7 +10283,7 @@ fn with_else_lowering_copies_retain_one_source_lambda_denotation() {
 
 #[test]
 fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and_jit() {
-    let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
+    let source = include_str!("../../fixtures/00420_enum_take_drop_split.fz");
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     let native = NativeProgramCapture::new();
@@ -10323,7 +10294,7 @@ fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/enum_take_drop_split.fz".to_string()),
+        name: Some("fixtures/00420_enum_take_drop_split.fz".to_string()),
         text: source.to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
@@ -10386,7 +10357,7 @@ fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and
     compiler
         .run_root_jit(root_id)
         .expect("enum take/drop/split should run in the JIT");
-    let expected = include_str!("../../fixtures2/behavior/enum_take_drop_split.expected.txt")
+    let expected = include_str!("../../fixtures/00420_enum_take_drop_split.expected.txt")
         .lines()
         .collect::<Vec<_>>();
     let lines = dbg.lines();
@@ -11210,13 +11181,13 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
     let mut twins = Vec::new();
     for fixture in [
         "fixtures2/00183_enum_take_list_range.fz",
-        "fixtures2/00420_enum_take_drop_split.fz",
-        "fixtures2/behavior/enum_count_member_reduce.fz",
+        "fixtures/00420_enum_take_drop_split.fz",
+        "fixtures/00568_enum_count_member_reduce.fz",
         "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
         "fixtures2/behavior/range_enumerable.fz",
         "fixtures2/behavior/closure_identity_tag_split.fz",
         "fixtures2/behavior/closure_identity_captures.fz",
-        "fixtures2/behavior/enum_map_family.fz",
+        "fixtures/00569_enum_map_family.fz",
         "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
         "fixtures2/00277_enum_tier0_fixture.fz",
         "fixtures2/00281_opaque_reducer_closure.fz",
@@ -12180,8 +12151,11 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// `00281_opaque_reducer_closure` and `opaque_fn_value_join`, and `Kernel.===/2`
 /// in `00277_enum_tier0_fixture` and `map_enumerable`. They are readable, so
 /// they count in the denominator and every blind population stays empty.
+/// `00566_enum_take_drop_split` was a second copy of `00420_enum_take_drop_split`
+/// -- same program, same plans -- and `ARM_ORDER_CENSUS` now walks the program
+/// once instead of twice: `entry` 184 -> 155 plans, 171 -> 142 unreadable.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 184, 171), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 155, 142), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -12406,26 +12380,25 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 /// artifact MOVES under a permuted wrapper order and not what its plans then
 /// ask.
 ///
-/// `00420_enum_take_drop_split` and `enum_take_drop_split` are the last two
-/// the corpus walk found: each carried four wrapper-selection seat findings on
-/// four adjacent wrappers that fz-kdt.179 has since cured -- `w21`-`w24` in the
-/// PUBLISHED numbering of the tree they were measured in, which is neither the
-/// numbering of this tree nor the one a dump prints (fz-kdt.193) -- and they
-/// stay in the census
-/// because their wrapper member selections still exercise the weld gate and the
+/// `00420_enum_take_drop_split` is the last one the corpus walk found: it
+/// carried four wrapper-selection seat findings on four adjacent wrappers that
+/// fz-kdt.179 has since cured -- `w21`-`w24` in the PUBLISHED numbering of the
+/// tree it was measured in, which is neither the numbering of this tree nor
+/// the one a dump prints (fz-kdt.193) -- and it stays in the census because
+/// its wrapper member selections still exercise the weld gate and the
 /// blind-escape walk under every seed -- the ratchet that would catch a
 /// regression of that cure.
-const ARM_ORDER_CENSUS: [&str; 22] = [
+const ARM_ORDER_CENSUS: [&str; 21] = [
     "fixtures2/behavior/dispatch_seat_element_blind.fz",
     "fixtures2/behavior/dispatch_list_head_separates.fz",
     "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
-    "fixtures2/behavior/enum_count_member_reduce.fz",
+    "fixtures/00568_enum_count_member_reduce.fz",
     "fixtures2/00277_enum_tier0_fixture.fz",
     "fixtures2/00281_opaque_reducer_closure.fz",
-    "fixtures2/behavior/enum_map_family.fz",
-    "fixtures2/behavior/enum_predicate_search.fz",
+    "fixtures/00569_enum_map_family.fz",
+    "fixtures/00571_enum_predicate_search.fz",
     "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
-    "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    "fixtures/00567_fz_f98_range_map_converges.fz",
     "fixtures2/behavior/opaque_fn_value_join.fz",
     "fixtures2/behavior/range_enumerable.fz",
     "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
@@ -12436,8 +12409,7 @@ const ARM_ORDER_CENSUS: [&str; 22] = [
     "fixtures2/behavior/list_literal_trailing_call.fz",
     "fixtures2/behavior/mailbox_closure_enum_hofs.fz",
     "fixtures2/behavior/map_enumerable.fz",
-    "fixtures2/00420_enum_take_drop_split.fz",
-    "fixtures2/behavior/enum_take_drop_split.fz",
+    "fixtures/00420_enum_take_drop_split.fz",
 ];
 
 /// The fixtures whose CONSTRUCTION-WRAPPER member order is free: compiling each
@@ -12455,10 +12427,10 @@ const ARM_ORDER_CENSUS: [&str; 22] = [
 ///
 /// This is the census the retired `FZ_STRESS_REVERSE_DISPATCH_ARMS` never
 /// touched at all (fz-kdt.136). Measured at this commit by sweeping the corpus
-/// under `wrappers:` seeds and diffing the backend dump; eleven of the nineteen
+/// under `wrappers:` seeds and diffing the backend dump; ten of the eighteen
 /// are named by [`ARM_ORDER_CENSUS`] too, which walks the same wrappers'
 /// selection PLANS rather than whether their artifact moves.
-const WRAPPER_MEMBER_CENSUS: [&str; 19] = [
+const WRAPPER_MEMBER_CENSUS: [&str; 18] = [
     "fixtures2/00183_enum_take_list_range.fz",
     "fixtures2/00197_poly_capture_ref.fz",
     "fixtures2/00230_enum_take_chained.fz",
@@ -12467,13 +12439,12 @@ const WRAPPER_MEMBER_CENSUS: [&str; 19] = [
     "fixtures2/00391_poly_capture_ref.fz",
     "fixtures2/00418_enum_count_range.fz",
     "fixtures2/00419_enum_take_mixed.fz",
-    "fixtures2/00420_enum_take_drop_split.fz",
+    "fixtures/00420_enum_take_drop_split.fz",
     "fixtures2/behavior/dispatch_seat_element_blind.fz",
     "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
-    "fixtures2/behavior/enum_map_family.fz",
-    "fixtures2/behavior/enum_predicate_search.fz",
-    "fixtures2/behavior/enum_take_drop_split.fz",
-    "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    "fixtures/00569_enum_map_family.fz",
+    "fixtures/00571_enum_predicate_search.fz",
+    "fixtures/00567_fz_f98_range_map_converges.fz",
     "fixtures2/behavior/list_literal_trailing_call.fz",
     "fixtures2/behavior/map_enumerable.fz",
     "fixtures2/behavior/opaque_fn_mixed_return.fz",
@@ -12777,20 +12748,19 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// the plan asks less, not because anything stopped being looked at. Every
 /// value reaches the same member it reached before: the column order permutes a
 /// row's conjuncts and leaves each arm admitting exactly the set it admitted.
-const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
+const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 12] = [
     ("fixtures2/00183_enum_take_list_range.fz", "", 54, 0),
     ("fixtures2/00230_enum_take_chained.fz", "", 54, 0),
     ("fixtures2/00418_enum_count_range.fz", "", 9, 0),
     ("fixtures2/00419_enum_take_mixed.fz", "", 54, 0),
-    ("fixtures2/00420_enum_take_drop_split.fz", "", 225, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "", 225, 0),
+    ("fixtures/00420_enum_take_drop_split.fz", "", 225, 0),
     ("fixtures2/behavior/unused_range_binding.fz", "", 9, 0),
     // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
     // hold, re-homed onto the fixture that still selects among members.
-    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 225, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 225, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 225, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 225, 0),
+    ("fixtures/00420_enum_take_drop_split.fz", "arms:6", 225, 0),
+    ("fixtures/00420_enum_take_drop_split.fz", "wrappers:1", 225, 0),
+    ("fixtures/00420_enum_take_drop_split.fz", "wrappers:6", 225, 0),
+    ("fixtures/00420_enum_take_drop_split.fz", "wrappers:reverse", 225, 0),
     // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
     // fixture whose list arms still differ at the element.
     ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 54, 0),
@@ -12828,7 +12798,7 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
 fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
     use crate::compiler2::callsite_dispatch::dispatch_stress::{DispatchStressed, setting};
 
-    let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
+    let fixture = "fixtures/00420_enum_take_drop_split.fz";
     let settled = backend_canon(fixture);
     assert_eq!(
         backend_canon(fixture),
@@ -13027,12 +12997,12 @@ fn compiler2_a_permuted_arm_order_renders_the_same_artifact() {
 /// The fixtures whose backend canon moved under a seeded arm permutation at
 /// `ca23b676f`, measured over the whole corpus. Each one carried at least one
 /// separated pair the seat left in arrival order.
-const ARM_ORDER_ARTIFACT_CENSUS: [&str; 22] = [
+const ARM_ORDER_ARTIFACT_CENSUS: [&str; 21] = [
     "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
     "fixtures2/00274_closed_union_protocol.fz",
     "fixtures2/00281_opaque_reducer_closure.fz",
     "fixtures2/00384_closure_predicate_wrapper.fz",
-    "fixtures2/00420_enum_take_drop_split.fz",
+    "fixtures/00420_enum_take_drop_split.fz",
     "fixtures2/00426_closed_union_protocol_dispatch.fz",
     "fixtures2/00428_open_union_protocol.fz",
     "fixtures2/behavior/brand_refines_its_inner.fz",
@@ -13040,9 +13010,8 @@ const ARM_ORDER_ARTIFACT_CENSUS: [&str; 22] = [
     "fixtures2/behavior/bsx_nested_match.fz",
     "fixtures2/behavior/closure_identity_captures.fz",
     "fixtures2/behavior/closure_identity_tag_split.fz",
-    "fixtures2/behavior/enum_map_family.fz",
+    "fixtures/00569_enum_map_family.fz",
     "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
-    "fixtures2/behavior/enum_take_drop_split.fz",
     "fixtures2/behavior/enumerable_protocol_dispatch.fz",
     "fixtures2/behavior/opaque_fn_mixed_return.fz",
     "fixtures2/behavior/opaque_fn_value_join.fz",
@@ -13054,7 +13023,7 @@ const ARM_ORDER_ARTIFACT_CENSUS: [&str; 22] = [
 
 /// The arrival settings the artifact ratchet drives: the two SEEDS
 /// [`ARM_ORDER_STRESSES`] names, and not its `arms:reverse`. All six seeds
-/// moved the identical 22 fixtures at base and the reversal moved none, so a
+/// moved the identical 21 fixtures at base and the reversal moved none, so a
 /// third seed is a duplicate reading and the reversal is an empty one -- the
 /// gate's doc has the injection numbers that say so. The corpus recipe in
 /// `.agent/docs/dispatch-matrix.md` drives all six seeds and the reversal.
@@ -13591,7 +13560,7 @@ fn compiler2_construction_target_precedes_seated_wrapper_selection() {
         "transport must derive the member list and selection plan from the seated edges"
     );
 
-    let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
+    let fixture = "fixtures/00420_enum_take_drop_split.fz";
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: Some(fixture.to_string()),
@@ -18429,766 +18398,6 @@ fn compiler2_import_except_waits_for_module_interface() {
     );
 }
 
-struct OutputCapture {
-    outputs: JobOutputMap,
-    stops: Rc<RefCell<Vec<JobSpanStop>>>,
-}
-
-struct WorkGraphCapture {
-    steps: AppliedSteps,
-}
-
-#[derive(Debug, Clone)]
-struct JobSpanStop {
-    job: Job,
-    effects_present: bool,
-    effects: Option<JobEffects>,
-}
-
-#[derive(Debug, Clone)]
-struct FunctionDefinedRecord {
-    function_id: FunctionId,
-    module_id: ModuleId,
-    arity: u64,
-    clauses: u64,
-    owner_function_id: Option<FunctionId>,
-    function_ref: FunctionRef,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CallsiteDefinedRecord {
-    pub(crate) key: CallSiteKey,
-    pub(crate) summary: CallSiteSummary,
-}
-
-#[derive(Debug, Clone)]
-struct BackendProgramRecord {
-    root_id: crate::compiler2::RootId,
-    changed: bool,
-    program: Rc<BackendProgram>,
-}
-
-#[derive(Debug, Clone)]
-struct NativeProgramRecord {
-    root_id: crate::compiler2::RootId,
-    program: Rc<NativeProgram>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ReturnTypeRecord {
-    activation: ActivationKey,
-    pub(crate) return_ty: Ty,
-}
-
-#[derive(Debug, Clone)]
-struct ActivationInputRecord {
-    activation: ActivationKey,
-    inputs: Vec<Ty>,
-}
-
-pub(crate) struct FunctionCapture {
-    defs: FunctionDefs,
-}
-
-pub(crate) struct ModuleCapture {
-    defs: ModuleDefs,
-}
-
-pub(crate) struct CallsiteCapture {
-    defs: CallsiteDefs,
-}
-
-pub(crate) struct ReturnTypeCapture {
-    defs: ReturnTypeDefs,
-}
-
-struct ActivationInputCapture {
-    defs: ActivationInputDefs,
-}
-
-struct BackendProgramCapture {
-    defs: BackendProgramDefs,
-}
-
-struct NativeProgramCapture {
-    defs: NativeProgramDefs,
-}
-
-struct ListRetentionTelemetryCapture {
-    counts: ListRetentionCounts,
-}
-
-impl ListRetentionTelemetryCapture {
-    fn new() -> Self {
-        Self {
-            counts: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let counts = Rc::clone(&self.counts);
-        telemetry.attach_raw_event2::<crate::compiler2::RootId, BackendProgram, _>(
-            &["fz", "compiler2", "native_program", "list_retention"],
-            move |_, _, _, root, program| {
-                let (construction_count, physical_capture_count) =
-                    crate::telemetry::jsonl::list_retention_counts(program);
-                counts
-                    .borrow_mut()
-                    .push((*root, construction_count, physical_capture_count));
-            },
-        );
-    }
-
-    fn last(&self) -> Option<(crate::compiler2::RootId, u64, u64)> {
-        self.counts.borrow().last().copied()
-    }
-}
-
-struct EntryDispatchCapture {
-    plans: EntryDispatchMap,
-}
-
-struct GuardDispatchCapture {
-    dispatches: GuardDispatchMap,
-}
-
-pub(crate) struct LoweredBodyCapture {
-    bodies: LoweredBodyDefs,
-}
-
-impl OutputCapture {
-    fn new() -> Self {
-        Self {
-            outputs: Rc::new(RefCell::new(HashMap::new())),
-            stops: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let outputs = Rc::clone(&self.outputs);
-        let stops = Rc::clone(&self.stops);
-        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::JobCompletion, _>(
-            &["fz", "compiler2", "work_graph", "applied"],
-            move |_, _, _, world, completion| {
-                let job = completion.job.clone();
-                let changed = completion
-                    .changed
-                    .iter()
-                    .filter(|change| change.content_changed())
-                    .filter_map(|change| change.key.fact().cloned())
-                    .collect();
-                let effects = JobEffects {
-                    reads: world.job_reads(&job).into_iter().collect(),
-                    waits: completion
-                        .blocked
-                        .iter()
-                        .cloned()
-                        .filter_map(super::drive::as_fact_use)
-                        .collect(),
-                    outputs: world.job_outputs(&job),
-                    changed,
-                    ..JobEffects::default()
-                };
-                stops.borrow_mut().push(JobSpanStop {
-                    job: job.clone(),
-                    effects_present: true,
-                    effects: Some(effects.clone()),
-                });
-                outputs
-                    .borrow_mut()
-                    .entry(job)
-                    .or_default()
-                    .push(output_facts(&effects));
-            },
-        );
-    }
-
-    fn take(&self, job: Job) -> Option<OutputFacts> {
-        let mut outputs = self.outputs.borrow_mut();
-        let matches = outputs.get_mut(&job)?;
-        let output = matches.pop();
-        if matches.is_empty() {
-            outputs.remove(&job);
-        }
-        output
-    }
-
-    fn stop(&self, job: Job) -> JobSpanStop {
-        self.stops
-            .borrow()
-            .iter()
-            .rev()
-            .find(|stop| stop.job == job)
-            .cloned()
-            .unwrap_or_else(|| panic!("job stop event for {job:?}"))
-    }
-
-    fn effects(&self, job: Job) -> JobEffects {
-        self.stop(job.clone())
-            .effects
-            .unwrap_or_else(|| panic!("job effects for {job:?}"))
-    }
-
-    fn stops_matching(&self, mut matches: impl FnMut(&Job) -> bool) -> Vec<JobSpanStop> {
-        self.stops
-            .borrow()
-            .iter()
-            .filter(|stop| matches(&stop.job))
-            .cloned()
-            .collect()
-    }
-}
-
-impl WorkGraphCapture {
-    fn new() -> Self {
-        Self {
-            steps: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let steps = Rc::clone(&self.steps);
-        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::JobCompletion, _>(
-            &["fz", "compiler2", "work_graph", "applied"],
-            move |_, _, _, _, completion| steps.borrow_mut().push(completion.step.clone()),
-        );
-    }
-
-    fn all(&self) -> Vec<AppliedStep<Job, DependencyKey>> {
-        self.steps.borrow().clone()
-    }
-}
-
-impl FunctionCapture {
-    pub(crate) fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(HashMap::new())),
-        }
-    }
-
-    pub(crate) fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let defs = Rc::clone(&self.defs);
-        telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
-            &["fz", "compiler2", "function"],
-            move |name, _, _, world, function| {
-                let from_source = match name {
-                    ["fz", "compiler2", "function", "defined"] => false,
-                    ["fz", "compiler2", "function", "source", "noted"] => true,
-                    _ => return,
-                };
-                record_function_definition(&defs, world, *function, None, from_source);
-            },
-        );
-        let defs = Rc::clone(&self.defs);
-        telemetry.attach_raw_event3::<crate::compiler2::World, FunctionId, FunctionId, _>(
-            &["fz", "compiler2", "function", "defined"],
-            move |_, _, _, world, function, owner| {
-                record_function_definition(&defs, world, *function, Some(*owner), false);
-            },
-        );
-    }
-
-    fn all(&self) -> Vec<FunctionDefinedRecord> {
-        self.defs.borrow().values().cloned().collect()
-    }
-
-    fn id(&self, name: &str, arity: u64) -> FunctionId {
-        self.defs
-            .borrow()
-            .values()
-            .find(|record| record.function_ref.is_named(name) && record.arity == arity)
-            .map(|record| record.function_id)
-            .unwrap_or_else(|| panic!("function fact for {name}/{arity}"))
-    }
-
-    /// The one `name/arity` owned by the module with this last segment, for
-    /// sources where two modules define the same name.
-    fn id_in_module(&self, module: &str, name: &str, arity: u64) -> FunctionId {
-        self.try_id_in_module(module, name, arity)
-            .unwrap_or_else(|| panic!("function fact for {module}.{name}/{arity}"))
-    }
-
-    fn try_id_in_module(&self, module: &str, name: &str, arity: u64) -> Option<FunctionId> {
-        use crate::compiler2::identity::FunctionOrigin;
-        self.defs
-            .borrow()
-            .values()
-            .find(|record| {
-                record.function_ref.is_named(name)
-                    && record.arity == arity
-                    && matches!(
-                        &record.function_ref.denotation.origin,
-                        FunctionOrigin::Named {
-                            module: Some(ModuleDenotation::Named(owner)),
-                            ..
-                        } if owner.last_segment() == module
-                    )
-            })
-            .map(|record| record.function_id)
-    }
-}
-
-impl SourceNoteCapture {
-    fn new() -> Self {
-        Self {
-            notes: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let event: &'static [&'static str] = &["fz", "compiler2", "function", "source", "noted"];
-        let notes = Rc::clone(&self.notes);
-        telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
-            event,
-            move |name, _, _, world, function| {
-                if name == event {
-                    notes.borrow_mut().push(world.function_ref(*function).clone());
-                }
-            },
-        );
-    }
-
-    fn count(&self, name: &str, arity: usize) -> usize {
-        self.notes
-            .borrow()
-            .iter()
-            .filter(|function_ref| function_ref.is_named(name) && function_ref.arity == arity)
-            .count()
-    }
-}
-
-impl ModuleCapture {
-    pub(crate) fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(HashMap::new())),
-        }
-    }
-
-    pub(crate) fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let defs = Rc::clone(&self.defs);
-        telemetry.attach_raw_event2::<crate::compiler2::World, ModuleId, _>(
-            &["fz", "compiler2", "module", "defined"],
-            move |_, _, _, world, module| {
-                defs.borrow_mut().entry(*module).or_default().push(
-                    world
-                        .module_denotation(*module)
-                        .expect("defined module denotation")
-                        .clone(),
-                );
-            },
-        );
-    }
-
-    fn qualified_name(&self, module_id: ModuleId) -> String {
-        if module_id == ModuleId::GLOBAL {
-            return "<top-level>".to_string();
-        }
-        self.defs
-            .borrow()
-            .get(&module_id)
-            .and_then(|defs| defs.last())
-            .map(ToString::to_string)
-            .unwrap_or_else(|| panic!("module.defined for {}", module_id.as_u32()))
-    }
-
-    fn try_qualified_name(&self, module_id: ModuleId) -> Option<String> {
-        if module_id == ModuleId::GLOBAL {
-            return Some("<top-level>".to_string());
-        }
-        self.defs
-            .borrow()
-            .get(&module_id)
-            .and_then(|defs| defs.last())
-            .map(ToString::to_string)
-    }
-
-    fn defined_names(&self) -> Vec<String> {
-        let ids = self.defs.borrow().keys().copied().collect::<Vec<_>>();
-        ids.into_iter().map(|id| self.qualified_name(id)).collect()
-    }
-}
-
-impl CallsiteCapture {
-    pub(crate) fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    pub(crate) fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let defs = Rc::clone(&self.defs);
-        telemetry.attach_raw_event2::<crate::compiler2::World, CallSiteKey, _>(
-            &["fz", "compiler2", "callsite", "defined"],
-            move |_, _, _, world, key| {
-                let Some(summary) = world.callsite_summary(key) else {
-                    return;
-                };
-                defs.borrow_mut().push(CallsiteDefinedRecord {
-                    key: key.clone(),
-                    summary: summary.clone(),
-                });
-            },
-        );
-    }
-
-    pub(crate) fn all(&self) -> Vec<CallsiteDefinedRecord> {
-        self.defs.borrow().clone()
-    }
-}
-
-impl ReturnTypeCapture {
-    pub(crate) fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    pub(crate) fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let defs = Rc::clone(&self.defs);
-        telemetry.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-            &["fz", "compiler2", "return_type", "defined"],
-            move |_, _, _, world, activation| {
-                let Some(return_ty) = world.activation_return_evidence(activation) else {
-                    return;
-                };
-                defs.borrow_mut().push(ReturnTypeRecord {
-                    activation: activation.clone(),
-                    return_ty,
-                });
-            },
-        );
-    }
-
-    pub(crate) fn last_for_function(
-        &self,
-        root_id: crate::compiler2::RootId,
-        function_id: FunctionId,
-    ) -> ReturnTypeRecord {
-        self.defs
-            .borrow()
-            .iter()
-            .rev()
-            .find(|record| record.activation.root == root_id && record.activation.function == function_id)
-            .cloned()
-            .unwrap_or_else(|| panic!("return_type.defined for root={root_id:?} function={function_id:?}"))
-    }
-
-    /// Every `return_type.defined` record for one activation, in emission order —
-    /// used to inspect the `changed` split (fz-go4.18.31) directly rather than
-    /// through the Ty-id-churn proxy (a re-published Ty can carry a fresh id even
-    /// when the fact did not move).
-    pub(crate) fn records_for_function(
-        &self,
-        root_id: crate::compiler2::RootId,
-        function_id: FunctionId,
-    ) -> Vec<ReturnTypeRecord> {
-        self.defs
-            .borrow()
-            .iter()
-            .filter(|record| record.activation.root == root_id && record.activation.function == function_id)
-            .cloned()
-            .collect()
-    }
-
-    /// The distinct activation keys under `root_id` that ever earned a settled
-    /// (`Some`) return through `return_type.defined`. Intersecting this with the
-    /// `activation_analysis.defined` keys keeps only converged activations —
-    /// mid-convergence intermediates that never settle a return drop out — a
-    /// telemetry-only stand-in for `world.activation_return(..).is_some()` where
-    /// the test drives through `Compiler2` and has no direct `World` handle.
-    fn settled_activations(&self, root_id: crate::compiler2::RootId) -> HashSet<ActivationKey> {
-        self.defs
-            .borrow()
-            .iter()
-            .filter(|record| record.activation.root == root_id)
-            .map(|record| record.activation.clone())
-            .collect()
-    }
-}
-
-impl ActivationInputCapture {
-    fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let defs = Rc::clone(&self.defs);
-        telemetry.attach_raw_event2::<crate::compiler2::World, super::world::JobCompletion, _>(
-            &["fz", "compiler2", "activation_inputs", "defined"],
-            move |_, _, _, world, completion| {
-                for activation in &completion.activation_input_changed {
-                    let Some(inputs) = world.activation_inputs_joined(activation) else {
-                        continue;
-                    };
-                    defs.borrow_mut().push(ActivationInputRecord {
-                        activation: activation.clone(),
-                        inputs,
-                    });
-                }
-            },
-        );
-    }
-
-    fn last_for_function(&self, root_id: crate::compiler2::RootId, function_id: FunctionId) -> ActivationInputRecord {
-        self.defs
-            .borrow()
-            .iter()
-            .rev()
-            .find(|record| record.activation.root == root_id && record.activation.function == function_id)
-            .cloned()
-            .unwrap_or_else(|| panic!("activation_inputs.defined for root={root_id:?} function={function_id:?}"))
-    }
-}
-
-impl BackendProgramCapture {
-    fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let defs = Rc::clone(&self.defs);
-        telemetry.attach_raw_event3::<ProductKey, ProductValue, ProductSettlement, _>(
-            &["fz", "compiler2", "pull", "product", "settled"],
-            move |_, _, _, key, value, settlement| {
-                if let (ProductKey::RootBackendProduct(root), ProductValue::RootBackendProduct(answer)) = (key, value)
-                    && settlement.changed
-                {
-                    defs.borrow_mut().push(BackendProgramRecord {
-                        root_id: *root,
-                        changed: settlement.changed,
-                        program: Rc::clone(answer),
-                    });
-                }
-            },
-        );
-    }
-
-    fn last(&self, root_id: crate::compiler2::RootId) -> BackendProgramRecord {
-        self.defs
-            .borrow()
-            .iter()
-            .rev()
-            .find(|record| record.root_id == root_id)
-            .cloned()
-            .unwrap_or_else(|| panic!("RootBackendProduct settlement for {root_id:?}"))
-    }
-
-    fn records(&self, root_id: crate::compiler2::RootId) -> Vec<BackendProgramRecord> {
-        self.defs
-            .borrow()
-            .iter()
-            .filter(|record| record.root_id == root_id)
-            .cloned()
-            .collect()
-    }
-}
-
-impl NativeProgramCapture {
-    fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let defs = Rc::clone(&self.defs);
-        telemetry.attach_raw_event3::<crate::compiler2::ProductKey, ProductValue, ProductSettlement, _>(
-            &["fz", "compiler2", "pull", "product", "settled"],
-            move |_, _, _, key, value, _settlement| {
-                let (crate::compiler2::ProductKey::NativeProgram(root), ProductValue::NativeProgram(program)) =
-                    (key, value)
-                else {
-                    return;
-                };
-                defs.borrow_mut().push(NativeProgramRecord {
-                    root_id: *root,
-                    program: Rc::clone(program),
-                });
-            },
-        );
-    }
-
-    fn last(&self, root_id: crate::compiler2::RootId) -> NativeProgramRecord {
-        self.defs
-            .borrow()
-            .iter()
-            .rev()
-            .find(|record| record.root_id == root_id)
-            .cloned()
-            .unwrap_or_else(|| panic!("NativeProgram product settlement for {root_id:?}"))
-    }
-}
-
-impl GuardDispatchCapture {
-    fn new() -> Self {
-        Self {
-            dispatches: Rc::new(RefCell::new(HashMap::new())),
-        }
-    }
-
-    fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let dispatches = Rc::clone(&self.dispatches);
-        telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
-            &["fz", "compiler2", "guard_dispatch", "defined"],
-            move |_, _, _, world, function| {
-                dispatches
-                    .borrow_mut()
-                    .entry(*function)
-                    .or_default()
-                    .push(world.guard_dispatch(*function));
-            },
-        );
-    }
-
-    fn take(&self, function: FunctionId) -> Option<Arc<PatternGuardDispatch<Ty>>> {
-        let mut dispatches = self.dispatches.borrow_mut();
-        let matches = dispatches.get_mut(&function)?;
-        let dispatch = matches.pop();
-        if matches.is_empty() {
-            dispatches.remove(&function);
-        }
-        dispatch
-    }
-
-    fn last(&self, function: FunctionId) -> Option<Arc<PatternGuardDispatch<Ty>>> {
-        self.dispatches
-            .borrow()
-            .get(&function)
-            .and_then(|matches| matches.last())
-            .cloned()
-    }
-}
-
-impl EntryDispatchCapture {
-    fn new() -> Self {
-        Self {
-            plans: Rc::new(RefCell::new(HashMap::new())),
-        }
-    }
-
-    fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let plans = Rc::clone(&self.plans);
-        telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
-            &["fz", "compiler2", "entry_dispatch", "defined"],
-            move |_, _, _, world, function| {
-                plans
-                    .borrow_mut()
-                    .entry(*function)
-                    .or_default()
-                    .push(world.entry_dispatch(*function));
-            },
-        );
-    }
-
-    fn take(&self, function: FunctionId) -> Option<Rc<PatternDispatchPlan<Ty>>> {
-        let mut plans = self.plans.borrow_mut();
-        let matches = plans.get_mut(&function)?;
-        let plan = matches.pop();
-        if matches.is_empty() {
-            plans.remove(&function);
-        }
-        plan
-    }
-
-    fn last(&self, function: FunctionId) -> Option<Rc<PatternDispatchPlan<Ty>>> {
-        self.plans
-            .borrow()
-            .get(&function)
-            .and_then(|matches| matches.last())
-            .cloned()
-    }
-}
-
-impl LoweredBodyCapture {
-    pub(crate) fn new() -> Self {
-        Self {
-            bodies: Rc::new(RefCell::new(HashMap::new())),
-        }
-    }
-
-    pub(crate) fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let bodies = Rc::clone(&self.bodies);
-        telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
-            &["fz", "compiler2", "lowered_body", "defined"],
-            move |_, _, _, world, function| {
-                bodies
-                    .borrow_mut()
-                    .entry(*function)
-                    .or_default()
-                    .push((*world.lowered_body(*function)).clone());
-            },
-        );
-    }
-
-    fn take(&self, function: FunctionId) -> Option<LoweredBody> {
-        let mut bodies = self.bodies.borrow_mut();
-        let matches = bodies.get_mut(&function)?;
-        let body = matches.pop();
-        if matches.is_empty() {
-            bodies.remove(&function);
-        }
-        body
-    }
-}
-
-struct SourceNoteCapture {
-    notes: SourceNotes,
-}
-
-fn record_function_definition(
-    defs: &FunctionDefs,
-    world: &crate::compiler2::World,
-    function_id: FunctionId,
-    owner_function_id: Option<FunctionId>,
-    from_source: bool,
-) {
-    let function_ref = world.function_ref(function_id);
-    let module_id = function_ref.module;
-    let clauses = if from_source {
-        world
-            .function_source(function_id)
-            .and_then(|source| {
-                let source_map = world.source_map();
-                crate::compiler2::quoted_function::derive_function_surface(&source.source, &source_map.borrow()).ok()
-            })
-            .map_or(0, |surface| surface.clauses.len() as u64)
-    } else {
-        world.function_surface(function_id).clauses.len() as u64
-    };
-    defs.borrow_mut().insert(
-        function_id,
-        FunctionDefinedRecord {
-            function_id,
-            module_id,
-            arity: function_ref.arity as u64,
-            clauses,
-            owner_function_id,
-            function_ref: function_ref.clone(),
-        },
-    );
-}
-
-fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
-    match event.metadata.get(key) {
-        Some(Value::Str(value)) => value.as_ref(),
-        None if key == "code" => event
-            .diagnostic
-            .as_ref()
-            .map(|diagnostic| diagnostic.code.0)
-            .unwrap_or_else(|| panic!("diagnostic missing for metadata key `{key}`")),
-        None if key == "message" => event
-            .diagnostic
-            .as_ref()
-            .map(|diagnostic| diagnostic.message.as_str())
-            .unwrap_or_else(|| panic!("diagnostic missing for metadata key `{key}`")),
-        other => panic!("metadata key `{key}` missing or not str: {other:?}"),
-    }
-}
-
 fn assert_primary_span_contains(diagnostic: &Diagnostic, source: &str, needle: &str) {
     let span = diagnostic.primary.span;
     assert!(!span.is_dummy(), "diagnostic span must be a real source span");
@@ -19199,36 +18408,6 @@ fn assert_primary_span_contains(diagnostic: &Diagnostic, source: &str, needle: &
         source_slice.contains(needle),
         "diagnostic span should cover `{needle}`; got {span:?} -> `{source_slice}`"
     );
-}
-
-fn guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> Arc<PatternGuardDispatch<Ty>> {
-    capture
-        .take(function)
-        .unwrap_or_else(|| panic!("guard_dispatch.defined for {function:?}"))
-}
-
-fn entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> Rc<PatternDispatchPlan<Ty>> {
-    capture
-        .take(function)
-        .unwrap_or_else(|| panic!("entry_dispatch.defined for {function:?}"))
-}
-
-fn latest_guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> Arc<PatternGuardDispatch<Ty>> {
-    capture
-        .last(function)
-        .unwrap_or_else(|| panic!("guard_dispatch.defined for {function:?}"))
-}
-
-fn latest_entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> Rc<PatternDispatchPlan<Ty>> {
-    capture
-        .last(function)
-        .unwrap_or_else(|| panic!("entry_dispatch.defined for {function:?}"))
-}
-
-pub(crate) fn lowered_body(capture: &LoweredBodyCapture, function: FunctionId) -> LoweredBody {
-    capture
-        .take(function)
-        .unwrap_or_else(|| panic!("lowered_body.defined for {function:?}"))
 }
 
 fn summary_has_callee(summary: &CallSiteSummary, callee: SelectedCallee) -> bool {
@@ -19246,16 +18425,6 @@ fn local_call_target<T>(target: &CallTarget<T>) -> &T {
             panic!("expected local call target, got provider-boundary function {function:?}")
         }
     }
-}
-
-fn backend_executable(program: &BackendProgram, function: FunctionId) -> (usize, &crate::compiler2::BackendExecutable) {
-    program
-        .executables()
-        .iter()
-        .enumerate()
-        .find(|(_, executable)| executable.key.activation.function == function)
-        .map(|(index, executable)| (index, executable.as_ref()))
-        .unwrap_or_else(|| panic!("backend executable for {function:?}"))
 }
 
 fn backend_direct_call(executable: &crate::compiler2::BackendExecutable, callee: FunctionId) -> &BackendTail {
@@ -19589,135 +18758,6 @@ fn expr_has_binary_nested_input(expr: &PatternGuardExpr<Ty>) -> bool {
         }
         PatternGuardExpr::Const(_) | PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => false,
     }
-}
-
-pub(crate) fn assert_resolved(outcome: DriveOutcome<Job, DependencyKey>, message: &str) {
-    assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
-}
-
-pub(crate) fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> FunctionId {
-    capture.id(name, arity)
-}
-
-pub(crate) fn module_function_id(capture: &FunctionCapture, module: &str, name: &str, arity: u64) -> FunctionId {
-    capture.id_in_module(module, name, arity)
-}
-
-pub(crate) fn try_module_function_id(
-    capture: &FunctionCapture,
-    module: &str,
-    name: &str,
-    arity: u64,
-) -> Option<FunctionId> {
-    capture.try_id_in_module(module, name, arity)
-}
-
-/// Records every `ActivationKey` the semantic pass publishes through
-/// `activation_analysis.defined`. A key can be republished across rounds (and,
-/// before convergence, a transient key can appear); callers dedup by key and
-/// filter to the live frontier via `world.activation_analysis` to recover the
-/// settled analyzed-activation set.
-struct ActivationAnalysisCapture {
-    keys: Rc<RefCell<Vec<ActivationKey>>>,
-}
-
-impl ActivationAnalysisCapture {
-    fn new() -> Self {
-        Self {
-            keys: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let keys = Rc::clone(&self.keys);
-        telemetry.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-            &["fz", "compiler2", "activation_analysis", "defined"],
-            move |_, _, _, _, activation| keys.borrow_mut().push(activation.clone()),
-        );
-    }
-
-    fn keys_for_root(&self, root: crate::compiler2::RootId) -> Vec<ActivationKey> {
-        self.keys
-            .borrow()
-            .iter()
-            .filter(|key| key.root == root)
-            .cloned()
-            .collect()
-    }
-}
-
-fn generated_functions_owned_by(capture: &FunctionCapture, owner: FunctionId) -> Vec<FunctionDefinedRecord> {
-    capture
-        .all()
-        .into_iter()
-        .filter(|record| record.owner_function_id == Some(owner))
-        .collect()
-}
-
-pub(crate) fn function_id_in_module(
-    functions: &FunctionCapture,
-    modules: &ModuleCapture,
-    module_name: &str,
-    name: &str,
-    arity: u64,
-) -> FunctionId {
-    functions
-        .all()
-        .into_iter()
-        .find(|record| {
-            record.function_ref.is_named(name)
-                && record.arity == arity
-                && modules.try_qualified_name(record.module_id).as_deref() == Some(module_name)
-        })
-        .map(|record| record.function_id)
-        .unwrap_or_else(|| panic!("function.defined for {module_name}.{name}/{arity}"))
-}
-
-pub(crate) fn module_id(capture: &ModuleCapture, name: &str) -> ModuleId {
-    capture
-        .defs
-        .borrow()
-        .keys()
-        .copied()
-        .find(|module_id| capture.qualified_name(*module_id) == name)
-        .unwrap_or_else(|| panic!("module.defined for {name}"))
-}
-
-fn function_fq_name(function: &FunctionDefinedRecord, modules: &ModuleCapture) -> String {
-    if function.module_id == ModuleId::GLOBAL {
-        function.function_ref.display_name()
-    } else {
-        format!(
-            "{}.{}",
-            modules.qualified_name(function.module_id),
-            function.function_ref.display_name()
-        )
-    }
-}
-
-fn function_module_name(function: &FunctionDefinedRecord, modules: &ModuleCapture) -> String {
-    modules
-        .try_qualified_name(function.module_id)
-        .unwrap_or_else(|| format!("<module:{}>", function.module_id.as_u32()))
-}
-
-fn module_indexed_ids(outputs: &OutputFacts) -> Vec<crate::compiler2::ModuleId> {
-    outputs
-        .iter()
-        .filter_map(|(fact, _)| match fact {
-            FactKey::ModuleIndexed(module_id) => Some(*module_id),
-            _ => None,
-        })
-        .collect()
-}
-
-fn named_module_id(world: &crate::compiler2::World, modules: &[ModuleId], name: &str) -> ModuleId {
-    let expected = module_name(name);
-    modules
-        .iter()
-        .copied()
-        .find(|module| world.module_name(*module) == Some(&expected))
-        .unwrap_or_else(|| panic!("indexed module `{name}`"))
 }
 
 fn sorted_strings(mut values: Vec<String>) -> Vec<String> {
@@ -20857,8 +19897,8 @@ fn compiler2_enum_reduce_operator_ref_has_no_function_head_warnings() {
 fn compiler2_enum_runtime_domains_are_total_without_hiding_user_partiality() {
     for (source_name, source) in [
         (
-            "fixtures2/behavior/enum_count_member_reduce.fz",
-            include_str!("../../fixtures2/behavior/enum_count_member_reduce.fz"),
+            "fixtures/00568_enum_count_member_reduce.fz",
+            include_str!("../../fixtures/00568_enum_count_member_reduce.fz"),
         ),
         (
             "fixtures2/behavior/enum_list_allocations.fz",
@@ -20869,12 +19909,12 @@ fn compiler2_enum_runtime_domains_are_total_without_hiding_user_partiality() {
             include_str!("../../fixtures2/behavior/membership_operator.fz"),
         ),
         (
-            "fixtures2/behavior/enum_take_drop_split.fz",
-            include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
+            "fixtures/00420_enum_take_drop_split.fz",
+            include_str!("../../fixtures/00420_enum_take_drop_split.fz"),
         ),
         (
-            "fixtures2/behavior/enum_predicate_search.fz",
-            include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+            "fixtures/00571_enum_predicate_search.fz",
+            include_str!("../../fixtures/00571_enum_predicate_search.fz"),
         ),
         (
             "fixtures2/behavior/with_index_users_key_apart_by_element.fz",
@@ -21404,7 +20444,7 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/behavior/enum_take_drop_split.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/enum_take_drop_split.fz").to_string(),
+        text: include_str!("../../fixtures/00420_enum_take_drop_split.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -21479,7 +20519,7 @@ fn compiler2_native_program_publishes_construction_owned_callable_wrappers() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/behavior/enum_predicate_search.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+        text: include_str!("../../fixtures/00571_enum_predicate_search.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -21707,8 +20747,8 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
 const ASCENT_RUNG_FIXTURES: &[&str] = &[
     "fixtures2/behavior/map_enumerable.fz",
     "fixtures2/behavior/range_enumerable.fz",
-    "fixtures2/behavior/enum_take_drop_split.fz",
-    "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    "fixtures/00420_enum_take_drop_split.fz",
+    "fixtures/00567_fz_f98_range_map_converges.fz",
     "fixtures2/behavior/dead_closure_capture_empty_list.fz",
 ];
 

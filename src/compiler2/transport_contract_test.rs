@@ -2236,7 +2236,7 @@ fn compiler2_transport_plan_does_not_publish_dead_callable_input_boundaries() {
 
 #[test]
 fn compiler2_transport_plan_scopes_enum_predicate_callback_inputs_to_concrete_activations() {
-    let source = include_str!("../../fixtures2/behavior/enum_predicate_search.fz");
+    let source = include_str!("../../fixtures/00571_enum_predicate_search.fz");
 
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
@@ -3929,7 +3929,7 @@ end
 
 #[test]
 fn compiler2_layout_distinct_input_positions_keep_independent_owned_answers() {
-    let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
+    let source = include_str!("../../fixtures/00420_enum_take_drop_split.fz");
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -3968,7 +3968,7 @@ fn compiler2_layout_distinct_input_positions_keep_independent_owned_answers() {
 
 #[test]
 fn compiler2_transport_plan_preserves_enum_reducer_constructions_behind_anonymous_abi() {
-    let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
+    let source = include_str!("../../fixtures/00420_enum_take_drop_split.fz");
 
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
@@ -4143,7 +4143,7 @@ def main(), do: make(41).(1)
 
 #[test]
 fn compiler2_callable_capture_carriers_reach_backend_wrappers() {
-    let source = include_str!("../../fixtures2/behavior/enum_predicate_search.fz");
+    let source = include_str!("../../fixtures/00571_enum_predicate_search.fz");
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(Some("callable_capture_construction.fz".to_string()), source.to_string());
@@ -4223,7 +4223,7 @@ fn compiler2_callable_capture_carriers_reach_backend_wrappers() {
 /// each backend member's ABI transport answers.
 #[test]
 fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
-    let source = include_str!("../../fixtures2/behavior/enum_predicate_search.fz");
+    let source = include_str!("../../fixtures/00571_enum_predicate_search.fz");
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(Some("return_lane_contract.fz".to_string()), source.to_string());
@@ -4347,7 +4347,7 @@ fn owner_position_label(world: &World, position: &TransportPosition) -> String {
 /// by seam/canon consequences downstream.
 #[test]
 fn compiler2_callable_owners_publish_only_their_own_position() {
-    let source = include_str!("../../fixtures2/00420_enum_take_drop_split.fz");
+    let source = include_str!("../../fixtures/00420_enum_take_drop_split.fz");
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(Some("owner_publications.fz".to_string()), source.to_string());
@@ -4497,7 +4497,7 @@ fn world_facts_and_product_memo_share_their_immutable_payloads() {
 /// assertion needs a demand-equality filter, not a weakening.
 #[test]
 fn compiler2_one_recursion_component_publishes_one_return_contract() {
-    let source = include_str!("../../fixtures2/00420_enum_take_drop_split.fz");
+    let source = include_str!("../../fixtures/00420_enum_take_drop_split.fz");
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(Some("one_return_contract.fz".to_string()), source.to_string());
@@ -4627,7 +4627,7 @@ fn positioned_callable_owners_have_observable_obligations() {
     for (name, source) in [
         (
             "take_drop",
-            include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
+            include_str!("../../fixtures/00420_enum_take_drop_split.fz"),
         ),
         ("scalar", "def main(), do: 42"),
     ] {
@@ -6359,8 +6359,8 @@ fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
-        Some("fixtures2/00420_enum_take_drop_split.fz".to_string()),
-        include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
+        Some("fixtures/00420_enum_take_drop_split.fz".to_string()),
+        include_str!("../../fixtures/00420_enum_take_drop_split.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (_driver, plan) = pull_backend_for_test(&tel, &mut world, root);

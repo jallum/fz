@@ -8,75 +8,33 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::super::Compiler2;
 use super::super::canon::{canon_backend_program, function_label};
+use super::super::drive_harness::Drive;
 use super::super::dump::DumpStage;
-use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::super::identity::{ExecutableKey, FunctionId};
 use super::super::types::{Ty, TyCanon, Types};
-use super::super::{CodeSubmission, Compiler2, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 
-/// The two fixtures the ticket names. Both are driven to their settled world;
-/// the canon sweep then reads the WHOLE interned arena, not a hand-picked
-/// sample, so a type minted anywhere in the compile is covered.
-const TARGETS: [(&str, &str); 2] = [
-    (
-        "fixtures2/00420_enum_take_drop_split.fz",
-        include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
-    ),
-    (
-        "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
-    ),
-];
+/// The two fixtures the ticket names, by number. Both are driven to their
+/// settled world; the canon sweep then reads the WHOLE interned arena, not a
+/// hand-picked sample, so a type minted anywhere in the compile is covered.
+///
+/// `00420_enum_take_drop_split` and `00567_fz_f98_range_map_converges`.
+const TARGETS: [u32; 2] = [420, 567];
 
 /// Drives one fixture to its retained `BackendProgram` — the same stage the
 /// `--dump backend` path reaches — and renders it.
-fn canon_of(name: &str, text: &str) -> String {
-    let (mut compiler, root) = submit(name, text);
-    compiler
-        .drive_root_to_dump_stage(root, DumpStage::Backend)
-        .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
-    let world = compiler.world();
-    canon_backend_program(world, &compiler.retained_backend_program(root))
-}
-
-fn submit(name: &str, text: &str) -> (Compiler2<ConfiguredTelemetry>, RootId) {
-    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
-    compiler.submit_code(CodeSubmission {
-        name: Some(name.to_string()),
-        text: text.to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    (compiler, root)
-}
-
-fn drive_fixture(name: &str, text: &str) -> Compiler2<ConfiguredTelemetry> {
-    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
-    compiler.submit_code(CodeSubmission {
-        name: Some(name.to_string()),
-        text: text.to_string(),
-    });
-    compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    let _ = compiler.drive();
-    compiler
+fn canon_of(number: u32) -> String {
+    let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);
+    let program = settled.backend_program();
+    canon_backend_program(settled.world(), &program)
 }
 
 #[test]
 fn enum_take_drop_split_reuses_identity_before_the_type_boundary() {
-    let name = "fixtures2/behavior/enum_take_drop_split.fz";
-    let text = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
-    let compiler = drive_fixture(name, text);
-    let work = compiler.world().types().interning_work_stats();
+    let settled = Drive::fixture(420).settle();
+    let work = settled.world().types().interning_work_stats();
     assert!(
         work.identity_shortcuts > 0,
         "the fixture must exercise identity reuse before the type boundary: {work:?}"
@@ -140,9 +98,10 @@ fn equivalent_executable_keys(
 /// clause subsumption can reconcile.
 #[test]
 fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
-    for (name, text) in TARGETS {
-        let compiler = drive_fixture(name, text);
-        let world = compiler.world();
+    for number in TARGETS {
+        let settled = Drive::fixture(number).settle();
+        let name = settled.fixture_path().to_string();
+        let world = settled.world();
         let types = world.types();
         let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
         let mut canon = TyCanon::new(&labels);
@@ -195,10 +154,10 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
         // boundary may lower them and none may raise them, and the target is
         // zero duplicates.
         assert!(
-            collapsed <= duplicate_ceiling(name),
+            collapsed <= duplicate_ceiling(number),
             "{name}: {collapsed} mutually-subtype distinct ids, above the {} this fixture is \
              pinned at -- a boundary fold may lower this ceiling, never raise it",
-            duplicate_ceiling(name)
+            duplicate_ceiling(number)
         );
     }
 }
@@ -212,11 +171,11 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
 /// coordinate mints the union of that coordinate, so a fold can spend a type
 /// to save an identity. Identities are what a specialization is keyed on;
 /// intermediate types are not.
-fn duplicate_ceiling(name: &str) -> usize {
-    match name {
-        "fixtures2/00420_enum_take_drop_split.fz" => 123,
-        "fixtures2/behavior/fz_f98_range_map_converges.fz" => 15,
-        other => panic!("no pinned ceiling for {other}"),
+fn duplicate_ceiling(number: u32) -> usize {
+    match number {
+        420 => 123,
+        567 => 15,
+        other => panic!("no pinned ceiling for fixture {other:05}"),
     }
 }
 
@@ -258,8 +217,7 @@ fn canon_distinguishes_the_three_list_forms_display_conflates() {
 /// having the form at all.
 #[test]
 fn canon_of_a_backend_program_carries_no_interned_id() {
-    let (name, text) = TARGETS[1];
-    let rendered = canon_of(name, text);
+    let rendered = canon_of(TARGETS[1]);
 
     for id in [
         "Ty(",
@@ -302,44 +260,36 @@ fn canon_of_a_backend_program_carries_no_interned_id() {
 #[test]
 fn generated_function_labels_follow_typed_origin_not_function_allocation() {
     fn compile_label(unrelated_functions: usize) -> String {
-        let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
-        for index in 0..unrelated_functions {
-            compiler
-                .world_mut()
-                .reference_function(super::super::ModuleId::GLOBAL, format!("unrelated_{index}"), 0);
-        }
-        compiler.submit_code(CodeSubmission {
-            name: Some("generated_label.fz".into()),
-            text: "def main(), do: (fn (x) -> x + 1 end).(41)\n".into(),
-        });
-        let root = compiler.submit_root(RootSubmission {
-            module_name: None,
-            name: "main".into(),
-            arity: 0,
-            need: ExecutableNeed::Value,
-        });
-        assert_eq!(compiler.run_root_interp(root), Ok(42));
+        let mut settled = Drive::fixture(564)
+            .before_submit(move |world| {
+                for index in 0..unrelated_functions {
+                    world.reference_function(super::super::ModuleId::GLOBAL, format!("unrelated_{index}"), 0);
+                }
+            })
+            .settle();
+        let root = settled.root();
+        assert_eq!(settled.compiler_mut().run_root_interp(root), Ok(42));
 
-        let main = compiler.root_function(root);
-        let super::super::LoweredBody::Clauses { generated, .. } = &*compiler.world().lowered_body(main) else {
+        let main = settled.compiler().root_function(root);
+        let super::super::LoweredBody::Clauses { generated, .. } = &*settled.world().lowered_body(main) else {
             panic!("source function must lower to clauses");
         };
         let generated = generated.first().copied().expect("source lambda identity");
         let super::super::identity::FunctionOrigin::Generated { owner, occurrence } =
-            &compiler.world().function_ref(generated).origin
+            &settled.world().function_ref(generated).origin
         else {
             panic!("generated function typed origin");
         };
         assert!(std::sync::Arc::ptr_eq(
             owner,
-            &compiler.world().function_ref(main).denotation
+            &settled.world().function_ref(main).denotation
         ));
         let expected = format!(
             "{}#lambda@{}/1",
-            function_label(compiler.world(), main),
+            function_label(settled.world(), main),
             occurrence.as_u32()
         );
-        let label = function_label(compiler.world(), generated);
+        let label = function_label(settled.world(), generated);
         assert_eq!(label, expected);
         label
     }
@@ -350,36 +300,15 @@ fn generated_function_labels_follow_typed_origin_not_function_allocation() {
 #[test]
 fn same_range_generated_peers_order_independently_of_function_allocation() {
     fn compile(unrelated_functions: usize) -> String {
-        let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
-        for index in 0..unrelated_functions {
-            compiler
-                .world_mut()
-                .reference_function(super::super::ModuleId::GLOBAL, format!("unrelated_{index}"), 0);
-        }
-        compiler.submit_code(CodeSubmission {
-            name: Some("generated_peers.fz".into()),
-            text: r#"
-defmacro deferred(x) do
-  {:fn, %{}, [{:"->", %{}, [[], x]}]}
-end
-def main() do
-  left = deferred(20)
-  right = deferred(22)
-  left.() + right.()
-end
-"#
-            .into(),
-        });
-        let root = compiler.submit_root(RootSubmission {
-            module_name: None,
-            name: "main".into(),
-            arity: 0,
-            need: ExecutableNeed::Value,
-        });
-        compiler
-            .drive_root_to_dump_stage(root, DumpStage::Backend)
-            .expect("same-range generated peers reach a backend program");
-        canon_backend_program(compiler.world(), &compiler.retained_backend_program(root))
+        let settled = Drive::fixture(565)
+            .before_submit(move |world| {
+                for index in 0..unrelated_functions {
+                    world.reference_function(super::super::ModuleId::GLOBAL, format!("unrelated_{index}"), 0);
+                }
+            })
+            .dump_stage(DumpStage::Backend);
+        let program = settled.backend_program();
+        canon_backend_program(settled.world(), &program)
     }
 
     let baseline = compile(0);
@@ -396,12 +325,13 @@ end
 /// answer from its index.)
 #[test]
 fn every_closure_literal_has_a_registered_origin() {
-    for (name, text) in TARGETS {
-        let compiler = drive_fixture(name, text);
-        let unregistered = compiler.world().types().unregistered_callables();
+    for number in TARGETS {
+        let settled = Drive::fixture(number).settle();
+        let unregistered = settled.world().types().unregistered_callables();
         assert!(
             unregistered.is_empty(),
-            "{name}: closure literals over unregistered callables {unregistered:?} have no activation order"
+            "{}: closure literals over unregistered callables {unregistered:?} have no activation order",
+            settled.fixture_path()
         );
     }
 }
@@ -411,9 +341,9 @@ fn every_closure_literal_has_a_registered_origin() {
 /// form OWNS: it holds by construction, with no sort of Debug text behind it.
 #[test]
 fn two_compiles_of_one_root_produce_one_canonical_form() {
-    let (name, text) = TARGETS[1];
-    let first = canon_of(name, text);
-    let second = canon_of(name, text);
+    let number = TARGETS[1];
+    let first = canon_of(number);
+    let second = canon_of(number);
     assert!(
         first == second,
         "two compiles of one root must publish one canonical form; they first differ at byte {:?}",
@@ -575,55 +505,38 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// inlining is deliberately deferred to a future optimizer.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
-    for (name, text, executables) in [
+    for (number, executables) in [
         (
-            "fixtures2/behavior/enum_count_member_reduce.fz",
-            include_str!("../../fixtures2/behavior/enum_count_member_reduce.fz"),
+            568, // enum_count_member_reduce
             // fz-5xp.22: 26 -> 27. `List.member?` asks `===` for identity where
             // it used to spell that `==` in a guard and rely on guards being
             // strict, so the strict operator becomes an executable of its own.
             31,
         ),
+        (567, 64), // fz_f98_range_map_converges
         (
-            "fixtures2/behavior/fz_f98_range_map_converges.fz",
-            include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
-            64,
-        ),
-        (
-            "fixtures2/behavior/enum_map_family.fz",
-            include_str!("../../fixtures2/behavior/enum_map_family.fz"),
+            569, // enum_map_family
             // fz-5xp.30 re-measured 113 -> 114: binary-concat sugar now
             // retains the public Kernel.<>/2 wrapper between source callers
             // and the private fz_binary_concat/2 physical gateway.
             118,
         ),
+        (562, 36), // mailbox_closure_each
+        (563, 46), // mailbox_closure_reduce
         (
-            "fixtures2/behavior/mailbox_closure_each.fz",
-            include_str!("../../fixtures2/behavior/mailbox_closure_each.fz"),
-            36,
-        ),
-        (
-            "fixtures2/behavior/mailbox_closure_reduce.fz",
-            include_str!("../../fixtures2/behavior/mailbox_closure_reduce.fz"),
-            46,
-        ),
-        (
-            "fixtures2/behavior/actor_ring.fz",
-            include_str!("../../fixtures2/behavior/actor_ring.fz"),
+            570, // actor_ring
             // The ring's `got == 5` compares a mailbox value, so all three
             // reachable `==` clauses emit: `fz_op_eq_ii`, `fz_op_eq_fi` and
             // the `any`/`any` `fz_op_eq`.
             31,
         ),
         (
-            "fixtures2/behavior/enum_predicate_search.fz",
-            include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+            571, // enum_predicate_search
             // Exact caller rows retain four specializations hidden by blended evidence.
             174,
         ),
         (
-            "fixtures2/behavior/enum_take_drop_split.fz",
-            include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
+            420, // enum_take_drop_split, over both a list and a range
             // fz-kdt.199 re-measured 204 -> 237: the `returned` axis keys the
             // accumulators of the reduce families this fixture drives
             // (`List.reduce_cont/3` slot 1, `Range.reduce_cont/6` slot 4,
@@ -635,27 +548,21 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // on the way in are never specialized.
             230,
         ),
-        (
-            "fixtures2/00420_enum_take_drop_split.fz",
-            include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
-            230,
-        ),
     ] {
-        let (mut compiler, root) = submit(name, text);
-        compiler
-            .drive_root_to_dump_stage(root, DumpStage::Backend)
-            .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
-        let program = compiler.retained_backend_program(root);
+        let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);
+        let program = settled.backend_program();
         assert_eq!(
             program.executables().len(),
             executables,
-            "{name}: the emitted executable inventory moved off its target-fixture pin; \
-             re-measure, name the cause, and re-pin"
+            "{}: the emitted executable inventory moved off its target-fixture pin; \
+             re-measure, name the cause, and re-pin",
+            settled.fixture_path()
         );
-        let duplicates = equivalent_executable_keys(compiler.world().types(), &program);
+        let duplicates = equivalent_executable_keys(settled.world().types(), &program);
         assert!(
             duplicates.is_empty(),
-            "{name}: equivalent activation inputs minted {} duplicate executable keys: {duplicates:?}",
+            "{}: equivalent activation inputs minted {} duplicate executable keys: {duplicates:?}",
+            settled.fixture_path(),
             duplicates.len(),
         );
     }
@@ -671,20 +578,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
 /// through `ExecutableDispatch::plan()` and route through `OutcomeId` slots.
 #[test]
 fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
-    for (name, text) in [
-        TARGETS[0],
-        TARGETS[1],
-        (
-            "fixtures2/behavior/enum_predicate_search.fz",
-            include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-        ),
-    ] {
-        let (mut compiler, root) = submit(name, text);
-        compiler
-            .drive_root_to_dump_stage(root, DumpStage::Backend)
-            .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
-        let world = compiler.world();
-        let program = compiler.retained_backend_program(root);
+    for number in [TARGETS[0], TARGETS[1], 571] {
+        let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);
+        let world = settled.world();
+        let program = settled.backend_program();
         let unordered = program
             .executables()
             .iter()
@@ -707,8 +604,9 @@ fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
             .collect::<Vec<_>>();
         assert!(
             unordered.is_empty(),
-            "{name}: {} executable(s) carry clause ids in row-arrival order rather than source \
+            "{}: {} executable(s) carry clause ids in row-arrival order rather than source \
              order, so any key-population change permutes the artifact: {unordered:?}",
+            settled.fixture_path(),
             unordered.len(),
         );
     }
@@ -734,21 +632,11 @@ fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
 /// function of what they say rather than of when they were interned.
 #[test]
 fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order() {
-    for (name, text) in [
-        TARGETS[0],
-        TARGETS[1],
-        (
-            "fixtures2/behavior/enum_predicate_search.fz",
-            include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-        ),
-    ] {
-        let (mut compiler, root) = submit(name, text);
-        compiler
-            .drive_root_to_dump_stage(root, DumpStage::Backend)
-            .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
-        let world = compiler.world();
+    for number in [TARGETS[0], TARGETS[1], 571] {
+        let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);
+        let world = settled.world();
         let types = world.types();
-        let program = compiler.retained_backend_program(root);
+        let program = settled.backend_program();
         let descents = program
             .executables()
             .iter()
@@ -774,32 +662,19 @@ fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order()
             .collect::<Vec<_>>();
         assert!(
             descents.is_empty(),
-            "{name}: {} sibling pair(s) sit in interning order rather than canonical order, so \
+            "{}: {} sibling pair(s) sit in interning order rather than canonical order, so \
              `entry x<N>` numbering follows the schedule: {descents:?}",
+            settled.fixture_path(),
             descents.len(),
         );
     }
 }
 
-/// The four lenses the fz-kdt.106 review measured schedule confluence on.
-const LENSES: [(&str, &str); 4] = [
-    (
-        "fixtures2/behavior/enum_predicate_search.fz",
-        include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-    ),
-    (
-        "fixtures2/00420_enum_take_drop_split.fz",
-        include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
-    ),
-    (
-        "fixtures2/00183_enum_take_list_range.fz",
-        include_str!("../../fixtures2/00183_enum_take_list_range.fz"),
-    ),
-    (
-        "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
-    ),
-];
+/// The four lenses the fz-kdt.106 review measured schedule confluence on:
+/// `00571_enum_predicate_search`, `00420_enum_take_drop_split`,
+/// `00183_enum_take_list_range` (still under `fixtures2/`, reached through
+/// `Drive::fixture`'s fallback) and `00567_fz_f98_range_map_converges`.
+const LENSES: [u32; 4] = [571, 420, 183, 567];
 
 /// fz-kdt.106: the schedule may not decide what gets specialized.
 ///
@@ -850,24 +725,12 @@ const LENSES: [(&str, &str); 4] = [
 /// genuine correlation width, and worth the ticket it would earn.
 #[test]
 fn correlated_input_rows_never_reach_the_widening_budget_on_the_lenses() {
-    for (name, text) in LENSES {
-        let telemetry = ConfiguredTelemetry::new();
+    for number in LENSES {
+        let drive = Drive::fixture(number);
         let capture = crate::telemetry::Capture::new();
-        capture.install(&telemetry, &["fz", "compiler2", "activation_inputs"]);
-        let mut compiler = Compiler2::new(telemetry);
-        compiler.submit_code(CodeSubmission {
-            name: Some(name.to_string()),
-            text: text.to_string(),
-        });
-        let root = compiler.submit_root(RootSubmission {
-            module_name: None,
-            name: "main".to_string(),
-            arity: 0,
-            need: ExecutableNeed::Value,
-        });
-        compiler
-            .drive_root_to_dump_stage(root, super::super::dump::DumpStage::Native)
-            .unwrap_or_else(|error| panic!("{name} should drive to a settled native program: {error}"));
+        capture.install(drive.telemetry(), &["fz", "compiler2", "activation_inputs"]);
+        let settled = drive.dump_stage(DumpStage::Native);
+        let name = settled.fixture_path().to_string();
 
         let collapses = capture
             .find(&["fz", "compiler2", "activation_inputs", "budget_collapsed"])

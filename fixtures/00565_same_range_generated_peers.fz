@@ -1,0 +1,11 @@
+#---
+# purpose: two macro-generated lambdas minted from the same source range order independently of function allocation
+#---
+defmacro deferred(x) do
+  {:fn, %{}, [{:"->", %{}, [[], x]}]}
+end
+def main() do
+  left = deferred(20)
+  right = deferred(22)
+  left.() + right.()
+end
