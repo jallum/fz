@@ -8,25 +8,23 @@ to work a problem when the subsystem is not yet doing the right thing.
 Use this index when you need a concrete debugging and repair loop rather than a
 subsystem model.
 
-- [Output Contract Loop](strategies/output-contract-loop.md)
-  Start from the desired externally-visible result, work a small example on
-  paper, make the signal loud with telemetry, pin it with tests, trace the
-  root cause backwards, then repair the data model from the bottom up.
-
-- [Predict, Measure, Collapse](strategies/predict-measure-collapse.md)
-  Derive the answer for a small fixture, predict the work needed to produce it,
-  and compare both with a trace. Use the evidence to give each decision one
-  owner and verify that its replacement makes the old mechanism removable.
+- [Paper First](strategies/paper-first.md)
+  **Use when** a problem is too noisy to reason about directly: a wrong
+  result, more work than the input warrants, or many symptoms at once. Shrink
+  it to one question you can answer by hand, answer it from first
+  principles, watch the system answer it, and fix the first place the two
+  differ. Then return to the original and take the next question.
 
 - [Red-Test Worklist](strategies/red-test-worklist.md)
-  When a branch carries many failing/hanging tests, disable them all behind a
-  greppable marker to make the suite green, then re-enable one at a time --
-  judging each test's intent against its assertions -- so every new red is
-  unmistakably caused by the change in front of you.
+  **Use when** a branch carries many failing or hanging tests at once.
+  Disable them all behind a greppable marker so the suite is green, then
+  re-enable one at a time -- judging each test's intent against its
+  assertions -- so every new red is caused by the change in front of you.
 
 - [Profile a Compilation](strategies/profile-a-compilation.md)
-  Capture a `--log-telemetry` stream on the slow door, distill it with
-  `tools/distill-telemetry.exs` into where the time went (by kind, by subject,
-  by re-run and by the fact that woke each re-run), corroborate the magnitude
-  with a sample of the plain binary, then name the mechanism and find its
-  ticket.
+  **Use when** a door is slow on a program that should be cheap, or a fixture
+  lane trips the matrix's wall-clock guard. Capture a `--log-telemetry`
+  stream, distill it with `tools/distill-telemetry.exs` into where the work
+  went (by kind, by subject, by re-run and by the fact that woke each
+  re-run), corroborate the magnitude with a sample of the plain binary, then
+  name the mechanism and take it to Paper First.
