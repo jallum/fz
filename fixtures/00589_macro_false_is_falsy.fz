@@ -1,0 +1,24 @@
+#---
+# purpose: a macro given false or nil sees it as falsy: if and case inside the macro body take the false branch
+#---
+defmacro pick(flag) do
+  if flag do
+    quote do: 1 + 0
+  else
+    quote do: 2 + 0
+  end
+end
+
+defmacro classify(flag) do
+  case flag do
+    false -> quote do: 2 + 0
+    _ -> quote do: 1 + 0
+  end
+end
+
+def main() do
+  assert(pick(true) == 1, "pick(true) takes the if branch")
+  assert(pick(false) == 2, "pick(false) takes the else branch, not the if branch")
+  assert(pick(nil) == 2, "pick(nil) takes the else branch, same as false")
+  assert(classify(false) == 2, "a case on false inside a macro takes the false arm")
+end

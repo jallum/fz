@@ -105,7 +105,7 @@ pub(super) fn interp_value_eq(proc: *mut Process, a: AnyValue, b: AnyValue) -> R
         (AnyValue::Float(a), AnyValue::Float(b)) => Ok(a.to_bits() == b.to_bits()),
         (AnyValue::Atom(a), AnyValue::Atom(b)) => Ok(a == b),
         (AnyValue::EmptyList, AnyValue::EmptyList) => Ok(true),
-        (AnyValue::Ref(a), AnyValue::Ref(b)) => Ok(fz_value_eq_ref(proc, a.raw_word(), b.raw_word()) != 0),
+        (AnyValue::Ref(a), AnyValue::Ref(b)) => Ok(fz_value_eq_ref(proc, a.raw().raw_word(), b.raw().raw_word()) != 0),
         (a, b) => Ok(fz_value_eq_ref(proc, a.as_ref_word(proc)?, b.as_ref_word(proc)?) != 0),
     }
 }
