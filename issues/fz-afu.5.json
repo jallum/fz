@@ -5,14 +5,16 @@
     "fz-afu.6"
   ],
   "blocks": [],
+  "closed_at": "2026-09-26T00:24:51Z",
+  "close_reason": "Answered by the owner (2026-09-25): compiling and running the def/defp macro root on every compile is intended -- the cost of def as a real macro, for metaprogramming and Elixir-style source. The s1 ledger (scratchpad wave2/r_s1_ledger/ledger.md) audited the def/1 chain's 13 jobs: every one is read by a named consumer; the only fold found (ExpandFunctionSource into DefineFunction) applies to every function and is fz-afu.7.",
   "created": "2026-09-25T20:28:36Z",
   "description": "Every compile runs two nested backend compiles for the `def/1` and `defp/1`\nmacros. Roots 1 and 2 (backend products for Kernel def/1 and defp/1) are\nrequested mid-compile while library source is indexed; on\n`def main(), do: Enum.take([1, 2, 3], 2)` they span from ~5ms to ~280ms of a\n~300ms front end, and each census test pays it once per compile.\n\nQuestion for the owner before any work: is expanding library `def`/`defp`\nthrough a compiled macro root on every compile intended? If the expansion is\nthe same on every compile, its product is a fixed fact of the library source.\nA reader measures what the two roots cost (jobs and time) and what they\nproduce, on the reduced case.",
   "id": "fz-afu.5",
   "labels": [],
   "parent": "fz-afu",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Every compile runs nested backend compiles for def/1 and defp/1",
   "type": "task",
-  "updated_at": "2026-09-25T21:05:17Z"
+  "updated_at": "2026-09-26T00:24:51Z"
 }
