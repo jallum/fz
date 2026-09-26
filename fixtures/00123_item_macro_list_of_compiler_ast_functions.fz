@@ -1,0 +1,15 @@
+#---
+# purpose: an item-level macro returning a list of compiler-shaped fn AST items splices multiple function definitions
+#---
+defmacro pair(a, b) do
+  [
+{:def, %{}, [{:first, %{}, []}, [{:do, a}]]},
+{:def, %{}, [{:second, %{}, []}, [{:do, b}]]}
+  ]
+end
+
+pair(10, 20)
+
+def main() do
+  assert(first() + second() == 30, "pair spliced both first/0 and second/0")
+end

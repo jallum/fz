@@ -1,0 +1,8 @@
+#---
+# purpose: an equality comparison between opaque pid/ref values is permitted without a diagnostic.
+#---
+def main() do
+  a = self()
+  b = self()
+  a == b
+end

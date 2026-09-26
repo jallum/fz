@@ -1,4 +1,0 @@
-def double(x), do: x * 2
-def map_l(_, []), do: []
-def map_l(f, [h | t]), do: [f.(h) | map_l(f, t)]
-def main(), do: dbg(map_l(double, [1, 2, 3]))

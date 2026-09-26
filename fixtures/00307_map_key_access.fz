@@ -1,0 +1,4 @@
+#---
+# purpose: map key access returns the value for present keys
+#---
+def main(), do: assert(%{a: 10, b: 20}[:a] + %{a: 10, b: 20}[:b] == 30, "map key access returns the value for present keys")

@@ -1,0 +1,6 @@
+#---
+# purpose: a recursive head/tail pattern match accumulates the sum of a list
+#---
+def sum([]), do: 0
+def sum([h | t]), do: h + sum(t)
+def main(), do: assert(sum([1, 2, 3, 4, 5]) == 15, "a recursive head/tail pattern match sums a list")

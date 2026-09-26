@@ -1,7 +1,0 @@
-defmodule A do
-  def f(x), do: x
-  def caller(x), do: f(x)
-  defmodule B do
-    def f(x), do: x + 100
-  end
-end

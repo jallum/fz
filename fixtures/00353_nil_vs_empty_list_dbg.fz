@@ -1,0 +1,7 @@
+#---
+# purpose: nil and the empty list are distinct values with distinct string representations
+#---
+def main() do
+  dbg(nil)
+  dbg([])
+end

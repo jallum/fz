@@ -1,5 +1,0 @@
-def main() do
-  a = self()
-  b = self()
-  a == b
-end

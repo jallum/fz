@@ -1,6 +1,0 @@
-defmodule A do
-  def ping(), do: 1
-end
-defmodule B do
-  def caller(), do: A.ping()
-end

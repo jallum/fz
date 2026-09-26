@@ -1,0 +1,9 @@
+#---
+# purpose: tuple destructuring binds each component to its own name
+#---
+def main() do
+  {a, b} = {1, 2}
+  result = a + b
+  assert(result == 3, "destructured tuple components sum correctly")
+  result
+end

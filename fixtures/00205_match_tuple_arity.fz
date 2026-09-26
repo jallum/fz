@@ -1,0 +1,10 @@
+#---
+# purpose: tuples of different arity partition by shape, each clause projecting its own payload without mixing in the others
+#---
+def pick({:one, x}), do: x
+def pick({:two, x, y}), do: {x, y}
+def pick(:other), do: :other
+
+def main() do
+  {pick({:one, 1}), pick({:two, 1, 2}), pick(:other)}
+end

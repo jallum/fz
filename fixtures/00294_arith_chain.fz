@@ -1,0 +1,4 @@
+#---
+# purpose: chained arithmetic operators evaluate with correct precedence and order
+#---
+def main(), do: assert((1 + 2) * 7 == 21, "chained arithmetic evaluates with correct precedence and order")

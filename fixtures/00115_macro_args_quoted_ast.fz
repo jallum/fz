@@ -1,0 +1,8 @@
+#---
+# purpose: a macro argument that is itself a macro call arrives as unexpanded quoted AST, not a pre-evaluated value
+#---
+defmacro m1(x) do quote do: unquote(x) + 1 end
+defmacro m2(x) do quote do: unquote(x) + 5 end
+def main() do
+  assert(m2(m1(0)) == 6, "m2 sees m1(0) as AST, so the result is m1(0) + 5 == 1 + 5 == 6")
+end

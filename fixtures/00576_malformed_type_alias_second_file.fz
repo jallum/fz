@@ -1,0 +1,5 @@
+#---
+# purpose: a malformed @type body -- used as the second of two files submitted sequentially in a multi-file resolve test; alone it has no root and no function so it never settles on its own.
+# defer: no root: this fragment defines no function and is only ever submitted as a second file after a root from another file is already active
+#---
+@type bad :: ,

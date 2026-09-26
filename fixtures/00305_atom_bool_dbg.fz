@@ -1,0 +1,8 @@
+#---
+# purpose: atom, true, and false literals render correctly via dbg
+#---
+def main() do
+  dbg(:ok)
+  dbg(true)
+  dbg(false)
+end

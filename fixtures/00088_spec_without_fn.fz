@@ -1,0 +1,10 @@
+#---
+# purpose: an @spec with no following function definition is a parse-time error.
+# expect: diagnostic
+# diagnostic.code: parse/dangling-function-attr
+#---
+defmodule M do
+  @spec lonely(integer) :: integer
+end
+
+def main(), do: nil

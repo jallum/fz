@@ -1,0 +1,10 @@
+#---
+# purpose: an assignment split across lines by whitespace still parses and binds
+#---
+def main() do
+  x =
+    41
+  result = x + 1
+  assert(result == 42, "a whitespace-split assignment binds correctly")
+  result
+end

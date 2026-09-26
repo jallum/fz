@@ -1,7 +1,0 @@
-def f(v) do
-  case v do
-    _ -> :any
-    0 -> :zero
-  end
-end
-def main(), do: f(7)

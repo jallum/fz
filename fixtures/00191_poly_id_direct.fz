@@ -1,0 +1,10 @@
+#---
+# purpose: the same direct-call function is instantiated per callsite, so two calls at different types don't join into one
+#---
+def id(x) do
+  x
+end
+
+def main() do
+  {id(1), id(:ok)}
+end

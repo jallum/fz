@@ -1,0 +1,4 @@
+#---
+# purpose: large integer arithmetic does not lose high-order bits
+#---
+def main(), do: assert(4611686018427387904 + 7 == 4611686018427387911, "large integer addition preserves high bits")

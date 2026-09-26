@@ -1,3 +1,0 @@
-def classify(_), do: :any
-def classify(0), do: :zero
-def main(), do: classify(7)

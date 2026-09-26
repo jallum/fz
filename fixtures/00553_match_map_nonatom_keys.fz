@@ -1,0 +1,11 @@
+#---
+# purpose: map-pattern dispatch on int, float, and string keys keeps every clause's key test live since none can be proven present or absent, without panicking
+#---
+def pick(%{1 => x}), do: x
+def pick(%{3.14 => y}), do: y
+def pick(%{"a" => z}), do: z
+def pick(_), do: :other
+
+def main() do
+  pick(%{1 => 10})
+end

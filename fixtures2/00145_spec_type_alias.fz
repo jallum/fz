@@ -1,6 +1,0 @@
-defmodule M do
-  @type id :: integer
-  @spec lookup(id) :: id
-  def lookup(x), do: x
-end
-def main(), do: dbg(M.lookup(7))

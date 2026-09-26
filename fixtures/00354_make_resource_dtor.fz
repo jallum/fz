@@ -1,0 +1,9 @@
+#---
+# purpose: make_resource creates a resource and fires its destructor when the heap drops
+#---
+extern "C" defp fz_resource_test_print_dtor(integer) :: nil
+def dwrap(x), do: fz_resource_test_print_dtor(x)
+def main() do
+  r = make_resource(42, &dwrap/1)
+  dbg(:before)
+end

@@ -1,0 +1,9 @@
+#---
+# purpose: a polymorphic function passed by name reference retains a distinct return type per call-site activation.
+#---
+def id(x), do: x
+
+def main() do
+  f = &id/1
+  {f.(1), f.(:ok)}
+end

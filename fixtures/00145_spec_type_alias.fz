@@ -1,0 +1,9 @@
+#---
+# purpose: an @spec using a local @type alias resolves and passes validation
+#---
+defmodule M do
+  @type id :: integer
+  @spec lookup(id) :: id
+  def lookup(x), do: x
+end
+def main(), do: dbg(M.lookup(7))

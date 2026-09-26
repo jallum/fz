@@ -1,0 +1,13 @@
+#---
+# purpose: a map receive pattern matches a message whose matched key is present with a nil value
+#---
+def main() do
+  me = self()
+  send(me, %{other: 1})
+  send(me, %{name: nil})
+  send(me, %{name: :later})
+  v = receive do
+    %{name: n} -> n
+  end
+  dbg(v)
+end

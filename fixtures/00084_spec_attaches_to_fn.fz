@@ -1,0 +1,9 @@
+#---
+# purpose: an @spec attribute is parsed and attached to the function definition that follows it.
+#---
+defmodule M do
+  @spec add1(integer) :: integer
+  def add1(n), do: n + 1
+end
+
+def main(), do: dbg(M.add1(5))

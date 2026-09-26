@@ -1,0 +1,5 @@
+#---
+# purpose: a string literal argument types as str_t through a polymorphic identity function
+#---
+def id(x), do: x
+def main(), do: id("hi")

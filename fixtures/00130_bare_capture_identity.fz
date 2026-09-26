@@ -1,0 +1,7 @@
+#---
+# purpose: a bare &1 desugars to an identity lambda returning its first argument
+#---
+def main() do
+  f = &1
+  assert(f.(42) == 42, "&1 alone desugars to fn(x) -> x end")
+end

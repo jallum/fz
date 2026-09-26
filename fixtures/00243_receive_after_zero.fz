@@ -1,0 +1,10 @@
+#---
+# purpose: receive after 0 fires immediately when no queued message matches
+#---
+def main() do
+  v = receive do
+    {:never, _} -> 11
+  after 0 -> 12
+  end
+  dbg(v)
+end

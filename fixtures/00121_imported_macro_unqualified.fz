@@ -1,0 +1,13 @@
+#---
+# purpose: an imported macro is callable unqualified in the importing module
+#---
+defmodule M do
+  defmacro bump(x), do: quote do: unquote(x) + 1
+end
+defmodule User do
+  import M, only: [bump: 1]
+  def run(), do: bump(41)
+end
+def main() do
+  assert(User.run() == 42, "imported bump/1 is callable unqualified")
+end

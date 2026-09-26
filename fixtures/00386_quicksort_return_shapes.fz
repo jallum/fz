@@ -1,0 +1,19 @@
+#---
+# purpose: quicksort's partition function returns a tuple while qsort and main return lists, and each callee's return shape is inferred independently.
+#---
+def append([], ys), do: ys
+def append([h | t], ys), do: [h | append(t, ys)]
+
+def partition(_, [], lo, hi), do: {lo, hi}
+def partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)
+def partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])
+
+def qsort([]), do: []
+def qsort([p | rest]) do
+  {lo, hi} = partition(p, rest, [], [])
+  append(qsort(lo), [p | qsort(hi)])
+end
+
+def main() do
+  dbg(qsort([3, 1, 4, 1, 5]))
+end

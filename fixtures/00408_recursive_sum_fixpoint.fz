@@ -1,0 +1,6 @@
+#---
+# purpose: a recursive list-summing function's return type converges at the recursive fixpoint rather than at its base case alone.
+#---
+def sum([]), do: 0
+def sum([h | t]), do: h + sum(t)
+def main(), do: dbg(sum([1, 2, 3, 4, 5]))

@@ -1,0 +1,18 @@
+#---
+# purpose: a threaded closure that captures another closure still settles the fold to number
+#---
+def go(list, acc, f) do
+  case list do
+    [] -> acc
+    [h | t] -> go(t, f.(h, acc), f)
+    _ -> acc
+  end
+end
+
+def myreduce(list, acc, g) do
+  go(list, acc, fn (entry, inner) -> g.(entry, inner) end)
+end
+
+def main() do
+  dbg(myreduce([1, 2, 3], 0, fn (x, a) -> x + a end))
+end

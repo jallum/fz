@@ -1,0 +1,6 @@
+#---
+# purpose: arithmetic performed on an opaque ref value is rejected as a spec violation.
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+def main(), do: make_ref() + 1

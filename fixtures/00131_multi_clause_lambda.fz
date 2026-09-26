@@ -1,0 +1,13 @@
+#---
+# purpose: a multi-clause fn literal desugars to a case expression with pattern dispatch
+#---
+def main() do
+  f = fn
+0 -> :zero
+n when n > 0 -> :pos
+_ -> :other
+  end
+  assert(f.(0) == :zero, "clause 0 matches the literal")
+  assert(f.(2) == :pos, "clause n when n > 0 matches")
+  assert(f.(-1) == :other, "the wildcard clause matches everything else")
+end

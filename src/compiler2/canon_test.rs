@@ -672,8 +672,7 @@ fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order()
 
 /// The four lenses the fz-kdt.106 review measured schedule confluence on:
 /// `00571_enum_predicate_search`, `00420_enum_take_drop_split`,
-/// `00183_enum_take_list_range` (still under `fixtures2/`, reached through
-/// `Drive::fixture`'s fallback) and `00567_fz_f98_range_map_converges`.
+/// `00183_enum_take_list_range` and `00567_fz_f98_range_map_converges`.
 const LENSES: [u32; 4] = [571, 420, 183, 567];
 
 /// fz-kdt.106: the schedule may not decide what gets specialized.

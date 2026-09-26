@@ -1,4 +1,0 @@
-defmodule M do
-  def helper(x), do: x
-  def shadow(helper), do: helper
-end

@@ -1,0 +1,6 @@
+#---
+# purpose: a top-level @spec attaches to the following fn and the program runs
+#---
+@spec add1(integer) :: integer
+def add1(n), do: n + 1
+def main() do dbg(add1(41)) end

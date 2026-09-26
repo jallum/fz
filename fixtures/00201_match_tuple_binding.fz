@@ -1,0 +1,9 @@
+#---
+# purpose: a tuple-shaped clause narrows its payload and returns the bound field, while an atom clause returns its own singleton
+#---
+def pick({:ok, x}), do: x
+def pick(:error), do: :error
+
+def main() do
+  {pick({:ok, 1}), pick(:error)}
+end

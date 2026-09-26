@@ -1,0 +1,10 @@
+#---
+# purpose: an @spec's type names resolve against local @type aliases defined in the same module.
+#---
+defmodule M do
+  @type id :: integer
+  @spec lookup(id) :: id
+  def lookup(x), do: x
+end
+
+def main(), do: dbg(M.lookup(5))

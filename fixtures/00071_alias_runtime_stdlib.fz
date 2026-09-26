@@ -1,0 +1,9 @@
+#---
+# purpose: an alias to a runtime stdlib module resolves its call sites on demand.
+#---
+defmodule User do
+  alias Utf8, as: U
+  def run(bytes), do: U.valid?(bytes)
+end
+
+def main(), do: dbg(User.run("ok"))

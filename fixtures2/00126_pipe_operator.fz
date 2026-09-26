@@ -1,2 +1,0 @@
-def add2(x), do: x + 2
-def main(), do: 1 |> add2()

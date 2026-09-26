@@ -1,0 +1,6 @@
+#---
+# purpose: tuple pattern match destructures elements by position
+#---
+def fst({a, _}), do: a
+def snd({_, b}), do: b
+def main(), do: assert(fst({10, 20}) + snd({30, 40}) == 50, "tuple pattern match destructures elements by position")

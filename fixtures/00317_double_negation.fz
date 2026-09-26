@@ -1,0 +1,11 @@
+#---
+# purpose: double negation round-trips an integer literal, including zero and large magnitudes
+#---
+def main() do
+  assert(-(-(42)) == 42, "double negation round-trips 42")
+  assert(-(-(0)) == 0, "double negation round-trips 0")
+  assert(-(-(1)) == 1, "double negation round-trips 1")
+  assert(-(-(-1)) == -1, "double negation round-trips -1")
+  assert(-(-(-42)) == -42, "double negation round-trips -42")
+  assert(-(-(1000000000)) == 1000000000, "double negation round-trips a large literal")
+end

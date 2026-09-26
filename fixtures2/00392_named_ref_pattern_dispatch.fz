@@ -1,8 +1,0 @@
-def pick(:left), do: :one
-def pick(:right), do: :two
-def pick(_), do: :other
-
-def main() do
-  f = &pick/1
-  {f.(:left), f.(:right)}
-end

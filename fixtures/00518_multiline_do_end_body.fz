@@ -1,0 +1,13 @@
+#---
+# purpose: a multiline do-end fn body with a local binding evaluates correctly
+#---
+def double_plus(x) do
+  y = x + 1
+  y * 2
+end
+
+def main() do
+  result = double_plus(20)
+  assert(result == 42, "double_plus(20) = (20+1)*2 = 42")
+  result
+end

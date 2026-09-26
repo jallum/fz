@@ -1,3 +1,0 @@
-alias Utf8, as: U
-
-def main(), do: U.valid?(<<0xff, 0xff>>)

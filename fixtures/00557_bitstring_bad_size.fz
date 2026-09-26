@@ -1,0 +1,6 @@
+#---
+# purpose: a bitstring size() modifier whose argument is a float rather than an int or variable is a parse-time error.
+# expect: diagnostic
+# diagnostic.code: parse/bitstring-bad-size
+#---
+def main(), do: dbg(<<1::size(1.5)>>)

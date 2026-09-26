@@ -1,0 +1,10 @@
+#---
+# purpose: a closure captures only the outer variable it actually reads
+#---
+def mk(x, y), do: fn(z) -> x + z end
+def main() do
+  f = mk(3, 99)
+  result = f.(4)
+  assert(result == 7, "mk's returned closure captures x (3) and ignores y; x+z = 3+4 = 7 regardless of y")
+  result
+end

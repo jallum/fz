@@ -1,0 +1,4 @@
+#---
+# purpose: a float inside a list renders correctly
+#---
+def main(), do: dbg([1.5])

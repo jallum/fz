@@ -1,0 +1,8 @@
+#---
+# purpose: sending a mixed-type list to self and receiving it round-trips the value
+#---
+def main() do
+  send(self(), [1, 2.5, :a])
+  x = receive do x -> x end
+  dbg(x)
+end

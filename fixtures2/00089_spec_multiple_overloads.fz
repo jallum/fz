@@ -1,5 +1,0 @@
-defmodule M do
-  @spec add1(integer) :: integer
-  @spec add1(float) :: float
-  def add1(n), do: n + 1
-end

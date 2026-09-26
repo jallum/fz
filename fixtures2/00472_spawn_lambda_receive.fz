@@ -1,3 +1,0 @@
-def p(parent) do
-  spawn(fn () -> send(parent, receive do x -> x end) end)
-end

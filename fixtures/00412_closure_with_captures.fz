@@ -1,0 +1,8 @@
+#---
+# purpose: a closure that captures values is distinguished from a plain named-function reference at the point it's constructed.
+#---
+def main() do
+  k = 7
+  f = fn (n) -> n + k end
+  dbg(f.(3))
+end

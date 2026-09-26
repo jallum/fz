@@ -1,6 +1,0 @@
-def id(x), do: x
-
-def main() do
-  f = &id/1
-  {f.(1), f.(:ok)}
-end

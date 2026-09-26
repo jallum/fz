@@ -1,0 +1,4 @@
+#---
+# purpose: dbg/1 prints its expression's value to output
+#---
+def main(), do: dbg(40 + 2)

@@ -1,0 +1,9 @@
+#---
+# purpose: an @spec on a zero-arity function parses correctly.
+#---
+defmodule M do
+  @spec one() :: integer
+  def one(), do: 1
+end
+
+def main(), do: dbg(M.one())

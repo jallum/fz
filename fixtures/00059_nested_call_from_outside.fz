@@ -1,0 +1,9 @@
+#---
+# purpose: a caller outside a nested module resolves a call into that nested module's dotted path.
+#---
+defmodule A do
+  defmodule B do
+    def f(x), do: x
+  end
+end
+def main() do A.B.f(99) end
