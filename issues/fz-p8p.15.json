@@ -4,14 +4,16 @@
   "blocks": [
     "fz-p8p.4"
   ],
+  "closed_at": "2026-09-26T10:23:08Z",
+  "close_reason": "Committed on fz-p8p.4/findings",
   "created": "2026-09-26T09:48:10Z",
   "description": "The old CLI runner discovered `def test_*()` functions (git show 9dda68aa0^:src/cli/test_runner_test.rs). `fz2 test` discovers only `test(:name)` items (src/compiler2/cli.rs:417-468; .agent/docs/fixtures.md:124; pipeline.md:1092), and ExUnit has only the test macro (ex_unit/case.ex:431,503). Delete fixtures2/00528 and test_fn_convention_compiles. One commit.",
   "id": "fz-p8p.15",
   "labels": [],
   "parent": "fz-p8p",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Retire fixture 00528: fz has no test_* convention",
   "type": "task",
-  "updated_at": "2026-09-26T09:48:11Z"
+  "updated_at": "2026-09-26T10:23:08Z"
 }
