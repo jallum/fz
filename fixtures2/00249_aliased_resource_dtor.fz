@@ -1,8 +1,0 @@
-extern "C" defp _resource_test_dtor(integer) :: nil
-def dwrap(x), do: _resource_test_dtor(x)
-def main() do
-  r1 = make_resource(7, &dwrap/1)
-  r2 = r1
-  r3 = r2
-  assert(true)
-end

@@ -1,0 +1,10 @@
+#---
+# purpose: aliasing a resource under multiple names still fires its destructor exactly once
+#---
+extern "C" defp fz_resource_test_print_dtor(integer) :: nil
+def dwrap(x), do: fz_resource_test_print_dtor(x)
+def main() do
+  r1 = make_resource(7, &dwrap/1)
+  r2 = r1
+  r3 = r2
+end
