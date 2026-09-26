@@ -6,8 +6,8 @@ use super::dispatch_exec::{Dispatch, DispatchSource, TypeTest, dispatch_values};
 use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
 use super::value::{
-    AnyValue, interp_bool_value, interp_empty_list_value, interp_nil_value, interp_struct_field_from_tagged_bits,
-    interp_value_from_ref_word, with_value_ref,
+    AnyValue, HeapRef, interp_bool_value, interp_empty_list_value, interp_nil_value,
+    interp_struct_field_from_tagged_bits, interp_value_from_ref_word, with_value_ref,
 };
 use super::*;
 use crate::compiler2::pull::TransportCarrier;
@@ -236,8 +236,12 @@ impl IrInterpRuntime {
             .into_iter()
             .map(|value| match value {
                 AnyValue::Ref(value) => {
-                    let copied =
-                        deep_copy_any_value_ref(value, &unsafe { &*sender }.heap, &mut child.heap, &mut forwarding);
+                    let copied = deep_copy_any_value_ref(
+                        value.raw(),
+                        &unsafe { &*sender }.heap,
+                        &mut child.heap,
+                        &mut forwarding,
+                    );
                     AnyValue::from_any_value_ref(copied)
                 }
                 value => Ok(value),
@@ -1359,7 +1363,10 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     }
                 }
                 let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, ptr).expect("backend struct ref");
-                env.insert(*value, BackendBoundValue::Runtime(AnyValue::Ref(struct_ref)));
+                env.insert(
+                    *value,
+                    BackendBoundValue::Runtime(AnyValue::Ref(HeapRef::new(struct_ref)?)),
+                );
             }
             ProgramStep::Bitstring { value, fields } => {
                 fz_bs_begin(runtime.cur_proc());
@@ -2906,7 +2913,7 @@ fn publish_runtime_value(proc: *mut Process, value: AnyValue) -> Result<AnyValue
         return Ok(value);
     };
     interp_value_from_ref_word(
-        fz_mark_published_ref_aliased(proc, value_ref.raw_word()),
+        fz_mark_published_ref_aliased(proc, value_ref.raw().raw_word()),
         "backend continuation capture",
     )
 }
@@ -3008,9 +3015,8 @@ fn make_tuple_on_proc(proc: *mut Process, items: Vec<AnyValue>) -> Result<AnyVal
         let item = publish_runtime_value(proc, *item)?;
         unsafe { process.heap.write_field_slot(p, (index as u32) * 8, item.value(proc)?) };
     }
-    Ok(AnyValue::Ref(
-        AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("backend tuple ref"),
-    ))
+    let tuple_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("backend tuple ref");
+    Ok(AnyValue::Ref(HeapRef::new(tuple_ref)?))
 }
 
 fn make_closure_on_proc(
@@ -3029,9 +3035,8 @@ fn make_closure_on_proc(
         unsafe { heap.write_closure_capture_value(p, index, value.value(proc)?) };
     }
     let closure_addr = closure_addr_from_tagged(bits).expect("backend closure bits");
-    Ok(AnyValue::Ref(
-        AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("backend closure ref"),
-    ))
+    let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("backend closure ref");
+    Ok(AnyValue::Ref(HeapRef::new(closure_ref)?))
 }
 
 fn make_closure(

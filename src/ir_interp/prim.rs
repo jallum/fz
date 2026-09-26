@@ -1,4 +1,6 @@
-use super::value::{AnyValue, interp_is_list_cons, interp_nil_value, interp_value_from_ref_word, with_value_ref};
+use super::value::{
+    AnyValue, HeapRef, interp_is_list_cons, interp_nil_value, interp_value_from_ref_word, with_value_ref,
+};
 use fz_runtime::any_value::ValueKind;
 use fz_runtime::ir_runtime::{
     fz_list_head_ref, fz_list_tail_ref, fz_map_get_ref, fz_map_put_atom, fz_map_put_float, fz_map_put_int,
@@ -22,7 +24,7 @@ pub(super) fn interp_list_cons(
         .heap
         .alloc_list_cons_any(head, tail)
         .map_err(|err| format!("{context}: cannot allocate list cons: {err:?}"))?;
-    Ok(AnyValue::Ref(list))
+    Ok(AnyValue::Ref(HeapRef::new(list)?))
 }
 
 pub(super) fn interp_map_put(

@@ -196,6 +196,7 @@ fn separate_backend_programs_keep_distinct_closures_on_one_process() {
     let AnyValue::Ref(first_tuple) = first.unwrap() else {
         panic!("tuple result")
     };
+    let first_tuple = first_tuple.raw();
     let first_id = tuple_denotations(&process, first_tuple, 1)[0];
     process.mailbox.push_back(first_tuple);
 
@@ -219,6 +220,7 @@ fn separate_backend_programs_keep_distinct_closures_on_one_process() {
     let AnyValue::Ref(second_tuple) = second.unwrap() else {
         panic!("tuple result")
     };
+    let second_tuple = second_tuple.raw();
     let second_id = tuple_denotations(&process, second_tuple, 1)[0];
     assert_eq!(
         process.node.compare_closure_denotations(second_id, first_id),

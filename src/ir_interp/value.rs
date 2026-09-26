@@ -26,7 +26,36 @@ pub(crate) enum AnyValue {
     /// what a rendered fun reports, so it travels with the reference rather
     /// than being reconstructed at the heap boundary (fz-gk4).
     FnRef(FnId, u16, fz_runtime::any_value::ClosureDenotationId),
-    Ref(AnyValueRef),
+    Ref(HeapRef),
+}
+
+/// A ref to a heap object. `HeapRef::new` refuses a scalar or the empty list,
+/// so a scalar always has exactly one form in `AnyValue`, the inline one that
+/// `is_truthy`, `is_false` and `is_nil` read.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HeapRef(AnyValueRef);
+
+impl HeapRef {
+    pub(crate) fn new(value: AnyValueRef) -> Result<Self, String> {
+        if value.is_empty_list() {
+            return Err(format!(
+                "expected a heap object, got the empty list ({:#x})",
+                value.raw_word()
+            ));
+        }
+        if !value.tag().is_heap() {
+            return Err(format!(
+                "expected a heap object, got {:?} ({:#x})",
+                value.tag(),
+                value.raw_word()
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub(crate) fn raw(self) -> AnyValueRef {
+        self.0
+    }
 }
 
 impl AnyValue {
@@ -51,9 +80,8 @@ impl AnyValue {
             AnyValue::Atom(value) => RuntimeAnyValue::atom(value),
             AnyValue::EmptyList => RuntimeAnyValue::empty_list(),
             AnyValue::FnRef(fn_id, arity, denotation) => Self::materialize_fn_ref(proc, fn_id, arity, denotation)?,
-            AnyValue::Ref(value) => {
-                RuntimeAnyValue::from_ref(value).map_err(|err| format!("interpreter ref storage view: {err:?}"))?
-            }
+            AnyValue::Ref(value) => RuntimeAnyValue::from_ref(value.raw())
+                .map_err(|err| format!("interpreter ref storage view: {err:?}"))?,
         })
     }
 
@@ -61,7 +89,10 @@ impl AnyValue {
         self.as_ref_word(proc)
     }
 
-    pub(super) fn from_any_value_ref(value: AnyValueRef) -> Result<Self, String> {
+    /// The normaliser every path that turns a runtime word into an `AnyValue`
+    /// must go through: a boxed scalar becomes its inline form here, so `Ref`
+    /// only ever reaches its callers holding a heap object.
+    pub(crate) fn from_any_value_ref(value: AnyValueRef) -> Result<Self, String> {
         interp_value_from_ref(value, "interpreter tagged mailbox value")
     }
 
@@ -78,7 +109,7 @@ impl AnyValue {
             AnyValue::FnRef(fn_id, arity, denotation) => Ok(Self::materialize_fn_ref(proc, fn_id, arity, denotation)?
                 .ref_word()
                 .raw_word()),
-            AnyValue::Ref(value) => Ok(value.raw_word()),
+            AnyValue::Ref(value) => Ok(value.raw().raw_word()),
         }
     }
 
@@ -86,7 +117,7 @@ impl AnyValue {
         match self {
             AnyValue::Null => Ok(AnyValueRef::null()),
             AnyValue::EmptyList => Ok(AnyValueRef::empty_list()),
-            AnyValue::Ref(value) => Ok(value),
+            AnyValue::Ref(value) => Ok(value.raw()),
             AnyValue::Int(_) | AnyValue::Float(_) | AnyValue::Atom(_) | AnyValue::FnRef(..) => {
                 let ref_word = self.as_ref_word(proc)?;
                 AnyValueRef::from_raw_word(ref_word)
@@ -143,7 +174,7 @@ impl AnyValue {
             AnyValue::FnRef(_, arity, denotation) => format!("#fn<{}/{}>", denotation.user_index(), arity),
             AnyValue::Ref(value) => render_value(
                 proc,
-                RuntimeAnyValue::from_ref(value).unwrap_or(RuntimeAnyValue::null()),
+                RuntimeAnyValue::from_ref(value.raw()).unwrap_or(RuntimeAnyValue::null()),
             ),
         }
     }
@@ -231,14 +262,11 @@ pub(super) fn interp_value_from_ref(value: AnyValueRef, context: &str) -> Result
                 .map_err(|err| format!("{context}: invalid atom ref {:#x}: {err:?}", value.raw_word()))?
                 as u32,
         ),
-        ValueKind::LIST
-        | ValueKind::MAP
-        | ValueKind::STRUCT
-        | ValueKind::CLOSURE
-        | ValueKind::BITSTRING
-        | ValueKind::PROCBIN
-        | ValueKind::RESOURCE => AnyValue::Ref(value),
-        _ => unreachable!("AnyValueRef tag set is exhaustive"),
+        // Every remaining tag is a heap kind (list, map, struct, closure,
+        // bitstring, procbin, resource) — `HeapRef::new` is the one place
+        // that knows the boundary, so it draws it here too rather than a
+        // second enumeration of the same tags.
+        _ => AnyValue::Ref(HeapRef::new(value).map_err(|err| format!("{context}: {err}"))?),
     })
 }
 
