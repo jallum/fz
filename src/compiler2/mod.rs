@@ -109,8 +109,8 @@ pub use semantic::{
 };
 pub(crate) use semantic::{CallableConstructionTargetKey, SemanticOrd};
 pub use source::{
-    Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
-    QuotedSourceError, QuotedSourceHeap, QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot,
+    Horizon, QuotedAstNode, QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError, QuotedSourceHeap,
+    QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot,
 };
 pub(crate) use source::{META_SPAN_KEY, quoted_span_entries};
 pub(crate) use types::TyCanon;
@@ -155,8 +155,6 @@ mod input_demand_answers_test;
 mod namespace_test;
 #[cfg(test)]
 mod native_inventory_test;
-#[cfg(test)]
-mod port_macros_test;
 #[cfg(test)]
 mod quoted_function_test;
 #[cfg(test)]

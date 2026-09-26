@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::ast::{Expr, Pattern, Spanned};
+use crate::ast::{Expr, Pattern, Spanned, Var};
 use crate::dispatch_matrix::{DispatchNode, GraphNodeId};
 use crate::source::Span;
 
@@ -47,7 +47,7 @@ impl<TypeHandle> SourcePatternRows<TypeHandle> {
     /// input that delivers it. A `def` closes over nothing and passes an empty
     /// list. Those inputs are the whole of the outside here, so a name they do
     /// not carry was never bound, and the pin reaching for it is refused.
-    pub(crate) fn entry(input_count: usize, rows: Vec<PatternRow<TypeHandle>>, inputs: Vec<(String, u32)>) -> Self {
+    pub(crate) fn entry(input_count: usize, rows: Vec<PatternRow<TypeHandle>>, inputs: Vec<(Var, u32)>) -> Self {
         Self {
             input_count,
             rows,
@@ -63,11 +63,11 @@ pub(crate) enum Prematch {
     /// An enclosing scope holds them and resolves each pin by name.
     Lexical,
     /// These inputs deliver them, and they are all there is.
-    Inputs(Vec<(String, u32)>),
+    Inputs(Vec<(Var, u32)>),
 }
 
 impl Prematch {
-    pub(crate) fn input_for(&self, name: &str) -> Option<u32> {
+    pub(crate) fn input_for(&self, name: &Var) -> Option<u32> {
         match self {
             Prematch::Lexical => None,
             Prematch::Inputs(inputs) => inputs
@@ -132,10 +132,10 @@ pub(crate) fn collect_pinned_names<TypeHandle>(patterns: &SourcePatternRows<Type
     out
 }
 
-fn record_pinned_name(name: &str, span: Span, kind: PinnedKind, out: &mut Vec<PatternPinnedInput>) {
-    if !out.iter().any(|pin| pin.name == name) {
+fn record_pinned_name(name: &Var, span: Span, kind: PinnedKind, out: &mut Vec<PatternPinnedInput>) {
+    if !out.iter().any(|pin| pin.name == *name) {
         out.push(PatternPinnedInput {
-            name: name.to_string(),
+            name: name.clone(),
             input: None,
             span,
             kind,
@@ -143,7 +143,7 @@ fn record_pinned_name(name: &str, span: Span, kind: PinnedKind, out: &mut Vec<Pa
     }
 }
 
-pub(crate) fn collect_bound_names_in_pattern(pattern: &Pattern, out: &mut BTreeSet<String>) {
+pub(crate) fn collect_bound_names_in_pattern(pattern: &Pattern, out: &mut BTreeSet<Var>) {
     match pattern {
         Pattern::Var(name) | Pattern::As(name, _) => {
             out.insert(name.clone());
@@ -188,7 +188,7 @@ pub(crate) fn collect_bound_names_in_pattern(pattern: &Pattern, out: &mut BTreeS
 
 pub(crate) fn collect_guard_capture_names(
     expr: &Spanned<Expr>,
-    bound: &BTreeSet<String>,
+    bound: &BTreeSet<Var>,
     out: &mut Vec<PatternPinnedInput>,
 ) {
     match &expr.node {
@@ -251,7 +251,7 @@ fn collect_pinned_names_in_pattern(pattern: &Spanned<Pattern>, out: &mut Vec<Pat
     }
 }
 
-pub(crate) fn direct_bitfield_bindings(pattern: &Pattern) -> Vec<String> {
+pub(crate) fn direct_bitfield_bindings(pattern: &Pattern) -> Vec<Var> {
     match pattern {
         Pattern::Var(name) => vec![name.clone()],
         Pattern::As(name, inner) => {

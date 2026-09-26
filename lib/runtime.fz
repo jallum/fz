@@ -69,3 +69,14 @@ defmacro defimpl(protocol, kw) do
   source = {:defimpl, %{}, [protocol, kw]}
   quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 end
+
+# `name` arrives unevaluated: the quoted variable a macro's own `quote`
+# wrote, still carrying that macro's hygiene context in its third slot.
+# Rewriting that slot to `nil` is what makes the variable ordinary again --
+# indistinguishable from one the macro's caller wrote by hand, so it reads
+# and binds together with the caller's own same-spelled variable instead of
+# staying a private, unreachable name of the macro's own.
+defmacro var!(name) do
+  {var_name, meta, _context} = name
+  {var_name, meta, nil}
+end

@@ -924,7 +924,7 @@ fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
                         .expect("semantic binding");
                     let ty = executable.abi.materialized.value_types[&argument.parameter];
                     let types = compiler.world().types();
-                    match binding.name.as_str() {
+                    match binding.name.name.as_str() {
                         "len" => assert!(types.is_integer(&ty), "length keeps its integer field type"),
                         "payload" | "rest" => {
                             assert!(types.is_equivalent(&ty, &binary), "binary fields keep their exact kind")
@@ -3808,7 +3808,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         .filter(|record| {
             !matches!(
                 record.function_ref.name(),
-                "def" | "defp" | "defmacro" | "defmodule" | "defprotocol" | "defimpl"
+                "def" | "defp" | "defmacro" | "defmodule" | "defprotocol" | "defimpl" | "var!"
             )
         })
         .map(|record| {
@@ -4313,9 +4313,10 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         .expect("quoted variable AST node");
     assert_eq!(var_node.head.atom_name().expect("quoted variable head"), "x");
     assert_eq!(
-        var_node.tail.atom_name().expect("quoted variable context"),
-        "nil",
-        "quote lowering should use the canonical no-context variable shape"
+        var_node.tail.int_value().expect("quoted variable context"),
+        i64::from(quoted_var.as_u32()),
+        "a variable written inside a macro's own quote carries that macro's FunctionId as a bare marker; \
+         hygiene stamps this invocation's ordinal onto it later, in the wrapper this call bypasses"
     );
 
     let forward_define = function_id(&functions, "forward_define", 1);
@@ -16734,7 +16735,7 @@ fn compiler2_guard_dispatch_threads_call_arguments_and_destructuring() {
             .outcomes
             .iter()
             .flat_map(|outcome| outcome.bindings.iter())
-            .any(|binding| binding.name == "n"),
+            .any(|binding| binding.name.name == "n"),
         "destructuring helper reification should preserve inner bound names"
     );
     assert!(

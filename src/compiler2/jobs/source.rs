@@ -11,7 +11,7 @@ use super::super::quoted_expander::{
 use super::super::quoted_surface::{is_function_definition_head, read_compiler_fragment_surface, read_scope_surface};
 use super::super::scheduler::FatalError;
 use super::super::scope::ScopeSnapshot;
-use super::super::source::{QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceRoot};
+use super::super::source::{QuotedSourceCursor, QuotedSourceRoot};
 use super::super::source_publish::{self, ScopePublication};
 use super::super::world::World;
 use super::super::{QuotedCodeSource, parse_quoted_program};
@@ -458,6 +458,9 @@ struct FunctionSourceExpander<'world, 'tel, T: crate::telemetry::Telemetry> {
     namespace: Namespace,
     required_remote_macros: HashSet<FunctionId>,
     reads: Vec<FactKey>,
+    /// See `ScopeSession::next_hygiene_counter` (source_publish.rs): one
+    /// ordinal per macro invocation this expander visits.
+    next_hygiene_counter: u32,
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for FunctionSourceExpander<'world, 'tel, T> {
@@ -505,6 +508,15 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
             _ => None,
         }
     }
+
+    fn next_hygiene_ordinal(&mut self) -> u32 {
+        let ordinal = self.next_hygiene_counter;
+        self.next_hygiene_counter = self
+            .next_hygiene_counter
+            .checked_add(1)
+            .expect("hygiene ordinal space exhausted");
+        ordinal
+    }
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world, 'tel, T> {
@@ -526,6 +538,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             namespace: source.namespace,
             required_remote_macros: source.required_remote_macros.iter().copied().collect(),
             reads: Vec::new(),
+            next_hygiene_counter: 0,
         }
     }
 
@@ -536,12 +549,9 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         // __ENV__; it is transient — it is never recorded on the function.
         let def_scope = ScopeSnapshot::function(self.current_module, self.namespace, self.function);
         let builder = source.source.builder();
-        let env = self
-            .world
-            .project_env_value(&builder, def_scope, QuotedLexicalContextKind::Definition)
-            .map_err(|error| {
-                emit_internal_surface_error(self.telemetry, format!("__ENV__ projection failed: {error}"))
-            })?;
+        let env = self.world.project_env_value(&builder, def_scope).map_err(|error| {
+            emit_internal_surface_error(self.telemetry, format!("__ENV__ projection failed: {error}"))
+        })?;
         let env = source.source.subroot(env);
         let namespace = self
             .world

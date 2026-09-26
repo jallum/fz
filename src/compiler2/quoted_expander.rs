@@ -16,7 +16,7 @@ use super::quoted_surface::{
     MacroCallForm, ScopeForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface,
 };
 use super::scope::ScopeSnapshot;
-use super::source::{QuotedAstNode, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
+use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::source_sugar::rewrite_source_sugar;
 use super::world::World;
 
@@ -47,6 +47,14 @@ pub(crate) trait QuotedExpansionCtx {
     fn note_read(&mut self, fact: FactKey);
     fn products(&self) -> Option<&ProductSessions>;
     fn note_product_read(&mut self, product: ProductAddress);
+
+    /// One ordinal per macro invocation this job attempt visits and commits
+    /// to (never one retried because it was blocked on a fact or product —
+    /// see `expand_macro_invocation`), advancing whether the expansion hits
+    /// the memoization cache or runs fresh. Local to the job attempt and
+    /// reset with it: the sequence this hands out is a pure function of how
+    /// many invocations were visited, never of scheduling or caching.
+    fn next_hygiene_ordinal(&mut self) -> u32;
 
     /// The source-visible caller scope for macro execution and memoization.
     /// Expansion may layer transient compiler bindings onto `scope`; those
@@ -454,6 +462,10 @@ pub(crate) trait QuotedExpansionCtx {
         self.note_product_read(address);
 
         let caller_scope = self.macro_caller_scope(scope);
+        // Drawn once this invocation is committed to (past both blocking
+        // checks above), whether it turns out to hit the memoization cache
+        // or not -- see `next_hygiene_ordinal`.
+        let ordinal = self.next_hygiene_ordinal();
         if let Some(expanded) = self
             .world()
             .memoized_macro_expansion(function, &invocation, caller_scope, &program)
@@ -467,7 +479,7 @@ pub(crate) trait QuotedExpansionCtx {
         let builder = owner.builder();
         let caller = self
             .world()
-            .project_env_value(&builder, caller_scope, QuotedLexicalContextKind::Caller)
+            .project_env_value(&builder, caller_scope)
             .map_err(|error| {
                 emit_internal_surface_error(self.telemetry(), format!("__ENV__ projection failed: {error}"))
             })?;
@@ -478,6 +490,10 @@ pub(crate) trait QuotedExpansionCtx {
             .map_err(|error| {
                 emit_job_diagnostic(tel, Diagnostic::error(codes::LOWER_UNSUPPORTED, error, Span::DUMMY))
             })?;
+        let source_map = world.source_map();
+        let stamped = stamp_hygiene(&expanded, &expanded.cursor(), function, ordinal, &source_map.borrow())
+            .map_err(|error| emit_internal_surface_error(tel, format!("hygiene stamping failed: {error}")))?;
+        let expanded = expanded.subroot(stamped);
         emit_macro_expanded(world, tel, &function, &expanded);
         world.memoize_macro_expansion(function, invocation, caller_scope, &program, expanded.clone());
         match self.expand_root(expanded, scope, depth + 1)? {
@@ -595,6 +611,110 @@ pub(crate) fn alias_path(
 
 pub(crate) fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
     cursor.root().is_empty_list() || cursor.root().tag() == ValueKind::LIST
+}
+
+/// The stamping walk hygiene needs once a macro's own quote-lowered body has
+/// run and before its output is memoized. Every variable that quote wrote
+/// left an unstamped marker (`Lowerer::lower_variable`, jobs/body.rs): its
+/// tail is this macro's own `FunctionId`, with no ordinal in its meta yet.
+/// This walk gives every such marker the one ordinal this invocation drew,
+/// so the variables the quote introduced bind to each other by that shared
+/// identity and never collide with a same-spelled variable the caller wrote.
+///
+/// A tail from a nested (already-expanded) macro call, an unquoted splice,
+/// or a plain user variable is never this shape — it is `nil`, a different
+/// macro's `FunctionId`, or already carries an ordinal — and this walk
+/// leaves it exactly as it found it.
+fn stamp_hygiene(
+    owner: &QuotedSourceRoot,
+    cursor: &QuotedSourceCursor,
+    function: FunctionId,
+    ordinal: u32,
+    sources: &SourceMap,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    if let Some(node) = cursor.ast_node(sources)? {
+        if !is_list_like(&node.tail)
+            && node.tail.root().tag() == ValueKind::INT
+            && node.tail.int_value()? == i64::from(function.as_u32())
+            && node.meta.hygiene_ordinal()?.is_none()
+        {
+            let builder = owner.builder();
+            let meta = stamp_meta_ordinal(&builder, &node.meta, ordinal)?;
+            return builder.tuple(&[node.head.root(), meta, node.tail.root()]);
+        }
+        let head = stamp_hygiene(owner, &node.head, function, ordinal, sources)?;
+        let tail = stamp_hygiene(owner, &node.tail, function, ordinal, sources)?;
+        if head == node.head.root() && tail == node.tail.root() {
+            return Ok(cursor.root());
+        }
+        return owner.builder().tuple(&[head, node.meta.root(), tail]);
+    }
+    match cursor.root().tag() {
+        ValueKind::LIST => {
+            let items = cursor.list_items()?;
+            let mut changed = false;
+            let mut out = Vec::with_capacity(items.len());
+            for item in &items {
+                let stamped = stamp_hygiene(owner, item, function, ordinal, sources)?;
+                changed |= stamped != item.root();
+                out.push(stamped);
+            }
+            if changed {
+                owner.builder().list(&out)
+            } else {
+                Ok(cursor.root())
+            }
+        }
+        ValueKind::STRUCT => {
+            let items = cursor.tuple_items()?;
+            let mut changed = false;
+            let mut out = Vec::with_capacity(items.len());
+            for item in &items {
+                let stamped = stamp_hygiene(owner, item, function, ordinal, sources)?;
+                changed |= stamped != item.root();
+                out.push(stamped);
+            }
+            if changed {
+                owner.builder().tuple(&out)
+            } else {
+                Ok(cursor.root())
+            }
+        }
+        ValueKind::MAP => {
+            let entries = cursor.map_entries()?;
+            let mut changed = false;
+            let mut out = Vec::with_capacity(entries.len());
+            for (key, value) in &entries {
+                let key_root = stamp_hygiene(owner, key, function, ordinal, sources)?;
+                let value_root = stamp_hygiene(owner, value, function, ordinal, sources)?;
+                changed |= key_root != key.root() || value_root != value.root();
+                out.push((key_root, value_root));
+            }
+            if changed {
+                owner.builder().map(&out)
+            } else {
+                Ok(cursor.root())
+            }
+        }
+        _ => Ok(cursor.root()),
+    }
+}
+
+fn stamp_meta_ordinal(
+    builder: &super::source::QuotedSourceBuilder,
+    meta: &QuotedSourceCursor,
+    ordinal: u32,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    let mut entries = meta
+        .map_entries()?
+        .into_iter()
+        .map(|(key, value)| (key.root(), value.root()))
+        .collect::<Vec<_>>();
+    entries.push((
+        builder.atom(super::source::META_HYGIENE_KEY),
+        builder.int(i64::from(ordinal)),
+    ));
+    builder.map(&entries)
 }
 
 /// The name of a splice-candidate variable: a compiler-reserved `__`-prefixed

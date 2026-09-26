@@ -67,8 +67,8 @@ impl CallableName {
         let mut current = expr;
         loop {
             match current {
-                Expr::Var(name) => {
-                    path.push(name.clone());
+                Expr::Var(var) => {
+                    path.push(var.name.clone());
                     path.reverse();
                     let name = path.pop()?;
                     // An alias written `A.B` arrives as one identifier, so its
@@ -122,6 +122,46 @@ impl std::fmt::Display for CallableName {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeExprBody(pub Vec<Token>);
 
+/// A variable's full identity: its spelling, and where that spelling was
+/// written. Two `Var`s with the same `name` but a different `context` never
+/// resolve to the same binding — that is what makes macro expansion
+/// hygienic. Every map that resolves a variable by name is keyed by `Var`,
+/// never by the bare `String`, so a macro's own binding can never shadow or
+/// be shadowed by a same-spelled binding written somewhere else.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Var {
+    pub name: String,
+    pub context: VarContext,
+}
+
+impl Var {
+    pub fn user(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            context: VarContext::User,
+        }
+    }
+}
+
+impl std::fmt::Display for Var {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
+/// Where a variable's name was written. `User` is ordinary source text.
+/// `Macro(function, ordinal)` is a name written inside that macro's own
+/// `quote`, distinguished per expansion by `ordinal` so two calls to the same
+/// macro never share a binding. `Generated(k)` is a name minted by the
+/// compiler itself (capture and lambda sugar) — no source spelling can ever
+/// collide with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum VarContext {
+    User,
+    Macro(crate::compiler2::FunctionId, u32),
+    Generated(u32),
+}
+
 /// Wraps an AST node with the source span that produced it. Every Expr
 /// and Pattern reference in the AST is `Spanned<…>`; the outer enum
 /// values themselves are unwrapped so pattern matching stays clean.
@@ -172,7 +212,7 @@ pub enum Expr {
     Nil,
 
     // identifier reference
-    Var(String),
+    Var(Var),
 
     /// A resolved module alias supplied by compiler reflection. Display
     /// segments are not retained as a second semantic authority.
@@ -359,7 +399,7 @@ pub enum WithBinding {
 #[derive(Debug, Clone)]
 pub enum Pattern {
     Wildcard,
-    Var(String),
+    Var(Var),
     Int(i64),
     Float(f64),
     /// fz-axu.10 (L2) — see `Expr::Binary`. Carries raw bytes; L3 narrows
@@ -378,9 +418,9 @@ pub enum Pattern {
     /// fz-5vj — `^name` pinned variable. The matcher compares the
     /// scrutinee against the value bound to `name` in the enclosing
     /// scope (snapshotted at pattern-match time for `receive`).
-    Pinned(String),
+    Pinned(Var),
     /// As-pattern: name = pattern (Elixir lets you write it both ways)
-    As(String, Box<Spanned<Pattern>>),
+    As(Var, Box<Spanned<Pattern>>),
     /// Bitstring pattern: `<< field, field, ... >>`. Each field's `value` is a
     /// Pattern (binds variables or matches a literal); the spec governs how
     /// many bits to consume and how to interpret them.
@@ -461,7 +501,7 @@ pub enum BitSize {
     /// `::8`, `::16`, `::size(42)` with a literal
     Literal(u32),
     /// `::size(n)` where n is an in-scope variable name (or, in patterns, a previously-bound variable)
-    Var(String),
+    Var(Var),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

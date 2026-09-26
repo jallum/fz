@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fz macros guide</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>fz macros guide</h1>
+<p class="subtitle">Code that writes code: <code>quote</code>, <code>unquote</code>, <code>defmacro</code>, and the hygiene rule that keeps a macro's own variables out of your way.</p>
+
+<div class="toc">
+<ul>
+  <li><a href="#idea">1. A macro is a function that returns code</a></li>
+  <li><a href="#quote">2. quote and unquote</a></li>
+  <li><a href="#defmacro">3. defmacro, step by step</a></li>
+  <li><a href="#hygiene">4. Hygiene: a macro's variables are its own</a></li>
+  <li><a href="#context">5. How fz tells two same-named variables apart</a></li>
+  <li><a href="#var-bang">6. var! — reaching into the caller on purpose</a></li>
+  <li><a href="#env">7. __CALLER__ and __ENV__</a></li>
+  <li><a href="#footguns">8. Footguns</a></li>
+  <li><a href="#contract">9. The contract</a></li>
+</ul>
+</div>
+
+<!-- ─────────────────────────────── 1 ─────────────────────────────── -->
+<h2 id="idea">1. A macro is a function that returns code</h2>
+
+<p>An ordinary function receives values and returns a value. A macro receives
+<em>unevaluated code</em> &mdash; the caller's argument, as written, not as
+run &mdash; and returns code too. The compiler splices what the macro
+returns into the call site, then keeps compiling.</p>
+
+<p>That's the whole idea. Everything else in this guide is about writing the
+code a macro returns, and one rule that keeps a macro's own bookkeeping from
+leaking into the program that calls it.</p>
+
+<!-- ─────────────────────────────── 2 ─────────────────────────────── -->
+<h2 id="quote">2. quote and unquote</h2>
+
+<p><code>quote</code> turns the code inside it into data instead of running
+it:</p>
+
+<pre><span class="kw">quote</span> <span class="kw">do</span>
+  <span class="num">1</span> + <span class="num">2</span>
+<span class="kw">end</span></pre>
+
+<p>This does not evaluate to <code>3</code>. It evaluates to a small tree
+describing the call <code>1 + 2</code> &mdash; the same shape a macro
+receives its arguments in, and the same shape a macro is expected to
+return.</p>
+
+<p><code>unquote(e)</code> is the escape hatch: inside a <code>quote</code>,
+it splices in the <em>value</em> of <code>e</code>, evaluated right where
+it's written, instead of quoting <code>e</code> itself:</p>
+
+<pre><span class="kw">defmacro</span> emit(x) <span class="kw">do</span>
+  <span class="kw">quote</span> <span class="kw">do</span>: unquote(x) + <span class="num">1</span>
+<span class="kw">end</span>
+
+emit(<span class="num">7</span>)  <span class="com"># expands to `7 + 1`, runs, returns 8</span></pre>
+
+<div class="aside">
+<strong>Mental model:</strong> a quoted block is a little AST value you can
+build, inspect, and hand back. <code>unquote</code> is the one place inside a
+quote where you drop back into "evaluate this now" instead of "quote this."
+</div>
+
+<!-- ─────────────────────────────── 3 ─────────────────────────────── -->
+<h2 id="defmacro">3. defmacro, step by step</h2>
+
+<pre><span class="kw">defmacro</span> unless_(cond, do_block) <span class="kw">do</span>
+  <span class="kw">quote</span> <span class="kw">do</span>
+    <span class="kw">if</span> unquote(cond), <span class="kw">do</span>: <span class="kw">nil</span>, <span class="kw">else</span>: unquote(do_block)
+  <span class="kw">end</span>
+<span class="kw">end</span></pre>
+
+<p>Walking through a call <code>unless_(ready, do_the_thing())</code>:</p>
+
+<ol>
+  <li>The compiler sees a call to <code>unless_/2</code> and finds it is a
+      macro, not an ordinary function.</li>
+  <li><code>cond</code> and <code>do_block</code> are bound to the
+      <em>unevaluated</em> arguments &mdash; quoted code for
+      <code>ready</code> and quoted code for <code>do_the_thing()</code>,
+      neither has run yet.</li>
+  <li>The macro body runs, at compile time, and returns a quoted
+      <code>if</code> expression built from those two pieces.</li>
+  <li>The compiler splices that returned tree in place of the call, then
+      keeps compiling &mdash; the <code>if</code> now lowers and runs like any
+      <code>if</code> a person typed directly.</li>
+</ol>
+
+<p>A macro may also just return a literal &mdash; a number, an atom, a
+string, or a small tuple &mdash; instead of a <code>quote</code> block. Both
+work; <code>quote do: 42</code> and a bare <code>42</code> mean the same
+thing.</p>
+
+<!-- ─────────────────────────────── 4 ─────────────────────────────── -->
+<h2 id="hygiene">4. Hygiene: a macro's variables are its own</h2>
+
+<p>Suppose a macro's own quoted body assigns a variable:</p>
+
+<pre><span class="kw">defmacro</span> set_local() <span class="kw">do</span>
+  <span class="kw">quote</span> <span class="kw">do</span>: t = <span class="num">99</span>
+<span class="kw">end</span>
+
+<span class="kw">def</span> main() <span class="kw">do</span>
+  t = <span class="num">1</span>
+  set_local()
+  t  <span class="com"># 1, not 99</span>
+<span class="kw">end</span></pre>
+
+<p>Even though the macro's expansion textually reads <code>t = 99</code> and
+gets spliced into <code>main</code>, it does not touch <code>main</code>'s
+own <code>t</code>. The macro's <code>t</code> and the caller's
+<code>t</code> are <em>different variables that happen to be spelled the same
+way</em>. This is hygiene, and fz gives it to you automatically &mdash; you
+don't have to gensym anything yourself.</p>
+
+<p>Hygiene runs both directions. A macro cannot see the caller's variables
+either:</p>
+
+<pre><span class="kw">defmacro</span> read_t() <span class="kw">do</span>
+  <span class="kw">quote</span> <span class="kw">do</span>: t
+<span class="kw">end</span>
+
+<span class="kw">def</span> main() <span class="kw">do</span>
+  t = <span class="num">5</span>
+  read_t()  <span class="com"># diagnostic: lower/unbound — the macro's own `t` was never bound</span>
+<span class="kw">end</span></pre>
+
+<p>The macro's <code>t</code> is a variable belonging to <code>read_t</code>,
+not to <code>main</code>, and <code>read_t</code> never assigns it. Reaching
+for a name nobody bound is exactly as much an error inside a macro's own quote
+as it would be anywhere else.</p>
+
+<p>Hygiene is also per <em>call</em>, not per macro. Two calls to the same
+macro never share a binding:</p>
+
+<pre><span class="kw">defmacro</span> double_via_temp(x) <span class="kw">do</span>
+  <span class="kw">quote</span> <span class="kw">do</span>
+    t = unquote(x)
+    t + t
+  <span class="kw">end</span>
+<span class="kw">end</span>
+
+double_via_temp(<span class="num">21</span>)  <span class="com"># 42 — both occurrences of the macro's own t, in ONE expansion, are the same binding</span></pre>
+
+<p>and</p>
+
+<pre><span class="kw">defmacro</span> step(write) <span class="kw">do</span>
+  <span class="kw">if</span> write <span class="kw">do</span>
+    <span class="kw">quote</span> <span class="kw">do</span>: t = <span class="num">1</span>
+  <span class="kw">else</span>
+    <span class="kw">quote</span> <span class="kw">do</span>: t
+  <span class="kw">end</span>
+<span class="kw">end</span>
+
+step(<span class="kw">true</span>)
+step(<span class="kw">false</span>)  <span class="com"># diagnostic: lower/unbound — this call's own t was never bound, even though the FIRST call's t was</span></pre>
+
+<!-- ─────────────────────────────── 5 ─────────────────────────────── -->
+<h2 id="context">5. How fz tells two same-named variables apart</h2>
+
+<p>A variable's real identity is its spelling plus <em>where it was
+written</em>, not its spelling alone. A variable written by hand is
+<code>User</code>. A variable written inside a macro's own
+<code>quote</code> carries that macro, plus a number saying which of that
+macro's calls produced it. So <code>t</code> the caller wrote and
+<code>t</code> the macro's quote wrote are never the same binding, no matter
+how many times the macro runs.</p>
+
+<div class="box blue">
+This is the same idea Elixir uses under the name <em>context</em>: a variable
+is <code>{name, context}</code>, and only variables with an identical pair
+ever resolve to the same binding.
+</div>
+
+<!-- ─────────────────────────────── 6 ─────────────────────────────── -->
+<h2 id="var-bang">6. var! — reaching into the caller on purpose</h2>
+
+<p>Sometimes a macro <em>wants</em> to bind or read the caller's own
+variable &mdash; an assertion helper that has to define a name the caller
+goes on to use, for example. Wrapping a variable in <code>var!(...)</code>
+inside a quote tells fz "treat this one as if the caller had written it by
+hand," opting that one variable out of hygiene:</p>
+
+<pre><span class="kw">defmacro</span> bump_and_shadow() <span class="kw">do</span>
+  <span class="kw">quote</span> <span class="kw">do</span>
+    t = <span class="num">1</span>
+    var!(t) = var!(t) + <span class="num">1</span>
+    {var!(t), t}
+  <span class="kw">end</span>
+<span class="kw">end</span>
+
+<span class="kw">def</span> main() <span class="kw">do</span>
+  t = <span class="num">9</span>
+  bump_and_shadow()  <span class="com"># {10, 1}</span>
+<span class="kw">end</span></pre>
+
+<p>Inside <code>bump_and_shadow</code>'s own quote, the bare <code>t</code>
+is still the macro's own hygienic variable, isolated at <code>1</code>.
+Every <code>var!(t)</code> is a different variable &mdash; the caller's
+<code>t</code> &mdash; so it reads <code>9</code>, becomes <code>10</code>,
+and that <code>10</code> is what the caller sees afterward.</p>
+
+<!-- ─────────────────────────────── 7 ─────────────────────────────── -->
+<h2 id="env">7. __CALLER__ and __ENV__</h2>
+
+<p>A macro that needs to know something about where it's being called from
+can ask for <code>__CALLER__</code>, a small map with the calling module,
+function, and namespace. <code>__ENV__</code> is the same shape, but for
+where the macro <em>itself</em> was defined &mdash; useful for a macro that
+wants to refer back to its own defining module.</p>
+
+<div class="aside">
+Neither of these is a hygiene escape hatch on its own &mdash; they hand back
+data about a scope, not a way to read or write that scope's variables. Use
+<code>var!</code> for that.
+</div>
+
+<!-- ─────────────────────────────── 8 ─────────────────────────────── -->
+<h2 id="footguns">8. Footguns</h2>
+
+<div class="box yellow">
+<strong>A macro cannot read a caller's variable by spelling alone.</strong>
+If your macro's quote reads a name it never bound, that's an unbound
+variable, full stop &mdash; hygiene does not fall back to "check the caller's
+scope." Reach for <code>var!</code> when you actually want that.
+</div>
+
+<div class="box yellow">
+<strong>var! opts a name out of hygiene entirely, not just for one
+read.</strong> Every occurrence of <code>var!(name)</code> for the same
+spelling, anywhere in the expansion, is the caller's ordinary variable. Don't
+reach for it just to silence an unbound-variable diagnostic; use it when the
+macro's whole point is to bind or read something in the caller's scope.
+</div>
+
+<!-- ─────────────────────────────── 9 ─────────────────────────────── -->
+<h2 id="contract">9. The contract</h2>
+
+<p>A macro's own variables never collide with the caller's, and never collide
+between two different calls to the same macro &mdash; unless you say
+<code>var!</code>, in which case you get exactly the caller's variable, on
+purpose.</p>
+
+</body>
+</html>

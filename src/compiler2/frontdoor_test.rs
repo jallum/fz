@@ -189,7 +189,7 @@ fn compiler2_frontdoor_parses_alias_import_and_require_as_quoted_calls() {
 }
 
 #[test]
-fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
+fn compiler2_frontdoor_threads_spans_through_nested_modules() {
     let tel = ConfiguredTelemetry::new();
     let source = "defmodule App do\n  require Helpers\n  defmodule Tools do\n    import Helpers, except: [twice: 1]\n  end\nend\n";
     let root = parse_quoted_program("app.fz", source, &tel).expect("quoted parse");
@@ -208,25 +208,6 @@ fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
         .expect("app do tuple")[1]
         .list_items()
         .expect("app body items");
-    let require = app_body[0]
-        .trusted_ast_node()
-        .expect("require cursor")
-        .expect("require node");
-    let require_lexical = require
-        .meta
-        .map_value("__fz_lexical__")
-        .expect("require lexical lookup")
-        .expect("require lexical");
-    assert_eq!(
-        require_lexical
-            .map_value("module")
-            .expect("require module lookup")
-            .expect("require module")
-            .list_atom_names()
-            .expect("require module atoms"),
-        vec!["App".to_string()]
-    );
-
     let tools = app_body[1]
         .trusted_ast_node()
         .expect("tools cursor")
@@ -242,20 +223,7 @@ fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
         .trusted_ast_node()
         .expect("nested import cursor")
         .expect("nested import node");
-    let import_lexical = import
-        .meta
-        .map_value("__fz_lexical__")
-        .expect("nested import lexical lookup")
-        .expect("nested import lexical");
-    assert_eq!(
-        import_lexical
-            .map_value("module")
-            .expect("nested import module lookup")
-            .expect("nested import module")
-            .list_atom_names()
-            .expect("nested import module atoms"),
-        vec!["App".to_string(), "Tools".to_string()]
-    );
+    assert_eq!(head_name(&import), "import");
     // The span is a byte offset now; resolve it back to a line to assert the
     // nested import's position threaded through correctly (it sits on line 4).
     let start = import

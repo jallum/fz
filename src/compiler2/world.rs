@@ -64,10 +64,7 @@ use super::semantic::{
     ContributionMap, ContributionReplace, ExecutableRuntimeDemand, RuntimeDemand, RuntimeDemandInputMap,
     RuntimeDemandTypeProjection, TargetDemandContribution,
 };
-use super::source::{
-    QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
-    QuotedSourceRoot,
-};
+use super::source::{QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata, QuotedSourceRoot};
 use super::structdef::{
     StructDef, StructDefMap, StructExpectationMap, StructFieldExpectation, StructReferenceExpectation,
 };
@@ -1978,27 +1975,10 @@ impl World {
         }
     }
 
-    pub(crate) fn scope_lexical_context(
-        &self,
-        scope: ScopeSnapshot,
-        kind: QuotedLexicalContextKind,
-    ) -> QuotedLexicalContext {
-        let module = self
-            .module_denotation(scope.module_id())
-            .map(|denotation| denotation.display_segments().cloned().collect())
-            .unwrap_or_default();
-        let function_scope = scope
-            .function_id()
-            .map(|function| vec![self.function_ref(function).lexical_owner().name().to_string()])
-            .unwrap_or_default();
-        QuotedLexicalContext::new(kind, module, function_scope).with_namespace_id(scope.namespace().as_u32())
-    }
-
     pub(crate) fn project_module_value(
         &self,
         builder: &QuotedSourceBuilder,
         scope: ScopeSnapshot,
-        kind: QuotedLexicalContextKind,
     ) -> Result<AnyValueRef, QuotedSourceError> {
         let Some(denotation) = self.module_denotation(scope.module_id()) else {
             return Ok(builder.nil());
@@ -2007,8 +1987,8 @@ impl World {
             module: Some(denotation.clone()),
             bound_callable: None,
             from_brackets: false,
-            lexical_context: Some(self.scope_lexical_context(scope, kind)),
             span: None,
+            hygiene_ordinal: None,
         };
         let segments = denotation.display_segments().map(String::as_str).collect::<Vec<_>>();
         builder.alias(&metadata, &segments)
@@ -2018,7 +1998,6 @@ impl World {
         &self,
         builder: &QuotedSourceBuilder,
         scope: ScopeSnapshot,
-        kind: QuotedLexicalContextKind,
     ) -> Result<AnyValueRef, QuotedSourceError> {
         let function = match scope.function_id() {
             Some(function) => {
@@ -2031,7 +2010,7 @@ impl World {
             None => builder.nil(),
         };
         builder.map(&[
-            (builder.atom("module"), self.project_module_value(builder, scope, kind)?),
+            (builder.atom("module"), self.project_module_value(builder, scope)?),
             (builder.atom("function"), function),
             (
                 builder.atom("namespace"),
@@ -3431,7 +3410,7 @@ impl World {
         owner: FunctionId,
         occurrence: crate::ast::LambdaOccurrence,
         namespace: Namespace,
-        capture_params: Vec<String>,
+        capture_params: Vec<crate::ast::Var>,
         surface: FunctionSurface,
     ) -> (FunctionId, bool) {
         let (owner_source, _) = self.function_definition(owner);
@@ -3870,7 +3849,7 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         owner: FunctionId,
         occurrence: crate::ast::LambdaOccurrence,
         namespace: Namespace,
-        capture_params: Vec<String>,
+        capture_params: Vec<crate::ast::Var>,
         surface: FunctionSurface,
     ) -> (FunctionId, bool) {
         let (id, changed) = self

@@ -1,0 +1,15 @@
+#---
+# purpose: var!(t) inside a quote reaches the caller's t, while a plain t in the same quote stays the macro's own hygienic binding
+#---
+defmacro bump_and_shadow() do
+  quote do
+    t = 1
+    var!(t) = var!(t) + 1
+    {var!(t), t}
+  end
+end
+def main() do
+  t = 9
+  result = bump_and_shadow()
+  assert(result == {10, 1}, "var!(t) reaches the caller's t (9 + 1 == 10); the macro's own t stays isolated at 1")
+end

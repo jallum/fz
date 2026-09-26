@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use fz_runtime::any_value::AnyValueRef;
 
-use crate::ast::{Attribute, SpecDecl, TypeExprBody};
+use crate::ast::{Attribute, SpecDecl, TypeExprBody, Var};
 use crate::diag::{Diagnostic, codes};
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
@@ -126,6 +126,10 @@ struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     callables: Vec<ModuleInterfaceCallable>,
     revision_floor: u64,
     struct_form_seen: bool,
+    /// One ordinal per macro invocation this session visits, drawn whether
+    /// or not the expansion hits the memoization cache (`next_hygiene_ordinal`
+    /// on `QuotedExpansionCtx`). Local to this job attempt, reset with it.
+    next_hygiene_counter: u32,
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeSession<'world, 'tel, T> {
@@ -168,6 +172,15 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeS
             }
             _ => None,
         }
+    }
+
+    fn next_hygiene_ordinal(&mut self) -> u32 {
+        let ordinal = self.next_hygiene_counter;
+        self.next_hygiene_counter = self
+            .next_hygiene_counter
+            .checked_add(1)
+            .expect("hygiene ordinal space exhausted");
+        ordinal
     }
 }
 
@@ -534,6 +547,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             callables: Vec::new(),
             revision_floor: 0,
             struct_form_seen: false,
+            next_hygiene_counter: 0,
         }
     }
 
@@ -1540,7 +1554,7 @@ fn build_module_info_function(
         matches!(kind, InterfaceCallableKind::PublicFunction)
     })?;
     let macros = module_info_pairs(&builder, callables, |kind| matches!(kind, InterfaceCallableKind::Macro))?;
-    let kind = builder.variable("kind", &meta)?;
+    let kind = builder.variable(&Var::user("kind"), &meta)?;
     let body = module_info_case(&builder, &meta, kind, functions, macros, builder.atom(module_name))?;
     let clause = module_info_function_clause(&builder, &meta, kind, body)?;
     Ok(FunctionForm {
@@ -1596,7 +1610,7 @@ fn module_info_case(
         module_info_match_clause(builder, meta, builder.atom("functions"), functions)?,
         module_info_match_clause(builder, meta, builder.atom("macros"), macros)?,
         module_info_match_clause(builder, meta, builder.atom("module"), module)?,
-        module_info_match_clause(builder, meta, builder.variable("_", meta)?, builder.nil())?,
+        module_info_match_clause(builder, meta, builder.variable(&Var::user("_"), meta)?, builder.nil())?,
     ];
     let body = builder.list(&clauses)?;
     let kw = builder.list(&[builder.keyword("do", body)?])?;

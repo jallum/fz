@@ -1,4 +1,4 @@
-use crate::ast::{Attribute, BitSize, BitType, Expr, Pattern, WithBinding};
+use crate::ast::{Attribute, BitSize, BitType, Expr, Pattern, Var, WithBinding};
 use crate::parser::lexer::Tok;
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -168,7 +168,7 @@ def pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8
     assert_eq!(fields[0].spec.ty, BitType::Integer);
     assert!(matches!(fields[0].spec.size, Some(BitSize::Literal(16))));
     assert_eq!(fields[1].spec.ty, BitType::Binary);
-    assert!(matches!(fields[1].spec.size, Some(BitSize::Var(ref name)) if name == "len"));
+    assert!(matches!(fields[1].spec.size, Some(BitSize::Var(ref name)) if name.name == "len"));
     assert_eq!(fields[1].spec.unit, Some(8));
 }
 
@@ -246,8 +246,8 @@ end
         panic!("expected match binding");
     };
     assert!(matches!(&pattern.node, Pattern::Tuple(parts) if parts.len() == 2));
-    assert!(matches!(&expr.node, Expr::Var(name) if name == "v"));
-    assert!(matches!(&body.node, Expr::Var(name) if name == "x"));
+    assert!(matches!(&expr.node, Expr::Var(name) if name.name == "v"));
+    assert!(matches!(&body.node, Expr::Var(name) if name.name == "x"));
     assert_eq!(else_clauses.len(), 1);
 }
 
@@ -285,7 +285,7 @@ fn source_less_ast_child_stays_source_less_under_a_spanned_parent() {
     };
     let head = builder.call("main", &parent_meta, &[]).expect("function head");
     let body = builder
-        .variable("generated", &generated_meta)
+        .variable(&Var::user("generated"), &generated_meta)
         .expect("source-less generated variable");
     let do_entry = builder.keyword("do", body).expect("do entry");
     let options = builder.list(&[do_entry]).expect("function options");

@@ -320,6 +320,60 @@ Two important guardrails fall out of this:
   runtime roots reject macros, and macro roots reject ordinary functions. A
   captured macro binding cannot execute an ordinary replacement using the macro ABI.
 
+## Variable Hygiene
+
+A variable's identity is its spelling plus where that spelling was written —
+`Var { name, context }` (`src/ast/mod.rs`). `VarContext::User` is a variable
+written by hand. `VarContext::Macro(function, ordinal)` is a variable a
+macro's own `quote` wrote, distinguished by which of that macro's expansions
+produced it. `VarContext::Generated(ordinal)` is a variable the compiler
+synthesized itself — the capture (`&1`) and multi-clause lambda-sugar
+parameters — with no source spelling for a user's own variable to collide
+with. `Expr::Var`, `Pattern::Var`, `Pattern::Pinned`, an as-pattern's name, and
+a bitstring's `size(n)` all carry a `Var`, and every map that resolves a
+variable by name — the lowering environment, closure free/bound-name
+tracking, and dispatch_matrix's pattern-binding tables — is keyed by `Var`,
+never by a bare string. Two variables with the same spelling but a different
+context never share a binding: a macro's own `t = 99` cannot shadow, or be
+shadowed by, the caller's `t`.
+
+A quoted variable's tail carries its context, the same slot a call's argument
+list would otherwise occupy: `nil` for a variable a user wrote, a macro's
+`FunctionId` (as a bare integer) for one written inside that macro's own
+`quote`, or the atom `generated` for one the compiler synthesized.
+`QuotedSourceBuilder::variable` is the one constructor for this shape; the
+front door, quote lowering, and sugar's capture and lambda desugaring all
+build a variable node through it, and decode reads the tail back into a
+`VarContext`.
+
+A macro's `FunctionId` alone cannot tell one call to that macro apart from the
+next, so quote lowering writes only that bare marker, with no ordinal yet.
+One walk, run over the macro's own returned tree immediately after it runs and
+before the expansion is memoized, then stamps this invocation's ordinal onto
+every variable still carrying that macro's bare marker. The ordinal is local
+to the job attempt: it advances once per macro invocation the attempt visits,
+whether or not the memoization cache already holds an answer, so a retry
+reproduces the identical sequence. A variable spliced in by `unquote`, or one
+a nested macro's own expansion already stamped with a concrete ordinal, does
+not carry this macro's bare marker and is left untouched.
+
+This is the same underlying question `bound_callable` answers for a call
+written inside a quote — "where was this written" — asked at a different
+cardinality. A call's target does not fork per invocation, so it is resolved
+once, eagerly, at quote-lowering time, and baked into meta as a `FunctionId`.
+A variable's binding does fork per invocation — two calls to the same macro
+need two distinct `t` bindings — so it is resolved in two steps: a bare
+marker at lowering time, and a concrete `(FunctionId, ordinal)` pair once the
+expansion it belongs to is known.
+
+`var!(x)`, an ordinary macro in `lib/runtime.fz`, rewrites a quoted
+variable's context back to `nil` and drops its ordinal, so it reads and binds
+exactly as if the caller had written it by hand.
+
+An undefined macro variable — one whose context names a macro but whose name
+was never bound anywhere lowering can see — reports `lower/unbound`, and the
+message names the macro.
+
 ## How The Macro Actually Runs
 
 `ExecutionContext::run_macro_on_source(...)` is the final handoff.

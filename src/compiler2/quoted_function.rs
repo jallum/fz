@@ -1,6 +1,6 @@
 use crate::ast::{
     AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, CallableName, Endian, Expr, FnClause,
-    LambdaClause, MatchClause, Pattern, Spanned, SpecDecl, TypeExprBody, UnOp, WithBinding,
+    LambdaClause, MatchClause, Pattern, Spanned, SpecDecl, TypeExprBody, UnOp, Var, VarContext, WithBinding,
 };
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
@@ -293,8 +293,12 @@ fn decode_expr(
         if let Some(module) = node.meta.module_denotation()? {
             return Ok(Spanned::new(Expr::Module(module), span));
         }
-        if !is_list_like(&node.tail) {
-            return Ok(Spanned::new(Expr::Var(atom_name(&node.head)?), span));
+        if !node.tail.is_list_like() {
+            let var = Var {
+                name: atom_name(&node.head)?,
+                context: decode_var_context(&node)?,
+            };
+            return Ok(Spanned::new(Expr::Var(var), span));
         }
 
         let args = node.tail.list_items()?;
@@ -429,7 +433,7 @@ fn decode_named_expr(
             let ty = quoted_type_expr_body(&args[1], sources)?;
             Ok(Spanned::new(Expr::Ascribe(Box::new(value), ty), span))
         }
-        ("__aliases__", _) => Ok(Spanned::new(Expr::Var(alias_name_from_args(args)?), span)),
+        ("__aliases__", _) => Ok(Spanned::new(Expr::Var(Var::user(alias_name_from_args(args)?)), span)),
         (".", 2) => {
             let base = decode_expr(occurrences, &args[0], Some(span), sources)?;
             let field = Spanned::new(Expr::Atom(args[1].atom_name()?), span);
@@ -463,7 +467,7 @@ fn decode_named_expr(
             // written with, and is never read back as source.
             let callee = match bound {
                 Some(function) => Spanned::new(Expr::BoundFunction(function), span),
-                None => Spanned::new(Expr::Var(name), span),
+                None => Spanned::new(Expr::Var(Var::user(name)), span),
             };
             let call_args = decode_exprs(occurrences, args, Some(span), sources)?;
             Ok(Spanned::new(Expr::Call(Box::new(callee), call_args), span))
@@ -478,13 +482,16 @@ fn decode_pattern(
 ) -> Result<Spanned<Pattern>, QuotedSourceError> {
     if let Some(node) = cursor.ast_node(sources)? {
         let span = node.span.unwrap_or(Span::DUMMY);
-        if !is_list_like(&node.tail) {
+        if !node.tail.is_list_like() {
             let name = atom_name(&node.head)?;
             return Ok(Spanned::new(
                 if name == "_" {
                     Pattern::Wildcard
                 } else {
-                    Pattern::Var(name)
+                    Pattern::Var(Var {
+                        name,
+                        context: decode_var_context(&node)?,
+                    })
                 },
                 span,
             ));
@@ -808,7 +815,7 @@ fn collect_quoted_splices(
             _ => Ok(()),
         };
     };
-    if !is_list_like(&node.tail) {
+    if !node.tail.is_list_like() {
         return Ok(()); // a bare variable mention, nothing to splice
     }
     let args = node.tail.list_items()?;
@@ -1333,15 +1340,18 @@ fn decode_module_target(
     )))
 }
 
+/// A wildcard has no context to decode — it cannot be referenced again, so
+/// naming it `_` for an as-bind or pin site is always `Var::user`, never a
+/// macro's or sugar's own context.
 fn pattern_var_name(
     cursor: &QuotedSourceCursor,
     fallback_span: Option<Span>,
     sources: &SourceMap,
-) -> Result<Option<String>, QuotedSourceError> {
+) -> Result<Option<Var>, QuotedSourceError> {
     let decoded = decode_pattern(cursor, fallback_span, sources)?;
     Ok(match decoded.node {
-        Pattern::Var(name) => Some(name),
-        Pattern::Wildcard => Some("_".to_string()),
+        Pattern::Var(var) => Some(var),
+        Pattern::Wildcard => Some(Var::user("_")),
         _ => None,
     })
 }
@@ -1498,7 +1508,7 @@ fn apply_bit_spec_modifier(
 ) -> Result<(), QuotedSourceError> {
     if let Some(node) = cursor.ast_node(sources)? {
         let node_span = node.span.unwrap_or(Span::DUMMY);
-        let args = if is_list_like(&node.tail) {
+        let args = if node.tail.is_list_like() {
             node.tail.list_items()?
         } else {
             Vec::new()
@@ -1581,12 +1591,20 @@ fn decode_bit_size(
         });
     }
     if let Some(node) = cursor.ast_node(sources)?
-        && !is_list_like(&node.tail)
+        && !node.tail.is_list_like()
     {
-        return Ok(BitSize::Var(atom_name(&node.head)?));
+        return Ok(BitSize::Var(Var {
+            name: atom_name(&node.head)?,
+            context: decode_var_context(&node)?,
+        }));
     }
     match cursor.root().tag() {
-        fz_runtime::any_value::ValueKind::ATOM => Ok(BitSize::Var(cursor.atom_name()?)),
+        // A bare atom, unlike the `Var`-shaped node above, has no tail and no
+        // meta to carry a macro's or sugar's context in — it is structurally
+        // only ever a variable the user wrote. No producer in this compiler
+        // emits a bitstring size this way today; a future one that does
+        // still cannot mean anything but `User`.
+        fz_runtime::any_value::ValueKind::ATOM => Ok(BitSize::Var(Var::user(cursor.atom_name()?))),
         other => Err(QuotedSourceError::user(
             crate::diag::codes::PARSE_BITSTRING_BAD_SIZE,
             Some(error_span),
@@ -1898,6 +1916,42 @@ fn atom_name(cursor: &QuotedSourceCursor) -> Result<String, QuotedSourceError> {
     cursor.atom_name()
 }
 
+/// A `Var`-shaped node's tail carries its hygiene context, exactly as
+/// [`super::source::QuotedSourceBuilder::variable`] wrote it: `nil` for a
+/// variable the user wrote, the quoting macro's coordinate for one it
+/// introduced, or the `generated` marker for one sugar introduced. The
+/// latter two also carry an expansion ordinal, stamped beside the context in
+/// `meta`.
+fn decode_var_context(node: &QuotedAstNode) -> Result<VarContext, QuotedSourceError> {
+    match node.tail.root().tag() {
+        fz_runtime::any_value::ValueKind::ATOM => match node.tail.atom_name()?.as_str() {
+            "nil" => Ok(VarContext::User),
+            "generated" => Ok(VarContext::Generated(hygiene_ordinal(node)?)),
+            other => Err(QuotedSourceError::new(format!(
+                "a variable's context atom must be `nil` or `generated`, got `{other}`"
+            ))),
+        },
+        fz_runtime::any_value::ValueKind::INT => {
+            let coordinate = u32::try_from(node.tail.int_value()?).map_err(|_| {
+                QuotedSourceError::new("a macro variable's context is outside the function coordinate space")
+            })?;
+            Ok(VarContext::Macro(
+                FunctionId::from_coordinate(coordinate),
+                hygiene_ordinal(node)?,
+            ))
+        }
+        other => Err(QuotedSourceError::new(format!(
+            "a variable's context must be `nil`, an int, or `generated`, got a {other:?}"
+        ))),
+    }
+}
+
+fn hygiene_ordinal(node: &QuotedAstNode) -> Result<u32, QuotedSourceError> {
+    node.meta
+        .hygiene_ordinal()?
+        .ok_or_else(|| QuotedSourceError::new("a macro- or sugar-generated variable is missing its hygiene ordinal"))
+}
+
 /// True when `node.head` is itself an atom equal to `name`.
 ///
 /// An AST node's `head` is not always an atom: remote calls and closure
@@ -1943,10 +1997,6 @@ fn is_bracket_access_callee(head_node: &QuotedAstNode) -> Result<bool, QuotedSou
         return Ok(false);
     };
     Ok(value.atom_name()? == "true")
-}
-
-fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
-    cursor.root().tag() == fz_runtime::any_value::ValueKind::LIST
 }
 
 fn binop_from_name(name: &str) -> Option<BinOp> {

@@ -4,9 +4,9 @@ use fz_runtime::any_value::ValueKind;
 
 use super::source::{META_SPAN_KEY, META_SPAN_LENGTH_KEY, META_SPAN_START_KEY, META_SPAN_VERSION_KEY};
 use super::{
-    Horizon, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceHeap,
-    QuotedSourceMetadata, QuotedSourceRoot, parse_quoted_program,
+    Horizon, QuotedSourceCursor, QuotedSourceHeap, QuotedSourceMetadata, QuotedSourceRoot, parse_quoted_program,
 };
+use crate::ast::Var;
 use crate::modules::runtime_library;
 use crate::source::{SourceVersion, Span};
 use crate::telemetry::ConfiguredTelemetry;
@@ -58,31 +58,22 @@ pub(super) fn assert_quoted_mentions(root: &QuotedSourceRoot, expected: &[&str])
     }
 }
 
-fn context(kind: QuotedLexicalContextKind, module: &[&str], scope: &[&str], namespace_id: u32) -> QuotedLexicalContext {
-    QuotedLexicalContext::new(
-        kind,
-        module.iter().map(|segment| (*segment).to_string()).collect(),
-        scope.iter().map(|segment| (*segment).to_string()).collect(),
-    )
-    .with_namespace_id(namespace_id)
-}
-
 // `_source_name` and `line` are arbitrary span noise: the byte-offset `Span`
 // carries no source name, and these tests assert spans are not semantic content,
 // so the helper just needs to vary the span by its `line` input.
-fn meta(context: &QuotedLexicalContext, _source_name: &str, line: u32) -> QuotedSourceMetadata {
+fn meta(_source_name: &str, line: u32) -> QuotedSourceMetadata {
     let mut sources = crate::source::SourceMap::new();
     let version = sources.add_code(Some("quoted-structural-test.fz"), " ".repeat(256));
     QuotedSourceMetadata {
         module: None,
         bound_callable: None,
         from_brackets: false,
-        lexical_context: Some(context.clone()),
         span: Some(Span::new(
             version,
             line,
             line.checked_add(3).expect("test span end fits in u32"),
         )),
+        hygiene_ordinal: None,
     }
 }
 
@@ -253,22 +244,15 @@ fn quoted_token_decoder_rejects_unregistered_source_versions() {
     );
 }
 
-fn build_simple_def(
-    source_name: &str,
-    line: u32,
-    namespace_id: u32,
-    module: &[&str],
-    literal: i64,
-) -> QuotedSourceRoot {
+fn build_simple_def(source_name: &str, line: u32, literal: i64) -> QuotedSourceRoot {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
-    let ctx = context(QuotedLexicalContextKind::Source, module, &["foo"], namespace_id);
-    let fn_meta = meta(&ctx, source_name, line);
-    let head_meta = meta(&ctx, source_name, line + 1);
-    let var_meta = meta(&ctx, source_name, line + 2);
-    let body_meta = meta(&ctx, source_name, line + 3);
+    let fn_meta = meta(source_name, line);
+    let head_meta = meta(source_name, line + 1);
+    let var_meta = meta(source_name, line + 2);
+    let body_meta = meta(source_name, line + 3);
 
-    let x = builder.variable("x", &var_meta).expect("x var");
+    let x = builder.variable(&Var::user("x"), &var_meta).expect("x var");
     let head = builder.call("foo", &head_meta, &[x]).expect("foo head");
     let body = builder
         .call("+", &body_meta, &[x, builder.int(literal)])
@@ -282,8 +266,8 @@ fn build_simple_def(
 
 #[test]
 fn heap_and_root_form_the_stable_source_key() {
-    let left = build_simple_def("left.fz", 10, 11, &["App"], 1);
-    let right = build_simple_def("right.fz", 90, 11, &["App"], 1);
+    let left = build_simple_def("left.fz", 10, 1);
+    let right = build_simple_def("right.fz", 90, 1);
 
     assert_ne!(
         left.key(),
@@ -301,12 +285,12 @@ fn heap_and_root_form_the_stable_source_key() {
 // span metadata; spans are still not semantic content.
 #[test]
 fn built_graphs_compare_semantically_across_span_noise() {
-    let left = build_simple_def("left.fz", 10, 11, &["App"], 1);
-    let right = build_simple_def("right.fz", 90, 11, &["App"], 1);
+    let left = build_simple_def("left.fz", 10, 1);
+    let right = build_simple_def("right.fz", 90, 1);
 
     assert!(
         left.semantically_eq(&right, Horizon::Full),
-        "semantic equality should follow source shape and lexical context, not span metadata"
+        "semantic equality should follow source shape, not span metadata"
     );
     assert!(
         left.semantically_eq(&right, Horizon::Surface),
@@ -315,118 +299,12 @@ fn built_graphs_compare_semantically_across_span_noise() {
 }
 
 #[test]
-fn namespace_id_is_transport_only_not_semantic_content() {
-    let left = build_simple_def("app.fz", 10, 11, &["App"], 1);
-    let right = build_simple_def("app.fz", 10, 77, &["App"], 1);
-
-    assert!(
-        left.semantically_eq(&right, Horizon::Full),
-        "ephemeral namespace ids should not churn semantic equality"
-    );
-}
-
-#[test]
-fn lexical_context_and_literals_both_move_semantic_equality() {
-    let app = build_simple_def("app.fz", 10, 11, &["App"], 1);
-    let helpers = build_simple_def("app.fz", 10, 11, &["Helpers"], 1);
-    let changed_body = build_simple_def("app.fz", 10, 11, &["App"], 2);
-
-    assert!(
-        !app.semantically_eq(&helpers, Horizon::Full),
-        "lexical context is semantic content"
-    );
-    assert!(
-        !app.semantically_eq(&changed_body, Horizon::Full),
-        "a changed quoted body is a semantic change at full depth"
-    );
-    assert!(
-        app.semantically_eq(&changed_body, Horizon::Surface),
-        "the changed literal lives under do: — below the surface horizon"
-    );
-}
-
-#[test]
-fn cursor_reads_definition_and_caller_contexts_separately() {
-    let heap = Rc::new(QuotedSourceHeap::new());
-    let builder = heap.builder();
-    let definition_ctx = context(QuotedLexicalContextKind::Definition, &["Helpers"], &["twice"], 21);
-    let caller_ctx = context(QuotedLexicalContextKind::Caller, &["App"], &["main"], 42);
-
-    let arg = builder
-        .variable("x", &meta(&caller_ctx, "helpers.fz", 12))
-        .expect("caller var");
-    let call = builder
-        .call("double", &meta(&definition_ctx, "helpers.fz", 13), &[arg])
-        .expect("definition call");
-    let root = builder.root(call).expect("quoted source root");
-
-    let node = root
-        .cursor()
-        .trusted_ast_node()
-        .expect("call cursor")
-        .expect("ast node");
-    assert_eq!(node.head.atom_name().expect("call head atom"), "double");
-
-    let call_ctx = node
-        .meta
-        .map_value("__fz_lexical__")
-        .expect("call lexical lookup")
-        .expect("call lexical context");
-    assert_eq!(
-        call_ctx
-            .map_value("kind")
-            .expect("call kind lookup")
-            .expect("call kind")
-            .atom_name()
-            .expect("call kind atom"),
-        "definition"
-    );
-    assert_eq!(
-        call_ctx
-            .map_value("module")
-            .expect("call module lookup")
-            .expect("call module")
-            .list_atom_names()
-            .expect("call module atoms"),
-        vec!["Helpers".to_string()]
-    );
-
-    let args = node.tail.list_items().expect("call args");
-    let arg_node = args[0]
-        .trusted_ast_node()
-        .expect("arg node cursor")
-        .expect("arg ast node");
-    assert_eq!(arg_node.head.atom_name().expect("arg head atom"), "x");
-    assert_eq!(
-        arg_node
-            .tail
-            .map_value("kind")
-            .expect("arg kind lookup")
-            .expect("arg kind")
-            .atom_name()
-            .expect("arg kind atom"),
-        "caller"
-    );
-    assert_eq!(
-        arg_node
-            .tail
-            .map_value("module")
-            .expect("arg module lookup")
-            .expect("arg module")
-            .list_atom_names()
-            .expect("arg module atoms"),
-        vec!["App".to_string()]
-    );
-}
-
-#[test]
 fn worked_surface_examples_fit_in_one_quoted_source_model() {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
-    let ctx = context(QuotedLexicalContextKind::Source, &["App"], &["macro_surface"], 9);
-    let meta = meta(&ctx, "surface.fz", 5);
+    let meta = meta("surface.fz", 5);
 
-    let x = builder.variable("x", &meta).expect("x var");
+    let x = builder.variable(&Var::user("x"), &meta).expect("x var");
     let inc_head = builder.call("inc", &meta, &[x]).expect("inc head");
     let inc_body = builder.call("+", &meta, &[x, builder.int(1)]).expect("inc body");
     let inc_kw = builder
@@ -504,8 +382,7 @@ fn worked_surface_examples_fit_in_one_quoted_source_model() {
 fn build_bulk_ast_list(last: i64) -> QuotedSourceRoot {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
-    let ctx = context(QuotedLexicalContextKind::Source, &["App"], &["bulk"], 99);
-    let node_meta = meta(&ctx, "bulk.fz", 1);
+    let node_meta = meta("bulk.fz", 1);
     let mut items = Vec::new();
     for n in 0..64 {
         let value = if n == 63 { last } else { n };
@@ -564,8 +441,7 @@ fn semantic_walk_handles_runtime_sized_quoted_roots() {
 fn build_bitstring_heavy_list(last_payload: &str) -> QuotedSourceRoot {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
-    let ctx = context(QuotedLexicalContextKind::Source, &["App"], &["bulk_bits"], 101);
-    let node_meta = meta(&ctx, "bulk_bits.fz", 1);
+    let node_meta = meta("bulk_bits.fz", 1);
     let payload = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(8);
     let mut items = Vec::new();
     for n in 0..48 {

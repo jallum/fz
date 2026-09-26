@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use crate::ast::{
     AfterClause, BitField, BitSize, CallableName, Callee, Expr, FnClause, LambdaClause, MatchClause, Pattern, Spanned,
-    WithBinding,
+    Var, VarContext, WithBinding,
 };
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -933,7 +933,7 @@ struct Lowerer<'w, 'tel, T: crate::telemetry::Telemetry> {
 
 struct QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, 'q, T: crate::telemetry::Telemetry> {
     lowerer: &'a mut Lowerer<'w, 'tel, T>,
-    env: &'env mut HashMap<String, ValueId>,
+    env: &'env mut HashMap<Var, ValueId>,
     steps: &'steps mut Vec<ExprStep>,
     /// Every `unquote(e)` inside this quote, already decoded in the same
     /// walk order this lowering walk encounters them. `next_splice` tracks
@@ -945,7 +945,7 @@ struct QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, 'q, T: crate::telemetry::Telemet
 impl<'a, 'w, 'tel, 'env, 'steps, 'q, T: crate::telemetry::Telemetry> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, 'q, T> {
     fn new(
         lowerer: &'a mut Lowerer<'w, 'tel, T>,
-        env: &'env mut HashMap<String, ValueId>,
+        env: &'env mut HashMap<Var, ValueId>,
         steps: &'steps mut Vec<ExprStep>,
         splices: &'q [Spanned<Expr>],
     ) -> Self {
@@ -1094,7 +1094,13 @@ impl<'a, 'w, 'tel, 'env, 'steps, 'q, T: crate::telemetry::Telemetry> QuoteLowere
 
     fn lower_variable(&mut self, name: &str, span: Span) -> Result<ValueId, FatalError> {
         let head = self.lowerer.push_const(self.steps, GroundValue::Atom(name.to_string()));
-        let tail = self.lowerer.push_const(self.steps, GroundValue::Nil);
+        // Every variable this quote's own body writes is, by construction,
+        // written inside this macro's quote. Its tail carries the macro's
+        // `FunctionId` as an unstamped marker; the walk in `stamp_hygiene`
+        // (quoted_expander.rs) rewrites it to `Var{context: Macro(fid, ordinal)}`
+        // once this expansion's ordinal is known, right after the macro runs.
+        let owner = i64::from(self.lowerer.owner.as_u32());
+        let tail = self.lowerer.push_const(self.steps, GroundValue::Int(owner));
         Ok(self.push_ast_node(head, tail, span))
     }
 
@@ -1363,7 +1369,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         if self.surface.is_macro {
             let value = self.fresh_value();
             params.push(value);
-            env.insert("__CALLER__".to_string(), value);
+            env.insert(Var::user("__CALLER__"), value);
         }
         for capture in self.source.capture_params.clone() {
             let value = self.fresh_value();
@@ -1389,7 +1395,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_expr_as_block(
         &mut self,
         expr: &Spanned<Expr>,
-        mut env: HashMap<String, ValueId>,
+        mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
         let mut steps = Vec::new();
         let result = self.lower_expr(expr, &mut env, &mut steps)?;
@@ -1403,7 +1409,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_expr(
         &mut self,
         expr: &Spanned<Expr>,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         match &expr.node {
@@ -1418,7 +1424,31 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 if let Some(value) = env.get(name) {
                     return Ok(*value);
                 }
-                match self.world.lookup_namespace(self.namespace, name) {
+                if let VarContext::Macro(function, _) = name.context {
+                    let macro_name = self.world.function_ref(function).display_name();
+                    return Err(emit_job_diagnostic(
+                        self.telemetry,
+                        Diagnostic::error(
+                            codes::LOWER_UNBOUND,
+                            format!(
+                                "compiler2 lowering found unbound variable `{}` (context {macro_name})",
+                                name.name
+                            ),
+                            expr.span,
+                        ),
+                    ));
+                }
+                if matches!(name.context, VarContext::Generated(_)) {
+                    return Err(emit_job_diagnostic(
+                        self.telemetry,
+                        Diagnostic::error(
+                            codes::LOWER_UNBOUND,
+                            format!("compiler2 lowering found unbound generated variable `{}`", name.name),
+                            expr.span,
+                        ),
+                    ));
+                }
+                match self.world.lookup_namespace(self.namespace, &name.name) {
                     Some(NamespaceSymbol::Function(function)) => {
                         let value = self.fresh_value();
                         steps.push(ExprStep::FunctionRef { value, function });
@@ -1957,7 +1987,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_call_args(
         &mut self,
         args: &[Spanned<Expr>],
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<Vec<CallArg>, FatalError> {
         let mut lowered = Vec::with_capacity(args.len());
@@ -1980,7 +2010,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         span: Span,
         module: &crate::ast::ModuleTarget,
         fields: &[(String, Spanned<Expr>)],
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let module_id = self.resolve_struct_module(module, span)?;
@@ -2025,7 +2055,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_bitstring_expr(
         &mut self,
         fields: &[BitField<Spanned<Expr>>],
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let mut lowered = Vec::with_capacity(fields.len());
@@ -2056,7 +2086,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         signed: bool,
         unit: Option<u32>,
         span: Span,
-        env: &HashMap<String, ValueId>,
+        env: &HashMap<Var, ValueId>,
     ) -> Result<LoweredBitFieldSpec, FatalError> {
         Ok(LoweredBitFieldSpec {
             ty,
@@ -2071,7 +2101,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         size: &Option<BitSize>,
         span: Span,
-        env: &HashMap<String, ValueId>,
+        env: &HashMap<Var, ValueId>,
     ) -> Result<Option<LoweredBitSize>, FatalError> {
         Ok(match size {
             None => None,
@@ -2113,7 +2143,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         span: Span,
         subject: &Spanned<Expr>,
         clauses: &[MatchClause],
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let subject_value = self.lower_expr(subject, env, steps)?;
@@ -2142,7 +2172,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         span: Span,
         arms: &[(Spanned<Expr>, Spanned<Expr>)],
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let block = self.lower_cond_block(span, arms, env.clone())?;
@@ -2156,7 +2186,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         bindings: &[WithBinding],
         body: &Spanned<Expr>,
         else_clauses: &[MatchClause],
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let block = self.lower_with_block(span, bindings, body, else_clauses, env.clone())?;
@@ -2168,7 +2198,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         span: Span,
         arms: &[(Spanned<Expr>, Spanned<Expr>)],
-        mut env: HashMap<String, ValueId>,
+        mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
         let Some((cond, body)) = arms.first() else {
             return Ok(self.halt_block(span, "cond_clause"));
@@ -2212,7 +2242,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         bindings: &[WithBinding],
         body: &Spanned<Expr>,
         else_clauses: &[MatchClause],
-        mut env: HashMap<String, ValueId>,
+        mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
         let Some((binding, rest)) = bindings.split_first() else {
             return self.lower_expr_as_block(body, env);
@@ -2266,7 +2296,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         span: Span,
         failed: ValueId,
         else_clauses: &[MatchClause],
-        env: HashMap<String, ValueId>,
+        env: HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
         if else_clauses.is_empty() {
             return Ok(ExprBlock {
@@ -2308,7 +2338,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         span: Span,
         clauses: &[MatchClause],
         after: Option<&AfterClause>,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         if clauses.is_empty() && after.is_none() {
@@ -2352,7 +2382,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         outcome: &crate::dispatch_matrix::pattern::PatternDispatchOutcome,
         clause: &MatchClause,
-        mut env: HashMap<String, ValueId>,
+        mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprOutcome, FatalError> {
         let arguments = self.bind_outcome_arguments(outcome, &mut env);
         let block = self.lower_expr_as_block(&clause.body, env)?;
@@ -2362,7 +2392,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn bind_outcome_arguments(
         &mut self,
         outcome: &crate::dispatch_matrix::pattern::PatternDispatchOutcome,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
     ) -> Box<[super::super::body::OutcomeArgument]> {
         outcome
             .bindings
@@ -2457,7 +2487,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_dispatch_bindings(
         &mut self,
         plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
-        env: &HashMap<String, ValueId>,
+        env: &HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<DispatchBindings, FatalError> {
         let pinned = plan
@@ -2523,7 +2553,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         clauses: &[MatchClause],
         after: Option<&AfterClause>,
-        env: &HashMap<String, ValueId>,
+        env: &HashMap<Var, ValueId>,
     ) -> Vec<ValueId> {
         let mut free = HashSet::new();
         let mut bound = HashSet::new();
@@ -2545,7 +2575,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         after: &AfterClause,
         timeout: ValueId,
-        env: &HashMap<String, ValueId>,
+        env: &HashMap<Var, ValueId>,
     ) -> Result<ExprReceiveAfter, FatalError> {
         Ok(ExprReceiveAfter {
             span: after.span,
@@ -2574,7 +2604,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         occurrence: crate::ast::LambdaOccurrence,
         span: Span,
         clauses: &[LambdaClause],
-        env: &HashMap<String, ValueId>,
+        env: &HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let value = self.fresh_value();
@@ -3072,7 +3102,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         pattern: &Pattern,
         span: Span,
         source: ValueId,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<(), FatalError> {
         match pattern {
@@ -3190,7 +3220,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         pattern: &Pattern,
         span: Span,
         source: ValueId,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<(), FatalError> {
         match pattern {
@@ -3249,7 +3279,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         entries: &[(Spanned<Pattern>, Spanned<Pattern>)],
         span: Span,
         source: ValueId,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
         with_asserts: bool,
     ) -> Result<(), FatalError> {
@@ -3285,7 +3315,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         fields: &[(String, Spanned<Pattern>)],
         span: Span,
         source: ValueId,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
         with_asserts: bool,
     ) -> Result<(), FatalError> {
@@ -3333,7 +3363,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         fields: &[BitField<Spanned<Pattern>>],
         span: Span,
         source: ValueId,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
         with_asserts: bool,
     ) -> Result<(), FatalError> {
@@ -4253,7 +4283,7 @@ fn child_entries(tail: &LoweredTail) -> Vec<ControlEntryId> {
     }
 }
 
-fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<String> {
+fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<Var> {
     let mut free = HashSet::new();
     for clause in clauses {
         let mut bound = HashSet::new();
@@ -4275,7 +4305,7 @@ fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<String> {
     free
 }
 
-fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<String>) {
+fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<Var>) {
     match pattern {
         Pattern::Var(name) | Pattern::Pinned(name) => {
             bound.insert(name.clone());
@@ -4323,7 +4353,7 @@ fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<String>) {
     }
 }
 
-fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut HashSet<String>) {
+fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
     match expr {
         Expr::Int(_)
         | Expr::Float(_)
@@ -4474,7 +4504,7 @@ fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut 
     }
 }
 
-fn collect_pattern_free_names(pattern: &Pattern, bound: &mut HashSet<String>, free: &mut HashSet<String>) {
+fn collect_pattern_free_names(pattern: &Pattern, bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
     match pattern {
         Pattern::Pinned(name) => {
             if !bound.contains(name) {
@@ -4522,7 +4552,7 @@ fn collect_pattern_free_names(pattern: &Pattern, bound: &mut HashSet<String>, fr
     }
 }
 
-fn collect_match_clause_free_names(clauses: &[MatchClause], bound: &mut HashSet<String>, free: &mut HashSet<String>) {
+fn collect_match_clause_free_names(clauses: &[MatchClause], bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
     for clause in clauses {
         let mut clause_bound = bound.clone();
         collect_pattern_free_names(&clause.pattern.node, &mut clause_bound, free);
@@ -4669,7 +4699,7 @@ fn expr_name(expr: &Expr) -> &'static str {
 ///
 /// Which shapes name a callable is [`Callee`]'s question; the only thing added
 /// here is that a bound local wins over a same-spelled definition.
-fn direct_callee(expr: &Spanned<Expr>, arity: usize, env: &HashMap<String, ValueId>) -> Option<Callee> {
+fn direct_callee(expr: &Spanned<Expr>, arity: usize, env: &HashMap<Var, ValueId>) -> Option<Callee> {
     let mut current = &expr.node;
     loop {
         match current {
