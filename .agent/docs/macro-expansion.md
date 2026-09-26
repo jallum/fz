@@ -331,8 +331,11 @@ It:
    `[__CALLER__, arg1, arg2, ...]`
 3. borrows the quoted source heap's process with `source.lend_process(...)`
 4. runs `ir_interp::run_backend_entry_on_process(...)`
-5. requires the return to be `RuntimeValue::Ref(root)`
-6. wraps that root back into `QuotedSourceRoot` with `source.subroot(root)`
+5. boxes the return onto that same process with `AnyValue::as_any_value_ref(...)` —
+   a heap ref already has this form, and a bare literal (a number, an atom, a
+   string, or a 2-tuple) gets one the same way a scalar argument does, so a
+   macro body may end in `quote do: ...` or in a literal outright
+6. wraps that boxed word back into `QuotedSourceRoot` with `source.subroot(root)`
 
 The returned root is therefore still rooted in the same quoted-source heap as
 the input carrier root.

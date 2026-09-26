@@ -3234,7 +3234,6 @@ impl World {
 
     pub(crate) fn run_macro_on_source_with(
         &mut self,
-        function: FunctionId,
         program: &BackendProgram,
         source: &QuotedSourceRoot,
         caller: AnyValueRef,
@@ -3254,16 +3253,18 @@ impl World {
         }
         let runtime_args =
             crate::ir_interp::encode_macro_entry_inputs(program, &self.types, &self.transport, &semantic_values)?;
-        let value =
-            source.lend_process(|process| run(&mut self.types, &self.transport, program, process, runtime_args))?;
-        match value {
-            RuntimeValue::Ref(root) => Ok(source.subroot(root.raw())),
-            other => Err(format!(
-                "macro {} returned non-source value {}",
-                function.as_u32(),
-                other.render(std::ptr::null_mut())
-            )),
-        }
+        // A macro's result is quoted code, and a literal (a number, an atom,
+        // a string, or a 2-tuple) is quoted code in its own right, the same
+        // as a call node. Box it onto the source heap with the same
+        // conversion the interpreter uses for a scalar argument, while the
+        // process that owns that heap is still on loan, then root the
+        // subtree on the boxed word exactly as it would on a `Ref`.
+        let root = source.lend_process(|process| {
+            let (mut process, value) = run(&mut self.types, &self.transport, program, process, runtime_args);
+            let boxed = value.and_then(|value| value.as_any_value_ref(&mut process as *mut _));
+            (process, boxed)
+        })?;
+        Ok(source.subroot(root))
     }
 
     pub fn define_module(&mut self, id: ModuleId, base: Namespace, interface: ModuleInterface) -> bool {
@@ -3690,14 +3691,12 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
 
     pub(crate) fn run_macro_on_source(
         &mut self,
-        function: FunctionId,
         program: &BackendProgram,
         source: &QuotedSourceRoot,
         caller: AnyValueRef,
         args: &[AnyValueRef],
     ) -> Result<QuotedSourceRoot, String> {
         self.world.run_macro_on_source_with(
-            function,
             program,
             source,
             caller,

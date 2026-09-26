@@ -473,8 +473,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         }
         let root = self.world.macro_root(function);
         let program = self.product_backend_program_for_root(root)?;
-        ExecutionContext::new(&mut self.world, &self.telemetry)
-            .run_macro_on_source(function, &program, source, caller, args)
+        ExecutionContext::new(&mut self.world, &self.telemetry).run_macro_on_source(&program, source, caller, args)
     }
 
     #[cfg(test)]

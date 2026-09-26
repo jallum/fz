@@ -1,0 +1,35 @@
+#---
+# purpose: a macro whose body is a bare literal returns that literal, the same as Elixir -- quote do: 1, a bare 2, an atom, nil, a string, and a 2-tuple
+#---
+defmacro quoted_one() do
+  quote do: 1
+end
+
+defmacro bare_two() do
+  2
+end
+
+defmacro bare_atom() do
+  :ok
+end
+
+defmacro bare_nil() do
+  nil
+end
+
+defmacro bare_string() do
+  "s"
+end
+
+defmacro bare_tuple() do
+  {1, 2}
+end
+
+def main() do
+  assert(quoted_one() == 1, "quote do: 1 returns the literal 1")
+  assert(bare_two() == 2, "a macro body that is a bare 2 returns 2")
+  assert(bare_atom() == :ok, "a macro body that is a bare atom returns that atom")
+  assert(bare_nil() == nil, "a macro body that is bare nil returns nil")
+  assert(bare_string() == "s", "a macro body that is a bare string returns that string")
+  assert(bare_tuple() == {1, 2}, "a macro body that is a bare 2-tuple returns that tuple")
+end

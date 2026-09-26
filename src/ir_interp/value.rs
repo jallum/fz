@@ -113,7 +113,12 @@ impl AnyValue {
         }
     }
 
-    pub(super) fn as_any_value_ref(self, proc: *mut Process) -> Result<AnyValueRef, String> {
+    /// Every `AnyValue` shape has a heap-object form: `Ref` already has one,
+    /// and every scalar shape boxes onto `proc`'s heap the same way
+    /// `as_ref_word` does. A caller that needs a ref word rather than a
+    /// tagged `AnyValueRef`, such as an extern argument slot, still goes
+    /// through `as_ref_word` directly.
+    pub(crate) fn as_any_value_ref(self, proc: *mut Process) -> Result<AnyValueRef, String> {
         match self {
             AnyValue::Null => Ok(AnyValueRef::null()),
             AnyValue::EmptyList => Ok(AnyValueRef::empty_list()),

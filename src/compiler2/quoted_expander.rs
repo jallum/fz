@@ -474,7 +474,7 @@ pub(crate) trait QuotedExpansionCtx {
         let arg_roots = args.iter().map(QuotedSourceCursor::root).collect::<Vec<_>>();
         let (world, tel) = self.split();
         let expanded = super::drive::ExecutionContext::new(world, tel)
-            .run_macro_on_source(function, &program, owner, caller, &arg_roots)
+            .run_macro_on_source(&program, owner, caller, &arg_roots)
             .map_err(|error| {
                 emit_job_diagnostic(tel, Diagnostic::error(codes::LOWER_UNSUPPORTED, error, Span::DUMMY))
             })?;
