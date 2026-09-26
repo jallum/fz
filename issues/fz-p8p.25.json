@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T11:14:09Z",
+  "description": "## Why\nElixir's `var!(v, Context)` (kernel.ex:4882-4900) lets two macros share one variable by naming a context explicitly. After fz-p8p.22, a quoted variable's context is `Macro(FunctionId, expansion ordinal)`, so there is no module-level context for two macros to share. fz-p8p.22 builds only `var!/1` (bind in the caller's context).\n\n## What changes\nDecide what a context name denotes in fz, for example the defining module with no ordinal. Then `var!/2` builds that context through the one var-node constructor. No fixture needs this yet. The first user is the fixture that proves it.\n\n## Done when\nA fixture has two macros sharing a variable through `var!(v, M)`, it runs on all three paths, and the macros guide documents it.",
+  "id": "fz-p8p.25",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 3,
+  "status": "open",
+  "title": "var!/2: a macro names the hygiene context a variable binds in",
+  "type": "feature",
+  "updated_at": "2026-09-26T11:14:09Z"
+}
