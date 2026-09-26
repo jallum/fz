@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T10:49:48Z",
+  "description": "Predict, Measure, Collapse (fz-k8w) was written because the Output Contract Loop was forgotten: rules.md pointed at a 'strategy trigger' in .agent/strategies.md that did not exist. The two strategies run the same loop; PMC added two ideas (the work is part of the contract; evidence discipline -- fixed prediction, discriminating probes) and a lot of process (per-case readers, repeated base checks, gates). Rebuild OCL as Paper First with those ideas, delete both old pages, give every strategies.md entry a 'Use when' trigger, and have rules.md name the trigger directly.",
+  "id": "fz-0t2",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Fold Predict, Measure, Collapse into the Output Contract Loop as Paper First, with use-when triggers",
+  "type": "task",
+  "updated_at": "2026-09-26T10:49:48Z"
+}
