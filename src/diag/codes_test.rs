@@ -24,7 +24,7 @@ fn all_codes_follow_stage_slash_kind_format() {
         MACRO_OWN_MODULE_ITEM_CALL,
         LOWER_UNSUPPORTED,
         LOWER_UNBOUND,
-        TYPE_NO_MATCHING_CLAUSE,
+        TYPE_REDUNDANT_CLAUSE,
         TYPE_NUMERIC_LITERAL_WIDENED,
         SPEC_VIOLATION,
         ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,

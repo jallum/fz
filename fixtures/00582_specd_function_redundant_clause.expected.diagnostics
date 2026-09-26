@@ -1,0 +1,7 @@
+warning[type/redundant-clause]: this clause cannot match because a previous clause at line 6 always matches
+  --> fixtures/00582_specd_function_redundant_clause.fz:4:3
+   |
+4 |   def f(0), do: :zero
+   |   ^^^^^^^^^^^^^^^^^^^ unreachable
+   |
+

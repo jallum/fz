@@ -168,6 +168,7 @@ pub(super) fn plan_entry_dispatch(
     let source_patterns = entry_source_patterns(world, tel, function, &source, &surface)?;
     let namespace = source.namespace;
     let fn_span = surface.span;
+    let redundancy_check = (source_patterns.rows.len() > 1).then(|| source_patterns.clone());
     let mut resolver = super::super::dispatch::SourcePatternResolver {
         world,
         namespace,
@@ -177,8 +178,26 @@ pub(super) fn plan_entry_dispatch(
             Ok(Some(world.guard_dispatch(callee)))
         },
     };
-    let plan = pattern_dispatch_from_source_with_resolver(source_patterns, &mut resolver)
-        .map_err(|error| emit_entry_dispatch_error(tel, world, function, fn_span, error))?;
+    let plan = match pattern_dispatch_from_source_with_resolver(source_patterns, &mut resolver) {
+        Ok(plan) => plan,
+        Err(error) => return Err(emit_entry_dispatch_error(tel, world, function, fn_span, error)),
+    };
+    if let Some(source_patterns) = redundancy_check {
+        let redundant_rows = crate::dispatch_matrix::pattern::source::find_redundant_rows_with_resolver(
+            &source_patterns,
+            &plan,
+            &mut resolver,
+        );
+        for redundant in redundant_rows {
+            let always_matches_span = surface.clauses[redundant.always_matches as usize].span;
+            let always_matches_line = world.source_map().borrow().locate(always_matches_span).line;
+            let diagnostic = super::super::source_diagnostics::redundant_clause_diagnostic(
+                surface.clauses[redundant.body_id as usize].span,
+                always_matches_line,
+            );
+            super::super::drive::ExecutionContext::new(world, tel).emit_warning_once(diagnostic);
+        }
+    }
     let changed = super::super::drive::ExecutionContext::new(world, tel).define_entry_dispatch(function, Rc::new(plan));
     Ok(JobEffects {
         reads: current_uses(reads),

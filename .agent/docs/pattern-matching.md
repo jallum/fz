@@ -318,46 +318,37 @@ means the guard fails, not that the surrounding match halts.
 
 ## Diagnostics
 
-`src/dispatch_matrix/pattern/source.rs` uses the same producer for domain-free
-coverage. It normalizes guards to `true`, compiles the rows to a
-`PatternDispatchPlan`, and walks the `DispatchGraph`:
+A missing clause is not a compile-time diagnostic. A function or `case`/`with`
+whose clauses do not cover every input compiles clean; an input that reaches
+none of them halts at runtime with `:function_clause` or `:case_clause`, the
+same fault Elixir raises for the same program.
 
-- `find_unreachable_rows` reports row body ids that no graph path reaches.
-- `is_inexhaustive` reports whether some path reaches `Fail` for unconstrained
-  inputs.
+What the compiler does flag at compile time is the opposite shape: a clause
+that can *never* run because an earlier clause already matches everything it
+could see. `src/dispatch_matrix/pattern/source.rs` finds this from the
+compiled plan, not from a syntax walk. `find_redundant_rows_with_resolver`
+takes the caller's own already-compiled `PatternDispatchPlan` for the real
+rows — real guards, real annotation preconditions, nothing normalized away —
+and walks the `DispatchGraph` to collect every body id some path still
+reaches. A row whose body id is missing from that set is unreachable; its
+`RedundantRow` also names the earliest earlier row (`always_matches`) whose
+own coverage, once you replay just that prefix plus the redundant row, already
+renders it unreachable on its own. Coverage only grows as earlier rows are
+added, so the first prefix that reproduces the miss is the row responsible for
+it.
 
-Declared function domains use the Types-backed reachability calculator after
-both `FunctionContract` and `EntryDispatch` settle. Each `ContractArrow` keeps
-its parameter row intact; the calculator evaluates that row against the shared
-plan and the function is exhaustive only when every valid row makes `Fail`
-unreachable. It does not union argument columns or enumerate products. Guard
-tests remain conservative, so a guard-false path can still prove fallthrough.
-Each row instantiates its arrow parameters through that arrow's bounds using
-`Types::instantiate`. Dependent bounds close to a fixed point; unbounded or
-cyclic variables remain polymorphic and therefore conservative.
-The traversal keeps branch-local empty/cons facts beside the refined root
-types. The list type lattice does not encode a minimum spine length, so a test
-of a projected tail cannot refine its root; when that projection is already
-known to be a proper list, however, `not empty` proves cons and `not cons`
-proves empty. This makes zero/one/two-plus partitions exhaustive without
-inventing a length type or treating a non-list domain as covered.
-This deterministic closure belongs specifically to
-`FunctionContract::input_domain_rows` for diagnostics. Ordinary dependent-bound
-call matching is a separate unresolved path and must not be inferred from this
-diagnostic behavior.
+Because the check runs on the real compiled plan, a guarded clause is never
+mistaken for redundant — a guard always compiles to a real `on_miss` branch in
+the graph, so a row behind a guard can still fall through to whatever follows
+it — and a parameter annotation that actually partitions the input (`f(x ::
+integer)` beside `f(x :: atom)`) is never mistaken for overlap either; each
+clause's own precondition row is what the plan branches on.
 
-Definition-time diagnostics still walk function bodies immediately. Only a
-declared function's head check is deferred to contract derivation. Functions
-without contracts retain the domain-free check, and an empty contract produced
-after a resolution error does not create a coverage domain.
-
-Runtime-library helpers declare the exact producer-owned boundary they consume;
-coverage does not infer a private helper's domain from whichever activations a
-particular program happened to create. For example, `List.member?/2` accepts a
-list and any search value, `Enum.member_result/3` accepts the two result variants
-published by `Enumerable.member?/2`, and both `Enum.with_index_list` arities
-accept lists. Their empty and cons clauses are therefore total without a
-wildcard that would admit an impossible container or result variant.
+`plan_entry_dispatch` (function clauses) and `compile_match_dispatch` (`case`
+and `with` arms) each run this check once, right after their own plan
+compiles, skipping it when there is only one row. The warning is
+`type/redundant-clause`, worded the way Elixir words the same warning: "this
+clause cannot match because a previous clause at line N always matches".
 
 Diagnostics should not reimplement matching with syntax walkers. If a warning
 depends on dispatch reachability, ask the dispatch graph.

@@ -1790,43 +1790,6 @@ fn run_and_interp_execute_case_and_with_fixtures() {
 }
 
 #[test]
-fn run_and_interp_report_partial_case_and_with_warnings() {
-    let fixture = "fixtures2/behavior/case_tuple_pattern_sequential.fz";
-    let expected = fixture_expected_stdout(fixture);
-    for command in ["run", "interp"] {
-        let out = run_fz2_without_color(&[OsStr::new(command), OsStr::new(fixture)]);
-        assert!(
-            out.status.success(),
-            "fz2 {command} {fixture} should succeed; stdout={:?} stderr={:?}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        assert_eq!(
-            String::from_utf8(out.stdout.clone()).expect("stdout is utf-8"),
-            expected,
-            "fz2 {command} {fixture} should print the expected stdout"
-        );
-        let stderr = String::from_utf8(out.stderr.clone()).expect("stderr is utf-8");
-        assert!(
-            stderr.contains("warning[type/no-matching-clause]: `case` clauses don't cover every input"),
-            "fz2 {command} should warn for partial case clauses; stderr={stderr}"
-        );
-        assert!(
-            stderr.contains("warning[type/no-matching-clause]: `with else` clauses don't cover every input"),
-            "fz2 {command} should warn for partial with else clauses; stderr={stderr}"
-        );
-        assert!(stderr.contains("--> fixtures2/behavior/case_tuple_pattern_sequential.fz:"));
-        assert!(stderr.contains("matched values may fall through here"));
-        assert!(stderr.contains("= note: an input matched by no clause halts with `:case_clause` at runtime"));
-        assert!(stderr.contains("= help: add a wildcard clause `_ -> ...` to cover any remaining input"));
-        assert!(
-            !stderr.contains("\x1b["),
-            "NO_COLOR must disable ANSI escapes; stderr={stderr}"
-        );
-    }
-}
-
-#[test]
 fn build_executes_case_and_with_fixtures() {
     let fixture = "fixtures2/behavior/case_with_total.fz";
     let expected = fixture_expected_stdout(fixture);
@@ -2181,17 +2144,22 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // built on it. Changed outputs fall 253 -> 250 and unchanged
             // outputs fall 37 -> 36 in the same motion; initial runs are
             // untouched.
-            evaluations: 286,
+            // fz-p8p.19: 286 -> 282 evaluations, content-caused 78 -> 74.
+            // The exhaustiveness check that used to run per function head is
+            // gone; redundancy is checked from the compiled dispatch plan
+            // instead, which removes its own formula, wake, and blocked
+            // prerequisite from every function that declared a contract.
+            evaluations: 282,
             runtime_demand_evaluations: 31,
             initial: 208,
-            content_caused: 78,
+            content_caused: 74,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
             changed_outputs: 250,
-            unchanged_outputs: 36,
-            wakes: 77,
-            blocked_completions: 63,
+            unchanged_outputs: 32,
+            wakes: 73,
+            blocked_completions: 59,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );

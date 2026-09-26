@@ -647,11 +647,10 @@ fn function_contract_input_domains_instantiate_top_level_bounded_union() {
         }],
     );
 
-    let rows = contract.input_domain_rows(&mut types);
+    let row = contract.arrows[0].input_domain_row(&mut types);
 
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].len(), 1);
-    assert!(types.is_equivalent(&rows[0][0], &domain));
+    assert_eq!(row.len(), 1);
+    assert!(types.is_equivalent(&row[0], &domain));
 }
 
 #[test]
@@ -673,10 +672,10 @@ fn function_contract_input_domains_instantiate_nested_bounded_variable() {
         }],
     );
 
-    let rows = contract.input_domain_rows(&mut types);
+    let row = contract.arrows[0].input_domain_row(&mut types);
     let expected = types.tuple(&[domain]);
 
-    assert!(types.is_equivalent(&rows[0][0], &expected));
+    assert!(types.is_equivalent(&row[0], &expected));
 }
 
 #[test]
@@ -716,13 +715,13 @@ fn function_contract_input_domains_close_dependent_bounds_without_grounding_unbo
         }],
     );
 
-    let bounded_rows = bounded.input_domain_rows(&mut types);
-    let unbounded_rows = unbounded.input_domain_rows(&mut types);
-    let cyclic_rows = cyclic.input_domain_rows(&mut types);
+    let bounded_row = bounded.arrows[0].input_domain_row(&mut types);
+    let unbounded_row = unbounded.arrows[0].input_domain_row(&mut types);
+    let cyclic_row = cyclic.arrows[0].input_domain_row(&mut types);
 
-    assert!(types.is_equivalent(&bounded_rows[0][0], &domain));
-    assert!(types.has_vars(&unbounded_rows[0][0]));
-    assert!(types.is_equivalent(&cyclic_rows[0][0], &outer_ty));
+    assert!(types.is_equivalent(&bounded_row[0], &domain));
+    assert!(types.has_vars(&unbounded_row[0]));
+    assert!(types.is_equivalent(&cyclic_row[0], &outer_ty));
 }
 
 #[test]
