@@ -47,8 +47,6 @@ only the keys below:
 - `oracle:` — relative path to a sibling Elixir twin whose stdout owns
   `expected.txt`.
 - `timeout.<path>_secs:` — per-path wall-clock hang-guard override.
-- `budget.<namespace>.<metric>:` — a compiler-shape target counter (see Dump
-  budgets).
 
 Fixtures already live in that comment-frontmatter form:
 
@@ -273,10 +271,9 @@ A fixture pins its claim in the most direct medium for what it tests.
 
 ## Compiler-Shape Signals
 
-The old dump-budget trial and old-compiler stats dump path are gone with the old
-compiler front door. New compiler-shape contracts should use compiler2
-telemetry, `metrics.*` frontmatter, or explicit compiler2 dump artifacts tied to
-the path under test.
+Compiler-shape claims are compiler2 contracts: `assert.metric.*` and
+`assert.edge:` frontmatter, checked from compiler2 telemetry and canonical
+call-edge facts (see below).
 
 ## Fixtures2 Frontmatter
 
@@ -289,7 +286,7 @@ build can reach it.
 Compiler2 fixtures live under `fixtures2/`. Their source-frontmatter can carry
 two independent kinds of intent:
 
-- behavioural matrix metadata (`paths`, `expect`, `budget.*`, etc.)
+- behavioural matrix metadata (`kind`, `expect`, `defer`, `timeout.*`, etc.)
 - compiler contract metadata (`root`, `assert.metric.*`, `assert.edge`, snapshots)
 
 The shared grammar is intentionally small:
@@ -299,7 +296,6 @@ The shared grammar is intentionally small:
   behavioural matrix policy knobs, using the same meanings as the old
   directory-shaped fixtures.
 - `timeout.<path>_secs:` — behavioural matrix hang-guard overrides.
-- `budget.<namespace>.<metric>:` — behavioural compiler-shape budgets.
 - `root:` — compiler2 root to drive, written as `name/arity`.
 - `assert.metric.<name>:` — a numeric invariant. The current built-in names are
   `semantic.activations`, `semantic.executables`, `semantic.callsites`,
@@ -314,7 +310,7 @@ snapshots that would be noisy inline.
 
 A fixtures2 file participates in the behavioural matrix when it lives under
 `fixtures2/behavior/`; frontmatter then contributes policy (`defer:`,
-`expect:`, budgets, timeouts, etc.) and the filename may narrow the default
+`expect:`, timeouts, etc.) and the filename may narrow the default
 route set. It participates in the compiler-contract
 harness when it declares compiler keys such as `root:` or `assert.metric.*`.
 One file may do either or both.
@@ -347,5 +343,5 @@ assertion machinery a fixture uses is itself fz source under `lib/`.
 through the execution context and has a `never` return contract; that is why a
 failed assertion is a nonzero exit on every path without requiring the
 interpreter to abort its host. A fixture that exercises a runtime-library
-function both proves the function and (via budgets and allocation goldens) pins
-its compiled shape and allocation floor.
+function both proves the function and (via allocation goldens) pins its
+allocation floor.

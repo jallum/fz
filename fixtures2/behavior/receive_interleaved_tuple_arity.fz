@@ -1,48 +1,6 @@
 #---
 # purpose: "receive whose clauses interleave tuple-3 / atom / tuple-3 — matrix shares the tuple-arity test across the non-adjacent tuple clauses"
-# budget.codegen.functions: 37
-# budget.codegen.instructions: 801
-# budget.planner.worklist_pops: 26
-# budget.planner.walk_calls: 26
-# budget.planner.type_fn_calls: 26
-# budget.planner.matcher_specs: 0
-# budget.planner.vars: 70
-# budget.planner.blocks: 26
-# budget.planner.stmts: 20
-# budget.planner.dispatches: 36
 #---
-#
-# ## `budget.codegen.functions` re-pricing
-#
-# `budget.codegen.functions` is `fz.codegen.define_function.stop` from
-# `fz2 --emit=stats run <this fixture>`. It reads 37.
-#
-# The argument of the final `dbg` is a 3-tuple whose every position is
-# `:unknown | any`, so the lattice carries it as EIGHT clauses and the callsite
-# settles eight `Kernel.dbg/1` arms (and eight `Kernel.fz_dbg_value/1` arms
-# behind them). fz-kdt.119 gave the tuple test a sub-predicate per position, so
-# those eight stopped being one question and each became a destination: the
-# number went 29 -> 35 -> 49, the last move being those arms becoming live.
-# Minting a specialization per clause for a callee that reads no position is
-# waste, and fz-kdt.140 owns it -- the 2^arity product is still minted.
-#
-# What fz-kdt.143 removes is the DISPATCH over them, and with it the demand for
-# the bodies. `{any, any, any}` is the same callee on a surface that strictly
-# contains each sibling's, asking a question that admits everything theirs
-# admits, so it stands in for all seven; and for the six MIXED clauses the seat
-# would never put the sibling first, because a sub-position holding `any`
-# against `any` is an erasing overlap and coverage then demands whole-tuple
-# containment, which fails. Those six are dropped. `{:unknown, :unknown,
-# :unknown}` survives -- it overlaps erasingly nowhere, so coverage runs both
-# ways and precision seats it first -- and the callsite tests TWO arms instead
-# of eight. Twelve executables lose their only caller (six `Kernel.dbg/1`, six
-# `Kernel.fz_dbg_value/1`): 49 -> 37 codegen functions, 25 -> 13 executables in
-# the backend program.
-#
-# The other nine `budget.*` keys on this fixture have no producer anywhere in
-# compiler2 -- they name a "planner" that does not exist -- and fz-kdt.139 owns
-# removing them corpus-wide. Nothing enforces any of the ten; this one is
-# reproducible by the recipe above, and that is the whole of its standing.
 #
 # # receive_interleaved_tuple_arity
 #

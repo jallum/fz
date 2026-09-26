@@ -357,3 +357,113 @@ fn gc_preserves_a_suffixs_offset() {
     assert_eq!(moved.bit_len(), (200 - 70) * 8);
     assert_eq!(unsafe { *moved.bytes_ptr() }, 70);
 }
+
+/// fz-5xp.60 — a ProcBin stub holds its SharedBin's address in word 0, and
+/// that is the word Cheney overwrites with a `TAG_FWD` (0x8) forwarding
+/// marker. At 8-byte alignment half of all SharedBin addresses end in 8 and
+/// a LIVE stub reads as forwarded, so the sweep treats the SharedBin itself
+/// as a to-space stub and writes into it. 16-alignment is what makes a real
+/// pointer and a tag distinguishable.
+#[test]
+fn a_shared_bin_address_is_never_mistakable_for_a_forwarding_marker() {
+    assert_eq!(align_of::<SharedBin>(), 16);
+    // Many at once: at 8-alignment about half of these would end in 8.
+    let bins: Vec<SharedBinHandle> = (0..64u8).map(|i| SharedBinHandle::from_bytes(&[i; 8], 64)).collect();
+    for bin in &bins {
+        let addr = bin.as_raw() as u64;
+        assert_eq!(addr % 16, 0, "SharedBin at {addr:#x} is not 16-aligned");
+        assert_ne!(addr & TAG_MASK, TAG_FWD);
+    }
+}
+
+// ===== fz-q8d.3 — loom verification of retain/release ordering ==============
+//
+// Enabled only under `RUSTFLAGS="--cfg loom"`. The two-thread model
+// constructs a SharedBin with an observed destructor, spawns two children that
+// each retain+release, then the "main" thread performs the final
+// release. Across every legal interleaving loom can produce, the test
+// destructor must fire exactly once.
+//
+// Run: `RUSTFLAGS="--cfg loom" cargo test --release -p fz-runtime loom_`.
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use super::super::*;
+    use loom::sync::Arc;
+    use loom::sync::atomic::{AtomicBool, Ordering as LoomOrdering};
+
+    // Destructor for the loom test sets a flag on a loom-instrumented
+    // `AtomicBool` handed out via the thread-local `LOOM_FLAG` slot. The
+    // model asserts the destructor fires exactly once per iteration.
+    loom::thread_local! {
+        static LOOM_FLAG: std::cell::RefCell<Option<Arc<AtomicBool>>> =
+            std::cell::RefCell::new(None);
+    }
+
+    unsafe extern "C" fn loom_dtor(_p: *mut SharedBin) {
+        LOOM_FLAG.with(|c| {
+            let flag = c.borrow();
+            let f = flag.as_ref().expect("LOOM_FLAG not installed");
+            // Use SeqCst so loom treats the destructor invocation as a
+            // single, observable event in the model.
+            let prev = f.swap(true, LoomOrdering::SeqCst);
+            assert!(!prev, "destructor fired more than once");
+        });
+    }
+
+    fn install_loom_flag(flag: Arc<AtomicBool>) {
+        LOOM_FLAG.with(|c| *c.borrow_mut() = Some(flag));
+    }
+
+    /// Build a SharedBin manually with `loom_dtor` installed and
+    /// `refcount = 1`. Returns the raw pointer. The byte buffer is a
+    /// constant we never free — loom_dtor doesn't reclaim it; the bin
+    /// itself is also leaked at end of model iteration. Each loom
+    /// model run allocates a fresh one, which is acceptable: loom
+    /// runs are tens of thousands of iterations, each allocating one
+    /// 40-byte bin and one Box that loom_dtor leaves intact.
+    fn build_loom_sharedbin() -> *mut SharedBin {
+        static PAYLOAD: [u8; 4] = [0, 0, 0, 0];
+        let bin = Box::new(SharedBin {
+            refcount: AtomicUsize::new(1),
+            bit_len: 32,
+            bytes_ptr: PAYLOAD.as_ptr(),
+            bytes_len: PAYLOAD.len(),
+            destructor: loom_dtor,
+        });
+        Box::into_raw(bin)
+    }
+
+    #[test]
+    fn loom_retain_release_two_threads() {
+        loom::model(|| {
+            let flag = Arc::new(AtomicBool::new(false));
+            install_loom_flag(flag.clone());
+            let p = build_loom_sharedbin();
+            let p_addr = p as usize;
+
+            let f1 = flag.clone();
+            let t1 = loom::thread::spawn(move || {
+                install_loom_flag(f1);
+                let p = p_addr as *mut SharedBin;
+                unsafe {
+                    shared_bin_retain(p);
+                    shared_bin_release(p);
+                }
+            });
+            let f2 = flag.clone();
+            let t2 = loom::thread::spawn(move || {
+                install_loom_flag(f2);
+                let p = p_addr as *mut SharedBin;
+                unsafe {
+                    shared_bin_retain(p);
+                    shared_bin_release(p);
+                }
+            });
+            t1.join().unwrap();
+            t2.join().unwrap();
+            // Main thread's final release fires the destructor.
+            unsafe { shared_bin_release(p_addr as *mut SharedBin) };
+            assert!(flag.load(LoomOrdering::SeqCst), "destructor must fire on last release");
+        });
+    }
+}

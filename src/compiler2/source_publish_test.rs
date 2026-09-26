@@ -1,10 +1,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::quoted_surface::read_compiler_fragment_surface;
-use super::source_publish::{ScopePublication, publish_scope};
-use super::source_test::quoted_tokens;
-use super::{
+use super::super::quoted_surface::read_compiler_fragment_surface;
+use super::super::source_publish::{ScopePublication, publish_scope};
+use super::super::source_test::quoted_tokens;
+use super::super::{
     DriveOutcome, Job, ModuleId, Namespace, NamespaceSymbol, QuotedSourceBuilder, QuotedSourceHeap,
     QuotedSourceMetadata, QuotedSourceRoot, ScopeSnapshot, World, parse_quoted_program,
 };
@@ -50,7 +50,7 @@ fn root_list(builder: &QuotedSourceBuilder, items: &[fz_runtime::any_value::AnyV
 
 #[derive(Clone)]
 struct MacroExpansionRecord {
-    function: super::FunctionId,
+    function: super::super::FunctionId,
 }
 
 struct MacroExpansionCapture(Rc<RefCell<Vec<MacroExpansionRecord>>>);
@@ -62,7 +62,7 @@ impl MacroExpansionCapture {
 
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let records = Rc::clone(&self.0);
-        telemetry.attach_raw_event3::<World, super::FunctionId, QuotedSourceRoot, _>(
+        telemetry.attach_raw_event3::<World, super::super::FunctionId, QuotedSourceRoot, _>(
             &["fz", "compiler2", "macro", "expanded"],
             move |_, _, _, _, function, _| {
                 records.borrow_mut().push(MacroExpansionRecord { function: *function });
@@ -78,7 +78,7 @@ impl MacroExpansionCapture {
 fn publish_compiler_fragment_scope(
     world: &mut World,
     tel: &ConfiguredTelemetry,
-    owner: super::SourceOwner,
+    owner: super::super::SourceOwner,
     root: &QuotedSourceRoot,
 ) -> ScopePublication {
     let source_map = world.source_map();
@@ -94,7 +94,11 @@ fn publish_compiler_fragment_scope(
     .expect("publish compiler fragment scope")
 }
 
-fn grouped_function_root(world: &World, owner: super::SourceOwner, tel: &ConfiguredTelemetry) -> QuotedSourceRoot {
+fn grouped_function_root(
+    world: &World,
+    owner: super::super::SourceOwner,
+    tel: &ConfiguredTelemetry,
+) -> QuotedSourceRoot {
     let source_map = world.source_map();
     let version = world.source_version(owner).expect("submitted source version");
     let root = parse_quoted_program(&source_map.borrow(), version, tel).expect("quoted parse");
@@ -246,7 +250,7 @@ fn compiler_service_define_groups_single_function_source_before_define_function(
     );
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::super::drive::ExecutionContext::new(&mut world, &tel).drive(),
             DriveOutcome::Resolved
         ),
         "Fz.Compiler.define should group a single function form before DefineFunction decodes it",
@@ -281,7 +285,7 @@ def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
     assert!(direct_world.demand(Job::DefineFunction(direct_id)));
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut direct_world, &tel).drive(),
+            super::super::drive::ExecutionContext::new(&mut direct_world, &tel).drive(),
             DriveOutcome::Resolved
         ),
         "raw grouped compiler fragments should decode long procbin-backed @doc payloads"
@@ -295,7 +299,7 @@ def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
         .project_env_value(
             &builder,
             ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()),
-            super::QuotedLexicalContextKind::Caller,
+            super::super::QuotedLexicalContextKind::Caller,
         )
         .expect("__CALLER__ projection");
     let service_root = builder
@@ -311,7 +315,7 @@ def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
     assert!(service_world.demand(Job::DefineFunction(service_id)));
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut service_world, &tel).drive(),
+            super::super::drive::ExecutionContext::new(&mut service_world, &tel).drive(),
             DriveOutcome::Resolved
         ),
         "Fz.Compiler.define should preserve long procbin-backed @doc payloads across the compiler-service boundary"
@@ -395,7 +399,7 @@ def main(), do: answer()
     assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::super::drive::ExecutionContext::new(&mut world, &tel).drive(),
             DriveOutcome::Resolved
         ),
         "source publication should expand item macros and apply returned source forms",
@@ -450,7 +454,7 @@ def main(), do: answer()
     assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::super::drive::ExecutionContext::new(&mut world, &tel).drive(),
             DriveOutcome::Resolved
         ),
         "item macros returning raw compiler fragments should publish those definitions"
@@ -477,12 +481,12 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
     macro_expansions.install(&tel);
     let expanded_functions = Rc::new(RefCell::new(Vec::new()));
     let expanded_function_sink = Rc::clone(&expanded_functions);
-    tel.attach_raw_event2::<World, super::FunctionId, _>(
+    tel.attach_raw_event2::<World, super::super::FunctionId, _>(
         &["fz", "compiler2", "function", "source", "expanded"],
         move |_, _, _, _, function| expanded_function_sink.borrow_mut().push(*function),
     );
     let mut world = World::new();
-    let mut sessions = super::pull::ProductSessions::default();
+    let mut sessions = super::super::pull::ProductSessions::default();
     let code = world.submit_code(
         Some("macro_inc.fz".to_string()),
         include_str!("../../fixtures2/behavior/macro_inc.fz").to_string(),
@@ -491,7 +495,7 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
     assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
     assert!(
         matches!(
-            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+            super::super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "source publication should complete without expanding ordinary function bodies",
@@ -539,7 +543,7 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
     );
     assert!(
         matches!(
-            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+            super::super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "demanding the function should stage its expanded source and define it",
@@ -583,7 +587,7 @@ fn source_publication_defers_source_sugar_rewrite_until_function_demand() {
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = World::new();
-    let mut sessions = super::pull::ProductSessions::default();
+    let mut sessions = super::super::pull::ProductSessions::default();
     let code = world.submit_code(
         Some("source-sugar.fz".to_string()),
         r#"
@@ -611,7 +615,7 @@ end
     );
     assert!(
         matches!(
-            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+            super::super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "source publication should not rewrite source-only sugars inside ordinary functions",
@@ -636,7 +640,7 @@ end
     );
     assert!(
         matches!(
-            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+            super::super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "demanding the function should rewrite sugars into staged expanded source",
@@ -667,33 +671,33 @@ end
 fn definition_heads_are_not_source_sugar_but_their_bodies_are() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
-    let mut sessions = super::pull::ProductSessions::default();
+    let mut sessions = super::super::pull::ProductSessions::default();
     let code = world.submit_code(
         Some("operator-definition-expansion.fz".to_string()),
         "defmodule Join do\n  def left <> right, do: left <> right\nend\n".to_string(),
     );
 
     assert!(matches!(
-        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        super::super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         DriveOutcome::Resolved
     ));
     assert!(world.demand(Job::ScopeCode(code)));
     assert!(matches!(
-        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        super::super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         DriveOutcome::Resolved
     ));
 
     let join_module = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("Join").unwrap());
     assert!(world.demand(Job::DefineModule(join_module)));
     assert!(matches!(
-        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        super::super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         DriveOutcome::Resolved
     ));
 
     let join = world.reference_function(join_module, "<>", 2);
     assert!(world.demand(Job::DefineFunction(join)));
     assert!(matches!(
-        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        super::super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         DriveOutcome::Resolved
     ));
     assert!(world.function_defined_revision(join).is_some());
@@ -709,4 +713,108 @@ fn definition_heads_are_not_source_sugar_but_their_bodies_are() {
     );
     assert!(tokens.iter().any(|token| token == "Kernel"));
     assert!(!tokens.iter().any(|token| token == "fz_binary_concat"));
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::super::*;
+
+    #[test]
+    fn protocol_impl_identity_preserves_the_protocol_target_boundary() {
+        let mut world = World::new();
+        let a = world.reference_module(ModuleName::parse_dotted("A").unwrap());
+        let bc = world.reference_module(ModuleName::parse_dotted("B.C").unwrap());
+        let ab = world.reference_module(ModuleName::parse_dotted("A.B").unwrap());
+        let c = world.reference_module(ModuleName::parse_dotted("C").unwrap());
+        let named = world.reference_module(ModuleName::parse_dotted("A.B.C").unwrap());
+        let left = world.reference_protocol_impl_module(a, bc);
+        let right = world.reference_protocol_impl_module(ab, c);
+        assert_ne!(left, right, "the protocol/target boundary is part of module identity");
+        assert_ne!(left, named, "a named module cannot own an implementation's source");
+        assert_ne!(right, named);
+        assert_eq!(left, world.reference_protocol_impl_module(a, bc));
+        assert!(
+            world.module_name(left).is_none(),
+            "an implementation has no named lookup path"
+        );
+        assert!(world.module_name(right).is_none());
+        let left_function = world.reference_function(left, "val", 1);
+        let right_function = world.reference_function(right, "val", 1);
+        let left = &world.function_ref(left_function).denotation;
+        let right = &world.function_ref(right_function).denotation;
+        assert_eq!(left.label(), right.label(), "display labels may collide");
+        assert_ne!(left.semantic_cmp(right), std::cmp::Ordering::Equal);
+        let table = vec![
+            (fz_runtime::any_value::ClosureDenotationId::user(0), left.clone()),
+            (fz_runtime::any_value::ClosureDenotationId::user(1), right.clone()),
+        ];
+        let bytes = fz_runtime::function_denotation::encode_closure_denotations(&table).unwrap();
+        assert_eq!(
+            fz_runtime::function_denotation::decode_closure_denotations(&bytes).unwrap(),
+            table
+        );
+    }
+
+    #[test]
+    fn module_reservation_and_definition_preserve_the_same_source_path() {
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let mut sources = crate::source::SourceMap::new();
+        let version = sources.add_code(Some("path.fz"), "defmodule A.B do\nend\n");
+        let source = super::super::super::parse_quoted_program(&sources, version, &tel).unwrap();
+        let raw = super::super::super::quoted_surface::read_scope_surface(&source, &sources).unwrap();
+        let ScopeForm::MacroCall(call) = &raw.forms[0] else {
+            panic!("source module macro");
+        };
+        let Some(ReservedSourceDefinition::Module { name: reserved }) =
+            reserved_source_definition(&call.source, &sources).unwrap()
+        else {
+            panic!("reserved module");
+        };
+        let expanded = super::super::super::quoted_surface::read_compiler_fragment_surface(&source, &sources).unwrap();
+        let ScopeForm::Module(module) = &expanded.forms[0] else {
+            panic!("decoded module");
+        };
+        let expected = ModuleName::from_segments(vec!["A".into(), "B".into()]);
+        assert_eq!(reserved, expected);
+        assert_eq!(module.name, expected);
+    }
+
+    #[test]
+    fn declared_and_protocol_impl_modules_preserve_full_typed_paths() {
+        let mut world = World::new();
+        let parent = world.reference_module(ModuleName::from_segments(vec!["Parent".into()]));
+        let flat = ModuleName::from_segments(vec!["A.B".into()]);
+        let nested = ModuleName::from_segments(vec!["A".into(), "B".into()]);
+        let flat_id = reference_declared_module(&mut world, parent, &flat);
+        let nested_id = reference_declared_module(&mut world, parent, &nested);
+        assert_ne!(flat_id, nested_id);
+        assert_eq!(
+            world.module_name(flat_id).unwrap().dotted(),
+            world.module_name(nested_id).unwrap().dotted()
+        );
+
+        let protocol = world.reference_module(ModuleName::from_segments(vec!["Protocol".into()]));
+        let left = world.reference_module(ModuleName::from_segments(vec!["Left".into(), "Box".into()]));
+        let right = world.reference_module(ModuleName::from_segments(vec!["Right".into(), "Box".into()]));
+        let left_impl = world.reference_protocol_impl_module(protocol, left);
+        let right_impl = world.reference_protocol_impl_module(protocol, right);
+        assert_ne!(
+            left_impl, right_impl,
+            "targets sharing a local name cannot alias an impl module"
+        );
+        assert_eq!(
+            world.module_denotation(left_impl).unwrap(),
+            &crate::modules::identity::ModuleDenotation::ProtocolImpl {
+                protocol: world.module_name(protocol).unwrap().clone(),
+                target: world.module_name(left).unwrap().clone()
+            }
+        );
+        assert_eq!(
+            world.module_denotation(right_impl).unwrap(),
+            &crate::modules::identity::ModuleDenotation::ProtocolImpl {
+                protocol: world.module_name(protocol).unwrap().clone(),
+                target: world.module_name(right).unwrap().clone()
+            }
+        );
+    }
 }

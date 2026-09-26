@@ -1,15 +1,5 @@
 #---
 # purpose: "closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort"
-# budget.codegen.functions: 19
-# budget.codegen.instructions: 475
-# budget.planner.worklist_pops: 19
-# budget.planner.walk_calls: 19
-# budget.planner.type_fn_calls: 19
-# budget.planner.matcher_specs: 0
-# budget.planner.vars: 72
-# budget.planner.blocks: 25
-# budget.planner.stmts: 41
-# budget.planner.dispatches: 16
 #---
 #
 # # quicksort

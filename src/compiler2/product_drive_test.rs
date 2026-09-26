@@ -28,19 +28,19 @@
 //! test-only budget seam (`product_drive.rs`). The retained production drive
 //! calls the same inner loop with the real 50,000-job budgets.
 
-use super::World;
-use super::drive::Job;
-use super::drive::{DependencyKey, FactKey};
-use super::dump::DumpStage;
-use super::facts::FactUse;
-use super::identity::{ExecutableNeed, RootId};
-use super::product_drive::ProductDriveError;
-use super::pull::{
+use super::super::World;
+use super::super::drive::Job;
+use super::super::drive::{DependencyKey, FactKey};
+use super::super::dump::DumpStage;
+use super::super::facts::FactUse;
+use super::super::identity::{ExecutableNeed, RootId};
+use super::super::product_drive::ProductDriveError;
+use super::super::pull::{
     ProductKey, ProductProducers, ProductSettlement, ProductValue, PullOutcome, PullSession, PullWait,
     WorldProductProducers,
 };
-use super::scheduler::{DriveOutcome, FatalError};
-use super::{CodeSubmission, Compiler2, RootSubmission};
+use super::super::scheduler::{DriveOutcome, FatalError};
+use super::super::{CodeSubmission, Compiler2, RootSubmission};
 use crate::modules::identity::ModuleName;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 
@@ -52,22 +52,22 @@ fn drive_retained_backend_fatal(
     world: &mut World,
     tel: &ConfiguredTelemetry,
     root: RootId,
-) -> Result<std::rc::Rc<super::BackendProgram>, FatalError> {
-    let mut sessions = super::pull::ProductSessions::default();
-    super::product_drive::with_retained_root_request(
+) -> Result<std::rc::Rc<super::super::BackendProgram>, FatalError> {
+    let mut sessions = super::super::pull::ProductSessions::default();
+    super::super::product_drive::with_retained_root_request(
         world,
         tel,
         &mut sessions,
         root,
         |world, tel, sessions, driver, _| {
-            super::product_drive::drive_active_root_backend_product(world, tel, sessions, root, driver)
+            super::super::product_drive::drive_active_root_backend_product(world, tel, sessions, root, driver)
         },
     )
 }
 
 fn apply_world_fact_movements(
-    driver: &mut super::pull::ProductDriver<'_, ConfiguredTelemetry>,
-    movements: &[super::FactMovement<DependencyKey>],
+    driver: &mut super::super::pull::ProductDriver<'_, ConfiguredTelemetry>,
+    movements: &[super::super::FactMovement<DependencyKey>],
 ) {
     let facts = movements
         .iter()
@@ -75,7 +75,7 @@ fn apply_world_fact_movements(
             let DependencyKey::Fact(key) = &movement.key else {
                 panic!("this semantic completion must move only World facts");
             };
-            super::FactMovement {
+            super::super::FactMovement {
                 key: key.clone(),
                 state: movement.state,
             }
@@ -97,17 +97,17 @@ fn some_fact() -> FactUse<FactKey> {
 }
 
 struct FailingNativeProducers {
-    types: super::Types,
-    backend: std::rc::Rc<super::BackendProgram>,
+    types: super::super::Types,
+    backend: std::rc::Rc<super::super::BackendProgram>,
     fail_once: bool,
 }
 
 impl ProductProducers for FailingNativeProducers {
-    fn product_types(&self) -> &super::Types {
+    fn product_types(&self) -> &super::super::Types {
         &self.types
     }
 
-    fn produce(&mut self, context: &mut super::pull::ProductReadContext<'_>, key: &ProductKey) -> PullOutcome {
+    fn produce(&mut self, context: &mut super::super::pull::ProductReadContext<'_>, key: &ProductKey) -> PullOutcome {
         let telemetry = ConfiguredTelemetry::new();
         match key {
             ProductKey::RootBackendProduct(_) => {
@@ -124,13 +124,15 @@ impl ProductProducers for FailingNativeProducers {
                 if std::mem::take(&mut self.fail_once) {
                     PullOutcome::Failed
                 } else {
-                    PullOutcome::Produced(ProductValue::NativeProgram(std::rc::Rc::new(super::NativeProgram {
-                        entry: crate::fz_ir::FnId(0),
-                        module: crate::fz_ir::Module::default(),
-                        executable_entries: Vec::new(),
-                        bodies: Vec::new(),
-                        callable_boundaries: Vec::new(),
-                    })))
+                    PullOutcome::Produced(ProductValue::NativeProgram(std::rc::Rc::new(
+                        super::super::NativeProgram {
+                            entry: crate::fz_ir::FnId(0),
+                            module: crate::fz_ir::Module::default(),
+                            executable_entries: Vec::new(),
+                            bodies: Vec::new(),
+                            callable_boundaries: Vec::new(),
+                        },
+                    )))
                 }
             }
             key => panic!("scripted native request reached unrelated product {key:?}"),
@@ -144,7 +146,7 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
     let tel = ConfiguredTelemetry::new();
     let backend_requests = std::rc::Rc::new(std::cell::Cell::new(0));
     let observed_backend_requests = std::rc::Rc::clone(&backend_requests);
-    tel.attach_raw_event2::<ProductKey, super::pull::ProductRequestId, _>(
+    tel.attach_raw_event2::<ProductKey, super::super::pull::ProductRequestId, _>(
         &["fz", "compiler2", "pull", "product", "requested"],
         move |_, _, _, key, _| {
             if key == &ProductKey::RootBackendProduct(root) {
@@ -159,21 +161,21 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
         move |_, _, _, session| observed_finished.borrow_mut().push(session.id()),
     );
     let mut world = World::new();
-    let mut sessions = super::pull::ProductSessions::default();
-    let backend = std::rc::Rc::new(super::BackendProgram::empty_for_test());
+    let mut sessions = super::super::pull::ProductSessions::default();
+    let backend = std::rc::Rc::new(super::super::BackendProgram::empty_for_test());
     let mut producers = FailingNativeProducers {
-        types: super::Types::new(),
+        types: super::super::Types::new(),
         backend: std::rc::Rc::clone(&backend),
         fail_once: true,
     };
-    let failed = super::product_drive::with_retained_root_request(
+    let failed = super::super::product_drive::with_retained_root_request(
         &mut world,
         &tel,
         &mut sessions,
         root,
         |world, tel, sessions, driver, retained| {
             assert!(!retained);
-            super::product_drive::drive_root_product_with_producers::<_, String>(
+            super::super::product_drive::drive_root_product_with_producers::<_, String>(
                 world,
                 tel,
                 root,
@@ -198,14 +200,14 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
     assert!(std::rc::Rc::ptr_eq(answer, &backend));
     drop(session);
 
-    let retry = super::product_drive::with_retained_root_request(
+    let retry = super::super::product_drive::with_retained_root_request(
         &mut world,
         &tel,
         &mut sessions,
         root,
         |world, tel, sessions, driver, retained| {
             assert!(retained);
-            super::product_drive::drive_root_product_with_producers::<_, String>(
+            super::super::product_drive::drive_root_product_with_producers::<_, String>(
                 world,
                 tel,
                 root,
@@ -239,7 +241,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let tel = ConfiguredTelemetry::new();
     let evaluations = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(ProductKey, PullOutcome)>::new()));
     let observed_evaluations = std::rc::Rc::clone(&evaluations);
-    tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, PullOutcome, _>(
+    tel.attach_raw_event3::<ProductKey, super::super::pull::ProductRequestId, PullOutcome, _>(
         &["fz", "compiler2", "pull", "product", "evaluated"],
         move |_, _, _, key, _, outcome| observed_evaluations.borrow_mut().push((key.clone(), outcome.clone())),
     );
@@ -251,7 +253,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     );
     let lowerings = std::rc::Rc::new(std::cell::Cell::new(0));
     let observed_lowerings = std::rc::Rc::clone(&lowerings);
-    tel.attach_raw_event2::<RootId, super::BackendProgram, _>(
+    tel.attach_raw_event2::<RootId, super::super::BackendProgram, _>(
         &["fz", "compiler2", "native_program", "list_retention"],
         move |_, _, _, _, _| observed_lowerings.set(observed_lowerings.get() + 1),
     );
@@ -272,7 +274,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let cold_work = compiler.world().work_start_tally().delta_since(before_cold_work);
     assert_eq!(
         cold_work,
-        super::WorkStartTally {
+        super::super::WorkStartTally {
             ignition: 0,
             // Publishing a function's source from the walk that scoped it
             // removes a wake and a blocked-waiter expansion per reached body.
@@ -355,9 +357,9 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let unreachable_work = compiler.world().work_start_tally().delta_since(before_unreachable_work);
     assert_eq!(
         unreachable_work,
-        super::WorkStartTally {
+        super::super::WorkStartTally {
             ignition: 2,
-            ..super::WorkStartTally::default()
+            ..super::super::WorkStartTally::default()
         },
         "an unreachable edit starts only its two source-ingestion jobs",
     );
@@ -377,12 +379,12 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         .delta_since(before_reached_backend_work);
     assert_eq!(
         reached_backend_work,
-        super::WorkStartTally {
+        super::super::WorkStartTally {
             ignition: 2,
             // The re-scope publishes the replaced source itself, so the edit no
             // longer wakes a separate copy job on its way to the body.
             changed_revision_wake: 19,
-            ..super::WorkStartTally::default()
+            ..super::super::WorkStartTally::default()
         },
         "a reached edit starts source ingestion and only exact changed-revision readers",
     );
@@ -444,7 +446,7 @@ fn jit_and_aot_share_one_retained_native_product() {
     let tel = ConfiguredTelemetry::new();
     let lowerings = std::rc::Rc::new(std::cell::Cell::new(0));
     let observed = std::rc::Rc::clone(&lowerings);
-    tel.attach_raw_event2::<RootId, super::BackendProgram, _>(
+    tel.attach_raw_event2::<RootId, super::super::BackendProgram, _>(
         &["fz", "compiler2", "native_program", "list_retention"],
         move |_, _, _, _, _| observed.set(observed.get() + 1),
     );
@@ -477,7 +479,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     let tel = ConfiguredTelemetry::new();
     let product_settlements = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(ProductKey, ProductSettlement)>::new()));
     let observed_product_settlements = std::rc::Rc::clone(&product_settlements);
-    tel.attach_raw_event3::<ProductKey, super::pull::ProductValue, ProductSettlement, _>(
+    tel.attach_raw_event3::<ProductKey, super::super::pull::ProductValue, ProductSettlement, _>(
         &["fz", "compiler2", "pull", "product", "settled"],
         move |_, _, _, product, _, settlement| {
             observed_product_settlements
@@ -485,14 +487,14 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
                 .push((product.clone(), *settlement));
         },
     );
-    let runtime_demand_runs = std::rc::Rc::new(std::cell::RefCell::new(Vec::<super::ExecutableKey>::new()));
+    let runtime_demand_runs = std::rc::Rc::new(std::cell::RefCell::new(Vec::<super::super::ExecutableKey>::new()));
     let observed_runtime_demand_runs = std::rc::Rc::clone(&runtime_demand_runs);
     let runtime_demand_wakes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(
-        super::ExecutableKey,
+        super::super::ExecutableKey,
         FactUse<DependencyKey>,
     )>::new()));
     let observed_runtime_demand_wakes = std::rc::Rc::clone(&runtime_demand_wakes);
-    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+    tel.attach_raw_event2::<World, super::super::JobCompletion, _>(
         &["fz", "compiler2", "work_graph", "applied"],
         move |_, _, _, _, completion| {
             for wake in &completion.wakes {
@@ -710,12 +712,12 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     assert!(!std::rc::Rc::ptr_eq(&cold_other, &moved_other));
     for leaf in &cold_leafs {
         let demand = compiler.world().runtime_demand(leaf).expect("moved leaf demand");
-        assert_eq!(demand.input_demands[0].shape, super::ShapeDemand::Whole);
+        assert_eq!(demand.input_demands[0].shape, super::super::ShapeDemand::Whole);
         let executable = [&moved_main, &moved_other]
             .into_iter()
             .find_map(|program| program.executables().iter().find(|executable| &executable.key == leaf))
             .expect("moved leaf backend executable");
-        assert_eq!(executable.abi.param_reprs, vec![super::AbiValueRepr::RawInt]);
+        assert_eq!(executable.abi.param_reprs, vec![super::super::AbiValueRepr::RawInt]);
         for expected in [
             ProductKey::MaterializedExecutable(leaf.clone()),
             ProductKey::AbiExecutable(leaf.clone()),
@@ -833,7 +835,7 @@ fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hi
     let tel = ConfiguredTelemetry::new();
     let evaluated = std::rc::Rc::new(std::cell::RefCell::new(Vec::<ProductKey>::new()));
     let observed_evaluated = std::rc::Rc::clone(&evaluated);
-    tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, PullOutcome, _>(
+    tel.attach_raw_event3::<ProductKey, super::super::pull::ProductRequestId, PullOutcome, _>(
         &["fz", "compiler2", "pull", "product", "evaluated"],
         move |_, _, _, key, _, _| observed_evaluated.borrow_mut().push(key.clone()),
     );
@@ -886,7 +888,7 @@ fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hi
             .all(|key| !matches!(key, ProductKey::NativeProgram(native_root) if macro_roots.contains(native_root))),
         "typed product telemetry must show that macro roots never evaluate NativeProgram",
     );
-    let mut cold_work = super::WorkStartTally::default();
+    let mut cold_work = super::super::WorkStartTally::default();
     for (_, _, work) in finished.borrow().iter().copied() {
         cold_work.add(work);
     }
@@ -899,7 +901,7 @@ fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hi
     assert!(
         unchanged
             .iter()
-            .all(|(_, pokes, work)| { *pokes == 0 && *work == super::WorkStartTally::default() })
+            .all(|(_, pokes, work)| { *pokes == 0 && *work == super::super::WorkStartTally::default() })
     );
 }
 
@@ -934,14 +936,14 @@ fn standalone_drive_work_is_not_charged_to_the_next_retained_request() {
     });
     assert!(matches!(compiler.drive(), DriveOutcome::Resolved));
     let bare_drive_delta = compiler.world().work_start_tally().delta_since(before_drive);
-    assert_ne!(bare_drive_delta, super::WorkStartTally::default());
+    assert_ne!(bare_drive_delta, super::super::WorkStartTally::default());
     assert_eq!(finished.borrow().len(), cold_events);
 
     assert_eq!(compiler.run_root_interp(root), Ok(7));
     assert_eq!(finished.borrow().len(), cold_events + 1);
     assert_eq!(
         finished.borrow()[cold_events],
-        super::WorkStartTally::default(),
+        super::super::WorkStartTally::default(),
         "a retained cache hit must not inherit work consumed by a standalone drive"
     );
 }
@@ -984,16 +986,16 @@ fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
         nested_events > cold_events,
         "the item macro must enter a nested retained product session"
     );
-    let mut nested_work = super::WorkStartTally::default();
+    let mut nested_work = super::super::WorkStartTally::default();
     for (nested_root, work) in &finished.borrow()[cold_events..] {
         assert_ne!(*nested_root, root, "the unrelated runtime root must stay cold");
         nested_work.add(*work);
     }
     let total_work = compiler.world().work_start_tally().delta_since(before_drive);
-    assert_ne!(nested_work, super::WorkStartTally::default());
+    assert_ne!(nested_work, super::super::WorkStartTally::default());
     assert_ne!(
         total_work.delta_since(nested_work),
-        super::WorkStartTally::default(),
+        super::super::WorkStartTally::default(),
         "standalone source work before macro demand must remain outside nested session attribution"
     );
 
@@ -1001,7 +1003,7 @@ fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
     assert_eq!(finished.borrow().len(), nested_events + 1);
     assert_eq!(
         finished.borrow()[nested_events],
-        (root, super::WorkStartTally::default()),
+        (root, super::super::WorkStartTally::default()),
         "the next direct cache hit must not inherit completed standalone work"
     );
 }
@@ -1044,13 +1046,13 @@ fn reconciliation_failure_is_attributed_to_the_failed_retained_request_only() {
     let after_failure_events = finished.borrow().len();
     assert_eq!(after_failure_events, cold_events + 1);
     assert_eq!(finished.borrow()[cold_events], (root, 0, failed_delta));
-    assert_ne!(failed_delta, super::WorkStartTally::default());
+    assert_ne!(failed_delta, super::super::WorkStartTally::default());
 
     assert_eq!(compiler.run_root_interp(root), Ok(7));
     assert_eq!(finished.borrow().len(), after_failure_events + 1);
     assert_eq!(
         finished.borrow()[after_failure_events],
-        (root, 0, super::WorkStartTally::default()),
+        (root, 0, super::super::WorkStartTally::default()),
         "the next successful request must not inherit failed reconciliation work"
     );
     assert_eq!(compiler.world().work_graph.pending_jobs(), 0);
@@ -1096,7 +1098,7 @@ fn zero_timeout_is_a_balanced_retained_activation_and_does_not_leak_work() {
     let after_failure_events = finished.borrow().len();
     assert_eq!(after_failure_events, cold_events + 1);
     assert_eq!(finished.borrow()[cold_events], (root, 0, failed_delta));
-    assert_ne!(failed_delta, super::WorkStartTally::default());
+    assert_ne!(failed_delta, super::super::WorkStartTally::default());
 
     compiler.set_drive_timeout(std::time::Duration::from_secs(30));
     assert_eq!(compiler.run_root_interp(root), Ok(8));
@@ -1278,8 +1280,9 @@ fn root_backend_schema_contributions_depend_on_exactly_their_struct_facts() {
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
-        .expect("the exact struct dependency fixture should settle");
+    let (program, driver) =
+        super::super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+            .expect("the exact struct dependency fixture should settle");
     let session = driver.session();
     let needed = world.reference_module(module_name("Needed"));
     let spare = world.reference_module(module_name("Spare"));
@@ -1464,19 +1467,21 @@ fn product_fact_waits_use_semantic_order_across_type_mint_histories() {
     let order = |non_empty_first: bool| {
         let mut world = World::new();
         let root = RootId::for_test(0);
-        let function = world.reference_function(super::ModuleId::GLOBAL, "lists", 1);
+        let function = world.reference_function(super::super::ModuleId::GLOBAL, "lists", 1);
         let int = world.types_mut().int();
         let (list_key, non_empty_key) = if non_empty_first {
             let non_empty = world.types_mut().non_empty_list(int);
-            let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            let non_empty_key =
+                super::super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
             let list = world.types_mut().list(int);
-            let list_key = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            let list_key = super::super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
             (list_key, non_empty_key)
         } else {
             let list = world.types_mut().list(int);
-            let list_key = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            let list_key = super::super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
             let non_empty = world.types_mut().non_empty_list(int);
-            let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            let non_empty_key =
+                super::super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
             (list_key, non_empty_key)
         };
         let raw_order = list_key.arrow < non_empty_key.arrow;
@@ -1493,7 +1498,7 @@ fn product_fact_waits_use_semantic_order_across_type_mint_histories() {
                 PullWait::Fact(FactUse::settled(non_empty_fact.clone())),
             ]
         };
-        super::product_drive::sort_product_waits(world.types(), &mut waits);
+        super::super::product_drive::sort_product_waits(world.types(), &mut waits);
         let labels = waits
             .iter()
             .map(|wait| match wait {
@@ -1564,7 +1569,7 @@ fn compiling_the_same_root_twice_through_the_jit_reaches_the_same_outcome() {
 /// contract: the ordered sequence of jobs the drive actually ran (observed
 /// through the production `fz.compiler2.job` span, not a test-only hook) and
 /// the `BackendProgram` it published.
-fn compile_enum_predicate_search() -> (Vec<Job>, std::rc::Rc<super::BackendProgram>) {
+fn compile_enum_predicate_search() -> (Vec<Job>, std::rc::Rc<super::super::BackendProgram>) {
     let tel = ConfiguredTelemetry::new();
     let jobs: std::rc::Rc<std::cell::RefCell<Vec<Job>>> = Default::default();
     let recorded = std::rc::Rc::clone(&jobs);
@@ -1674,7 +1679,7 @@ fn compiling_the_same_root_twice_publishes_byte_identical_backend_programs() {
 
 #[test]
 fn live_executable_order_distinguishes_noninjective_display_pairs() {
-    use super::semantic::SemanticOrd;
+    use super::super::semantic::SemanticOrd;
     use std::collections::BTreeMap;
 
     let tel = ConfiguredTelemetry::new();
@@ -1693,7 +1698,7 @@ fn live_executable_order_distinguishes_noninjective_display_pairs() {
         .product_executable_inventory(root)
         .expect("fixture must compile");
     let types = compiler.types_for_test();
-    let mut by_display = BTreeMap::<String, Vec<super::Ty>>::new();
+    let mut by_display = BTreeMap::<String, Vec<super::super::Ty>>::new();
     for ty in types.interned_tys() {
         by_display.entry(types.display(&ty)).or_default().push(ty);
     }
@@ -1933,11 +1938,11 @@ fn string_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive() {
     let tel = ConfiguredTelemetry::new();
     let (mut world, root) = add1_world(&tel);
 
-    let result = super::product_drive::drive_root_backend_product_with_budgets::<_, String>(
+    let result = super::super::product_drive::drive_root_backend_product_with_budgets::<_, String>(
         &mut world,
         &tel,
         root,
-        super::product_drive::PRODUCT_DRIVE_BUDGET,
+        super::super::product_drive::PRODUCT_DRIVE_BUDGET,
         0,
     );
     let error = match result {
@@ -1958,26 +1963,26 @@ fn one_product_prerequisite_set_emits_one_quiescence_step_with_both_readiness_ch
     let tel = ConfiguredTelemetry::new();
     let steps = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let observed = std::rc::Rc::clone(&steps);
-    tel.attach_raw_event1::<super::AppliedStep<Job, DependencyKey>, _>(
+    tel.attach_raw_event1::<super::super::AppliedStep<Job, DependencyKey>, _>(
         &["fz", "compiler2", "work_graph", "quiesced"],
         move |_, _, _, step| observed.borrow_mut().push(step.clone()),
     );
     let mut world = World::new();
     let root = RootId::for_test(88);
-    let code = super::SourceOwner::for_test(0);
+    let code = super::super::SourceOwner::for_test(0);
     let left = FactKey::CodeIndexed(code);
     let right = FactKey::CodeScoped(code);
     let left_job = Job::IndexCode(code);
     let right_job = Job::ScopeCode(code);
 
     let complete = |world: &mut World, job, reads, outputs, changed| {
-        super::drive::ExecutionContext::new(world, &tel).complete_job(
+        super::super::drive::ExecutionContext::new(world, &tel).complete_job(
             job,
-            super::drive::JobEffects {
+            super::super::drive::JobEffects {
                 reads,
                 outputs,
                 changed,
-                ..super::drive::JobEffects::default()
+                ..super::super::drive::JobEffects::default()
             },
         )
     };
@@ -2007,14 +2012,14 @@ fn one_product_prerequisite_set_emits_one_quiescence_step_with_both_readiness_ch
     assert!(!world.fact_is_settled(&left));
     assert!(!world.fact_is_settled(&right));
 
-    let mut driver = super::pull::ProductDriver::new(&tel, root);
-    super::product_drive::drive_product_fact_waits::<_, String>(
+    let mut driver = super::super::pull::ProductDriver::new(&tel, root);
+    super::super::product_drive::drive_product_fact_waits::<_, String>(
         &mut world,
         &tel,
         root,
         &mut driver,
         &[FactUse::settled(left.clone()), FactUse::settled(right.clone())],
-        super::product_drive::PRODUCT_DRIVE_BUDGET,
+        super::super::product_drive::PRODUCT_DRIVE_BUDGET,
     )
     .expect("the locally clean prerequisite cycle should settle at the drain");
 
@@ -2038,11 +2043,11 @@ fn fatal_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive() {
     capture.install(&tel, &[]);
     let (mut world, root) = add1_world(&tel);
 
-    let result = super::product_drive::drive_root_backend_product_with_budgets::<_, FatalError>(
+    let result = super::super::product_drive::drive_root_backend_product_with_budgets::<_, FatalError>(
         &mut world,
         &tel,
         root,
-        super::product_drive::PRODUCT_DRIVE_BUDGET,
+        super::super::product_drive::PRODUCT_DRIVE_BUDGET,
         0,
     );
     assert_eq!(
@@ -2074,12 +2079,12 @@ fn string_error_end_to_end_did_not_settle_on_a_real_drive() {
     let tel = ConfiguredTelemetry::new();
     let (mut world, root) = add1_world(&tel);
 
-    let result = super::product_drive::drive_root_backend_product_with_budgets::<_, String>(
+    let result = super::super::product_drive::drive_root_backend_product_with_budgets::<_, String>(
         &mut world,
         &tel,
         root,
         3,
-        super::product_drive::PRODUCT_DRIVE_BUDGET,
+        super::super::product_drive::PRODUCT_DRIVE_BUDGET,
     );
     let error = match result {
         Ok(_) => panic!("a product-stack budget of 3 should exhaust before add1's product settles"),
@@ -2150,7 +2155,7 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
         ),
         "the String path should report the RootEntry fact-wait's SeedRoot job failure, got: {error}"
     );
-    let mut finished_work = super::WorkStartTally::default();
+    let mut finished_work = super::super::WorkStartTally::default();
     for work in finished.borrow().iter().copied() {
         finished_work.add(work);
     }
@@ -2205,12 +2210,12 @@ fn fatal_error_end_to_end_did_not_settle_on_a_real_drive() {
     capture.install(&tel, &[]);
     let (mut world, root) = add1_world(&tel);
 
-    let result = super::product_drive::drive_root_backend_product_with_budgets::<_, FatalError>(
+    let result = super::super::product_drive::drive_root_backend_product_with_budgets::<_, FatalError>(
         &mut world,
         &tel,
         root,
         3,
-        super::product_drive::PRODUCT_DRIVE_BUDGET,
+        super::super::product_drive::PRODUCT_DRIVE_BUDGET,
     );
     assert_eq!(
         result.err(),
@@ -2255,8 +2260,9 @@ fn settled_products_depend_only_on_settled_products() {
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    let (_program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
-        .expect("the reducer root should settle");
+    let (_program, driver) =
+        super::super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+            .expect("the reducer root should settle");
     let session = driver.session();
     let memo = session.memo();
 
@@ -2312,8 +2318,9 @@ fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_d
             .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
-        .expect("the executable-fact consumer fixture should settle");
+    let (_program, driver) =
+        super::super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+            .expect("the executable-fact consumer fixture should settle");
     let session = driver.session();
     let memo = session.memo();
 
@@ -2351,12 +2358,12 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     let executable_fact_trace = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(
         Job,
         bool,
-        Vec<super::FactChange<DependencyKey>>,
-        Vec<super::FactMovement<DependencyKey>>,
+        Vec<super::super::FactChange<DependencyKey>>,
+        Vec<super::super::FactMovement<DependencyKey>>,
         Vec<FactUse<DependencyKey>>,
     )>::new()));
     let observed_trace = std::rc::Rc::clone(&executable_fact_trace);
-    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+    tel.attach_raw_event2::<World, super::super::JobCompletion, _>(
         &["fz", "compiler2", "work_graph", "applied"],
         move |_, _, _, _, completion| {
             if matches!(completion.job, Job::DeriveExecutableFacts(_)) {
@@ -2376,8 +2383,9 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         "def main(), do: 42\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_program, mut driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
-        .expect("the equal-reproduction fixture should settle");
+    let (_program, mut driver) =
+        super::super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+            .expect("the equal-reproduction fixture should settle");
     let generations = driver
         .session()
         .memo()
@@ -2405,12 +2413,12 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         .fact_revision(&prerequisite)
         .expect("the lowered body prerequisite should already be published");
     let prerequisite_job = Job::LowerFunction(executable.activation.function);
-    let observer = Job::DefineFunction(super::FunctionId::from_coordinate(u32::MAX));
-    let observer_completion = super::drive::ExecutionContext::new(&mut world, &tel).complete_job(
+    let observer = Job::DefineFunction(super::super::FunctionId::from_coordinate(u32::MAX));
+    let observer_completion = super::super::drive::ExecutionContext::new(&mut world, &tel).complete_job(
         observer.clone(),
-        super::drive::JobEffects {
+        super::super::drive::JobEffects {
             reads: vec![FactUse::current(fact.clone()), FactUse::settled(fact.clone())],
-            ..super::drive::JobEffects::default()
+            ..super::super::drive::JobEffects::default()
         },
     );
     assert!(observer_completion.changed.is_empty());
@@ -2418,13 +2426,13 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
 
     let (prerequisite_outputs, prerequisite_reads) = world.standing_claims_and_reads(&prerequisite_job);
     assert!(prerequisite_outputs.contains(&prerequisite));
-    let dirtied = super::drive::ExecutionContext::new(&mut world, &tel).complete_job(
+    let dirtied = super::super::drive::ExecutionContext::new(&mut world, &tel).complete_job(
         prerequisite_job.clone(),
-        super::drive::JobEffects {
+        super::super::drive::JobEffects {
             reads: prerequisite_reads.into_iter().collect(),
             waits: vec![FactUse::settled(FactKey::RootEntry(RootId::for_test(u32::MAX)))],
             outputs: prerequisite_outputs,
-            ..super::drive::JobEffects::default()
+            ..super::super::drive::JobEffects::default()
         },
     );
     let executable_fact_dirtied = dirtied
@@ -2439,7 +2447,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         });
     assert_eq!(
         executable_fact_dirtied.state,
-        super::facts::FactState {
+        super::super::facts::FactState {
             revision: Some(revision),
             settled: false,
         },
@@ -2503,13 +2511,13 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         );
     }
 
-    let effects = super::jobs::run(
-        &mut super::drive::ExecutionContext::new(&mut world, &tel),
+    let effects = super::super::jobs::run(
+        &mut super::super::drive::ExecutionContext::new(&mut world, &tel),
         &prerequisite_job,
     )
     .expect("the unchanged prerequisite should reproduce");
     let prerequisite_settled =
-        super::drive::ExecutionContext::new(&mut world, &tel).complete_job(prerequisite_job, effects);
+        super::super::drive::ExecutionContext::new(&mut world, &tel).complete_job(prerequisite_job, effects);
     assert_eq!(world.fact_revision(&prerequisite), Some(prerequisite_revision));
     assert!(
         world.fact_is_settled(&prerequisite),
@@ -2526,9 +2534,13 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         if ready == observer {
             continue;
         }
-        let effects = super::jobs::run(&mut super::drive::ExecutionContext::new(&mut world, &tel), &ready)
-            .expect("the unchanged prerequisite cone should reproduce");
-        let completion = super::drive::ExecutionContext::new(&mut world, &tel).complete_job(ready.clone(), effects);
+        let effects = super::super::jobs::run(
+            &mut super::super::drive::ExecutionContext::new(&mut world, &tel),
+            &ready,
+        )
+        .expect("the unchanged prerequisite cone should reproduce");
+        let completion =
+            super::super::drive::ExecutionContext::new(&mut world, &tel).complete_job(ready.clone(), effects);
         apply_world_fact_movements(&mut driver, &completion.movements);
         if ready == producer
             && completion
@@ -2651,8 +2663,8 @@ fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_r
         world: &mut World,
         tel: &ConfiguredTelemetry,
         root: RootId,
-    ) -> Vec<super::ExecutableKey> {
-        let (_program, driver) = super::product_drive::drive_root_backend_product::<_, String>(world, tel, root)
+    ) -> Vec<super::super::ExecutableKey> {
+        let (_program, driver) = super::super::product_drive::drive_root_backend_product::<_, String>(world, tel, root)
             .expect("the root should settle");
         driver
             .session()
@@ -2683,7 +2695,7 @@ fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_r
         .find(|executable| executable.activation.function == world.root_function(root))
         .expect("the root inventory should contain main")
         .clone();
-    let alternate = super::ExecutableKey {
+    let alternate = super::super::ExecutableKey {
         activation: main.activation.clone(),
         need: ExecutableNeed::TupleFields(2),
     };
@@ -2691,7 +2703,7 @@ fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_r
     assert!(world.demand(alternate_job));
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::super::drive::ExecutionContext::new(&mut world, &tel).drive(),
             DriveOutcome::Resolved
         ),
         "the second executable need should derive on the same activation"
@@ -2722,7 +2734,7 @@ fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_r
         .activation_analysis(&main.activation)
         .expect("main analysis should be settled");
     let callsite = *analysis.callsites.first().expect("main should contain one callsite");
-    let callsite_key = super::CallSiteKey {
+    let callsite_key = super::super::CallSiteKey {
         activation: main.activation.clone(),
         callsite,
     };
@@ -2733,18 +2745,18 @@ fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_r
     summary.return_ty = Some(world.types_mut().atom());
     assert!(world.define_callsite_summary(
         callsite_key.clone(),
-        super::semantic::CallSiteResolution::Resolved(summary),
+        super::super::semantic::CallSiteResolution::Resolved(summary),
     ));
     let callsite_fact = FactKey::CallSiteSummary(callsite_key);
     let analyze = Job::AnalyzeActivation(main.activation.clone());
     let (outputs, reads) = world.standing_claims_and_reads(&analyze);
     let movement = world.complete_job(
         analyze,
-        super::drive::JobEffects {
+        super::super::drive::JobEffects {
             reads: reads.into_iter().collect(),
             outputs,
             changed: vec![callsite_fact.clone()],
-            ..super::drive::JobEffects::default()
+            ..super::super::drive::JobEffects::default()
         },
     );
     let moved_readers = movement
@@ -2760,7 +2772,7 @@ fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_r
 
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::super::drive::ExecutionContext::new(&mut world, &tel).drive(),
             DriveOutcome::Resolved
         ),
         "the exact executable-fact readers should rederive"
@@ -2790,7 +2802,7 @@ fn runtime_demand_is_a_settled_world_fact_for_the_exact_executable() {
         "def main(), do: 42\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+    super::super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
         .expect("the root should settle");
     let executable = world.root_entry_executable(root);
     let fact = FactKey::RuntimeDemand(executable.clone());
@@ -2807,6 +2819,657 @@ fn runtime_demand_is_a_settled_world_fact_for_the_exact_executable() {
         world
             .runtime_demand_input(&executable)
             .and_then(|contribution| contribution.return_demand.clone()),
-        Some(super::RuntimeDemand::whole()),
+        Some(super::super::RuntimeDemand::whole()),
     );
+}
+
+#[cfg(test)]
+mod wait_frame_tests {
+    use super::super::*;
+    use crate::compiler2::pull::{ProductProducers, ProductReadContext};
+    use crate::telemetry::ConfiguredTelemetry;
+
+    #[derive(Debug)]
+    struct WaitStorage {
+        buffer: *const PullWait,
+        inputs: Vec<*const crate::compiler2::Ty>,
+        message: String,
+    }
+
+    impl ProductDriveError for WaitStorage {
+        fn job_failed<T: crate::telemetry::Telemetry>(
+            _: &World,
+            _: &T,
+            _: RootId,
+            _: &FactUse<FactKey>,
+            _: &Job,
+            _: FatalError,
+        ) -> Self {
+            panic!("unexpected job failure")
+        }
+        fn no_ready_producer<T: crate::telemetry::Telemetry>(
+            _: &World,
+            _: &T,
+            _: RootId,
+            _: &FactUse<FactKey>,
+        ) -> Self {
+            panic!("unexpected missing producer")
+        }
+        fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
+            _: &World,
+            _: &T,
+            _: RootId,
+            _: &FactUse<FactKey>,
+        ) -> Self {
+            panic!("unexpected fact budget failure")
+        }
+        fn product_failed<T: crate::telemetry::Telemetry>(_: &World, _: &T, _: RootId, _: &ProductKey) -> Self {
+            panic!("unexpected product failure")
+        }
+        fn dependency_failed<T: crate::telemetry::Telemetry>(
+            _: &World,
+            _: &T,
+            _: ProductAddress,
+            _: FatalError,
+        ) -> Self {
+            panic!("unexpected dependency failure")
+        }
+        fn did_not_settle<T: crate::telemetry::Telemetry>(
+            world: &World,
+            tel: &T,
+            root: RootId,
+            last_wait: Option<(&ProductKey, &[PullWait])>,
+        ) -> Self {
+            let (_, waits) = last_wait.as_ref().expect("the drive observed a wait");
+            Self {
+                buffer: waits.as_ptr(),
+                inputs: waits
+                    .iter()
+                    .filter_map(|wait| {
+                        let PullWait::Product(key) = wait else { return None };
+                        Some(positioned_input(key))
+                    })
+                    .collect(),
+                message: String::did_not_settle(world, tel, root, last_wait),
+            }
+        }
+    }
+
+    fn positioned_key(arrow: crate::compiler2::Ty, id: u32) -> ProductKey {
+        use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
+        ProductKey::TransportShape(TransportPosition::ExecutableReturn {
+            executable: ExecutableSymbol {
+                activation: ActivationSymbol {
+                    function: crate::compiler2::FunctionId::from_coordinate(id),
+                    arrow,
+                    input: vec![arrow; 32].into_boxed_slice(),
+                },
+                need: crate::compiler2::identity::ExecutableNeed::Value,
+            },
+        })
+    }
+
+    fn positioned_input(key: &ProductKey) -> *const crate::compiler2::Ty {
+        let ProductKey::TransportShape(position) = key else {
+            panic!("expected a positioned product")
+        };
+        position.executable().activation.input.as_ptr()
+    }
+
+    #[test]
+    fn budget_diagnostics_retain_the_original_wait_batch_even_after_its_frame_drains() {
+        for (product_count, budget) in [(0, 1), (3, 1), (3, 4)] {
+            let tel = ConfiguredTelemetry::new();
+            let mut world = World::new();
+            let root = RootId::for_test(91);
+            let root_key = ProductKey::RootBackendProduct(root);
+            let arrow = world.types_mut().any();
+            let mut waits = (100..100 + product_count)
+                .map(|id| PullWait::Product(positioned_key(arrow, id)))
+                .collect::<Vec<_>>();
+            sort_product_waits(world.types(), &mut waits);
+            let buffer = waits.as_ptr();
+            let inputs = waits
+                .iter()
+                .map(|wait| {
+                    let PullWait::Product(key) = wait else { unreachable!() };
+                    positioned_input(key)
+                })
+                .collect::<Vec<_>>();
+            let expected_message = format!(
+                "compiler2 root {} product backend did not settle; last wait: {:?}",
+                root.as_u32(),
+                Some((&root_key, &waits)),
+            );
+            let mut waits = Some(waits);
+            let mut driver = ProductDriver::new(&tel, root);
+            let error = drive_root_product_with::<_, WaitStorage>(
+                &mut world,
+                &tel,
+                root,
+                root_key.clone(),
+                &mut driver,
+                None,
+                budget,
+                PRODUCT_DRIVE_BUDGET,
+                |_, _, key| {
+                    if key == &root_key {
+                        PullOutcome::Waiting(waits.take().expect("the budget ends before root retry"))
+                    } else {
+                        PullOutcome::Produced(ProductValue::Unit)
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.message, expected_message,
+                "the full historic diagnostic survives frame consumption"
+            );
+            assert_eq!(
+                error.buffer, buffer,
+                "remembering a wait moves its vector rather than cloning it"
+            );
+            assert_eq!(
+                error.inputs, inputs,
+                "positioned input backing is shared, not duplicated for diagnostics"
+            );
+        }
+    }
+
+    #[test]
+    fn the_latest_nested_mixed_wait_keeps_its_full_original_snapshot_after_completion() {
+        for budget in [2, 4, 5] {
+            let tel = ConfiguredTelemetry::new();
+            let mut world = World::new();
+            let code = world.submit_code(None, "def indexed_only() do\n 1\nend\n".to_owned());
+            let root = RootId::for_test(95);
+            let root_key = ProductKey::RootBackendProduct(root);
+            let arrow = world.types_mut().any();
+            let child = positioned_key(arrow, 100);
+            let mut waits = vec![
+                PullWait::Product(positioned_key(arrow, 102)),
+                PullWait::Fact(FactUse::current(FactKey::CodeIndexed(code))),
+                PullWait::Product(positioned_key(arrow, 101)),
+            ];
+            sort_product_waits(world.types(), &mut waits);
+            let buffer = waits.as_ptr();
+            let inputs = waits
+                .iter()
+                .filter_map(|wait| {
+                    let PullWait::Product(key) = wait else { return None };
+                    Some(positioned_input(key))
+                })
+                .collect::<Vec<_>>();
+            let expected = format!(
+                "compiler2 root {} product backend did not settle; last wait: {:?}",
+                root.as_u32(),
+                Some((&child, &waits)),
+            );
+            let mut waits = Some(waits);
+            let mut selected_inputs = Vec::new();
+            let mut driver = ProductDriver::new(&tel, root);
+            let error = drive_root_product_with::<_, WaitStorage>(
+                &mut world,
+                &tel,
+                root,
+                root_key.clone(),
+                &mut driver,
+                None,
+                budget,
+                PRODUCT_DRIVE_BUDGET,
+                |_, _, key| {
+                    if key == &root_key {
+                        PullOutcome::Waiting(vec![PullWait::Product(child.clone())])
+                    } else if key == &child {
+                        waits
+                            .take()
+                            .map_or(PullOutcome::Produced(ProductValue::Unit), PullOutcome::Waiting)
+                    } else {
+                        selected_inputs.push(positioned_input(key));
+                        PullOutcome::Produced(ProductValue::Unit)
+                    }
+                },
+            )
+            .unwrap_err();
+            assert!(
+                world.fact_revision(&FactKey::CodeIndexed(code)).is_some(),
+                "the mixed prefix drove its real fact producer"
+            );
+            assert_eq!(
+                error.message, expected,
+                "last_wait names the child, not the completed parent frame"
+            );
+            assert_eq!(error.buffer, buffer);
+            assert_eq!(error.inputs, inputs);
+            if budget >= 4 {
+                assert_eq!(
+                    selected_inputs, inputs,
+                    "fact-prefix indices select each original product exactly once"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn product_index_storage_is_sized_once_for_the_exact_suffix() {
+        for fact_count in [0, 2] {
+            for product_count in [0, 1, 64, 1024] {
+                let owner = ProductKey::RootBackendProduct(RootId::for_test(96));
+                let mut waits = (0..fact_count)
+                    .map(|id| PullWait::Fact(FactUse::current(FactKey::RootEntry(RootId::for_test(id as u32)))))
+                    .collect::<Vec<_>>();
+                waits.extend(
+                    (0..product_count)
+                        .map(|id| PullWait::Product(ProductKey::RootBackendProduct(RootId::for_test(id as u32)))),
+                );
+                let storage = waits.as_ptr();
+                let frame =
+                    ProductWaitFrame::take_selection(&mut Some(SelectedProduct::Owned(owner)), None, waits, fact_count);
+                assert_eq!(frame.batch.waits.as_ptr(), storage);
+                let indices = frame.products.into_values();
+                assert_eq!(indices.len(), product_count);
+                assert_eq!(
+                    indices.capacity(),
+                    product_count,
+                    "the exact-size suffix does not grow an initially undersized heap"
+                );
+                assert!(indices.iter().enumerate().all(|(index, product)| matches!(product, FrameProduct::Observed(actual) if *actual == fact_count + index)));
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_selected_product_cleans_up_before_the_same_driver_retries() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let root = RootId::for_test(97);
+        let root_key = ProductKey::RootBackendProduct(root);
+        let child = positioned_key(world.types_mut().any(), 100);
+        let input = positioned_input(&child);
+        let mut waits = Some(vec![PullWait::Product(child)]);
+        let mut driver = ProductDriver::new(&tel, root);
+        let error = drive_root_product_with::<_, String>(
+            &mut world,
+            &tel,
+            root,
+            root_key.clone(),
+            &mut driver,
+            None,
+            PRODUCT_DRIVE_BUDGET,
+            PRODUCT_DRIVE_BUDGET,
+            |_, _, key| {
+                if key == &root_key {
+                    PullOutcome::Waiting(waits.take().unwrap())
+                } else {
+                    assert_eq!(
+                        positioned_input(key),
+                        input,
+                        "a failed selection still borrows its original input"
+                    );
+                    PullOutcome::Failed
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("failed"),
+            "the selected product owns its failure: {error}"
+        );
+        let mut pulls = 0;
+        let result = drive_root_product_with::<_, String>(
+            &mut world,
+            &tel,
+            root,
+            root_key.clone(),
+            &mut driver,
+            None,
+            PRODUCT_DRIVE_BUDGET,
+            PRODUCT_DRIVE_BUDGET,
+            |_, _, key| {
+                pulls += 1;
+                assert_eq!(key, &root_key, "no discarded child is requested on retry");
+                PullOutcome::Produced(ProductValue::Unit)
+            },
+        );
+        assert_eq!(result, Ok(ProductValue::Unit));
+        assert_eq!(pulls, 1);
+    }
+
+    #[test]
+    fn healthy_wait_selection_borrows_the_original_positioned_input() {
+        struct Producers<'a> {
+            world: &'a World,
+            root: &'a ProductKey,
+            waits: &'a mut Option<Vec<PullWait>>,
+            input: *const crate::compiler2::Ty,
+            child_pulls: &'a mut usize,
+        }
+        impl ProductProducers for Producers<'_> {
+            fn product_types(&self) -> &crate::compiler2::Types {
+                self.world.types()
+            }
+            fn produce(&mut self, _: &mut ProductReadContext<'_>, key: &ProductKey) -> PullOutcome {
+                if key == self.root {
+                    self.waits
+                        .take()
+                        .map_or(PullOutcome::Produced(ProductValue::Unit), PullOutcome::Waiting)
+                } else {
+                    *self.child_pulls += 1;
+                    assert_eq!(
+                        positioned_input(key),
+                        self.input,
+                        "selection and ProductDriver both borrow the original key"
+                    );
+                    PullOutcome::Produced(ProductValue::Unit)
+                }
+            }
+        }
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let root = RootId::for_test(92);
+        let root_key = ProductKey::RootBackendProduct(root);
+        let child = positioned_key(world.types_mut().any(), 101);
+        let input = positioned_input(&child);
+        let mut waits = Some(vec![PullWait::Product(child)]);
+        let mut driver = ProductDriver::new(&tel, root);
+        let mut child_pulls = 0;
+        let result = drive_root_product_with::<_, String>(
+            &mut world,
+            &tel,
+            root,
+            root_key.clone(),
+            &mut driver,
+            None,
+            PRODUCT_DRIVE_BUDGET,
+            PRODUCT_DRIVE_BUDGET,
+            |world, driver, key| {
+                driver.pull(
+                    &mut Producers {
+                        world,
+                        root: &root_key,
+                        waits: &mut waits,
+                        input,
+                        child_pulls: &mut child_pulls,
+                    },
+                    key,
+                )
+            },
+        );
+        assert_eq!(result, Ok(ProductValue::Unit));
+        assert_eq!(child_pulls, 1);
+    }
+
+    #[test]
+    fn canceling_nested_frames_releases_batches_without_copying_the_resumed_owner() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let arrow = world.types_mut().any();
+        let root = RootId::for_test(93);
+        let owner = positioned_key(arrow, 100);
+        let owner_input = positioned_input(&owner);
+        let child = positioned_key(arrow, 101);
+        let child_input = positioned_input(&child);
+        let mut current = Some(SelectedProduct::Owned(owner));
+        let first = ProductWaitFrame::take_selection(&mut current, None, vec![PullWait::Product(child)], 0);
+        let first_lifetime = Rc::downgrade(&first.batch);
+        let mut stack = vec![first];
+        let mut driver = ProductDriver::new(&tel, root);
+        let mut work = ProductValidation::default();
+        current = next_waiting_product(&mut stack, &mut driver, world.types(), &mut work);
+        assert_eq!(positioned_input(current.as_ref().unwrap().key()), child_input);
+        let second = ProductWaitFrame::take_selection(&mut current, None, Vec::new(), 0);
+        let second_lifetime = Rc::downgrade(&second.batch);
+        assert_ne!(
+            positioned_input(&second.batch.owner),
+            child_input,
+            "only a child that waits needs one independent owner copy"
+        );
+        let last_wait = Rc::clone(&second.batch);
+        stack.push(second);
+        let boundary = discard_wait_frames(&mut stack, &mut driver, 0, None, &mut work).unwrap();
+        assert!(stack.is_empty());
+        assert_eq!(
+            positioned_input(boundary.key()),
+            owner_input,
+            "canceling intermediate frames only moves handles"
+        );
+        drop(boundary);
+        assert!(
+            first_lifetime.upgrade().is_none(),
+            "the latest diagnostic cannot retain its parent batch"
+        );
+        assert!(
+            second_lifetime.upgrade().is_some(),
+            "the last diagnostic alone retains its complete observation"
+        );
+        drop(last_wait);
+        assert!(
+            second_lifetime.upgrade().is_none(),
+            "dropping the last diagnostic releases its observation"
+        );
+    }
+
+    #[test]
+    fn completed_owner_retry_moves_its_input_and_allocates_no_product_inventory_for_fact_only_waits() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let arrow = world.types_mut().any();
+        let root = RootId::for_test(94);
+        for waits in [
+            Vec::new(),
+            vec![PullWait::Fact(FactUse::current(FactKey::RootEntry(root)))],
+        ] {
+            let owner = positioned_key(arrow, 100);
+            let input = positioned_input(&owner);
+            let mut current = Some(SelectedProduct::Owned(owner));
+            let fact_count = waits.len();
+            let frame = ProductWaitFrame::take_selection(&mut current, None, waits, fact_count);
+            assert_eq!(
+                Rc::strong_count(&frame.batch),
+                1,
+                "the frame owns one shared batch allocation"
+            );
+            let old_batch = Rc::downgrade(&frame.batch);
+            let mut last_wait = Some(Rc::clone(&frame.batch));
+            assert_eq!(
+                Rc::strong_count(&frame.batch),
+                2,
+                "the diagnostic shares that allocation"
+            );
+            let ProductWaitFrame {
+                batch,
+                request,
+                products,
+            } = frame;
+            let products = products.into_values();
+            assert_eq!(
+                products.capacity(),
+                0,
+                "empty and fact-only batches need no product-index allocation"
+            );
+            let mut stack = vec![ProductWaitFrame {
+                batch,
+                request,
+                products: OrderedWorklist::from_sorted(products),
+            }];
+            let mut driver = ProductDriver::new(&tel, root);
+            current = next_waiting_product(
+                &mut stack,
+                &mut driver,
+                world.types(),
+                &mut ProductValidation::default(),
+            );
+            assert!(stack.is_empty());
+            assert_eq!(positioned_input(current.as_ref().unwrap().key()), input);
+            drop(last_wait.take());
+            let replacement = ProductWaitFrame::take_selection(&mut current, None, Vec::new(), 0);
+            assert_eq!(
+                positioned_input(&replacement.batch.owner),
+                input,
+                "a drained owner moves into its next observation"
+            );
+            assert!(old_batch.upgrade().is_none());
+        }
+    }
+
+    #[test]
+    fn a_waiting_frame_takes_the_selected_positioned_key_without_copying_its_input() {
+        use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
+        let arrow = crate::compiler2::Types::new().any();
+        let input = vec![arrow; 32].into_boxed_slice();
+        let storage = input.as_ptr();
+        let mut selected = Some(SelectedProduct::Owned(ProductKey::TransportShape(
+            TransportPosition::ExecutableReturn {
+                executable: ExecutableSymbol {
+                    activation: ActivationSymbol {
+                        function: crate::compiler2::FunctionId::from_coordinate(91),
+                        arrow,
+                        input,
+                    },
+                    need: crate::compiler2::identity::ExecutableNeed::Value,
+                },
+            },
+        )));
+        let frame = ProductWaitFrame::take_selection(&mut selected, None, Vec::new(), 0);
+        assert!(
+            selected.is_none(),
+            "the suspended owner has exactly one current location"
+        );
+        let ProductKey::TransportShape(position) = &frame.batch.owner else {
+            unreachable!()
+        };
+        assert_eq!(
+            position.executable().activation.input.as_ptr(),
+            storage,
+            "suspending a selected key moves its boxed input rather than allocating a duplicate"
+        );
+    }
+
+    #[test]
+    fn a_product_wait_batch_drives_facts_in_descending_semantic_order() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let roots = ["missing_first", "missing_second"].map(|name| {
+            world.submit_root(
+                None,
+                name.to_owned(),
+                0,
+                crate::compiler2::identity::ExecutableNeed::Value,
+            )
+        });
+        let mut facts = roots.map(|root| FactUse::settled(FactKey::RootEntry(root)));
+        facts.sort_by(|left, right| left.semantic_cmp(right, world.types()));
+        let root = roots[0];
+        let expected_fact = facts[1].clone();
+        let waits = facts.into_iter().map(PullWait::Fact).collect::<Vec<_>>();
+        let mut driver = ProductDriver::new(&tel, root);
+        let result = drive_root_product_with::<_, String>(
+            &mut world,
+            &tel,
+            root,
+            ProductKey::RootBackendProduct(root),
+            &mut driver,
+            None,
+            PRODUCT_DRIVE_BUDGET,
+            PRODUCT_DRIVE_BUDGET,
+            |_, _, _| PullOutcome::Waiting(waits.clone()),
+        );
+        let expected = <String as ProductDriveError>::no_ready_producer(&world, &tel, root, &expected_fact);
+        assert_eq!(
+            result,
+            Err(expected),
+            "the actual pump must begin with the last semantically sorted fact"
+        );
+    }
+
+    #[test]
+    fn a_fact_pump_rechecks_retired_demand_before_reporting_an_obsolete_missing_producer() {
+        struct Producers<'a> {
+            world: &'a World,
+            tel: &'a ConfiguredTelemetry,
+            indexed: FactKey,
+            missing: FactKey,
+            remove_after_index: bool,
+            keys: [ProductKey; 4],
+        }
+        impl ProductProducers for Producers<'_> {
+            fn product_types(&self) -> &crate::compiler2::Types {
+                self.world.types()
+            }
+            fn produce(&mut self, context: &mut ProductReadContext<'_>, key: &ProductKey) -> PullOutcome {
+                let [owner, old_seed, empty_seed, child] = &self.keys;
+                if key == owner {
+                    let indexed = context.read_fact(self.world, FactUse::current(self.indexed.clone()));
+                    let seed = if indexed && self.remove_after_index {
+                        empty_seed
+                    } else {
+                        old_seed
+                    };
+                    return match context.read_rooted_products(self.tel, key.clone(), seed.clone(), self.world.types()) {
+                        Ok(_) => PullOutcome::Produced(ProductValue::Unit),
+                        Err(waits) => PullOutcome::Waiting(waits),
+                    };
+                }
+                if key == old_seed {
+                    context.include_product(child.clone());
+                }
+                if key == child {
+                    let fact = FactUse::settled(self.missing.clone());
+                    if !context.read_fact(self.world, fact.clone()) {
+                        return PullOutcome::wait_on_fact(fact);
+                    }
+                }
+                PullOutcome::Produced(ProductValue::Unit)
+            }
+        }
+        for remove_after_index in [false, true] {
+            let tel = ConfiguredTelemetry::new();
+            let mut world = World::new();
+            let code = world.submit_code(None, "def indexed_only() do\n 1\nend\n".to_owned());
+            let root = world.submit_root(
+                None,
+                "undefined_wait_entry".to_owned(),
+                0,
+                crate::compiler2::identity::ExecutableNeed::Value,
+            );
+            let keys = [100, 101, 102, 103].map(|id| ProductKey::RootBackendProduct(RootId::for_test(id)));
+            let mut driver = ProductDriver::new(&tel, root);
+            let result = drive_root_product_with::<_, String>(
+                &mut world,
+                &tel,
+                root,
+                keys[0].clone(),
+                &mut driver,
+                None,
+                PRODUCT_DRIVE_BUDGET,
+                PRODUCT_DRIVE_BUDGET,
+                |world, driver, current| {
+                    driver.pull(
+                        &mut Producers {
+                            world,
+                            tel: &tel,
+                            indexed: FactKey::CodeIndexed(code),
+                            missing: FactKey::RootEntry(root),
+                            remove_after_index,
+                            keys: keys.clone(),
+                        },
+                        current,
+                    )
+                },
+            );
+            if remove_after_index {
+                assert_eq!(
+                    result,
+                    Ok(ProductValue::Unit),
+                    "IndexCode retires the observation that owned the undefined-root wait"
+                );
+            } else {
+                let error = result.unwrap_err();
+                assert!(
+                    error.contains("no ready producer"),
+                    "a still-required undefined root remains an error: {error}"
+                );
+            }
+        }
+    }
 }

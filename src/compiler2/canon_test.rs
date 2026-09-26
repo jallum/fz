@@ -8,11 +8,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::canon::{canon_backend_program, function_label};
-use super::dump::DumpStage;
-use super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
-use super::types::{Ty, TyCanon, Types};
-use super::{CodeSubmission, Compiler2, RootSubmission};
+use super::super::canon::{canon_backend_program, function_label};
+use super::super::dump::DumpStage;
+use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::super::types::{Ty, TyCanon, Types};
+use super::super::{CodeSubmission, Compiler2, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 
 /// The two fixtures the ticket names. Both are driven to their settled world;
@@ -87,7 +87,10 @@ fn equivalent(types: &Types, left: Ty, right: Ty) -> bool {
     types.is_subtype(&left, &right) && types.is_subtype(&right, &left)
 }
 
-fn equivalent_executable_keys(types: &Types, program: &super::BackendProgram) -> Vec<(ExecutableKey, ExecutableKey)> {
+fn equivalent_executable_keys(
+    types: &Types,
+    program: &super::super::BackendProgram,
+) -> Vec<(ExecutableKey, ExecutableKey)> {
     let executables = program
         .executables()
         .iter()
@@ -303,7 +306,7 @@ fn generated_function_labels_follow_typed_origin_not_function_allocation() {
         for index in 0..unrelated_functions {
             compiler
                 .world_mut()
-                .reference_function(super::ModuleId::GLOBAL, format!("unrelated_{index}"), 0);
+                .reference_function(super::super::ModuleId::GLOBAL, format!("unrelated_{index}"), 0);
         }
         compiler.submit_code(CodeSubmission {
             name: Some("generated_label.fz".into()),
@@ -318,11 +321,11 @@ fn generated_function_labels_follow_typed_origin_not_function_allocation() {
         assert_eq!(compiler.run_root_interp(root), Ok(42));
 
         let main = compiler.root_function(root);
-        let super::LoweredBody::Clauses { generated, .. } = &*compiler.world().lowered_body(main) else {
+        let super::super::LoweredBody::Clauses { generated, .. } = &*compiler.world().lowered_body(main) else {
             panic!("source function must lower to clauses");
         };
         let generated = generated.first().copied().expect("source lambda identity");
-        let super::identity::FunctionOrigin::Generated { owner, occurrence } =
+        let super::super::identity::FunctionOrigin::Generated { owner, occurrence } =
             &compiler.world().function_ref(generated).origin
         else {
             panic!("generated function typed origin");
@@ -351,7 +354,7 @@ fn same_range_generated_peers_order_independently_of_function_allocation() {
         for index in 0..unrelated_functions {
             compiler
                 .world_mut()
-                .reference_function(super::ModuleId::GLOBAL, format!("unrelated_{index}"), 0);
+                .reference_function(super::super::ModuleId::GLOBAL, format!("unrelated_{index}"), 0);
         }
         compiler.submit_code(CodeSubmission {
             name: Some("generated_peers.fz".into()),
@@ -863,7 +866,7 @@ fn correlated_input_rows_never_reach_the_widening_budget_on_the_lenses() {
             need: ExecutableNeed::Value,
         });
         compiler
-            .drive_root_to_dump_stage(root, super::dump::DumpStage::Native)
+            .drive_root_to_dump_stage(root, super::super::dump::DumpStage::Native)
             .unwrap_or_else(|error| panic!("{name} should drive to a settled native program: {error}"));
 
         let collapses = capture
@@ -878,6 +881,44 @@ fn correlated_input_rows_never_reach_the_widening_budget_on_the_lenses() {
             collapses, 0,
             "{name}: a correlated-input row set widened past its budget, so what the compile \
              specializes is a function of the agenda and not of the program",
+        );
+    }
+}
+
+#[cfg(test)]
+mod carrier_canon_tests {
+    use super::super::*;
+
+    fn render_root_carrier_with_dummy_lanes(dummy_lanes: usize) -> String {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let atom = world.types_mut().atom();
+        for _ in 0..dummy_lanes {
+            world.intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: atom,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        }
+        let carrier = world.intern_lane(crate::compiler2::transport::LaneDescr {
+            ty: int,
+            class: crate::compiler2::transport::TransportClass::Value,
+        });
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let layout = BackendValueLayout {
+            structural: nothing,
+            carrier: TransportCarrier::ValueRef(carrier),
+            tys: Box::new([int]),
+            reprs: Box::new([AbiValueRepr::ValueRef]),
+        };
+        let labels = |fn_id| function_label(&world, FunctionId::from_fn_id(fn_id));
+        ProgramCanon::new(&world, TyCanon::new(&labels)).layout(&layout)
+    }
+
+    #[test]
+    fn root_carrier_canon_uses_the_lane_type_not_its_mint_order() {
+        assert_eq!(
+            render_root_carrier_with_dummy_lanes(0),
+            render_root_carrier_with_dummy_lanes(1)
         );
     }
 }

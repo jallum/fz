@@ -1,15 +1,5 @@
 #---
 # purpose: "fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout"
-# budget.codegen.functions: 27
-# budget.codegen.instructions: 576
-# budget.planner.worklist_pops: 24
-# budget.planner.walk_calls: 24
-# budget.planner.type_fn_calls: 24
-# budget.planner.matcher_specs: 0
-# budget.planner.vars: 85
-# budget.planner.blocks: 24
-# budget.planner.stmts: 22
-# budget.planner.dispatches: 27
 #---
 #
 # # receive_selective_refs
@@ -41,9 +31,7 @@
 # ## Three-path parity
 #
 # The fixture is run through interpreter, JIT, and AOT; all three must
-# produce identical printed output. The README budget frontmatter keeps
-# compiler output shape from growing unexpectedly without committing the full
-# generated dumps.
+# produce identical printed output.
 # fz-recv.fixture -- selective receive acceptance.
 #
 # Two replies arrive in the opposite order from the receives that want

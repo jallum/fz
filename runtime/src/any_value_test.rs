@@ -1354,3 +1354,212 @@ fn float_ingress_rejects_nonfinite_payloads_before_publication() {
         assert!(std::panic::catch_unwind(|| AnyValue::from_ref(reference)).is_err());
     }
 }
+
+use crate::heap::{Heap, Schema, SchemaRegistry};
+use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+#[test]
+fn packing_strategy_uses_platform_specific_tag_shift() {
+    assert_eq!(AnyValueRefPacking::for_arch(TaggedRefArch::Arm64Tbi).tag_shift(), 56);
+    assert_eq!(
+        AnyValueRefPacking::for_arch(TaggedRefArch::X86_64Canonical57).tag_shift(),
+        57
+    );
+    assert_eq!(
+        AnyValueRefPacking::for_arch(TaggedRefArch::Arm64Tbi).address_mask(),
+        (1u64 << 56) - 1
+    );
+    assert_eq!(
+        AnyValueRefPacking::for_arch(TaggedRefArch::X86_64Canonical57).address_mask(),
+        (1u64 << 57) - 1
+    );
+}
+
+#[test]
+fn packing_extracts_same_semantic_tag_on_supported_arches() {
+    let address = 0x1234_5678usize;
+    for packing in [
+        AnyValueRefPacking::for_arch(TaggedRefArch::Arm64Tbi),
+        AnyValueRefPacking::for_arch(TaggedRefArch::X86_64Canonical57),
+    ] {
+        let value = packing.pack(ValueKind::MAP, address);
+        assert_eq!(packing.tag(value), Ok(ValueKind::MAP));
+        assert_eq!(packing.address(value), address);
+    }
+}
+
+#[test]
+fn any_value_refs_use_value_kind_tags_directly() {
+    let packing = AnyValueRefPacking::current();
+    let value = packing.pack(ValueKind::ATOM, 0x1000);
+
+    assert_eq!(packing.tag(value), Ok(ValueKind::ATOM));
+    assert_eq!(value.raw_word() >> packing.tag_shift(), ValueKind::ATOM.tag() as u64);
+    assert_eq!(
+        AnyValueRef::from_raw_word(8_u64 << packing.tag_shift()),
+        Err(AnyValueRefError::UnknownTag(8))
+    );
+}
+
+#[test]
+fn empty_list_is_null_address_list_ref() {
+    let empty = AnyValueRef::empty_list();
+
+    assert_eq!(empty.tag(), ValueKind::LIST);
+    assert!(empty.is_empty_list());
+    assert!(!empty.is_heap_root());
+    assert_eq!(empty.list_addr(), Ok(ptr::null_mut()));
+    assert_eq!(
+        AnyValueRef::from_heap_object(ValueKind::LIST, ptr::null()).expect("empty list ref"),
+        empty
+    );
+    assert_eq!(
+        AnyValueRef::from_heap_object(ValueKind::MAP, ptr::null()),
+        Err(AnyValueRefError::NullAddress(ValueKind::MAP))
+    );
+}
+
+#[test]
+fn x86_packing_preserves_wide_canonical_user_addresses() {
+    let packing = AnyValueRefPacking::for_arch(TaggedRefArch::X86_64Canonical57);
+    let address = 0x00ab_cdef_1234_5000usize;
+    let value = packing.pack(ValueKind::INT, address);
+
+    assert_eq!(packing.tag(value), Ok(ValueKind::INT));
+    assert_eq!(packing.address(value), address);
+}
+
+#[test]
+fn scalar_refs_load_full_width_payloads() {
+    let int_slot = (-42i64) as u64;
+    let float_slot = 3.5f64.to_bits();
+    let atom_slot = 99u64;
+
+    let int_ref = AnyValueRef::from_scalar_slot(ValueKind::INT, &int_slot).expect("int ref");
+    let float_ref = AnyValueRef::from_scalar_slot(ValueKind::FLOAT, &float_slot).expect("float ref");
+    let atom_ref = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &atom_slot).expect("atom ref");
+
+    assert_eq!(int_ref.load_int(), Ok(-42));
+    assert_eq!(float_ref.load_float(), Ok(3.5));
+    assert_eq!(atom_ref.load_atom(), Ok(99));
+    assert!(!int_ref.is_heap_root());
+}
+
+#[test]
+fn bad_scalar_projection_reports_expected_and_found_tags() {
+    let slot = 7u64;
+    let value = AnyValueRef::from_scalar_slot(ValueKind::INT, &slot).expect("int ref");
+
+    assert_eq!(
+        value.load_float(),
+        Err(AnyValueRefError::ExpectedTag {
+            expected: ValueKind::FLOAT,
+            found: ValueKind::INT
+        })
+    );
+    assert_eq!(
+        AnyValueRef::from_scalar_slot(ValueKind::MAP, &slot),
+        Err(AnyValueRefError::ExpectedScalarTag(ValueKind::MAP))
+    );
+}
+
+#[test]
+fn heap_object_refs_clear_addresses_before_projection() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let mut heap = Heap::new(4096, schemas);
+    let schema_id = heap.register_schema(Schema::tuple_of_arity(1));
+
+    let list_bits = heap.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST_BITS);
+    let list_addr = list_addr_from_tagged(list_bits).expect("list addr");
+    let map_bits = heap.alloc_map_slots(&[(AnyValue::atom(3), AnyValue::int(4))]);
+    let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
+    let struct_addr = heap.alloc_struct(schema_id);
+    let bitstring_addr = heap.alloc_bitstring(&[0xAA], 8).heap_addr().expect("bitstring addr");
+    let closure_bits = heap.alloc_closure(crate::any_value::ClosureDenotationId::user(0), 0, 0, 0, 0xfeed, &[]);
+    let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
+    let procbin_addr = heap
+        .alloc_bitstring(&[0u8; 65], 65 * 8)
+        .heap_addr()
+        .expect("procbin addr");
+    let resource_addr = alloc_resource(
+        &mut heap,
+        ResourceHandle::new(77, fz_resource_destructor_noop),
+        AnyValue::nil_atom(),
+    )
+    .as_raw();
+
+    assert_eq!(
+        AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
+            .expect("list ref")
+            .list_addr(),
+        Ok(list_addr)
+    );
+    assert_eq!(
+        AnyValueRef::from_heap_object(ValueKind::MAP, map_addr)
+            .expect("map ref")
+            .map_addr(),
+        Ok(map_addr)
+    );
+    assert_eq!(
+        AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr)
+            .expect("struct ref")
+            .struct_addr(),
+        Ok(struct_addr)
+    );
+    assert_eq!(
+        AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr)
+            .expect("closure ref")
+            .closure_addr(),
+        Ok(closure_addr)
+    );
+    assert_eq!(
+        AnyValueRef::from_heap_object(ValueKind::BITSTRING, bitstring_addr)
+            .expect("bitstring ref")
+            .bitstring_addr(),
+        Ok(bitstring_addr)
+    );
+    assert_eq!(
+        AnyValueRef::from_heap_object(ValueKind::PROCBIN, procbin_addr)
+            .expect("procbin ref")
+            .procbin_addr(),
+        Ok(procbin_addr)
+    );
+    assert_eq!(
+        AnyValueRef::from_heap_object(ValueKind::RESOURCE, resource_addr)
+            .expect("resource ref")
+            .resource_addr(),
+        Ok(resource_addr)
+    );
+
+    let packed = AnyValueRef::from_heap_object(ValueKind::BITSTRING, bitstring_addr).expect("bitstring ref");
+    assert_eq!(
+        heap_object_word(packed.bitstring_addr().expect("bitstring addr"), ValueKind::BITSTRING),
+        heap_object_word(bitstring_addr, ValueKind::BITSTRING)
+    );
+    let packed = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref");
+    assert_eq!(
+        heap_object_word(packed.closure_addr().expect("closure addr"), ValueKind::CLOSURE),
+        heap_object_word(closure_addr, ValueKind::CLOSURE)
+    );
+}
+
+#[test]
+fn bad_heap_projection_reports_expected_and_found_tags() {
+    let mut bytes = [0u8; 16];
+    let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, bytes.as_mut_ptr()).expect("map ref");
+
+    assert!(map_ref.is_heap_root());
+    assert_eq!(
+        map_ref.list_addr(),
+        Err(AnyValueRefError::ExpectedTag {
+            expected: ValueKind::LIST,
+            found: ValueKind::MAP
+        })
+    );
+    assert_eq!(
+        AnyValueRef::from_heap_object(ValueKind::INT, bytes.as_mut_ptr()),
+        Err(AnyValueRefError::ExpectedHeapObjectTag(ValueKind::INT))
+    );
+}
