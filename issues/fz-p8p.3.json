@@ -9,14 +9,16 @@
     "fz-p8p.7",
     "fz-p8p.9"
   ],
+  "closed_at": "2026-09-26T02:28:05Z",
+  "close_reason": "de5e241b4 on fz-p8p.3/fixtures-home",
   "created": "2026-09-25T21:22:59Z",
   "description": "## Why\nEvery later step needs a place to put processed fixtures and one way to drive them. Owner decisions 2026-09-25: one flat `fixtures/` (no `behavior/` subdirectory); every fixture is a runnable program entered at `main/0` (or `test` blocks) and runs on the run/interp/build matrix; files are `NNNNN_\u003cshort_description\u003e.fz` with a stable unique number and a `# purpose:` line. Approved design: /Users/j5n/Workspace/fz-p8p.3.html.\n\n## What changes\n- `tests/fixture_matrix.rs` discovers `fixtures/*.fz` in addition to `fixtures2/behavior/`; the contract harness discovers `fixtures/` in addition to `fixtures2/`; `canonical_source_name` uses the real relative path. The second root is scaffolding removed by fz-p8p.12.\n- Static trial `fixtures_describe_themselves`: every `fixtures/*.fz` has `purpose:`, a 5-digit `NNNNN_` stem, and a number unique across both roots (the existing 00556 collision is a named exemption until fz-p8p.9). No separate entry check: the matrix already fails a fixture without `main` or `test` blocks.\n- Test-only `src/compiler2/drive_harness.rs`: `Drive::fixture(n)` (number only; falls back to fixtures2 until fz-p8p.12; no source-string entry), root `main/0` + `Value` with `open_root(module, name, arity)` as the only override, optional `demand(job)`, `settle()` asserting Resolved vs `drive()` returning the outcome. The captures and lookups defined in drive_test.rs move into it; captures are always installed (cost measured against lib wall time; if expensive, bring opt-in to the owner). Duplicate `module_name` (4 test files) and `function_id` (2) definitions collapse into it.\n- Pilot migrations: `fixture_facts_test.rs`, `canon_test.rs` (their setup helpers deleted; their programs become fixtures/ files).\n- Delete `FixtureMetadata::participates_in_matrix` (only its own unit test calls it).\n- Fold `fixtures2/GOLDEN.md` into `.agent/docs/fixtures.md` (realignment map dropped as history); README points there.\n\n## Signal\nPilot assertions unchanged; a moved pilot fixture runs on all three paths with its trial time recorded; the static trial is proven by a temp-dir unit test; gate green except the fz-xxd.3 reds.",
   "id": "fz-p8p.3",
   "labels": [],
   "parent": "fz-p8p",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fixtures/ home: one flat self-describing fixture directory, every fixture on the matrix, one drive harness",
   "type": "task",
-  "updated_at": "2026-09-25T21:25:34Z"
+  "updated_at": "2026-09-26T02:28:05Z"
 }
