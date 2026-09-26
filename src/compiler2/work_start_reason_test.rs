@@ -250,7 +250,16 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // tally no longer double-counts layers re-arbitrated after they were
         // already proven final. Publishing a function's source from the walk
         // that scoped it removes one source job per reached function.
-        (3813, 11, 19, 232),
+        // A job gated on a fact its subject already carries never starts to
+        // discover that fact missing, then wake once the fact lands
+        // (`Job::missing_gates`).
+        // fz-afu.2: 3170 -> 3168. `World::submit_root` no longer enqueues
+        // `SeedRoot` directly; it demands `RootEntry` through the same
+        // gate-checked path every other job uses. `SeedRoot(main)` used to
+        // run 3 times -- an ignition run that discovered its own gate, one
+        // more rediscovering the second, then the real run -- and now runs
+        // once, removing its two blocked-only applied steps.
+        (3168, 9, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -265,7 +274,13 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // changed revision, and this fixture reaches `<` and `>`.
         // A function's source and its consumable fact are one publication now,
         // so each reached body costs one changed revision instead of two.
-        1192,
+        // A job gated on a fact its subject already carries never starts to
+        // discover that fact missing, then wake once the fact lands
+        // (`Job::missing_gates`).
+        // fz-afu.2: 781 -> 779. `SeedRoot(main)`'s two now-eliminated
+        // blocked-only runs (see above) each published one non-demand
+        // changed revision on their way to discovering their own gate.
+        779,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -275,7 +290,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // The typed `==` clauses retain blocked prerequisite waits of their own.
         // A consumer of a function's source no longer waits behind a copy job,
         // so each reached body retains one blocked prerequisite fewer.
-        1113,
+        // fz-afu.2: 1113 -> 1103. `SeedRoot(main)`'s gate chain used to be
+        // rediscovered hop by hop through the blocked-waiter sweep; it now
+        // demands through `submit_root`'s own ignition call and the
+        // `root_frontier` standing demand instead, so those hops move off
+        // this count rather than adding to it.
+        1103,
         "the blocked-waiter census includes every ordinary generic helper prerequisite",
     );
     assert_eq!(
@@ -292,8 +312,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fields distinct consumers read stay distinct, and each one is its
         // own completion woken on that same exact cause. The drain arbiter's
         // whole-cone certification removes the re-arbitration wakes that used
-        // to inflate the whole-input-vector slot.
-        (1169, 937, [58, 232, 165, 482, 0]),
+        // to inflate the whole-input-vector slot. A job gated on a fact its
+        // subject already carries never starts to discover that fact
+        // missing, then wake once the fact lands (`Job::missing_gates`) --
+        // the settled-executable-facts slot drops to zero since that wake
+        // was entirely the discovery bounce.
+        (937, 705, [58, 0, 165, 482, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(

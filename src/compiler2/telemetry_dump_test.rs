@@ -197,12 +197,22 @@ fn jsonl_backend_shows_precipitating_compiler2_actions() {
         log.contains("\"name\":[\"fz\",\"compiler2\",\"work_graph\",\"applied\"]"),
         "compiler2 jsonl log should include the applied work-graph step:\n{log}"
     );
+    // fz-afu.2: `World::submit_root` no longer enqueues `SeedRoot` directly;
+    // it demands `RootEntry` through the same gate-checked path every other
+    // job uses. `SeedRoot(main)`'s own gate (`FunctionDefined`) is missing,
+    // so demand redirects to `DefineFunction`, whose own gate
+    // (`ExpandedFunctionSource`) redirects to `ExpandFunctionSource` in
+    // turn. No code has been submitted, so `ExpandFunctionSource` has no
+    // scope to gate on and is the one that actually starts, discovering the
+    // true leaf cause -- there is no function named `main/0` anywhere -- as
+    // a mid-run wait on `FunctionSource`, one gate hop deeper than before
+    // this fix.
     assert!(
-        log.contains("\"job\":{\"opaque_type\"") && log.contains("SeedRoot"),
+        log.contains("\"job\":{\"opaque_type\"") && log.contains("ExpandFunctionSource"),
         "compiler2 jsonl log should name the job that triggered the unresolved drive:\n{log}"
     );
     assert!(
-        log.contains("\"completion\":{\"opaque_type\"") && log.contains("FunctionDefined"),
+        log.contains("\"completion\":{\"opaque_type\"") && log.contains("FunctionSource"),
         "compiler2 jsonl log should show the blocking fact in the applied step:\n{log}"
     );
     assert!(

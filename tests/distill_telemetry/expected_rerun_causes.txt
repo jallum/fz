@@ -17,5 +17,5 @@ cause of every re-run
   none
 
   matched enqueued wakes (18) == work_starts_changed_revision_wake (18)
-  ignition + activation_frontier + blocked_waiter_expansion (26) == distinct subjects (26)
+  ignition + root_frontier + activation_frontier + blocked_waiter_expansion (26) == distinct subjects (26)
 

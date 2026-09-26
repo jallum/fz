@@ -858,6 +858,13 @@ impl RootMap {
     pub fn len(&self) -> usize {
         self.slots.len()
     }
+
+    /// Every root id defined so far, in definition order. A root's slot
+    /// exists the moment `define` returns it, so unlike `CodeMap::ids` this
+    /// never filters: there is no reserved-but-undefined state to skip.
+    pub fn ids(&self) -> Vec<RootId> {
+        (0..self.slots.len() as u32).map(RootId).collect()
+    }
 }
 
 /// Reconciles a fact's value when it is (re)produced. `current` is `None`
