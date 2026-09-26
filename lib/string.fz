@@ -86,10 +86,6 @@ defmodule String do
   # Case mapping is full Unicode, not ASCII -- see `upcase/1` and `downcase/1`
   # below for what "full" means and why the table lives in the runtime.
 
-  extern "fz" defp fz_binary_to_atom(any) :: any
-  extern "fz" defp fz_binary_upcase(any) :: binary
-  extern "fz" defp fz_binary_downcase(any) :: binary
-
   @doc """
   Returns the number of codepoints in `s`.
 
@@ -439,6 +435,8 @@ defmodule String do
   @spec upcase(binary) :: binary
   def upcase(s), do: fz_binary_upcase(s)
 
+  extern "fz" defp fz_binary_upcase(any) :: binary
+
   @doc """
   Converts every codepoint in `s` to lowercase.
 
@@ -456,6 +454,8 @@ defmodule String do
   """
   @spec downcase(binary) :: binary
   def downcase(s), do: fz_binary_downcase(s)
+
+  extern "fz" defp fz_binary_downcase(any) :: binary
 
   @doc """
   Returns `s` repeated `n` times.
@@ -787,6 +787,8 @@ defmodule String do
   """
   @spec to_atom(binary) :: atom
   def to_atom(s), do: fz_binary_to_atom(s)
+
+  extern "fz" defp fz_binary_to_atom(any) :: any
 
   @doc """
   Reverses the codepoints of `s`.

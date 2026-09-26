@@ -20,16 +20,6 @@ defmodule Map do
   iteration can differ between the two runtimes.
   """
 
-  extern "C" defp fz_map_count(any) :: integer
-  extern "C" defp fz_map_entry_key(any, integer) :: any
-  extern "C" defp fz_map_entry_value(any, integer) :: any
-  extern "fz" defp fz_map_delete(any, any) :: any
-  extern "fz" defp fz_map_from_kv(any, any) :: any
-  extern "fz" defp fz_map_put_ref(any, any, any) :: any
-  extern "fz" defp fz_map_put_int(any, any, integer) :: any
-  extern "fz" defp fz_map_put_float(any, any, float) :: any
-  extern "fz" defp fz_map_put_atom_ref(any, any, atom) :: any
-
   # One pass, one allocation each. Reach for these when working with several keys.
 
   @doc """
@@ -129,6 +119,8 @@ defmodule Map do
   defp build([], ks, vs), do: fz_map_from_kv(reverse(ks, []), reverse(vs, []))
   defp build([{k, v} | t], ks, vs), do: build(t, [k | ks], [v | vs])
 
+  extern "fz" defp fz_map_from_kv(any, any) :: any
+
   @spec taken(any, [any], [{any, any}]) :: [{any, any}]
   defp taken(_map, [], acc), do: reverse(acc, [])
   defp taken(map, [k | t], acc), do: taken(map, t, take_one(map, k, acc, has_key?(map, k)))
@@ -186,6 +178,11 @@ defmodule Map do
   def put(map, key, value :: atom), do: fz_map_put_atom_ref(map, key, value)
   def put(map, key, value), do: fz_map_put_ref(map, key, value)
 
+  extern "fz" defp fz_map_put_int(any, any, integer) :: any
+  extern "fz" defp fz_map_put_float(any, any, float) :: any
+  extern "fz" defp fz_map_put_atom_ref(any, any, atom) :: any
+  extern "fz" defp fz_map_put_ref(any, any, any) :: any
+
   @doc """
   Returns the value for `key`, or `nil` when the key is absent.
 
@@ -237,6 +234,8 @@ defmodule Map do
   @spec delete(any, any) :: any
   def delete(map, key), do: fz_map_delete(map, key)
 
+  extern "fz" defp fz_map_delete(any, any) :: any
+
   @doc """
   Returns the number of entries in `map`.
 
@@ -251,6 +250,8 @@ defmodule Map do
   """
   @spec size(any) :: integer
   def size(map), do: fz_map_count(map)
+
+  extern "C" defp fz_map_count(any) :: integer
 
   @doc """
   Returns the entries as a `{key, value}` list, in key order.
@@ -318,6 +319,8 @@ defmodule Map do
     end
   end
 
+  extern "C" defp fz_map_entry_key(any, integer) :: any
+
   @spec keys(any, integer, integer, [any]) :: [any]
   defp keys(map, count, index, acc) do
     if index >= count do
@@ -335,6 +338,8 @@ defmodule Map do
       values(map, count, index + 1, [fz_map_entry_value(map, index) | acc])
     end
   end
+
+  extern "C" defp fz_map_entry_value(any, integer) :: any
 
   @doc """
   The `Enumerable.reduce/3` callback body for maps.

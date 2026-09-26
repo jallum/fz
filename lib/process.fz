@@ -1,8 +1,6 @@
 defmodule Process do
   @moduledoc "Runtime process inspection helpers."
 
-  extern "fz" defp fz_process_heap_alloc_stats() :: any
-
   @doc """
   Returns allocation and scheduling counters for the current process, as a map.
 
@@ -23,4 +21,6 @@ defmodule Process do
   """
   @spec heap_alloc_stats() :: any
   def heap_alloc_stats(), do: fz_process_heap_alloc_stats()
+
+  extern "fz" defp fz_process_heap_alloc_stats() :: any
 end
