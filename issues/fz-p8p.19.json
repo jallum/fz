@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-p8p.4"
+  ],
   "created": "2026-09-26T09:48:11Z",
   "description": "Elixir warns 'this clause cannot match because a previous clause at line N always matches' (module/types/pattern.ex:192-215, 1500-1830). fz computes this fact in find_unreachable_rows (src/dispatch_matrix/pattern/source.rs:271-280), but it is cfg(test) with no production caller. Its sibling is_inexhaustive_with_resolver is wired at source_diagnostics.rs:70-75, 212-231. Fix: add a resolver form, drop the cfg(test) gate, call it from both sites, and add warning code type/redundant-clause. fixtures/00151 and 00152 pin the warning in expected.stderr; 00153 stays clean. pattern-matching.md:325 then describes a live check. Proposal: /Users/j5n/Workspace/fz-p8p.4-findings.html (approved 2026-09-26). One commit. The fixture moves to fixtures/ and its port test is deleted in the same commit.",
   "id": "fz-p8p.19",
