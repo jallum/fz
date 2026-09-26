@@ -1,0 +1,12 @@
+#---
+# purpose: an outer sibling call is not shadowed by an inner nested module's function of the same name.
+#---
+defmodule A do
+  def f(x), do: x
+  def caller(x), do: f(x)
+  defmodule B do
+    def f(x), do: x + 100
+  end
+end
+
+def main(), do: dbg(A.caller(1))

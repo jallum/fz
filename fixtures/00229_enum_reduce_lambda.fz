@@ -1,0 +1,6 @@
+#---
+# purpose: Enum.reduce over a list with an inline lambda accumulates correctly
+#---
+def main() do
+  assert(Enum.reduce([1, 2, 3], 0, fn (x, acc) -> acc + x end) == 6, "1 + 2 + 3 == 6")
+end

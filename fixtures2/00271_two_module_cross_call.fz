@@ -1,8 +1,0 @@
-defmodule Math do
-  def add(x, y), do: x + y
-end
-defmodule User do
-  import Math, only: [add: 2]
-  def run(), do: add(20, 22)
-end
-def main(), do: User.run()

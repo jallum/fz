@@ -1,0 +1,9 @@
+#---
+# purpose: a defstruct whose @type t omits a field resolves without enforcing full field coverage.
+#---
+defmodule Range do
+  defstruct [:first, :last, :step]
+  @type t :: %Range{first: integer, last: integer}
+end
+
+def main(), do: %Range{first: 1, last: 10}

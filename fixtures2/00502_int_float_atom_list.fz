@@ -1,4 +1,0 @@
-def main() do
-  x = [1, 2.5, :a]
-  x
-end

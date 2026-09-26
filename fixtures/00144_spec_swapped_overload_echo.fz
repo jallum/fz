@@ -1,0 +1,13 @@
+#---
+# purpose: a swapped multi-arrow @spec (each arrow's declared result reversed from its actual body) still resolves; per-arrow validation does not currently reject the mismatched return type
+#---
+defmodule M do
+  @spec echo(integer) :: float
+  @spec echo(float) :: integer
+  def echo(x :: integer), do: x
+  def echo(x :: float), do: x
+end
+def main() do
+  dbg(M.echo(1))
+  dbg(M.echo(1.5))
+end

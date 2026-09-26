@@ -1,0 +1,4 @@
+#---
+# purpose: a list literal renders correctly as a bracketed, comma-separated sequence
+#---
+def main(), do: dbg([1, 2, 3])

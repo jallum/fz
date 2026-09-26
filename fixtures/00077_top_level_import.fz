@@ -1,0 +1,8 @@
+#---
+# purpose: a top-level import brings a module's export into scope for top-level function calls.
+#---
+defmodule Math do
+  def add(x, y), do: x + y
+end
+import Math, only: [add: 2]
+def main(), do: add(20, 22)

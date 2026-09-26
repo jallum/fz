@@ -1,0 +1,13 @@
+#---
+# purpose: Utf8.valid? imported into a module and called through it returns true through the linked runtime
+#---
+defmodule User do
+  import Utf8, only: [valid?: 1]
+  def run(), do: valid?(<<104, 105>>)
+end
+
+def main() do
+  result = User.run()
+  assert(result == true, "Utf8.valid? imported into a module returns true for valid UTF-8")
+  result
+end

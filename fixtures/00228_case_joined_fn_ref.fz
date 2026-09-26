@@ -1,0 +1,13 @@
+#---
+# purpose: a function reference joined across case branches remains callable after the join
+#---
+def add_a(x, acc), do: acc + x
+def add_b(x, acc), do: acc + x
+
+def main() do
+  reducer = case 0 == 0 do
+    true -> add_a
+    _ -> add_b
+  end
+  assert(reducer.(1, 0) == 1, "the case-joined reference is still callable")
+end

@@ -1,0 +1,10 @@
+#---
+# purpose: a float as a list head allocates exactly one cons cell
+#---
+def main() do
+  xs = [3.14]
+  dbg(xs)
+  stats = Process.heap_alloc_stats()
+  dbg(stats[:list_cons_allocs])
+  dbg(stats[:scalar_box_allocs])
+end

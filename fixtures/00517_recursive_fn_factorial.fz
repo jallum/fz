@@ -1,0 +1,11 @@
+#---
+# purpose: a multi-clause recursive fn computes a factorial
+#---
+def fact(0), do: 1
+def fact(n), do: n * fact(n - 1)
+
+def main() do
+  result = fact(6)
+  assert(result == 720, "fact(6) evaluates to 720")
+  result
+end

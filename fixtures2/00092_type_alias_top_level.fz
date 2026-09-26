@@ -1,2 +1,0 @@
-@type id :: integer
-def main(), do: nil

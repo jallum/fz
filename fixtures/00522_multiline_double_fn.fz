@@ -1,0 +1,7 @@
+#---
+# purpose: a multiline fn body with arithmetic evaluates and runs correctly
+#---
+def double(x) do
+  x * 2
+end
+def main() do dbg(double(21)) end

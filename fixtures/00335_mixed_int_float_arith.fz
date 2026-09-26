@@ -1,0 +1,4 @@
+#---
+# purpose: mixed integer and float arithmetic promotes the integer operand to float
+#---
+def main(), do: assert(1 + 2.0 == 3.0, "mixed int/float arithmetic promotes the integer to float")

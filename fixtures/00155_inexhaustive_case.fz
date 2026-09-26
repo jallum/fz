@@ -1,0 +1,11 @@
+#---
+# purpose: a case with only literal arms and no wildcard is inexhaustive; an unmatched value aborts at runtime with a no-matching-clause fault
+# expect: abort
+#---
+def f(v) do
+  case v do
+    0 -> :zero
+    1 -> :one
+  end
+end
+def main(), do: f(7)

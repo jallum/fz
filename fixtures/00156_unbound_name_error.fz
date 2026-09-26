@@ -1,0 +1,6 @@
+#---
+# purpose: an unbound name in an expression is rejected at lowering with an unbound-value diagnostic
+# expect: diagnostic
+# diagnostic.code: lower/unbound
+#---
+def main(), do: missing + 1

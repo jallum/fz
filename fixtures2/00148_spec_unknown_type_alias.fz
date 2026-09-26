@@ -1,5 +1,0 @@
-defmodule M do
-  @spec one(unknown_thing) :: integer
-  def one(_), do: 1
-end
-def main(), do: dbg(M.one(0))

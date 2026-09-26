@@ -1,0 +1,4 @@
+#---
+# purpose: tuple equality is false when arities differ
+#---
+def main(), do: refute({1, 2} == {1, 2, 3}, "tuple equality is false when arities differ")

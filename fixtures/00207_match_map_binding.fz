@@ -1,0 +1,10 @@
+#---
+# purpose: a static-key map pattern proves the key hit and carries the field's value into the selected leaf, past a dead catch-all
+#---
+def pick(%{id: x}), do: x
+def pick(:none), do: :none
+def pick(_), do: :unreachable
+
+def main() do
+  {pick(%{id: 1}), pick(:none)}
+end

@@ -1,0 +1,9 @@
+#---
+# purpose: a nested tuple/list pattern narrows its payload twice and returns the bound list head
+#---
+def pick({:ok, [h | _t]}), do: h
+def pick(:error), do: :error
+
+def main() do
+  {pick({:ok, [1]}), pick(:error)}
+end

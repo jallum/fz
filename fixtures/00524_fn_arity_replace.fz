@@ -1,0 +1,10 @@
+#---
+# purpose: a two-argument function call evaluates correctly
+#---
+def f(x, y), do: x + y
+
+def main() do
+  result = f(10, 20)
+  assert(result == 30, "f(10, 20) evaluates to 30")
+  result
+end

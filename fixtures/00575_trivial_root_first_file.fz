@@ -1,0 +1,4 @@
+#---
+# purpose: the smallest well-formed program, used as the first of two files submitted sequentially in a multi-file resolve test; it resolves entirely on its own.
+#---
+def main(), do: 1

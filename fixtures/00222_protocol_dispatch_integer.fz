@@ -1,0 +1,12 @@
+#---
+# purpose: protocol dispatch selects the correct implementation for Integer
+#---
+defprotocol Integerish do
+  def id(value)
+end
+
+defimpl Integerish, for: Integer do
+  def id(value), do: value + 1
+end
+
+def main(), do: assert(Integerish.id(41) == 42, "dispatch selects the Integer impl")

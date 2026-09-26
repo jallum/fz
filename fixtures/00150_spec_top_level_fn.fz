@@ -1,0 +1,6 @@
+#---
+# purpose: an @spec on a top-level function with only builtin types resolves using the builtin environment
+#---
+@spec one() :: integer
+def one(), do: 1
+def main(), do: dbg(one())

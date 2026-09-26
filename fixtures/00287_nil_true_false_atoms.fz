@@ -1,0 +1,8 @@
+#---
+# purpose: nil, true, and false are atoms whose names round-trip through Atom.to_string
+#---
+def main() do
+  assert(Atom.to_string(nil) == "nil", "nil renders as its name")
+  assert(Atom.to_string(true) == "true", "true renders as its name")
+  assert(Atom.to_string(false) == "false", "false renders as its name")
+end

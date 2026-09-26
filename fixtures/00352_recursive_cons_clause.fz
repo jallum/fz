@@ -1,0 +1,10 @@
+#---
+# purpose: a recursive multi-clause function dispatches on list vs non-list types
+#---
+def count([]), do: 0
+def count([_head | tail]), do: count(tail) + 1
+def count(_value), do: 99
+
+def main() do
+  assert(count([1, 2]) + count([]) + count(%{a: 1}) + count(42) == 200, "recursive multi-clause function dispatches on list vs other types")
+end

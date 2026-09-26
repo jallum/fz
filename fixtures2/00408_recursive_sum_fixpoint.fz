@@ -1,3 +1,0 @@
-def sum([]), do: 0
-def sum([h | t]), do: h + sum(t)
-def main(), do: dbg(sum([1, 2, 3, 4, 5]))

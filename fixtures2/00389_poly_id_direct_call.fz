@@ -1,7 +1,0 @@
-def id(x) do
-  x
-end
-
-def main() do
-  {id(1), id(:ok)}
-end

@@ -1,6 +1,0 @@
-def main() do
-  parent = self()
-  spawn(fn () -> send(parent, receive do x -> x end) end)
-  send(2, 42)
-  receive do x -> x end
-end

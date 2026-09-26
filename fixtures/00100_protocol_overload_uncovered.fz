@@ -1,0 +1,15 @@
+#---
+# purpose: an implementation @spec overload not present in the protocol's declared overload set resolves without a rejection.
+#---
+defprotocol P do
+  @spec pick(integer) :: integer
+  def pick(value)
+end
+
+defimpl P, for: List do
+  @spec pick(integer) :: integer
+  @spec pick(float) :: float
+  def pick(value), do: value
+end
+
+def main(), do: dbg(P.__info__(:functions))

@@ -1,0 +1,9 @@
+#---
+# purpose: a successful match on a fresh name does not disturb an earlier binding
+#---
+def main() do
+  x = 1
+  {:ok, _y} = {:ok, 2}
+  assert(x == 1, "matching {:ok, _y} leaves x's earlier binding untouched")
+  x
+end

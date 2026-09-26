@@ -1,5 +1,0 @@
-def make_adder(k), do: fn(x) -> x + k end
-def main() do
-  f = make_adder(10)
-  f.(5)
-end

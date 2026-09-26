@@ -1,0 +1,6 @@
+#---
+# purpose: Enum.count dispatches the count protocol callback to the List impl and settles to int
+#---
+def main() do
+  dbg(Enum.count([1, 2, 3]))
+end

@@ -1,0 +1,7 @@
+#---
+# purpose: a reference to an unbound variable is a compile-time error
+# expect: diagnostic
+# diagnostic.code: lower/unbound
+#---
+def f(), do: missing
+def main() do f() end

@@ -1,5 +1,0 @@
-defmodule M do
-  @type opts :: keyword(integer)
-  @spec run(opts) :: nil
-  def run(_), do: nil
-end

@@ -1,5 +1,0 @@
-def main() do
-  x = 1
-  {:ok, _y} = {:ok, 2}
-  x
-end

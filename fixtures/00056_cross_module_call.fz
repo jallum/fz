@@ -1,0 +1,11 @@
+#---
+# purpose: a qualified cross-module call resolves to the target module's function.
+#---
+defmodule A do
+  def ping(), do: 1
+end
+defmodule B do
+  def caller(), do: A.ping()
+end
+
+def main(), do: dbg(B.caller())

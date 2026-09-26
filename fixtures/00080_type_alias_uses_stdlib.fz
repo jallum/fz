@@ -1,0 +1,10 @@
+#---
+# purpose: a module's @type alias can reference a runtime stdlib type alias such as keyword/1.
+#---
+defmodule M do
+  @type opts :: keyword(integer)
+  @spec run(opts) :: nil
+  def run(_), do: nil
+end
+
+def main(), do: dbg(M.run([]))

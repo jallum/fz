@@ -1,0 +1,5 @@
+#---
+# purpose: a top-level @type alias is retained as a program-level attribute alongside function definitions.
+#---
+@type id :: integer
+def main(), do: nil

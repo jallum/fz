@@ -1,11 +1,11 @@
 use super::drive_harness::{
     ActivationAnalysisCapture, ActivationInputCapture, ActivationInputRecord, BackendProgramCapture, CallsiteCapture,
-    EntryDispatchCapture, FunctionCapture, GuardDispatchCapture, ListRetentionTelemetryCapture, LoweredBodyCapture,
-    ModuleCapture, NativeProgramCapture, OutputCapture, ReturnTypeCapture, SourceNoteCapture, WorkGraphCapture,
-    assert_resolved, backend_executable, entry_dispatch, function_fq_name, function_id, function_id_in_module,
-    function_module_name, generated_functions_owned_by, guard_dispatch, latest_entry_dispatch, latest_guard_dispatch,
-    lowered_body, metadata_str, module_function_id, module_id, module_indexed_ids, module_name, named_module_id,
-    presence, try_module_function_id,
+    Drive, EntryDispatchCapture, FunctionCapture, GuardDispatchCapture, ListRetentionTelemetryCapture,
+    LoweredBodyCapture, ModuleCapture, NativeProgramCapture, OutputCapture, ReturnTypeCapture, Settled,
+    SourceNoteCapture, WorkGraphCapture, assert_resolved, backend_executable, entry_dispatch, function_fq_name,
+    function_id, function_id_in_module, function_module_name, generated_functions_owned_by, guard_dispatch,
+    latest_entry_dispatch, latest_guard_dispatch, lowered_body, metadata_str, module_function_id, module_id,
+    module_indexed_ids, module_name, named_module_id, presence, try_module_function_id,
 };
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
@@ -14,10 +14,10 @@ use crate::compiler2::drive::DependencyKey;
 use crate::compiler2::pull::{ProductKey, TransportCarrier};
 use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
-    CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
-    FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, Namespace, QuotedSourceHeap,
-    QuotedSourceMetadata, RuntimeDemand, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, World,
-    parse_quoted_program,
+    CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, CallableValueKind, ControlEntryOrigin, ExecutableKey,
+    FactKey, FactUse, FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, Namespace,
+    QuotedSourceHeap, QuotedSourceMetadata, RuntimeDemand, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId,
+    World, parse_quoted_program,
 };
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
@@ -28,6 +28,7 @@ use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
 };
 use crate::modules::identity::{ModuleDenotation, ModuleName};
+use crate::source::Span;
 use crate::telemetry::handler::{Event, EventKind};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
@@ -1922,7 +1923,7 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
     let mut sessions = super::pull::ProductSessions::default();
     let source_owner = world.submit_code(
         Some("nested_protocol_impl_dispatch.fz".to_string()),
-        include_str!("../../fixtures2/00272_protocol_impl_dispatch.fz").to_string(),
+        include_str!("../../fixtures/00272_protocol_impl_dispatch.fz").to_string(),
     );
 
     assert_resolved(
@@ -4201,7 +4202,7 @@ fn compiler2_root_source_publication_is_once_per_code_fact() {
     let mut compiler = Compiler2::new(tel);
     let user_code = compiler.submit_code(CodeSubmission {
         name: Some("no_runtime.fz".to_string()),
-        text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
+        text: include_str!("../../fixtures/00009_no_runtime.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4686,7 +4687,7 @@ fn compiler2_unused_runtime_library_stays_cold() {
     let mut compiler = Compiler2::new(tel);
     let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("no_runtime.fz".to_string()),
-        text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
+        text: include_str!("../../fixtures/00009_no_runtime.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -6347,7 +6348,7 @@ fn assert_native_helpers_are_referenced(source: &str) {
 
 #[test]
 fn native_dispatch_does_not_emit_unselected_branch_helpers() {
-    assert_native_helpers_are_referenced(include_str!("../../fixtures2/00152_case_wildcard_unreachable.fz"));
+    assert_native_helpers_are_referenced(include_str!("../../fixtures/00152_case_wildcard_unreachable.fz"));
 }
 
 #[test]
@@ -8382,8 +8383,8 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00297_heap_alloc_stats.fz".to_string()),
-        text: include_str!("../../fixtures2/00297_heap_alloc_stats.fz").to_string(),
+        name: Some("fixtures/00297_heap_alloc_stats.fz".to_string()),
+        text: include_str!("../../fixtures/00297_heap_alloc_stats.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -8643,8 +8644,8 @@ fn compiler2_interp_runs_enum_reduce_while_halt_payload_with_distinct_type() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00284_enum_find_early_halt.fz".to_string()),
-        text: include_str!("../../fixtures2/00284_enum_find_early_halt.fz").to_string(),
+        name: Some("fixtures/00284_enum_find_early_halt.fz".to_string()),
+        text: include_str!("../../fixtures/00284_enum_find_early_halt.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -11139,7 +11140,7 @@ end
 ///
 /// The LIFO half is verified by hand, per the fz-kdt.93 precedent: change
 /// `Agenda::pop` (src/compiler2/agenda.rs) to `self.queue.pop_back()` and run
-/// `fz2 run fixtures2/00183_enum_take_list_range.fz`; its first line must be
+/// `fz2 run fixtures/00183_enum_take_list_range.fz`; its first line must be
 /// `[1, 2, 3]`.
 ///
 /// Arms asking one question with no stand-in between them -- neither domain
@@ -11180,7 +11181,7 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
     let mut measured: BTreeMap<(&str, String), usize> = BTreeMap::new();
     let mut twins = Vec::new();
     for fixture in [
-        "fixtures2/00183_enum_take_list_range.fz",
+        "fixtures/00183_enum_take_list_range.fz",
         "fixtures/00420_enum_take_drop_split.fz",
         "fixtures/00568_enum_count_member_reduce.fz",
         "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
@@ -11188,9 +11189,9 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
         "fixtures2/behavior/closure_identity_tag_split.fz",
         "fixtures2/behavior/closure_identity_captures.fz",
         "fixtures/00569_enum_map_family.fz",
-        "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
-        "fixtures2/00277_enum_tier0_fixture.fz",
-        "fixtures2/00281_opaque_reducer_closure.fz",
+        "fixtures/00231_joined_fn_refs_enum_reduce.fz",
+        "fixtures/00277_enum_tier0_fixture.fz",
+        "fixtures/00281_opaque_reducer_closure.fz",
         "fixtures2/behavior/opaque_fn_value_join.fz",
         "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
     ] {
@@ -12391,10 +12392,10 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 const ARM_ORDER_CENSUS: [&str; 21] = [
     "fixtures2/behavior/dispatch_seat_element_blind.fz",
     "fixtures2/behavior/dispatch_list_head_separates.fz",
-    "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
+    "fixtures/00231_joined_fn_refs_enum_reduce.fz",
     "fixtures/00568_enum_count_member_reduce.fz",
-    "fixtures2/00277_enum_tier0_fixture.fz",
-    "fixtures2/00281_opaque_reducer_closure.fz",
+    "fixtures/00277_enum_tier0_fixture.fz",
+    "fixtures/00281_opaque_reducer_closure.fz",
     "fixtures/00569_enum_map_family.fz",
     "fixtures/00571_enum_predicate_search.fz",
     "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
@@ -12404,7 +12405,7 @@ const ARM_ORDER_CENSUS: [&str; 21] = [
     "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
     "fixtures2/behavior/closure_identity_tag_split.fz",
     "fixtures2/behavior/closure_identity_captures.fz",
-    "fixtures2/00276_enum_to_list_and_map.fz",
+    "fixtures/00276_enum_to_list_and_map.fz",
     "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
     "fixtures2/behavior/list_literal_trailing_call.fz",
     "fixtures2/behavior/mailbox_closure_enum_hofs.fz",
@@ -12431,14 +12432,14 @@ const ARM_ORDER_CENSUS: [&str; 21] = [
 /// are named by [`ARM_ORDER_CENSUS`] too, which walks the same wrappers'
 /// selection PLANS rather than whether their artifact moves.
 const WRAPPER_MEMBER_CENSUS: [&str; 18] = [
-    "fixtures2/00183_enum_take_list_range.fz",
-    "fixtures2/00197_poly_capture_ref.fz",
-    "fixtures2/00230_enum_take_chained.fz",
-    "fixtures2/00276_enum_to_list_and_map.fz",
-    "fixtures2/00277_enum_tier0_fixture.fz",
-    "fixtures2/00391_poly_capture_ref.fz",
-    "fixtures2/00418_enum_count_range.fz",
-    "fixtures2/00419_enum_take_mixed.fz",
+    "fixtures/00183_enum_take_list_range.fz",
+    "fixtures/00197_poly_capture_ref.fz",
+    "fixtures/00230_enum_take_chained.fz",
+    "fixtures/00276_enum_to_list_and_map.fz",
+    "fixtures/00277_enum_tier0_fixture.fz",
+    "fixtures/00391_poly_capture_ref.fz",
+    "fixtures/00418_enum_count_range.fz",
+    "fixtures/00419_enum_take_mixed.fz",
     "fixtures/00420_enum_take_drop_split.fz",
     "fixtures2/behavior/dispatch_seat_element_blind.fz",
     "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
@@ -12749,10 +12750,10 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// value reaches the same member it reached before: the column order permutes a
 /// row's conjuncts and leaves each arm admitting exactly the set it admitted.
 const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 12] = [
-    ("fixtures2/00183_enum_take_list_range.fz", "", 54, 0),
-    ("fixtures2/00230_enum_take_chained.fz", "", 54, 0),
-    ("fixtures2/00418_enum_count_range.fz", "", 9, 0),
-    ("fixtures2/00419_enum_take_mixed.fz", "", 54, 0),
+    ("fixtures/00183_enum_take_list_range.fz", "", 54, 0),
+    ("fixtures/00230_enum_take_chained.fz", "", 54, 0),
+    ("fixtures/00418_enum_count_range.fz", "", 9, 0),
+    ("fixtures/00419_enum_take_mixed.fz", "", 54, 0),
     ("fixtures/00420_enum_take_drop_split.fz", "", 225, 0),
     ("fixtures2/behavior/unused_range_binding.fz", "", 9, 0),
     // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
@@ -12763,7 +12764,7 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 12] = [
     ("fixtures/00420_enum_take_drop_split.fz", "wrappers:reverse", 225, 0),
     // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
     // fixture whose list arms still differ at the element.
-    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 54, 0),
+    ("fixtures/00419_enum_take_mixed.fz", "arms:6", 54, 0),
     // The fixture written for fz-kdt.131's facet-3 pair reads 0: its header
     // says why (the fold hands the TAIL to the recursive dispatch, so the
     // mixed list never reaches the `[:false | :true]` arm), and this row is
@@ -12849,7 +12850,7 @@ fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
 /// either.
 #[test]
 fn compiler2_a_selection_sites_label_names_the_wrapper_the_dump_prints() {
-    let fixture = "fixtures2/00419_enum_take_mixed.fz";
+    let fixture = "fixtures/00419_enum_take_mixed.fz";
     let (compiler, program) = driven_backend_program(fixture);
     let world = compiler.world();
 
@@ -12998,13 +12999,13 @@ fn compiler2_a_permuted_arm_order_renders_the_same_artifact() {
 /// `ca23b676f`, measured over the whole corpus. Each one carried at least one
 /// separated pair the seat left in arrival order.
 const ARM_ORDER_ARTIFACT_CENSUS: [&str; 21] = [
-    "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
-    "fixtures2/00274_closed_union_protocol.fz",
-    "fixtures2/00281_opaque_reducer_closure.fz",
-    "fixtures2/00384_closure_predicate_wrapper.fz",
+    "fixtures/00231_joined_fn_refs_enum_reduce.fz",
+    "fixtures/00274_closed_union_protocol.fz",
+    "fixtures/00281_opaque_reducer_closure.fz",
+    "fixtures/00384_closure_predicate_wrapper.fz",
     "fixtures/00420_enum_take_drop_split.fz",
-    "fixtures2/00426_closed_union_protocol_dispatch.fz",
-    "fixtures2/00428_open_union_protocol.fz",
+    "fixtures/00426_closed_union_protocol_dispatch.fz",
+    "fixtures/00428_open_union_protocol.fz",
     "fixtures2/behavior/brand_refines_its_inner.fz",
     "fixtures2/behavior/bsx_guard_eq.fz",
     "fixtures2/behavior/bsx_nested_match.fz",
@@ -14185,7 +14186,7 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
 
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/late_main.fz".to_string()),
-        text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
+        text: include_str!("../../fixtures/00009_no_runtime.fz").to_string(),
     });
     assert_resolved(
         compiler.drive(),
@@ -14254,7 +14255,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_only.fz".to_string()),
-        text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
+        text: include_str!("../../fixtures/00009_no_runtime.fz").to_string(),
     });
     let _root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -14988,8 +14989,8 @@ fn compiler2_lowering_routes_nontail_if_join_flow_through_delivered_resume() {
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
-        text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
+        name: Some("fixtures/00466_nontail_if_join_flow.fz".to_string()),
+        text: include_str!("../../fixtures/00466_nontail_if_join_flow.fz").to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -15063,8 +15064,8 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
-        text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
+        name: Some("fixtures/00466_nontail_if_join_flow.fz".to_string()),
+        text: include_str!("../../fixtures/00466_nontail_if_join_flow.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -15890,8 +15891,8 @@ fn compiler2_native_program_jit_runs_nontail_if_join_flow_through_compiler2_code
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
-        text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
+        name: Some("fixtures/00466_nontail_if_join_flow.fz".to_string()),
+        text: include_str!("../../fixtures/00466_nontail_if_join_flow.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -19883,8 +19884,8 @@ def main(), do: invalid(:a)
 #[test]
 fn compiler2_enum_reduce_operator_ref_has_no_function_head_warnings() {
     let diagnostics = no_matching_clause_diagnostics(
-        "fixtures2/00181_enum_reduce_operator_ref.fz",
-        include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz"),
+        "fixtures/00181_enum_reduce_operator_ref.fz",
+        include_str!("../../fixtures/00181_enum_reduce_operator_ref.fz"),
     );
 
     assert!(
@@ -20344,8 +20345,8 @@ fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_cra
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00279_enum_find_find_value.fz".to_string()),
-        text: include_str!("../../fixtures2/00279_enum_find_find_value.fz").to_string(),
+        name: Some("fixtures/00279_enum_find_find_value.fz".to_string()),
+        text: include_str!("../../fixtures/00279_enum_find_find_value.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -20377,8 +20378,8 @@ fn compiler2_multi_target_closure_arg_floor_keeps_unique_member_on_producer_cons
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00279_enum_find_find_value.fz".to_string()),
-        text: include_str!("../../fixtures2/00279_enum_find_find_value.fz").to_string(),
+        name: Some("fixtures/00279_enum_find_find_value.fz".to_string()),
+        text: include_str!("../../fixtures/00279_enum_find_find_value.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -20402,7 +20403,7 @@ fn compiler2_multi_target_closure_arg_floor_keeps_unique_member_on_producer_cons
                 return false;
             }
             let span = compiler.world().function_surface(record.function_id).span;
-            include_str!("../../fixtures2/00279_enum_find_find_value.fz")
+            include_str!("../../fixtures/00279_enum_find_find_value.fz")
                 .get(span.start as usize..span.end as usize)
                 .is_some_and(|body| body.contains("x > 2"))
         })
@@ -21196,10 +21197,10 @@ fn quoted_call_retains_the_provider_function_id() {
     bodies.install(&tel);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00120_cross_module_macro.fz".to_string()),
-        text: include_str!("../../fixtures2/00120_cross_module_macro.fz").to_string(),
+        name: Some("fixtures/00120_cross_module_macro.fz".to_string()),
+        text: include_str!("../../fixtures/00120_cross_module_macro.fz").to_string(),
     });
-    compiler.submit_root(RootSubmission {
+    let root = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
         arity: 0,
@@ -21229,6 +21230,32 @@ fn quoted_call_retains_the_provider_function_id() {
         lowered_direct_callee(&bodies, run),
         Some(helper),
         "the caller lowers to the retained function itself"
+    );
+    assert_eq!(compiler.run_root_interp(root), Ok(107), "7 + 100");
+}
+
+/// An item macro's spliced fn belongs to the module it was spliced into: the
+/// call inside that module reaches the spliced function directly, not a name
+/// resolved a second time.
+#[test]
+fn item_macro_in_module_qualifies_spliced_fn_names() {
+    let drive = Drive::fixture(124);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(drive.telemetry());
+    let mut settled = drive.settle();
+    let root = settled.root();
+
+    let main = settled.function("main", 0);
+    let pi_ish = module_function_id(settled.functions(), "Constants", "pi_ish", 0);
+    assert_eq!(
+        lowered_direct_callee(&bodies, main),
+        Some(pi_ish),
+        "`Constants.pi_ish()` calls the fn the macro spliced into Constants"
+    );
+    assert_eq!(
+        settled.compiler_mut().run_root_interp(root),
+        Ok(314),
+        "the spliced constant"
     );
 }
 
@@ -21450,4 +21477,769 @@ fn a_quoted_guard_helper_reifies_its_retained_callable() {
         compiler.run_root_interp(root).is_ok(),
         "both of the fixture's assertions hold"
     );
+}
+
+/// Captures the primary span of the last `[fz, diag, error]` diagnostic seen.
+/// `Capture` durably owns its events, which strips the opaque `Diagnostic`
+/// payload (opaque values are not durable) -- so a span assertion needs a
+/// handler that reads the `Diagnostic` synchronously, inside `handle`, the
+/// way `telemetry::diag_render::DiagRenderer` does for rendering.
+struct LastErrorSpan {
+    span: Rc<RefCell<Option<Span>>>,
+}
+
+impl LastErrorSpan {
+    fn install(self, telemetry: &ConfiguredTelemetry) {
+        telemetry.attach_raw_event1::<Diagnostic, _>(&["fz", "diag", "error"], move |_, _, _, diagnostic| {
+            *self.span.borrow_mut() = Some(diagnostic.primary.span);
+        });
+    }
+}
+
+/// A USER coded quoted-source error must carry its source location end to
+/// end, not `Span::DUMMY`: `QuotedSourceError` now threads a span from the
+/// decode site (`quoted_function.rs`'s bit-spec modifier decode) through to
+/// the `emit_surface_read_error` render site (`quoted_expander.rs`). `3.14`
+/// is a bare literal in the quoted tree (frontdoor quotes literals without
+/// their own span metadata), so the tightest span available is the
+/// enclosing `1::3.14` bitstring field -- this asserts that span is real
+/// (non-DUMMY) and brackets the `3.14` modifier, not merely non-DUMMY.
+/// The diagnostic's code and message are covered by
+/// `fixtures/00577_bitstring_float_modifier.fz`'s `expect: diagnostic`
+/// frontmatter through the fixture matrix; this test carries only the span
+/// precision claim, which the matrix does not check.
+#[test]
+fn compiler2_bitstring_float_modifier_error_span_brackets_the_modifier() {
+    let tel = ConfiguredTelemetry::new();
+    let last_span = Rc::new(RefCell::new(None));
+    LastErrorSpan {
+        span: last_span.clone(),
+    }
+    .install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let source = include_str!("../../fixtures/00577_bitstring_float_modifier.fz");
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/00577_bitstring_float_modifier.fz".to_string()),
+        text: source.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "<<1::3.14>> should fail during bit-spec modifier decoding",
+    );
+
+    let span = last_span.borrow().expect("expected a captured diagnostic span");
+    assert!(
+        !span.is_dummy(),
+        "user coded bit-spec modifier error must carry a real span, not DUMMY"
+    );
+
+    let modifier_start = source.find("3.14").expect("fixture contains `3.14`") as u32;
+    let modifier_end = modifier_start + "3.14".len() as u32;
+    assert!(
+        span.start <= modifier_start && span.end >= modifier_end,
+        "span [{}, {}) must bracket the `3.14` modifier at [{modifier_start}, {modifier_end})",
+        span.start,
+        span.end,
+    );
+
+    // Upper bound: the span must not widen past the `1::3.14` bitstring field.
+    // Without this, a regression to a whole-function or whole-`<<>>` span would
+    // still satisfy the containment check above. `3.14` is a bare literal
+    // (no span meta of its own), so the enclosing `::` field is the tightest
+    // bracket available and the span should equal exactly that field.
+    let field_start = source.find("1::3.14").expect("fixture contains `1::3.14`") as u32;
+    let field_end = field_start + "1::3.14".len() as u32;
+    assert!(
+        span.start >= field_start && span.end <= field_end,
+        "span [{}, {}) must not extend beyond the `1::3.14` field at [{field_start}, {field_end})",
+        span.start,
+        span.end,
+    );
+}
+
+// A `size(...)` modifier with a non-int, non-variable argument (`size(1.5)`)
+// is the sole USER-reachable trigger of PARSE_BITSTRING_BAD_SIZE from
+// `decode_bit_size`: frontdoor parses the `::` right-hand side as a generic
+// expr, so `size(1.5)` reaches quoted_function.rs as a call node whose float
+// argument is neither int nor variable. This asserts the span brackets the
+// `size(1.5)` call construct TIGHTLY -- unlike a bare-literal modifier, a
+// call-shaped modifier carries its own `__fz_span__`, so the error points at
+// `size(1.5)` itself, not the wider enclosing bitstring field. The
+// diagnostic's code is covered by `fixtures/00557_bitstring_bad_size.fz`'s
+// `expect: diagnostic` frontmatter through the fixture matrix; this test
+// carries only the span precision claim.
+#[test]
+fn compiler2_bitstring_bad_size_error_span_brackets_the_size_modifier() {
+    let tel = ConfiguredTelemetry::new();
+    let last_span = Rc::new(RefCell::new(None));
+    LastErrorSpan {
+        span: last_span.clone(),
+    }
+    .install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let source = include_str!("../../fixtures/00557_bitstring_bad_size.fz");
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/00557_bitstring_bad_size.fz".to_string()),
+        text: source.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "<<1::size(1.5)>> should fail during bit-spec size decoding",
+    );
+
+    let span = last_span.borrow().expect("expected a captured diagnostic span");
+    assert!(
+        !span.is_dummy(),
+        "user coded bad-size error must carry a real span, not DUMMY"
+    );
+
+    // Lower bound: the span brackets the whole `size(1.5)` modifier.
+    let modifier_start = source.find("size(1.5)").expect("fixture contains `size(1.5)`") as u32;
+    let modifier_end = modifier_start + "size(1.5)".len() as u32;
+    assert!(
+        span.start <= modifier_start && span.end >= modifier_end,
+        "span [{}, {}) must bracket the `size(1.5)` modifier at [{modifier_start}, {modifier_end})",
+        span.start,
+        span.end,
+    );
+
+    // Upper bound: the span must not widen past `size(1.5)` -- it must be the
+    // tight call construct, not the enclosing `1::size(1.5)` field or the whole
+    // `<<>>`. This is what makes threading node_span (rather than field_span)
+    // through the size branch observable.
+    assert!(
+        span.start >= modifier_start && span.end <= modifier_end,
+        "span [{}, {}) must equal the `size(1.5)` modifier at [{modifier_start}, {modifier_end}), not widen past it",
+        span.start,
+        span.end,
+    );
+}
+
+/// A malformed `@type` in the SECOND submitted file must surface its
+/// `RESOLVE_TYPE_ALIAS` diagnostic pointing at that second file, not at the
+/// first. Every decoded token must carry the exact immutable version of the
+/// text that produced it; accepting an inferred or placeholder identity would
+/// render the diagnostic against unrelated source text. Both files are raw
+/// `Compiler2` submissions (not `Drive::fixture`) because the harness's
+/// `submit()` allows exactly one `submit_code` plus `submit_root`, with no
+/// support for a second sequential submission.
+#[test]
+fn compiler2_malformed_type_alias_in_second_file_points_at_that_files_span() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let last_span = Rc::new(RefCell::new(None));
+    LastErrorSpan {
+        span: last_span.clone(),
+    }
+    .install(&tel);
+    let mut compiler = Compiler2::new(tel);
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/00575_trivial_root_first_file.fz".to_string()),
+        text: include_str!("../../fixtures/00575_trivial_root_first_file.fz").to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(
+        compiler.drive(),
+        "the first, well-formed file should resolve on its own",
+    );
+
+    // The second file arrives once a root is already active, so it is
+    // auto-scoped -- exercising exactly the multi-file shape this bug hid
+    // behind: a real second source version whose decoded tokens must retain
+    // that version rather than the first submission's.
+    let second_source = include_str!("../../fixtures/00576_malformed_type_alias_second_file.fz");
+    let second_code = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/00576_malformed_type_alias_second_file.fz".to_string()),
+        text: second_source.to_string(),
+    });
+    let second_version = compiler
+        .world()
+        .source_version(second_code)
+        .expect("second source version");
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "the malformed `@type` in the second file should fail to parse",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a compiler diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::RESOLVE_TYPE_ALIAS.0,
+        "a malformed `@type` body should surface as RESOLVE_TYPE_ALIAS"
+    );
+
+    let span = last_span.borrow().expect("expected a captured diagnostic span");
+    assert_eq!(
+        span.source_version, second_version,
+        "the diagnostic span must point at the second file's immutable source version"
+    );
+
+    let comma_offset = second_source.find(',').expect("fixture contains `,`") as u32;
+    assert!(
+        span.start <= comma_offset && span.end > comma_offset,
+        "span [{}, {}) must bracket the malformed `,` at offset {comma_offset} inside the second file",
+        span.start,
+        span.end,
+    );
+}
+
+/// The settled return type of the top-level (unqualified) function
+/// `name/arity`, asserted equivalent — under the Types-layer equivalence
+/// relation, not string/handle comparison — to `expected`.
+fn assert_settles_to(settled: &Settled, name: &str, arity: u64, expected: Ty, context: &str) -> Ty {
+    let function_id = settled.function(name, arity);
+    let actual = settled
+        .return_types()
+        .last_for_function(settled.root(), function_id)
+        .return_ty;
+    assert!(
+        settled.compiler().types_equivalent_for_test(actual, expected),
+        "{name}/{arity} should settle to a return type equivalent to {context}, got {}",
+        settled.compiler().display_ty_for_test(actual),
+    );
+    actual
+}
+
+/// Same as [`assert_settles_to`], but for a function living inside
+/// `module_name` (disambiguates same-named functions across modules, e.g.
+/// `Enum.reduce/3` vs `Enumerable.List.reduce/3`).
+fn assert_settles_to_in_module(
+    settled: &Settled,
+    module_name: &str,
+    name: &str,
+    arity: u64,
+    expected: Ty,
+    context: &str,
+) -> Ty {
+    let function_id = function_id_in_module(settled.functions(), settled.modules(), module_name, name, arity);
+    let actual = settled
+        .return_types()
+        .last_for_function(settled.root(), function_id)
+        .return_ty;
+    assert!(
+        settled.compiler().types_equivalent_for_test(actual, expected),
+        "{module_name}.{name}/{arity} should settle to a return type equivalent to {context}, got {}",
+        settled.compiler().display_ty_for_test(actual),
+    );
+    actual
+}
+
+/// Asserts `actual` is a callable literal of the given `kind` carrying
+/// exactly `n_captures` captured values (a thin `FnRef` is
+/// `kind = FnRef, n_captures = 0`).
+fn assert_closure_kind(settled: &Settled, actual: Ty, kind: CallableValueKind, n_captures: usize, label: &str) {
+    let info = settled
+        .compiler()
+        .types_for_test()
+        .closure_lit_parts(&actual)
+        .unwrap_or_else(|| {
+            panic!(
+                "{label} should be a closure literal, got {}",
+                settled.compiler().display_ty_for_test(actual),
+            )
+        });
+    assert_eq!(info.kind, kind, "{label} should be a {kind:?}");
+    assert_eq!(
+        info.captures.len(),
+        n_captures,
+        "{label} should carry {n_captures} captures, got {:?}",
+        info.captures,
+    );
+}
+
+/// `Enum.reduce` over a list devirtualizes through the `Enumerable` protocol
+/// to `List.reduce` and settles to int.
+#[test]
+fn enum_reduce_list_lambda_settles_to_int() {
+    let mut settled = Drive::fixture(177).settle();
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to_in_module(&settled, "Enum", "reduce", 3, int_ty, "int");
+}
+
+/// A well-typed named-function-reference reducer returning the bare
+/// accumulator settles `Enum.reduce` to int exactly like an inline lambda.
+#[test]
+fn enum_reduce_named_ref_ok_settles_to_int() {
+    let mut settled = Drive::fixture(178).settle();
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to_in_module(&settled, "Enum", "reduce", 3, int_ty, "int");
+}
+
+/// `Enum.count` dispatches the count protocol callback to the `List` impl and
+/// settles to int.
+#[test]
+fn enum_count_list_settles_to_int() {
+    let mut settled = Drive::fixture(179).settle();
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to_in_module(&settled, "Enum", "count", 1, int_ty, "int");
+}
+
+/// `Enum.reduce` over a `Range` devirtualizes `Enumerable` to the `Range`
+/// impl and settles to int.
+#[test]
+fn enum_reduce_range_settles_to_int() {
+    let mut settled = Drive::fixture(180).settle();
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to_in_module(&settled, "Enum", "reduce", 3, int_ty, "int");
+}
+
+/// Operator-headed Kernel functions are ordinary zero-capture callables:
+/// both the qualified `&Kernel.+/2` path and the bare `&+/2` prelude-import
+/// path settle through the same operator overload set.
+#[test]
+fn enum_reduce_operator_refs_settle_through_kernel_specs() {
+    let mut settled = Drive::fixture(181).settle();
+    let main_id = settled.function("main", 0);
+    let main_return = settled
+        .return_types()
+        .last_for_function(settled.root(), main_id)
+        .return_ty;
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    let expected_return = settled.compiler_mut().types_mut_for_test().tuple(&[int_ty, int_ty]);
+    assert!(
+        settled
+            .compiler()
+            .types_equivalent_for_test(main_return, expected_return),
+        "main/0 should settle to a return type equivalent to {{int, int}} once the qualified \
+         and bare operator refs both settle through kernel specs, got {}",
+        settled.compiler().display_ty_for_test(main_return),
+    );
+}
+
+/// A broadly declared `[any]` parameter still carries its concrete caller
+/// witness through `Enum.reduce` to int, rather than falling back to `any`.
+#[test]
+fn enum_reduce_erased_list_preserves_concrete_caller_witness() {
+    let mut settled = Drive::fixture(182).settle();
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to(&settled, "main", 0, int_ty, "int");
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to(&settled, "test", 1, int_ty, "int");
+}
+
+/// A receive clause's bound capture keeps its typed value and flows into the
+/// enclosing tuple's return.
+#[test]
+fn receive_clause_body_keeps_typed_capture_and_settles_return() {
+    let mut settled = Drive::fixture(184).settle();
+    let parent_expected = {
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let any_ty = settled.compiler_mut().types_mut_for_test().any();
+        settled.compiler_mut().types_mut_for_test().tuple(&[int_ty, any_ty])
+    };
+    let parent_return = assert_settles_to(&settled, "parent", 1, parent_expected, "{int, any}");
+    let main_expected = settled.compiler_mut().types_mut_for_test().tuple(&[parent_return]);
+    assert_settles_to(&settled, "main", 0, main_expected, "{{int, any}}");
+}
+
+/// A message that crosses a spawn/send/receive process boundary is typed
+/// conservatively as `any`, even though the spawned closure only ever sends
+/// back the concrete captured value.
+#[test]
+fn spawn_receive_converges_through_extern_return_contract() {
+    let mut settled = Drive::fixture(185).settle();
+    let any_ty = settled.compiler_mut().types_mut_for_test().any();
+    assert_settles_to(&settled, "parent", 1, any_ty, "any");
+}
+
+/// A string literal argument flows through a direct call as `str_t`.
+#[test]
+fn string_literal_argument_types_as_str_t() {
+    let mut settled = Drive::fixture(187).settle();
+    let str_ty = settled.compiler_mut().types_mut_for_test().str_t();
+    assert_settles_to(&settled, "id", 1, str_ty, "str_t");
+}
+
+/// `Enum.reduce` and `Enumerable.List.reduce` settle to their own concrete
+/// return types: the public `Enum.reduce` settles to `int`, and the protocol
+/// impl `Enumerable.List.reduce` settles to `{:done, int}`.
+#[test]
+fn enum_reduce_runtime_graph_settles() {
+    let mut settled = Drive::fixture(177).settle();
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to_in_module(&settled, "Enum", "reduce", 3, int_ty, "int");
+    let done_ty = {
+        let done_atom = settled.compiler_mut().types_mut_for_test().atom_lit("done");
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        settled.compiler_mut().types_mut_for_test().tuple(&[done_atom, int_ty])
+    };
+    assert_settles_to_in_module(&settled, "Enumerable.List", "reduce", 3, done_ty, "{:done, int}");
+}
+
+/// Every arithmetic binary operator infers its return type from Kernel's
+/// operator specs; division always widens to float, matching Elixir parity.
+#[test]
+fn arithmetic_binops_infer_from_kernel_operator_specs() {
+    let mut settled = Drive::fixture(189).settle();
+    // `{1 + 2, 4 - 1, 2 * 3, 4 / 2, 5 % 2, 1 + 2.0, 4.0 - 1, 2 * 3.0}`.
+    //
+    // The FOURTH is `4 / 2` and it is a FLOAT: `/` always returns one, as in
+    // Elixir, and `div/2` is the truncating form (fz-5xp.6).
+    let expected = {
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let float_ty = settled.compiler_mut().types_mut_for_test().float();
+        settled
+            .compiler_mut()
+            .types_mut_for_test()
+            .tuple(&[int_ty, int_ty, int_ty, float_ty, int_ty, float_ty, float_ty, float_ty])
+    };
+    assert_settles_to(
+        &settled,
+        "main",
+        0,
+        expected,
+        "{int, int, int, int, int, float, float, float}",
+    );
+}
+
+/// `+` over two `any` operands settles to the union of every operator
+/// clause's successful return (`int | float`), not a single joined `any`.
+#[test]
+fn arithmetic_binops_union_successful_returns_for_any_operands() {
+    // `RootSubmission` has no per-argument type facility (unlike the
+    // old-world `infer_from_entry(&mut t, &module, add_id, &[any, int], &tel)`
+    // harness this was ported from), so both of add/2's parameters settle as
+    // unconstrained `any` here rather than the old harness's `(any, int)`.
+    // The behaviour under test survives regardless: `+` over two `any`
+    // operands still settles to `int | float`.
+    let mut settled = Drive::fixture(190).open_root(None, "add", 2).settle();
+    let expected = {
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let float_ty = settled.compiler_mut().types_mut_for_test().float();
+        settled.compiler_mut().types_mut_for_test().union(int_ty, float_ty)
+    };
+    assert_settles_to(&settled, "add", 2, expected, "int | float");
+}
+
+/// `add(int, int)` infers int from the body alone, with no `@spec` needed.
+#[test]
+fn add_infers_int_return() {
+    let mut settled = Drive::fixture(171).settle();
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to(&settled, "add", 2, int_ty, "int");
+}
+
+/// The same direct-call function is instantiated separately per callsite
+/// type: `id(1)` and `id(:ok)` keep their own instantiated returns rather
+/// than joining into `int | :ok` at both tuple positions.
+#[test]
+fn direct_calls_instantiate_polymorphic_identity_per_callsite() {
+    let mut settled = Drive::fixture(191).settle();
+    let expected = {
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let ok_ty = settled.compiler_mut().types_mut_for_test().atom_lit("ok");
+        settled.compiler_mut().types_mut_for_test().tuple(&[int_ty, ok_ty])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{int, :ok}");
+}
+
+/// A named-function reference (`&id/1`) applied at two concrete types
+/// creates two separate activations rather than one joined callable.
+#[test]
+fn named_refs_instantiate_polymorphic_identity_per_callsite() {
+    let mut settled = Drive::fixture(192).settle();
+    let expected = {
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let ok_ty = settled.compiler_mut().types_mut_for_test().atom_lit("ok");
+        settled.compiler_mut().types_mut_for_test().tuple(&[int_ty, ok_ty])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{int, :ok}");
+}
+
+/// `&id/1` infers as a thin `FnRef` carrying no capture payload.
+#[test]
+fn named_ref_return_preserves_thin_callable_kind() {
+    let settled = Drive::fixture(193).settle();
+    let main_id = settled.function("main", 0);
+    let main_return = settled
+        .return_types()
+        .last_for_function(settled.root(), main_id)
+        .return_ty;
+    assert_closure_kind(
+        &settled,
+        main_return,
+        CallableValueKind::FnRef,
+        0,
+        "main/0's &id/1 return",
+    );
+}
+
+/// A lambda with no free variables still lowers through `closure_lit` and
+/// keeps `CallableValueKind::Closure` (only a named function reference mints
+/// `FnRef`); what makes it "thin" is that its capture list is empty.
+#[test]
+fn zero_capture_lambda_infers_as_thin_callable() {
+    let settled = Drive::fixture(194).settle();
+    let main_id = settled.function("main", 0);
+    let main_return = settled
+        .return_types()
+        .last_for_function(settled.root(), main_id)
+        .return_ty;
+    assert_closure_kind(
+        &settled,
+        main_return,
+        CallableValueKind::Closure,
+        0,
+        "main/0's zero-capture lambda return",
+    );
+}
+
+/// A lambda that captures an outer value infers as a `Closure` carrying that
+/// capture payload.
+#[test]
+fn captured_lambda_infers_as_closure_with_capture_payload() {
+    let settled = Drive::fixture(195).settle();
+    let main_id = settled.function("main", 0);
+    let main_return = settled
+        .return_types()
+        .last_for_function(settled.root(), main_id)
+        .return_ty;
+    assert_closure_kind(
+        &settled,
+        main_return,
+        CallableValueKind::Closure,
+        1,
+        "main/0's captured lambda return",
+    );
+}
+
+/// A named reference to a pattern-matched function feeds each activation's
+/// argument into the matcher tree; main only calls `f.(:left)` and
+/// `f.(:right)`, so main/0 settling to `{:one, :two}` (not a wider union
+/// including `:other`) is itself the proof the catch-all clause is dead.
+#[test]
+fn named_refs_drive_pattern_dispatch_per_activation() {
+    let mut settled = Drive::fixture(196).settle();
+    let expected = {
+        let one_ty = settled.compiler_mut().types_mut_for_test().atom_lit("one");
+        let two_ty = settled.compiler_mut().types_mut_for_test().atom_lit("two");
+        settled.compiler_mut().types_mut_for_test().tuple(&[one_ty, two_ty])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{:one, :two}");
+}
+
+/// A captured closure's callable surface is just its explicit parameters,
+/// so applying the same closure value at different argument facts
+/// instantiates separately rather than joining those activations.
+#[test]
+fn captured_closure_refs_instantiate_by_capture_and_arg_facts() {
+    let mut settled = Drive::fixture(197).settle();
+    let expected = {
+        let ok_ty = settled.compiler_mut().types_mut_for_test().atom_lit("ok");
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let ok_int = settled.compiler_mut().types_mut_for_test().tuple(&[ok_ty, int_ty]);
+        let ok_ty = settled.compiler_mut().types_mut_for_test().atom_lit("ok");
+        let right_ty = settled.compiler_mut().types_mut_for_test().atom_lit("right");
+        let ok_right = settled.compiler_mut().types_mut_for_test().tuple(&[ok_ty, right_ty]);
+        settled.compiler_mut().types_mut_for_test().tuple(&[ok_int, ok_right])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{{:ok, int}, {:ok, :right}}");
+}
+
+/// The same function called at two concrete atom inputs selects the
+/// matching decision-tree leaf per activation.
+#[test]
+fn direct_calls_specialize_atom_pattern_dispatch_by_input() {
+    let mut settled = Drive::fixture(198).settle();
+    let expected = {
+        let one_ty = settled.compiler_mut().types_mut_for_test().atom_lit("one");
+        let two_ty = settled.compiler_mut().types_mut_for_test().atom_lit("two");
+        settled.compiler_mut().types_mut_for_test().tuple(&[one_ty, two_ty])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{:one, :two}");
+}
+
+/// The same function called at exact empty-list and non-empty-list inputs
+/// selects the matching decision-tree leaf per activation.
+#[test]
+fn direct_calls_specialize_list_pattern_dispatch_by_shape() {
+    let mut settled = Drive::fixture(199).settle();
+    let expected = {
+        let empty_ty = settled.compiler_mut().types_mut_for_test().atom_lit("empty");
+        let cons_ty = settled.compiler_mut().types_mut_for_test().atom_lit("cons");
+        settled.compiler_mut().types_mut_for_test().tuple(&[empty_ty, cons_ty])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{:empty, :cons}");
+}
+
+/// The cons leaf returns the matched head element's type, proving
+/// matcher-produced bindings carry the input element type into the leaf.
+#[test]
+fn list_pattern_binding_flows_into_selected_leaf() {
+    let mut settled = Drive::fixture(200).settle();
+    let expected = {
+        let empty_ty = settled.compiler_mut().types_mut_for_test().atom_lit("empty");
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        settled.compiler_mut().types_mut_for_test().tuple(&[empty_ty, int_ty])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{:empty, int}");
+}
+
+/// The tuple leaf returns the bound payload, while the atom leaf returns
+/// its own singleton.
+#[test]
+fn tuple_pattern_binding_flows_into_selected_leaf() {
+    let mut settled = Drive::fixture(201).settle();
+    let expected = {
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let error_ty = settled.compiler_mut().types_mut_for_test().atom_lit("error");
+        settled.compiler_mut().types_mut_for_test().tuple(&[int_ty, error_ty])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{int, :error}");
+}
+
+/// A nested tuple/list pattern narrows its payload twice: the tuple leaf
+/// projects the payload, then narrows it to a non-empty list, so the bound
+/// head flows into the leaf.
+#[test]
+fn nested_pattern_binding_flows_into_selected_leaf() {
+    let mut settled = Drive::fixture(202).settle();
+    let expected = {
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let error_ty = settled.compiler_mut().types_mut_for_test().atom_lit("error");
+        settled.compiler_mut().types_mut_for_test().tuple(&[int_ty, error_ty])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{int, :error}");
+}
+
+/// Empty-payload, cons-payload, and atom-fallback clauses are distinct
+/// activations; main/0 settling to `{:empty, int, :error}` (not a wider
+/// union pulling in `:unreachable`) is the proof the catch-all is dead.
+#[test]
+fn nested_pattern_partition_selects_sibling_leaves() {
+    let mut settled = Drive::fixture(203).settle();
+    let expected = {
+        let empty_ty = settled.compiler_mut().types_mut_for_test().atom_lit("empty");
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let error_ty = settled.compiler_mut().types_mut_for_test().atom_lit("error");
+        settled
+            .compiler_mut()
+            .types_mut_for_test()
+            .tuple(&[empty_ty, int_ty, error_ty])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{:empty, int, :error}");
+}
+
+/// Same-arity tuples partition by their atom tag: `:ok` projects `int`,
+/// `:error` projects `:bad`.
+#[test]
+fn tuple_tag_partition_selects_matching_payloads() {
+    let mut settled = Drive::fixture(204).settle();
+    let expected = {
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let bad_ty = settled.compiler_mut().types_mut_for_test().atom_lit("bad");
+        settled.compiler_mut().types_mut_for_test().tuple(&[int_ty, bad_ty])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{int, :bad}");
+}
+
+/// Tuples of different arity partition by shape, each clause projecting its
+/// own payload without mixing in the others.
+#[test]
+fn tuple_arity_partition_selects_matching_shape() {
+    let mut settled = Drive::fixture(205).settle();
+    let expected = {
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let int_pair = settled.compiler_mut().types_mut_for_test().tuple(&[int_ty, int_ty]);
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let other_ty = settled.compiler_mut().types_mut_for_test().atom_lit("other");
+        settled
+            .compiler_mut()
+            .types_mut_for_test()
+            .tuple(&[int_ty, int_pair, other_ty])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{int, {int, int}, :other}");
+}
+
+/// A static-key map pattern proves the key hit and carries the field's value
+/// into the selected leaf; main/0 settling to `{int, :none}` (not a wider
+/// union pulling in `:unreachable`) is the proof the catch-all is dead.
+#[test]
+fn map_pattern_binding_flows_into_selected_leaf() {
+    let mut settled = Drive::fixture(207).settle();
+    let expected = {
+        let int_ty = settled.compiler_mut().types_mut_for_test().int();
+        let none_ty = settled.compiler_mut().types_mut_for_test().atom_lit("none");
+        settled.compiler_mut().types_mut_for_test().tuple(&[int_ty, none_ty])
+    };
+    assert_settles_to(&settled, "main", 0, expected, "{int, :none}");
+}
+
+/// Regression guard: int, float, and string map-pattern keys are valid, but
+/// the lattice cannot resolve them to a prunable map-key singleton, so the
+/// dispatch-reachability walk must keep every clause's key test live instead
+/// of panicking on an unprovable key. main/0 settling at all (no panic) is
+/// the guard; because none of the non-atom keys can be proven present or
+/// absent, every clause leaf plus the catch-all stays live and the return
+/// settles to `any`.
+#[test]
+fn map_pattern_dispatch_on_nonatom_keys_does_not_panic() {
+    let mut settled = Drive::fixture(553).settle();
+    let expected = settled.compiler_mut().types_mut_for_test().any();
+    assert_settles_to(&settled, "main", 0, expected, "any");
+}
+
+/// A tail-recursive fold threading a captureless closure settles to int.
+#[test]
+fn corpus_folds_settle_myreduce_to_int_fold_tail() {
+    let mut settled = Drive::fixture(172).settle();
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to(&settled, "myreduce", 3, int_ty, "int");
+}
+
+/// A non-tail wrapper that consumes a recursive fold's result still settles
+/// to int.
+#[test]
+fn corpus_folds_settle_myreduce_to_int_fold_nontail() {
+    let mut settled = Drive::fixture(173).settle();
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to(&settled, "myreduce", 3, int_ty, "int");
+}
+
+/// A threaded closure that captures a plain int still settles the fold to
+/// int.
+#[test]
+fn corpus_folds_settle_myreduce_to_int_fold_capture_int() {
+    let mut settled = Drive::fixture(174).settle();
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to(&settled, "myreduce", 3, int_ty, "int");
+}
+
+/// A threaded closure that captures another closure still settles the fold
+/// to int.
+#[test]
+fn corpus_folds_settle_myreduce_to_int_fold_capture_closure() {
+    let mut settled = Drive::fixture(175).settle();
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to(&settled, "myreduce", 3, int_ty, "int");
+}
+
+/// An `Enum.reduce`-shaped cont/halt state machine, hand-rolled with no
+/// protocol, settles to int.
+#[test]
+fn corpus_folds_settle_myreduce_to_int_fold_state_machine() {
+    let mut settled = Drive::fixture(176).settle();
+    let int_ty = settled.compiler_mut().types_mut_for_test().int();
+    assert_settles_to(&settled, "myreduce", 3, int_ty, "int");
 }

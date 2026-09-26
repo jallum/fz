@@ -1,0 +1,8 @@
+#---
+# purpose: an @spec whose parameter type equals or is wider than the inferred callsite type passes validation
+#---
+defmodule M do
+  @spec add1(integer) :: integer
+  def add1(n), do: n + 1
+end
+def main(), do: dbg(M.add1(41))

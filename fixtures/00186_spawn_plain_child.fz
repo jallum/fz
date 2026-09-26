@@ -1,0 +1,8 @@
+#---
+# purpose: spawning a plain child function starts it as a process boundary
+#---
+def child(), do: nil
+
+def main() do
+  spawn(child)
+end

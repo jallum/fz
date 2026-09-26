@@ -1,8 +1,0 @@
-def ignore(_, x), do: x
-
-def main() do
-  a = ignore(1, 2)
-  b = ignore(:ok, 2)
-  dbg(a)
-  dbg(b)
-end

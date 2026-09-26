@@ -1,0 +1,4 @@
+#---
+# purpose: a large integer survives extraction via map field access
+#---
+def main(), do: assert(%{answer: 4611686018427387904}.answer == 4611686018427387904, "map field access preserves the full integer")

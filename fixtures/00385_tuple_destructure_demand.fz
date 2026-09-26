@@ -1,0 +1,8 @@
+#---
+# purpose: a call site that destructures a returned tuple specializes its callee by tuple-return demand, while a sibling call site using the plain tuple value does not.
+#---
+def pair(x), do: {x, x}
+def main() do
+  {a, b} = pair(1)
+  dbg({a, b, pair(2)})
+end

@@ -1,0 +1,9 @@
+#---
+# purpose: a self-contained quote body with no unquote evaluates to its literal value
+#---
+def f(), do: quote do: 1
+def main() do
+  result = f()
+  assert(result == 1, "quote do: 1 with nothing to unquote evaluates to 1")
+  result
+end

@@ -1,0 +1,11 @@
+#---
+# purpose: a spawned closure relays a received value back to its parent
+#---
+def main() do
+  parent = self()
+  spawn(fn () -> send(parent, receive do x -> x end) end)
+  send(2, 42)
+  result = receive do x -> x end
+  assert(result == 42, "spawn/send/receive round-trips a value through a child process")
+  result
+end

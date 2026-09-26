@@ -1,0 +1,9 @@
+#---
+# purpose: a named function reference passed as a value calls the referenced function
+#---
+def id(x), do: x
+def apply(f, x), do: f.(x)
+def main() do
+  f = &id/1
+  assert(apply(f, 41) == 41, "&id/1 applied through apply calls id")
+end

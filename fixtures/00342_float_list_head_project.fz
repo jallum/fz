@@ -1,0 +1,5 @@
+#---
+# purpose: list head projection retrieves a float element with its exact value
+#---
+def first([h | _]), do: h
+def main(), do: assert(first([2.5]) == 2.5, "list head projection retrieves a float element exactly")

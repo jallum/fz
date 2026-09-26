@@ -1,0 +1,9 @@
+#---
+# purpose: a large integer survives the send/receive message boundary intact
+#---
+def main() do
+  send(self(), 4611686018427387904)
+  assert(receive do
+    x -> x
+  end == 4611686018427387904, "the received value equals the sent value bit-for-bit")
+end

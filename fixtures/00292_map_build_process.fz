@@ -1,0 +1,4 @@
+#---
+# purpose: map construction and key lookup returns the inserted value
+#---
+def main(), do: assert(%{1 => 10, 2 => 20}[1] == 10, "map construction and key lookup returns the inserted value")

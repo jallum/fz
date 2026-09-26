@@ -1,0 +1,8 @@
+#---
+# purpose: dbg/1 returns its argument, so its result is usable in further expressions
+#---
+def main() do
+  x = dbg(41)
+  assert(x == 41, "dbg returns its argument unchanged")
+  assert(x + 1 == 42, "the returned value is usable in a further expression")
+end

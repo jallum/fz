@@ -1,5 +1,0 @@
-def pair(x), do: {x, x}
-def main() do
-  {a, b} = pair(1)
-  dbg({a, b, pair(2)})
-end

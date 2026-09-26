@@ -152,13 +152,7 @@ mod namespace_test;
 #[cfg(test)]
 mod native_inventory_test;
 #[cfg(test)]
-mod port_codegen_test;
-#[cfg(test)]
-mod port_frontend_test;
-#[cfg(test)]
 mod port_interp_test;
-#[cfg(test)]
-mod port_lower_test;
 #[cfg(test)]
 mod port_macros_test;
 #[cfg(test)]
@@ -167,8 +161,6 @@ mod port_misc_test;
 mod port_planner_test;
 #[cfg(test)]
 mod port_resolve_test;
-#[cfg(test)]
-mod port_type_infer_test;
 #[cfg(test)]
 mod quoted_function_test;
 #[cfg(test)]

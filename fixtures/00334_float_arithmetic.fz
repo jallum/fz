@@ -1,0 +1,4 @@
+#---
+# purpose: float addition evaluates to the exact expected sum
+#---
+def main(), do: assert(1.5 + 2.5 == 4.0, "float addition evaluates correctly")

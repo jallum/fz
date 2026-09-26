@@ -1,0 +1,22 @@
+#---
+# purpose: a recursive protocol reduce callback converges to a fixpoint result
+#---
+defprotocol Reducible do
+  def reduce(value, acc, reducer)
+end
+
+defmodule List do
+  def reduce([], {:cont, acc}, _reducer), do: {:done, acc}
+  def reduce([head | tail], {:cont, acc}, reducer), do: reduce(tail, reducer.(head, acc), reducer)
+  def reduce(_list, {:halt, acc}, _reducer), do: {:halted, acc}
+end
+
+defimpl Reducible, for: List do
+  def reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
+end
+
+def main() do
+  result = Reducible.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, x + acc} end)
+  assert(result == {:done, 6}, "protocol reduce converges to {:done, 6}")
+  result
+end

@@ -1,0 +1,10 @@
+#---
+# purpose: a top-level alias expands its module shorthand at a top-level function's call site.
+#---
+defmodule Outer do
+  defmodule Inner do
+    def value(), do: 42
+  end
+end
+alias Outer.Inner, as: I
+def main(), do: I.value()

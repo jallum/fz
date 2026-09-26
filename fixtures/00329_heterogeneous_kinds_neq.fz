@@ -1,0 +1,4 @@
+#---
+# purpose: a list and a tuple with the same elements are never equal
+#---
+def main(), do: refute([1, 2] == {1, 2}, "different container kinds are never equal")

@@ -1,4 +1,0 @@
-defmodule User do
-  def run(), do: Contracts.Collectable.id([1])
-end
-def main(), do: User.run()

@@ -1,0 +1,5 @@
+#---
+# purpose: a script's main/0 calls a helper fn and completes successfully
+#---
+def add1(n) do n + 1 end
+def main() do dbg(add1(41)) end

@@ -1,0 +1,9 @@
+#---
+# purpose: import from a runtime stdlib module resolves without an explicit interface table entry.
+#---
+defmodule User do
+  import Utf8, only: [valid?: 1]
+  def run(bytes), do: valid?(bytes)
+end
+
+def main(), do: dbg(User.run("ok"))

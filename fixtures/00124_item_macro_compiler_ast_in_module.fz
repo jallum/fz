@@ -1,0 +1,16 @@
+#---
+# purpose: an item macro's spliced fn belongs to the module it was spliced into
+#---
+defmacro make_const(name, value) do
+  {:def, %{}, [{name, %{}, []}, [{:do, value}]]}
+end
+
+defmodule Constants do
+  make_const(:pi_ish, 314)
+end
+
+def main() do
+  result = Constants.pi_ish()
+  assert(result == 314, "make_const spliced pi_ish/0 into Constants")
+  result
+end

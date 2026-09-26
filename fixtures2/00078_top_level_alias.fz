@@ -1,7 +1,0 @@
-defmodule Outer do
-  defmodule Inner do
-    def value(), do: 42
-  end
-end
-alias Outer.Inner, as: I
-def main(), do: I.value()

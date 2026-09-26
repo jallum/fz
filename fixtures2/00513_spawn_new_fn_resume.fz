@@ -1,9 +1,0 @@
-def id(n), do: n
-
-def main() do
-  parent = self()
-  spawn(fn () -> send(parent, receive do x -> x end) end)
-  _ = id(42)
-  send(2, 7)
-  receive do x -> x end
-end

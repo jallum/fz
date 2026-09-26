@@ -1,0 +1,7 @@
+#---
+# purpose: an extern call whose argument count does not match any declared overload is a compile-time error
+# expect: diagnostic
+# diagnostic.code: lower/unbound
+#---
+extern "C" defp libc::open(path :: c_string, c_int, c_int) :: c_int
+def main() do libc::open("x", "x", 0, 0) end

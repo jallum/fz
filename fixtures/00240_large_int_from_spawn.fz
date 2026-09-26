@@ -1,0 +1,13 @@
+#---
+# purpose: a large integer delivered from a spawned process unblocks a receive intact
+#---
+def child(parent) do
+  send(parent, 4611686018427387904)
+end
+def main() do
+  me = self()
+  spawn(fn () -> child(me) end)
+  assert(receive do
+    x -> x
+  end == 4611686018427387904, "the value delivered from the spawned process is unchanged")
+end

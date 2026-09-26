@@ -1,0 +1,4 @@
+#---
+# purpose: a mixed-type tuple with int, atom, and bool renders correctly
+#---
+def main(), do: dbg({1, :ok, true})

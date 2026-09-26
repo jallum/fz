@@ -1,0 +1,4 @@
+#---
+# purpose: list equality is structural, not referential, across separate allocations
+#---
+def main(), do: assert([1, 2, 3] == [1, 2, 3], "list equality is structural not referential")

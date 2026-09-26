@@ -1,0 +1,8 @@
+#---
+# purpose: a closure captures its enclosing scope's variable and uses it when called
+#---
+def make_adder(k), do: fn(x) -> x + k end
+def main() do
+  f = make_adder(10)
+  assert(f.(5) == 15, "a closure captures its enclosing scope's variable")
+end

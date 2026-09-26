@@ -1,0 +1,4 @@
+#---
+# purpose: an atom-keyed map literal renders with canonical key => value syntax
+#---
+def main(), do: dbg(%{a: 1, b: 2})

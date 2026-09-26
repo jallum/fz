@@ -1,0 +1,4 @@
+#---
+# purpose: integer addition computes the correct sum
+#---
+def main(), do: assert(40 + 2 == 42, "integer addition computes the correct sum")

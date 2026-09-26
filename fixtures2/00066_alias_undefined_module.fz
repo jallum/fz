@@ -1,4 +1,0 @@
-defmodule User do
-  alias Missing.Path
-  def run(), do: nil
-end

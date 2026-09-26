@@ -1,0 +1,15 @@
+#---
+# purpose: an Enum.reduce reducer that returns a tagged tuple instead of the bare accumulator violates +/2's spec on the next iteration
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+defmodule Main do
+  def broken_reducer(entry, acc) do
+    {:cont, acc + entry}
+  end
+end
+
+def main() do
+  Enum.reduce([1, 2, 3], 0, &Main.broken_reducer/2)
+  |> dbg()
+end

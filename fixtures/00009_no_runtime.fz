@@ -1,0 +1,4 @@
+#---
+# purpose: a bare integer literal with no runtime library calls; the minimal-telemetry probe fixture used across compiler2 tests
+#---
+def main(), do: 42
