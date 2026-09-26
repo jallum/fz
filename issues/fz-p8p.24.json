@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-26T09:48:11Z",
+  "description": "Elixir warns 'unused alias Path' and 'unused import' (seen probing fixture 00066 and conflicting imports 00075). src/diag/codes.rs has no unused_* code. Found during the fz-p8p.4 findings investigation.",
+  "id": "fz-p8p.24",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 3,
+  "status": "open",
+  "title": "Unused alias and unused import warnings",
+  "type": "feature",
+  "updated_at": "2026-09-26T09:48:11Z"
+}
