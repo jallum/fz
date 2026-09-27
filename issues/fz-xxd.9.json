@@ -4,14 +4,15 @@
   "blocks": [
     "fz-xxd.6"
   ],
+  "closed_at": "2026-09-27T23:12:10Z",
   "created": "2026-09-27T20:35:43Z",
   "description": "resource.value types as any. The field access (jobs/semantic.rs ~539-547) asks map_field_lookup (types/mod.rs ~3370-3399), which reads only the map axis of a type and returns None for a resource, so the result falls back to any. Types::resource_payload_type (types/mod.rs ~1413) already answers a resource's payload, and match_arrow uses it; the field access doesn't. Seen: Kernel.claim_resource's success value types as {:ok, any} for a resource(c_pointer) input, so File.open's value reaches libc::fclose as any (found by the fz-xxd.5 reader). Paper: resource(c_pointer).value is c_pointer; resource(integer | c_pointer).value is integer | c_pointer. Fix: the field lookup asks the one calculator that knows every axis, not only maps; no parallel lookup. Done when: a failing-first test (a field access on a resource-typed value types as its payload), the activation dump of the File.open path shows c_pointer at fclose, and every pin that moves is classified in a red ledger. Does not block fz-xxd.3.",
   "id": "fz-xxd.9",
   "labels": [],
   "parent": "fz-xxd",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A resource's .value field has the resource's payload type",
   "type": "bug",
-  "updated_at": "2026-09-27T22:21:48Z"
+  "updated_at": "2026-09-27T23:12:10Z"
 }
