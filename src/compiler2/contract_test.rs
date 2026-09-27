@@ -1209,3 +1209,127 @@ fn variadic_printf_contract_accepts_a_binary_tail_argument() {
         "an ascribed binary tail argument reaches the wire, so the contract must accept it: printf(fmt, s :: cstring)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// fz-xxd.5: a row that overlaps a clause gets that clause's answer. `any`
+// means the argument's type is unknown, not that it is every value, so it is
+// narrowed to the clause's own domain before matching. Every other column
+// still needs the ordinary subset test, so a genuinely wrong value is still
+// rejected.
+// ---------------------------------------------------------------------------
+
+/// Drives a program that reaches `Kernel`'s private `fz_resource_claim`
+/// extern and hands back its published contract, the way a real call site
+/// would find it. `"fz"`-ABI externs are reserved to bootstrap source
+/// (`declared_by_runtime_library`), so this drives the REAL declaration in
+/// `lib/kernel.fz` — which is loaded for every program — instead of
+/// restating one in test source.
+fn drive_kernel_resource_claim_contract() -> (Compiler2<ConfiguredTelemetry>, FunctionContract) {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("drives_kernel_resource_claim.fz".to_string()),
+        text: "def main() do\n  Kernel.claim_resource(Kernel.make_resource(42, fn (_x) -> nil end))\nend\n".to_string(),
+    });
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Resolved),
+        "a program that reaches Kernel.claim_resource should resolve like any other: {outcome:?}"
+    );
+    let kernel = compiler
+        .world_mut()
+        .reference_module(ModuleName::parse_dotted("Kernel").expect("Kernel module name"));
+    let function = compiler.world_mut().reference_function(kernel, "fz_resource_claim", 1);
+    let contract = compiler
+        .world()
+        .function_contract(function)
+        .expect("fz_resource_claim should publish a function contract")
+        .clone();
+    (compiler, contract)
+}
+
+#[test]
+fn fz_resource_claim_contract_applied_to_an_any_argument_answers_boolean() {
+    let (mut compiler, contract) = drive_kernel_resource_claim_contract();
+    let types = compiler.world_mut().types_mut();
+    let any = types.any();
+
+    let applied = contract.apply(types, &[any]);
+    assert!(
+        applied.satisfied,
+        "a handle whose type is unknown (any) is narrowed to the resource domain, not rejected as a mismatch"
+    );
+    let boolean = types.bool();
+    let result = applied
+        .result
+        .expect("a handle narrowed into the resource domain still publishes a result");
+    assert!(
+        types.is_equivalent(&result, &boolean),
+        "fz_resource_claim's declared return is boolean: {}",
+        types.display(&result)
+    );
+}
+
+#[test]
+fn fz_resource_claim_contract_rejects_an_atom_argument() {
+    let (mut compiler, contract) = drive_kernel_resource_claim_contract();
+    let types = compiler.world_mut().types_mut();
+    let atom = types.atom_lit("atom");
+
+    let applied = contract.apply(types, &[atom]);
+    assert!(
+        !applied.satisfied,
+        "an atom is a precisely known value outside the resource domain, not an imprecise one to narrow"
+    );
+    assert!(applied.result.is_none());
+}
+
+#[test]
+fn a_precise_but_wrong_union_member_still_violates_an_integer_domain() {
+    let mut types = Types::new();
+    let int = types.int();
+    let resolved = ResolvedSpecDecl {
+        params: vec![int],
+        result: int,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let weird = types.atom_lit("weird");
+    let int_or_weird = types.union(int, weird);
+    let applied = contract.apply(&mut types, &[int_or_weird]);
+
+    assert!(
+        !applied.satisfied,
+        "integer | :weird is precisely known and partly outside the domain, so it is rejected, not narrowed"
+    );
+    assert!(applied.result.is_none());
+}
+
+#[test]
+fn the_any_rule_narrows_one_column_and_a_wrong_sibling_column_still_rejects() {
+    let mut types = Types::new();
+    let int = types.int();
+    let resolved = ResolvedSpecDecl {
+        params: vec![int, int],
+        result: int,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let any = types.any();
+    let weird = types.atom_lit("weird");
+    let applied = contract.apply(&mut types, &[any, weird]);
+
+    assert!(
+        !applied.satisfied,
+        "the any column alone would narrow to integer, but :weird in the sibling column still violates it"
+    );
+    assert!(applied.result.is_none());
+}

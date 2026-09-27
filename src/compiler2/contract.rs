@@ -174,7 +174,7 @@ impl FunctionContract {
             enforceable_matched = true;
             matched_any = true;
             for clause in &self.arrows {
-                let Some(narrowed) = self.narrow_args_to_clause(types, clause, arg_tys) else {
+                let Some(narrowed) = clause.narrow_args(types, arg_tys) else {
                     continue;
                 };
                 let params = types.arrow_params(&clause.arrow);
@@ -244,28 +244,6 @@ impl FunctionContract {
         let observed = types.tuple(arg_tys);
         types.is_subtype(&observed, &domain)
     }
-
-    /// The argument row narrowed positionally into one clause's domain, or
-    /// `None` when the clause overlaps no member of the arguments.
-    fn narrow_args_to_clause(&self, types: &mut Types, clause: &ContractArrow, arg_tys: &[Ty]) -> Option<Vec<Ty>> {
-        let row = clause.input_domain_row(types);
-        if row.len() != arg_tys.len() {
-            return None;
-        }
-        let mut narrowed = Vec::with_capacity(arg_tys.len());
-        for (arg, param) in arg_tys.iter().zip(row.iter()) {
-            if types.has_vars(param) {
-                narrowed.push(*arg);
-                continue;
-            }
-            let overlap = types.intersect(*arg, *param);
-            if types.is_empty(&overlap) {
-                return None;
-            }
-            narrowed.push(overlap);
-        }
-        Some(narrowed)
-    }
 }
 
 impl ContractArrow {
@@ -287,11 +265,27 @@ impl ContractArrow {
     }
 
     pub(crate) fn input_domain_row(&self, types: &mut Types) -> Vec<Ty> {
-        types
-            .arrow_params(&self.arrow)
-            .into_iter()
-            .map(|param| instantiate_domain(types, param, &self.bounds))
-            .collect()
+        let params = types.arrow_params(&self.arrow);
+        types.clause_domain_row(&params, &self.bounds)
+    }
+
+    /// This clause's own domain row, narrowed against `arg_tys` position by
+    /// position; `None` when the clause overlaps no member of the arguments.
+    fn narrow_args(&self, types: &mut Types, arg_tys: &[Ty]) -> Option<Vec<Ty>> {
+        let params = types.arrow_params(&self.arrow);
+        if params.len() != arg_tys.len() {
+            return None;
+        }
+        let domain = types.clause_domain_row(&params, &self.bounds);
+        let mut narrowed = Vec::with_capacity(arg_tys.len());
+        for (arg, domain) in arg_tys.iter().zip(domain.iter()) {
+            let narrowed_col = types.narrow_to_clause_domain(*arg, domain);
+            if types.is_empty(&narrowed_col) {
+                return None;
+            }
+            narrowed.push(narrowed_col);
+        }
+        Some(narrowed)
     }
 }
 
@@ -306,12 +300,6 @@ fn domain_row_at_any(types: &mut Types, row: Vec<Ty>) -> Vec<Ty> {
             types.instantiate(&param, &free_at_any)
         })
         .collect()
-}
-
-fn instantiate_domain(types: &mut Types, mut domain: Ty, bounds: &HashMap<TypeVarId, Ty>) -> Ty {
-    let closed = types.close_bounds(bounds, &HashMap::new());
-    domain = types.instantiate(&domain, &closed);
-    domain
 }
 
 impl FunctionContractMap {

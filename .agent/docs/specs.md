@@ -57,6 +57,22 @@ Compiler2 owns the active contract path:
   pattern with that kind's component cleared (`witness_escapes_kind`) — a
   cross-kind union like `:first | {:acc, a}` accepts `:first` through its
   atom member but still rejects `:third`, which no member accepts.
+- An argument column witnessed exactly `any` is IMPRECISE, not a claim that
+  the argument really can be every value: it means the call site does not
+  know that argument's type, the way Elixir reads a `dynamic()` argument.
+  `Types::match_arrow` narrows such a column, before the rest of the walk
+  ever sees it, to the clause's own declared domain — the parameter pattern
+  closed from the clause's bounds alone, the same domain
+  `ContractArrow::input_domain_row` reads for coverage — and matches on that
+  narrowed part. A column witnessed something merely PARTLY imprecise, such
+  as a union with one member outside the domain, is not `any`, so it still
+  needs the ordinary subset test to pass whole: `resource(t)` applied to a
+  handle typed `any` answers on the resource domain, but applied to
+  `integer | :weird` against an integer-only domain still violates. This is
+  a different question from arrow-SET coverage above: coverage joins several
+  CLAUSES' answers over disjoint slices of one row, which a single call to
+  `match_arrow` cannot express, so `arrow_set_covers` and
+  `ContractArrow::narrow_args` still carry that case.
 - A variadic extern's contract carries a tail domain alongside its fixed
   parameters: the type every argument past the declared prefix must belong
   to (`extern_contract::variadic_tail_domain`). `FunctionContract::apply`

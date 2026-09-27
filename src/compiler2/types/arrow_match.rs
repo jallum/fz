@@ -210,6 +210,16 @@ impl Types {
     /// Match a signature `(params) -> result` with variable `bounds` against an
     /// observed argument list, returning the trichotomy verdict and the
     /// instantiated arrow.
+    ///
+    /// A column witnessed exactly `any` is imprecise, not a claim that the
+    /// argument really can be every value: it means the call site does not
+    /// know that argument's type, the way Elixir reads a `dynamic()` argument.
+    /// Such a column is narrowed to the clause's own declared domain before
+    /// the walk below ever sees it, and matched on that narrowed part. A
+    /// witness that is merely partly imprecise, such as a union with one
+    /// member outside the domain, is not `any` and still needs the ordinary
+    /// subset gate to pass whole, so a genuinely wrong value is still
+    /// rejected.
     pub fn match_arrow(
         &mut self,
         params: &[Ty],
@@ -220,7 +230,55 @@ impl Types {
         if params.len() != args.len() {
             return ArrowMatch::Invalid;
         }
-        self.instantiate_match(params, result, bounds, args)
+        let narrowed = self.narrow_any_witnesses(params, bounds, args);
+        self.instantiate_match(params, result, bounds, &narrowed)
+    }
+
+    /// A clause's own domain, one row: each parameter pattern closed from the
+    /// clause's declared `bounds` alone (an empty seed), before any call's
+    /// evidence. A clause variable still free after its bounds are closed has
+    /// nothing ground in it and stays var-carrying — the caller reads that as
+    /// "nothing to narrow to" via [`Types::narrow_to_clause_domain`].
+    pub(crate) fn clause_domain_row(&mut self, params: &[Ty], bounds: &HashMap<TypeVarId, Ty>) -> Vec<Ty> {
+        let closed = self.close_bounds(bounds, &HashMap::new());
+        params
+            .iter()
+            .map(|pattern| self.instantiate(pattern, &closed))
+            .collect()
+    }
+
+    /// Narrow `witness` to one column's `domain` (a row entry from
+    /// [`Types::clause_domain_row`]): left alone when the domain still
+    /// carries a free variable — there is nothing ground to narrow to — else
+    /// the overlap of `witness` and `domain`.
+    pub(crate) fn narrow_to_clause_domain(&mut self, witness: Ty, domain: &Ty) -> Ty {
+        if self.has_vars(domain) {
+            witness
+        } else {
+            self.intersect(witness, *domain)
+        }
+    }
+
+    /// Replace each column witnessed exactly `any` with that column's own
+    /// clause domain, before this call's own evidence ever sees it: an `any`
+    /// argument and an omitted one narrow to the same place. A witness that
+    /// is not exactly `any` still needs the ordinary walk below, so a
+    /// genuinely wrong value is still rejected.
+    fn narrow_any_witnesses(&mut self, params: &[Ty], bounds: &HashMap<TypeVarId, Ty>, args: &[Ty]) -> Vec<Ty> {
+        let any = self.any();
+        if !args.contains(&any) {
+            return args.to_vec();
+        }
+        let domain = self.clause_domain_row(params, bounds);
+        args.iter()
+            .zip(domain)
+            .map(|(witness, domain)| {
+                if *witness != any {
+                    return *witness;
+                }
+                self.narrow_to_clause_domain(*witness, &domain)
+            })
+            .collect()
     }
 
     /// One walk over `(params, args)`: each position's witness is its argument.
