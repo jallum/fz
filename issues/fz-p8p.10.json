@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-p8p.3"
+    "fz-p8p.3",
+    "fz-xxd.3"
   ],
   "blocks": [
     "fz-p8p.12"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Move the behaviour fixtures into fixtures/ with numbers",
   "type": "task",
-  "updated_at": "2026-09-25T21:23:00Z"
+  "updated_at": "2026-09-27T20:14:03Z"
 }
