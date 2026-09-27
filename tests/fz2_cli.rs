@@ -2174,17 +2174,24 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // initial runs rise 205 -> 208, and with the runs that no longer
             // re-walk to the same answer, changed outputs rise 249 -> 253
             // and unchanged outputs fall 47 -> 37.
-            evaluations: 290,
+            // fz-afu.11: 290 -> 286 evaluations, content-caused 82 -> 78,
+            // wakes 81 -> 77, blocked 64 -> 63. The protocol callback no
+            // longer joins over `ProtocolDispatch`'s arms, so an
+            // implementation defined later never re-runs it or the callers
+            // built on it. Changed outputs fall 253 -> 250 and unchanged
+            // outputs fall 37 -> 36 in the same motion; initial runs are
+            // untouched.
+            evaluations: 286,
             runtime_demand_evaluations: 31,
             initial: 208,
-            content_caused: 82,
+            content_caused: 78,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 253,
-            unchanged_outputs: 37,
-            wakes: 81,
-            blocked_completions: 64,
+            changed_outputs: 250,
+            unchanged_outputs: 36,
+            wakes: 77,
+            blocked_completions: 63,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
