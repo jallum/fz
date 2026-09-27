@@ -16,7 +16,7 @@ use super::super::SourceOwner;
 use super::super::body::{
     CallSiteId, ControlDestination, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, ValueId,
 };
-use super::super::contract::FunctionContract;
+use super::super::contract::{AppliedFunctionContract, FunctionContract};
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{ActivationKey, FunctionId, ModuleId, TypeName, function_id_of_closure_target};
@@ -117,7 +117,12 @@ impl EntryWalkTable {
 }
 
 type ValueTypes = HashMap<ValueId, Ty>;
-type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
+/// A callee's refined argument surface plus its contract verdict. `None`
+/// means the callee declares no contract at all, so there is nothing to
+/// verify. `Some` carries the verdict `FunctionContract::apply` reached —
+/// answered, underconstrained, or rejected — so a caller reads the verdict it
+/// needs instead of a type that already lost which one happened.
+type RefinedCallSurface = (Vec<Ty>, Option<AppliedFunctionContract>);
 /// One reached call: what it resolved to, the activation demand it
 /// contributes, and its return evidence.
 type ResolvedCall = (
@@ -1271,8 +1276,9 @@ fn resolve_function_call(
         return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     };
     let caller_owner = world.function_definition(caller.function).0.owner;
-    let (input_types, contract_return_ty) =
+    let (input_types, applied_contract) =
         refine_function_call_surface(world, tel, function, input_types, caller_owner, call_span)?;
+    let contract_return_ty = applied_contract_return(applied_contract);
     if shape == CalleeShape::Boundary {
         // The provider boundary is the public dynamic edge: `any` is earned
         // here (and only here and at unresolvable callable values).
@@ -1418,8 +1424,9 @@ fn resolve_protocol_call(
         }
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
         let caller_owner = world.function_definition(caller.function).0.owner;
-        let (refined_inputs, contract_return_ty) =
+        let (refined_inputs, applied_contract) =
             refine_function_call_surface(world, tel, selected.function, refined_inputs, caller_owner, call_span)?;
+        let contract_return_ty = applied_contract_return(applied_contract);
         let (activation, observed_return) =
             prepare_function_call(world, caller, selected.function, &refined_inputs, reads);
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
@@ -1737,37 +1744,58 @@ fn apply_function_contract(
     input_types: Vec<Ty>,
     caller_owner: SourceOwner,
     violation_span: Span,
-) -> Result<(Vec<Ty>, Option<Ty>), FatalError> {
+) -> Result<RefinedCallSurface, FatalError> {
     let application = contract.apply(world.types_mut(), &input_types);
     if !application.enforceable_satisfied
         && function_contract_is_enforced(world, function, caller_owner)
         && spec_violation_is_actionable(world, &input_types)
     {
-        return Err(emit_spec_violation(tel, world, function, &input_types, violation_span));
-    }
-    Ok((
-        refine_contract_inputs(
+        return Err(emit_spec_violation(
+            tel,
             world,
-            input_types,
-            application.matched_arrows.iter().map(|params| params.as_slice()),
-        ),
-        application.result,
-    ))
+            function,
+            contract,
+            &input_types,
+            violation_span,
+        ));
+    }
+    let refined_inputs = refine_contract_inputs(
+        world,
+        input_types,
+        application.matched_arrows.iter().map(|params| params.as_slice()),
+    );
+    Ok((refined_inputs, Some(application)))
 }
 
-/// A spec violation is enforced (fatal) only at USER callsites. Calls written
-/// inside library code are validated for refinement but never diagnosed:
-/// shared library bodies currently carry JOINED activation evidence — one
-/// evidence row unioned across uncorrelated users — so a callsite there can
-/// observe a phantom argument combination no runtime call makes (one user's
-/// callable paired with another user's element type). The matcher verdict on
-/// that row is correct, but as a diagnostic it is false, and its span points
-/// into library source where the user can act on nothing. The gate retires
-/// when activation evidence becomes correlation-sound. The lexical source
-/// owner is carried separately from the callsite's exact source-version span.
+/// The type a contract answered for this call, once its verdict is known. A
+/// callee with no contract at all carries no verdict (`None`); a rejected row
+/// that reached here without being diagnosed (still underconstrained, or the
+/// library/user gate held it back) answered no type either — its rejection
+/// stays a fact on the verdict rather than becoming this `None`.
+fn applied_contract_return(applied: Option<AppliedFunctionContract>) -> Option<Ty> {
+    applied.and_then(|application| application.result)
+}
+
+/// A spec violation is enforced (fatal) unconditionally for an extern: its
+/// declaration IS its whole definition, and the row it is applied to comes
+/// straight from the one caller that made it, never joined evidence from
+/// several callers. A rejected extern row is therefore always a real fault,
+/// in the declaration or in the call.
+///
+/// For an ordinary function the violation is enforced only at USER
+/// callsites. Calls written inside library code are validated for
+/// refinement but never diagnosed: shared library bodies currently carry
+/// JOINED activation evidence — one evidence row unioned across uncorrelated
+/// users — so a callsite there can observe a phantom argument combination no
+/// runtime call makes (one user's callable paired with another user's
+/// element type). The matcher verdict on that row is correct, but as a
+/// diagnostic it is false, and its span points into library source where the
+/// user can act on nothing. The gate retires when activation evidence
+/// becomes correlation-sound. The lexical source owner is carried separately
+/// from the callsite's exact source-version span.
 fn function_contract_is_enforced(world: &World, function: FunctionId, caller_owner: SourceOwner) -> bool {
     let (_source, surface) = world.function_definition(function);
-    surface.extern_abi.is_none() && !world.is_bootstrap(caller_owner)
+    surface.extern_abi.is_some() || !world.is_bootstrap(caller_owner)
 }
 
 fn spec_violation_is_actionable(world: &mut World, input_types: &[Ty]) -> bool {
@@ -1791,33 +1819,35 @@ fn activation_contract_return(
     if !require_function_contract(world, function, reads, waits) {
         return Ok(None);
     }
-    let (_, contract_return_ty) =
+    let (_, applied_contract) =
         refine_function_call_surface(world, tel, function, input_types.to_vec(), caller_owner, violation_span)?;
-    Ok(contract_return_ty)
+    Ok(applied_contract_return(applied_contract))
 }
 
 fn emit_spec_violation(
     tel: &impl crate::telemetry::Telemetry,
-    world: &World,
+    world: &mut World,
     function: FunctionId,
+    contract: &FunctionContract,
     input_types: &[Ty],
     span: Span,
 ) -> FatalError {
+    let domain_rows = contract.matched_domain_rows(world.types_mut(), input_types.len());
     let function_ref = world.function_ref(function);
     let observed = input_types
         .iter()
         .map(|ty| world.types().display_for_diag(ty))
         .collect::<Vec<_>>()
         .join(", ");
+    let domain = domain_rows.join(" | ");
     emit_through(
         tel,
         &[Diagnostic::error(
             codes::SPEC_VIOLATION,
             format!(
-                "call to `{}/{}` violates its @spec for arguments ({})",
+                "call to `{}/{}` violates its @spec for arguments ({observed}); the declared domain is ({domain})",
                 function_ref.display_name(),
                 function_ref.arity,
-                observed
             ),
             span,
         )

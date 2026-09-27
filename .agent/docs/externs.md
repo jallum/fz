@@ -388,6 +388,12 @@ marshal classes below decide the narrower question of which physical lane
 each tail value crosses on — an un-ascribed binary is still refused there,
 because the lane depends on an ascription the contract's row can't see.
 
+A row that does not fit is a fatal `spec/violation` at the call, on every
+door: an extern's declaration is enforced unconditionally, because it is the
+whole definition and the row came straight from the one caller that made it.
+`libc::printf("%f", 1.5)` names the tail domain past the fixed `fmt`
+parameter in its diagnostic, marked `...` (`00253_variadic_float_error.fz`).
+
 ## Marshal classes resolve per call site
 
 The `ret` and fixed `params` are fixed by the declaration. A variadic call's
@@ -557,4 +563,8 @@ cargo test --test fixture_matrix c_int_negative_return    # C int width, 3 doors
 cargo test --lib compiler2_native_lowering_narrows_c_int_arguments_and_sign_extends_c_int_results
 cargo test --test fixture_matrix variadic_three_integers  # variadic ABI, 3 doors
 cargo test --test aot_variadic_open                   # variadic call through the linker
+cargo test --test fixture_matrix 00605_libc_abs_arg_outside_declared_domain  # row outside a fixed extern's domain, 3 doors
+cargo test --test fixture_matrix 00253_variadic_float_error  # row outside a variadic extern's tail domain, 3 doors
+cargo test --lib compiler2::contract_test::extern_row_outside_its_declared_contract_is_a_spec_violation
+cargo test --lib compiler2::contract_test::variadic_extern_violation_names_the_tail_domain_past_the_fixed_params
 ```

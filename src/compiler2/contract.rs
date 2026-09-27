@@ -203,6 +203,18 @@ impl FunctionContract {
         }
     }
 
+    /// Every clause's domain, rendered for naming what a rejected call of
+    /// `row_len` arguments was measured against: one string per clause, in
+    /// declaration order. Built from `ContractArrow::matched_params`, the
+    /// exact row `apply` widens by the tail and matches the call against, so
+    /// the message can never claim a domain the check did not use.
+    pub(crate) fn matched_domain_rows(&self, types: &mut Types, row_len: usize) -> Vec<String> {
+        self.arrows
+            .iter()
+            .map(|clause| clause.matched_domain_display(types, row_len))
+            .collect()
+    }
+
     /// Arrow-SET coverage of a ground argument row: no single arrow accepted
     /// the arguments, but the arguments may still be covered member-by-member
     /// by different arrows (e.g. `(int | float, int)` against `+/2`'s
@@ -267,6 +279,25 @@ impl ContractArrow {
     pub(crate) fn input_domain_row(&self, types: &mut Types) -> Vec<Ty> {
         let params = types.arrow_params(&self.arrow);
         types.clause_domain_row(&params, &self.bounds)
+    }
+
+    /// This clause's domain for a call of `row_len` arguments, rendered as a
+    /// single readable string: each fixed position named individually, and,
+    /// past them, the variadic tail's type named once and marked `...` (the
+    /// widened positions all share that one type, so they name nothing new
+    /// repeated).
+    fn matched_domain_display(&self, types: &mut Types, row_len: usize) -> String {
+        let fixed_len = types.arrow_params(&self.arrow).len();
+        let widened = self.matched_params(types, row_len);
+        let tail = widened.get(fixed_len).copied();
+        let mut parts: Vec<String> = widened[..fixed_len.min(widened.len())]
+            .iter()
+            .map(|ty| types.display_for_diag(ty))
+            .collect();
+        if let Some(tail) = tail {
+            parts.push(format!("...{}", types.display_for_diag(&tail)));
+        }
+        parts.join(", ")
     }
 
     /// This clause's own domain row, narrowed against `arg_tys` position by

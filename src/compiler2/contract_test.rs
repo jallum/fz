@@ -1,10 +1,12 @@
 use std::collections::{BTreeSet, HashMap};
 
+use crate::diag::codes;
 use crate::modules::identity::ModuleName;
-use crate::telemetry::ConfiguredTelemetry;
+use crate::telemetry::{Capture, ConfiguredTelemetry};
 use crate::type_expr::ResolvedSpecDecl;
 
 use super::contract::{ContractArrow, ResolvedContractArrow};
+use super::drive_harness::metadata_str;
 use super::protocol::ProtocolDomainObligation;
 use super::{
     CallableValueKind, ClosureTarget, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, FunctionContract,
@@ -1332,4 +1334,84 @@ fn the_any_rule_narrows_one_column_and_a_wrong_sibling_column_still_rejects() {
         "the any column alone would narrow to integer, but :weird in the sibling column still violates it"
     );
     assert!(applied.result.is_none());
+}
+
+// fz-xxd.6: an extern's declaration is its whole contract. `libc::abs` takes
+// one `c_int`, and `:nope` fits no clause of that contract, so the call is
+// rejected at compile time on every door -- there is no extern body to fall
+// back into, and no backend may be asked to make the call.
+#[test]
+fn extern_row_outside_its_declared_contract_is_a_spec_violation() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/00605_libc_abs_arg_outside_declared_domain.fz".to_string()),
+        text: include_str!("../../fixtures/00605_libc_abs_arg_outside_declared_domain.fz").to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "an extern row outside its declared contract should fail to compile",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("the rejected extern row must surface as a diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::SPEC_VIOLATION.0);
+    let message = metadata_str(&diagnostic, "message");
+    assert!(
+        message.contains("libc::abs"),
+        "the diagnostic should name the extern, got: {message}",
+    );
+    assert!(
+        message.contains(":nope"),
+        "the diagnostic should name the rejected row, got: {message}",
+    );
+    assert!(
+        message.contains("declared domain is (int)"),
+        "the diagnostic should name the declared domain, got: {message}",
+    );
+}
+
+// fz-xxd.6: a variadic extern's contract accepts more past its fixed
+// parameters, so a violation naming only the fixed parameters understates
+// what the call was actually checked against. `libc::printf` declares one
+// fixed parameter (`fmt`); the domain named here must also name what its
+// tail accepts.
+#[test]
+fn variadic_extern_violation_names_the_tail_domain_past_the_fixed_params() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/00253_variadic_float_error.fz".to_string()),
+        text: include_str!("../../fixtures/00253_variadic_float_error.fz").to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "a float tail argument is outside the declaration's tail domain",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("the rejected extern row must surface as a diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::SPEC_VIOLATION.0);
+    let message = metadata_str(&diagnostic, "message");
+    assert!(
+        message.contains("declared domain is (binary, ..."),
+        "the domain should name the fixed `fmt` parameter and then the tail's own domain \
+         marked `...`, not stop at the fixed parameters, got: {message}",
+    );
 }

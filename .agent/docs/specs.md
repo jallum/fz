@@ -78,7 +78,12 @@ Compiler2 owns the active contract path:
   to (`extern_contract::variadic_tail_domain`). `FunctionContract::apply`
   widens the clause's parameter list by repeating the tail domain to the
   observed row's length before calling `match_arrow`, so a longer row is not
-  an arity mismatch; a row shorter than the fixed prefix still is.
+  an arity mismatch; a row shorter than the fixed prefix still is. A
+  rejected row's diagnostic renders the same widened row
+  (`FunctionContract::matched_domain_rows`, reusing
+  `ContractArrow::matched_params`): the fixed positions named individually,
+  then the tail's one type named once and marked `...`, e.g.
+  `(binary, ...int | pid | reference | c_pointer | binary)`.
 - Arrow matching is polarity-aware. A `@spec` variable collects LOWER bounds
   from its covariant occurrences (list element, tuple field, map field, resource
   payload, arrow result) and UPPER bounds from its contravariant ones (under an
@@ -115,14 +120,21 @@ Compiler2 owns the active contract path:
   two shapes apart and it masked the partial join above, since dropping a
   `{:done, []}` rung's binding suppressed the claim without saying why it was
   wrong.
-- Fatal `spec/violation` diagnostics fire only at USER callsites
-  (`function_contract_is_enforced` in `compiler2/jobs/semantic.rs`). Library
-  (bootstrap) callsites are validated for refinement but never diagnosed:
-  shared library bodies carry joined activation evidence that can pair
-  uncorrelated users into phantom argument combinations, so a correct matcher
-  verdict there would be a false diagnostic with a span inside library source.
-  The gate keys on the violation span's code and retires when activation
-  evidence becomes correlation-sound.
+- Fatal `spec/violation` diagnostics fire at every callsite of an extern:
+  its declaration is its whole definition, and the row it is checked against
+  comes straight from the one caller that made it, so a rejection is always
+  a real fault, in the declaration or in the call
+  (`function_contract_is_enforced` in `compiler2/jobs/semantic.rs`). An
+  out-of-domain row therefore never falls through to the settled-`none`
+  collapse or a native trap; it is a diagnosed compile-time fact, on every
+  door, at the exact call. For an ordinary (non-extern) function the
+  diagnostic still fires only at USER callsites. Library (bootstrap)
+  callsites are validated for refinement but never diagnosed: shared library
+  bodies carry joined activation evidence that can pair uncorrelated users
+  into phantom argument combinations, so a correct matcher verdict there
+  would be a false diagnostic with a span inside library source. The gate
+  keys on the violation span's code and retires when activation evidence
+  becomes correlation-sound.
 
   Two users of one library reducer no longer share an activation over the
   ELEMENT their lists carry: the element is part of the key wherever demand
@@ -167,4 +179,7 @@ cargo test --test fixture_matrix spec_violation_between_side_effects
 cargo test --test fixture_matrix spec_violation_cross_kind_union
 cargo test --test fixture_matrix spec_boundary
 cargo test --test fixture_matrix spec_mixed_protocol_concrete_violation
+cargo test --test fixture_matrix 00605_libc_abs_arg_outside_declared_domain  # extern row, no library-callsite gate
+cargo test --lib compiler2::contract_test::extern_row_outside_its_declared_contract_is_a_spec_violation
+cargo test --lib compiler2::contract_test::variadic_extern_violation_names_the_tail_domain_past_the_fixed_params
 ```
