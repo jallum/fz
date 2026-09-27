@@ -1,0 +1,6 @@
+error[resolve/not-a-protocol]: Foo is not a protocol
+  --> fixtures/00603_defimpl_of_non_protocol_module.fz:5:1
+   |
+5 | defimpl Foo, for: List do
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |

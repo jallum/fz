@@ -370,9 +370,7 @@ fn macro_expansion_retains_definition_and_caller_source_versions_per_node() {
 #[test]
 fn repeated_macro_generated_lambdas_keep_distinct_structural_occurrences() {
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
-    compiler.submit_code(CodeSubmission {
-        name: Some("source-less-lambda-macro.fz".into()),
-        text: r#"
+    let text = r#"
 defmacro deferred(x) do
   {:fn, %{}, [{:"->", %{}, [[], x]}]}
 end
@@ -382,8 +380,10 @@ def main() do
   right = deferred(22)
   left.() + right.()
 end
-"#
-        .into(),
+"#;
+    compiler.submit_code(CodeSubmission {
+        name: Some("source-less-lambda-macro.fz".into()),
+        text: text.into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -417,11 +417,30 @@ end
             *occurrence
         })
         .collect::<Vec<_>>();
+    // As in Elixir: a lambda body the macro built with no location of its
+    // own takes the location of the `deferred(...)` call that produced it,
+    // not an absent one -- and the two calls give two distinct locations.
+    let spans = generated
+        .iter()
+        .map(|function| compiler.world().function_surface(*function).span)
+        .collect::<Vec<_>>();
     assert!(
-        generated
-            .iter()
-            .all(|function| compiler.world().function_surface(*function).span.is_dummy()),
-        "source-less expansions share absent diagnostic location"
+        spans.iter().all(|span| !span.is_dummy()),
+        "a source-less expansion takes its macro call site's location"
+    );
+    assert_ne!(
+        spans[0], spans[1],
+        "two distinct macro calls give two distinct fallback locations"
+    );
+    let mut call_sites = spans
+        .iter()
+        .map(|span| &text[span.start as usize..span.end as usize])
+        .collect::<Vec<_>>();
+    call_sites.sort_unstable();
+    assert_eq!(
+        call_sites,
+        ["deferred(20)", "deferred(22)"],
+        "each lambda's fallback location is its own call, not the other's"
     );
     assert_eq!(
         [origins[0].as_u32(), origins[1].as_u32()],

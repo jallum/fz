@@ -19,6 +19,8 @@ fn all_codes_follow_stage_slash_kind_format() {
         RESOLVE_TYPE_ALIAS,
         RESOLVE_DUPLICATE_STRUCT,
         RESOLVE_DUPLICATE_FUNCTION,
+        RESOLVE_NOT_A_PROTOCOL,
+        PROTOCOL_MISSING_CALLBACK,
         MACRO_NOT_A_DEFMACRO,
         MACRO_NOT_REQUIRED,
         MACRO_OWN_MODULE_ITEM_CALL,

@@ -180,11 +180,22 @@ enforcement must not rewalk source refs or enumerate protocol implementations.
 
 ## Callback surface vs domain
 
-The two are checked in different places. The **callback surface** is validated at
-implementation time: an impl must define every required callback at the required
-arity and none the protocol never declared. An impl's own `@spec` is never
-checked against the protocol's `@spec`: when both declare one for the same
-callback, fz does not compare their arrows, and neither does `elixirc`.
+The two are checked in different places. The **callback surface** is checked at
+`defimpl` registration: every callback the protocol declares must appear in the
+impl body at the same `(name, arity)`, comparing each side's own indexed surface
+directly. One that doesn't warns under `protocol/missing-callback`, in Elixir's
+words, naming the arity the impl defines instead when the name exists at one. An
+impl callback the protocol never declared passes silently; nothing checks for
+those. An impl's own `@spec` is never checked against the protocol's `@spec`:
+when both declare one for the same callback, fz does not compare their arrows,
+and neither does `elixirc`.
+
+This check does not require the protocol to already be indexed at the point the
+`defimpl` is registered -- it waits for the protocol's file to index, however
+many other files come first, rather than skipping the comparison. A `defimpl`
+naming a protocol nothing anywhere ever defines never gets a surface to wait
+for; that settles into `resolve/unknown-module` at the `defimpl`'s own line
+instead of leaving the wait stuck forever.
 The **domain type** is a normal `TypeDefined` dependency: consumers that mention
 `P.t(...)` demand `DeriveTypeDef(P.t)` and read the protocol-owned marker. It is
 not revised by `defimpl`.
@@ -196,10 +207,21 @@ jobs/source.rs       indexes defprotocol (define_protocol_surface ->
                      define_protocol_callback)
 source_publish.rs    register_protocol_impl (scope tier) hoists each defimpl to a
                      ModuleSourceKind::ProtocolImpl source owned by the typed pair
-                     (World::reference_protocol_impl_module) and records it in the
-                     provider index; publish_protocol_impl_surface (define tier,
-                     run by DefineModule(impl_module)) lowers the callbacks
-                     and revises the dispatch fact
+                     (World::reference_protocol_impl_module), records the impl in
+                     the provider index, and warns on a missing callback
+                     (warn_missing_protocol_callbacks, reading
+                     World::protocol_callback_surface). The protocol may not be
+                     indexed yet -- true whenever it lives in a different file, a
+                     library protocol most of all -- so this waits on
+                     ExecutionContext::wait_for_module_indexed(protocol), the same
+                     escalation Job::DefineModule climbs for any other unresolved
+                     module, and runs again once the protocol's surface exists. A
+                     protocol name nothing ever defines settles into the ordinary
+                     "module is not defined" diagnostic, at the defimpl's own span
+                     (register_protocol_impl notes that reference expectation up
+                     front); publish_protocol_impl_surface (define tier, run by
+                     DefineModule(impl_module)) lowers the callbacks and revises
+                     the dispatch fact
 compiler2/protocol.rs  the ProtocolCallback / ProtocolImpl fact shapes + maps;
                      ProtocolDomainObligation, keyed by the protocol's ModuleName
 compiler2/resolve.rs  NominalKind::ProtocolDomain mints the domain marker tag

@@ -329,7 +329,7 @@ impl QuotedSourceBuilder {
         proc.heap.alloc_map_refs(entries).map_err(QuotedSourceError::from)
     }
 
-    fn span(&self, span: &Span) -> Result<AnyValueRef, QuotedSourceError> {
+    pub(crate) fn span(&self, span: &Span) -> Result<AnyValueRef, QuotedSourceError> {
         let entries = quoted_span_entries(*span).map(|(key, value)| (self.atom(key), self.int(value)));
         self.map(&entries)
     }

@@ -462,6 +462,21 @@ pub(crate) trait QuotedExpansionCtx {
         self.note_product_read(address);
 
         let caller_scope = self.macro_caller_scope(scope);
+        // The call site every unlocated node in this macro's result falls
+        // back to (`stamp_span_fallback`) -- read from `invocation` itself,
+        // which is always either the user's own source (real span from the
+        // parser) or an earlier macro's already-stamped result (real span
+        // from that expansion, by the same rule, one level up).
+        let macro_call_span = {
+            let source_map = self.world().source_map();
+            invocation
+                .cursor()
+                .ast_node(&source_map.borrow())
+                .map_err(|error| {
+                    emit_internal_surface_error(self.telemetry(), format!("macro call span read failed: {error}"))
+                })?
+                .and_then(|node| node.span)
+        };
         // Drawn once this invocation is committed to (past both blocking
         // checks above), whether it turns out to hit the memoization cache
         // or not -- see `next_hygiene_ordinal`.
@@ -491,6 +506,13 @@ pub(crate) trait QuotedExpansionCtx {
                 emit_job_diagnostic(tel, Diagnostic::error(codes::LOWER_UNSUPPORTED, error, Span::DUMMY))
             })?;
         let source_map = world.source_map();
+        let expanded = if let Some(macro_call_span) = macro_call_span {
+            let filled = stamp_span_fallback(&expanded, &expanded.cursor(), macro_call_span, &source_map.borrow())
+                .map_err(|error| emit_internal_surface_error(tel, format!("span fallback stamping failed: {error}")))?;
+            expanded.subroot(filled)
+        } else {
+            expanded
+        };
         let stamped = stamp_hygiene(&expanded, &expanded.cursor(), function, ordinal, &source_map.borrow())
             .map_err(|error| emit_internal_surface_error(tel, format!("hygiene stamping failed: {error}")))?;
         let expanded = expanded.subroot(stamped);
@@ -715,6 +737,123 @@ fn stamp_meta_ordinal(
         builder.int(i64::from(ordinal)),
     ));
     builder.map(&entries)
+}
+
+/// As in Elixir: a node a macro's result carries with no location of its own
+/// takes the macro call's location. A node that already has one -- unquoted
+/// user code the macro merely relayed, or something an earlier expansion
+/// already stamped -- keeps it. `defmodule`/`defprotocol`/`defimpl` are the
+/// motivating case: each rebuilds its own `Fz.Compiler.define(...)` argument
+/// from destructured parameters, so the tuple this produces has no span of
+/// its own token to point at, even though the call the user wrote does.
+///
+/// A `quote` call's own arguments are left untouched: `expand_ast_call`
+/// already treats a `quote` node as its own boundary, complete without
+/// looking inside (the "head == \"quote\"" case above), because what it
+/// quotes is data the macro is carrying, not syntax this expansion owns.
+/// Reaching past that same boundary here to stamp a location into it would
+/// fabricate one on a value the macro built and meant to hand back exactly
+/// as constructed.
+fn stamp_span_fallback(
+    owner: &QuotedSourceRoot,
+    cursor: &QuotedSourceCursor,
+    macro_call_span: Span,
+    sources: &SourceMap,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    if let Some(node) = cursor.ast_node(sources)? {
+        if is_quote_call(&node)? {
+            if node.span.is_none() {
+                let builder = owner.builder();
+                let meta = stamp_meta_span(&builder, &node.meta, macro_call_span)?;
+                return builder.tuple(&[node.head.root(), meta, node.tail.root()]);
+            }
+            return Ok(cursor.root());
+        }
+        let head = stamp_span_fallback(owner, &node.head, macro_call_span, sources)?;
+        let tail = stamp_span_fallback(owner, &node.tail, macro_call_span, sources)?;
+        if node.span.is_none() {
+            let builder = owner.builder();
+            let meta = stamp_meta_span(&builder, &node.meta, macro_call_span)?;
+            return builder.tuple(&[head, meta, tail]);
+        }
+        if head == node.head.root() && tail == node.tail.root() {
+            return Ok(cursor.root());
+        }
+        return owner.builder().tuple(&[head, node.meta.root(), tail]);
+    }
+    match cursor.root().tag() {
+        ValueKind::LIST => {
+            let items = cursor.list_items()?;
+            let mut changed = false;
+            let mut out = Vec::with_capacity(items.len());
+            for item in &items {
+                let stamped = stamp_span_fallback(owner, item, macro_call_span, sources)?;
+                changed |= stamped != item.root();
+                out.push(stamped);
+            }
+            if changed {
+                owner.builder().list(&out)
+            } else {
+                Ok(cursor.root())
+            }
+        }
+        ValueKind::STRUCT => {
+            let items = cursor.tuple_items()?;
+            let mut changed = false;
+            let mut out = Vec::with_capacity(items.len());
+            for item in &items {
+                let stamped = stamp_span_fallback(owner, item, macro_call_span, sources)?;
+                changed |= stamped != item.root();
+                out.push(stamped);
+            }
+            if changed {
+                owner.builder().tuple(&out)
+            } else {
+                Ok(cursor.root())
+            }
+        }
+        ValueKind::MAP => {
+            let entries = cursor.map_entries()?;
+            let mut changed = false;
+            let mut out = Vec::with_capacity(entries.len());
+            for (key, value) in &entries {
+                let key_root = stamp_span_fallback(owner, key, macro_call_span, sources)?;
+                let value_root = stamp_span_fallback(owner, value, macro_call_span, sources)?;
+                changed |= key_root != key.root() || value_root != value.root();
+                out.push((key_root, value_root));
+            }
+            if changed {
+                owner.builder().map(&out)
+            } else {
+                Ok(cursor.root())
+            }
+        }
+        _ => Ok(cursor.root()),
+    }
+}
+
+fn stamp_meta_span(
+    builder: &super::source::QuotedSourceBuilder,
+    meta: &QuotedSourceCursor,
+    span: Span,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    let mut entries = meta
+        .map_entries()?
+        .into_iter()
+        .map(|(key, value)| (key.root(), value.root()))
+        .collect::<Vec<_>>();
+    entries.push((builder.atom(super::source::META_SPAN_KEY), builder.span(&span)?));
+    builder.map(&entries)
+}
+
+/// Whether `node` is a `quote(...)` call, the same shape `expand_ast_call`
+/// recognizes as its own boundary: a call node (its tail is an argument
+/// list, not a variable context) whose head atom is literally `quote`.
+fn is_quote_call(node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {
+    if node.head.root().tag() != ValueKind::ATOM {
+        return Ok(false);
+    }
+    Ok(node.head.atom_name()? == "quote" && is_list_like(&node.tail))
 }
 
 /// The name of a splice-candidate variable: a compiler-reserved `__`-prefixed

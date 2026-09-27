@@ -1,0 +1,13 @@
+#---
+# purpose: a defimpl naming a module that exists but was never declared with defprotocol is an error, at the defimpl line, not a missing-module diagnostic.
+# expect: diagnostic
+#---
+defmodule Foo do
+  def a(), do: 1
+end
+
+defimpl Foo, for: List do
+  def x(a), do: a
+end
+
+def main(), do: dbg(Foo.a())

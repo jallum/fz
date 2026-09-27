@@ -247,23 +247,7 @@ pub(super) fn define_module(
         };
     }
 
-    if let Some((source_owner, parent_module)) = world.module_indexed_parent(module_id) {
-        if parent_module.is_global() {
-            return Ok(JobEffects::wait_on_current(FactKey::CodeScoped(source_owner)));
-        }
-        return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module)));
-    }
-
-    if let Some(source_owner) = super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(module_id)
-    {
-        return Ok(JobEffects::wait_on_current(FactKey::CodeIndexed(source_owner)));
-    }
-
-    if let Some(parent_module) = world.module_named_parent(module_id) {
-        return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module)));
-    }
-
-    Ok(JobEffects::wait_on_current(FactKey::ModuleIndexed(module_id)))
+    Ok(super::super::drive::ExecutionContext::new(world, tel).wait_for_module_indexed(module_id))
 }
 
 pub(super) fn define_module_interface(

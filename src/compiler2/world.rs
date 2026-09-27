@@ -37,8 +37,8 @@ use super::drive::{ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
 use super::facts::FactUse;
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
-    FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleState, NotedTypeDecl, RootEntry, RootId,
-    RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
+    FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl,
+    RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{BodyKeying, BodyKeyingMap, CallGraphComponentMap, InputDemand, InputDemandMap, StaticCalleeMap};
@@ -53,7 +53,7 @@ use super::protocol::{
     ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap,
 };
 use super::quoted_expander::surface_read_diagnostic;
-use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
+use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, ScopeSurface, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
 use super::scheduler::ExternalDependencyStates;
 use super::scheduler::{CompletionEffects, FatalError, WorkStartReason, WorkStartTally};
@@ -249,6 +249,17 @@ impl Default for World {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// `World::protocol_callback_surface`'s answer: a protocol's own callback
+/// surface is either not yet knowable (the module hasn't been indexed, so it
+/// might still turn out to be a protocol) or definitely known one way or the
+/// other (it is a `defprotocol`'s surface, or it is something else and never
+/// will be). Only `Unindexed` is worth waiting on.
+pub(crate) enum ProtocolCallbackSurface<'a> {
+    Declared(&'a ScopeSurface),
+    NotAProtocol,
+    Unindexed,
 }
 
 impl World {
@@ -2254,6 +2265,30 @@ impl World {
         }
     }
 
+    /// A protocol's own declared callback surface, read from its indexed
+    /// `defprotocol` body -- the same forms `publish_protocol_surface` walks
+    /// to build the protocol's callables. Indexing runs for a whole source
+    /// submission before any of it scopes, so this answers as soon as the
+    /// protocol's file has been submitted, independent of where the
+    /// `defprotocol` sits relative to a `defimpl` naming it.
+    ///
+    /// `Unindexed` and `NotAProtocol` both used to collapse to one `None`, so
+    /// a `defimpl` of a module that turns out not to be a protocol looked
+    /// identical, at the call site, to a protocol whose file just hadn't
+    /// indexed yet -- forever unresolved instead of a definite answer. They
+    /// are two different questions with two different answers: one still
+    /// might resolve to a protocol; the other never will, no matter how long
+    /// it waits.
+    pub(crate) fn protocol_callback_surface(&self, protocol: ModuleId) -> ProtocolCallbackSurface<'_> {
+        let Some(source) = self.modules.get(protocol).source() else {
+            return ProtocolCallbackSurface::Unindexed;
+        };
+        match &source.kind {
+            ModuleSourceKind::Protocol(surface) => ProtocolCallbackSurface::Declared(surface),
+            ModuleSourceKind::Body(_) | ModuleSourceKind::ProtocolImpl(_) => ProtocolCallbackSurface::NotAProtocol,
+        }
+    }
+
     pub fn module_indexed_parent(&self, module: ModuleId) -> Option<(SourceOwner, ModuleId)> {
         match self.modules.get(module) {
             ModuleState::Indexed { source, .. } => Some((source.owner, source.parent)),
@@ -3907,6 +3942,31 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         let registration = self.world.ensure_runtime_module_registration(module)?;
         self.emit_runtime_module_registration(&registration);
         Some(registration.owner)
+    }
+
+    /// The escalation `Job::DefineModule` uses when a module has no source
+    /// yet: wait on whatever fact would bring one. A module nested inside
+    /// another waits on that parent's scope; a runtime module registers its
+    /// source, if this is the first reference to it, and waits on its own
+    /// indexing; a dotted name with a scoped prefix waits on that prefix.
+    /// Nothing left to try waits directly on the module's own indexing,
+    /// which never resolves for a name nothing anywhere defines, settling
+    /// that wait into the ordinary "module is not defined" diagnostic
+    /// instead of stalling forever.
+    pub(crate) fn wait_for_module_indexed(&mut self, module: ModuleId) -> JobEffects {
+        if let Some((source_owner, parent_module)) = self.world.module_indexed_parent(module) {
+            if parent_module.is_global() {
+                return JobEffects::wait_on_current(FactKey::CodeScoped(source_owner));
+            }
+            return JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module));
+        }
+        if let Some(source_owner) = self.ensure_runtime_module(module) {
+            return JobEffects::wait_on_current(FactKey::CodeIndexed(source_owner));
+        }
+        if let Some(parent_module) = self.world.module_named_parent(module) {
+            return JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module));
+        }
+        JobEffects::wait_on_current(FactKey::ModuleIndexed(module))
     }
 
     fn emit_runtime_module_registration(&self, registration: &RuntimeModuleRegistration) {

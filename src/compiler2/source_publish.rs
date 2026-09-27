@@ -37,7 +37,7 @@ use super::scope::ScopeSnapshot;
 use super::source::{QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata};
 use super::structdef::StructDef;
 use super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
-use super::world::World;
+use super::world::{ProtocolCallbackSurface, World};
 
 type Outputs = Vec<FactKey>;
 type Changed = Vec<FactKey>;
@@ -786,13 +786,13 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         Ok(None)
     }
 
-    fn apply_compiler_service(&mut self, service: &CompilerServiceForm) -> Result<(), FatalError> {
+    fn apply_compiler_service(&mut self, service: &CompilerServiceForm) -> Result<Option<JobEffects>, FatalError> {
         match service.service {
             CompilerService::Define => self.apply_compiler_define(service),
         }
     }
 
-    fn apply_compiler_define(&mut self, service: &CompilerServiceForm) -> Result<(), FatalError> {
+    fn apply_compiler_define(&mut self, service: &CompilerServiceForm) -> Result<Option<JobEffects>, FatalError> {
         let source_map = self.world.source_map();
         let surface = read_compiler_fragment_root(
             self.telemetry,
@@ -831,20 +831,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             ));
         }
         let context = FragmentPublicationContext::compiler_define(self.current_module);
-        if let Some(blocked) = self.apply_surface_fragment(&surface, &context)? {
-            return Err(emit_job_diagnostic(
-                self.telemetry,
-                Diagnostic::error(
-                    codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
-                    format!(
-                        "Fz.Compiler.define cannot block while applying a source fragment: waits={:?}",
-                        blocked.waits
-                    ),
-                    service.span,
-                ),
-            ));
-        }
-        Ok(())
+        self.apply_surface_fragment(&surface, &context)
     }
 
     fn define_source_function(
@@ -934,10 +921,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             }
             ScopeForm::Import(import) => self.apply_import(import),
             ScopeForm::Require(import) => self.apply_require(import),
-            ScopeForm::CompilerService(service) => {
-                self.apply_compiler_service(service)?;
-                Ok(None)
-            }
+            ScopeForm::CompilerService(service) => self.apply_compiler_service(service),
             ScopeForm::Function(function) => {
                 let publication = self.define_source_function(
                     self.current_module,
@@ -957,18 +941,14 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 let source_map = self.world.source_map();
                 let body = read_module_body_surface(module, &source_map.borrow())
                     .map_err(|error| emit_surface_read_error(self.telemetry, "module body read failed", &error))?;
-                self.register_protocol_impl_providers(module_id, &body)?;
-                Ok(None)
+                self.register_protocol_impl_providers(module_id, &body)
             }
             ScopeForm::Protocol(protocol) => {
                 let protocol_id = reference_declared_protocol_module(self.world, self.current_module, &protocol.name);
                 self.world.scope_module(protocol_id, self.namespace);
                 Ok(None)
             }
-            ScopeForm::ProtocolImpl(protocol_impl) => {
-                self.register_protocol_impl(protocol_impl)?;
-                Ok(None)
-            }
+            ScopeForm::ProtocolImpl(protocol_impl) => self.register_protocol_impl(self.current_module, protocol_impl),
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
             ScopeForm::Struct(def) => {
                 self.publish_struct_def(def)?;
@@ -1066,11 +1046,114 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     /// It records the provider relation without defining the module: the
     /// `defimpl` is pulled (its callbacks registered) only when a concrete
     /// receiver later demands `DefineModule(provider)`.
-    fn register_protocol_impl_providers(&mut self, module: ModuleId, body: &ScopeSurface) -> Result<(), FatalError> {
-        for form in &body.forms {
+    fn register_protocol_impl_providers(
+        &mut self,
+        module: ModuleId,
+        body: &ScopeSurface,
+    ) -> Result<Option<JobEffects>, FatalError> {
+        let outer_namespace = self.namespace;
+        let bound = self.bind_sibling_module_names(module, self.namespace, &body.forms);
+        let result = match bound {
+            Ok((namespace, definitions)) => {
+                self.namespace = namespace;
+                self.register_protocol_impl_providers_walk(module, body, &definitions)
+            }
+            Err(error) => Err(error),
+        };
+        self.namespace = outer_namespace;
+        result
+    }
+
+    /// Binds `forms`' own `defmodule`/`defprotocol` declarations into
+    /// `namespace` as `module`'s children. A real scoping session builds this
+    /// same binding for its own module as part of `reserve_local_forms`,
+    /// before walking its forms in order; this discovery walk visits a nested
+    /// module's body without ever running that session for it, so a nested
+    /// `defimpl`'s bare protocol or target name -- naming a sibling declared
+    /// right next to it, such as a protocol defined in the same enclosing
+    /// module -- would otherwise resolve against the outer file's namespace
+    /// instead of its own.
+    ///
+    /// Every `MacroCall` form's reservation is decoded here, once, and handed
+    /// back alongside the namespace it produced (`None` for a form that
+    /// isn't a `MacroCall`, or that reserved nothing): `register_protocol_impl_providers_walk`
+    /// needs that same reservation, by form, to register providers, and reads
+    /// it from here rather than decoding its source a second time.
+    fn bind_sibling_module_names(
+        &mut self,
+        module: ModuleId,
+        namespace: Namespace,
+        forms: &[ScopeForm],
+    ) -> Result<(Namespace, Vec<Option<ReservedSourceDefinition>>), FatalError> {
+        let mut namespace = namespace;
+        let mut definitions = Vec::with_capacity(forms.len());
+        for form in forms {
+            let definition = match form {
+                ScopeForm::Module(child) => {
+                    let child_id = reference_declared_module(self.world, module, &child.name);
+                    namespace = self.world.bind_namespace(
+                        namespace,
+                        child.name.last_segment().to_string(),
+                        NamespaceSymbol::Module(child_id),
+                    );
+                    None
+                }
+                ScopeForm::Protocol(protocol) => {
+                    let protocol_id = reference_declared_protocol_module(self.world, module, &protocol.name);
+                    namespace = self.world.bind_namespace(
+                        namespace,
+                        protocol.name.last_segment().to_string(),
+                        NamespaceSymbol::Module(protocol_id),
+                    );
+                    None
+                }
+                ScopeForm::MacroCall(macro_call) => {
+                    let source_map = self.world.source_map();
+                    let definition =
+                        reserved_source_definition(&macro_call.source, &source_map.borrow()).map_err(|error| {
+                            emit_surface_read_error(self.telemetry, "impl discovery reservation failed", &error)
+                        })?;
+                    match &definition {
+                        Some(ReservedSourceDefinition::Module { name }) => {
+                            let child_id = reference_declared_module(self.world, module, name);
+                            namespace = self.world.bind_namespace(
+                                namespace,
+                                name.last_segment().to_string(),
+                                NamespaceSymbol::Module(child_id),
+                            );
+                        }
+                        Some(ReservedSourceDefinition::Protocol { name }) => {
+                            let protocol_id = reference_declared_protocol_module(self.world, module, name);
+                            namespace = self.world.bind_namespace(
+                                namespace,
+                                name.last_segment().to_string(),
+                                NamespaceSymbol::Module(protocol_id),
+                            );
+                        }
+                        Some(ReservedSourceDefinition::Function { .. } | ReservedSourceDefinition::ProtocolImpl)
+                        | None => {}
+                    }
+                    definition
+                }
+                _ => None,
+            };
+            definitions.push(definition);
+        }
+        Ok((namespace, definitions))
+    }
+
+    fn register_protocol_impl_providers_walk(
+        &mut self,
+        module: ModuleId,
+        body: &ScopeSurface,
+        definitions: &[Option<ReservedSourceDefinition>],
+    ) -> Result<Option<JobEffects>, FatalError> {
+        for (form, definition) in body.forms.iter().zip(definitions) {
             match form {
                 ScopeForm::ProtocolImpl(impl_form) => {
-                    self.register_protocol_impl(impl_form)?;
+                    if let Some(blocked) = self.register_protocol_impl(module, impl_form)? {
+                        return Ok(Some(blocked));
+                    }
                 }
                 ScopeForm::Module(child) => {
                     let child_id = reference_declared_module(self.world, module, &child.name);
@@ -1078,15 +1161,12 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                     let nested = read_module_body_surface(child, &source_map.borrow()).map_err(|error| {
                         emit_surface_read_error(self.telemetry, "nested module body read failed", &error)
                     })?;
-                    self.register_protocol_impl_providers(child_id, &nested)?;
+                    if let Some(blocked) = self.register_protocol_impl_providers(child_id, &nested)? {
+                        return Ok(Some(blocked));
+                    }
                 }
                 ScopeForm::MacroCall(macro_call) => {
-                    let source_map = self.world.source_map();
-                    let Some(definition) = reserved_source_definition(&macro_call.source, &source_map.borrow())
-                        .map_err(|error| {
-                            emit_surface_read_error(self.telemetry, "impl discovery reservation failed", &error)
-                        })?
-                    else {
+                    let Some(definition) = definition else {
                         continue;
                     };
                     match definition {
@@ -1099,7 +1179,9 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                             )?;
                             if let Some(ScopeForm::ProtocolImpl(impl_form)) = fragment.forms.first() {
                                 let impl_form = impl_form.clone();
-                                self.register_protocol_impl(&impl_form)?;
+                                if let Some(blocked) = self.register_protocol_impl(module, &impl_form)? {
+                                    return Ok(Some(blocked));
+                                }
                             }
                         }
                         ReservedSourceDefinition::Module { .. } => {
@@ -1120,7 +1202,9 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                                             &error,
                                         )
                                     })?;
-                                self.register_protocol_impl_providers(child_id, &nested)?;
+                                if let Some(blocked) = self.register_protocol_impl_providers(child_id, &nested)? {
+                                    return Ok(Some(blocked));
+                                }
                             }
                         }
                         _ => {}
@@ -1129,7 +1213,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 _ => {}
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {
@@ -1409,9 +1493,21 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     /// at its lexical site; `DefineModule(impl_module)`
     /// later publishes it without defining its lexical host. The provider index
     /// points at that module so dispatch demands exactly the impl.
-    fn register_protocol_impl(&mut self, form: &ProtocolImplForm) -> Result<(), FatalError> {
-        let protocol = reference_impl_protocol_module(self.world, self.current_module, self.namespace, &form.protocol);
-        let target = reference_impl_target_module(self.world, self.current_module, self.namespace, &form.target);
+    ///
+    /// The provider registration below runs unconditionally, whether or not
+    /// the protocol it names ever resolves: a forward-declared or genuinely
+    /// undefined protocol must still get a provider entry, so later dispatch
+    /// has something to point at rather than nothing. The missing-callback
+    /// check that follows is the only part that can wait.
+    fn register_protocol_impl(
+        &mut self,
+        current_module: ModuleId,
+        form: &ProtocolImplForm,
+    ) -> Result<Option<JobEffects>, FatalError> {
+        let protocol = reference_impl_protocol_module(self.world, current_module, self.namespace, &form.protocol);
+        self.world
+            .note_module_reference_expectation(protocol, self.interface_requester(form.span));
+        let target = reference_impl_target_module(self.world, current_module, self.namespace, &form.target);
         let impl_module = self.world.reference_protocol_impl_module(protocol, target);
         let source_map = self.world.source_map();
         let body = read_protocol_impl_body_surface(form, &source_map.borrow()).map_err(|error| {
@@ -1427,7 +1523,11 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             self.source_owner,
             protocol,
             form.source.clone(),
-            ProtocolImplSource { protocol, target, body },
+            ProtocolImplSource {
+                protocol,
+                target,
+                body: body.clone(),
+            },
         );
         self.world.scope_module(impl_module, self.namespace);
         self.outputs.push(FactKey::ModuleIndexed(impl_module));
@@ -1441,7 +1541,110 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         if grew {
             self.changed.push(FactKey::ProtocolImplProviders(protocol));
         }
-        Ok(())
+        if let Some(blocked) = self.warn_missing_protocol_callbacks(protocol, impl_module, form.span, &body)? {
+            return Ok(Some(blocked));
+        }
+        Ok(None)
+    }
+
+    /// Compares the protocol's declared `(name, arity)` callback set against
+    /// this impl body's own, using each side's already-indexed surface --
+    /// the same forms `publish_protocol_surface` and
+    /// `publish_resolved_protocol_impl` walk. A declared callback the impl
+    /// never defines warns under `protocol/missing-callback`, naming the
+    /// arity the impl defines instead when that name exists at one.
+    ///
+    /// The protocol may live in a file this submission has not indexed yet
+    /// -- a library protocol most of all, always in its own file. Rather
+    /// than comparing against nothing and staying quiet, this waits on
+    /// whatever fact would bring the protocol's index into existence
+    /// (`ExecutionContext::wait_for_module_indexed`, the same escalation
+    /// `Job::DefineModule` climbs for any other unresolved module) and runs
+    /// again once the protocol's declared surface exists to compare against.
+    /// `register_protocol_impl` already noted a reference expectation for
+    /// `protocol` at this impl's own span, so a name that never resolves to
+    /// a real protocol settles into the ordinary "module is not defined"
+    /// diagnostic there instead of leaving this wait stuck forever.
+    ///
+    /// A name that *does* resolve, to a module indexed as something other
+    /// than a `defprotocol`, is a different, definite answer -- not a
+    /// missing surface to keep waiting on, an impossible one. Elixir raises
+    /// this immediately, at compile time; this reports it the same way,
+    /// as an error rather than the missing-callback warning above.
+    fn warn_missing_protocol_callbacks(
+        &mut self,
+        protocol: ModuleId,
+        impl_module: ModuleId,
+        span: Span,
+        impl_body: &ScopeSurface,
+    ) -> Result<Option<JobEffects>, FatalError> {
+        let declared = match self.world.protocol_callback_surface(protocol) {
+            ProtocolCallbackSurface::Unindexed => {
+                let effects =
+                    super::drive::ExecutionContext::new(self.world, self.telemetry).wait_for_module_indexed(protocol);
+                return Ok(Some(effects));
+            }
+            ProtocolCallbackSurface::NotAProtocol => {
+                let name = self
+                    .world
+                    .module_denotation(protocol)
+                    .expect("indexed module has a denotation")
+                    .to_string();
+                return Err(emit_job_diagnostic(
+                    self.telemetry,
+                    super::source_diagnostics::not_a_protocol_diagnostic(span, &name),
+                ));
+            }
+            ProtocolCallbackSurface::Declared(surface) => surface,
+        };
+        let declared_callbacks: Vec<(String, usize)> = declared
+            .forms
+            .iter()
+            .filter_map(|form| match form {
+                ScopeForm::Function(callback) => Some((callback.name.clone(), callback.arity)),
+                _ => None,
+            })
+            .collect();
+        let impl_callbacks: Vec<(&str, usize)> = impl_body
+            .forms
+            .iter()
+            .filter_map(|form| match form {
+                ScopeForm::Function(callback) => Some((callback.name.as_str(), callback.arity)),
+                _ => None,
+            })
+            .collect();
+        let protocol_display = self
+            .world
+            .module_denotation(protocol)
+            .expect("referenced protocol module")
+            .to_string();
+        let implementation_display = self
+            .world
+            .module_denotation(impl_module)
+            .expect("just-referenced impl module")
+            .to_string();
+        for (name, arity) in declared_callbacks {
+            if impl_callbacks
+                .iter()
+                .any(|(impl_name, impl_arity)| *impl_name == name && *impl_arity == arity)
+            {
+                continue;
+            }
+            let other_arity = impl_callbacks
+                .iter()
+                .find(|(impl_name, _)| *impl_name == name)
+                .map(|(_, impl_arity)| *impl_arity);
+            let diagnostic = super::source_diagnostics::protocol_missing_callback_diagnostic(
+                span,
+                &name,
+                arity,
+                &protocol_display,
+                &implementation_display,
+                other_arity,
+            );
+            super::drive::ExecutionContext::new(self.world, self.telemetry).emit_warning_once(diagnostic);
+        }
+        Ok(None)
     }
 
     /// Publish a hoisted impl module from its settled `ProtocolImplSource`: define
