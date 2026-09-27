@@ -7,6 +7,7 @@
     "fz-xxd.6"
   ],
   "blocks": [
+    "fz-p8p.21",
     "fz-xxd.4"
   ],
   "created": "2026-09-25T20:29:00Z",
@@ -18,5 +19,5 @@
   "status": "open",
   "title": "An extern's return is its contract applied to its row; resolve the declaration once",
   "type": "bug",
-  "updated_at": "2026-09-25T20:29:51Z"
+  "updated_at": "2026-09-27T20:14:02Z"
 }
