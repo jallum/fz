@@ -596,7 +596,7 @@ fn apply_step(
                 return Ok(());
             };
             let field_ty = key
-                .and_then(|key| world.types_mut().map_field_lookup(&base_ty, &key))
+                .and_then(|key| world.types_mut().field_lookup(&base_ty, &key))
                 .unwrap_or_else(|| any_ty(world));
             values.insert(*value, field_ty);
         }
@@ -606,7 +606,7 @@ fn apply_step(
             };
             let field_ty = world
                 .types_mut()
-                .map_field_lookup(&base_ty, &super::super::types::MapKey::Atom(field.clone()))
+                .field_lookup(&base_ty, &super::super::types::MapKey::Atom(field.clone()))
                 .unwrap_or_else(|| any_ty(world));
             values.insert(*value, field_ty);
         }
@@ -631,7 +631,7 @@ fn apply_step(
                 return Ok(());
             };
             let field_ty = literal_map_key(key)
-                .and_then(|key| world.types_mut().map_field_lookup(&source_ty, &key))
+                .and_then(|key| world.types_mut().field_lookup(&source_ty, &key))
                 .unwrap_or_else(|| any_ty(world));
             values.insert(*value, field_ty);
         }

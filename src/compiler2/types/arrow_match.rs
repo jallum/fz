@@ -482,7 +482,7 @@ impl Types {
             self.collect_lower_occurrences(&payload, side, seen, out);
         }
         for key in self.map_known_keys(pattern) {
-            if let Some(field) = self.map_field_lookup(pattern, &key) {
+            if let Some(field) = self.field_lookup(pattern, &key) {
                 self.collect_lower_occurrences(&field, side, seen, out);
             }
         }
@@ -735,7 +735,7 @@ impl Types {
         let witness_keys = self.map_known_keys(witness);
         let mut outcome = MatchWitness::Unknown;
         for key in self.map_known_keys(pattern) {
-            let Some(pattern_field) = self.map_field_lookup(pattern, &key) else {
+            let Some(pattern_field) = self.field_lookup(pattern, &key) else {
                 continue;
             };
             if !self.has_vars(&pattern_field) {
@@ -747,7 +747,7 @@ impl Types {
                 }
                 continue;
             }
-            if let Some(witness_field) = self.map_field_lookup(witness, &key) {
+            if let Some(witness_field) = self.field_lookup(witness, &key) {
                 outcome = outcome.merge(self.collect_match_subst(&pattern_field, &witness_field, side, bounds));
             }
         }

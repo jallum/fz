@@ -222,3 +222,38 @@ fn only_an_uninhabitable_callee_makes_a_call_dead() {
              analysis, not absence of values",
     );
 }
+
+/// `LoweredStep::FieldAccess` asks the shared field lookup for `.value` on a
+/// resource the same way it asks for any map field. The lookup must answer
+/// the resource's payload type rather than falling back to `any`.
+#[test]
+fn field_access_on_a_resource_types_as_its_payload() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("resource_value_field_access.fz".to_string()),
+        r#"
+extern "C" defp opaque_handle() :: resource(c_pointer)
+
+def main() do
+  r = opaque_handle()
+  r.value
+end
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert!(matches!(
+        ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+
+    let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    let main_activation = world.activation_key(root, main, &[]);
+    let c_pointer = world.types_mut().c_pointer();
+    assert_eq!(
+        world.activation_return_evidence(&main_activation),
+        Some(c_pointer),
+        "opaque_handle() is resource(c_pointer), so r.value should type as c_pointer, not any",
+    );
+}
