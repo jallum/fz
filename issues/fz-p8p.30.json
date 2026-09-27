@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-xxd.3"
+  ],
   "blocks": [],
   "created": "2026-09-26T22:31:18Z",
   "description": "fz accepts [if true, do: 1]; Elixir rejects it: 'unexpected comma. Parentheses are required to solve ambiguity inside containers.' (verified with the elixir CLI). Tuples and bitstrings already enforce this through the front door's comma_bound wrap; parse_list_literal's element parsing has no comma_bound wrap, so list elements miss it. Fix: list elements are parsed the same way tuple and bitstring elements are, one rule for every container. Done when: a diagnostic fixture with [if true, do: 1] reports a parse error in Elixir's words (fails first), [if(true, do: 1)] still works, and every existing fixture stays green; any fixture or lib spelling the rule rejects is fixed to the Elixir spelling and listed in the red ledger. One commit.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A list literal requires parentheses around a keyword-sugar call, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-09-26T22:31:18Z"
+  "updated_at": "2026-09-27T20:14:03Z"
 }
