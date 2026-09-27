@@ -2,7 +2,8 @@
 # purpose: spawn/1 receives a typed closure with captures directly, without going through a synthetic thunk function.
 #---
 def parent(tag) do
-  spawn(fn () -> send(1, tag) end)
+  me = self()
+  spawn(fn () -> send(me, tag) end)
   receive do
     x -> x
   end

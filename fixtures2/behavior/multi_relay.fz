@@ -1,13 +1,14 @@
 #---
 # purpose: "two workers both block on receive simultaneously; exercises scheduler managing multiple Blocked processes"
 #---
-def worker(), do: send(1, receive do x -> x * 2 end)
+def worker(parent), do: send(parent, receive do x -> x * 2 end)
 
 def main() do
-  spawn(worker)
-  spawn(worker)
-  send(2, 10)
-  send(3, 11)
+  parent = self()
+  first = spawn(fn () -> worker(parent) end)
+  second = spawn(fn () -> worker(parent) end)
+  send(first, 10)
+  send(second, 11)
   a = receive do x -> x end
   b = receive do x -> x end
   assert(a == 20, "first worker doubled 10")

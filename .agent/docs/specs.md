@@ -128,9 +128,9 @@ Compiler2 owns the active contract path:
 - Kernel arithmetic (`+ - * / %`) is fully specced in
   `lib/kernel.fz`, so provably non-numeric operands at
   a user callsite (e.g. `:bad + 1`) are fatal compile-time spec violations on
-  every path. `send/2` is specced `(pid | integer, t)`: the runtime addresses
-  processes by raw integer index (`fz_send_ref` takes `receiver_pid_bits`) and
-  has no registry, so integer addressing is part of the callee's real domain.
+  every path. `send/2` is specced `(pid, t)`: the receiver is a pid, gotten
+  from `self()` or `spawn`, and an integer such as `send(1, msg)` is rejected
+  the same way.
 
 The old `src/specs` operations were removed with the old-world compiler:
 scheme matching, overload-set application, structural correspondence grouping,

@@ -1,5 +1,5 @@
 #---
-# purpose: "send to an exited or unknown pid returns the message without delivery"
+# purpose: "send to an exited pid returns the message without delivery"
 #---
 def child(parent), do: send(parent, {:exiting, self()})
 
@@ -11,8 +11,6 @@ def main() do
   end
 
   dead_msg = {:dead, [1, 2]}
-  unknown_msg = {:unknown, [3, 4]}
   assert(send(child, dead_msg) == dead_msg, "send to exited pid returns its message")
-  assert(send(999999, unknown_msg) == unknown_msg, "send to unknown pid returns its message")
   dbg(:ok)
 end
