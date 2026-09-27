@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-xxd.3"
+  ],
   "blocks": [],
   "created": "2026-09-26T09:48:11Z",
   "description": "fixtures/00144: a multi-arrow @spec with swapped arrows passes, because spec checking is caller-side only (FunctionContract::apply, src/compiler2/contract.rs:120-176, never inspects the callee's body). Elixir never reads @spec (typespecs.md:16-18); only Dialyzer does, so this is fz-only. Shape: a definition-side check narrows each arrow's clauses, infers the return, and compares through Types::match_arrow; a mismatch is spec/violation at the arrow span. Owner: ticketed, not scheduled (2026-09-26).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A function's body is checked against its own @spec",
   "type": "feature",
-  "updated_at": "2026-09-26T09:48:11Z"
+  "updated_at": "2026-09-27T20:14:03Z"
 }
