@@ -8,14 +8,15 @@
   "blocks": [
     "fz-xxd.3"
   ],
+  "closed_at": "2026-09-27T23:44:36Z",
   "created": "2026-09-25T20:29:31Z",
   "description": "## Approved design (2026-09-27, proposal ../fz-xxd.5-6.html)\n1. Rejection stays a fact. FunctionContract::apply already returns AppliedFunctionContract { result, satisfied, .. }; satisfied == false is \"rejected\", distinct from Underconstrained. apply_function_contract (jobs/semantic.rs ~1668) carries the whole application to activation_contract_return, not only .result. No new type.\n2. function_contract_is_enforced (jobs/semantic.rs ~1704) checks an extern at every call site, including calls from lib code. An extern's row is exactly one call's arguments, never joined evidence. A rejected row is a fatal spec/violation naming the extern, the row and its declared domain, so it never reaches the settled-None -\u003e none collapse (jobs/artifact.rs:78-80), the native trap for a function that never returns, or compiler2_unreachable_control.\n3. The divergence machinery (none, return_diverges, unreachable_control) stays; it serves functions that really never return.\nThe earlier attempt (worktree fz-xxd.6, uncommitted) has semantic.rs and docs hunks that apply cleanly to the current tree. Its test moves from the deleted port_frontend_test.rs to contract_test.rs. Its fixture takes the next free number in fixtures/, not fixtures2/00559 (that number is taken).\nDone when: a failing-first fixture (a user call whose row is outside an extern's contract) reports spec/violation on run, interp and build; every existing fixture stays green; each new red (e.g. a lib wrapper whose @spec is wider than its extern) is classified in a red ledger and reported, not suppressed. Whether the interpreter and native doors agree on the spawn fixtures is measured when fz-xxd.3 is built on top. One commit.\n\n## Original report\nWhen an extern row can never be answered, the error is silent at compile time\nand a trap at runtime.\n\nOnce an extern's return is its contract applied to its row, a row outside\nevery clause (a truly out-of-domain call) keeps return evidence \"not yet\nknown\"; at the fixpoint that coincides with `none` (jobs/semantic.rs:208-212\ncomment), the continuation is specialized to `compiler2_unreachable_control`\n(jobs/artifact.rs ~1484-1493), and JIT/AOT trap with SIGILL while the\ncompile reports nothing. Errors must be loud: a settled activation whose\nreturn is absent because its contract rejected the row is a diagnosable fact,\nnot an unreachable branch.\n\nAlso observed (three-path parity, unmeasured): concurrency_ping_pong,\nshared_heap_send_large_bitstring and spawn_with_captures pass on interp while\nfailing on run/build in the same state; the reader's hypothesis is tail\nposition of the call in the spawned function. The interp must fail the same\nway or the others must not.\n\nSettle with a reader, then the owner: what the compile reports (library vs\nuser callsite gating applies: library callsites are validated but not\ndiagnosed because joined activation evidence can pair uncorrelated callers),\nand how \"rejected\" is distinguished from \"not yet known\" in the data model\nrather than by the absence of an answer.",
   "id": "fz-xxd.6",
   "labels": [],
   "parent": "fz-xxd",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "An extern row outside its contract is a silent runtime trap, not a compile error",
   "type": "bug",
-  "updated_at": "2026-09-27T22:21:48Z"
+  "updated_at": "2026-09-27T23:44:36Z"
 }
