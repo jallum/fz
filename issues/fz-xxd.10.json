@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-28T15:13:25Z",
+  "description": "North star: compile work proportional to input; things nothing uses create no work or artifacts. fixtures/00420_enum_take_drop_split.fz uses only integers yet lowers 18 float/mixed Kernel operator externs (fz_op_add_ff, fz_op_eq_ff/fi/if, fz_op_gt/lt/rem/sub_*, fz_value_cmp_ref), each costing LowerFunction and DeriveFunctionContract jobs. Cause (fact): + and == are single multi-clause functions (lib/kernel.fz:293,297,681,687); LowerFunction lowers every clause, and body_static_callees (jobs/keying.rs:107-131) walks static_edges over the whole lowered body with no clause-reachability filter, so every extern named in any clause gets a static edge and is lowered. Direction: static callees come from clauses dispatch can select for the demanded activations (dispatch-aware edges), so an unreached clause's callees are never demanded. Investigate (paper-first) before a design: which facts need whole-body edges today (call-graph components, recursion) and whether edges can be keyed per activation. Done when 00420 lowers none of the 18 and every work pin that moves drops.",
+  "id": "fz-xxd.10",
+  "labels": [],
+  "parent": "fz-xxd",
+  "priority": 2,
+  "status": "open",
+  "title": "Nothing unused creates work: a static edge exists only from a clause dispatch can select",
+  "type": "bug",
+  "updated_at": "2026-09-28T15:13:25Z"
+}
