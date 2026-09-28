@@ -312,6 +312,18 @@ because as fz clauses its 2,723 pairs would go through the dispatch matrix and
 make compile work proportional to the table rather than to the program; it
 belongs in fz once a table can be data rather than clauses (fz-5xp.68).
 
+**What does an activation return** — owner `ActivationMap::define_return`
+(`compiler2/semantic.rs`), joined monotonically within an epoch. A CLAUSED
+function's return evidence comes from observing its clauses and refining that
+observation against `FunctionContract::apply`'s answer for the row
+(`refine_call_return`). An EXTERN has no body to observe, so its return
+evidence is its `FunctionContract` applied to its own row, set directly —
+never refined against an observation that does not exist. Not-yet-known
+evidence is `None`, the bottom of the join; it is never the type `none`, which
+is a real, earned answer. `LoweredExtern` carries only the physical wire ABI;
+its wire derivation reads the same `FunctionContract` fact the return does, so
+the declaration is resolved once.
+
 ## Reading this list
 
 Two properties make an entry safe. The rule is stated once, and the places that

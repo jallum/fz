@@ -19171,13 +19171,188 @@ const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 17;
 // instead of first publishing an intermediate one, and `main/0` hears one
 // `dbg/1` return change instead of two.
 const TUPLE_LADDER_MAIN_ANALYSES: u64 = 21;
-// This is a baseline red (fz-xxd.3): main/0 measures 1 revision today because
-// an extern's un-instantiated declared return (`a0`) poses as an observation
-// and wins over the correctly-instantiated `int` (`jobs/semantic.rs:216`,
-// `:1805-1829`). The pin stays 2 -- the value fz-xxd.3's fix measures -- so
-// this constant does not bless the leak. fz-afu.2's `root_frontier` change
-// does not move this number.
-const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 2;
+// main/0 re-keys its call to `dbg/1` on `build/1`'s CURRENT return every time
+// it is re-analyzed, so a `dbg/1` activation that settles for one rung is
+// usually stale by the time main/0 reads it again -- `build/1` has already
+// climbed past it. Only once `build/1` stops moving (the ladder has widened
+// to `any`) does a `dbg/1` activation survive long enough for main/0 to
+// observe its settled return, so main/0's own return crosses `None -> Some`
+// exactly once no matter how many rungs precede it (fz-xxd.3, re-measured;
+// this constant was pinned at 2 for a fold that never happened -- lowered
+// with the same measured 1 both before and after the fix). Before fz-xxd.3
+// the count was already 1, for an unrelated reason: `fz_dbg_value`'s
+// declared, un-instantiated return (`a0`) never varied by row, so the first
+// `dbg/1` key to settle already carried that constant, wrong answer. After
+// fz-xxd.3, `dbg/1`'s return equals its own argument, so main/0's one
+// crossing now carries the correct converged answer (`any`, matching
+// `build/1`'s own settled return) instead of the leaked declared variable.
+const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 1;
+
+#[test]
+fn compiler2_extern_dbg_return_is_its_contract_applied_to_the_row() {
+    // dbg(1) calls fz_dbg_value(1), an extern declared `(t) :: t when t:
+    // any`. The extern has no body to walk, so its activation's return can
+    // only come from applying its own contract to the row it was keyed on:
+    // t's lower bound is int, so fz_dbg_value/1[int] returns int, and every
+    // caller up to main/0 returns that same int -- never the extern's own
+    // declared, un-instantiated `t`.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let modules = ModuleCapture::new();
+    modules.install(&tel);
+    let (mut compiler, root) = submit_main_root(tel, "extern_dbg_return.fz", "def main(), do: dbg(1)\n");
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("dbg(1) reaches a backend program");
+
+    let int = compiler.world_mut().types_mut().int();
+    let dbg_value_id = function_id_in_module(&functions, &modules, "Kernel", "fz_dbg_value", 1);
+    let dbg_id = function_id_in_module(&functions, &modules, "Kernel", "dbg", 1);
+    let main_id = function_id(&functions, "main", 0);
+    let dbg_value_key = ActivationKey::from_inputs(root, dbg_value_id, &[int], compiler.world_mut().types_mut());
+    let dbg_key = ActivationKey::from_inputs(root, dbg_id, &[int], compiler.world_mut().types_mut());
+    let main_key = ActivationKey::from_inputs(root, main_id, &[], compiler.world_mut().types_mut());
+
+    for (label, key) in [
+        ("Kernel.fz_dbg_value/1", &dbg_value_key),
+        ("Kernel.dbg/1", &dbg_key),
+        ("main/0", &main_key),
+    ] {
+        let observed = compiler
+            .world()
+            .activation_return(key)
+            .unwrap_or_else(|| panic!("{label} should have settled return evidence"));
+        assert!(
+            compiler.world().types().is_equivalent(&observed, &int),
+            "{label} should return int, not its extern's declared free variable; got {}",
+            compiler.world().types().display(&observed),
+        );
+    }
+}
+
+#[test]
+fn compiler2_extern_send_return_is_its_contract_applied_to_the_row() {
+    // send(self(), 1) calls fz_send(pid, 1), an extern declared `(pid |
+    // integer, t) :: t`. Here the leaked variable sits at the SECOND
+    // parameter's positional address (a1, not a0), which is the proof that
+    // what goes missing is contract application, not the source name `t`.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let modules = ModuleCapture::new();
+    modules.install(&tel);
+    let (mut compiler, root) = submit_main_root(tel, "extern_send_return.fz", "def main(), do: send(self(), 1)\n");
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("send(self(), 1) reaches a backend program");
+
+    let int = compiler.world_mut().types_mut().int();
+    let pid = compiler.world_mut().types_mut().pid();
+    let fz_send_id = function_id_in_module(&functions, &modules, "Kernel", "fz_send", 2);
+    let send_id = function_id_in_module(&functions, &modules, "Kernel", "send", 2);
+    let main_id = function_id(&functions, "main", 0);
+    let fz_send_key = ActivationKey::from_inputs(root, fz_send_id, &[pid, int], compiler.world_mut().types_mut());
+    let send_key = ActivationKey::from_inputs(root, send_id, &[pid, int], compiler.world_mut().types_mut());
+    let main_key = ActivationKey::from_inputs(root, main_id, &[], compiler.world_mut().types_mut());
+
+    for (label, key) in [
+        ("Kernel.fz_send/2", &fz_send_key),
+        ("Kernel.send/2", &send_key),
+        ("main/0", &main_key),
+    ] {
+        let observed = compiler
+            .world()
+            .activation_return(key)
+            .unwrap_or_else(|| panic!("{label} should have settled return evidence"));
+        assert!(
+            compiler.world().types().is_equivalent(&observed, &int),
+            "{label} should return int, not its extern's declared free variable; got {}",
+            compiler.world().types().display(&observed),
+        );
+    }
+}
+
+#[test]
+fn compiler2_extern_resource_return_is_its_contract_applied_to_the_row() {
+    // make_resource(1, &drop/1) calls fz_make_resource(1, &drop/1), an extern
+    // declared `(t, (t) -> nil) :: resource(t) when t: integer | c_pointer`.
+    // The payload's lower bound is int, so the activation returns
+    // resource(int) rather than resource of the extern's own declared,
+    // un-instantiated `t`.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let (mut compiler, root) = submit_main_root(
+        tel,
+        "extern_resource_return.fz",
+        "def drop(_x), do: nil\ndef main(), do: make_resource(1, &drop/1)\n",
+    );
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("make_resource(1, &drop/1) reaches a backend program");
+
+    let int = compiler.world_mut().types_mut().int();
+    let expected = compiler.world_mut().types_mut().resource(int);
+    let main_id = function_id(&functions, "main", 0);
+    let main_key = ActivationKey::from_inputs(root, main_id, &[], compiler.world_mut().types_mut());
+    let observed = compiler
+        .world()
+        .activation_return(&main_key)
+        .expect("main/0 should have settled return evidence");
+    assert!(
+        compiler.world().types().is_equivalent(&observed, &expected),
+        "main/0 should return resource(int), not resource of the extern's declared free variable; got {}",
+        compiler.world().types().display(&observed),
+    );
+}
+
+#[test]
+fn compiler2_extern_return_binds_to_each_activations_own_row() {
+    // ascending/0 and descending/0 both end with a dbg/1 call, but each
+    // activation of dbg/1 (and its fz_dbg_value/1 body) keys on the argument
+    // dbg/1 actually saw at that call site -- ascending/0 ends dbg(10.5),
+    // descending/0 ends dbg(11). Each activation's return is its own
+    // contract application, not whichever type happened to intern first.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let (mut compiler, root) = submit_main_root(
+        tel,
+        "extern_return_binds_to_caller.fz",
+        include_str!("../../fixtures/00606_extern_return_binds_to_caller.fz"),
+    );
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("the order fixture reaches a backend program");
+
+    let float = compiler.world_mut().types_mut().float();
+    let int = compiler.world_mut().types_mut().int();
+    let ascending_id = function_id(&functions, "ascending", 0);
+    let descending_id = function_id(&functions, "descending", 0);
+    let ascending_key = ActivationKey::from_inputs(root, ascending_id, &[], compiler.world_mut().types_mut());
+    let descending_key = ActivationKey::from_inputs(root, descending_id, &[], compiler.world_mut().types_mut());
+
+    let ascending_return = compiler
+        .world()
+        .activation_return(&ascending_key)
+        .expect("ascending/0 should have settled return evidence");
+    assert!(
+        compiler.world().types().is_equivalent(&ascending_return, &float),
+        "ascending/0 (dbg(11); dbg(10.5)) should return float, got {}",
+        compiler.world().types().display(&ascending_return),
+    );
+
+    let descending_return = compiler
+        .world()
+        .activation_return(&descending_key)
+        .expect("descending/0 should have settled return evidence");
+    assert!(
+        compiler.world().types().is_equivalent(&descending_return, &int),
+        "descending/0 (dbg(10.5); dbg(11)) should return int, got {}",
+        compiler.world().types().display(&descending_return),
+    );
+}
 
 #[test]
 fn compiler2_recursive_typedef_deadlocks_on_its_own_definition() {

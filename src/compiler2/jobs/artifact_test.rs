@@ -6,12 +6,9 @@ use crate::compiler2::transport::{LaneId, TransportCarrier};
 use crate::compiler2::{ActivationKey, FunctionId};
 use crate::fz_ir::{ExternAbi, ExternTy};
 use crate::telemetry::ConfiguredTelemetry;
-use crate::type_expr::ResolvedSpecDecl;
 
 #[test]
 fn generic_extern_effects_do_not_depend_on_privileged_symbol_spellings() {
-    let mut world = World::new();
-    let nil = world.types_mut().nil();
     let extern_body = |symbol: &str| LoweredBody::Extern {
         signature: super::super::super::body::LoweredExtern {
             abi: ExternAbi::C,
@@ -19,12 +16,6 @@ fn generic_extern_effects_do_not_depend_on_privileged_symbol_spellings() {
             params: Vec::new(),
             variadic: false,
             ret: crate::fz_ir::ExternReturn::Scalar(ExternTy::Unit),
-            return_ty: nil,
-            semantic_contract: ResolvedSpecDecl {
-                params: Vec::new(),
-                result: nil,
-                constraints: HashMap::new(),
-            },
         },
     };
     let expected_local = EffectSummary {

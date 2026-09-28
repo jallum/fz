@@ -156,7 +156,10 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // function head is gone; redundancy is checked from the compiled dispatch
 // plan instead, which removes its own source job from every function that
 // declared a contract.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 282;
+// fz-xxd.3: 282 -> 284, +2 DeriveFunctionContract. An extern's declaration
+// is resolved once, by its own contract job, instead of a second time inside
+// `LowerFunction`, where that work was never counted as a job.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 284;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

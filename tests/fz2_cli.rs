@@ -2149,14 +2149,18 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // gone; redundancy is checked from the compiled dispatch plan
             // instead, which removes its own formula, wake, and blocked
             // prerequisite from every function that declared a contract.
-            evaluations: 282,
+            // fz-xxd.3: 282 -> 284 evaluations, initial 208 -> 210, changed
+            // outputs 250 -> 252. An extern's declaration is resolved once,
+            // by its own contract job, instead of a second time inside
+            // `LowerFunction`, where that work was never counted.
+            evaluations: 284,
             runtime_demand_evaluations: 31,
-            initial: 208,
+            initial: 210,
             content_caused: 74,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 250,
+            changed_outputs: 252,
             unchanged_outputs: 32,
             wakes: 73,
             blocked_completions: 59,

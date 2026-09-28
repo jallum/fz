@@ -2197,7 +2197,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // per function head is gone; redundancy is checked from the compiled
         // dispatch plan instead, which removes its own evaluation from every
         // function that declared a contract.
-        total_evaluations: 735,
+        // fz-xxd.3: 735 -> 747, +12 DeriveFunctionContract. An extern's
+        // declaration is resolved once, by its own contract job, instead of a
+        // second time inside `LowerFunction`, where that work was never
+        // counted.
+        total_evaluations: 747,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2323,7 +2327,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // per function head is gone; redundancy is checked from the compiled
         // dispatch plan instead, which removes its own evaluation from every
         // function that declared a contract.
-        total_evaluations: 1152,
+        // fz-xxd.3: 1152 -> 1168, +16 DeriveFunctionContract. An extern's
+        // declaration is resolved once, by its own contract job, instead of a
+        // second time inside `LowerFunction`, where that work was never
+        // counted.
+        total_evaluations: 1168,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2547,7 +2555,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `ReturnType` wake.
         // fz-afu.11: 906 -> 897 runs, zero-change 8 -> 7. The re-keys above
         // no longer happen, so their reproducing analyses go with them.
-        analyze_evaluations: 897,
+        // fz-xxd.3: 897 -> 898. `Range.done?/3`'s `(int, int, int)` activation
+        // runs a fourth time, content-caused, with a changed output.
+        analyze_evaluations: 898,
         analyze_zero_change: 7,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
@@ -2589,7 +2599,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // per function head is gone; redundancy is checked from the compiled
         // dispatch plan instead, which removes its own evaluation from every
         // function that declared a contract.
-        total_evaluations: 1892,
+        // fz-xxd.3: 1892 -> 1911. +18 DeriveFunctionContract, for the Kernel
+        // operator externs this drive lowers, whose declarations used to be
+        // resolved a second time inside `LowerFunction`; +1 AnalyzeActivation,
+        // the `Range.done?/3` run above.
+        total_evaluations: 1911,
     },
 ];
 

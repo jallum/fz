@@ -12,7 +12,6 @@ use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
-use crate::type_expr::ResolvedSpecDecl;
 
 use super::identity::{FunctionId, ModuleId};
 use super::types::Ty;
@@ -81,8 +80,6 @@ pub struct LoweredExtern {
     pub params: Vec<ExternTy>,
     pub variadic: bool,
     pub ret: ExternReturn,
-    pub return_ty: Ty,
-    pub semantic_contract: ResolvedSpecDecl<Ty>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

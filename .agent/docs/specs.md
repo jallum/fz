@@ -120,6 +120,17 @@ Compiler2 owns the active contract path:
   two shapes apart and it masked the partial join above, since dropping a
   `{:done, []}` rung's binding suppressed the claim without saying why it was
   wrong.
+- An extern activation's return evidence is its `FunctionContract` applied to
+  the activation's row, set directly rather than refined against a body
+  observation: an extern has no body to observe, so its declaration is the
+  only witness of what it returns. When the contract cannot answer for that
+  row (`Underconstrained`, or the row falls outside its domain and is not
+  itself a fatal violation) the evidence stays not-yet-known and the
+  activation waits, rather than seeding a placeholder that outlives its own
+  refinement (`compiler2/jobs/semantic.rs`; see
+  [`semantic-authorities`](semantic-authorities.md), "what does an activation
+  return"). `LoweredExtern` carries only the physical wire ABI; the wire's
+  param and result types are read from the same `FunctionContract` fact.
 - Fatal `spec/violation` diagnostics fire at every callsite of an extern:
   its declaration is its whole definition, and the row it is checked against
   comes straight from the one caller that made it, so a rejection is always

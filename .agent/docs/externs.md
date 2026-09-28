@@ -452,14 +452,22 @@ what makes an ordinary wrapper come back correctly:
 def dbg(x), do: fz_dbg_value(x)
 ```
 
-The body calls `extern "fz" defp fz_dbg_value(any) :: any`, so the argument is
-boxed (the ABI adds the process alongside it, which the wrapper never sees) and the
-result is a boxed `AnyValueRef`; reached for an `integer`, the wrapper's return
-unboxes that word back to an `i64`. A repeated type variable means "same type",
-not "same object" — boundary correctness is the marshal class on the way in plus
-this coercion on the way out. The declared bound answers only where the call
-pinned nothing, so `t` is whatever the caller passed, the empty list included:
-`dbg([])` is typed `[]` and not `any` (`types::arrow_match`, fz-kdt.120).
+The body calls `extern "fz" defp fz_dbg_value(t) :: t when t: any`, so the
+argument is boxed (the ABI adds the process alongside it, which the wrapper
+never sees) and the result is a boxed `AnyValueRef`; reached for an `integer`,
+the wrapper's return unboxes that word back to an `i64`. A repeated type
+variable means "same type", not "same object" — boundary correctness is the
+marshal class on the way in plus this coercion on the way out. The declared
+bound answers only where the call pinned nothing, so `t` is whatever the
+caller passed, the empty list included: `dbg([])` is typed `[]` and not `any`
+(`types::arrow_match`, fz-kdt.120).
+
+`fz_dbg_value`'s own return evidence is its `FunctionContract` applied to the
+activation's row: the extern has no body to observe, so its declared clause
+is the only witness it has for what it returns (see
+[`semantic-authorities`](semantic-authorities.md), "what does an activation
+return"). `dbg(1)` therefore defines its return as `int` once, and every
+caller sees that value rather than the unconstrained `t`.
 
 ## Variadic calls
 
@@ -524,7 +532,10 @@ extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer 
 ```
 
 `resource(T)` is a real type constructor on the `Types` trait; the variable binds
-from the payload, so `make_resource(42, &close/1)` is `resource(integer)`. A
+from the payload, so `make_resource(42, &close/1)` is `resource(integer)` --
+`fz_make_resource`'s return evidence, like every extern's, is its own
+`FunctionContract` applied to the call's row, not a type the extern's
+(nonexistent) body could observe. A
 module that declares `@type t :: opaque resource(integer)` brands that shape as
 `t` wherever a position is annotated `t` — `mint_brand(resource(integer), tag)`,
 the identical mechanism `refines` uses (see

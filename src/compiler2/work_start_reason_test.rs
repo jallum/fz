@@ -282,7 +282,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // per function head is gone; redundancy is checked from the compiled
         // dispatch plan instead, which removes its own source job from every
         // function that declared a contract.
-        (2747, 9, 19, 232),
+        // fz-xxd.3: 2747 -> 2761. +18 DeriveFunctionContract: eighteen Kernel
+        // operator externs this fixture lowers but never calls. Their
+        // declarations used to be resolved a second time inside
+        // `LowerFunction`, where no job was counted; now their own contract
+        // job resolves them once. AnalyzeActivation falls by 4.
+        (2761, 9, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -316,7 +321,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // per function head is gone; redundancy is checked from the compiled
         // dispatch plan instead, which removes its own changed revision from
         // every function that declared a contract.
-        707,
+        // fz-xxd.3: 707 -> 705.
+        705,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -337,7 +343,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // own, started by the caller that waits for it: 103 -> 127 distinct
         // functions. Those starts replace re-runs rather than adding to them
         // -- DeriveInputDemand runs fall 197 -> 190.
-        1127,
+        // fz-xxd.3: 1127 -> 1145. An extern's `LowerFunction` is gated on its
+        // `FunctionContract`, so each of the eighteen new contract jobs above
+        // is started by expanding that blocked waiter to its producer.
+        1145,
         "the blocked-waiter census includes every ordinary generic helper prerequisite",
     );
     assert_eq!(
@@ -390,7 +399,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // `({empty_list(), int})`, before the settled `({list(int), int})`.
         // `drop_positive_finish/1`'s own input demand is derived once,
         // identically; only the order its caller runs in moved.
-        (2, 266, 0, 0, 0),
+        // fz-xxd.3: 266 -> 264. `Kernel.dbg/1`, `Kernel.fz_dbg_value/1`, and
+        // the `{empty_list(), int}` shapes of `Enum.drop_positive_finish/1`
+        // and `Enum.take_positive_finish/1` are no longer activated;
+        // `Range.reduce_while_step/6` and `List.reduce_while_step/3` each gain
+        // one activation.
+        (2, 264, 0, 0, 0),
         "ordinary generic helper activations preserve the pull-only frontier",
     );
 

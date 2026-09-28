@@ -19,9 +19,7 @@ use crate::dispatch_matrix::pattern::{
     PatternBodyId, PatternDispatchError, PatternRow, SourcePatternError, SourcePatternRows,
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
 };
-use crate::extern_contract::{
-    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty,
-};
+use crate::extern_contract::{explicit_extern_wire_hint, extern_symbol_from_name, ty_to_extern_ty};
 use fz_runtime::any_value::ValueKind;
 
 use crate::function_surface::FunctionSurface;
@@ -237,14 +235,17 @@ enum ExprStep {
     },
 }
 
-/// The one fact `lower_function` cannot conclude without: the function's own
-/// definition.
+/// The facts `lower_function` cannot conclude without: the function's own
+/// definition, then -- once that definition names an extern -- its own
+/// `FunctionContract`, the one resolver of an extern's declared surface.
 pub(super) fn lower_function_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
     if world.function_defined_revision(function).is_none() {
-        vec![FactKey::FunctionDefined(function)]
-    } else {
-        Vec::new()
+        return vec![FactKey::FunctionDefined(function)];
     }
+    if world.function_surface(function).extern_abi.is_some() && world.function_contract_revision(function).is_none() {
+        return vec![FactKey::FunctionContract(function)];
+    }
+    Vec::new()
 }
 
 /// Lowers one demanded function into Compiler2's structured body form.
@@ -257,38 +258,21 @@ pub(super) fn lower_function(
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
 ) -> Result<JobEffects, FatalError> {
-    if !lower_function_gates(world, function).is_empty() {
-        return Ok(world.wait_for_function_definition(function));
+    if let Some(gate) = lower_function_gates(world, function).into_iter().next() {
+        return Ok(JobEffects::wait_on_current(gate));
     }
     let (source, surface) = world.function_definition(function);
 
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let mut waits = HashSet::new();
     if surface.extern_abi.is_some() {
-        for referenced in world.function_type_refs(function).iter().cloned() {
-            let fact = FactKey::TypeDefined(referenced);
-            if world.has_fact(&fact) {
-                reads.push(fact);
-            } else {
-                waits.insert(fact);
-            }
-        }
-        // Same wait, `StructDefined` side: an extern contract that names
-        // `%Mod{...}` resolves through the shared `TypeExpr::StructRecord` arm
-        // (`resolve_extern_signature` -> `resolve_spec_decl`), which needs
-        // `Mod`'s settled schema. Resolving before the defstruct lands would
-        // validate and type the tagged record against an incomplete field set.
-        // This waits on the extern spec's struct refs, mirroring the
-        // `TypeDefined` loop above; it is spec-type resolution, distinct from
-        // the struct-literal/pattern lowering wait recorded below.
-        for module in world.function_type_struct_refs(function).iter().copied() {
-            let fact = FactKey::StructDefined(module);
-            if world.has_fact(&fact) {
-                reads.push(fact);
-            } else {
-                waits.insert(fact);
-            }
-        }
+        // An extern's declared types and bounds come from its own
+        // `FunctionContract` fact (`jobs/contract.rs`), the one resolver of a
+        // function's declared surface. `lower_function_gates` already
+        // confirmed it is present before this job started, so reading it
+        // here just names the dependency; resolving the extern's spec a
+        // second time would fork that surface's one source of truth.
+        reads.push(FactKey::FunctionContract(function));
     }
     for clause in &surface.clauses {
         for param in &clause.params {
@@ -1308,45 +1292,47 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         )
     }
 
+    /// An extern has no body of its own, so its declared types and bounds are
+    /// not resolved here a second time: they come off the `FunctionContract`
+    /// fact `jobs/contract.rs` already resolved for this same function.
+    /// `lower_function` waits on that fact before this runs.
     fn resolve_extern_signature(&mut self) -> Result<LoweredExtern, FatalError> {
         // Checked first: it is the cheapest question, and a wrong answer makes
         // every later one moot.
         let abi = self.resolve_extern_abi()?;
-        let contract = extern_semantic_contract(&self.surface).map_err(|error| {
-            emit_job_diagnostic(
-                self.telemetry,
-                error.diagnostic(&self.surface.name, self.surface.name_span),
-            )
-        })?;
-        let semantic_contract = self
+        // A refused contract (a wire spelling with no register of its own
+        // inside a tuple, say) already reported its own diagnostic when the
+        // contract job resolved it, and publishes a `FunctionContract` with
+        // no arrow. There is nothing here to lower an extern signature from,
+        // so the compile halts on the diagnostic already filed rather than
+        // panicking on a witness that was never going to exist.
+        let Some(clause) = self
             .world
-            .resolve_spec_decl(self.namespace, &contract)
-            .map_err(|error| {
-                emit_job_diagnostic(
-                    self.telemetry,
-                    Diagnostic::error(
-                        codes::RESOLVE_TYPE_ALIAS,
-                        format!(
-                            "compiler2 could not resolve extern contract for `{}`: {}",
-                            self.surface.name, error.msg
-                        ),
-                        error.span,
-                    ),
-                )
-            })?;
+            .function_contract(self.owner)
+            .and_then(|contract| contract.arrows.first())
+            .cloned()
+        else {
+            return Err(FatalError);
+        };
+        let params_ty = self.world.types().arrow_params(&clause.arrow);
+        let result_ty = self
+            .world
+            .types()
+            .arrow_result(&clause.arrow)
+            .expect("a contract clause is an arrow with a result slot");
         let params: Vec<_> = self
             .surface
             .extern_param_tokens
             .iter()
-            .zip(semantic_contract.params.iter())
-            .map(|(body, ty)| extern_param_wire(self.world.types_mut(), body, ty, &semantic_contract.constraints, abi))
+            .zip(params_ty.iter())
+            .map(|(body, ty)| extern_param_wire(self.world.types_mut(), body, ty, &clause.bounds, abi))
             .collect::<Result<_, _>>()
             .map_err(|message| self.extern_abi_error(format!("`{}`: {message}", self.surface.name)))?;
         let ret = extern_return_wire(
             self.world.types_mut(),
             &self.surface.extern_ret_tokens,
-            &semantic_contract.result,
-            &semantic_contract.constraints,
+            &result_ty,
+            &clause.bounds,
             abi,
         )
         .map_err(|message| self.extern_abi_error(format!("`{}`: {message}", self.surface.name)))?;
@@ -1357,8 +1343,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             params,
             variadic: self.surface.variadic,
             ret,
-            return_ty: semantic_contract.result,
-            semantic_contract,
         })
     }
 

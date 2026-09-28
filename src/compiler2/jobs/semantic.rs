@@ -252,10 +252,14 @@ pub(super) fn analyze_activation(
     // two coincide; mid-climb only readers of settled facts may conflate
     // them, and the settled gate keeps everyone else out.
     let mut return_evidence: Option<Ty> = None;
+    // An extern has no body to walk: the clauses arm below never runs for it,
+    // and its return evidence comes entirely from the contract loop that
+    // follows -- the declaration is its only witness, so that evidence is
+    // set directly rather than refined against a walked observation that
+    // does not exist.
+    let is_extern = matches!(&*lowered_body, LoweredBody::Extern { .. });
     match &*lowered_body {
-        LoweredBody::Extern { signature } => {
-            return_evidence = Some(signature.return_ty);
-        }
+        LoweredBody::Extern { .. } => {}
         LoweredBody::Clauses { clauses, entries, .. } => {
             for (clause_id, clause_inputs) in row_clause_inputs.iter().flatten() {
                 let clause = &clauses[*clause_id as usize];
@@ -302,7 +306,15 @@ pub(super) fn analyze_activation(
         if let Some(contract_return_ty) =
             activation_contract_return(world, tel, function, row.columns(), &mut reads, &mut waits)?
         {
-            return_evidence = refine_call_return(world, return_evidence, Some(contract_return_ty));
+            return_evidence = if is_extern {
+                // An extern's declaration is its only witness: the contract
+                // applied to this row IS the return, not a refinement of a
+                // walked body that does not exist. Distinct rows join by
+                // union, the same rule the clause arm above uses.
+                join_evidence(world, return_evidence, Some(contract_return_ty))
+            } else {
+                refine_call_return(world, return_evidence, Some(contract_return_ty))
+            };
         }
     }
 
