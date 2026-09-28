@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-p8p.31",
     "fz-xxd.3"
   ],
   "blocks": [
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "A call through two conflicting imports is an error (resolve/ambiguous-import)",
   "type": "feature",
-  "updated_at": "2026-09-27T20:14:02Z"
+  "updated_at": "2026-09-28T15:13:25Z"
 }

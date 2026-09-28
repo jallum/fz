@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-p8p.21"
+  ],
   "created": "2026-09-28T15:13:25Z",
   "description": "fixtures/00596_special_forms_three_spellings_agree.fz (44 lines, one main/0; added by fz-p8p.28) takes ~14s to compile locally on every binary from fz-xxd.5 through fz-xxd.3, and times out (20s) on CI for run/interp/build, so CI is red for every PR from #248 up (run 36416532358).\n\nMeasured (telemetry, e93830f96): 278 applied jobs; AnalyzeActivation 7.9s over 54 runs, DeriveRuntimeDemand 6.0s over 40; the worst single job is AnalyzeActivation(main/0, arrow 43) at 4.05s, each DeriveRuntimeDemand(main/0) ~1.7s.\n\nShrinking (interp wall clock): any one section (if / case / cond / with, three spellings each) ~0.1s; any pair ~0.3s; sections 1-3 0.58s; all four 14.0s. With every assert removed: 2.4s. Only the with-section's assert kept: 13.5s. Repeating one construct (6x case+assert, 5x three-way 'and' assert, 4x with) stays ~0.1s. So cost grows with the MIX of branchy forms in one function, not with their count.\n\nWork: paper-first (.agent/strategies/paper-first.md). Shrink to the smallest program whose time is superlinear, hand the expected facts/job succession before reading code, find the first step where measured work departs from the paper, fix at the source. Done when 00596 compiles in time proportional to its size (a tiny-fixture budget), with a test that pins the work, on all three doors.",
   "id": "fz-p8p.31",
