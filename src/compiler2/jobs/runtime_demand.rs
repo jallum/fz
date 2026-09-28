@@ -93,6 +93,35 @@ struct DerivedExecutableDemand {
     callable_flows: CallableFlowBuilder,
 }
 
+/// One walk's memo: an entry reached again with the same outgoing demand
+/// answers with the same external demands it already recorded, because that
+/// answer is derived from nothing else. The first arrival walks and records
+/// the answer; a later arrival with an equal outgoing demand reuses it and
+/// walks nothing below it. The table lives for one
+/// [`derive_executable_runtime_demand`] call and is never published.
+#[derive(Default)]
+struct EntryDemandWalkTable {
+    answers: HashMap<(ControlEntryId, RuntimeDemand), HashMap<ValueId, RuntimeDemand>>,
+    /// How many entries this walk actually visited, as opposed to answered
+    /// from the memo. [`emit_runtime_demand_walk`] reports it.
+    entries_walked: u64,
+}
+
+impl EntryDemandWalkTable {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, key: &(ControlEntryId, RuntimeDemand)) -> Option<&HashMap<ValueId, RuntimeDemand>> {
+        self.answers.get(key)
+    }
+
+    fn record(&mut self, key: (ControlEntryId, RuntimeDemand), answer: HashMap<ValueId, RuntimeDemand>) {
+        self.answers.insert(key, answer);
+        self.entries_walked += 1;
+    }
+}
+
 struct CallableFlowPlan {
     value: ValueId,
     producer: LocalCallableProducer,
@@ -119,7 +148,7 @@ pub(super) fn derive_runtime_demand_gates(world: &World, executable: &Executable
 
 pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     world: &mut World,
-    _tel: &T,
+    tel: &T,
     executable: &ExecutableKey,
 ) -> Result<JobEffects, FatalError> {
     let gates = derive_runtime_demand_gates(world, executable);
@@ -175,7 +204,13 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     let mut callable_target_reads = HashSet::new();
     let mut runtime_demand_evaluations = 0;
     let (mut derived, plans, unresolved_construction_targets) = loop {
-        let derived = derive_up_before_down(world.types(), &mut input, calls_itself, &mut runtime_demand_evaluations);
+        let derived = derive_up_before_down(
+            world.types(),
+            tel,
+            &mut input,
+            calls_itself,
+            &mut runtime_demand_evaluations,
+        );
         let (plans, requested, unresolved) =
             plan_callable_flows(world, &input, &derived.callable_flows, &derived.demand);
         callable_target_reads.extend(requested);
@@ -400,13 +435,14 @@ impl CalleeAnswers {
 /// computed, from that stable answer.
 fn derive_up_before_down(
     types: &Types,
+    tel: &impl Telemetry,
     input: &mut RuntimeDemandFormulaInput<'_>,
     calls_itself: bool,
     evaluations: &mut u64,
 ) -> DerivedExecutableDemand {
     loop {
         *evaluations += 1;
-        let derived = derive_executable_runtime_demand(types, input);
+        let derived = derive_executable_runtime_demand(types, tel, input);
         if !calls_itself || input.current.target_inputs.get(input.member) == Some(&derived.demand.input_demands) {
             return derived;
         }
@@ -1150,7 +1186,23 @@ fn join_contributed_input_demands(input_demands: &mut [RuntimeDemand], contribut
     }
 }
 
-fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaInput) -> DerivedExecutableDemand {
+/// How many distinct (entry, outgoing demand) pairs this walk actually
+/// visited. A join reached again with a demand the walk table already
+/// answered costs nothing further, so this count grows with the entries the
+/// body contains rather than with the number of paths that reach them.
+fn emit_runtime_demand_walk(tel: &impl Telemetry, function: FunctionId, entries_walked: u64) {
+    tel.dispatch(
+        &["fz", "compiler2", "runtime_demand", "walk"],
+        &crate::measurements! { entries_walked: entries_walked },
+        &crate::metadata! { function_id: u64::from(function.as_u32()) },
+    );
+}
+
+fn derive_executable_runtime_demand(
+    types: &Types,
+    tel: &impl Telemetry,
+    input: &RuntimeDemandFormulaInput,
+) -> DerivedExecutableDemand {
     let executable = &input.member;
     let facts = &input.facts;
     let demands = &input.current;
@@ -1182,6 +1234,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
             LoweredBody::Clauses { .. } => unreachable!(),
         };
         join_contributed_input_demands(&mut out.input_demands, contributed_input_demands);
+        emit_runtime_demand_walk(tel, executable.activation.function, 0);
         return DerivedExecutableDemand {
             demand: out,
             call_return_demands,
@@ -1198,6 +1251,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
     // set by the trivial delta `trivial_value_clause_ids` identifies.
     let mut walked_clauses = facts.reachable_clauses.to_vec();
     walked_clauses.extend(trivial_value_clause_ids(facts.body, facts.reachable_clauses));
+    let mut walks = EntryDemandWalkTable::new();
     for clause_id in walked_clauses {
         let clause = &clauses[clause_id as usize];
         let mut live = collect_entry_live_demands(
@@ -1211,6 +1265,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
             &mut out,
             &mut call_return_demands,
             &mut callable_flows,
+            &mut walks,
         );
         propagate_steps_reverse(
             types,
@@ -1243,6 +1298,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
 
     join_contributed_input_demands(&mut out.input_demands, contributed_input_demands);
     widen_boxed_closure_call_results(facts, &mut out);
+    emit_runtime_demand_walk(tel, executable.activation.function, walks.entries_walked);
 
     DerivedExecutableDemand {
         demand: out,
@@ -1317,7 +1373,17 @@ fn collect_entry_external_demands(
     out: &mut ExecutableRuntimeDemand,
     call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
     callable_flows: &mut CallableFlowBuilder,
+    walks: &mut EntryDemandWalkTable,
 ) -> HashMap<ValueId, RuntimeDemand> {
+    // What this join answers depends only on the entry and the demand flowing
+    // out of it. A join reached again with the same outgoing demand answers
+    // with the external demands it already recorded -- walking it again would
+    // record nothing new (every recorder below joins by union), so the second
+    // arrival just returns the stored answer.
+    let key = (entry_id, outgoing_demand.clone());
+    if let Some(cached) = walks.get(&key) {
+        return cached.clone();
+    }
     let entry = &entries[entry_id.as_u32() as usize];
     let mut live = collect_entry_live_demands(
         types,
@@ -1330,6 +1396,7 @@ fn collect_entry_external_demands(
         out,
         call_return_demands,
         callable_flows,
+        walks,
     );
     let mut external = HashMap::new();
     if let Some(value) = entry.origin.input_value()
@@ -1358,6 +1425,7 @@ fn collect_entry_external_demands(
         live.remove(param);
     }
     merge_live_demands(&mut external, live);
+    walks.record(key, external.clone());
     external
 }
 
@@ -1372,6 +1440,7 @@ fn collect_entry_live_demands(
     out: &mut ExecutableRuntimeDemand,
     call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
     callable_flows: &mut CallableFlowBuilder,
+    walks: &mut EntryDemandWalkTable,
 ) -> HashMap<ValueId, RuntimeDemand> {
     let entry = &entries[entry_id.as_u32() as usize];
     let mut live = HashMap::new();
@@ -1389,6 +1458,7 @@ fn collect_entry_live_demands(
                 out,
                 call_return_demands,
                 callable_flows,
+                walks,
             );
             let demand = boundary_value_flow_demand(facts, callable_flows, *value, boundary_demand);
             note_live_demand(out, &mut live, *value, demand);
@@ -1412,6 +1482,7 @@ fn collect_entry_live_demands(
                 out,
                 call_return_demands,
                 callable_flows,
+                walks,
             );
             let demand = boundary_value_flow_demand(facts, callable_flows, *value, boundary_demand);
             note_live_demand(out, &mut live, *value, demand.clone());
@@ -1451,6 +1522,7 @@ fn collect_entry_live_demands(
                 out,
                 call_return_demands,
                 callable_flows,
+                walks,
             );
             let demand = boundary_value_flow_demand(facts, callable_flows, *value, boundary_demand);
             note_live_demand(out, &mut live, *value, demand.clone());
@@ -1503,6 +1575,7 @@ fn collect_entry_live_demands(
                     out,
                     call_return_demands,
                     callable_flows,
+                    walks,
                 ),
             );
             merge_live_demands(
@@ -1518,6 +1591,7 @@ fn collect_entry_live_demands(
                     out,
                     call_return_demands,
                     callable_flows,
+                    walks,
                 ),
             );
         }
@@ -1546,6 +1620,7 @@ fn collect_entry_live_demands(
                         out,
                         call_return_demands,
                         callable_flows,
+                        walks,
                     ),
                 );
             }
@@ -1562,6 +1637,7 @@ fn collect_entry_live_demands(
                     out,
                     call_return_demands,
                     callable_flows,
+                    walks,
                 ),
             );
         }
@@ -1583,6 +1659,7 @@ fn collect_entry_live_demands(
                         out,
                         call_return_demands,
                         callable_flows,
+                        walks,
                     ),
                 );
             }
@@ -1601,6 +1678,7 @@ fn collect_entry_live_demands(
                         out,
                         call_return_demands,
                         callable_flows,
+                        walks,
                     ),
                 );
             }
@@ -1649,6 +1727,7 @@ fn destination_demands(
     out: &mut ExecutableRuntimeDemand,
     call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
     callable_flows: &mut CallableFlowBuilder,
+    walks: &mut EntryDemandWalkTable,
 ) -> (RuntimeDemand, HashMap<ValueId, RuntimeDemand>) {
     match dest {
         ControlDestination::Return => (outgoing_demand, HashMap::new()),
@@ -1668,6 +1747,7 @@ fn destination_demands(
                 out,
                 call_return_demands,
                 callable_flows,
+                walks,
             );
             let delivered_demand = external_demands.remove(&delivered).unwrap_or(RuntimeDemand::ignore());
             (delivered_demand, external_demands)
