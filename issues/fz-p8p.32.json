@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-28T15:13:25Z",
+  "description": "Under a parallel workspace run (cargo test --workspace --all-targets -- --skip matrix::), fixture_matrix's harness tests fixture_readiness_drains_an_exited_child and fixture_command_verdict_follows_the_fixture_expectation failed once with 'Operation not permitted (os error 1)' from kill_process_group -\u003e libc::kill(-pgid, SIGKILL). EPERM from kill(-pgid) means a process group with that id exists but is not ours: the child had exited and its pgid was reused by another process group, so the harness sent SIGKILL toward a group it does not own. Both pass in isolation (3/3 re-runs, 30 passed). Fix: the harness only signals a group whose leader it still holds un-reaped (kill before wait, or track the group's liveness), and a failed kill is loud only when the group is ours. Done when a test forces the exited-child path and the harness never calls kill on a reaped child's pgid.",
+  "id": "fz-p8p.32",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "The fixture harness signals only a process group it owns",
+  "type": "bug",
+  "updated_at": "2026-09-28T15:13:25Z"
+}
