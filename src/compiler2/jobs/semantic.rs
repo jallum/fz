@@ -1915,11 +1915,12 @@ fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>)
     if world.types().is_empty(&observed) {
         return observed;
     }
+    // a contract that still carries a variable doesn't know its result yet, so it doesn't refine.
     if world.types().has_vars(&contract) {
         return observed;
     }
     let any = world.types_mut().any();
-    let observed_is_unconstrained = world.types().is_equivalent(&observed, &any) || world.types().has_vars(&observed);
+    let observed_is_unconstrained = world.types().is_equivalent(&observed, &any);
     if !observed_is_unconstrained
         && world.types().is_subtype(&contract, &observed)
         && !world.types().is_subtype(&observed, &contract)
