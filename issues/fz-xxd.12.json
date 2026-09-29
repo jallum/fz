@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-29T13:57:03Z",
+  "description": "Investigate. Widening leaves ground scalars (int, float, atom, literals) unchanged under every mask: convergence_collapse is per-slot and convergence_class_at / convergence_class / erase_closure_identity are identity on them (reader F7-Q4, xxd10/f7_readers.md). So a key whose row is only scalars is the precise arrow whatever Recursive/InputDemand say, and call-site keying need not wait on them (e.g. keying Kernel.+/2 with (int, int)). Open: tuples of scalars (e.g. {int, boolean}); transport still reads CallGraphComponent per executable; whether any job count actually drops once fz-xxd.10's scope facts land. Paper-first before a design.",
+  "id": "fz-xxd.12",
+  "labels": [],
+  "parent": "fz-xxd",
+  "priority": 2,
+  "status": "open",
+  "title": "A scalar row needs no keying facts",
+  "type": "task",
+  "updated_at": "2026-09-29T13:57:03Z"
+}
