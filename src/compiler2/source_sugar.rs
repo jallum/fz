@@ -5,8 +5,11 @@
 
 use fz_runtime::any_value::{AnyValueRef, ValueKind};
 
-use super::source::{QuotedAstNode, QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
-use crate::source::SourceMap;
+use super::source::{
+    QuotedAstNode, QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError, QuotedSourceMetadata, QuotedSourceRoot,
+};
+use crate::ast::{Var, VarContext};
+use crate::source::{SourceMap, Span};
 
 pub(crate) fn rewrite_source_sugar(
     owner: &QuotedSourceRoot,
@@ -179,13 +182,13 @@ fn rewrite_capture(
         if arity < 1 {
             return Ok(None);
         }
-        let body = variable(&builder, capture_arg_name(arity as usize), meta)?;
-        return Ok(Some(capture_lambda(&builder, arity as usize, body, meta)?));
+        let body = generated_variable(&builder, "__fz_capture_arg", arity as usize, node.span)?;
+        return Ok(Some(capture_lambda(&builder, arity as usize, body, meta, node.span)?));
     }
 
     let arity = max_capture_arg(body, sources)?.unwrap_or(0);
-    let body = replace_capture_args(&builder, body, meta, sources)?.0;
-    Ok(Some(capture_lambda(&builder, arity, body, meta)?))
+    let body = replace_capture_args(&builder, body, node.span, sources)?.0;
+    Ok(Some(capture_lambda(&builder, arity, body, meta, node.span)?))
 }
 
 fn rewrite_lambda(
@@ -215,7 +218,7 @@ fn rewrite_lambda(
     let builder = owner.builder();
     let meta = node.meta.root();
     let lambda_params = (0..arity)
-        .map(|index| variable(&builder, lambda_arg_name(index), meta))
+        .map(|index| generated_variable(&builder, "__fz_lambda_arg", index, node.span))
         .collect::<Result<Vec<_>, _>>()?;
     let subject = if arity == 1 {
         lambda_params[0]
@@ -334,11 +337,11 @@ fn max_capture_arg(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<O
 fn replace_capture_args(
     builder: &QuotedSourceBuilder,
     cursor: &QuotedSourceCursor,
-    meta: AnyValueRef,
+    span: Option<Span>,
     sources: &SourceMap,
 ) -> Result<(AnyValueRef, bool), QuotedSourceError> {
     if let Some(index) = capture_arg_index(cursor, sources)? {
-        return Ok((variable(builder, capture_arg_name(index), meta)?, true));
+        return Ok((generated_variable(builder, "__fz_capture_arg", index, span)?, true));
     }
 
     match cursor.root().tag() {
@@ -347,7 +350,7 @@ fn replace_capture_args(
             let mut changed = false;
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                let (root, item_changed) = replace_capture_args(builder, &item, meta, sources)?;
+                let (root, item_changed) = replace_capture_args(builder, &item, span, sources)?;
                 changed |= item_changed;
                 out.push(root);
             }
@@ -362,7 +365,7 @@ fn replace_capture_args(
             let mut changed = false;
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                let (root, item_changed) = replace_capture_args(builder, &item, meta, sources)?;
+                let (root, item_changed) = replace_capture_args(builder, &item, span, sources)?;
                 changed |= item_changed;
                 out.push(root);
             }
@@ -377,8 +380,8 @@ fn replace_capture_args(
             let mut changed = false;
             let mut out = Vec::with_capacity(entries.len());
             for (key, value) in entries {
-                let (key, key_changed) = replace_capture_args(builder, &key, meta, sources)?;
-                let (value, value_changed) = replace_capture_args(builder, &value, meta, sources)?;
+                let (key, key_changed) = replace_capture_args(builder, &key, span, sources)?;
+                let (value, value_changed) = replace_capture_args(builder, &value, span, sources)?;
                 changed |= key_changed || value_changed;
                 out.push((key, value));
             }
@@ -431,17 +434,37 @@ fn capture_lambda(
     arity: usize,
     body: AnyValueRef,
     meta: AnyValueRef,
+    span: Option<Span>,
 ) -> Result<AnyValueRef, QuotedSourceError> {
     let params = (1..=arity)
-        .map(|index| variable(builder, capture_arg_name(index), meta))
+        .map(|index| generated_variable(builder, "__fz_capture_arg", index, span))
         .collect::<Result<Vec<_>, _>>()?;
     let params = builder.list(&params)?;
     let clause = named_call(builder, "->", meta, &[params, body])?;
     named_call(builder, "fn", meta, &[clause])
 }
 
-fn variable(builder: &QuotedSourceBuilder, name: String, meta: AnyValueRef) -> Result<AnyValueRef, QuotedSourceError> {
-    builder.tuple(&[builder.atom(&name), meta, builder.nil()])
+/// The one shape a sugar-synthesised parameter or reference takes: a `Var`
+/// with `Generated(ordinal)` context, so it can never collide with a
+/// same-spelled variable the user wrote, no matter how it reads on the page.
+fn generated_variable(
+    builder: &QuotedSourceBuilder,
+    name: &str,
+    ordinal: usize,
+    span: Option<Span>,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    let var = Var {
+        name: name.to_string(),
+        context: VarContext::Generated(ordinal as u32),
+    };
+    let meta = QuotedSourceMetadata {
+        module: None,
+        bound_callable: None,
+        from_brackets: false,
+        span,
+        hygiene_ordinal: None,
+    };
+    builder.variable(&var, &meta)
 }
 
 fn named_call(
@@ -486,14 +509,6 @@ fn roots(cursors: &[QuotedSourceCursor]) -> Vec<AnyValueRef> {
 
 fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
     cursor.root().is_empty_list() || cursor.root().tag() == ValueKind::LIST
-}
-
-fn capture_arg_name(index: usize) -> String {
-    format!("__fz_capture_arg_{index}")
-}
-
-fn lambda_arg_name(index: usize) -> String {
-    format!("__fz_lambda_arg_{index}")
 }
 
 #[cfg(test)]

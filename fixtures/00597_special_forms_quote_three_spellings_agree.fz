@@ -1,0 +1,29 @@
+#---
+# purpose: quote accepts all three call spellings and produces the same quoted tree; a bare literal is unaffected by source position, and an if-shaped body agrees once each occurrence's own span is set aside
+#---
+def main() do
+  lit1 = quote do
+    5
+  end
+  lit2 = quote do: 5
+  lit3 = quote(do: 5)
+  assert(lit1 == 5 and lit2 == 5 and lit3 == 5, "a bare-literal quote agrees across all three call spellings")
+
+  tree1 = quote do
+    if true do
+      1
+    else
+      2
+    end
+  end
+  tree2 = quote do: if true, do: 1, else: 2
+  tree3 = quote(do: if(true, do: 1, else: 2))
+  {op1, _, args1} = tree1
+  {op2, _, args2} = tree2
+  {op3, _, args3} = tree3
+  assert(op1 == op2 and op2 == op3, "the quoted if has the same call head across all three spellings")
+  assert(
+    args1 == args2 and args2 == args3,
+    "the quoted if has the same args across all three spellings, once each occurrence's own span is set aside"
+  )
+end

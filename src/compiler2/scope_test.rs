@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use super::quoted_surface::ScopeSurface;
-use super::{Job, ModuleId, NamespaceSymbol, QuotedLexicalContextKind, QuotedSourceHeap, ScopeSnapshot, World};
+use super::{Job, ModuleId, NamespaceSymbol, QuotedSourceHeap, ScopeSnapshot, World};
 use crate::telemetry::ConfiguredTelemetry;
 
 #[test]
@@ -15,13 +15,7 @@ fn compiler2_impl_environment_projects_alias_without_rekeying_its_owner() {
     let scope = ScopeSnapshot::module(owner, world.prelude_head());
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
-    let env = builder
-        .root(
-            world
-                .project_env_value(&builder, scope, QuotedLexicalContextKind::Definition)
-                .unwrap(),
-        )
-        .unwrap();
+    let env = builder.root(world.project_env_value(&builder, scope).unwrap()).unwrap();
     let projected = env
         .cursor()
         .map_value("module")
@@ -53,11 +47,7 @@ fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
     let builder = heap.builder();
 
     let module_root = builder
-        .root(
-            world
-                .project_module_value(&builder, scope, QuotedLexicalContextKind::Definition)
-                .expect("project __MODULE__"),
-        )
+        .root(world.project_module_value(&builder, scope).expect("project __MODULE__"))
         .expect("module root");
     let module_alias = module_root
         .cursor()
@@ -72,11 +62,7 @@ fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
     );
 
     let env_root = builder
-        .root(
-            world
-                .project_env_value(&builder, scope, QuotedLexicalContextKind::Definition)
-                .expect("project __ENV__"),
-        )
+        .root(world.project_env_value(&builder, scope).expect("project __ENV__"))
         .expect("env root");
     let env = env_root.cursor();
     let env_module = env
@@ -185,19 +171,7 @@ fn compiler2_source_scoping_threads_function_scope_through_module_definition() {
 
     let run = world.reference_function(app, "run", 1);
     let scope = world.function_scope(run).expect("defined function scope");
-    let lexical = world.scope_lexical_context(scope, QuotedLexicalContextKind::Definition);
 
     assert_eq!(scope.module_id(), app);
     assert_eq!(scope.function_id(), Some(run));
-    assert_eq!(
-        lexical.module,
-        vec!["App".to_string()],
-        "function lexical context should carry the owning module path",
-    );
-    assert_eq!(
-        lexical.scope,
-        vec!["run".to_string()],
-        "function lexical context should carry the function name from the same scope snapshot",
-    );
-    assert_eq!(lexical.namespace_id, Some(scope.namespace().as_u32()));
 }

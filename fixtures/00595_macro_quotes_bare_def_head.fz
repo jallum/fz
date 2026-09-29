@@ -1,0 +1,14 @@
+#---
+# purpose: a macro's own quote can define a bare (no-parens) function head; the def head's tail carries the macro's context, same as any other quoted variable, and Elixir accepts any context there
+#---
+defmacro make_hello() do
+  quote do
+    def hello do
+      41 + 1
+    end
+  end
+end
+make_hello()
+def main() do
+  assert(hello() == 42, "a macro-generated bare-name def defines hello/0")
+end

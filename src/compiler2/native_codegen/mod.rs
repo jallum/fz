@@ -18,7 +18,7 @@
 
 pub(crate) use crate::compiler2::Ty;
 use crate::telemetry::RawSpanTelemetry;
-pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types, VisibilityTypes};
+pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types};
 
 mod call;
 mod clif;
@@ -69,7 +69,7 @@ pub(crate) use crate::ir_codegen::{
 
 pub(crate) fn compile_with_backend_native_program<
     B: Backend,
-    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 >(
     t: &mut T,
     program: &crate::compiler2::NativeProgram,

@@ -1,0 +1,10 @@
+#---
+# purpose: two lambdas in the same macro, one written inside a quote's unquote and one outside, get distinct lambda occurrences; unquote splices must share the enclosing decode's LambdaOccurrences counter instead of a fresh one, or the two collide
+#---
+defmacro mk(x) do
+  g = fn a -> a + 1 end
+  quote do: unquote(Enum.map([x], fn b -> b * 10 end)) ++ [unquote(g.(x))]
+end
+def main() do
+  assert(mk(2) == [20, 3], "two lambdas, one inside an unquote, stay distinct")
+end

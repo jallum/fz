@@ -1,0 +1,14 @@
+#---
+# purpose: a bitstring size(n) inside a quote reads the macro's own hygienic n, not the caller's same-named variable
+#---
+defmacro sized_bits() do
+  quote do
+    n = 8
+    <<0::size(n)>>
+  end
+end
+def main() do
+  n = 4
+  result = sized_bits()
+  assert({byte_size(result), n} == {1, 4}, "sized_bits' own n sizes the bitstring; the caller's n stays 4")
+end

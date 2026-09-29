@@ -1,0 +1,8 @@
+#---
+# purpose: a defimpl of a library protocol, declared in its own file, missing a callback warns at the defimpl line.
+#---
+defimpl String.Chars, for: List do
+  def other(x), do: x
+end
+
+def main(), do: dbg(:ok)

@@ -77,13 +77,6 @@ fn builtin_opaque_source_names_resolve_to_closed_builtin_identities() {
         let resolved = resolve(&tel, &mut world, name).expect("builtin opaque resolves");
         assert_eq!(world.types_mut().builtin_opaque_singleton(&resolved), Some(builtin));
         assert_eq!(world.types_mut().opaque_singleton(&resolved), None);
-        let named = world.types_mut().opaque_of(name);
-        assert_eq!(world.types_mut().opaque_singleton(&named).as_deref(), Some(name));
-        assert_ne!(
-            resolved, named,
-            "a user nominal with the same rendered spelling must not acquire builtin identity"
-        );
-        assert_eq!(world.types_mut().display(&resolved), world.types_mut().display(&named));
     }
 }
 

@@ -16,7 +16,9 @@ mod builtin_opaque_wire_test {
             assert_eq!(ty_to_extern_ty(&mut types, &builtin), ExternTy::I64);
         }
         for spelling in ["pid", "ref", "c_pointer"] {
-            let user_opaque = types.opaque_of(spelling);
+            let int = types.int();
+            let payload = types.resource(int);
+            let user_opaque = types.mint_brand(payload, spelling);
             assert_eq!(
                 ty_to_extern_ty(&mut types, &user_opaque),
                 ExternTy::Any,

@@ -1,0 +1,12 @@
+#---
+# purpose: a macro reading a bare variable it never bound sees its own hygienic context, not the caller's binding
+# expect: diagnostic
+# diagnostic.code: lower/unbound
+#---
+defmacro read_t() do
+  quote do: t
+end
+def main() do
+  t = 5
+  read_t()
+end

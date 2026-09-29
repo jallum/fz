@@ -1,0 +1,7 @@
+warning[protocol/missing-callback]: function to_string/1 required by protocol String.Chars is not implemented (in module String.Chars.List)
+  --> fixtures/00601_protocol_impl_lib_protocol_missing_callback.fz:1:1
+   |
+1 | defimpl String.Chars, for: List do
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+

@@ -1,0 +1,15 @@
+#---
+# purpose: a bitstring pattern's size(len) inside a quoted case clause reads the macro's own hygienic len, not the caller's same-named variable
+#---
+defmacro parse_it(bin) do
+  quote do
+    case unquote(bin) do
+      <<len, payload::binary-size(len)>> -> payload
+    end
+  end
+end
+def main() do
+  len = 99
+  result = parse_it(<<2, 65, 66>>)
+  assert({result, len} == {<<65, 66>>, 99}, "parse_it's own len sizes its own payload; the caller's len is untouched")
+end

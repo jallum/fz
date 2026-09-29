@@ -1,0 +1,7 @@
+warning[type/redundant-clause]: this clause cannot match because a previous clause at line 6 always matches
+  --> fixtures/00152_case_wildcard_unreachable.fz:4:5
+   |
+4 |     0 -> :zero
+   |     ^^^^^^^^^^ unreachable
+   |
+

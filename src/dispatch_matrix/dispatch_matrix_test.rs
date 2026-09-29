@@ -1,5 +1,5 @@
 use super::*;
-use crate::ast::{BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, Pattern, Spanned};
+use crate::ast::{BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, Pattern, Spanned, Var};
 use crate::compiler2::{Ty, Types};
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, PatternSubjectRef, SourcePatternRows};
@@ -695,17 +695,17 @@ fn has_region(plan: &pattern::PatternDispatchPlan<Ty>, pred: impl Fn(&Region<Ty>
 #[test]
 fn a_pin_resolves_to_the_input_that_delivers_its_name() {
     let rows = vec![PatternRow::<Ty> {
-        patterns: vec![sp(Pattern::Var("x".to_string())), sp(Pattern::Pinned("x".to_string()))],
+        patterns: vec![sp(Pattern::Var(Var::user("x"))), sp(Pattern::Pinned(Var::user("x")))],
         preconditions: Vec::new(),
         guard: None,
         body_id: 0,
     }];
 
-    let plan = pattern::pattern_dispatch_from_source(SourcePatternRows::entry(2, rows, vec![("x".to_string(), 0)]))
+    let plan = pattern::pattern_dispatch_from_source(SourcePatternRows::entry(2, rows, vec![(Var::user("x"), 0)]))
         .expect("a lambda head may pin what it closed over");
 
     assert_eq!(plan.pinned.len(), 1);
-    assert_eq!(plan.pinned[0].name, "x");
+    assert_eq!(plan.pinned[0].name.name, "x");
     assert_eq!(
         plan.pinned[0].input,
         Some(0),
@@ -720,12 +720,12 @@ fn a_lexical_pin_carries_no_input() {
     let plan = pattern_plan(SourcePatternRows::lexical(
         1,
         vec![
-            pattern_row(vec![Pattern::Pinned("want".to_string())], 0),
+            pattern_row(vec![Pattern::Pinned(Var::user("want"))], 0),
             pattern_row(vec![Pattern::Wildcard], 1),
         ],
     ));
 
-    assert_eq!(plan.pinned[0].name, "want");
+    assert_eq!(plan.pinned[0].name.name, "want");
     assert_eq!(
         plan.pinned[0].input, None,
         "a lexical pin is resolved by name, not by ordinal"
@@ -740,9 +740,9 @@ fn a_guard_variable_its_own_row_binds_is_not_a_pin() {
         1,
         vec![
             pattern_row_with_guard_preconditions(
-                vec![Pattern::Var("x".to_string())],
+                vec![Pattern::Var(Var::user("x"))],
                 0,
-                Expr::Var("x".to_string()),
+                Expr::Var(Var::user("x")),
                 Vec::new(),
             ),
             pattern_row(vec![Pattern::Wildcard], 1),
@@ -762,11 +762,11 @@ fn an_entry_pin_no_input_delivers_is_refused_with_every_undefined_name() {
     let guard_span = test_span(20, 21);
     let rows = vec![PatternRow::<Ty> {
         patterns: vec![
-            Spanned::new(Pattern::Pinned("a".to_string()), pin_span),
-            sp(Pattern::Var("y".to_string())),
+            Spanned::new(Pattern::Pinned(Var::user("a")), pin_span),
+            sp(Pattern::Var(Var::user("y"))),
         ],
         preconditions: Vec::new(),
-        guard: Some(Spanned::new(Expr::Var("b".to_string()), guard_span)),
+        guard: Some(Spanned::new(Expr::Var(Var::user("b")), guard_span)),
         body_id: 0,
     }];
 
@@ -778,7 +778,7 @@ fn an_entry_pin_no_input_delivers_is_refused_with_every_undefined_name() {
     };
     assert_eq!(
         pins.iter()
-            .map(|pin| (pin.name.as_str(), pin.kind, pin.span))
+            .map(|pin| (pin.name.name.as_str(), pin.kind, pin.span))
             .collect::<Vec<_>>(),
         vec![
             ("a", pattern::PinnedKind::Pin, pin_span),
@@ -837,8 +837,8 @@ fn pattern_dispatch_matrix_preserves_literal_outcomes_and_default() {
 #[test]
 fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() {
     let cons = Pattern::List(
-        vec![sp(Pattern::Var("h".to_string()))],
-        Some(Box::new(sp(Pattern::Var("t".to_string())))),
+        vec![sp(Pattern::Var(Var::user("h")))],
+        Some(Box::new(sp(Pattern::Var(Var::user("t"))))),
     );
     let source_patterns = SourcePatternRows::lexical(
         1,
@@ -846,7 +846,7 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
             pattern_row(
                 vec![Pattern::Tuple(vec![
                     sp(Pattern::Atom("ok".to_string())),
-                    sp(Pattern::Var("x".to_string())),
+                    sp(Pattern::Var(Var::user("x"))),
                 ])],
                 0,
             ),
@@ -876,7 +876,7 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
     let x = tuple_outcome
         .bindings
         .iter()
-        .find(|binding| binding.name == "x")
+        .find(|binding| binding.name.name == "x")
         .expect("x binding");
     assert!(matches!(
         plan.graph.subjects[x.source.0 as usize].source,
@@ -890,12 +890,12 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
     let h = list_outcome
         .bindings
         .iter()
-        .find(|binding| binding.name == "h")
+        .find(|binding| binding.name.name == "h")
         .expect("h binding");
     let t = list_outcome
         .bindings
         .iter()
-        .find(|binding| binding.name == "t")
+        .find(|binding| binding.name.name == "t")
         .expect("t binding");
     assert!(matches!(
         plan.graph.subjects[h.source.0 as usize].source,
@@ -974,7 +974,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
         vec![pattern_row(
             vec![Pattern::Bitstring(vec![
                 BitField {
-                    value: sp(Pattern::Var("n".to_string())),
+                    value: sp(Pattern::Var(Var::user("n"))),
                     spec: BitFieldSpec {
                         ty: BitType::Integer,
                         size: Some(BitSize::Literal(8)),
@@ -984,10 +984,10 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
                     },
                 },
                 BitField {
-                    value: sp(Pattern::Var("payload".to_string())),
+                    value: sp(Pattern::Var(Var::user("payload"))),
                     spec: BitFieldSpec {
                         ty: BitType::Binary,
-                        size: Some(BitSize::Var("n".to_string())),
+                        size: Some(BitSize::Var(Var::user("n"))),
                         ..Default::default()
                     },
                 },
@@ -1037,7 +1037,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
     let n = outcome
         .bindings
         .iter()
-        .find(|binding| binding.name == "n")
+        .find(|binding| binding.name.name == "n")
         .expect("n binding");
     assert_eq!(size_subject, n.source);
     assert!(matches!(
@@ -1047,7 +1047,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
             ..
         })
     ));
-    assert!(outcome.bindings.iter().any(|binding| binding.name == "payload"));
+    assert!(outcome.bindings.iter().any(|binding| binding.name.name == "payload"));
 }
 
 #[test]
@@ -1058,7 +1058,7 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
             pattern_row(
                 vec![Pattern::Bitstring(vec![
                     BitField {
-                        value: sp(Pattern::Var("n".to_string())),
+                        value: sp(Pattern::Var(Var::user("n"))),
                         spec: BitFieldSpec {
                             ty: BitType::Integer,
                             size: Some(BitSize::Literal(8)),
@@ -1066,10 +1066,10 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
                         },
                     },
                     BitField {
-                        value: sp(Pattern::Var("payload".to_string())),
+                        value: sp(Pattern::Var(Var::user("payload"))),
                         spec: BitFieldSpec {
                             ty: BitType::Binary,
-                            size: Some(BitSize::Var("n".to_string())),
+                            size: Some(BitSize::Var(Var::user("n"))),
                             ..Default::default()
                         },
                     },
@@ -1084,7 +1084,7 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
                 1,
             ),
             pattern_row_with_guard_preconditions(
-                vec![Pattern::Pinned("want".to_string())],
+                vec![Pattern::Pinned(Var::user("want"))],
                 2,
                 Expr::Bool(true),
                 Vec::new(),
@@ -1094,7 +1094,7 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
     let plan = pattern_plan(source_patterns);
 
     assert_eq!(plan.prepared_keys, vec![GroundValue::Atom("id".to_string())]);
-    assert_eq!(plan.pinned[0].name, "want");
+    assert_eq!(plan.pinned[0].name.name, "want");
     assert_eq!(plan_body_ids(&plan), vec![0, 1, 2]);
     assert!(has_region(&plan, |region| matches!(
         region,
@@ -1134,8 +1134,8 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
         .flat_map(|outcome| &outcome.bindings)
         .map(|binding| binding.name.clone())
         .collect::<Vec<_>>();
-    assert!(direct_names.contains(&"n".to_string()));
-    assert!(direct_names.contains(&"payload".to_string()));
+    assert!(direct_names.contains(&Var::user("n")));
+    assert!(direct_names.contains(&Var::user("payload")));
     assert!(matches!(
         plan.bitstring_extraction(bitstring.fields[1]).spec.size,
         Some(BitstringFieldSize::Binding(_))
@@ -1150,7 +1150,7 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
         1,
         vec![
             pattern_row_with_guard_preconditions(
-                vec![Pattern::Pinned("want".to_string())],
+                vec![Pattern::Pinned(Var::user("want"))],
                 0,
                 Expr::Bool(true),
                 vec![(PatternSubjectRef::Input(0), int)],
@@ -1161,7 +1161,7 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
 
     let plan = pattern_plan(source_patterns);
 
-    assert_eq!(plan.pinned[0].name, "want");
+    assert_eq!(plan.pinned[0].name.name, "want");
     assert_eq!(
         plan.guards,
         vec![pattern::PatternGuardExpr::Const(GroundValue::Bool(true))]
@@ -1200,8 +1200,8 @@ fn a_literal_head_demands_the_input_it_compares_and_nothing_else() {
     let plan = pattern_plan(SourcePatternRows::lexical(
         2,
         vec![
-            pattern_row(vec![Pattern::Int(0), Pattern::Var("acc".to_string())], 0),
-            pattern_row(vec![Pattern::Var("n".to_string()), Pattern::Var("acc".to_string())], 1),
+            pattern_row(vec![Pattern::Int(0), Pattern::Var(Var::user("acc"))], 0),
+            pattern_row(vec![Pattern::Var(Var::user("n")), Pattern::Var(Var::user("acc"))], 1),
         ],
     ));
 
@@ -1217,9 +1217,9 @@ fn a_guard_demands_what_it_reads_not_the_subject_that_carries_it() {
     let plan = pattern_plan(SourcePatternRows::lexical(
         3,
         vec![pattern_row_with_guard_preconditions(
-            vec![Pattern::Wildcard, Pattern::Wildcard, Pattern::Var("value".to_string())],
+            vec![Pattern::Wildcard, Pattern::Wildcard, Pattern::Var(Var::user("value"))],
             0,
-            Expr::Var("value".to_string()),
+            Expr::Var(Var::user("value")),
             Vec::new(),
         )],
     ));
@@ -1236,12 +1236,12 @@ fn a_pinned_head_demands_the_input_that_delivers_the_pin() {
     let plan = pattern::pattern_dispatch_from_source(SourcePatternRows::entry(
         2,
         vec![PatternRow::<Ty> {
-            patterns: vec![sp(Pattern::Wildcard), sp(Pattern::Pinned("x".to_string()))],
+            patterns: vec![sp(Pattern::Wildcard), sp(Pattern::Pinned(Var::user("x")))],
             preconditions: Vec::new(),
             guard: None,
             body_id: 0,
         }],
-        vec![("x".to_string(), 0)],
+        vec![(Var::user("x"), 0)],
     ))
     .expect("a lambda head may pin what it closed over");
 
@@ -1260,10 +1260,10 @@ fn a_bitstring_head_demands_the_input_that_delivers_a_pinned_size() {
             patterns: vec![
                 sp(Pattern::Wildcard),
                 sp(Pattern::Bitstring(vec![BitField {
-                    value: sp(Pattern::Var("payload".to_string())),
+                    value: sp(Pattern::Var(Var::user("payload"))),
                     spec: BitFieldSpec {
                         ty: BitType::Binary,
-                        size: Some(BitSize::Var("n".to_string())),
+                        size: Some(BitSize::Var(Var::user("n"))),
                         ..Default::default()
                     },
                 }])),
@@ -1272,7 +1272,7 @@ fn a_bitstring_head_demands_the_input_that_delivers_a_pinned_size() {
             guard: None,
             body_id: 0,
         }],
-        vec![("n".to_string(), 0)],
+        vec![(Var::user("n"), 0)],
     ))
     .expect("a size bound before the pattern arrives as a pin");
 
@@ -1312,7 +1312,7 @@ fn a_nested_projection_nests_the_demand_in_the_order_the_projections_descend() {
         1,
         vec![pattern_row(
             vec![Pattern::Tuple(vec![sp(Pattern::List(
-                vec![sp(Pattern::Tuple(vec![sp(Pattern::Var("a".to_string()))]))],
+                vec![sp(Pattern::Tuple(vec![sp(Pattern::Var(Var::user("a")))]))],
                 Some(Box::new(sp(Pattern::Wildcard))),
             ))])],
             0,
@@ -1335,8 +1335,8 @@ fn a_tuple_head_demands_the_shape_it_takes_apart() {
         1,
         vec![pattern_row(
             vec![Pattern::Tuple(vec![
-                sp(Pattern::Var("a".to_string())),
-                sp(Pattern::Var("b".to_string())),
+                sp(Pattern::Var(Var::user("a"))),
+                sp(Pattern::Var(Var::user("b"))),
             ])],
             0,
         )],

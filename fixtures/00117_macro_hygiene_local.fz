@@ -1,0 +1,11 @@
+#---
+# purpose: a macro-introduced binding does not shadow the caller's variable of the same name
+#---
+defmacro set_local() do
+  quote do: t = 99
+end
+def main() do
+  t = 1
+  set_local()
+  assert(t == 1, "the macro's own t is a fresh gensym; the caller's t survives untouched")
+end

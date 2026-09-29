@@ -1,0 +1,16 @@
+#---
+# purpose: two expansions of the same macro do not share a binding; the second expansion's read of an unbound name is its own hygienic context, not the first expansion's
+# expect: diagnostic
+# diagnostic.code: lower/unbound
+#---
+defmacro step(write) do
+  if write do
+    quote do: t = 1
+  else
+    quote do: t
+  end
+end
+def main() do
+  step(true)
+  step(false)
+end

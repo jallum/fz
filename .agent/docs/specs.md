@@ -24,8 +24,8 @@ Compiler2 owns the active contract path:
   components remain symbolic. Contract matching and declared input domains both
   use this one interpretation.
 - `FunctionContract` stores resolved protocol-domain marker obligations per
-  arrow. The current obligation identity is the resolved opaque marker tag
-  (`protocol::<Name>.t`) wrapped as a `ProtocolDomainObligation`; it is
+  arrow. The current obligation identity is the resolved protocol's
+  `ModuleName`, wrapped as a `ProtocolDomainObligation`; it is
   classified from explicit positive markers in hard `Ty` values plus the
   contract bounds sidecar, not from source refs, negative/complement clauses, or
   protocol impl registries. Protocol-domain arrows can still refine calls, but

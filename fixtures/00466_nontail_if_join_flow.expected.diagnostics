@@ -1,9 +1,0 @@
-warning[type/no-matching-clause]: function clauses don't cover every input
-  --> fixtures/00466_nontail_if_join_flow.fz:2:1
-   |
-2 | def map_every_list([head | tail], nth, index, fun) do
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
-   |
-   = note: an input matched by no clause halts with `:function_clause` at runtime
-   = help: add a wildcard clause `_ -> ...` to cover any remaining input
-

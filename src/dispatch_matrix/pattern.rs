@@ -7,7 +7,7 @@ use super::{
     GuardId, GuardLeaf, OutcomeId, OutcomeMultiplicity, PinnedValueId, PlanInputs, PreparedKeyId, ProjectionKind,
     Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix, demand::DispatchDemand,
 };
-use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned};
+use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned, Var};
 use crate::function_surface::CallableSurface;
 use crate::source::Span;
 use std::collections::HashMap;
@@ -100,7 +100,7 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
 /// name in the scope enclosing the match instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternPinnedInput {
-    pub(crate) name: String,
+    pub(crate) name: Var,
     pub(crate) input: Option<u32>,
     pub(crate) span: Span,
     pub(crate) kind: PinnedKind,
@@ -141,7 +141,7 @@ pub(crate) struct PatternDispatchOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternDispatchBinding {
-    pub(crate) name: String,
+    pub(crate) name: Var,
     pub(crate) source: SubjectId,
     pub(crate) span: Span,
 }
@@ -403,8 +403,8 @@ where
 /// Builds one guard expression from its source form.
 fn guard_expr_from_ast<F, TypeHandle>(
     expr: &Expr,
-    bindings: &HashMap<String, SubjectId>,
-    pinned_by_name: &HashMap<String, PinnedValueId>,
+    bindings: &HashMap<Var, SubjectId>,
+    pinned_by_name: &HashMap<Var, PinnedValueId>,
     prepared_keys: &mut Vec<GroundValue>,
     resolver: &mut F,
 ) -> Result<PatternGuardExpr<TypeHandle>, SourcePatternError>
@@ -424,7 +424,7 @@ where
             } else if let Some(pinned) = pinned_by_name.get(name) {
                 PatternGuardExpr::Pinned(*pinned)
             } else {
-                return Err(SourcePatternError::UnknownGuardVar(name.clone()));
+                return Err(SourcePatternError::UnknownGuardVar(name.to_string()));
             }
         }
         Expr::Ascribe(inner, _) => guard_expr_from_ast(&inner.node, bindings, pinned_by_name, prepared_keys, resolver)?,
@@ -547,7 +547,7 @@ struct PatternDispatchProducer<TypeHandle> {
     subjects: HashMap<PatternSubjectRef, SubjectId>,
     guard_subject: SubjectId,
     pinned: Vec<PatternPinnedInput>,
-    pinned_by_name: HashMap<String, PinnedValueId>,
+    pinned_by_name: HashMap<Var, PinnedValueId>,
     prepared_keys: Vec<GroundValue>,
     outcomes: Vec<PatternDispatchOutcome>,
     guards: Vec<PatternGuardExpr<TypeHandle>>,
@@ -621,7 +621,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             questions.push(RegionQuestion::type_region(subject, ty.clone()));
         }
         if let Some(guard) = &row.guard {
-            let mut bound = HashMap::new();
+            let mut bound: HashMap<Var, SubjectId> = HashMap::new();
             for binding in &bindings {
                 bound.insert(binding.name.clone(), binding.source);
             }
@@ -725,7 +725,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                 let pinned = *self
                     .pinned_by_name
                     .get(name)
-                    .ok_or_else(|| SourcePatternError::UnknownPinned(name.clone()))?;
+                    .ok_or_else(|| SourcePatternError::UnknownPinned(name.to_string()))?;
                 let subject = self.subject_id(subject)?;
                 questions.push(RegionQuestion::equality(subject, ComparisonValue::Pinned(pinned)));
             }
@@ -872,7 +872,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         fields: &[crate::ast::BitField<Spanned<Pattern>>],
     ) -> Result<RegionQuestion<TypeHandle>, SourcePatternError> {
         let subject_id = self.subject_id(subject)?;
-        let mut binding_subjects = HashMap::new();
+        let mut binding_subjects: HashMap<Var, SubjectId> = HashMap::new();
         let mut projections = Vec::new();
         let mut shapes = Vec::new();
         for (index, field) in fields.iter().enumerate() {
@@ -936,14 +936,14 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
 
     fn bind(
         &mut self,
-        name: &str,
+        name: &Var,
         span: Span,
         subject: &PatternSubjectRef,
         bindings: &mut Vec<PatternDispatchBinding>,
     ) -> Result<(), SourcePatternError> {
         let source = self.subject_id(subject)?;
         bindings.push(PatternDispatchBinding {
-            name: name.to_string(),
+            name: name.clone(),
             source,
             span,
         });
@@ -952,18 +952,18 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
 
     /// A pin for a name the pattern does not bind, created on first use and
     /// resolved against the rows' prematch like every other pin.
-    fn pin_for_name(&mut self, name: &str, span: Span) -> PinnedValueId {
+    fn pin_for_name(&mut self, name: &Var, span: Span) -> PinnedValueId {
         if let Some(id) = self.pinned_by_name.get(name) {
             return *id;
         }
         let id = PinnedValueId(self.pinned.len() as u32);
         self.pinned.push(PatternPinnedInput {
-            name: name.to_string(),
+            name: name.clone(),
             input: self.prematch.input_for(name),
             span,
             kind: PinnedKind::Variable,
         });
-        self.pinned_by_name.insert(name.to_string(), id);
+        self.pinned_by_name.insert(name.clone(), id);
         id
     }
 

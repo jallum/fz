@@ -1,0 +1,8 @@
+#---
+# purpose: a call named like a special form but shaped wrong (no do section, or a do value that isn't a clause list) is an ordinary unresolved call, not a decode-internal error
+# expect: diagnostic
+# diagnostic.code: lower/unbound
+#---
+def main() do
+  case 1
+end

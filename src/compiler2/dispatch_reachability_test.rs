@@ -1,5 +1,5 @@
 use super::*;
-use crate::ast::{Expr, Pattern, Spanned};
+use crate::ast::{Expr, Pattern, Spanned, Var};
 use crate::compiler2::types::{MapKey, Sigma, TypeVarId};
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::dispatch_matrix::pattern::{PatternRow, PatternSubjectRef, SourcePatternRows, pattern_dispatch_from_source};
@@ -32,12 +32,12 @@ fn a_guard_envelopes_only_the_input_its_leaves_read() {
         vec![
             PatternRow {
                 patterns: vec![
-                    Spanned::dummy(Pattern::Var("first".to_string())),
-                    Spanned::dummy(Pattern::Var("second".to_string())),
-                    Spanned::dummy(Pattern::Var("tested".to_string())),
+                    Spanned::dummy(Pattern::Var(Var::user("first"))),
+                    Spanned::dummy(Pattern::Var(Var::user("second"))),
+                    Spanned::dummy(Pattern::Var(Var::user("tested"))),
                 ],
                 preconditions: Vec::new(),
-                guard: Some(Spanned::dummy(Expr::Var("tested".to_string()))),
+                guard: Some(Spanned::dummy(Expr::Var(Var::user("tested")))),
                 body_id: 0,
             },
             PatternRow {

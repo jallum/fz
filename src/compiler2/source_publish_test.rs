@@ -296,11 +296,7 @@ def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
     let service_grouped = grouped_function_root(&service_world, service_code, &tel);
     let builder = service_grouped.builder();
     let env = service_world
-        .project_env_value(
-            &builder,
-            ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()),
-            super::super::QuotedLexicalContextKind::Caller,
-        )
+        .project_env_value(&builder, ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()))
         .expect("__CALLER__ projection");
     let service_root = builder
         .root(

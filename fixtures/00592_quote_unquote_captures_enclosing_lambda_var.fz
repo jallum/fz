@@ -1,0 +1,10 @@
+#---
+# purpose: a lambda whose body quotes `unquote(x)` still captures `x` from its enclosing macro scope; free-name collection must see into a quote's unquote splices, not treat the quote as opaque
+#---
+defmacro twice(x) do
+  f = fn v -> quote do: unquote(v) + unquote(x) end
+  f.(x)
+end
+def main() do
+  assert(twice(3) == 6, "a lambda in a macro captures x used inside its quote's unquote")
+end

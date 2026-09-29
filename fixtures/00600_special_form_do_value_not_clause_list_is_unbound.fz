@@ -1,0 +1,8 @@
+#---
+# purpose: case/2 with a do: value that isn't a `->` clause list is a shape mismatch, so it's the ordinary unresolved call `case/2` too, not a decode-internal error
+# expect: diagnostic
+# diagnostic.code: lower/unbound
+#---
+def main() do
+  case(1, do: 2)
+end

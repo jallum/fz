@@ -8,16 +8,16 @@ fact engine can detect change by value equality instead of hashing.
 ## Representation, not naming
 
 `Types` deals in **symbols**: it constructs them (`int`, `list`, `tuple`, `union`,
-`mint_brand`, `opaque_of`), combines them (`intersect`, `difference`, `instantiate`,
-`refine_widen`), and decides questions about them (`is_subtype`, `is_disjoint`,
-`opaque_singleton`). Every method takes and returns symbols. None takes a
-source-level type name and resolves it.
+`mint_brand`, `protocol_domain_of`), combines them (`intersect`, `difference`,
+`instantiate`, `refine_widen`), and decides questions about them (`is_subtype`,
+`is_disjoint`, `opaque_singleton`). Every method takes and returns symbols. None
+takes a source-level type name and resolves it.
 
 That boundary is the design. *What the language calls a symbol* is naming, and
 naming is reference-and-definition work that lives in the namespace and the fact
-graph (see [`type-naming`](type-naming.md)), not in the kernel. The string a
-constructor like `opaque_of("Mod::t")` accepts is the symbol's own nominal identity,
-not a key into a lookup table the kernel consults.
+graph (see [`type-naming`](type-naming.md)), not in the kernel. The name a
+constructor like `mint_brand(inner, "Mod::t")` accepts is the symbol's own nominal
+identity, not a key into a lookup table the kernel consults.
 
 Source type expressions arrive as token payloads whose spans retain their exact
 immutable `SourceVersion`; resolution uses those spans only for provenance and

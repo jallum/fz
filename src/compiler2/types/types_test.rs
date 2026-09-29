@@ -678,7 +678,7 @@ fn runtime_type_predicate_projects_named_structs_and_widens_unknown_opaques() {
         }
     );
 
-    let mystery = t.opaque_of("mystery");
+    let mystery = t.protocol_domain_of(module_name("mystery"));
     let widened = t.runtime_type_predicate(&mystery);
     assert_eq!(widened.named_structs, FiniteSet::none());
     assert!(!widened.allow_other_structs);
@@ -714,7 +714,7 @@ fn runtime_type_predicate_preserves_typed_struct_exclusions_without_narrowing_ge
     );
 
     let generic_opaque_complement = t.intern(Descr {
-        opaques: FiniteSet::cofinite([OpaqueTag::Named("known".to_string())]),
+        opaques: FiniteSet::cofinite([OpaqueTag::ProtocolDomain(module_name("known"))]),
         ..Descr::unbranded()
     });
     let generic = t.runtime_type_predicate(&generic_opaque_complement);
@@ -840,11 +840,11 @@ fn nominal_protocol_targets_keep_typed_identity_through_the_opaque_algebra() {
     assert_eq!(left_name.dotted(), right_name.dotted());
     let left = t.nominal_protocol_target(left_name.clone());
     let right = t.nominal_protocol_target(right_name.clone());
-    let ordinary = t.opaque_of("protocol-target(A.B)");
+    let ordinary = t.protocol_domain_of(ModuleName::from_segments(vec!["protocol-target(A.B)".into()]));
     assert!(t.is_disjoint(&left, &right));
     assert!(
         t.is_disjoint(&left, &ordinary),
-        "ordinary opaque spelling cannot manufacture a protocol target"
+        "an ordinary opaque axis tag cannot manufacture a protocol target"
     );
     let union = t.union(left, right);
     let remaining = t.difference(union, right);
@@ -3764,6 +3764,32 @@ mod brand_lattice_law {
             !t.is_empty(&rest),
             "int minus Meters must still hold a bare int; got {}",
             t.display(&rest)
+        );
+    }
+
+    /// `opaque` mints through the same `mint_brand` call as `refines`, so an
+    /// opaque type obeys the brand law stated for `Meters`/`utf8` above.
+    #[test]
+    fn opaque_over_integer_is_a_subtype_of_integer() {
+        let mut t = Types::new();
+        let int = t.int();
+        let handle = t.mint_brand(int, "Handle");
+        assert!(
+            t.is_subtype(&handle, &int),
+            "an opaque type mints a brand over its inner, so it stays inside int; got Handle = {}",
+            t.display(&handle)
+        );
+    }
+
+    #[test]
+    fn integer_is_not_a_subtype_of_an_opaque_over_integer() {
+        let mut t = Types::new();
+        let int = t.int();
+        let handle = t.mint_brand(int, "Handle");
+        assert!(
+            !t.is_subtype(&int, &handle),
+            "a bare int lacks the opaque tag, so it is NOT a Handle; got Handle = {}",
+            t.display(&handle)
         );
     }
 

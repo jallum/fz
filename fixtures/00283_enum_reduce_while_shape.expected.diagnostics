@@ -1,9 +1,0 @@
-warning[type/no-matching-clause]: function clauses don't cover every input
-  --> fixtures/00283_enum_reduce_while_shape.fz:2:1
-   |
-2 | def finish({:not_found, _index}), do: -1
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
-   |
-   = note: an input matched by no clause halts with `:function_clause` at runtime
-   = help: add a wildcard clause `_ -> ...` to cover any remaining input
-

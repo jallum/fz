@@ -960,13 +960,17 @@ fn is_local_function_name(name: &str, allow_reserved_macro_name: bool) -> bool {
     }
 }
 
+/// A function name written with no parens at all (`def foo do ... end`, or
+/// `def hello do ... end` inside a macro's own quote) is the same shape as a
+/// plain variable reference: an atom head and a context tail, not an
+/// argument list. That is a bare name with zero arguments, whatever context
+/// its tail carries — the same "variable or call?" question `decode_expr`
+/// answers with `is_list_like`.
 pub(crate) fn function_head_args(tail: &QuotedSourceCursor) -> Result<Vec<QuotedSourceCursor>, QuotedSourceError> {
-    match tail.root().tag() {
-        fz_runtime::any_value::ValueKind::LIST => tail.list_items(),
-        fz_runtime::any_value::ValueKind::MAP => Ok(Vec::new()),
-        other => Err(QuotedSourceError::new(format!(
-            "quoted function head tail must be an argument list or bare-name context, got {other:?}"
-        ))),
+    if tail.is_list_like() {
+        tail.list_items()
+    } else {
+        Ok(Vec::new())
     }
 }
 

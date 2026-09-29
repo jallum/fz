@@ -1,5 +1,5 @@
 use super::*;
-use crate::ast::{Pattern, Spanned};
+use crate::ast::{Pattern, Spanned, Var};
 use crate::compiler2::World;
 use crate::compiler2::transport::{LaneDescr, ShapeDescr, ShapeId, TransportClass, TransportLayout};
 use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
@@ -34,13 +34,13 @@ fn entry_plan_pinning_input_zero() -> PatternDispatchPlan<Ty> {
         vec![PatternRow {
             patterns: vec![
                 Spanned::dummy(Pattern::Wildcard),
-                Spanned::dummy(Pattern::Pinned("want".to_string())),
+                Spanned::dummy(Pattern::Pinned(Var::user("want"))),
             ],
             preconditions: Vec::new(),
             guard: None,
             body_id: 0,
         }],
-        vec![("want".to_string(), 0)],
+        vec![(Var::user("want"), 0)],
     ))
     .expect("an entry head that pins a delivered input compiles")
 }
@@ -147,7 +147,7 @@ fn bitstring_field_subjects(plan: &PatternDispatchPlan<Ty>) -> Vec<SubjectId> {
 /// One byte of a bitstring pattern, bound to a name.
 fn byte_field(name: &str) -> crate::ast::BitField<Spanned<Pattern>> {
     crate::ast::BitField {
-        value: Spanned::dummy(Pattern::Var(name.to_string())),
+        value: Spanned::dummy(Pattern::Var(Var::user(name))),
         spec: crate::ast::BitFieldSpec {
             size: Some(crate::ast::BitSize::Literal(8)),
             ..Default::default()
@@ -160,7 +160,7 @@ fn byte_field(name: &str) -> crate::ast::BitField<Spanned<Pattern>> {
 fn binary_key_pattern(key: &str, bind: &str) -> Pattern {
     Pattern::Map(vec![(
         Spanned::dummy(Pattern::Binary(key.as_bytes().to_vec())),
-        Spanned::dummy(Pattern::Var(bind.to_string())),
+        Spanned::dummy(Pattern::Var(Var::user(bind))),
     )])
 }
 
@@ -206,7 +206,7 @@ fn an_input_the_plan_reads_but_never_received_stops_the_run() {
 /// The door answers which clause of a multi-clause plan the operands chose.
 #[test]
 fn the_door_decides_which_clause_the_operands_choose() {
-    let plan = one_input_plan(vec![Pattern::Int(1), Pattern::Var("other".to_string())]);
+    let plan = one_input_plan(vec![Pattern::Int(1), Pattern::Var(Var::user("other"))]);
     let mut door = Door::new();
     let values = DispatchValues::default();
     for (input, expected_body) in [(1, 0u32), (2, 1)] {
@@ -228,7 +228,7 @@ fn the_door_decides_which_clause_the_operands_choose() {
 /// them from the operands it already holds.
 #[test]
 fn an_outcome_argument_reads_the_run_that_decided_it() {
-    let plan = one_input_plan(vec![Pattern::Int(1), Pattern::Var("other".to_string())]);
+    let plan = one_input_plan(vec![Pattern::Int(1), Pattern::Var(Var::user("other"))]);
     let mut door = Door::new();
     let values = DispatchValues::default();
     let inputs = [Some(BackendBoundValue::Runtime(AnyValue::Int(7)))];
@@ -259,7 +259,7 @@ fn an_outcome_argument_reads_the_run_that_decided_it() {
 #[test]
 fn a_pin_comes_from_an_input_ordinal_or_from_an_environment_value() {
     let entry_plan = entry_plan_pinning_input_zero();
-    let site_plan = one_input_plan(vec![Pattern::Pinned("want".to_string())]);
+    let site_plan = one_input_plan(vec![Pattern::Pinned(Var::user("want"))]);
     let door = Door::new();
     let want = AnyValue::Int(41);
 
@@ -334,7 +334,7 @@ fn a_pin_whose_input_arrives_in_lane_form_is_refused_by_name() {
 fn a_failed_test_undoes_the_subjects_it_produced() {
     let plan = one_input_plan(vec![
         Pattern::Tuple(vec![Spanned::dummy(Pattern::Int(1))]),
-        Pattern::Var("other".to_string()),
+        Pattern::Var(Var::user("other")),
     ]);
     let mut door = Door::new();
     let pair = door.int_lane_tuple(2);
@@ -368,7 +368,7 @@ fn a_failed_test_undoes_the_subjects_it_produced() {
 fn a_taken_branch_keeps_what_its_test_learned() {
     let plan = one_input_plan(vec![
         Pattern::Tuple(vec![Spanned::dummy(Pattern::Int(1)), Spanned::dummy(Pattern::Wildcard)]),
-        Pattern::Var("other".to_string()),
+        Pattern::Var(Var::user("other")),
     ]);
     let mut door = Door::new();
     let pair = door.int_lane_tuple(2);
@@ -411,7 +411,7 @@ fn a_taken_branch_keeps_what_its_test_learned() {
 fn a_bitstring_field_a_failed_shape_extracted_is_not_visible_to_the_next_arm() {
     let plan = one_input_plan(vec![
         Pattern::Bitstring(vec![byte_field("first"), byte_field("second")]),
-        Pattern::Var("other".to_string()),
+        Pattern::Var(Var::user("other")),
     ]);
     let mut door = Door::new();
     let values = DispatchValues::default();
@@ -441,7 +441,7 @@ fn a_prepared_binary_key_no_test_reads_is_never_built() {
     let plan = one_input_plan(vec![
         Pattern::Tuple(vec![Spanned::dummy(Pattern::Int(1))]),
         binary_key_pattern("key", "value"),
-        Pattern::Var("other".to_string()),
+        Pattern::Var(Var::user("other")),
     ]);
     assert_eq!(plan.prepared_keys.len(), 1, "the map pattern prepares its binary key");
     let mut door = Door::new();
