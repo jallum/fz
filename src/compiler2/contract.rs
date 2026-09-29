@@ -71,6 +71,11 @@ pub struct ContractArrow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionContract {
     pub arrows: Vec<ContractArrow>,
+    /// An extern's wire ABI: how its declared surface crosses into foreign
+    /// code. `None` for an ordinary function, which has a lowered body
+    /// instead. This is the one resolution of an extern's declared surface;
+    /// nothing else derives it a second time.
+    pub extern_wire: Option<super::body::LoweredExtern>,
 }
 
 /// The contract applied to observed arguments: the instantiated parameter
@@ -133,7 +138,17 @@ impl FunctionContract {
                     variadic_tail,
                 })
                 .collect(),
+            extern_wire: None,
         }
+    }
+
+    /// Attaches the wire ABI this contract's own extern declaration resolves
+    /// to. The one place that calls this is `derive_function_contract`,
+    /// which is also the one place with a declared surface to resolve it
+    /// from.
+    pub(crate) fn with_extern_wire(mut self, wire: super::body::LoweredExtern) -> Self {
+        self.extern_wire = Some(wire);
+        self
     }
 
     pub fn apply(&self, types: &mut Types, arg_tys: &[Ty]) -> AppliedFunctionContract {

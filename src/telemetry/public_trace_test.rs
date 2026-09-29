@@ -2201,7 +2201,17 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // declaration is resolved once, by its own contract job, instead of a
         // second time inside `LowerFunction`, where that work was never
         // counted.
-        total_evaluations: 747,
+        // fz-xxd.11: 747 -> 712 -> 702. `LoweredBody::Extern` and its
+        // `LowerFunction` job are gone; the contract job builds the wire ABI
+        // instead, and an extern never gets a `LowerFunction` or
+        // `PlanEntryDispatch` job at all, which is the first fall (unmeasured
+        // until now). `analyze_activation_gates` (`Job::missing_gates`) is
+        // the second: it holds a called extern's own `AnalyzeActivation`
+        // back until its `EntryDispatch` exists, so ten of this fixture's
+        // extern-activation runs never start blocked-then-real; the ten
+        // fewer AnalyzeActivation evaluations are the whole of the drop
+        // (216, from 226, pin unchanged below).
+        total_evaluations: 702,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2331,7 +2341,14 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // declaration is resolved once, by its own contract job, instead of a
         // second time inside `LowerFunction`, where that work was never
         // counted.
-        total_evaluations: 1168,
+        // fz-xxd.11: 1168 -> 1121 -> 1113. `LoweredBody::Extern` and its
+        // `LowerFunction` job are gone, the first fall (unmeasured until
+        // now). `analyze_activation_gates` (`Job::missing_gates`) is the
+        // second: it holds a called extern's own `AnalyzeActivation` back
+        // until its `EntryDispatch` exists, so eight of this fixture's
+        // extern-activation runs never start blocked-then-real (550, from
+        // 558, pin unchanged below).
+        total_evaluations: 1113,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2557,7 +2574,14 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // no longer happen, so their reproducing analyses go with them.
         // fz-xxd.3: 897 -> 898. `Range.done?/3`'s `(int, int, int)` activation
         // runs a fourth time, content-caused, with a changed output.
-        analyze_evaluations: 898,
+        // fz-xxd.11: 898 -> 900. A called extern's analysis now waits for
+        // its `EntryDispatch` before it starts, which reorders when extern
+        // returns arrive. The reduce-while mutual recursion
+        // (`{List,Range}.reduce_while_step`/`_cont`, `reduce_while`,
+        // `Range.done?/3` and two lambdas) settles over two more rounds; each
+        // of those runs changes its output, and no activation is added or
+        // removed. The same compile runs 65 fewer jobs in all.
+        analyze_evaluations: 900,
         analyze_zero_change: 7,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
@@ -2603,7 +2627,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // operator externs this drive lowers, whose declarations used to be
         // resolved a second time inside `LowerFunction`; +1 AnalyzeActivation,
         // the `Range.done?/3` run above.
-        total_evaluations: 1911,
+        // fz-xxd.11: 1911 -> 1849. An extern has no body: -28 LowerFunction,
+        // -18 PlanEntryDispatch and -18 DeriveFunctionContract for externs no
+        // caller reaches, +2 AnalyzeActivation (above).
+        total_evaluations: 1849,
     },
 ];
 

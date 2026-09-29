@@ -177,6 +177,10 @@ pub struct MaterializedExecutable {
     /// its type surface, kept as typed compiler identities until root packaging.
     pub(crate) struct_modules: Box<[ModuleId]>,
     pub body: LoweredBody,
+    /// The wire ABI this executable's function resolved on its contract,
+    /// once it names an extern. `None` for an ordinary function, whose
+    /// `body` above carries its clauses instead.
+    pub extern_wire: Option<LoweredExtern>,
     pub call_edges: HashMap<CallSiteId, MaterializedCallEdge>,
 }
 
@@ -1104,6 +1108,7 @@ impl BackendExecutable {
             effects: EffectSummary::default(),
             struct_modules: Box::default(),
             body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
+            extern_wire: None,
             call_edges: HashMap::new(),
         });
         let abi = Rc::new(AbiReadyExecutable {

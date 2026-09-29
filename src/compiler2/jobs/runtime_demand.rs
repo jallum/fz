@@ -641,9 +641,7 @@ fn target_return_demand_contributions(
 }
 
 fn trivial_value_clause_ids(body: &LoweredBody, reachable: &[u32]) -> Vec<u32> {
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return Vec::new();
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
     (0..clauses.len() as u32)
         .filter(|clause_id| !reachable.contains(clause_id))
         .filter(|clause_id| {
@@ -1216,23 +1214,20 @@ fn derive_executable_runtime_demand(
     };
     let mut call_return_demands = HashMap::new();
 
-    let LoweredBody::Clauses { clauses, entries, .. } = &facts.body else {
-        out.input_demands = match &facts.body {
-            LoweredBody::Extern { signature } => executable
-                .activation
-                .inputs(types)
-                .iter()
-                .enumerate()
-                .map(|(index, ty)| {
-                    signature
-                        .params
-                        .get(index)
-                        .map(|_| RuntimeDemand::whole())
-                        .unwrap_or_else(|| facts.boundary_demand(*ty))
-                })
-                .collect(),
-            LoweredBody::Clauses { .. } => unreachable!(),
-        };
+    if let Some(signature) = facts.extern_wire {
+        out.input_demands = executable
+            .activation
+            .inputs(types)
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| {
+                signature
+                    .params
+                    .get(index)
+                    .map(|_| RuntimeDemand::whole())
+                    .unwrap_or_else(|| facts.boundary_demand(*ty))
+            })
+            .collect();
         join_contributed_input_demands(&mut out.input_demands, contributed_input_demands);
         emit_runtime_demand_walk(tel, executable.activation.function, 0);
         return DerivedExecutableDemand {
@@ -1240,7 +1235,8 @@ fn derive_executable_runtime_demand(
             call_return_demands,
             callable_flows: CallableFlowBuilder::new(),
         };
-    };
+    }
+    let LoweredBody::Clauses { clauses, entries, .. } = &facts.body;
 
     // Live-demand propagation is the authoritative "what must be
     // Codegen lowers every structural clause regardless of
@@ -1338,9 +1334,7 @@ fn derive_executable_runtime_demand(
 /// callable (fz-f98.14.11), non-empty when a construction owner contributes
 /// the member's return contract.
 fn widen_boxed_closure_call_results(facts: &RuntimeDemandFacts<'_>, out: &mut ExecutableRuntimeDemand) {
-    let LoweredBody::Clauses { entries, .. } = &facts.body else {
-        return;
-    };
+    let LoweredBody::Clauses { entries, .. } = &facts.body;
     for entry in entries {
         let LoweredTail::ClosureCall { value, callee, .. } = &entry.tail else {
             continue;
@@ -1787,9 +1781,7 @@ fn continuation_capture_demand(
 }
 
 fn value_is_closure_callee(body: &LoweredBody, value: ValueId) -> bool {
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return false;
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
     clauses
         .iter()
         .any(|clause| tail_closure_callee(&clause.entry, entries, value))
@@ -1828,10 +1820,9 @@ fn callsite_returns_feeding(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> H
                 }
             }
         }
-        if let LoweredBody::Clauses { entries, .. } = &facts.body {
-            for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
-                pending.extend(step_sources_of(step, value));
-            }
+        let LoweredBody::Clauses { entries, .. } = &facts.body;
+        for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
+            pending.extend(step_sources_of(step, value));
         }
     }
     feeding

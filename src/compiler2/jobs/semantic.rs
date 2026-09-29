@@ -27,7 +27,7 @@ use super::super::semantic::{
     SelectedCallee,
 };
 use super::super::types::{ClosureTarget, Ty, Types};
-use super::super::world::World;
+use super::super::world::{BodyShape, World};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct TupleFieldProjection {
@@ -146,11 +146,40 @@ struct ActivationContribution {
     inputs: Vec<Ty>,
 }
 
+/// The facts `Job::AnalyzeActivation` cannot conclude without: the activation's
+/// function must be defined, its entry dispatch planned, and -- for a
+/// non-extern, which alone gets a lowered body -- its body lowered. An
+/// extern's wire ABI lives on its contract, not a `LowerFunction` job, so it
+/// never gates on `LoweredBody`.
+///
+/// The activation itself, and its inputs, are not gated here: an activation
+/// nothing claims yet has no producer to demand (`analyze_activation`'s own
+/// early return answers that case), so naming it as a gate would demand a
+/// producer that does not exist.
+pub(super) fn analyze_activation_gates(world: &World, activation: &ActivationKey) -> Vec<FactKey> {
+    let function = activation.function;
+    let shape = world.function_body_shape(function);
+    if let Some(gate) = shape.undefined_gate(function) {
+        return vec![gate];
+    }
+    let mut gates = Vec::new();
+    if matches!(shape, BodyShape::Clauses) && !world.has_fact(&FactKey::LoweredBody(function)) {
+        gates.push(FactKey::LoweredBody(function));
+    }
+    if !world.has_fact(&FactKey::EntryDispatch(function)) {
+        gates.push(FactKey::EntryDispatch(function));
+    }
+    gates
+}
+
 /// Analyzes one rooted function activation against its lowered body.
 ///
-/// The job waits until the activation, lowered body, and entry dispatch all
-/// exist. It then walks only the dispatch-reachable clauses, publishes direct
-/// callsite summaries, and settles the activation's current return type.
+/// The activation must already exist, and its function's definition, entry
+/// dispatch, and (for a non-extern) lowered body must all be settled --
+/// `analyze_activation_gates` is this job's start gate, so the scheduler
+/// never starts it otherwise. It then walks only the dispatch-reachable
+/// clauses, publishes direct callsite summaries, and settles the
+/// activation's current return type.
 pub(super) fn analyze_activation(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -187,39 +216,30 @@ pub(super) fn analyze_activation(
     };
     let alternatives = alternatives.clone();
 
+    // `FunctionDefined`, `EntryDispatch(function)`, and `LoweredBody`
+    // (non-extern only) are this job's start gate (`analyze_activation_gates`,
+    // demanded by `Job::missing_gates`): the scheduler never starts this job
+    // until all three exist, so none of them is waited for here.
     let function = activation.function;
     let function_fact = FactKey::FunctionDefined(function);
-    let Some(_) = world.function_defined_revision(function) else {
-        return Ok(world.wait_for_function_definition(function));
-    };
-
+    let is_extern = world.function_body_shape(function).is_extern();
     let lowered_fact = FactKey::LoweredBody(function);
-    if !world.has_fact(&lowered_fact) {
-        // `LoweredBody`'s sole producer arm is `Job::LowerFunction`
-        // (`World::demand_fact_producer`).
-        return Ok(JobEffects::wait_on_current(lowered_fact));
-    }
-
     let dispatch_fact = FactKey::EntryDispatch(function);
-    if !world.has_fact(&dispatch_fact) {
-        // `EntryDispatch`'s sole producer arm is `Job::PlanEntryDispatch`
-        // (`World::demand_fact_producer`).
-        return Ok(JobEffects::wait_on_current(dispatch_fact));
-    }
 
     let mut reads = vec![
         FactKey::Activation(activation.clone()),
         FactKey::ActivationInputs(activation.clone()),
         function_fact,
-        lowered_fact,
         dispatch_fact,
     ];
+    if !is_extern {
+        reads.push(lowered_fact);
+    }
     let mut waits = HashSet::new();
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
 
     let entry_dispatch = world.entry_dispatch(function);
-    let lowered_body = world.lowered_body(function);
     // Each correlated row is dispatched and analyzed on its own
     // (fz-9i4.7.10.2): a row's columns arrived together and only ever bind a
     // clause together. Only post-analysis results merge — reachable clauses
@@ -252,53 +272,50 @@ pub(super) fn analyze_activation(
     // two coincide; mid-climb only readers of settled facts may conflate
     // them, and the settled gate keeps everyone else out.
     let mut return_evidence: Option<Ty> = None;
-    // An extern has no body to walk: the clauses arm below never runs for it,
-    // and its return evidence comes entirely from the contract loop that
-    // follows -- the declaration is its only witness, so that evidence is
-    // set directly rather than refined against a walked observation that
-    // does not exist.
-    let is_extern = matches!(&*lowered_body, LoweredBody::Extern { .. });
-    match &*lowered_body {
-        LoweredBody::Extern { .. } => {}
-        LoweredBody::Clauses { clauses, entries, .. } => {
-            for (clause_id, clause_inputs) in row_clause_inputs.iter().flatten() {
-                let clause = &clauses[*clause_id as usize];
-                // Input evidence that has not caught up to the clause's
-                // arity cannot bind its params. Like an absent capture,
-                // incomplete evidence yields no evidence — the analysis
-                // re-runs when the joined inputs grow. Never `any`.
-                if clause.params.len() > clause_inputs.len() {
-                    continue;
-                }
-                let mut values = SemanticValues::default();
-                for (value, ty) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
-                    values.insert(value, ty);
-                }
-                apply_steps(
-                    world,
-                    &clause.projections,
-                    &mut values,
-                    &mut analysis_calls,
-                    activation,
-                    &mut reads,
-                    &mut waits,
-                )?;
-                merge_value_types(world, &mut value_types, &values);
-                let clause_return = analyze_entry(
-                    world,
-                    tel,
-                    entries.as_slice(),
-                    clause.entry,
-                    &values,
-                    &mut walks,
-                    &mut value_types,
-                    &mut analysis_calls,
-                    activation,
-                    &mut reads,
-                    &mut waits,
-                )?;
-                return_evidence = join_evidence(world, return_evidence, clause_return);
+    // An extern has no body to walk: this block never runs for it, and its
+    // return evidence comes entirely from the contract loop that follows --
+    // the declaration is its only witness, so that evidence is set directly
+    // rather than refined against a walked observation that does not exist.
+    if !is_extern {
+        let lowered_body = world.lowered_body(function);
+        let LoweredBody::Clauses { clauses, entries, .. } = &*lowered_body;
+        for (clause_id, clause_inputs) in row_clause_inputs.iter().flatten() {
+            let clause = &clauses[*clause_id as usize];
+            // Input evidence that has not caught up to the clause's
+            // arity cannot bind its params. Like an absent capture,
+            // incomplete evidence yields no evidence — the analysis
+            // re-runs when the joined inputs grow. Never `any`.
+            if clause.params.len() > clause_inputs.len() {
+                continue;
             }
+            let mut values = SemanticValues::default();
+            for (value, ty) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
+                values.insert(value, ty);
+            }
+            apply_steps(
+                world,
+                &clause.projections,
+                &mut values,
+                &mut analysis_calls,
+                activation,
+                &mut reads,
+                &mut waits,
+            )?;
+            merge_value_types(world, &mut value_types, &values);
+            let clause_return = analyze_entry(
+                world,
+                tel,
+                entries.as_slice(),
+                clause.entry,
+                &values,
+                &mut walks,
+                &mut value_types,
+                &mut analysis_calls,
+                activation,
+                &mut reads,
+                &mut waits,
+            )?;
+            return_evidence = join_evidence(world, return_evidence, clause_return);
         }
     }
 
@@ -1685,6 +1702,25 @@ fn require_callee_prerequisites(
 ) -> bool {
     let contract_ready = require_function_contract(world, function, reads, waits);
     let keying_ready = world.require_activation_key_facts(function, reads, waits);
+    let shape = world.function_body_shape(function);
+    if let Some(gate) = shape.undefined_gate(function) {
+        // The caller here is never a provider boundary or a protocol
+        // callback: both are ruled out before this runs (`resolve_function_call`
+        // checks the callback, `require_direct_call_prerequisites` the
+        // boundary), and both are the only functions that stay undefined
+        // forever, so this wait always has a producer that ends it. This
+        // bundles with the two waits already registered above so this caller
+        // settles all three together in one re-run, instead of discovering
+        // them one gate at a time.
+        waits.insert(gate);
+        return false;
+    }
+    if shape.is_extern() {
+        // An extern never gets a `LowerFunction` job: its wire ABI is the
+        // contract this caller already waited on above, so there is no
+        // further body to wait for.
+        return contract_ready && keying_ready;
+    }
     let lowered = FactKey::LoweredBody(function);
     let lowered_ready = world.has_fact(&lowered);
     if lowered_ready {
@@ -2098,10 +2134,7 @@ fn call_target_summary(
 }
 
 fn callee_extern_params(world: &World, function: FunctionId) -> Option<usize> {
-    match &*world.lowered_body(function) {
-        LoweredBody::Extern { signature } => Some(signature.params.len()),
-        LoweredBody::Clauses { .. } => None,
-    }
+    world.extern_wire(function).map(|signature| signature.params.len())
 }
 
 fn value_ty(values: &SemanticValues, value: ValueId) -> Option<Ty> {

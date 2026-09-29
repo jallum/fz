@@ -27,7 +27,7 @@ use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 use super::SourceOwner;
 use super::artifact::BackendProgram;
-use super::body::{LoweredBody, LoweredBodyMap};
+use super::body::{LoweredBody, LoweredBodyMap, LoweredExtern};
 use super::code::{CodeMap, CodeState, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
 use super::deps::UnresolvedWait;
@@ -260,6 +260,36 @@ pub(crate) enum ProtocolCallbackSurface<'a> {
     Declared(&'a ScopeSurface),
     NotAProtocol,
     Unindexed,
+}
+
+/// `World::function_body_shape`'s answer to "extern or body, or not known
+/// yet". `Unknown` is a real, distinct case -- not a stand-in `false` -- so a
+/// caller can never mistake "this function isn't defined yet" for "this
+/// function is not an extern". `ProtocolCallback` and `Extern` both have no
+/// `LoweredBody` of their own, but for different reasons and different
+/// lifetimes: an extern settles the moment its definition lands, while a
+/// protocol callback is never defined at all, so it must never fall out of
+/// `Unknown`'s wait-for-definition case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyShape {
+    Unknown,
+    ProtocolCallback,
+    Extern,
+    Clauses,
+}
+
+impl BodyShape {
+    /// The one wait every `Unknown` answer resolves to: `function`'s own
+    /// definition. `None` once the shape is settled, including forever for a
+    /// protocol callback -- callers do not need to check that exemption
+    /// themselves.
+    pub(crate) fn undefined_gate(self, function: FunctionId) -> Option<FactKey> {
+        matches!(self, BodyShape::Unknown).then(|| FactKey::FunctionDefined(function))
+    }
+
+    pub(crate) fn is_extern(self) -> bool {
+        matches!(self, BodyShape::Extern)
+    }
 }
 
 impl World {
@@ -1494,6 +1524,42 @@ impl World {
             }
             super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => false,
         }
+    }
+
+    /// `function`'s body shape, correct by construction: `Unknown` before its
+    /// own definition has landed, `ProtocolCallback` for a protocol's own
+    /// callback signature (dispatched through concrete impls, never defined),
+    /// `Extern` for a foreign declaration whose wire ABI lives on its
+    /// `FunctionContract` instead of a `LoweredBody`, and `Clauses` otherwise.
+    /// This is the one place that answers "extern or body" -- every caller
+    /// that needs the answer, including whether to gate on the function's own
+    /// definition first, goes through this and [`BodyShape::undefined_gate`]
+    /// instead of reading a bare `bool` that would read `false` for "not
+    /// known yet" the same as it does for "not an extern".
+    pub(crate) fn function_body_shape(&self, function: FunctionId) -> BodyShape {
+        if self.function_defined_revision(function).is_none() {
+            return if self.protocol_callback(function).is_some() {
+                BodyShape::ProtocolCallback
+            } else {
+                BodyShape::Unknown
+            };
+        }
+        if self.function_surface(function).extern_abi.is_some() {
+            BodyShape::Extern
+        } else {
+            BodyShape::Clauses
+        }
+    }
+
+    /// The wire ABI `function`'s contract resolved for it, once its contract
+    /// has settled. `None` for a non-extern function, and `None` before the
+    /// contract is settled -- callers that need this fact gate on
+    /// `FactKey::FunctionContract(function)` rather than treat `None` as
+    /// "not an extern". Returned by value, like `lowered_body`, so holding it
+    /// never borrows `World`.
+    pub(crate) fn extern_wire(&self, function: FunctionId) -> Option<LoweredExtern> {
+        self.function_contract(function)
+            .and_then(|contract| contract.extern_wire.clone())
     }
 
     pub(crate) fn protocol_callback(&self, function: FunctionId) -> Option<ProtocolCallback> {

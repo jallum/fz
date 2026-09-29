@@ -233,12 +233,19 @@ const PONG_ANSWER: &str =
 /// `Enum.take/2` forwards its list and count through a dozen Enum helpers, a
 /// protocol callback and its implementation. Reading answers instead of
 /// bodies keeps every run small.
+///
+/// fz-xxd.11: `(76, 264, 8)` -> `(76, 282, 8)`. An extern has no lowered
+/// body, so the input-demand walk answers each of the eighteen externs that
+/// `+` and `==` name in their clauses as a bodyless leaf, reading
+/// `FunctionDefined` and `ModuleDefined` where it used to read the stand-in
+/// body's `EntryDispatch`. Those externs are named by clauses dispatch never
+/// selects here; dispatch-aware static callees remove them from this walk.
 #[test]
 fn enum_take_derives_input_demand_proportionally() {
     let work = input_demand_work("def main(), do: Enum.take([1, 2, 3], 2)\n");
     assert_eq!(
         (work.runs.len(), total_reads(&work), most_reads_in_one_run(&work)),
-        (76, 264, 8)
+        (76, 282, 8)
     );
 }
 

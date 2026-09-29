@@ -271,9 +271,8 @@ fn generated_function_labels_follow_typed_origin_not_function_allocation() {
         assert_eq!(settled.compiler_mut().run_root_interp(root), Ok(42));
 
         let main = settled.compiler().root_function(root);
-        let super::super::LoweredBody::Clauses { generated, .. } = &*settled.world().lowered_body(main) else {
-            panic!("source function must lower to clauses");
-        };
+        let super::super::LoweredBody::Clauses { generated, .. } = &*settled.world().lowered_body(main);
+
         let generated = generated.first().copied().expect("source lambda identity");
         let super::super::identity::FunctionOrigin::Generated { owner, occurrence } =
             &settled.world().function_ref(generated).origin
@@ -522,7 +521,16 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             118,
         ),
         (562, 36), // mailbox_closure_each
-        (563, 46), // mailbox_closure_reduce
+        (
+            563, // mailbox_closure_reduce
+            // fz-xxd.11: 46 -> 47. `Kernel.fz_send/2` held two blended
+            // executables, one keyed on an arrow that still carried type
+            // variables (`(a1_p0, a1_p1) -> a1_r`) and one on
+            // `closure[?](int)`. Now each of the three lambdas this fixture
+            // sends is known before the call is keyed, so there are three
+            // exact executables, one per lambda.
+            47,
+        ),
         (
             570, // actor_ring
             // The ring's `got == 5` compares a mailbox value, so all three

@@ -130,10 +130,8 @@ end
         entries,
         generated,
         ..
-    } = (*world.lowered_body(first)).clone()
-    else {
-        panic!("the source fixture should lower first/0 to clauses");
-    };
+    } = (*world.lowered_body(first)).clone();
+
     let withdrawn = entries
         .into_iter()
         .map(|entry| LoweredEntry {

@@ -25,11 +25,13 @@ pub(super) fn derive_executable_facts(
         .activation_analysis(activation)
         .expect("settled activation analysis fact should have analysis")
         .clone();
-    let mut prerequisites = vec![
-        analyzed,
-        FactKey::LoweredBody(activation.function),
-        FactKey::EntryDispatch(activation.function),
-    ];
+    let mut prerequisites = vec![analyzed, FactKey::EntryDispatch(activation.function)];
+    if !world.function_body_shape(activation.function).is_extern() {
+        // An extern has no lowered body; its wire ABI comes from its
+        // contract, which the activation analysis this job already waited
+        // on has settled.
+        prerequisites.push(FactKey::LoweredBody(activation.function));
+    }
     prerequisites.extend(analysis.callsites.iter().map(|callsite| {
         FactKey::CallSiteSummary(CallSiteKey {
             activation: activation.clone(),

@@ -9,15 +9,14 @@ use crate::telemetry::ConfiguredTelemetry;
 
 #[test]
 fn generic_extern_effects_do_not_depend_on_privileged_symbol_spellings() {
-    let extern_body = |symbol: &str| LoweredBody::Extern {
-        signature: super::super::super::body::LoweredExtern {
-            abi: ExternAbi::C,
-            symbol: symbol.to_string(),
-            params: Vec::new(),
-            variadic: false,
-            ret: crate::fz_ir::ExternReturn::Scalar(ExternTy::Unit),
-        },
+    let extern_wire = |symbol: &str| super::super::super::body::LoweredExtern {
+        abi: ExternAbi::C,
+        symbol: symbol.to_string(),
+        params: Vec::new(),
+        variadic: false,
+        ret: crate::fz_ir::ExternReturn::Scalar(ExternTy::Unit),
     };
+    let empty_body = LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new());
     let expected_local = EffectSummary {
         observable: true,
         ..EffectSummary::default()
@@ -34,7 +33,7 @@ fn generic_extern_effects_do_not_depend_on_privileged_symbol_spellings() {
         "fz_send",
         "fz_spawn",
     ] {
-        let local = local_effects(&extern_body(symbol), &HashMap::new());
+        let local = local_effects(&empty_body, Some(&extern_wire(symbol)), &HashMap::new());
         assert_eq!(local, expected_local, "`{symbol}` must use generic extern effects");
 
         let mut caller = EffectSummary {

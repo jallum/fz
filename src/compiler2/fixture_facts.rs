@@ -162,9 +162,8 @@ impl CallsiteDispatchKind {
 
 fn callsite_kinds(body: &LoweredBody) -> HashMap<CallSiteId, CallsiteDispatchKind> {
     let mut out = HashMap::new();
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return out;
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
+
     for entry in entries {
         match entry.tail {
             LoweredTail::DirectCall { callsite, .. } => {

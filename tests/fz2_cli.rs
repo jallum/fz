@@ -2153,14 +2153,24 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // outputs 250 -> 252. An extern's declaration is resolved once,
             // by its own contract job, instead of a second time inside
             // `LowerFunction`, where that work was never counted.
-            evaluations: 284,
+            // fz-xxd.11: 284 -> 276 evaluations, initial 210 -> 202, changed
+            // outputs 252 -> 244; content-caused, wakes, and blocked
+            // prerequisites untouched. Six of the eight are
+            // `EXPECTED_00181_NO_DUMP_JOB_STARTS`'s own -4 LowerFunction/-2
+            // DeriveExecutableFacts (`LoweredBody::Extern` and its
+            // `LowerFunction` job are gone), unmeasured here until now; the
+            // other two are that same pin's own AnalyzeActivation fall --
+            // `analyze_activation_gates` (`Job::missing_gates`) holds a
+            // called extern's own activation back until its `EntryDispatch`
+            // exists, for the two externs this fixture calls.
+            evaluations: 276,
             runtime_demand_evaluations: 31,
-            initial: 210,
+            initial: 202,
             content_caused: 74,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 252,
+            changed_outputs: 244,
             unchanged_outputs: 32,
             wakes: 73,
             blocked_completions: 59,
@@ -2264,10 +2274,19 @@ fn fz2_stall_diagnostic_is_byte_identical_across_runs() {
     }
 }
 
-/// One entry-dispatch plan is defined per function this fixture compiles. The
-/// plan now carries what it reads of its inputs, so the two counts moving apart
-/// would mean a function stopped planning its own dispatch, not that a reader
-/// asked a different question.
+/// An entry-dispatch plan is defined per function this fixture *calls*, not
+/// per function it merely compiles. `Kernel`'s `+`, `-` and `==` macro-expand
+/// every typed clause regardless of what the fixture calls: this fixture's
+/// own two integers only ever reach `fz_op_add_ii`, `fz_op_sub_ii` and
+/// `fz_op_eq_ii`, so the other nine typed clauses -- `fz_op_add_if`,
+/// `fz_op_add_ff`, `fz_op_sub_if`, `fz_op_sub_fi`, `fz_op_sub_ff`,
+/// `fz_op_eq_ff`, `fz_op_eq_if`, `fz_op_eq_fi`, and the `any`/`any` catch-all
+/// `fz_op_eq` -- are defined (declared externs) but never called, so nothing
+/// ever demands their `EntryDispatch` and `PlanEntryDispatch` never runs for
+/// them: an extern's wire ABI comes from its `FunctionContract`, not a
+/// compiled dispatch plan. The plan still carries what it reads of its
+/// inputs, so the two counts moving apart by anything other than this named
+/// nine would mean a *called* function stopped planning its own dispatch.
 #[test]
 fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
     let output = run_fz2(&[
@@ -2289,10 +2308,13 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
             .unwrap_or_else(|| panic!("the stats summary must count {name}; got:\n{stats}"))
     };
     let functions = counter("fz.compiler2.function.defined");
+    assert_eq!(functions, 24, "the fixture compiles its known function population");
     assert_eq!(
         counter("fz.compiler2.entry_dispatch.defined"),
-        functions,
-        "every compiled function plans its own entry dispatch"
+        // fz-xxd.11: 24 -> 15. The nine uncalled typed-clause externs named
+        // above never get a `PlanEntryDispatch` job: nothing demands their
+        // `EntryDispatch` once nothing calls them.
+        15,
+        "every called function plans its own entry dispatch",
     );
-    assert_eq!(functions, 24, "the fixture compiles its known function population");
 }

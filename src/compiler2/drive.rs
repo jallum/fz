@@ -877,10 +877,21 @@ impl World {
             // started; the missing gate's producer is demanded instead, so
             // the gate's own wake reaches this job the ordinary way once it
             // lands, instead of spending a run to discover what was already
-            // knowable from the subject alone.
+            // knowable from the subject alone. That redirected producer is a
+            // different job than `job` -- named by the gate, not by whatever
+            // demanded `job` -- so it is always tallied under `GateExpansion`
+            // instead of whatever reason drove this call, uniformly across
+            // every caller (`ActivationFrontier`'s own dedup invariant,
+            // `demand_activation_frontier_analyses`'s exactly-one-credit-per-
+            // activation tally, is one reason this matters, but every other
+            // reason's own accounting is just as displaced by a gate detour
+            // that runs a different job than the one it named).
             let gates = job.missing_gates(self);
             if !gates.is_empty() {
-                let demanded: u64 = gates.iter().map(|gate| self.demand_fact_producer(gate, reason)).sum();
+                let demanded: u64 = gates
+                    .iter()
+                    .map(|gate| self.demand_fact_producer(gate, WorkStartReason::GateExpansion))
+                    .sum();
                 return demanded > 0;
             }
             self.work_graph.enqueue(job, reason);
@@ -1038,10 +1049,19 @@ impl World {
             }
             #[cfg(test)]
             let traced_key = key.clone();
+            // `started` also counts a still-missing gate's own producer
+            // getting poked (`demand_producer_if_needed`'s recursive branch),
+            // which is a different job than this activation's own seed or
+            // analysis and must not credit the frontier a second time. The
+            // tally is the precise signal: it moves only when this call
+            // actually placed the activation's own job on the agenda
+            // (`WorkStartReason::GateExpansion` covers everything else).
+            #[cfg(test)]
+            let before = self.work_start_tally().activation_frontier;
             let started =
                 self.demand_fact_producer(&FactKey::ActivationAnalyzed(key), WorkStartReason::ActivationFrontier);
             #[cfg(test)]
-            if started > 0 {
+            if self.work_start_tally().activation_frontier > before {
                 self.note_activation_frontier_start(traced_key);
             }
             demanded += started;

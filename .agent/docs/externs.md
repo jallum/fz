@@ -16,10 +16,12 @@ The pieces:
 - `ExternMarshal` — a per-argument decision: `Fixed(ty)` (a declared param) or
   `Auto` (an un-ascribed variadic argument awaiting resolution; an `arg :: ty`
   ascription at the call resolves it to a concrete `ExternTy` per site).
-- `LoweredExtern { abi, params, ret }` (`src/compiler2/body.rs`) — compiler2's
-  lowered form: a `LoweredBody::Extern` carries the `ExternAbi`, the param wire
-  types, and the return wire type, and lowering also computes the fz-visible
-  return type from the declared return.
+- `LoweredExtern { abi, symbol, params, variadic, ret }` (`src/compiler2/body.rs`)
+  — compiler2's lowered form of the wire ABI. An extern has no body to lower:
+  its `FunctionContract` (`jobs/contract.rs::derive_function_contract`) resolves
+  the wire ABI once, from the surface declaration, and carries it as
+  `extern_wire`. Every wire-ABI reader goes through the contract; there is no
+  `LowerFunction` job, and no `LoweredBody`, for an extern.
 
 ## Two ABIs
 

@@ -159,7 +159,18 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // fz-xxd.3: 282 -> 284, +2 DeriveFunctionContract. An extern's declaration
 // is resolved once, by its own contract job, instead of a second time inside
 // `LowerFunction`, where that work was never counted as a job.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 284;
+// fz-xxd.11: 284 -> 278, -4 LowerFunction and -2 DeriveExecutableFacts. An
+// extern never gets a LowerFunction job at all now, so the two externs here
+// no longer each cost one blocked-then-resumed LowerFunction pair (the
+// block was fz-xxd.3's own FunctionContract gate, since removed); and
+// DeriveExecutableFacts no longer waits a second time for that LowerFunction
+// to catch up, since its wire ABI now comes straight off the contract.
+// fz-xxd.11 (start gate): 278 -> 276, -2 AnalyzeActivation. `analyze_activation_gates`
+// (`Job::missing_gates`) holds a called extern's own activation back until
+// its `EntryDispatch` exists, so the two externs this fixture calls no
+// longer each start their activation once blocked (changing nothing) before
+// the real run.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 276;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {
@@ -4739,9 +4750,8 @@ fn ignored_forwarded_input_requests_no_positioned_products() {
         demand.input_demands[0].is_ignore(),
         "neither physical nor callable input is demanded"
     );
-    let super::body::LoweredBody::Clauses { clauses, .. } = &abi.materialized.body else {
-        panic!("ordinary forward body")
-    };
+    let super::body::LoweredBody::Clauses { clauses, .. } = &abi.materialized.body;
+
     for clause in clauses {
         assert!(
             !demand.callable_flows.contains_key(&clause.params[0]),

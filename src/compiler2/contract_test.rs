@@ -337,6 +337,7 @@ fn addressed_function_contract_keeps_reduce_halt_payload_free_until_callable_ret
             protocol_domain_obligations: BTreeSet::new(),
             variadic_tail: None,
         }],
+        extern_wire: None,
     };
 
     let int = types.int();

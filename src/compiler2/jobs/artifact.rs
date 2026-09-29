@@ -79,24 +79,26 @@ pub(crate) fn produce_materialized_executable_product(
         .activation_return(&executable.activation)
         .unwrap_or_else(|| world.types_mut().none());
     let lowered = executable_facts.body().clone();
-    let (dispatch_outcomes, retained_entries) = match lowered {
-        LoweredBody::Clauses { ref clauses, .. } => {
-            let mut entries = analysis.reachable_entries.clone();
-            entries.extend(
-                analysis
-                    .entry_reachability
-                    .clauses()
-                    .iter()
-                    .map(|clause| clauses[*clause as usize].entry),
-            );
-            entries.sort_by_key(|entry| entry.as_u32());
-            entries.dedup();
-            (analysis.entry_reachability.clauses().to_vec(), entries)
-        }
-        LoweredBody::Extern { .. } => (
-            analysis.entry_reachability.clauses().to_vec(),
-            analysis.reachable_entries.clone(),
-        ),
+    let extern_wire = executable_facts.extern_wire().cloned();
+    let (dispatch_outcomes, retained_entries) = if extern_wire.is_some() {
+        // An extern has no clauses or entries to prune: `analysis` may still
+        // carry reachability evidence keyed to a body this executable does
+        // not have, and clause/entry ids from that evidence do not index
+        // into an empty body.
+        (Vec::new(), Vec::new())
+    } else {
+        let LoweredBody::Clauses { ref clauses, .. } = lowered;
+        let mut entries = analysis.reachable_entries.clone();
+        entries.extend(
+            analysis
+                .entry_reachability
+                .clauses()
+                .iter()
+                .map(|clause| clauses[*clause as usize].entry),
+        );
+        entries.sort_by_key(|entry| entry.as_u32());
+        entries.dedup();
+        (analysis.entry_reachability.clauses().to_vec(), entries)
     };
     let pruned = prune_lowered_body(lowered, &dispatch_outcomes, &retained_entries);
     let body = pruned.body;
@@ -143,7 +145,7 @@ pub(crate) fn produce_materialized_executable_product(
     let call_edges = call_edges.expect("product materialization should have complete call edges after waits");
     let retained_values = super::body::retained_value_ids(&body);
     analysis.value_types.retain(|value, _| retained_values.contains(value));
-    let effects = local_effects(&body, &call_edges);
+    let effects = local_effects(&body, extern_wire.as_ref(), &call_edges);
     let struct_modules = reachable_struct_modules(
         world.types(),
         executable,
@@ -162,6 +164,7 @@ pub(crate) fn produce_materialized_executable_product(
         effects,
         struct_modules,
         body,
+        extern_wire,
         call_edges,
     });
     PullOutcome::Produced(ProductValue::MaterializedExecutable(materialized))
@@ -176,19 +179,18 @@ fn reachable_struct_modules(
     call_edges: &HashMap<CallSiteId, MaterializedCallEdge>,
 ) -> Box<[ModuleId]> {
     let mut modules = BTreeSet::new();
-    if let LoweredBody::Clauses { clauses, entries, .. } = body {
-        for steps in clauses
-            .iter()
-            .map(|clause| clause.projections.as_slice())
-            .chain(entries.iter().map(|entry| entry.steps.as_slice()))
-        {
-            for step in steps {
-                match step {
-                    LoweredStep::Struct { module, .. } | LoweredStep::AssertStruct { module, .. } => {
-                        modules.insert(*module);
-                    }
-                    _ => {}
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
+    for steps in clauses
+        .iter()
+        .map(|clause| clause.projections.as_slice())
+        .chain(entries.iter().map(|entry| entry.steps.as_slice()))
+    {
+        for step in steps {
+            match step {
+                LoweredStep::Struct { module, .. } | LoweredStep::AssertStruct { module, .. } => {
+                    modules.insert(*module);
                 }
+                _ => {}
             }
         }
     }
@@ -483,9 +485,7 @@ fn required_entry_capture_transport_positions(
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
-    let LoweredBody::Clauses { entries, .. } = &materialized.body else {
-        return Vec::new();
-    };
+    let LoweredBody::Clauses { entries, .. } = &materialized.body;
     let symbol = transport_executable_symbol(executable, world.types());
     let mut positions = Vec::new();
     for (entry_index, entry) in entries.iter().enumerate() {
@@ -566,9 +566,7 @@ fn required_resume_transport_positions(
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
-    let LoweredBody::Clauses { entries, .. } = &materialized.body else {
-        return Vec::new();
-    };
+    let LoweredBody::Clauses { entries, .. } = &materialized.body;
     let symbol = transport_executable_symbol(executable, world.types());
     let mut positions = Vec::new();
     let mut deliver_callsites = HashMap::new();
@@ -616,9 +614,7 @@ fn required_local_backend_transport_positions(
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
-    let LoweredBody::Clauses { clauses, entries, .. } = &materialized.body else {
-        return Vec::new();
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = &materialized.body;
     let symbol = transport_executable_symbol(executable, world.types());
     let mut positions = Vec::new();
     positions.extend(
@@ -751,9 +747,7 @@ fn required_call_edge_transport_positions(
     body: &LoweredBody,
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Vec<TransportPosition> {
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return Vec::new();
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
     let caller_symbol = transport_executable_symbol(executable, world.types());
     let callsite_needs = facts.callsite_needs();
     let summaries = facts.callsites();
@@ -891,9 +885,7 @@ fn materialize_call_edges(
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<HashMap<CallSiteId, MaterializedCallEdge>>, FatalError> {
     let mut call_edges = HashMap::new();
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return Ok(Some(call_edges));
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
     for entry in entries {
         match &entry.tail {
             LoweredTail::DirectCall {
@@ -1223,7 +1215,7 @@ fn lower_materialized_call_target(
                 )
             })?;
             let callee = ExecutableKey { activation, need };
-            let extern_marshals = if let LoweredBody::Extern { signature } = &*world.lowered_body(function) {
+            let extern_marshals = if let Some(signature) = world.extern_wire(function) {
                 let Some(args) = callsite_args.get(&callsite) else {
                     return Err(incomplete_semantic_plan(
                         tel,
@@ -1390,42 +1382,35 @@ fn prune_lowered_body(
     reachable_clauses: &[u32],
     reachable_entries: &[ControlEntryId],
 ) -> PrunedLoweredBody {
-    match body {
-        LoweredBody::Extern { .. } => PrunedLoweredBody {
-            body,
-            original_entry_ids: Vec::new(),
-        },
-        LoweredBody::Clauses {
-            clauses,
-            entries,
-            generated,
-            ..
-        } => {
-            let reachable_entries = reachable_entries.iter().copied().collect::<HashSet<_>>();
-            let mut clauses = reachable_clauses
-                .iter()
-                .map(|clause_id| clauses[*clause_id as usize].clone())
-                .collect::<Vec<_>>();
-            let mut needed = HashMap::new();
-            let mut kept_ids = Vec::new();
-            for clause in &clauses {
-                collect_reachable_entries(&entries, clause.entry, &reachable_entries, &mut kept_ids, &mut needed);
-            }
-            let mut kept = kept_ids
-                .iter()
-                .map(|entry_id| {
-                    specialize_entry(
-                        entries[entry_id.as_u32() as usize].clone(),
-                        reachable_entries.contains(entry_id),
-                    )
-                })
-                .collect::<Vec<_>>();
-            reindex_entries(&mut clauses, &mut kept, &needed);
-            PrunedLoweredBody {
-                body: LoweredBody::clauses(clauses, kept, generated),
-                original_entry_ids: kept_ids,
-            }
-        }
+    let LoweredBody::Clauses {
+        clauses,
+        entries,
+        generated,
+        ..
+    } = body;
+    let reachable_entries = reachable_entries.iter().copied().collect::<HashSet<_>>();
+    let mut clauses = reachable_clauses
+        .iter()
+        .map(|clause_id| clauses[*clause_id as usize].clone())
+        .collect::<Vec<_>>();
+    let mut needed = HashMap::new();
+    let mut kept_ids = Vec::new();
+    for clause in &clauses {
+        collect_reachable_entries(&entries, clause.entry, &reachable_entries, &mut kept_ids, &mut needed);
+    }
+    let mut kept = kept_ids
+        .iter()
+        .map(|entry_id| {
+            specialize_entry(
+                entries[entry_id.as_u32() as usize].clone(),
+                reachable_entries.contains(entry_id),
+            )
+        })
+        .collect::<Vec<_>>();
+    reindex_entries(&mut clauses, &mut kept, &needed);
+    PrunedLoweredBody {
+        body: LoweredBody::clauses(clauses, kept, generated),
+        original_entry_ids: kept_ids,
     }
 }
 
@@ -1656,25 +1641,28 @@ fn resolve_auto_variadic_marshal(
     ))
 }
 
-fn local_effects(body: &LoweredBody, call_edges: &HashMap<CallSiteId, MaterializedCallEdge>) -> EffectSummary {
-    match body {
-        LoweredBody::Extern { signature } => EffectSummary {
+fn local_effects(
+    body: &LoweredBody,
+    extern_wire: Option<&super::super::body::LoweredExtern>,
+    call_edges: &HashMap<CallSiteId, MaterializedCallEdge>,
+) -> EffectSummary {
+    if let Some(signature) = extern_wire {
+        return EffectSummary {
             observable: true,
             halts: signature.ret == crate::fz_ir::ExternTy::Never,
             ..EffectSummary::default()
-        },
-        LoweredBody::Clauses { clauses, entries, .. } => {
-            let mut effects = EffectSummary::default();
-            for clause in clauses {
-                effects.union_with(step_effects(&clause.projections, call_edges));
-            }
-            for entry in entries {
-                effects.union_with(step_effects(&entry.steps, call_edges));
-                effects.union_with(tail_effects(&entry.tail, call_edges));
-            }
-            effects
-        }
+        };
     }
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
+    let mut effects = EffectSummary::default();
+    for clause in clauses {
+        effects.union_with(step_effects(&clause.projections, call_edges));
+    }
+    for entry in entries {
+        effects.union_with(step_effects(&entry.steps, call_edges));
+        effects.union_with(tail_effects(&entry.tail, call_edges));
+    }
+    effects
 }
 
 fn step_effects(steps: &[LoweredStep], _call_edges: &HashMap<CallSiteId, MaterializedCallEdge>) -> EffectSummary {
@@ -1799,15 +1787,14 @@ fn build_executable_abi_plan(
             ))
         })
         .collect();
-    if let LoweredBody::Clauses { clauses, .. } = &executable.body {
-        for clause in clauses {
-            for (semantic_index, value) in clause.params.iter().copied().enumerate() {
-                if let Some(input) = semantic_inputs
-                    .iter()
-                    .find(|input| input.semantic_index == semantic_index)
-                {
-                    value_layouts.insert(value, input.layout.clone());
-                }
+    let LoweredBody::Clauses { clauses, .. } = &executable.body;
+    for clause in clauses {
+        for (semantic_index, value) in clause.params.iter().copied().enumerate() {
+            if let Some(input) = semantic_inputs
+                .iter()
+                .find(|input| input.semantic_index == semantic_index)
+            {
+                value_layouts.insert(value, input.layout.clone());
             }
         }
     }
