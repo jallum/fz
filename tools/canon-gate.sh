@@ -12,9 +12,9 @@ set -euo pipefail
 
 BASE_REF="${1:-origin/main}"
 FIXTURES=(
-  fixtures2/00420_enum_take_drop_split.fz
-  fixtures2/behavior/fz_f98_range_map_converges.fz
-  fixtures2/behavior/enum_predicate_search.fz
+  fixtures/00420_enum_take_drop_split.fz
+  fixtures/00567_fz_f98_range_map_converges.fz
+  fixtures/00571_enum_predicate_search.fz
 )
 
 ROOT="$(git rev-parse --show-toplevel)"

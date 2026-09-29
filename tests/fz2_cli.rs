@@ -37,22 +37,22 @@ struct TargetFixture {
 // it rather than concluding on a guess that a later run has to revise.
 const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
-        source: "fixtures2/00420_enum_take_drop_split.fz",
-        golden: "fixtures2/behavior/enum_take_drop_split.fz",
+        source: "fixtures/00420_enum_take_drop_split.fz",
+        golden: "fixtures/00420_enum_take_drop_split.fz",
         runtime_demand_walks: 620,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
-        source: "fixtures2/behavior/enum_predicate_search.fz",
-        golden: "fixtures2/behavior/enum_predicate_search.fz",
+        source: "fixtures/00571_enum_predicate_search.fz",
+        golden: "fixtures/00571_enum_predicate_search.fz",
         runtime_demand_walks: 474,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
-        source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        source: "fixtures/00567_fz_f98_range_map_converges.fz",
+        golden: "fixtures/00567_fz_f98_range_map_converges.fz",
         runtime_demand_walks: 145,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
@@ -1711,7 +1711,7 @@ fn interp_run_and_built_binary_report_unused_arithmetic_failure() {
 
 #[test]
 fn native_enum_take_drop_split_preserves_tuple_accumulator_lists() {
-    let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
+    let fixture = "fixtures/00420_enum_take_drop_split.fz";
     let expected = fixture_expected_stdout(fixture);
     let run = run_fz2(&[OsStr::new("run"), OsStr::new(fixture)]);
     assert_successful_stdout(&run, &expected, &format!("fz2 run {fixture}"));

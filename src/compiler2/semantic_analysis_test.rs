@@ -1,13 +1,8 @@
 use std::collections::HashSet;
 
-use super::drive_test::{CallsiteCapture, FunctionCapture, assert_resolved, function_id};
+use super::drive_harness::{CallsiteCapture, FunctionCapture, assert_resolved, function_id, module_name};
 use super::{CallSiteSummary, ExecutableNeed, FactKey, FunctionId, Job, RootId, SelectedCallee, World};
-use crate::modules::identity::ModuleName;
 use crate::telemetry::ConfiguredTelemetry;
-
-fn module_name(text: &str) -> ModuleName {
-    ModuleName::parse_dotted(text).unwrap()
-}
 
 /// fz-hwn.19.2.4.12: a `defimpl` nested in a module the program never reaches by
 /// name (`Mini`) used to be dropped — `DefineModule` is demand-gated, nothing
@@ -711,16 +706,16 @@ fn a_reached_callsite_that_names_no_target_publishes_an_unresolved_edge() {
 /// these are the corpus's dense cases.
 const EDGE_COMPLETENESS_FIXTURES: [(&str, &str); 3] = [
     (
-        "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
+        "fixtures/00567_fz_f98_range_map_converges.fz",
+        include_str!("../../fixtures/00567_fz_f98_range_map_converges.fz"),
     ),
     (
-        "fixtures2/behavior/enum_predicate_search.fz",
-        include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+        "fixtures/00571_enum_predicate_search.fz",
+        include_str!("../../fixtures/00571_enum_predicate_search.fz"),
     ),
     (
-        "fixtures2/behavior/enum_take_drop_split.fz",
-        include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
+        "fixtures/00420_enum_take_drop_split.fz",
+        include_str!("../../fixtures/00420_enum_take_drop_split.fz"),
     ),
 ];
 

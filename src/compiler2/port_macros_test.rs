@@ -1,7 +1,6 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
-use super::drive_test::{
-    FunctionCapture, LoweredBodyCapture, assert_resolved, function_id, lowered_direct_callee, module_function_id,
-};
+use super::drive_harness::{FunctionCapture, LoweredBodyCapture, assert_resolved, function_id, module_function_id};
+use super::drive_test::lowered_direct_callee;
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 

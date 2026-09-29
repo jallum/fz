@@ -577,7 +577,7 @@ executable, REPL script mode). A fixture is more than a sample file
 the JIT but not in AOT, the fixture matrix catches it.
 
 Fixture conventions — how each fixture pins its claim — are explained in
-[fixtures2/GOLDEN.md](fixtures2/GOLDEN.md).
+[.agent/docs/fixtures.md](.agent/docs/fixtures.md).
 
 CI runs lint, security audit, doctests, and workspace tests for pull requests
 and pushes to `main` and `develop`. Pushes to either branch also enforce the

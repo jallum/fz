@@ -1,0 +1,4 @@
+#---
+# purpose: "trivial program for drive_harness_test's raw Drive::drive() proof, which reads the DriveOutcome instead of the Settled it comes with"
+#---
+def main(), do: 1

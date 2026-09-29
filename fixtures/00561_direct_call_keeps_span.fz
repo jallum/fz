@@ -1,0 +1,6 @@
+#---
+# purpose: a direct call keeps its callsite's source span through lowering
+#---
+def add1(x), do: x + 1
+
+def main(), do: add1(41)
