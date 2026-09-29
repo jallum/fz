@@ -50,12 +50,10 @@ where
     }
 
     pub(crate) fn has_consumers(&self, key: &F) -> bool {
-        [FactUse::current(key.clone()), FactUse::settled(key.clone())]
-            .iter()
-            .any(|usage| {
-                self.subscribers.get(usage).is_some_and(|readers| !readers.is_empty())
-                    || self.waiters.get(usage).is_some_and(|waiters| !waiters.is_empty())
-            })
+        FactUse::every_use(key.clone()).iter().any(|usage| {
+            self.subscribers.get(usage).is_some_and(|readers| !readers.is_empty())
+                || self.waiters.get(usage).is_some_and(|waiters| !waiters.is_empty())
+        })
     }
 
     pub fn reads(&self, publisher: &P) -> Option<&HashSet<FactUse<F>>> {
@@ -164,7 +162,7 @@ where
     where
         P: SemanticOrd<Ctx>,
     {
-        let mut readers = [FactUse::current(fact.clone()), FactUse::settled(fact.clone())]
+        let mut readers = FactUse::every_use(fact.clone())
             .into_iter()
             .flat_map(|fact_use| self.subscribers.get(&fact_use).into_iter().flatten().cloned())
             .collect::<Vec<_>>();

@@ -4,6 +4,7 @@
 //! effects, and the drive loop. Concrete job implementations live under
 //! `compiler2::jobs`.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use crate::telemetry::{RawSpanGuard, RawSpanStop0, RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt};
@@ -444,9 +445,18 @@ impl SemanticOrd<Types> for DependencyKey {
     }
 }
 
+/// How a reader may use an answer right now: read it at this use, or wait
+/// for it at this use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AnswerUse {
+    Read(FactUse<FactKey>),
+    Wait(FactUse<FactKey>),
+}
+
 pub(crate) fn fact_dependency(fact: FactUse<FactKey>) -> FactUse<DependencyKey> {
     match fact {
         FactUse::Current(fact) => FactUse::current(DependencyKey::Fact(fact)),
+        FactUse::Concluded(fact) => FactUse::concluded(DependencyKey::Fact(fact)),
         FactUse::Settled(fact) => FactUse::settled(DependencyKey::Fact(fact)),
     }
 }
@@ -454,6 +464,7 @@ pub(crate) fn fact_dependency(fact: FactUse<FactKey>) -> FactUse<DependencyKey> 
 pub(crate) fn as_fact_use(usage: FactUse<DependencyKey>) -> Option<FactUse<FactKey>> {
     match usage {
         FactUse::Current(DependencyKey::Fact(fact)) => Some(FactUse::current(fact)),
+        FactUse::Concluded(DependencyKey::Fact(fact)) => Some(FactUse::concluded(fact)),
         FactUse::Settled(DependencyKey::Fact(fact)) => Some(FactUse::settled(fact)),
         _ => None,
     }
@@ -573,6 +584,9 @@ pub(crate) struct JobEffects {
     pub(crate) runtime_demand_input_contributions: Vec<(ExecutableKey, super::semantic::TargetDemandContribution)>,
     pub(crate) incoming_input_contributions:
         std::collections::HashMap<super::incoming_inputs::InputSlot, super::incoming_inputs::IncomingInputSources>,
+    /// What the demand sent to each callee stands on, when that is less than
+    /// everything the run read.
+    pub(crate) send_reads: std::collections::HashMap<ExecutableKey, Vec<FactUse<FactKey>>>,
 }
 
 impl JobEffects {
@@ -617,7 +631,127 @@ impl World {
     /// `WorkStartReason`), not the fact->producer mapping itself, since the
     /// mapping is shared by every caller of this function.
     pub(crate) fn demand_fact_producer(&mut self, fact: &FactKey, reason: WorkStartReason) -> u64 {
-        let job = match fact {
+        match fact {
+            // A function's source is published by the scope walk that defines
+            // it, and which walk that is depends on where the function lives.
+            // `demand_function_scope` names the scope facts that gate it, and
+            // each of those has its own arm in `fact_producer`, so expanding
+            // them is how this fact reaches its producer. A function no
+            // submitted code names yet has no scope fact: nothing is demanded,
+            // and the wait is discharged when some later walk publishes the
+            // source. A corpus with two homes for one name is diagnosed by the
+            // job that needs the source, not by this map, which carries no
+            // telemetry.
+            FactKey::FunctionSource(function) => {
+                let scopes = self.demand_function_scope(*function).unwrap_or_default();
+                scopes
+                    .iter()
+                    .map(|scope| self.demand_fact_producer(scope, reason))
+                    .sum()
+            }
+            // An activation's analysis needs the activation to exist, so its
+            // seed is demanded along with it.
+            FactKey::ActivationAnalyzed(activation)
+            | FactKey::ReturnType(activation)
+            | FactKey::CallSiteTargets(CallSiteKey { activation, .. })
+            | FactKey::CallSiteSummary(CallSiteKey { activation, .. }) => {
+                let activation = activation.clone();
+                let mut pokes = 0;
+                if let Some(seed) = self.seed_activation_producer(&activation) {
+                    pokes += self.demand_producer_if_needed(seed, fact, reason) as u64;
+                }
+                pokes + self.demand_producer_if_needed(Job::AnalyzeActivation(activation), fact, reason) as u64
+            }
+            _ => self
+                .fact_producer(fact)
+                .map(|job| self.demand_producer_if_needed(job, fact, reason) as u64)
+                .unwrap_or(0),
+        }
+    }
+
+    /// Whether `from` is waiting, directly or through the jobs it waits on,
+    /// for an answer only `to` can give.
+    ///
+    /// A run that would wait on a job already waiting on it would close a
+    /// cycle of waits that nothing can open: each is the other's missing
+    /// answer. The walk follows standing waits to their producers and visits
+    /// each job once.
+    pub(crate) fn waits_reach(&self, from: &Job, to: &Job) -> bool {
+        let mut pending = vec![from.clone()];
+        let mut seen = HashSet::new();
+        while let Some(job) = pending.pop() {
+            if !seen.insert(job.clone()) {
+                continue;
+            }
+            for wait in self.work_graph.waits_for(&job) {
+                let Some(producer) = wait.fact().fact().and_then(|fact| self.fact_producer(fact)) else {
+                    continue;
+                };
+                if &producer == to {
+                    return true;
+                }
+                pending.push(producer);
+            }
+        }
+        false
+    }
+
+    /// How `reader` may use the answer `fact` gives. A partner's answer, one
+    /// whose producer is waiting on `reader`, is one fixpoint with the
+    /// reader's own and is read however unfinished. Any other answer is read
+    /// only once it has concluded, and waited for until then.
+    pub(crate) fn answer_use(&self, reader: &Job, fact: FactKey) -> AnswerUse {
+        let partner = self
+            .fact_producer(&fact)
+            .is_some_and(|producer| self.waits_reach(&producer, reader));
+        if partner {
+            AnswerUse::Read(FactUse::current(fact))
+        } else if self.fact_is_concluded(&fact) {
+            AnswerUse::Read(FactUse::concluded(fact))
+        } else {
+            AnswerUse::Wait(FactUse::concluded(fact))
+        }
+    }
+
+    /// The next queued job worth running. A job whose last run read a
+    /// concluded answer that is now being derived again would find that
+    /// answer missing and wait for it, so it waits without running.
+    pub(crate) fn pop_runnable(&mut self) -> Option<Job> {
+        while let Some(job) = self.work_graph.pop() {
+            let missing = self.concluded_answers_missing(&job);
+            if missing.is_empty() {
+                return Some(job);
+            }
+            self.work_graph.wait_without_running(job, missing);
+        }
+        None
+    }
+
+    fn concluded_answers_missing(&self, job: &Job) -> HashSet<FactUse<DependencyKey>> {
+        self.work_graph
+            .reads(job)
+            .into_iter()
+            .filter_map(|read| match read {
+                FactUse::Concluded(DependencyKey::Fact(fact)) => Some(fact),
+                _ => None,
+            })
+            .filter_map(|fact| match self.answer_use(job, fact) {
+                AnswerUse::Wait(wait) => Some(fact_dependency(wait)),
+                AnswerUse::Read(_) => None,
+            })
+            .collect()
+    }
+
+    /// The job that publishes `fact`, when one job does.
+    ///
+    /// Facts whose producers publish them only as a co-output of a broader
+    /// job's conclusion (`ModuleIndexed`, `StructDefined`, `ProtocolDispatch`,
+    /// `ProtocolImplProviders`, `Executable`) have no arm: their demand rides
+    /// the mapped facts that gate the job that co-produces them. A function's
+    /// source has no single producer either; `demand_fact_producer` expands it
+    /// through its scope facts.
+    pub(crate) fn fact_producer(&self, fact: &FactKey) -> Option<Job> {
+        match fact {
             FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
             FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
             FactKey::ModuleDefined(module) => Some(Job::DefineModule(*module)),
@@ -653,22 +787,6 @@ impl World {
             }
             FactKey::InputDemand(function) => Some(Job::DeriveInputDemand(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
-            // A function's source is published by the scope walk that defines
-            // it, and which walk that is depends on where the function lives.
-            // `demand_function_scope` names the scope facts that gate it, and
-            // each of those has its own arm here, so expanding them is how
-            // this fact reaches its producer. A function no submitted code
-            // names yet has no scope fact: nothing is demanded, and the wait
-            // is discharged when some later walk publishes the source. A
-            // corpus with two homes for one name is diagnosed by the job that
-            // needs the source, not by this map, which carries no telemetry.
-            FactKey::FunctionSource(function) => {
-                let scopes = self.demand_function_scope(*function).unwrap_or_default();
-                return scopes
-                    .iter()
-                    .map(|scope| self.demand_fact_producer(scope, reason))
-                    .sum();
-            }
             FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),
             FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
                 self.seed_activation_producer(activation)
@@ -677,12 +795,7 @@ impl World {
             | FactKey::ReturnType(activation)
             | FactKey::CallSiteTargets(CallSiteKey { activation, .. })
             | FactKey::CallSiteSummary(CallSiteKey { activation, .. }) => {
-                let activation = activation.clone();
-                let mut pokes = 0;
-                if let Some(seed) = self.seed_activation_producer(&activation) {
-                    pokes += self.demand_producer_if_needed(seed, fact, reason) as u64;
-                }
-                return pokes + self.demand_producer_if_needed(Job::AnalyzeActivation(activation), fact, reason) as u64;
+                Some(Job::AnalyzeActivation(activation.clone()))
             }
             FactKey::ExecutableFacts(executable) => Some(Job::DeriveExecutableFacts(executable.clone())),
             FactKey::CallableConstructionTarget(key) => Some(Job::DeriveCallableConstructionTarget(key.clone())),
@@ -691,9 +804,7 @@ impl World {
             }
             FactKey::IncomingInputSlot(slot) => Some(Job::DeriveRuntimeDemand(slot.executable.clone())),
             _ => None,
-        };
-        job.map(|job| self.demand_producer_if_needed(job, fact, reason) as u64)
-            .unwrap_or(0)
+        }
     }
 
     /// `Job::SeedActivation` as this activation's existence producer, or `None`
@@ -925,21 +1036,21 @@ impl World {
     /// first-run ignition is owned by the scheduler boundary, not by any
     /// job's follow-up.
     pub(crate) fn next_ready_job(&mut self, sessions: Option<&super::pull::ProductSessions>) -> Option<Job> {
-        if let Some(job) = self.work_graph.pop() {
+        if let Some(job) = self.pop_runnable() {
             return Some(job);
         }
         self.settle_quiescent_waits(sessions);
-        if let Some(job) = self.work_graph.pop() {
+        if let Some(job) = self.pop_runnable() {
             return Some(job);
         }
         let ignited = self.demand_root_frontier_seeds() + self.demand_activation_frontier_analyses();
         if ignited > 0
-            && let Some(job) = self.work_graph.pop()
+            && let Some(job) = self.pop_runnable()
         {
             return Some(job);
         }
         if self.demand_blocked_wait_producers() > 0 {
-            return self.work_graph.pop();
+            return self.pop_runnable();
         }
         None
     }
@@ -1013,7 +1124,7 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                         ExecutionContext::new(world, tel).flush_reported_warnings();
                         break 'outcome DriveOutcome::TimedOut { jobs_ran, pending_jobs };
                     }
-                    let Some(job) = world.work_graph.pop() else {
+                    let Some(job) = world.pop_runnable() else {
                         break;
                     };
                     let job_span = start_job_span(tel, &job);

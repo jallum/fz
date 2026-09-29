@@ -820,7 +820,8 @@ where
     fn semantic_cmp(&self, other: &Self, ctx: &Ctx) -> Ordering {
         let readiness_rank = |fact: &FactUse<F>| match fact {
             FactUse::Current(_) => 0,
-            FactUse::Settled(_) => 1,
+            FactUse::Concluded(_) => 1,
+            FactUse::Settled(_) => 2,
         };
         self.fact()
             .semantic_cmp(other.fact(), ctx)
