@@ -578,6 +578,12 @@ is the raw telemetry authority. The sanctioned reasons mirror the pull model:
 - `ActivationFrontier` expands a published activation's standing semantic
   demand through the fact-to-producer map. Root entries and caller-discovered
   callees use the same path.
+- `GateExpansion` is `ActivationFrontier`'s own redirect when a frontier
+  activation's job has a missing gate (`Job::missing_gates`): the still-missing
+  gate's own producer is a different job than the activation waiting on it, so
+  it is tallied here instead of folding into `ActivationFrontier`, which
+  credits exactly one start per activation. Every other reason's own
+  gate-poke still carries that reason unchanged.
 - `BlockedWaiterExpansion` expands a drained waiter's missing fact to its
   producer, including runtime-module indexing.
 

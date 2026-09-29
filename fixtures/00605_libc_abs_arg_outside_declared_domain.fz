@@ -1,0 +1,7 @@
+#---
+# purpose: an extern's declared parameter types are its whole contract; an argument outside every clause is rejected with a spec/violation diagnostic on every path
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+extern "C" defp libc::abs(c_int) :: c_int
+def main(), do: libc::abs(:nope)

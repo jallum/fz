@@ -211,17 +211,33 @@ pub(crate) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
     if t.is_floating(d) {
         return ExternTy::F64;
     }
+    let raw_word = raw_word_domain(t);
+    if t.is_subtype(d, &raw_word) {
+        return ExternTy::I64;
+    }
+    ExternTy::Any
+}
+
+/// The raw integer-bank word: every scalar `ty_to_extern_ty` reduces to
+/// `I64`. Named so the variadic tail domain below can't drift from it.
+fn raw_word_domain<T: Types>(t: &mut T) -> T::Ty {
     let int = t.int();
     let pid = t.pid();
     let reference = t.reference();
     let c_pointer = t.c_pointer();
     let raw_word = t.union(int, pid);
     let raw_word = t.union(raw_word, reference);
-    let raw_word = t.union(raw_word, c_pointer);
-    if t.is_subtype(d, &raw_word) {
-        return ExternTy::I64;
-    }
-    ExternTy::Any
+    t.union(raw_word, c_pointer)
+}
+
+/// Every fz type a variadic extern's tail may carry: a raw word, or a binary
+/// that reaches the wire through a `:: c_string` or `:: binary` ascription at
+/// the call. Float is left out — the generated variadic call has nowhere to
+/// carry one (see `externs.md`, "Variadic calls").
+pub(crate) fn variadic_tail_domain<T: Types>(t: &mut T) -> T::Ty {
+    let raw_word = raw_word_domain(t);
+    let binary = t.str_t();
+    t.union(raw_word, binary)
 }
 
 /// Rewrite a wire-only spelling to its semantic spelling, so the type checker

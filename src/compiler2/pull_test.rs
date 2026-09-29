@@ -2263,6 +2263,7 @@ fn fake_effect_materialized(
             }],
             Vec::new(),
         ),
+        extern_wire: None,
         call_edges: callees
             .iter()
             .enumerate()

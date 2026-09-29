@@ -16,7 +16,7 @@ use super::super::SourceOwner;
 use super::super::body::{
     CallSiteId, ControlDestination, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, ValueId,
 };
-use super::super::contract::FunctionContract;
+use super::super::contract::{AppliedFunctionContract, FunctionContract};
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{ActivationKey, FunctionId, ModuleId, TypeName, function_id_of_closure_target};
@@ -27,7 +27,7 @@ use super::super::semantic::{
     SelectedCallee,
 };
 use super::super::types::{ClosureTarget, Ty, Types};
-use super::super::world::World;
+use super::super::world::{BodyShape, World};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct TupleFieldProjection {
@@ -117,7 +117,12 @@ impl EntryWalkTable {
 }
 
 type ValueTypes = HashMap<ValueId, Ty>;
-type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
+/// A callee's refined argument surface plus its contract verdict. `None`
+/// means the callee declares no contract at all, so there is nothing to
+/// verify. `Some` carries the verdict `FunctionContract::apply` reached —
+/// answered, underconstrained, or rejected — so a caller reads the verdict it
+/// needs instead of a type that already lost which one happened.
+type RefinedCallSurface = (Vec<Ty>, Option<AppliedFunctionContract>);
 /// One reached call: what it resolved to, the activation demand it
 /// contributes, and its return evidence.
 type ResolvedCall = (
@@ -141,11 +146,40 @@ struct ActivationContribution {
     inputs: Vec<Ty>,
 }
 
+/// The facts `Job::AnalyzeActivation` cannot conclude without: the activation's
+/// function must be defined, its entry dispatch planned, and -- for a
+/// non-extern, which alone gets a lowered body -- its body lowered. An
+/// extern's wire ABI lives on its contract, not a `LowerFunction` job, so it
+/// never gates on `LoweredBody`.
+///
+/// The activation itself, and its inputs, are not gated here: an activation
+/// nothing claims yet has no producer to demand (`analyze_activation`'s own
+/// early return answers that case), so naming it as a gate would demand a
+/// producer that does not exist.
+pub(super) fn analyze_activation_gates(world: &World, activation: &ActivationKey) -> Vec<FactKey> {
+    let function = activation.function;
+    let shape = world.function_body_shape(function);
+    if let Some(gate) = shape.undefined_gate(function) {
+        return vec![gate];
+    }
+    let mut gates = Vec::new();
+    if matches!(shape, BodyShape::Clauses) && !world.has_fact(&FactKey::LoweredBody(function)) {
+        gates.push(FactKey::LoweredBody(function));
+    }
+    if !world.has_fact(&FactKey::EntryDispatch(function)) {
+        gates.push(FactKey::EntryDispatch(function));
+    }
+    gates
+}
+
 /// Analyzes one rooted function activation against its lowered body.
 ///
-/// The job waits until the activation, lowered body, and entry dispatch all
-/// exist. It then walks only the dispatch-reachable clauses, publishes direct
-/// callsite summaries, and settles the activation's current return type.
+/// The activation must already exist, and its function's definition, entry
+/// dispatch, and (for a non-extern) lowered body must all be settled --
+/// `analyze_activation_gates` is this job's start gate, so the scheduler
+/// never starts it otherwise. It then walks only the dispatch-reachable
+/// clauses, publishes direct callsite summaries, and settles the
+/// activation's current return type.
 pub(super) fn analyze_activation(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -182,39 +216,30 @@ pub(super) fn analyze_activation(
     };
     let alternatives = alternatives.clone();
 
+    // `FunctionDefined`, `EntryDispatch(function)`, and `LoweredBody`
+    // (non-extern only) are this job's start gate (`analyze_activation_gates`,
+    // demanded by `Job::missing_gates`): the scheduler never starts this job
+    // until all three exist, so none of them is waited for here.
     let function = activation.function;
     let function_fact = FactKey::FunctionDefined(function);
-    let Some(_) = world.function_defined_revision(function) else {
-        return Ok(world.wait_for_function_definition(function));
-    };
-
+    let is_extern = world.function_body_shape(function).is_extern();
     let lowered_fact = FactKey::LoweredBody(function);
-    if !world.has_fact(&lowered_fact) {
-        // `LoweredBody`'s sole producer arm is `Job::LowerFunction`
-        // (`World::demand_fact_producer`).
-        return Ok(JobEffects::wait_on_current(lowered_fact));
-    }
-
     let dispatch_fact = FactKey::EntryDispatch(function);
-    if !world.has_fact(&dispatch_fact) {
-        // `EntryDispatch`'s sole producer arm is `Job::PlanEntryDispatch`
-        // (`World::demand_fact_producer`).
-        return Ok(JobEffects::wait_on_current(dispatch_fact));
-    }
 
     let mut reads = vec![
         FactKey::Activation(activation.clone()),
         FactKey::ActivationInputs(activation.clone()),
         function_fact,
-        lowered_fact,
         dispatch_fact,
     ];
+    if !is_extern {
+        reads.push(lowered_fact);
+    }
     let mut waits = HashSet::new();
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
 
     let entry_dispatch = world.entry_dispatch(function);
-    let lowered_body = world.lowered_body(function);
     // Each correlated row is dispatched and analyzed on its own
     // (fz-9i4.7.10.2): a row's columns arrived together and only ever bind a
     // clause together. Only post-analysis results merge — reachable clauses
@@ -247,49 +272,50 @@ pub(super) fn analyze_activation(
     // two coincide; mid-climb only readers of settled facts may conflate
     // them, and the settled gate keeps everyone else out.
     let mut return_evidence: Option<Ty> = None;
-    match &*lowered_body {
-        LoweredBody::Extern { signature } => {
-            return_evidence = Some(signature.return_ty);
-        }
-        LoweredBody::Clauses { clauses, entries, .. } => {
-            for (clause_id, clause_inputs) in row_clause_inputs.iter().flatten() {
-                let clause = &clauses[*clause_id as usize];
-                // Input evidence that has not caught up to the clause's
-                // arity cannot bind its params. Like an absent capture,
-                // incomplete evidence yields no evidence — the analysis
-                // re-runs when the joined inputs grow. Never `any`.
-                if clause.params.len() > clause_inputs.len() {
-                    continue;
-                }
-                let mut values = SemanticValues::default();
-                for (value, ty) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
-                    values.insert(value, ty);
-                }
-                apply_steps(
-                    world,
-                    &clause.projections,
-                    &mut values,
-                    &mut analysis_calls,
-                    activation,
-                    &mut reads,
-                    &mut waits,
-                )?;
-                merge_value_types(world, &mut value_types, &values);
-                let clause_return = analyze_entry(
-                    world,
-                    tel,
-                    entries.as_slice(),
-                    clause.entry,
-                    &values,
-                    &mut walks,
-                    &mut value_types,
-                    &mut analysis_calls,
-                    activation,
-                    &mut reads,
-                    &mut waits,
-                )?;
-                return_evidence = join_evidence(world, return_evidence, clause_return);
+    // An extern has no body to walk: this block never runs for it, and its
+    // return evidence comes entirely from the contract loop that follows --
+    // the declaration is its only witness, so that evidence is set directly
+    // rather than refined against a walked observation that does not exist.
+    if !is_extern {
+        let lowered_body = world.lowered_body(function);
+        let LoweredBody::Clauses { clauses, entries, .. } = &*lowered_body;
+        for (clause_id, clause_inputs) in row_clause_inputs.iter().flatten() {
+            let clause = &clauses[*clause_id as usize];
+            // Input evidence that has not caught up to the clause's
+            // arity cannot bind its params. Like an absent capture,
+            // incomplete evidence yields no evidence — the analysis
+            // re-runs when the joined inputs grow. Never `any`.
+            if clause.params.len() > clause_inputs.len() {
+                continue;
             }
+            let mut values = SemanticValues::default();
+            for (value, ty) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
+                values.insert(value, ty);
+            }
+            apply_steps(
+                world,
+                &clause.projections,
+                &mut values,
+                &mut analysis_calls,
+                activation,
+                &mut reads,
+                &mut waits,
+            )?;
+            merge_value_types(world, &mut value_types, &values);
+            let clause_return = analyze_entry(
+                world,
+                tel,
+                entries.as_slice(),
+                clause.entry,
+                &values,
+                &mut walks,
+                &mut value_types,
+                &mut analysis_calls,
+                activation,
+                &mut reads,
+                &mut waits,
+            )?;
+            return_evidence = join_evidence(world, return_evidence, clause_return);
         }
     }
 
@@ -297,7 +323,15 @@ pub(super) fn analyze_activation(
         if let Some(contract_return_ty) =
             activation_contract_return(world, tel, function, row.columns(), &mut reads, &mut waits)?
         {
-            return_evidence = refine_call_return(world, return_evidence, Some(contract_return_ty));
+            return_evidence = if is_extern {
+                // An extern's declaration is its only witness: the contract
+                // applied to this row IS the return, not a refinement of a
+                // walked body that does not exist. Distinct rows join by
+                // union, the same rule the clause arm above uses.
+                join_evidence(world, return_evidence, Some(contract_return_ty))
+            } else {
+                refine_call_return(world, return_evidence, Some(contract_return_ty))
+            };
         }
     }
 
@@ -596,7 +630,7 @@ fn apply_step(
                 return Ok(());
             };
             let field_ty = key
-                .and_then(|key| world.types_mut().map_field_lookup(&base_ty, &key))
+                .and_then(|key| world.types_mut().field_lookup(&base_ty, &key))
                 .unwrap_or_else(|| any_ty(world));
             values.insert(*value, field_ty);
         }
@@ -606,7 +640,7 @@ fn apply_step(
             };
             let field_ty = world
                 .types_mut()
-                .map_field_lookup(&base_ty, &super::super::types::MapKey::Atom(field.clone()))
+                .field_lookup(&base_ty, &super::super::types::MapKey::Atom(field.clone()))
                 .unwrap_or_else(|| any_ty(world));
             values.insert(*value, field_ty);
         }
@@ -631,7 +665,7 @@ fn apply_step(
                 return Ok(());
             };
             let field_ty = literal_map_key(key)
-                .and_then(|key| world.types_mut().map_field_lookup(&source_ty, &key))
+                .and_then(|key| world.types_mut().field_lookup(&source_ty, &key))
                 .unwrap_or_else(|| any_ty(world));
             values.insert(*value, field_ty);
         }
@@ -1271,8 +1305,9 @@ fn resolve_function_call(
         return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     };
     let caller_owner = world.function_definition(caller.function).0.owner;
-    let (input_types, contract_return_ty) =
+    let (input_types, applied_contract) =
         refine_function_call_surface(world, tel, function, input_types, caller_owner, call_span)?;
+    let contract_return_ty = applied_contract_return(applied_contract);
     if shape == CalleeShape::Boundary {
         // The provider boundary is the public dynamic edge: `any` is earned
         // here (and only here and at unresolvable callable values).
@@ -1418,8 +1453,9 @@ fn resolve_protocol_call(
         }
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
         let caller_owner = world.function_definition(caller.function).0.owner;
-        let (refined_inputs, contract_return_ty) =
+        let (refined_inputs, applied_contract) =
             refine_function_call_surface(world, tel, selected.function, refined_inputs, caller_owner, call_span)?;
+        let contract_return_ty = applied_contract_return(applied_contract);
         let (activation, observed_return) =
             prepare_function_call(world, caller, selected.function, &refined_inputs, reads);
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
@@ -1666,6 +1702,25 @@ fn require_callee_prerequisites(
 ) -> bool {
     let contract_ready = require_function_contract(world, function, reads, waits);
     let keying_ready = world.require_activation_key_facts(function, reads, waits);
+    let shape = world.function_body_shape(function);
+    if let Some(gate) = shape.undefined_gate(function) {
+        // The caller here is never a provider boundary or a protocol
+        // callback: both are ruled out before this runs (`resolve_function_call`
+        // checks the callback, `require_direct_call_prerequisites` the
+        // boundary), and both are the only functions that stay undefined
+        // forever, so this wait always has a producer that ends it. This
+        // bundles with the two waits already registered above so this caller
+        // settles all three together in one re-run, instead of discovering
+        // them one gate at a time.
+        waits.insert(gate);
+        return false;
+    }
+    if shape.is_extern() {
+        // An extern never gets a `LowerFunction` job: its wire ABI is the
+        // contract this caller already waited on above, so there is no
+        // further body to wait for.
+        return contract_ready && keying_ready;
+    }
     let lowered = FactKey::LoweredBody(function);
     let lowered_ready = world.has_fact(&lowered);
     if lowered_ready {
@@ -1737,37 +1792,58 @@ fn apply_function_contract(
     input_types: Vec<Ty>,
     caller_owner: SourceOwner,
     violation_span: Span,
-) -> Result<(Vec<Ty>, Option<Ty>), FatalError> {
+) -> Result<RefinedCallSurface, FatalError> {
     let application = contract.apply(world.types_mut(), &input_types);
     if !application.enforceable_satisfied
         && function_contract_is_enforced(world, function, caller_owner)
         && spec_violation_is_actionable(world, &input_types)
     {
-        return Err(emit_spec_violation(tel, world, function, &input_types, violation_span));
-    }
-    Ok((
-        refine_contract_inputs(
+        return Err(emit_spec_violation(
+            tel,
             world,
-            input_types,
-            application.matched_arrows.iter().map(|params| params.as_slice()),
-        ),
-        application.result,
-    ))
+            function,
+            contract,
+            &input_types,
+            violation_span,
+        ));
+    }
+    let refined_inputs = refine_contract_inputs(
+        world,
+        input_types,
+        application.matched_arrows.iter().map(|params| params.as_slice()),
+    );
+    Ok((refined_inputs, Some(application)))
 }
 
-/// A spec violation is enforced (fatal) only at USER callsites. Calls written
-/// inside library code are validated for refinement but never diagnosed:
-/// shared library bodies currently carry JOINED activation evidence — one
-/// evidence row unioned across uncorrelated users — so a callsite there can
-/// observe a phantom argument combination no runtime call makes (one user's
-/// callable paired with another user's element type). The matcher verdict on
-/// that row is correct, but as a diagnostic it is false, and its span points
-/// into library source where the user can act on nothing. The gate retires
-/// when activation evidence becomes correlation-sound. The lexical source
-/// owner is carried separately from the callsite's exact source-version span.
+/// The type a contract answered for this call, once its verdict is known. A
+/// callee with no contract at all carries no verdict (`None`); a rejected row
+/// that reached here without being diagnosed (still underconstrained, or the
+/// library/user gate held it back) answered no type either — its rejection
+/// stays a fact on the verdict rather than becoming this `None`.
+fn applied_contract_return(applied: Option<AppliedFunctionContract>) -> Option<Ty> {
+    applied.and_then(|application| application.result)
+}
+
+/// A spec violation is enforced (fatal) unconditionally for an extern: its
+/// declaration IS its whole definition, and the row it is applied to comes
+/// straight from the one caller that made it, never joined evidence from
+/// several callers. A rejected extern row is therefore always a real fault,
+/// in the declaration or in the call.
+///
+/// For an ordinary function the violation is enforced only at USER
+/// callsites. Calls written inside library code are validated for
+/// refinement but never diagnosed: shared library bodies currently carry
+/// JOINED activation evidence — one evidence row unioned across uncorrelated
+/// users — so a callsite there can observe a phantom argument combination no
+/// runtime call makes (one user's callable paired with another user's
+/// element type). The matcher verdict on that row is correct, but as a
+/// diagnostic it is false, and its span points into library source where the
+/// user can act on nothing. The gate retires when activation evidence
+/// becomes correlation-sound. The lexical source owner is carried separately
+/// from the callsite's exact source-version span.
 fn function_contract_is_enforced(world: &World, function: FunctionId, caller_owner: SourceOwner) -> bool {
     let (_source, surface) = world.function_definition(function);
-    surface.extern_abi.is_none() && !world.is_bootstrap(caller_owner)
+    surface.extern_abi.is_some() || !world.is_bootstrap(caller_owner)
 }
 
 fn spec_violation_is_actionable(world: &mut World, input_types: &[Ty]) -> bool {
@@ -1791,33 +1867,35 @@ fn activation_contract_return(
     if !require_function_contract(world, function, reads, waits) {
         return Ok(None);
     }
-    let (_, contract_return_ty) =
+    let (_, applied_contract) =
         refine_function_call_surface(world, tel, function, input_types.to_vec(), caller_owner, violation_span)?;
-    Ok(contract_return_ty)
+    Ok(applied_contract_return(applied_contract))
 }
 
 fn emit_spec_violation(
     tel: &impl crate::telemetry::Telemetry,
-    world: &World,
+    world: &mut World,
     function: FunctionId,
+    contract: &FunctionContract,
     input_types: &[Ty],
     span: Span,
 ) -> FatalError {
+    let domain_rows = contract.matched_domain_rows(world.types_mut(), input_types.len());
     let function_ref = world.function_ref(function);
     let observed = input_types
         .iter()
         .map(|ty| world.types().display_for_diag(ty))
         .collect::<Vec<_>>()
         .join(", ");
+    let domain = domain_rows.join(" | ");
     emit_through(
         tel,
         &[Diagnostic::error(
             codes::SPEC_VIOLATION,
             format!(
-                "call to `{}/{}` violates its @spec for arguments ({})",
+                "call to `{}/{}` violates its @spec for arguments ({observed}); the declared domain is ({domain})",
                 function_ref.display_name(),
                 function_ref.arity,
-                observed
             ),
             span,
         )
@@ -1873,11 +1951,12 @@ fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>)
     if world.types().is_empty(&observed) {
         return observed;
     }
+    // a contract that still carries a variable doesn't know its result yet, so it doesn't refine.
     if world.types().has_vars(&contract) {
         return observed;
     }
     let any = world.types_mut().any();
-    let observed_is_unconstrained = world.types().is_equivalent(&observed, &any) || world.types().has_vars(&observed);
+    let observed_is_unconstrained = world.types().is_equivalent(&observed, &any);
     if !observed_is_unconstrained
         && world.types().is_subtype(&contract, &observed)
         && !world.types().is_subtype(&observed, &contract)
@@ -2055,10 +2134,7 @@ fn call_target_summary(
 }
 
 fn callee_extern_params(world: &World, function: FunctionId) -> Option<usize> {
-    match &*world.lowered_body(function) {
-        LoweredBody::Extern { signature } => Some(signature.params.len()),
-        LoweredBody::Clauses { .. } => None,
-    }
+    world.extern_wire(function).map(|signature| signature.params.len())
 }
 
 fn value_ty(values: &SemanticValues, value: ValueId) -> Option<Ty> {

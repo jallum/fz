@@ -1,8 +1,12 @@
 
-def child(), do: send(1, 42)
+def child() do
+  parent = receive do x -> x end
+  send(parent, 42)
+end
 
 def main() do
-  spawn(child)
+  child = spawn(child)
+  send(child, self())
   got = receive do
     x -> x
   end

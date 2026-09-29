@@ -16,10 +16,12 @@ The pieces:
 - `ExternMarshal` — a per-argument decision: `Fixed(ty)` (a declared param) or
   `Auto` (an un-ascribed variadic argument awaiting resolution; an `arg :: ty`
   ascription at the call resolves it to a concrete `ExternTy` per site).
-- `LoweredExtern { abi, params, ret }` (`src/compiler2/body.rs`) — compiler2's
-  lowered form: a `LoweredBody::Extern` carries the `ExternAbi`, the param wire
-  types, and the return wire type, and lowering also computes the fz-visible
-  return type from the declared return.
+- `LoweredExtern { abi, symbol, params, variadic, ret }` (`src/compiler2/body.rs`)
+  — compiler2's lowered form of the wire ABI. An extern has no body to lower:
+  its `FunctionContract` (`jobs/contract.rs::derive_function_contract`) resolves
+  the wire ABI once, from the surface declaration, and carries it as
+  `extern_wire`. Every wire-ABI reader goes through the contract; there is no
+  `LowerFunction` job, and no `LoweredBody`, for an extern.
 
 ## Two ABIs
 
@@ -369,6 +371,31 @@ What follows from the invariant:
 including both mixed orders — one alone cannot distinguish a correct table from
 one with the two mixed shapes transposed.
 
+## A variadic contract has a tail domain
+
+A variadic extern's `FunctionContract` carries a tail domain alongside its
+fixed parameters: the type every argument past the declared prefix must
+belong to, `integer | pid | reference | c_pointer | binary`.
+`extern_contract::variadic_tail_domain` builds it next to `ty_to_extern_ty`'s
+own raw-word union, so the domain and the wire alphabet can't drift apart.
+`FunctionContract::apply` widens a clause's parameter list by repeating the
+tail domain until it matches an observed row's length, then matches through
+the ordinary calculator (`Types::match_arrow`) exactly as it does for any
+other arrow; a row shorter than the fixed prefix is still refused.
+
+The domain decides whether a row FITS the declaration at all. Binary is in
+it because an ascribed binary reaches the wire; float is not, because the
+generated variadic call has nowhere to carry one. Once a row fits, the
+marshal classes below decide the narrower question of which physical lane
+each tail value crosses on — an un-ascribed binary is still refused there,
+because the lane depends on an ascription the contract's row can't see.
+
+A row that does not fit is a fatal `spec/violation` at the call, on every
+door: an extern's declaration is enforced unconditionally, because it is the
+whole definition and the row came straight from the one caller that made it.
+`libc::printf("%f", 1.5)` names the tail domain past the fixed `fmt`
+parameter in its diagnostic, marked `...` (`00253_variadic_float_error.fz`).
+
 ## Marshal classes resolve per call site
 
 The `ret` and fixed `params` are fixed by the declaration. A variadic call's
@@ -427,14 +454,22 @@ what makes an ordinary wrapper come back correctly:
 def dbg(x), do: fz_dbg_value(x)
 ```
 
-The body calls `extern "fz" defp fz_dbg_value(any) :: any`, so the argument is
-boxed (the ABI adds the process alongside it, which the wrapper never sees) and the
-result is a boxed `AnyValueRef`; reached for an `integer`, the wrapper's return
-unboxes that word back to an `i64`. A repeated type variable means "same type",
-not "same object" — boundary correctness is the marshal class on the way in plus
-this coercion on the way out. The declared bound answers only where the call
-pinned nothing, so `t` is whatever the caller passed, the empty list included:
-`dbg([])` is typed `[]` and not `any` (`types::arrow_match`, fz-kdt.120).
+The body calls `extern "fz" defp fz_dbg_value(t) :: t when t: any`, so the
+argument is boxed (the ABI adds the process alongside it, which the wrapper
+never sees) and the result is a boxed `AnyValueRef`; reached for an `integer`,
+the wrapper's return unboxes that word back to an `i64`. A repeated type
+variable means "same type", not "same object" — boundary correctness is the
+marshal class on the way in plus this coercion on the way out. The declared
+bound answers only where the call pinned nothing, so `t` is whatever the
+caller passed, the empty list included: `dbg([])` is typed `[]` and not `any`
+(`types::arrow_match`, fz-kdt.120).
+
+`fz_dbg_value`'s own return evidence is its `FunctionContract` applied to the
+activation's row: the extern has no body to observe, so its declared clause
+is the only witness it has for what it returns (see
+[`semantic-authorities`](semantic-authorities.md), "what does an activation
+return"). `dbg(1)` therefore defines its return as `int` once, and every
+caller sees that value rather than the unconstrained `t`.
 
 ## Variadic calls
 
@@ -499,7 +534,10 @@ extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer 
 ```
 
 `resource(T)` is a real type constructor on the `Types` trait; the variable binds
-from the payload, so `make_resource(42, &close/1)` is `resource(integer)`. A
+from the payload, so `make_resource(42, &close/1)` is `resource(integer)` --
+`fz_make_resource`'s return evidence, like every extern's, is its own
+`FunctionContract` applied to the call's row, not a type the extern's
+(nonexistent) body could observe. A
 module that declares `@type t :: opaque resource(integer)` brands that shape as
 `t` wherever a position is annotated `t` — `mint_brand(resource(integer), tag)`,
 the identical mechanism `refines` uses (see
@@ -538,4 +576,8 @@ cargo test --test fixture_matrix c_int_negative_return    # C int width, 3 doors
 cargo test --lib compiler2_native_lowering_narrows_c_int_arguments_and_sign_extends_c_int_results
 cargo test --test fixture_matrix variadic_three_integers  # variadic ABI, 3 doors
 cargo test --test aot_variadic_open                   # variadic call through the linker
+cargo test --test fixture_matrix 00605_libc_abs_arg_outside_declared_domain  # row outside a fixed extern's domain, 3 doors
+cargo test --test fixture_matrix 00253_variadic_float_error  # row outside a variadic extern's tail domain, 3 doors
+cargo test --lib compiler2::contract_test::extern_row_outside_its_declared_contract_is_a_spec_violation
+cargo test --lib compiler2::contract_test::variadic_extern_violation_names_the_tail_domain_past_the_fixed_params
 ```

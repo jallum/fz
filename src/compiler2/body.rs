@@ -12,7 +12,6 @@ use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
-use crate::type_expr::ResolvedSpecDecl;
 
 use super::identity::{FunctionId, ModuleId};
 use super::types::Ty;
@@ -74,15 +73,13 @@ pub struct CallArg {
     pub ownership: crate::fz_ir::OwnershipMode,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoweredExtern {
     pub abi: ExternAbi,
     pub symbol: String,
     pub params: Vec<ExternTy>,
     pub variadic: bool,
     pub ret: ExternReturn,
-    pub return_ty: Ty,
-    pub semantic_contract: ResolvedSpecDecl<Ty>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,9 +407,6 @@ impl BodyTables {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweredBody {
-    Extern {
-        signature: LoweredExtern,
-    },
     Clauses {
         clauses: Vec<LoweredClause>,
         entries: Vec<LoweredEntry>,
@@ -442,10 +436,7 @@ impl LoweredBody {
             entries,
             tables,
             ..
-        } = self
-        else {
-            return None;
-        };
+        } = self;
         match tables.definitions.get(&value)? {
             StepSite::Projection { clause, index } => Some(&clauses[*clause as usize].projections[*index as usize]),
             StepSite::Entry { entry, index } => Some(&entries[entry.as_u32() as usize].steps[*index as usize]),
@@ -463,9 +454,7 @@ impl LoweredBody {
         source: ValueId,
         permission: crate::fz_ir::ListRewritePermission,
     ) {
-        let Self::Clauses { entries, tables, .. } = self else {
-            panic!("only a clause body holds list constructions")
-        };
+        let Self::Clauses { entries, tables, .. } = self;
         let LoweredStep::List { retention, .. } = &mut entries[entry.as_u32() as usize].steps[step] else {
             panic!("a retention belongs to a list construction")
         };
@@ -483,9 +472,7 @@ impl LoweredBody {
         step: usize,
         permission: crate::fz_ir::ListRewritePermission,
     ) {
-        let Self::Clauses { entries, .. } = self else {
-            panic!("only a clause body holds list constructions")
-        };
+        let Self::Clauses { entries, .. } = self;
         let LoweredStep::List {
             retention: Some(retention),
             ..
@@ -547,9 +534,7 @@ impl ControlEntryOrigin {
 }
 
 pub(crate) fn delivered_value_joins(body: &LoweredBody) -> HashMap<ControlEntryId, DeliveredValueJoin> {
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return HashMap::new();
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
     let mut delivered_values = HashMap::new();
     for (entry_index, entry) in entries.iter().enumerate() {
         if let ControlEntryOrigin::DeliveredResume { value } = entry.origin {
@@ -717,9 +702,7 @@ impl LoweredBody {
         owner: ControlEntryId,
         mut subject: crate::dispatch_matrix::SubjectId,
     ) -> (SubjectOriginRoot, Vec<&crate::dispatch_matrix::ProjectionKind>) {
-        let Self::Clauses { entries, .. } = self else {
-            panic!("an outcome belongs to a clause body")
-        };
+        let Self::Clauses { entries, .. } = self;
         let tail = &entries[owner.as_u32() as usize].tail;
         let mut path = Vec::new();
         loop {
@@ -842,9 +825,7 @@ impl CallInputMode {
 /// left a dangling or orphaned entry would silently break this scan.
 pub(crate) fn callsite_input_modes(body: &LoweredBody) -> HashMap<CallSiteId, CallInputMode> {
     let mut out = HashMap::new();
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return out;
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
     for entry in entries {
         match &entry.tail {
             LoweredTail::DirectCall { callsite, .. } => {
@@ -871,9 +852,7 @@ pub(crate) fn callsite_input_modes(body: &LoweredBody) -> HashMap<CallSiteId, Ca
 /// makes the flat scan sound).
 pub(crate) fn callsite_call_args(body: &LoweredBody) -> HashMap<CallSiteId, Vec<CallArg>> {
     let mut out = HashMap::new();
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return out;
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
     for entry in entries {
         if let LoweredTail::DirectCall { callsite, args, .. } | LoweredTail::ClosureCall { callsite, args, .. } =
             &entry.tail

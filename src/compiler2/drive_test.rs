@@ -64,10 +64,8 @@ fn compiler2_inline_dispatch_plan_is_shared_from_lowering_to_backend() {
     let LoweredBody::Clauses {
         entries: lowered_entries,
         ..
-    } = &lowered
-    else {
-        panic!("main/0 should lower as clauses");
-    };
+    } = &lowered;
+
     let lowered_dispatch = lowered_entries
         .iter()
         .find_map(|entry| match &entry.tail {
@@ -120,9 +118,8 @@ fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
 
     let body = lowered_body(&bodies, function);
     let origins = collect_value_origins(&body, &collect_callsite_return_origins(&body));
-    let LoweredBody::Clauses { entries, .. } = &body else {
-        panic!("clause body")
-    };
+    let LoweredBody::Clauses { entries, .. } = &body;
+
     let (source, value) = entries
         .iter()
         .flat_map(|entry| &entry.steps)
@@ -271,9 +268,8 @@ fn assert_list_retention_ownership(
             "{name}: each original and reconstructed list remains immutable; native={native}"
         );
         let body = lowered_body(&bodies, function_id(&functions, function, arity));
-        let LoweredBody::Clauses { entries, .. } = &body else {
-            panic!("clause-backed reconstruction")
-        };
+        let LoweredBody::Clauses { entries, .. } = &body;
+
         let retentions = entries
             .iter()
             .flat_map(|entry| &entry.steps)
@@ -298,9 +294,8 @@ fn assert_list_retention_ownership(
             let main = lowered_body(&bodies, function_id(&functions, "main", 0));
             assert!(
                 [body, main].iter().any(|body| {
-                    let LoweredBody::Clauses { entries, .. } = body else {
-                        return false;
-                    };
+                    let LoweredBody::Clauses { entries, .. } = body;
+
                     entries.iter().any(|entry| match &entry.tail {
                         LoweredTail::DirectCall { callee, args, .. } if *callee == shared_function => {
                             args[0].ownership == crate::fz_ir::OwnershipMode::Share
@@ -334,9 +329,8 @@ fn compiler2_operand_returning_boolean_ops_retain_source_ownership() {
             need: ExecutableNeed::Value,
         });
         settle_native_product(&mut compiler, root);
-        let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, "rebuild", 1)) else {
-            panic!("clause body")
-        };
+        let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, "rebuild", 1));
+
         let permissions = entries
             .iter()
             .flat_map(|entry| &entry.steps)
@@ -418,9 +412,8 @@ fn compiler2_forwarded_constructor_descendants_share_at_each_ownership_boundary(
         ("forwarded_retained_peer", Some(("change_tail", 1)), vec![Share]),
         ("forwarded_tuple_peers", None, vec![Share, Share]),
     ] {
-        let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, name, 1)) else {
-            panic!("clause body")
-        };
+        let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, name, 1));
+
         let modes = if let Some((callee, arity)) = callee {
             let target = function_id(&functions, callee, arity);
             entries.iter().find_map(|entry| match &entry.tail {
@@ -468,9 +461,8 @@ fn compiler2_tuple_ownership_transfers_disjoint_fields_and_shares_old_owners() {
         ("duplicate", 1, vec![Share, Share]),
         ("kept", 1, vec![Share]),
     ] {
-        let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, name, arity)) else {
-            panic!("clause body")
-        };
+        let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, name, arity));
+
         let fields = entries
             .iter()
             .flat_map(|entry| &entry.steps)
@@ -525,9 +517,8 @@ fn compiler2_tuple_ownership_reads_the_body_a_fixed_number_of_times() {
     compiler.demand(Job::LowerFunction(main));
     assert_resolved(compiler.drive(), "fifty nested tuple literals lower");
 
-    let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, main) else {
-        panic!("clause body")
-    };
+    let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, main);
+
     let steps = entries.iter().map(|entry| entry.steps.len()).sum::<usize>();
     assert_eq!(
         steps, 351,
@@ -603,9 +594,7 @@ fn compiler2_join_walk_visits_each_entry_and_scope_once() {
             .collect::<Vec<_>>()
     };
 
-    let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, main) else {
-        panic!("clause body")
-    };
+    let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, main);
     assert_eq!(
         entries.len(),
         29,
@@ -678,10 +667,8 @@ fn compiler2_list_reconstruction_keeps_conditional_and_projected_rewrite_permiss
             need: ExecutableNeed::Value,
         });
         assert_eq!(compiler.run_root_interp(root), Ok(42));
-        let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, "rebuild", arity))
-        else {
-            panic!("rebuild body")
-        };
+        let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, "rebuild", arity));
+
         let permissions = entries
             .iter()
             .flat_map(|entry| &entry.steps)
@@ -724,9 +711,8 @@ fn compiler2_inline_tuple_callable_binding_keeps_its_producer_origin() {
         .find(|key| key.activation.function == main)
         .expect("main executable");
     let facts = compiler.world().executable_facts(executable).expect("main facts");
-    let LoweredBody::Clauses { entries, .. } = facts.body() else {
-        panic!("clause body")
-    };
+    let LoweredBody::Clauses { entries, .. } = facts.body();
+
     let argument = entries
         .iter()
         .find_map(|entry| match &entry.tail {
@@ -758,9 +744,8 @@ fn compiler2_inline_bitstring_recipes_have_distinct_subjects() {
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42));
     let body = lowered_body(&bodies, compiler.root_function(root));
-    let LoweredBody::Clauses { entries, .. } = body else {
-        panic!("main has a lowered body");
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
+
     let dispatch = entries
         .iter()
         .find_map(|entry| match &entry.tail {
@@ -886,9 +871,8 @@ fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
             .executable_facts(&executable.key)
             .expect("executable facts");
         let origins = collect_value_origins(facts.body(), &collect_callsite_return_origins(facts.body()));
-        let LoweredBody::Clauses { entries, .. } = facts.body() else {
-            continue;
-        };
+        let LoweredBody::Clauses { entries, .. } = facts.body();
+
         for (owner, entry) in entries.iter().enumerate() {
             let LoweredTail::Receive(receive) = &entry.tail else {
                 continue;
@@ -1452,9 +1436,14 @@ fn executable_facts_are_one_world_owned_scheduler_fact_with_exact_semantic_reads
             .expect("every materialized executable should have one World-owned fact value");
         let mut expected_reads = HashSet::from([
             FactUse::settled(FactKey::ActivationAnalyzed(executable.activation.clone())),
-            FactUse::settled(FactKey::LoweredBody(executable.activation.function)),
             FactUse::settled(FactKey::EntryDispatch(executable.activation.function)),
         ]);
+        // An extern has no lowered body -- its wire ABI comes from its
+        // contract, which ActivationAnalyzed already waited on -- so its
+        // DeriveExecutableFacts job never reads LoweredBody at all.
+        if !world.function_body_shape(executable.activation.function).is_extern() {
+            expected_reads.insert(FactUse::settled(FactKey::LoweredBody(executable.activation.function)));
+        }
         expected_reads.extend(facts.analysis().callsites.iter().map(|callsite| {
             FactUse::settled(FactKey::CallSiteSummary(CallSiteKey {
                 activation: executable.activation.clone(),
@@ -3037,16 +3026,16 @@ fn compiler2_struct_param_annotation_diagnoses_unknown_field_instead_of_dropping
 
 #[test]
 fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
-    // The extern-contract path resolves its `%Mod{...}` param through the same
-    // shared arm via `resolve_extern_signature`/`resolve_spec_decl` inside
-    // `lower_function`. Demanding LowerFunction ALONE (which never pulls the
-    // contract job) isolates lower_function's own wait-set: with the
-    // StructDefined wait, a `%NotAStruct{...}` extern param cannot resolve to a
-    // literal-order type -- it waits, the wait never settles (NotAStruct has no
-    // defstruct), and the drive terminates with the not-a-struct diagnostic.
-    // Non-vacuous for lower_function's wait: without it, lower_function would
-    // resolve the extern signature immediately in literal order and the drive
-    // would Resolve with no diagnostic.
+    // An extern's wire ABI is resolved entirely on its contract job, through
+    // `resolve_extern_signature`/`resolve_spec_decl`; it never gets a
+    // LowerFunction job at all. Demanding DeriveFunctionContract directly
+    // isolates that resolution: with the StructDefined wait, a
+    // `%NotAStruct{...}` extern param cannot resolve to a literal-order type
+    // -- it waits, the wait never settles (NotAStruct has no defstruct), and
+    // the drive terminates with the not-a-struct diagnostic. Non-vacuous:
+    // without that wait, the contract job would resolve the extern signature
+    // immediately in literal order and the drive would Resolve with no
+    // diagnostic.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -3077,20 +3066,20 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
 
     let takes = world.reference_function(ModuleId::GLOBAL, "takes", 1);
     assert!(
-        world.demand(Job::LowerFunction(takes)),
-        "lowering the extern function should be demandable"
+        world.demand(Job::DeriveFunctionContract(takes)),
+        "deriving the extern function's contract should be demandable"
     );
     assert!(
         matches!(
             super::drive::ExecutionContext::new(&mut world, &tel).drive(),
             DriveOutcome::Unresolved { .. }
         ),
-        "lowering an extern whose struct param names a non-struct should terminate, not resolve in literal order",
+        "resolving an extern whose struct param names a non-struct should terminate, not resolve in literal order",
     );
 
     let diagnostic = capture
         .last(&["fz", "diag", "error"])
-        .expect("expected a not-a-struct diagnostic from the extern lowering wait");
+        .expect("expected a not-a-struct diagnostic from the extern contract's wait");
     assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_NOT_A_STRUCT.0);
     assert_eq!(
         metadata_str(&diagnostic, "message"),
@@ -3168,9 +3157,7 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
     );
 
     let body = lowered_body(&bodies, convert);
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        panic!("convert/1 should lower as clauses");
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
 
     let field_access_order = clauses[0]
         .projections
@@ -4688,11 +4675,23 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
         lowered_body(&bodies, heap_stats_id),
         LoweredBody::Clauses { .. }
     ));
-    assert!(matches!(lowered_body(&bodies, dbg_prim_id), LoweredBody::Extern { .. }));
-    assert!(matches!(
-        lowered_body(&bodies, heap_stats_prim_id),
-        LoweredBody::Extern { .. }
-    ));
+    // An extern's wire ABI lives on its contract, resolved once by
+    // `DeriveFunctionContract`: it never gets a `LowerFunction` job, so it
+    // never appears in the lowered-body capture.
+    assert!(compiler.world().extern_wire(dbg_prim_id).is_some());
+    assert!(compiler.world().extern_wire(heap_stats_prim_id).is_some());
+    assert!(
+        outputs
+            .stops_matching(|job| matches!(job, Job::LowerFunction(function) if *function == dbg_prim_id))
+            .is_empty(),
+        "an extern should never get a LowerFunction job"
+    );
+    assert!(
+        outputs
+            .stops_matching(|job| matches!(job, Job::LowerFunction(function) if *function == heap_stats_prim_id))
+            .is_empty(),
+        "an extern should never get a LowerFunction job"
+    );
     assert!(
         bodies.take(spawn_id).is_none(),
         "unreached Kernel.spawn/1 should stay cold even though Kernel is defined"
@@ -5242,9 +5241,8 @@ fn compiler2_import_only_exact_fn_refs_lower_as_function_ids_without_provider_bo
     );
 
     let body = lowered_body(&bodies, main_id);
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        panic!("main/0 should lower as clauses");
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
+
     let has_function_ref = clauses
         .iter()
         .flat_map(|clause| clause.projections.iter())
@@ -14934,9 +14932,8 @@ fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching(
     );
 
     let body = lowered_body(&bodies, wanted_id);
-    let LoweredBody::Clauses { clauses, .. } = body else {
-        panic!("wanted/1 should lower as clauses");
-    };
+    let LoweredBody::Clauses { clauses, .. } = body;
+
     assert_eq!(clauses.len(), 2, "wanted/1 should preserve both source clauses");
     assert!(
         !clauses[0].projections.is_empty(),
@@ -15008,9 +15005,8 @@ fn compiler2_generated_lambda_body_binds_captures_as_leading_inputs() {
     );
 
     let body = lowered_body(&bodies, lambda_id);
-    let LoweredBody::Clauses { clauses, .. } = body else {
-        panic!("generated lambda should lower as clauses");
-    };
+    let LoweredBody::Clauses { clauses, .. } = body;
+
     assert_eq!(
         clauses.len(),
         1,
@@ -15064,9 +15060,8 @@ fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
     );
 
     let body = lowered_body(&bodies, main_id);
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        panic!("main/0 should lower as clauses");
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
+
     assert_eq!(
         clauses[0].projections.len(),
         0,
@@ -15128,9 +15123,7 @@ fn compiler2_lowering_routes_nontail_if_join_flow_through_delivered_resume() {
     );
 
     let body = lowered_body(&bodies, map_every_list_id);
-    let LoweredBody::Clauses { entries, .. } = body else {
-        panic!("map_every_list/4 should lower as clauses");
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
 
     let closure_join = entries.iter().find_map(|entry| match &entry.tail {
         LoweredTail::ClosureCall {
@@ -15263,9 +15256,8 @@ end
     );
 
     let body = lowered_body(&bodies, rebuild_id);
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        panic!("rebuild/1 should lower as clauses");
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
+
     let continuation = entries
         .iter()
         .find(|entry| matches!(entry.origin, ControlEntryOrigin::DeliveredResume { .. }))
@@ -18755,21 +18747,17 @@ fn sorted_extern_marshals(body: &crate::compiler2::artifact::NativeBody) -> Vec<
 }
 
 fn direct_call_in_body(body: LoweredBody, callee: FunctionId) -> (CallSiteId, ValueId) {
-    match body {
-        LoweredBody::Extern { .. } => panic!("expected clause body with a direct call"),
-        LoweredBody::Clauses { clauses, entries, .. } => {
-            for clause in &clauses {
-                if let Some(found) = direct_call_in_entry(&entries, clause.entry, callee) {
-                    return found;
-                }
-            }
-            let available = clauses
-                .iter()
-                .filter_map(|clause| direct_callee_in_entry(&entries, clause.entry))
-                .collect::<Vec<_>>();
-            panic!("direct call to {callee:?} not found in lowered body; saw {available:?}")
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
+    for clause in &clauses {
+        if let Some(found) = direct_call_in_entry(&entries, clause.entry, callee) {
+            return found;
         }
     }
+    let available = clauses
+        .iter()
+        .filter_map(|clause| direct_callee_in_entry(&entries, clause.entry))
+        .collect::<Vec<_>>();
+    panic!("direct call to {callee:?} not found in lowered body; saw {available:?}")
 }
 
 fn direct_call_in_entry(
@@ -18795,9 +18783,8 @@ fn direct_call_in_entry(
 
 /// The exact function this caller's lowered body calls.
 pub(crate) fn lowered_direct_callee(bodies: &LoweredBodyCapture, caller: FunctionId) -> Option<FunctionId> {
-    let LoweredBody::Clauses { clauses, entries, .. } = lowered_body(bodies, caller) else {
-        panic!("clause body")
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = lowered_body(bodies, caller);
+
     clauses
         .iter()
         .find_map(|clause| direct_callee_in_entry(&entries, clause.entry))
@@ -19171,13 +19158,188 @@ const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 17;
 // instead of first publishing an intermediate one, and `main/0` hears one
 // `dbg/1` return change instead of two.
 const TUPLE_LADDER_MAIN_ANALYSES: u64 = 21;
-// This is a baseline red (fz-xxd.3): main/0 measures 1 revision today because
-// an extern's un-instantiated declared return (`a0`) poses as an observation
-// and wins over the correctly-instantiated `int` (`jobs/semantic.rs:216`,
-// `:1805-1829`). The pin stays 2 -- the value fz-xxd.3's fix measures -- so
-// this constant does not bless the leak. fz-afu.2's `root_frontier` change
-// does not move this number.
-const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 2;
+// main/0 re-keys its call to `dbg/1` on `build/1`'s CURRENT return every time
+// it is re-analyzed, so a `dbg/1` activation that settles for one rung is
+// usually stale by the time main/0 reads it again -- `build/1` has already
+// climbed past it. Only once `build/1` stops moving (the ladder has widened
+// to `any`) does a `dbg/1` activation survive long enough for main/0 to
+// observe its settled return, so main/0's own return crosses `None -> Some`
+// exactly once no matter how many rungs precede it (fz-xxd.3, re-measured;
+// this constant was pinned at 2 for a fold that never happened -- lowered
+// with the same measured 1 both before and after the fix). Before fz-xxd.3
+// the count was already 1, for an unrelated reason: `fz_dbg_value`'s
+// declared, un-instantiated return (`a0`) never varied by row, so the first
+// `dbg/1` key to settle already carried that constant, wrong answer. After
+// fz-xxd.3, `dbg/1`'s return equals its own argument, so main/0's one
+// crossing now carries the correct converged answer (`any`, matching
+// `build/1`'s own settled return) instead of the leaked declared variable.
+const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 1;
+
+#[test]
+fn compiler2_extern_dbg_return_is_its_contract_applied_to_the_row() {
+    // dbg(1) calls fz_dbg_value(1), an extern declared `(t) :: t when t:
+    // any`. The extern has no body to walk, so its activation's return can
+    // only come from applying its own contract to the row it was keyed on:
+    // t's lower bound is int, so fz_dbg_value/1[int] returns int, and every
+    // caller up to main/0 returns that same int -- never the extern's own
+    // declared, un-instantiated `t`.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let modules = ModuleCapture::new();
+    modules.install(&tel);
+    let (mut compiler, root) = submit_main_root(tel, "extern_dbg_return.fz", "def main(), do: dbg(1)\n");
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("dbg(1) reaches a backend program");
+
+    let int = compiler.world_mut().types_mut().int();
+    let dbg_value_id = function_id_in_module(&functions, &modules, "Kernel", "fz_dbg_value", 1);
+    let dbg_id = function_id_in_module(&functions, &modules, "Kernel", "dbg", 1);
+    let main_id = function_id(&functions, "main", 0);
+    let dbg_value_key = ActivationKey::from_inputs(root, dbg_value_id, &[int], compiler.world_mut().types_mut());
+    let dbg_key = ActivationKey::from_inputs(root, dbg_id, &[int], compiler.world_mut().types_mut());
+    let main_key = ActivationKey::from_inputs(root, main_id, &[], compiler.world_mut().types_mut());
+
+    for (label, key) in [
+        ("Kernel.fz_dbg_value/1", &dbg_value_key),
+        ("Kernel.dbg/1", &dbg_key),
+        ("main/0", &main_key),
+    ] {
+        let observed = compiler
+            .world()
+            .activation_return(key)
+            .unwrap_or_else(|| panic!("{label} should have settled return evidence"));
+        assert!(
+            compiler.world().types().is_equivalent(&observed, &int),
+            "{label} should return int, not its extern's declared free variable; got {}",
+            compiler.world().types().display(&observed),
+        );
+    }
+}
+
+#[test]
+fn compiler2_extern_send_return_is_its_contract_applied_to_the_row() {
+    // send(self(), 1) calls fz_send(pid, 1), an extern declared `(pid |
+    // integer, t) :: t`. Here the leaked variable sits at the SECOND
+    // parameter's positional address (a1, not a0), which is the proof that
+    // what goes missing is contract application, not the source name `t`.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let modules = ModuleCapture::new();
+    modules.install(&tel);
+    let (mut compiler, root) = submit_main_root(tel, "extern_send_return.fz", "def main(), do: send(self(), 1)\n");
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("send(self(), 1) reaches a backend program");
+
+    let int = compiler.world_mut().types_mut().int();
+    let pid = compiler.world_mut().types_mut().pid();
+    let fz_send_id = function_id_in_module(&functions, &modules, "Kernel", "fz_send", 2);
+    let send_id = function_id_in_module(&functions, &modules, "Kernel", "send", 2);
+    let main_id = function_id(&functions, "main", 0);
+    let fz_send_key = ActivationKey::from_inputs(root, fz_send_id, &[pid, int], compiler.world_mut().types_mut());
+    let send_key = ActivationKey::from_inputs(root, send_id, &[pid, int], compiler.world_mut().types_mut());
+    let main_key = ActivationKey::from_inputs(root, main_id, &[], compiler.world_mut().types_mut());
+
+    for (label, key) in [
+        ("Kernel.fz_send/2", &fz_send_key),
+        ("Kernel.send/2", &send_key),
+        ("main/0", &main_key),
+    ] {
+        let observed = compiler
+            .world()
+            .activation_return(key)
+            .unwrap_or_else(|| panic!("{label} should have settled return evidence"));
+        assert!(
+            compiler.world().types().is_equivalent(&observed, &int),
+            "{label} should return int, not its extern's declared free variable; got {}",
+            compiler.world().types().display(&observed),
+        );
+    }
+}
+
+#[test]
+fn compiler2_extern_resource_return_is_its_contract_applied_to_the_row() {
+    // make_resource(1, &drop/1) calls fz_make_resource(1, &drop/1), an extern
+    // declared `(t, (t) -> nil) :: resource(t) when t: integer | c_pointer`.
+    // The payload's lower bound is int, so the activation returns
+    // resource(int) rather than resource of the extern's own declared,
+    // un-instantiated `t`.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let (mut compiler, root) = submit_main_root(
+        tel,
+        "extern_resource_return.fz",
+        "def drop(_x), do: nil\ndef main(), do: make_resource(1, &drop/1)\n",
+    );
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("make_resource(1, &drop/1) reaches a backend program");
+
+    let int = compiler.world_mut().types_mut().int();
+    let expected = compiler.world_mut().types_mut().resource(int);
+    let main_id = function_id(&functions, "main", 0);
+    let main_key = ActivationKey::from_inputs(root, main_id, &[], compiler.world_mut().types_mut());
+    let observed = compiler
+        .world()
+        .activation_return(&main_key)
+        .expect("main/0 should have settled return evidence");
+    assert!(
+        compiler.world().types().is_equivalent(&observed, &expected),
+        "main/0 should return resource(int), not resource of the extern's declared free variable; got {}",
+        compiler.world().types().display(&observed),
+    );
+}
+
+#[test]
+fn compiler2_extern_return_binds_to_each_activations_own_row() {
+    // ascending/0 and descending/0 both end with a dbg/1 call, but each
+    // activation of dbg/1 (and its fz_dbg_value/1 body) keys on the argument
+    // dbg/1 actually saw at that call site -- ascending/0 ends dbg(10.5),
+    // descending/0 ends dbg(11). Each activation's return is its own
+    // contract application, not whichever type happened to intern first.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let (mut compiler, root) = submit_main_root(
+        tel,
+        "extern_return_binds_to_caller.fz",
+        include_str!("../../fixtures/00606_extern_return_binds_to_caller.fz"),
+    );
+    compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+        .expect("the order fixture reaches a backend program");
+
+    let float = compiler.world_mut().types_mut().float();
+    let int = compiler.world_mut().types_mut().int();
+    let ascending_id = function_id(&functions, "ascending", 0);
+    let descending_id = function_id(&functions, "descending", 0);
+    let ascending_key = ActivationKey::from_inputs(root, ascending_id, &[], compiler.world_mut().types_mut());
+    let descending_key = ActivationKey::from_inputs(root, descending_id, &[], compiler.world_mut().types_mut());
+
+    let ascending_return = compiler
+        .world()
+        .activation_return(&ascending_key)
+        .expect("ascending/0 should have settled return evidence");
+    assert!(
+        compiler.world().types().is_equivalent(&ascending_return, &float),
+        "ascending/0 (dbg(11); dbg(10.5)) should return float, got {}",
+        compiler.world().types().display(&ascending_return),
+    );
+
+    let descending_return = compiler
+        .world()
+        .activation_return(&descending_key)
+        .expect("descending/0 should have settled return evidence");
+    assert!(
+        compiler.world().types().is_equivalent(&descending_return, &int),
+        "descending/0 (dbg(10.5); dbg(11)) should return int, got {}",
+        compiler.world().types().display(&descending_return),
+    );
+}
 
 #[test]
 fn compiler2_recursive_typedef_deadlocks_on_its_own_definition() {

@@ -397,9 +397,8 @@ end
         "two expansions of one definition-site lambda are distinct occurrences in the final owner"
     );
     let main = compiler.root_function(root);
-    let super::LoweredBody::Clauses { generated, .. } = &*compiler.world().lowered_body(main) else {
-        panic!("main must lower to source clauses");
-    };
+    let super::LoweredBody::Clauses { generated, .. } = &*compiler.world().lowered_body(main);
+
     assert_eq!(generated.len(), 2);
     assert_ne!(generated[0], generated[1]);
     let origins = generated

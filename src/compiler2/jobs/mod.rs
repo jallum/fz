@@ -95,6 +95,7 @@ impl Job {
             Job::DeriveRuntimeDemand(executable) => runtime_demand::derive_runtime_demand_gates(world, executable),
             Job::LowerFunction(function_id) => body::lower_function_gates(world, *function_id),
             Job::DeriveStaticCallees(function_id) => keying::derive_static_callees_gates(world, *function_id),
+            Job::AnalyzeActivation(activation) => semantic::analyze_activation_gates(world, activation),
             Job::IndexCode(_)
             | Job::DefineModule(_)
             | Job::DefineModuleInterface(_)
@@ -103,7 +104,6 @@ impl Job {
             | Job::ReifyGuardDispatch(_)
             | Job::PlanEntryDispatch(_)
             | Job::SeedActivation(_)
-            | Job::AnalyzeActivation(_)
             | Job::DeriveExecutableFacts(_)
             | Job::DeriveCallableConstructionTarget(_) => Vec::new(),
         }

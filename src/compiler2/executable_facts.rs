@@ -12,7 +12,7 @@ use crate::dispatch_matrix::demand::DispatchDemand;
 use super::artifact::ExecutableDispatch;
 use super::body::{
     CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource, LoweredBody,
-    LoweredClause, LoweredEntry, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
+    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
 };
 use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::semantic::{
@@ -27,6 +27,10 @@ use super::world::World;
 pub(crate) struct ExecutableFacts {
     pub(super) analysis: ActivationAnalysis,
     pub(super) body: LoweredBody,
+    /// The wire ABI this executable's function resolved on its contract,
+    /// once it names an extern. `None` for an ordinary function, whose
+    /// `body` above carries its clauses instead.
+    pub(super) extern_wire: Option<LoweredExtern>,
     pub(super) entry_dispatch: Option<ExecutableDispatch>,
     pub(super) callsites: HashMap<CallSiteId, CallSiteSummary>,
     pub(super) callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
@@ -42,6 +46,7 @@ pub(crate) struct ExecutableFacts {
 /// Settled semantic facts visible to RuntimeDemand; transport metadata is absent.
 pub(crate) struct RuntimeDemandFacts<'a> {
     pub(crate) body: &'a LoweredBody,
+    pub(crate) extern_wire: Option<&'a LoweredExtern>,
     pub(crate) reachable_clauses: &'a [u32],
     pub(crate) value_types: &'a HashMap<ValueId, Ty>,
     /// What this executable's own entry dispatch reads of each input.
@@ -94,6 +99,10 @@ impl ExecutableFacts {
         &self.body
     }
 
+    pub(crate) fn extern_wire(&self) -> Option<&LoweredExtern> {
+        self.extern_wire.as_ref()
+    }
+
     pub(crate) fn callsites(&self) -> &HashMap<CallSiteId, CallSiteSummary> {
         &self.callsites
     }
@@ -137,6 +146,7 @@ impl ExecutableFacts {
     ) -> RuntimeDemandFacts<'a> {
         RuntimeDemandFacts {
             body: &self.body,
+            extern_wire: self.extern_wire.as_ref(),
             reachable_clauses: self.analysis.entry_reachability.clauses(),
             value_types: &self.analysis.value_types,
             entry_dispatch_demand: self.entry_dispatch_demand(),
@@ -222,7 +232,17 @@ pub(crate) fn project_executable_facts(
     mut analysis: ActivationAnalysis,
 ) -> Rc<ExecutableFacts> {
     let activation = &executable.activation;
-    let body = (*world.lowered_body(activation.function)).clone();
+    // An extern has no lowered body -- its wire ABI lives on its contract
+    // instead, and everything downstream that walks entries and clauses sees
+    // an executable with none of either.
+    let (body, extern_wire) = if world.function_body_shape(activation.function).is_extern() {
+        (
+            LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
+            world.extern_wire(activation.function),
+        )
+    } else {
+        ((*world.lowered_body(activation.function)).clone(), None)
+    };
     let callsites: HashMap<_, _> = analysis
         .callsites
         .iter()
@@ -241,30 +261,67 @@ pub(crate) fn project_executable_facts(
         })
         .collect();
     complete_settled_call_result_types(world, &body, &callsites, &mut analysis);
-    let delivered_value_joins = delivered_value_joins(&body);
-    let callsite_return_origins = collect_callsite_return_origins(&body);
-    let value_origins = collect_value_origins(&body, &callsite_return_origins);
-    let callable_origins: HashMap<ValueId, LocalCallableProducer> = value_origins
-        .keys()
-        .filter_map(|&value| {
-            local_callable_origin(&body, &value_origins, value, &[]).map(|producer| (value, producer.clone()))
-        })
-        .collect();
-    let return_origins = collect_return_origins(&body, &analysis);
+    // An extern has no fz control flow to walk: every one of these facts
+    // about clauses and entries is empty by construction, rather than
+    // derived from an `analysis.entry_reachability` that names clause ids a
+    // body-less executable does not have.
+    let (
+        delivered_value_joins,
+        callsite_return_origins,
+        value_origins,
+        callable_origins,
+        return_origins,
+        callsite_needs,
+    ) = if extern_wire.is_some() {
+        (
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            Box::default(),
+            HashMap::new(),
+        )
+    } else {
+        let delivered_value_joins = delivered_value_joins(&body);
+        let callsite_return_origins = collect_callsite_return_origins(&body);
+        let value_origins = collect_value_origins(&body, &callsite_return_origins);
+        let callable_origins: HashMap<ValueId, LocalCallableProducer> = value_origins
+            .keys()
+            .filter_map(|&value| {
+                local_callable_origin(&body, &value_origins, value, &[]).map(|producer| (value, producer.clone()))
+            })
+            .collect();
+        let return_origins = collect_return_origins(&body, &analysis);
+        let callsite_needs = executable_callsite_needs(
+            &body,
+            analysis.entry_reachability.clauses(),
+            executable.need,
+            tel,
+            activation.function,
+        );
+        (
+            delivered_value_joins,
+            callsite_return_origins,
+            value_origins,
+            callable_origins,
+            return_origins,
+            callsite_needs,
+        )
+    };
     let entry_dispatch = executable_dispatch(world, activation.function, &analysis.entry_reachability);
     let entry_dispatch_demand = entry_dispatch
         .as_ref()
         .map(|dispatch| dispatch.plan().input_demand())
         .unwrap_or_default();
-    let callsite_needs = executable_callsite_needs(
+    let mut demand_builder = prepare_runtime_demand_type_inputs(
+        world,
+        executable,
+        &analysis,
         &body,
-        analysis.entry_reachability.clauses(),
-        executable.need,
-        tel,
-        activation.function,
+        extern_wire.as_ref(),
+        entry_dispatch_demand,
+        &callsites,
     );
-    let mut demand_builder =
-        prepare_runtime_demand_type_inputs(world, executable, &analysis, &body, entry_dispatch_demand, &callsites);
     let capture_count = world.activation_capture_count(&executable.activation);
     let capture_called_with_own_surface = captured_inputs_called_with_own_surface(&body, capture_count);
     let callable_activation_inputs = analysis
@@ -285,6 +342,7 @@ pub(crate) fn project_executable_facts(
     Rc::new(ExecutableFacts {
         analysis,
         body,
+        extern_wire,
         entry_dispatch,
         callsites,
         callsite_needs,
@@ -311,9 +369,7 @@ fn complete_settled_call_result_types(
     callsites: &HashMap<CallSiteId, CallSiteSummary>,
     analysis: &mut ActivationAnalysis,
 ) {
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return;
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
     let none = world.types_mut().none();
     for entry in entries {
         let (value, callsite) = match &entry.tail {
@@ -340,6 +396,7 @@ fn prepare_runtime_demand_type_inputs(
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     body: &LoweredBody,
+    extern_wire: Option<&LoweredExtern>,
     entry_dispatch_demand: &[DispatchDemand],
     callsites: &HashMap<CallSiteId, CallSiteSummary>,
 ) -> RuntimeDemandTypeBuilder {
@@ -354,7 +411,7 @@ fn prepare_runtime_demand_type_inputs(
             .filter(|(_, demand)| demand.asks_anything())
             .filter_map(|(index, _)| activation_inputs.get(index).copied()),
     );
-    if let LoweredBody::Extern { signature } = body {
+    if let Some(signature) = extern_wire {
         tys.extend(activation_inputs.iter().skip(signature.params.len()).copied());
     }
     for summary in callsites.values() {
@@ -363,16 +420,15 @@ fn prepare_runtime_demand_type_inputs(
             prepare_surface(world, &mut builder, &target.surface_inputs);
         }
     }
-    if let LoweredBody::Clauses { entries, .. } = body {
-        for entry in entries {
-            if let LoweredTail::ClosureCall { args, .. } = &entry.tail {
-                let actual_inputs = args
-                    .iter()
-                    .map(|arg| analysis.value_types.get(&arg.value).copied().unwrap_or(any))
-                    .collect::<Vec<_>>();
-                tys.extend(actual_inputs.iter().copied());
-                prepare_surface(world, &mut builder, &actual_inputs);
-            }
+    let LoweredBody::Clauses { entries, .. } = body;
+    for entry in entries {
+        if let LoweredTail::ClosureCall { args, .. } = &entry.tail {
+            let actual_inputs = args
+                .iter()
+                .map(|arg| analysis.value_types.get(&arg.value).copied().unwrap_or(any))
+                .collect::<Vec<_>>();
+            tys.extend(actual_inputs.iter().copied());
+            prepare_surface(world, &mut builder, &actual_inputs);
         }
     }
     for ty in tys {
@@ -496,22 +552,17 @@ fn executable_dispatch(
     function: FunctionId,
     reachability: &EntryReachability,
 ) -> Option<ExecutableDispatch> {
-    if reachability.is_direct_clause() {
+    if reachability.is_direct_clause() || world.function_body_shape(function).is_extern() {
         return None;
     }
-    match &*world.lowered_body(function) {
-        LoweredBody::Extern { .. } => None,
-        LoweredBody::Clauses { .. } => Some(ExecutableDispatch::new(
-            world.entry_dispatch(function),
-            reachability.clauses().to_vec(),
-        )),
-    }
+    Some(ExecutableDispatch::new(
+        world.entry_dispatch(function),
+        reachability.clauses().to_vec(),
+    ))
 }
 
 fn captured_inputs_called_with_own_surface(body: &LoweredBody, capture_count: usize) -> Box<[bool]> {
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return vec![false; capture_count].into_boxed_slice();
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
     (0..capture_count)
         .map(|capture_index| {
             clauses.iter().any(|clause| {
@@ -580,10 +631,7 @@ fn executable_callsite_needs(
     function: FunctionId,
 ) -> HashMap<CallSiteId, ExecutableNeed> {
     let mut needs = HashMap::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        emit_executable_facts_walk(tel, function, 0);
-        return needs;
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
     let mut walks = CallsiteNeedWalkTable::new();
     for clause_id in reachable_clauses {
         collect_clause_callsite_needs(
@@ -761,9 +809,7 @@ fn record_callsite_need(out: &mut HashMap<CallSiteId, ExecutableNeed>, callsite:
 
 pub(crate) fn collect_callsite_return_origins(body: &LoweredBody) -> HashMap<CallSiteId, TransportOrigin> {
     let mut origins = HashMap::new();
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return origins;
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
     for entry in entries {
         match entry.tail {
             LoweredTail::DirectCall { callsite, .. } => {
@@ -831,9 +877,7 @@ pub(crate) fn collect_value_origins(
     callsite_return_origins: &HashMap<CallSiteId, TransportOrigin>,
 ) -> HashMap<ValueId, TransportOrigin> {
     let mut origins = HashMap::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return origins;
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
     for clause in clauses {
         for step in &clause.projections {
             for (value, origin) in step_transport_origins(step) {
@@ -949,9 +993,7 @@ fn step_transport_origins(step: &LoweredStep) -> Vec<(ValueId, TransportOrigin)>
 }
 
 fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> Box<[TransportOrigin]> {
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return Box::default();
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
     let reachable = analysis.reachable_entries.iter().copied().collect::<HashSet<_>>();
     let mut seen = HashSet::new();
     let mut origins = Vec::new();

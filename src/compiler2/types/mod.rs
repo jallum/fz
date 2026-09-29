@@ -1445,10 +1445,10 @@ impl Types {
         self.intern(d)
     }
 
-    pub fn map_field_lookup(&mut self, a: &Ty, key: &MapKey) -> Option<Ty> {
+    pub fn field_lookup(&mut self, a: &Ty, key: &MapKey) -> Option<Ty> {
         let d = {
             let cx = self.ctx();
-            map_field_lookup(cx, cx.descr(a), key)?
+            field_lookup(cx, cx.descr(a), key)?
         };
         Some(self.intern(d))
     }
@@ -3005,8 +3005,8 @@ impl SharedTypes for Types {
         Types::refine_map_field(self, a, key, v)
     }
 
-    fn map_field_lookup(&mut self, a: &Self::Ty, key: &MapKey) -> Option<Self::Ty> {
-        Types::map_field_lookup(self, a, key)
+    fn field_lookup(&mut self, a: &Self::Ty, key: &MapKey) -> Option<Self::Ty> {
+        Types::field_lookup(self, a, key)
     }
 
     fn map_known_keys(&self, a: &Self::Ty) -> Vec<MapKey> {
@@ -3367,10 +3367,11 @@ fn tuple_field_type(cx: TyCtx<'_>, d: &Descr, index: usize) -> Descr {
     if found { out } else { Descr::none() }
 }
 
-fn map_field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
-    if d.maps.is_empty() {
-        return None;
-    }
+/// Look up `key` across every axis a field can come from: a map's declared
+/// fields, and — for the atom `value` only — a resource's payload. A resource
+/// carries no field but `value`, so any other key skips the resource axis
+/// exactly as it would a type with no resource axis at all.
+fn field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
     let mut found = false;
     let mut acc = Descr::none();
     for conj in &d.maps {
@@ -3394,6 +3395,12 @@ fn map_field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
             acc = acc.union(cx, &v);
             found = true;
         }
+    }
+    if matches!(key, MapKey::Atom(name) if name == "value")
+        && let Some(payload) = resource_payload_type(cx, d)
+    {
+        acc = acc.union(cx, &payload);
+        found = true;
     }
     if found { Some(acc) } else { None }
 }

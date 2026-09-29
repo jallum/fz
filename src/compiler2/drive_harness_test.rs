@@ -74,9 +74,7 @@ fn settle_and_dump_stage_populate_every_installed_capture() {
     let util = settled.module("Util");
     assert_eq!(settled.modules().qualified_name(util), "Util");
 
-    let LoweredBody::Clauses { .. } = settled.lowered_body(helper) else {
-        panic!("helper/1 should lower to clauses");
-    };
+    let LoweredBody::Clauses { .. } = settled.lowered_body(helper);
 
     assert!(
         !settled.callsites().all().is_empty(),

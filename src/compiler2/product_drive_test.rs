@@ -302,11 +302,22 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             // `SeedRoot(main)`'s gate chain now runs through
             // `demand_root_frontier_seeds`'s standing demand instead of the
             // blocked-waiter sweep below.
-            root_frontier: 10,
+            // fz-xxd.11: 10 -> 1. A gate detour -- a still-missing gate's own
+            // producer getting demanded instead of the job that named it --
+            // is now tallied under `gate_expansion` uniformly, whatever
+            // reason drove the call (`World::demand_producer_if_needed`),
+            // not only for `ActivationFrontier`. Nine of these ten hops were
+            // `RootFrontier`'s own gate detours; they move there.
+            root_frontier: 1,
             activation_frontier: 2,
+            // fz-xxd.11: 0 -> 17. The moved root_frontier and
+            // blocked_waiter_expansion gate detours above, landing here.
+            gate_expansion: 17,
             // fz-afu.2: 22 -> 12. The ten hops root_frontier now owns used to
             // be rediscovered through this sweep instead.
-            blocked_waiter_expansion: 12,
+            // fz-xxd.11: 12 -> 4. Eight of those hops were themselves gate
+            // detours, now tallied under `gate_expansion` instead.
+            blocked_waiter_expansion: 4,
             unclassified: 0,
             root_scans: 0,
             drain_discovery_sweeps: 0,

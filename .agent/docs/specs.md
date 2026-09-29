@@ -57,6 +57,33 @@ Compiler2 owns the active contract path:
   pattern with that kind's component cleared (`witness_escapes_kind`) — a
   cross-kind union like `:first | {:acc, a}` accepts `:first` through its
   atom member but still rejects `:third`, which no member accepts.
+- An argument column witnessed exactly `any` is IMPRECISE, not a claim that
+  the argument really can be every value: it means the call site does not
+  know that argument's type, the way Elixir reads a `dynamic()` argument.
+  `Types::match_arrow` narrows such a column, before the rest of the walk
+  ever sees it, to the clause's own declared domain — the parameter pattern
+  closed from the clause's bounds alone, the same domain
+  `ContractArrow::input_domain_row` reads for coverage — and matches on that
+  narrowed part. A column witnessed something merely PARTLY imprecise, such
+  as a union with one member outside the domain, is not `any`, so it still
+  needs the ordinary subset test to pass whole: `resource(t)` applied to a
+  handle typed `any` answers on the resource domain, but applied to
+  `integer | :weird` against an integer-only domain still violates. This is
+  a different question from arrow-SET coverage above: coverage joins several
+  CLAUSES' answers over disjoint slices of one row, which a single call to
+  `match_arrow` cannot express, so `arrow_set_covers` and
+  `ContractArrow::narrow_args` still carry that case.
+- A variadic extern's contract carries a tail domain alongside its fixed
+  parameters: the type every argument past the declared prefix must belong
+  to (`extern_contract::variadic_tail_domain`). `FunctionContract::apply`
+  widens the clause's parameter list by repeating the tail domain to the
+  observed row's length before calling `match_arrow`, so a longer row is not
+  an arity mismatch; a row shorter than the fixed prefix still is. A
+  rejected row's diagnostic renders the same widened row
+  (`FunctionContract::matched_domain_rows`, reusing
+  `ContractArrow::matched_params`): the fixed positions named individually,
+  then the tail's one type named once and marked `...`, e.g.
+  `(binary, ...int | pid | reference | c_pointer | binary)`.
 - Arrow matching is polarity-aware. A `@spec` variable collects LOWER bounds
   from its covariant occurrences (list element, tuple field, map field, resource
   payload, arrow result) and UPPER bounds from its contravariant ones (under an
@@ -93,14 +120,32 @@ Compiler2 owns the active contract path:
   two shapes apart and it masked the partial join above, since dropping a
   `{:done, []}` rung's binding suppressed the claim without saying why it was
   wrong.
-- Fatal `spec/violation` diagnostics fire only at USER callsites
-  (`function_contract_is_enforced` in `compiler2/jobs/semantic.rs`). Library
-  (bootstrap) callsites are validated for refinement but never diagnosed:
-  shared library bodies carry joined activation evidence that can pair
-  uncorrelated users into phantom argument combinations, so a correct matcher
-  verdict there would be a false diagnostic with a span inside library source.
-  The gate keys on the violation span's code and retires when activation
-  evidence becomes correlation-sound.
+- An extern activation's return evidence is its `FunctionContract` applied to
+  the activation's row, set directly rather than refined against a body
+  observation: an extern has no body to observe, so its declaration is the
+  only witness of what it returns. When the contract cannot answer for that
+  row (`Underconstrained`, or the row falls outside its domain and is not
+  itself a fatal violation) the evidence stays not-yet-known and the
+  activation waits, rather than seeding a placeholder that outlives its own
+  refinement (`compiler2/jobs/semantic.rs`; see
+  [`semantic-authorities`](semantic-authorities.md), "what does an activation
+  return"). `LoweredExtern` carries only the physical wire ABI; the wire's
+  param and result types are read from the same `FunctionContract` fact.
+- Fatal `spec/violation` diagnostics fire at every callsite of an extern:
+  its declaration is its whole definition, and the row it is checked against
+  comes straight from the one caller that made it, so a rejection is always
+  a real fault, in the declaration or in the call
+  (`function_contract_is_enforced` in `compiler2/jobs/semantic.rs`). An
+  out-of-domain row therefore never falls through to the settled-`none`
+  collapse or a native trap; it is a diagnosed compile-time fact, on every
+  door, at the exact call. For an ordinary (non-extern) function the
+  diagnostic still fires only at USER callsites. Library (bootstrap)
+  callsites are validated for refinement but never diagnosed: shared library
+  bodies carry joined activation evidence that can pair uncorrelated users
+  into phantom argument combinations, so a correct matcher verdict there
+  would be a false diagnostic with a span inside library source. The gate
+  keys on the violation span's code and retires when activation evidence
+  becomes correlation-sound.
 
   Two users of one library reducer no longer share an activation over the
   ELEMENT their lists carry: the element is part of the key wherever demand
@@ -122,9 +167,9 @@ Compiler2 owns the active contract path:
 - Kernel arithmetic (`+ - * / %`) is fully specced in
   `lib/kernel.fz`, so provably non-numeric operands at
   a user callsite (e.g. `:bad + 1`) are fatal compile-time spec violations on
-  every path. `send/2` is specced `(pid | integer, t)`: the runtime addresses
-  processes by raw integer index (`fz_send_ref` takes `receiver_pid_bits`) and
-  has no registry, so integer addressing is part of the callee's real domain.
+  every path. `send/2` is specced `(pid, t)`: the receiver is a pid, gotten
+  from `self()` or `spawn`, and an integer such as `send(1, msg)` is rejected
+  the same way.
 
 The old `src/specs` operations were removed with the old-world compiler:
 scheme matching, overload-set application, structural correspondence grouping,
@@ -145,4 +190,7 @@ cargo test --test fixture_matrix spec_violation_between_side_effects
 cargo test --test fixture_matrix spec_violation_cross_kind_union
 cargo test --test fixture_matrix spec_boundary
 cargo test --test fixture_matrix spec_mixed_protocol_concrete_violation
+cargo test --test fixture_matrix 00605_libc_abs_arg_outside_declared_domain  # extern row, no library-callsite gate
+cargo test --lib compiler2::contract_test::extern_row_outside_its_declared_contract_is_a_spec_violation
+cargo test --lib compiler2::contract_test::variadic_extern_violation_names_the_tail_domain_past_the_fixed_params
 ```

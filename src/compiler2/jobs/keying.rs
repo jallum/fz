@@ -10,7 +10,7 @@ use super::super::facts::FactUse;
 use super::super::identity::FunctionId;
 use super::super::keying::{BodyKeying, InputDemand};
 use super::super::scheduler::FatalError;
-use super::super::world::World;
+use super::super::world::{BodyShape, World};
 use crate::telemetry::TelemetryExt as _;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,27 +36,33 @@ impl StaticEdge {
 /// they can reach, so discovering one more layer of the graph costs one fact
 /// read per node rather than one body scan per node per layer (fz-kdt.56).
 /// True when `function` concludes immediately, with no gate at all: a
-/// provider boundary has no body to derive edges from, and an undefined
+/// provider boundary has no body to derive edges from, an undefined
 /// protocol callback is a leaf of the static graph by construction, never a
-/// body waiting to be lowered.
+/// body waiting to be lowered, and an extern names no fz callees -- its
+/// wire ABI lives on its contract, not a lowered body.
 fn derive_static_callees_concludes_without_body(world: &World, function: FunctionId) -> bool {
     world.function_is_provider_boundary(function)
-        || (world.function_defined_revision(function).is_none() && world.protocol_callback(function).is_some())
+        || matches!(
+            world.function_body_shape(function),
+            BodyShape::ProtocolCallback | BodyShape::Extern
+        )
 }
 
 /// The facts `derive_static_callees` cannot conclude without, once the
 /// no-body cases above are ruled out: the module that would dissolve an
-/// as-yet-undefined function's provider boundary, then the lowered body its
-/// edges come from.
+/// as-yet-undefined function's provider boundary, then the function's own
+/// definition, then the lowered body its edges come from.
 pub(super) fn derive_static_callees_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
     if derive_static_callees_concludes_without_body(world, function) {
         return Vec::new();
     }
-    if world.function_defined_revision(function).is_none() {
+    let shape = world.function_body_shape(function);
+    if let Some(gate) = shape.undefined_gate(function) {
         let module = world.function_module(function);
         if !module.is_global() && world.module_defined_revision(module).is_none() {
             return vec![FactKey::ModuleDefined(module)];
         }
+        return vec![gate];
     }
     let lowered = FactKey::LoweredBody(function);
     if !world.has_fact(&lowered) {
@@ -79,15 +85,28 @@ pub(super) fn derive_static_callees(world: &mut World, function: FunctionId) -> 
             vec![FactKey::FunctionDefined(function), FactKey::ModuleDefined(module)],
         ));
     }
-    if world.function_defined_revision(function).is_none() && world.protocol_callback(function).is_some() {
-        // A protocol callback is dispatched through, never lowered: it is
-        // a leaf of the static graph, not a wait that would never resolve.
-        return Ok(publish_static_callees(
-            world,
-            function,
-            Vec::new(),
-            vec![FactKey::FunctionDefined(function)],
-        ));
+    match world.function_body_shape(function) {
+        BodyShape::ProtocolCallback => {
+            // A protocol callback is dispatched through, never lowered: it is
+            // a leaf of the static graph, not a wait that would never resolve.
+            return Ok(publish_static_callees(
+                world,
+                function,
+                Vec::new(),
+                vec![FactKey::FunctionDefined(function)],
+            ));
+        }
+        BodyShape::Extern => {
+            // An extern names no fz callees: its wire ABI lives on its
+            // contract, and it never gets a lowered body to derive edges from.
+            return Ok(publish_static_callees(
+                world,
+                function,
+                Vec::new(),
+                vec![FactKey::FunctionDefined(function)],
+            ));
+        }
+        BodyShape::Unknown | BodyShape::Clauses => {}
     }
 
     if let Some(gate) = derive_static_callees_gates(world, function).into_iter().next() {
@@ -180,11 +199,18 @@ pub(super) fn derive_call_graph_component_gates(world: &World, function: Functio
     if world.function_is_provider_boundary(function) {
         return Vec::new();
     }
+    let shape = world.function_body_shape(function);
+    if let Some(gate) = shape.undefined_gate(function) {
+        return vec![gate];
+    }
     let mut gates = Vec::new();
     if !world.has_fact(&FactKey::StaticCallees(function)) {
         gates.push(FactKey::StaticCallees(function));
     }
-    if !world.has_fact(&FactKey::LoweredBody(function)) {
+    // Only `Clauses` ever gets a `LowerFunction` job: a protocol callback
+    // stays undefined forever, and an extern's wire ABI lives on its
+    // contract, so neither has a body to gate on here.
+    if matches!(shape, BodyShape::Clauses) && !world.has_fact(&FactKey::LoweredBody(function)) {
         gates.push(FactKey::LoweredBody(function));
     }
     gates
@@ -214,12 +240,16 @@ pub(super) fn derive_call_graph_component(world: &mut World, function: FunctionI
     // Identity consumption is a property of this body alone, so it rides the
     // same conclusion rather than the graph walk -- but it needs the body,
     // which a `StaticCallees` fact published for an undefined protocol
-    // callback does not imply.
-    let lowered = FactKey::LoweredBody(function);
-    if !world.has_fact(&lowered) {
-        waits.insert(lowered);
-    } else {
-        reads.push(lowered);
+    // callback does not imply. A protocol callback and an extern both have
+    // no body to wait for: their identity consumption is false by
+    // construction (checked below without reading one).
+    if matches!(world.function_body_shape(function), BodyShape::Clauses) {
+        let lowered = FactKey::LoweredBody(function);
+        if !world.has_fact(&lowered) {
+            waits.insert(lowered);
+        } else {
+            reads.push(lowered);
+        }
     }
     if !waits.is_empty() {
         return Ok(JobEffects {
@@ -295,17 +325,19 @@ fn body_consumes_callable_identity(world: &World, function: FunctionId) -> bool 
     {
         return true;
     }
-    match &*world.lowered_body(function) {
-        LoweredBody::Extern { .. } => false,
-        LoweredBody::Clauses { clauses, entries, .. } => {
-            let step_constructs = |step: &LoweredStep| matches!(step, LoweredStep::Lambda { .. });
-            entries.iter().any(|entry| {
-                matches!(entry.tail, LoweredTail::ClosureCall { .. }) || entry.steps.iter().any(step_constructs)
-            }) || clauses
-                .iter()
-                .any(|clause| clause.projections.iter().any(step_constructs))
-        }
+    if !matches!(world.function_body_shape(function), BodyShape::Clauses) {
+        // A protocol callback or an extern has no fz body to construct or
+        // call through: neither captures nor dispatches callable identity.
+        return false;
     }
+    let LoweredBody::Clauses { clauses, entries, .. } = &*world.lowered_body(function);
+    let step_constructs = |step: &LoweredStep| matches!(step, LoweredStep::Lambda { .. });
+    entries
+        .iter()
+        .any(|entry| matches!(entry.tail, LoweredTail::ClosureCall { .. }) || entry.steps.iter().any(step_constructs))
+        || clauses
+            .iter()
+            .any(|clause| clause.projections.iter().any(step_constructs))
 }
 
 /// One node of the input-demand graph: a body's OWN dispatch demand, and the
@@ -591,9 +623,7 @@ impl<'w> ForwardingWalk<'w> {
 /// which is why the callee slot is the argument index.
 fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> Vec<ForwardEdge> {
     let body = world.lowered_body(function);
-    let LoweredBody::Clauses { entries, .. } = &*body else {
-        return Vec::new();
-    };
+    let LoweredBody::Clauses { entries, .. } = &*body;
     let slots_of = input_positions(&body, input_count)
         .into_iter()
         .map(|(value, positions)| {
@@ -675,9 +705,7 @@ fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> 
 fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> Vec<DispatchDemand> {
     let mut mask = vec![DispatchDemand::Ignore; input_count];
     let body = world.lowered_body(function);
-    let LoweredBody::Clauses { clauses, entries, .. } = &*body else {
-        return mask;
-    };
+    let LoweredBody::Clauses { clauses, entries, .. } = &*body;
     let origins = input_positions(&body, input_count);
     let rebuilt = recursion_supplied_positions(function, entries, &origins, input_count);
     for (slot, path) in returned_values(&body, clauses, entries)
@@ -838,9 +866,7 @@ fn collect_rebuild_obligations(
 /// `forwarded_inputs` records.
 fn input_positions(body: &LoweredBody, input_count: usize) -> HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>> {
     use super::super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
-    let LoweredBody::Clauses { clauses, .. } = body else {
-        return HashMap::new();
-    };
+    let LoweredBody::Clauses { clauses, .. } = body;
     let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
     let mut positions = HashMap::<ValueId, Vec<(usize, Vec<DemandPathStep>)>>::new();
     for clause in clauses {
@@ -1092,17 +1118,13 @@ fn strong_component(function: FunctionId, graph: &HashMap<FunctionId, Vec<Functi
 
 fn static_edges(body: &LoweredBody) -> Vec<StaticEdge> {
     let mut edges = Vec::new();
-    match body {
-        LoweredBody::Extern { .. } => {}
-        LoweredBody::Clauses { clauses, entries, .. } => {
-            for clause in clauses {
-                collect_step_edges(&clause.projections, &mut edges);
-            }
-            for entry in entries {
-                collect_step_edges(&entry.steps, &mut edges);
-                collect_tail_edges(&entry.tail, &mut edges);
-            }
-        }
+    let LoweredBody::Clauses { clauses, entries, .. } = body;
+    for clause in clauses {
+        collect_step_edges(&clause.projections, &mut edges);
+    }
+    for entry in entries {
+        collect_step_edges(&entry.steps, &mut edges);
+        collect_tail_edges(&entry.tail, &mut edges);
     }
     edges.sort_by_key(|edge| {
         let rank = match edge {
