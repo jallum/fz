@@ -20025,7 +20025,7 @@ fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
 /// cold compile. `RETURN_WIDENING_BUDGET` is 8 strict ascents before the join
 /// widens the growing spine and twice that before it stores `any`; the ladder
 /// climbs past both, so `build/1`'s one activation is analyzed 19 times and its
-/// return revised 17, and `main/0` is re-analyzed 22 times for a return that
+/// return revised 17, and `main/0` is re-analyzed 21 times for a return that
 /// moves twice.
 ///
 /// These are whole-compile totals, not the ladder's own round counter. A rebase
@@ -20034,7 +20034,11 @@ fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
 /// warm or re-driven world counts the epochs together while `ascents` does not.
 const TUPLE_LADDER_BUILD_ANALYSES: u64 = 19;
 const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 17;
-const TUPLE_LADDER_MAIN_ANALYSES: u64 = 22;
+// fz-afu.10: 22 -> 21. `dbg/1`'s first activation now re-runs only after its
+// callee `fz_dbg_value/1` has been analyzed, so it publishes its return once
+// instead of first publishing an intermediate one, and `main/0` hears one
+// `dbg/1` return change instead of two.
+const TUPLE_LADDER_MAIN_ANALYSES: u64 = 21;
 // This is a baseline red (fz-xxd.3): main/0 measures 1 revision today because
 // an extern's un-instantiated declared return (`a0`) poses as an observation
 // and wins over the correctly-instantiated `int` (`jobs/semantic.rs:216`,
