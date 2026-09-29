@@ -1,7 +1,9 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-xxd.12"
+  ],
   "created": "2026-09-28T15:13:25Z",
   "description": "North star: compile work proportional to input; things nothing uses create no work or artifacts.\n\nFact (HEAD 5ea6a5830): an extern no caller reaches runs 4 jobs (ExpandFunctionSource, DefineFunction, DeriveStaticCallees, DeriveInputDemand). `def main(), do: 1 + 2` touches fz_op_add_if/ff through the unselected clauses of Kernel.+/2 (lib/kernel.fz:291-293); 00420 has 19 such externs. Cause: StaticCallees, CallGraphComponent/Recursive and InputDemand are whole-function summaries built from every clause before any activation exists.\n\nDesign (approved proposal ../fz-xxd.10.html, artifact MCMss4qzGKDSW4tKXf8xbL):\n1. StaticCallees(f) becomes ClauseCalls(f): per clause, its calls, each with a static row (Const -\u003e the literal's type; own param -\u003e its pattern refinement from calculate_dispatch_reachability(plan, any-row).outcome_inputs; else any). Gates LoweredBody(f), EntryDispatch(f).\n2. Recursive, CallGraphComponent and InputDemand are keyed by a ClauseScope (function + clause set = reach(EntryDispatch(f), row)). Only analysed rows ask (call-site keying, SeedRoot/root backend, callable target, normalize_contributions, transport via the executable's entry_reachability).\n3. Walks step by scope: a call from a clause to g with static row R visits (g, reach(g, R)) through ClauseCalls(g).\n4. ForwardingWalk walks callee scopes inline (body facts only); the concluded-leaf read and partner case go.\n5. Assertion: reach(f, widened key) == reach(f, row).\n\nPredicted traces (tests pin them): `1 + 2` 144 -\u003e 134 jobs, no job names fz_op_add_if/ff; count (xxd10/count_recursive.fz) 163 -\u003e 152, fz_op_sub_fi keeps exactly 3 jobs; walk_typed 43 -\u003e 43, Recursive(walk,{0}) = false, no recursive_group search for walk.\n\nDone when: `1 + 2` runs no job for an unreached function; every function that still gets a job is named by a static row (census shows which); every pin that rises comes from a distinct analysed scope and is approved.",
   "id": "fz-xxd.10",
@@ -11,5 +13,5 @@
   "status": "in_progress",
   "title": "Nothing unused creates work: a static edge exists only from a clause dispatch can select",
   "type": "bug",
-  "updated_at": "2026-09-29T13:56:58Z"
+  "updated_at": "2026-09-29T13:57:06Z"
 }
