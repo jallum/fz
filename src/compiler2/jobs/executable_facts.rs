@@ -7,7 +7,11 @@ use super::super::scheduler::FatalError;
 use super::super::semantic::CallSiteKey;
 use super::super::world::World;
 
-pub(super) fn derive_executable_facts(world: &mut World, executable: &ExecutableKey) -> Result<JobEffects, FatalError> {
+pub(super) fn derive_executable_facts(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    executable: &ExecutableKey,
+) -> Result<JobEffects, FatalError> {
     let activation = &executable.activation;
     let analyzed = FactKey::ActivationAnalyzed(activation.clone());
     if !world.fact_is_settled(&analyzed) {
@@ -45,7 +49,7 @@ pub(super) fn derive_executable_facts(world: &mut World, executable: &Executable
         });
     }
 
-    let facts = project_executable_facts(world, executable, analysis);
+    let facts = project_executable_facts(world, tel, executable, analysis);
     let fact = FactKey::ExecutableFacts(executable.clone());
     let changed = world.define_executable_facts(executable.clone(), facts);
     Ok(JobEffects {

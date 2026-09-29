@@ -217,6 +217,7 @@ impl RuntimeDemandTypeBuilder {
 /// function owns only value construction.
 pub(crate) fn project_executable_facts(
     world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     executable: &ExecutableKey,
     mut analysis: ActivationAnalysis,
 ) -> Rc<ExecutableFacts> {
@@ -255,7 +256,13 @@ pub(crate) fn project_executable_facts(
         .as_ref()
         .map(|dispatch| dispatch.plan().input_demand())
         .unwrap_or_default();
-    let callsite_needs = executable_callsite_needs(&body, analysis.entry_reachability.clauses(), executable.need);
+    let callsite_needs = executable_callsite_needs(
+        &body,
+        analysis.entry_reachability.clauses(),
+        executable.need,
+        tel,
+        activation.function,
+    );
     let mut demand_builder =
         prepare_runtime_demand_type_inputs(world, executable, &analysis, &body, entry_dispatch_demand, &callsites);
     let capture_count = world.activation_capture_count(&executable.activation);
@@ -523,18 +530,71 @@ fn captured_inputs_called_with_own_surface(body: &LoweredBody, capture_count: us
         .collect()
 }
 
+/// One walk's memo: an entry reached again with the same outgoing need
+/// answers with the same tuple arity it already recorded, because that
+/// answer is derived from nothing else. The first arrival walks and records
+/// the answer (including its callsite need, via [`record_callsite_need`]); a
+/// later arrival with an equal outgoing need reuses the stored answer and
+/// walks nothing below it. The table lives for one
+/// [`executable_callsite_needs`] call and is never published.
+#[derive(Default)]
+struct CallsiteNeedWalkTable {
+    answers: HashMap<(ControlEntryId, ExecutableNeed), Option<usize>>,
+    /// How many entries this walk actually visited, as opposed to answered
+    /// from the memo. [`emit_executable_facts_walk`] reports it.
+    entries_walked: u64,
+}
+
+impl CallsiteNeedWalkTable {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, key: &(ControlEntryId, ExecutableNeed)) -> Option<Option<usize>> {
+        self.answers.get(key).copied()
+    }
+
+    fn record(&mut self, key: (ControlEntryId, ExecutableNeed), answer: Option<usize>) {
+        self.answers.insert(key, answer);
+        self.entries_walked += 1;
+    }
+}
+
+/// How many distinct (entry, outgoing need) pairs this walk actually
+/// visited. A join reached again with a need the walk table already answered
+/// costs nothing further, so this count grows with the entries the body
+/// contains rather than with the number of paths that reach them.
+fn emit_executable_facts_walk(tel: &impl crate::telemetry::Telemetry, function: FunctionId, entries_walked: u64) {
+    tel.dispatch(
+        &["fz", "compiler2", "executable_facts", "walk"],
+        &crate::measurements! { entries_walked: entries_walked },
+        &crate::metadata! { function_id: u64::from(function.as_u32()) },
+    );
+}
+
 fn executable_callsite_needs(
     body: &LoweredBody,
     reachable_clauses: &[u32],
     executable_need: ExecutableNeed,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
 ) -> HashMap<CallSiteId, ExecutableNeed> {
     let mut needs = HashMap::new();
     let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        emit_executable_facts_walk(tel, function, 0);
         return needs;
     };
+    let mut walks = CallsiteNeedWalkTable::new();
     for clause_id in reachable_clauses {
-        collect_clause_callsite_needs(&clauses[*clause_id as usize], entries, executable_need, &mut needs);
+        collect_clause_callsite_needs(
+            &clauses[*clause_id as usize],
+            entries,
+            executable_need,
+            &mut needs,
+            &mut walks,
+        );
     }
+    emit_executable_facts_walk(tel, function, walks.entries_walked);
     needs
 }
 
@@ -543,8 +603,9 @@ fn collect_clause_callsite_needs(
     entries: &[LoweredEntry],
     executable_need: ExecutableNeed,
     out: &mut HashMap<CallSiteId, ExecutableNeed>,
+    walks: &mut CallsiteNeedWalkTable,
 ) {
-    collect_entry_callsite_needs(entries, clause.entry, executable_need, out);
+    collect_entry_callsite_needs(entries, clause.entry, executable_need, out, walks);
 }
 
 fn collect_entry_callsite_needs(
@@ -552,12 +613,22 @@ fn collect_entry_callsite_needs(
     entry_id: ControlEntryId,
     outgoing_need: ExecutableNeed,
     out: &mut HashMap<CallSiteId, ExecutableNeed>,
+    walks: &mut CallsiteNeedWalkTable,
 ) -> Option<usize> {
+    // What this entry answers depends only on itself and the need flowing out
+    // of it. A join reached again with the same outgoing need answers with
+    // the arity it already recorded -- walking it again would record nothing
+    // new (`record_callsite_need` joins by union), so the second arrival just
+    // returns the stored answer.
+    let key = (entry_id, outgoing_need);
+    if let Some(answer) = walks.get(&key) {
+        return answer;
+    }
     let entry = &entries[entry_id.as_u32() as usize];
     let mut tuple_demands = HashMap::new();
     match &entry.tail {
         LoweredTail::Value { value, dest } => {
-            if let Some(arity) = destination_need(entries, dest, outgoing_need, out) {
+            if let Some(arity) = destination_need(entries, dest, outgoing_need, out, walks) {
                 tuple_demands.insert(*value, arity);
             }
         }
@@ -567,7 +638,7 @@ fn collect_entry_callsite_needs(
         | LoweredTail::ClosureCall {
             value, callsite, dest, ..
         } => {
-            let need = destination_need(entries, dest, outgoing_need, out)
+            let need = destination_need(entries, dest, outgoing_need, out, walks)
                 .map(ExecutableNeed::TupleFields)
                 .unwrap_or(ExecutableNeed::Value);
             record_callsite_need(out, *callsite, need);
@@ -578,21 +649,21 @@ fn collect_entry_callsite_needs(
         LoweredTail::If {
             then_entry, else_entry, ..
         } => {
-            let _ = collect_entry_callsite_needs(entries, *then_entry, outgoing_need, out);
-            let _ = collect_entry_callsite_needs(entries, *else_entry, outgoing_need, out);
+            let _ = collect_entry_callsite_needs(entries, *then_entry, outgoing_need, out, walks);
+            let _ = collect_entry_callsite_needs(entries, *else_entry, outgoing_need, out, walks);
         }
         LoweredTail::Dispatch { dispatch, .. } => {
             for edge in &dispatch.outcomes {
-                let _ = collect_entry_callsite_needs(entries, edge.target, outgoing_need, out);
+                let _ = collect_entry_callsite_needs(entries, edge.target, outgoing_need, out, walks);
             }
-            let _ = collect_entry_callsite_needs(entries, dispatch.miss_entry, outgoing_need, out);
+            let _ = collect_entry_callsite_needs(entries, dispatch.miss_entry, outgoing_need, out, walks);
         }
         LoweredTail::Receive(receive) => {
             for clause in &receive.outcomes {
-                let _ = collect_entry_callsite_needs(entries, clause.target, outgoing_need, out);
+                let _ = collect_entry_callsite_needs(entries, clause.target, outgoing_need, out, walks);
             }
             if let Some(after) = &receive.after {
-                let _ = collect_entry_callsite_needs(entries, after.entry, outgoing_need, out);
+                let _ = collect_entry_callsite_needs(entries, after.entry, outgoing_need, out, walks);
             }
         }
         LoweredTail::Halt { .. } => {}
@@ -640,10 +711,12 @@ fn collect_entry_callsite_needs(
             | LoweredStep::AssertBitstringDone { .. } => {}
         }
     }
-    entry
+    let answer = entry
         .origin
         .input_value()
-        .and_then(|value| tuple_demands.remove(&value))
+        .and_then(|value| tuple_demands.remove(&value));
+    walks.record(key, answer);
+    answer
 }
 
 fn destination_need(
@@ -651,13 +724,16 @@ fn destination_need(
     dest: &ControlDestination,
     outgoing_need: ExecutableNeed,
     out: &mut HashMap<CallSiteId, ExecutableNeed>,
+    walks: &mut CallsiteNeedWalkTable,
 ) -> Option<usize> {
     match dest {
         ControlDestination::Return => match outgoing_need {
             ExecutableNeed::Value => None,
             ExecutableNeed::TupleFields(arity) => Some(arity),
         },
-        ControlDestination::Deliver(entry_id) => collect_entry_callsite_needs(entries, *entry_id, outgoing_need, out),
+        ControlDestination::Deliver(entry_id) => {
+            collect_entry_callsite_needs(entries, *entry_id, outgoing_need, out, walks)
+        }
     }
 }
 

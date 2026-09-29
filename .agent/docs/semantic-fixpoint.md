@@ -91,7 +91,12 @@ Clause reachability is a pure compiler2 calculation over the entry
 `PatternDispatchPlan`, the shared `Types`, and one input row at a time —
 `AnalyzeActivation` dispatches and analyzes each row independently and merges
 only post-analysis results (reachable clauses by set union, failure by OR,
-return evidence by join, call emissions by coalescing). Branch states retain
+return evidence by join, call emissions by coalescing). Within one row's walk,
+every control-flow entry is visited once per distinct delivered scope: an
+`if`/`case`/`cond`/`with` construct's shared resume entry answers once for
+each scope an arm reaches it with, not once per arriving arm, because every
+recorder the walk fills is itself a lattice join and a repeat visit with the
+same scope records nothing new. Branch states retain
 root input `Ty` values and subject-indexed empty/cons list-shape evidence;
 the graph node and this full state form the visited key. Edge proofs refine
 the roots and list-shape evidence. Each plan-owned `SubjectId`'s type is projected
