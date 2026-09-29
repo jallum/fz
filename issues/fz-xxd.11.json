@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-29T11:57:04Z",
   "created": "2026-09-28T15:16:03Z",
   "description": "Approved 2026-09-28 (proposal https://claude.ai/artifact/KX4zrM7YzBAhGr42RJoYzx, also ../fz-extern-no-body.html).\n\nWhy: after fz-xxd.3 an extern's declaration is resolved once, by DeriveFunctionContract, but LowerFunction still runs per lowered extern only to package LoweredBody::Extern { LoweredExtern } from the surface + contract (jobs/body.rs:1210-1215, 1299-1348, 349-430). Two jobs where one does; it is why .3 raised the 00181/00420/00567/00571 pins.\n\nDesign: derive_function_contract also builds the extern's wire ABI (abi, symbol, variadic, params, ret), using resolve_extern_signature/resolve_extern_abi/extern_abi_error/extern_wire_ty/extern_param_wire/extern_return_wire moved unchanged from jobs/body.rs to jobs/contract.rs; a refused ABI is refused there as a diagnostic. An extern has no LoweredBody: wire-ABI readers (backend.rs:617, native.rs:129/242/4895, artifact.rs:1226, transport.rs:607/1647/1658/1990, runtime_demand.rs:1169) read it from the contract; body-existence readers (keying.rs:61-65/97-131/187, semantic.rs:2037, executable_facts.rs) answer 'no body' from the surface or read the contract's arity. Not adopted: keeping LoweredBody::Extern with a second producer.\n\nAnalyzeActivation start gate (approved 2026-09-28): a caller's wait on an extern's LoweredBody used to delay publishing the extern's activation until its EntryDispatch existed -- an accidental barrier. With that wait gone, each called extern's AnalyzeActivation starts before its own EntryDispatch, blocks, and changes nothing (probe on 00420: 10 such runs, and the 10 new EntryDispatch wakes). AnalyzeActivation has no missing_gates arm (jobs/mod.rs:106). It gains one, per the fz-afu.2 rule that a job never starts before its inputs exist: FunctionDefined, EntryDispatch(function), and LoweredBody for a non-extern; the in-job waits for those facts go away. Not adopted: a caller-side wait on the extern's EntryDispatch (it rebuilds the accidental barrier).\n\nRemoval ledger: LoweredBody::Extern and every extern match arm; the extern branch of lower(); the FunctionContract gate in lower_function_gates added by .3; the extern contract read in lower_function (body.rs:268-276); one LowerFunction job per lowered extern; the in-job wait_on_current gates at the top of analyze_activation that missing_gates now covers.\n\nPrediction: every pin falls by exactly one job per lowered extern; bounds 00181 \u003c= 282, 00420 census \u003c= 2743, 00567 \u003c= 735, 00571 \u003c= 1152. Builder measures the exact extern LowerFunction count per fixture first and states exact predictions before building. No pin may rise.\n\nDone when: all doors green (variadic, c_int, resource, spec/violation fixtures included), full gate green, every moved pin a drop with its mechanism.",
   "id": "fz-xxd.11",
   "labels": [],
   "parent": "fz-xxd",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "An extern has no body: its contract job builds its wire ABI",
   "type": "bug",
-  "updated_at": "2026-09-28T22:30:08Z"
+  "updated_at": "2026-09-29T11:57:04Z"
 }
