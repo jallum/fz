@@ -144,6 +144,8 @@ mod fixture_facts;
 #[cfg(test)]
 mod frontdoor_test;
 #[cfg(test)]
+mod gated_job_starts_test;
+#[cfg(test)]
 mod namespace_test;
 #[cfg(test)]
 mod native_inventory_test;

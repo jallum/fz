@@ -34,11 +34,37 @@ impl StaticEdge {
 /// next -- walk these facts instead of re-extracting edges from every body
 /// they can reach, so discovering one more layer of the graph costs one fact
 /// read per node rather than one body scan per node per layer (fz-kdt.56).
-pub(super) fn derive_static_callees(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    function: FunctionId,
-) -> Result<JobEffects, FatalError> {
+/// True when `function` concludes immediately, with no gate at all: a
+/// provider boundary has no body to derive edges from, and an undefined
+/// protocol callback is a leaf of the static graph by construction, never a
+/// body waiting to be lowered.
+fn derive_static_callees_concludes_without_body(world: &World, function: FunctionId) -> bool {
+    world.function_is_provider_boundary(function)
+        || (world.function_defined_revision(function).is_none() && world.protocol_callback(function).is_some())
+}
+
+/// The facts `derive_static_callees` cannot conclude without, once the
+/// no-body cases above are ruled out: the module that would dissolve an
+/// as-yet-undefined function's provider boundary, then the lowered body its
+/// edges come from.
+pub(super) fn derive_static_callees_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
+    if derive_static_callees_concludes_without_body(world, function) {
+        return Vec::new();
+    }
+    if world.function_defined_revision(function).is_none() {
+        let module = world.function_module(function);
+        if !module.is_global() && world.module_defined_revision(module).is_none() {
+            return vec![FactKey::ModuleDefined(module)];
+        }
+    }
+    let lowered = FactKey::LoweredBody(function);
+    if !world.has_fact(&lowered) {
+        return vec![lowered];
+    }
+    Vec::new()
+}
+
+pub(super) fn derive_static_callees(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
     if world.function_is_provider_boundary(function) {
         // A provider boundary has an interface but no body in this program:
         // no edges. The boundary test is not monotone -- a definition landing
@@ -52,42 +78,22 @@ pub(super) fn derive_static_callees(
             vec![FactKey::FunctionDefined(function), FactKey::ModuleDefined(module)],
         ));
     }
-    if world.function_defined_revision(function).is_none() {
-        if world.protocol_callback(function).is_some() {
-            // A protocol callback is dispatched through, never lowered: it is
-            // a leaf of the static graph, not a wait that would never resolve.
-            return Ok(publish_static_callees(
-                world,
-                function,
-                Vec::new(),
-                vec![FactKey::FunctionDefined(function)],
-            ));
-        }
-        let module = world.function_module(function);
-        if !module.is_global() && world.module_defined_revision(module).is_none() {
-            // Demand the scope that produces the `ModuleDefined` this site
-            // waits on, not the body: `ensure_runtime_module`
-            // mints a runtime module's code the first time the call graph
-            // reaches it, instead of leaving that submission to whenever
-            // `Job::DefineModule` happens to run. `ModuleDefined`'s sole
-            // producer arm is `Job::DefineModule`; `demand_function_scope`'s
-            // only other branch (`CodeScoped`, for `module.is_global()`) is
-            // ruled out by the guard above.
-            super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(module);
-            return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(module)));
-        }
+    if world.function_defined_revision(function).is_none() && world.protocol_callback(function).is_some() {
+        // A protocol callback is dispatched through, never lowered: it is
+        // a leaf of the static graph, not a wait that would never resolve.
+        return Ok(publish_static_callees(
+            world,
+            function,
+            Vec::new(),
+            vec![FactKey::FunctionDefined(function)],
+        ));
+    }
+
+    if let Some(gate) = derive_static_callees_gates(world, function).into_iter().next() {
+        return Ok(JobEffects::wait_on_current(gate));
     }
 
     let lowered = FactKey::LoweredBody(function);
-    if !world.has_fact(&lowered) {
-        // One wait, for the one fact this derivation reads. `LoweredBody`'s
-        // sole producer arm is `Job::LowerFunction`, and the chain behind it
-        // (`DefineFunction` -> `ExpandFunctionSource` -> `demand_function_scope`)
-        // is what scopes the code the body comes from. Waiting on
-        // `FunctionDefined` first, as a separate rung, would buy nothing but
-        // one more blocked evaluation per function.
-        return Ok(JobEffects::wait_on_current(lowered));
-    }
     let mut reads = vec![FactKey::FunctionDefined(function), lowered];
     let callees = body_static_callees(world, function, &mut reads);
     Ok(publish_static_callees(world, function, callees, reads))
@@ -161,6 +167,28 @@ fn publish_static_callees(
 /// Lambda creation is a static edge from the owner to the generated function,
 /// so recursion through generated closures is handled the same way as direct
 /// or mutual recursion.
+/// The facts `derive_call_graph_component` cannot conclude without, for
+/// `function` itself: its own static edges, and its own lowered body. Both
+/// are named from `function` alone, so the scheduler checks them before ever
+/// starting a never-run `DeriveCallGraphComponent` (`Job::missing_gates`). A
+/// callee's own `StaticCallees`, reached by the walk `collect_static_graph`
+/// runs below, is a wait the walk DISCOVERS -- it depends on which edges this
+/// body turns out to have, not on `function` alone -- so it is not named
+/// here.
+pub(super) fn derive_call_graph_component_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
+    if world.function_is_provider_boundary(function) {
+        return Vec::new();
+    }
+    let mut gates = Vec::new();
+    if !world.has_fact(&FactKey::StaticCallees(function)) {
+        gates.push(FactKey::StaticCallees(function));
+    }
+    if !world.has_fact(&FactKey::LoweredBody(function)) {
+        gates.push(FactKey::LoweredBody(function));
+    }
+    gates
+}
+
 pub(super) fn derive_call_graph_component(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
     if world.function_is_provider_boundary(function) {
         // No body in this program: no edges, so the component is the function
@@ -333,6 +361,31 @@ struct ForwardEdge {
 ///
 /// The LOCAL half publishes beside the forwarded one, because brand erasure
 /// asks the local question and only the local question (see [`InputDemand`]).
+/// The facts `derive_input_demand` cannot conclude without, for `function`
+/// itself: its own static edges, then -- once neither a protocol callback nor
+/// a bodyless conclusion applies -- its own entry dispatch plan. A callee's
+/// own gates, reached by `collect_input_forwarding_graph`'s recursion below,
+/// are waits the walk DISCOVERS, not named here (same reasoning as
+/// `derive_call_graph_component_gates`).
+pub(super) fn derive_input_demand_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
+    let callees = FactKey::StaticCallees(function);
+    if !world.has_fact(&callees) {
+        return vec![callees];
+    }
+    if world.protocol_callback(function).is_some() {
+        return Vec::new();
+    }
+    let lowered = FactKey::LoweredBody(function);
+    if world.function_is_provider_boundary(function) || !world.has_fact(&lowered) {
+        return Vec::new();
+    }
+    let dispatch = FactKey::EntryDispatch(function);
+    if !world.has_fact(&dispatch) {
+        return vec![dispatch];
+    }
+    Vec::new()
+}
+
 pub(super) fn derive_input_demand(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,

@@ -1664,6 +1664,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
             ("producer_pokes", session.producer_pokes()),
             ("work_starts_ignition", work_starts.ignition),
             ("work_starts_changed_revision_wake", work_starts.changed_revision_wake),
+            ("work_starts_root_frontier", work_starts.root_frontier),
             ("work_starts_activation_frontier", work_starts.activation_frontier),
             (
                 "work_starts_blocked_waiter_expansion",
