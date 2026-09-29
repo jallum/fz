@@ -1721,7 +1721,16 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // A job gated on a fact its subject already carries never starts to
     // discover that fact missing, then wake once the fact lands
     // (`Job::missing_gates`).
-    ("fixtures2/behavior/enum_take_drop_split.fz", 122, 19, 133, 0),
+    // fz-afu.11 (authorized raise): 122/19 -> 128/25, all of it unchanged.
+    // `Enumerable.List.reduce/3` and `Enumerable.Range.reduce/3` each go
+    // 2 -> 5 runs. The old demand walk crossed the callback and fetched the
+    // `List.reduce` chain's `StaticCallees` ahead of time; without that walk
+    // the call-graph job meets the chain one link per run -- `List.reduce/3`,
+    // then `reduce_cont/3`, then `reduce_step/3`, then its lambda -- each
+    // link known only once the previous one is. That per-function reachable
+    // walk is fz-afu.8's subject ("one walk per program, not one per
+    // function"); recursive answers and compiled programs are unchanged.
+    ("fixtures2/behavior/enum_take_drop_split.fz", 128, 25, 133, 0),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -2121,7 +2130,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // Now only the callback's own derivation and its cycle partners read
         // `ProtocolDispatch`; everyone else reads a concluded answer and
         // concludes within a run or two.
-        shifts: shifts(15, 21),
+        // fz-afu.11: 15 -> 7 shift wakes and 21 -> 10 rebased completions.
+        // The callback reads no protocol fact at all now, so a `defimpl`
+        // landing never rebases it or the callers built on its answer.
+        shifts: shifts(7, 10),
         // fz-kdt.183: 226 -> 230 evaluations, 13 -> 14 reproducing an answer
         // they already had -- four more runs for the rebasing above, and
         // `uncaused` stays empty, so every one of them names a moved input.
@@ -2148,7 +2160,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // the fact's last publisher stops deriving it. `Concluded` readers
         // hear that as a change, so the run no longer counts as producing
         // nothing. The work is the same and the counting is more exact.
-        analyze_evaluations: 218,
+        // fz-afu.11: 218 -> 216. Two of the rebases above no longer happen,
+        // so their reproducing analyses go with them; zero-change stays 3.
+        analyze_evaluations: 216,
         analyze_zero_change: 3,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
@@ -2176,7 +2190,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // caller reads each callee's concluded answer instead of walking the
         // callee's body, so it stops re-running once per callee fact that
         // lands and once per `ProtocolDispatch` shift its walk crossed.
-        total_evaluations: 751,
+        // fz-afu.11: 751 -> 740. The callback no longer reads or waits on
+        // `ProtocolDispatch`/`ModuleDefined` at all, so it and the callers
+        // built on it never re-run once an implementation lands.
+        total_evaluations: 740,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -2216,7 +2233,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // wakes only `Enumerable.reduce_while/3`'s own derivation, and the
         // change climbs through concluded answers one caller at a time --
         // callback, `reduce_while/3`, `all?/1` -- one wake per hop.
-        shifts: shifts(6, 8),
+        // fz-afu.11: 6 -> 1 shift wakes, 8 -> 2 rebased completions. The
+        // callback reads no protocol fact now, so `ProtocolDispatch` never
+        // wakes it, and the climb through concluded answers it used to cause
+        // is gone with it.
+        shifts: shifts(1, 2),
         // fz-kdt.105: 553 -> 552. Canonical clause order at the interner
         // makes one more re-derived union reproduce its previous id instead
         // of minting a permuted twin, so one AnalyzeActivation run that used
@@ -2244,7 +2265,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // the same `ActivationInputs` wake as before, but it now arrives after
         // the run it used to coalesce into has finished, so it starts one
         // more run. Every wake cause is the same; only the order moved.
-        analyze_evaluations: 552,
+        // fz-afu.11: 552 -> 550. Two of the rebases above no longer happen,
+        // so their reproducing analyses go with them.
+        analyze_evaluations: 550,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -2289,7 +2312,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // run above. DeriveInputDemand stays at 109 runs, now spread over 81
         // functions instead of 63, at most 3 runs for any one function
         // instead of 11.
-        total_evaluations: 1171,
+        // fz-afu.11: 1171 -> 1165. The callback reads and waits on nothing
+        // protocol-shaped, so it and the callers built on it never re-run
+        // once an implementation lands.
+        total_evaluations: 1165,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2422,7 +2448,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // covers the implementations defined so far, and more callers read
         // it now. Each rebased job concludes within a run or two instead of
         // staying rebased through a walk's blocked runs.
-        shifts: shifts(37, 44),
+        // fz-afu.11: 37 -> 6 shift wakes, 44 -> 10 rebased completions. The
+        // callback reads no `ProtocolDispatch`/`ModuleDefined` fact, so an
+        // implementation landing later shifts nothing it stands on; the
+        // re-keys that answer used to cause are gone with it.
+        shifts: shifts(6, 10),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
         // the same change bought: the accumulator that used to widen to
@@ -2507,8 +2537,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // the implementations defined so far, and more callers read it now.
         // The rest is order -- two more `Recursive` wakes, one fewer enqueued
         // `ReturnType` wake.
-        analyze_evaluations: 906,
-        analyze_zero_change: 8,
+        // fz-afu.11: 906 -> 897 runs, zero-change 8 -> 7. The re-keys above
+        // no longer happen, so their reproducing analyses go with them.
+        analyze_evaluations: 897,
+        analyze_zero_change: 7,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
         // this fixture's deep call graph is where the removed starts pile
@@ -2543,7 +2575,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-afu.10: 1947 -> 1940. DeriveInputDemand falls 201 -> 190 runs,
         // at most 4 for any one function instead of 17, and
         // AnalyzeActivation rises by the four runs above.
-        total_evaluations: 1940,
+        // fz-afu.11: 1940 -> 1916. The callback and the callers built on it
+        // never re-run once an implementation lands.
+        total_evaluations: 1916,
     },
 ];
 

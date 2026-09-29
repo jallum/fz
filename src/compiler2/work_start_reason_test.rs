@@ -272,7 +272,13 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // re-keys their activations. The other six are callee `ReturnType`
         // (369 -> 373 enqueued, 25 -> 26 coalesced) and `Recursive`
         // (46 -> 47) wakes.
-        (2797, 9, 19, 232),
+        // fz-afu.11: 2797 -> 2771. The callback no longer joins over
+        // `ProtocolDispatch`'s arms: it is a leaf with no forwards and no
+        // protocol reads, answered from its own arity alone. An
+        // implementation defined later never revises it or the callers built
+        // on it, so the four extra `InputDemand` wakes fz-afu.10 added above
+        // are gone with the join.
+        (2771, 9, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -298,7 +304,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // one per callee its walk discovered, become 57 wakes on concluded
         // callee answers, and `ProtocolDispatch` shifts wake it 10 -> 6 times.
         // AnalyzeActivation's nine extra runs (see above) add nine.
-        757,
+        // fz-afu.11: 757 -> 731. `ProtocolDispatch` no longer shifts the
+        // callback's wake at all -- the callback reads no protocol fact, so
+        // those six wakes and the extra `InputDemand` wakes they fed (above)
+        // both go with the join.
+        731,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
