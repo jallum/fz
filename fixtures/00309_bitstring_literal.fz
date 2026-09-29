@@ -1,0 +1,4 @@
+#---
+# purpose: a bitstring literal renders correctly as a byte sequence
+#---
+def main(), do: dbg(<<0xff, 0xab>>)

@@ -1,0 +1,6 @@
+#---
+# purpose: every arithmetic binary operator infers its return type from Kernel's operator specs, division always widening to float
+#---
+def main() do
+  {1 + 2, 4 - 1, 2 * 3, 4 / 2, 5 % 2, 1 + 2.0, 4.0 - 1, 2 * 3.0}
+end

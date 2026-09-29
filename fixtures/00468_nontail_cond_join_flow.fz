@@ -1,0 +1,11 @@
+#---
+# purpose: a non-tail cond with a call arm flows its result into the enclosing expression
+#---
+def pick(x, fun) do
+  next = cond do
+    x == 0 -> fun.(x)
+    true -> x
+  end
+  [next]
+end
+def main() do dbg(pick(0, fn (x) -> x + 1 end)) end

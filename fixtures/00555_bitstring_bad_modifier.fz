@@ -1,0 +1,6 @@
+#---
+# purpose: an unrecognized bitstring modifier atom is a parse-time error.
+# expect: diagnostic
+# diagnostic.code: parse/bitstring-bad-modifier
+#---
+def main(), do: dbg(<<1::bogus>>)

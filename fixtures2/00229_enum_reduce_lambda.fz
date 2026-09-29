@@ -1,3 +1,0 @@
-def main() do
-  Enum.reduce([1, 2, 3], 0, fn (x, acc) -> acc + x end)
-end

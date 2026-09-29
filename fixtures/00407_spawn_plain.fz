@@ -1,0 +1,8 @@
+#---
+# purpose: a spawned child process's function stays reachable and typed through the callable boundary, both immediately and after materialization.
+#---
+def child(), do: nil
+
+def main() do
+  spawn(child)
+end

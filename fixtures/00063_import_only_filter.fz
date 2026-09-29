@@ -1,0 +1,14 @@
+#---
+# purpose: import only: [] brings exactly the named export into scope, leaving the other export unresolved as a bare name.
+#---
+defmodule Math do
+  def add(x, y), do: x + y
+  def mul(x, y), do: x * y
+end
+defmodule User do
+  import Math, only: [add: 2]
+  def r1(x, y), do: add(x, y)
+  def r2(x, y), do: mul(x, y)
+end
+
+def main(), do: dbg(User.r1(2, 3))

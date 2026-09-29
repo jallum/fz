@@ -1,0 +1,9 @@
+#---
+# purpose: Elixir-aligned binops (++, --, ..) parse and resolve
+#---
+def main() do
+  xs = [1, 2] ++ [3, 4]
+  ys = [1, 2, 3] -- [2]
+  r = 1..5
+  xs
+end

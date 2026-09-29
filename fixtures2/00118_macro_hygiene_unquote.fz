@@ -1,7 +1,0 @@
-defmacro emit(x) do
-  quote do: unquote(x) + 1
-end
-def main() do
-  x = 7
-  emit(x)
-end

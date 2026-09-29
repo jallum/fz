@@ -1,0 +1,11 @@
+#---
+# purpose: a closure that captures and returns a polymorphic value preserves a distinct return type per activation, including when the closure itself is later returned and called elsewhere.
+#---
+def tagger(tag) do
+  fn (x) -> {tag, x} end
+end
+
+def main() do
+  f = tagger(:ok)
+  {f.(1), f.(:right)}
+end

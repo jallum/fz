@@ -1,0 +1,4 @@
+#---
+# purpose: a float bitstring field stores raw IEEE 754 bits big-endian
+#---
+def main(), do: <<2.5::float>>

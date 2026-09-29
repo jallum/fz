@@ -1,0 +1,9 @@
+#---
+# purpose: a function dispatched over an empty list argument selects only the empty-list clause of its pattern match.
+#---
+def classify([]), do: :empty
+def classify([_ | _]), do: :cons
+
+def main() do
+  dbg(classify([]))
+end

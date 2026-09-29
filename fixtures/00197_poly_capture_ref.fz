@@ -1,0 +1,11 @@
+#---
+# purpose: a captured closure's callable surface is just its explicit parameters, so applying it at different argument facts doesn't join those activations
+#---
+def tagger(tag) do
+  fn (x) -> {tag, x} end
+end
+
+def main() do
+  f = tagger(:ok)
+  {f.(1), f.(:right)}
+end

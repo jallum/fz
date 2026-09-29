@@ -1,0 +1,12 @@
+#---
+# purpose: a defmacro expands correctly at its call site
+#---
+defmacro inc(x) do
+  quote do: unquote(x) + 1
+end
+
+def main() do
+  result = inc(41)
+  assert(result == 42, "inc(41) expands to 41 + 1")
+  result
+end

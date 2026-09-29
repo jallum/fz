@@ -1,7 +1,0 @@
-def positive(n), do: n > 0
-def classify(m) do
-  case m do
-    %{id: x} when positive(x) -> x + x
-    _ -> 0
-  end
-end

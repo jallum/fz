@@ -1,6 +1,0 @@
-defmodule A do
-  defmodule B do
-    def f(x), do: x
-  end
-end
-def main() do A.B.f(99) end

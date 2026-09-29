@@ -1,0 +1,4 @@
+#---
+# purpose: a list containing a float compares equal by value
+#---
+def main(), do: assert([1.5] == [1.5], "a list containing a float compares equal by value")

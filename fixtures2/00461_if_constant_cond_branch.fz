@@ -1,4 +1,0 @@
-def helper(), do: 7
-def main() do
-  if 1 == 0 do dbg(helper()) else dbg(99) end
-end

@@ -1,0 +1,8 @@
+#---
+# purpose: integer addition evaluates in a top-level main
+#---
+def main() do
+  result = 1 + 2
+  assert(result == 3, "1 + 2 evaluates to 3")
+  result
+end

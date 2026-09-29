@@ -1,3 +1,0 @@
-def check(x :: integer) do :is_int end
-def check(x) do :other end
-def main(), do: dbg(check(42))

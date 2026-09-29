@@ -1,3 +1,0 @@
-defmodule User do
-  def run(bytes), do: Utf8.valid?(bytes)
-end

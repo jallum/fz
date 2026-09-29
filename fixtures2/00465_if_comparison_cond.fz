@@ -1,6 +1,0 @@
-def helper(), do: 7
-def pick(n) do if n > 0, do: helper(), else: 99 end
-def main() do
-  dbg(pick(5))
-  dbg(pick(0))
-end

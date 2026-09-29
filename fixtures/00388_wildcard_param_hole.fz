@@ -1,0 +1,11 @@
+#---
+# purpose: a wildcard parameter position does not fork specialization by the argument's concrete type.
+#---
+def ignore(_, x), do: x
+
+def main() do
+  a = ignore(1, 2)
+  b = ignore(:ok, 2)
+  dbg(a)
+  dbg(b)
+end

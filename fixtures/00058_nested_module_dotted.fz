@@ -1,0 +1,10 @@
+#---
+# purpose: a nested defmodule produces a dotted module path for its contained function.
+#---
+defmodule A do
+  defmodule B do
+    def f(x), do: x + 1
+  end
+end
+
+def main(), do: dbg(A.B.f(1))

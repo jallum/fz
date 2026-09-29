@@ -1,0 +1,10 @@
+#---
+# purpose: a polymorphic identity function returns a distinct type at each of its concrete call sites.
+#---
+def id(x) do
+  x
+end
+
+def main() do
+  {id(1), id(:ok)}
+end

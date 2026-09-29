@@ -1,3 +1,0 @@
-def add1(n), do: n + 1
-
-def main(), do: add1(41)

@@ -1,0 +1,4 @@
+#---
+# purpose: unary negation of an integer literal returns its negative value
+#---
+def main(), do: assert(-7 == 0 - 7, "unary negation of a literal matches subtraction from zero")

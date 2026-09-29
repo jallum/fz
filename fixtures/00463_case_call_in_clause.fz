@@ -1,0 +1,14 @@
+#---
+# purpose: a case clause ending in a non-tail call compiles and runs correctly
+#---
+def helper(), do: 7
+def classify(n) do
+  case n do
+    0 -> helper()
+    _ -> 99
+  end
+end
+def main() do
+  dbg(classify(0))
+  dbg(classify(5))
+end

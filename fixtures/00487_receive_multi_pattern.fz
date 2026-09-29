@@ -1,0 +1,15 @@
+#---
+# purpose: a well-formed receive with multiple message patterns dispatches on the matching one
+#---
+def rx() do
+  receive do
+    {:ping, _} -> 1
+    {:pong, _} -> 2
+  end
+end
+def main() do
+  send(self(), {:pong, :ignored})
+  result = rx()
+  assert(result == 2, "receive dispatches to the {:pong, _} clause")
+  result
+end

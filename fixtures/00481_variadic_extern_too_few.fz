@@ -1,0 +1,7 @@
+#---
+# purpose: a variadic extern call with too few arguments is a compile-time error
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+extern "C" defp libc::open(path :: c_string, flags :: c_int, ...) :: c_int
+def main() do libc::open("x") end

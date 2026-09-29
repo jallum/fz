@@ -1,0 +1,13 @@
+#---
+# purpose: importing the same name from the same module twice is idempotent.
+#---
+defmodule Math do
+  def add(x, y), do: x + y
+end
+defmodule User do
+  import Math, only: [add: 2]
+  import Math, only: [add: 2]
+  def run(x, y), do: add(x, y)
+end
+
+def main(), do: dbg(User.run(2, 3))

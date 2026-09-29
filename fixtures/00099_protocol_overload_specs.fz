@@ -1,0 +1,16 @@
+#---
+# purpose: a protocol callback declared with multiple @spec overloads, matched by an implementation with the same overloads, resolves.
+#---
+defprotocol P do
+  @spec pick(integer) :: integer
+  @spec pick(float) :: float
+  def pick(value)
+end
+
+defimpl P, for: List do
+  @spec pick(integer) :: integer
+  @spec pick(float) :: float
+  def pick(value), do: value
+end
+
+def main(), do: dbg(P.__info__(:functions))

@@ -1,0 +1,9 @@
+#---
+# purpose: a lambda capturing an outer variable executes correctly with that capture
+#---
+def apply(f, x), do: f.(x)
+def main() do
+  k = 7
+  f = fn (x) -> x + k end
+  assert(apply(f, 1) == 8, "the captured k == 7 is added: 1 + 7 == 8")
+end

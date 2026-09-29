@@ -1,0 +1,10 @@
+#---
+# purpose: an operator body alone (no @spec) refines a and b off any to number, so add(1,2) settles to int
+#---
+def add(a, b) do
+  a + b
+end
+
+def main() do
+  dbg(add(1, 2))
+end

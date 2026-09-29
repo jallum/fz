@@ -1,3 +1,0 @@
-def count(0, acc), do: acc
-def count(n, acc), do: count(n - 1, acc + 1)
-def main(), do: count(100000, 0)

@@ -1,0 +1,7 @@
+#---
+# purpose: float literals render with an explicit decimal point
+#---
+def main() do
+  dbg(4.0)
+  dbg(2.5)
+end

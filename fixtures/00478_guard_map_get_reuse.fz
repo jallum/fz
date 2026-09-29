@@ -1,0 +1,14 @@
+#---
+# purpose: a guard and its clause binding share a single map field extraction
+#---
+def positive(n), do: n > 0
+def classify(m) do
+  case m do
+    %{id: x} when positive(x) -> x + x
+    _ -> 0
+  end
+end
+def main() do
+  assert(classify(%{id: 3}) == 6, "a positive guarded map field dispatches to the doubling clause")
+  assert(classify(%{id: -1}) == 0, "a non-positive guarded map field falls through to the default clause")
+end

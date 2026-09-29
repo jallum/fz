@@ -1,0 +1,14 @@
+#---
+# purpose: a spawned process's tagged message unblocks a selective receive
+#---
+def child(parent) do
+  send(parent, {:reply, :tag, 99})
+end
+def main() do
+  me = self()
+  spawn(fn () -> child(me) end)
+  v = receive do
+    {:reply, :tag, val} -> val
+  end
+  dbg(v)
+end

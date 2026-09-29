@@ -1,3 +1,0 @@
-@spec one() :: integer
-def one(), do: 1
-def main(), do: dbg(one())

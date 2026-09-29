@@ -1,8 +1,0 @@
-def positive(n), do: n > 0
-
-def pick({:ok, x}) when positive(x), do: x
-def pick({:ok, _}), do: :fallback
-
-def main() do
-  {pick({:ok, 1}), pick({:ok, 0})}
-end

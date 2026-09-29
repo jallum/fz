@@ -1,0 +1,9 @@
+#---
+# purpose: a named-function reference applied at two concrete types instantiates per activation, not as one joined callable
+#---
+def id(x), do: x
+
+def main() do
+  f = &id/1
+  {f.(1), f.(:ok)}
+end

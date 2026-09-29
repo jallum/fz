@@ -1,0 +1,10 @@
+#---
+# purpose: an aliased module call resolves and runs correctly
+#---
+alias Utf8, as: U
+
+def main() do
+  result = U.valid?(<<0xff, 0xff>>)
+  assert(result == false, "alias-qualified Utf8.valid? returns false for invalid UTF-8 bytes")
+  result
+end

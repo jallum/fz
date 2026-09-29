@@ -1,0 +1,5 @@
+Running 1 test...
+
+  ok  test_one
+
+1 test, 0 failures

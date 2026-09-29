@@ -1,0 +1,18 @@
+#---
+# purpose: a tail-recursive fold threading a captureless closure settles to number
+#---
+def go(list, acc, f) do
+  case list do
+    [] -> acc
+    [h | t] -> go(t, f.(h, acc), f)
+    _ -> acc
+  end
+end
+
+def myreduce(list, acc, f) do
+  go(list, acc, f)
+end
+
+def main() do
+  dbg(myreduce([1, 2, 3], 0, fn (x, a) -> x + a end))
+end

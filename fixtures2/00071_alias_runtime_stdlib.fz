@@ -1,4 +1,0 @@
-defmodule User do
-  alias Utf8, as: U
-  def run(bytes), do: U.valid?(bytes)
-end

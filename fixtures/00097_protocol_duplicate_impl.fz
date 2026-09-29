@@ -1,0 +1,16 @@
+#---
+# purpose: two defimpl blocks for the same protocol and type resolve without a duplicate-implementation error.
+#---
+defprotocol P do
+  def each(x)
+end
+
+defimpl P, for: List do
+  def each(x), do: x
+end
+
+defimpl P, for: List do
+  def each(x), do: x
+end
+
+def main(), do: dbg(P.__info__(:functions))

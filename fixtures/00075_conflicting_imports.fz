@@ -1,0 +1,16 @@
+#---
+# purpose: importing the same name from two different modules resolves to the most recently imported one, without a conflict error.
+#---
+defmodule A do
+  def f(), do: 1
+end
+defmodule B do
+  def f(), do: 2
+end
+defmodule User do
+  import A
+  import B
+  def run(), do: f()
+end
+
+def main(), do: dbg(User.run())

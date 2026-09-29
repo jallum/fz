@@ -1,0 +1,9 @@
+#---
+# purpose: a self-referencing macro is rejected at compile time once expansion exceeds the depth budget, instead of looping forever or overflowing the stack
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+defmacro loop_m(x) do
+  quote do: loop_m(unquote(x))
+end
+def main() do loop_m(0) end

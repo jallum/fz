@@ -1,0 +1,9 @@
+#---
+# purpose: an @spec can reference a runtime stdlib type alias without a local @type definition.
+#---
+defmodule M do
+  @spec run(keyword(integer)) :: nil
+  def run(_), do: nil
+end
+
+def main(), do: dbg(M.run([]))

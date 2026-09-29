@@ -1,0 +1,6 @@
+#---
+# purpose: a top-level function defined outside any defmodule keeps its bare name.
+#---
+def helper(x), do: x + 1
+
+def main(), do: dbg(helper(1))

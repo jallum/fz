@@ -1,0 +1,10 @@
+#---
+# purpose: an imported Utf8.valid? is callable unqualified in an expression
+#---
+import Utf8, only: [valid?: 1]
+
+def main() do
+  result = valid?(<<104, 105>>)
+  assert(result == true, "imported Utf8.valid? returns true for a valid UTF-8 binary")
+  result
+end

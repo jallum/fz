@@ -1,0 +1,10 @@
+#---
+# purpose: a closure with no outer references captures nothing
+#---
+def mk(x), do: fn(y) -> y + 1 end
+def main() do
+  f = mk(999)
+  result = f.(5)
+  assert(result == 6, "mk's returned closure reads only its own parameter y, not x")
+  result
+end

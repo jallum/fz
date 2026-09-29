@@ -1,0 +1,6 @@
+#---
+# purpose: deep recursion computes factorial without overflowing the stack
+#---
+def fact(0), do: 1
+def fact(n), do: n * fact(n - 1)
+def main(), do: assert(fact(10) == 3628800, "deep recursion computes factorial without overflow")

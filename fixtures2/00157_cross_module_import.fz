@@ -1,5 +1,0 @@
-defmodule User do
-  import Math, only: [add: 2]
-  @spec run(integer, integer) :: integer
-  def run(x, y), do: add(x, y)
-end

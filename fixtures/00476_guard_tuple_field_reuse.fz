@@ -1,0 +1,14 @@
+#---
+# purpose: a guard and its clause binding share a single tuple field projection
+#---
+def positive(n), do: n > 0
+def classify(t) do
+  case t do
+    {:ok, x} when positive(x) -> x + x
+    _ -> 0
+  end
+end
+def main() do
+  assert(classify({:ok, 3}) == 6, "a positive guarded field dispatches to the doubling clause")
+  assert(classify({:ok, -1}) == 0, "a non-positive guarded field falls through to the default clause")
+end
