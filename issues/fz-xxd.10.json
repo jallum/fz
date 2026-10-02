@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-afu.13"
+  ],
   "blocks": [
     "fz-xxd.12"
   ],
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "Nothing unused creates work: a static edge exists only from a clause dispatch can select",
   "type": "bug",
-  "updated_at": "2026-09-30T00:08:32Z"
+  "updated_at": "2026-10-02T11:07:52Z"
 }
