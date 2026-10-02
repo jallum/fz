@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-02T11:07:52Z",
+  "description": "A settled reader runs once just to discover its input became unsettled. When a drain re-settles the cone above new work, every DeriveExecutableFacts in that cone is woken by the unsettling revision, runs, finds ActivationAnalyzed unsettled, blocks, and runs again after it settles: about two runs per executable per drain where one suffices.\n\nEvidence (xxd10/a/p1.fz, quoted in fz-afu.13, on fz-xxd.10 revision 3 over 5ea6a5830): 13 quiescences, each re-settling 190-306 facts; ExecutableFacts 216 -\u003e 664 runs against base; ExecutableFacts blocked on ActivationAnalyzed 312 times vs 86 at base; about 54 runs per drain over 28 executables. fz-afu.13 removes most of the drains here, which hides this cost but does not remove it.\n\nPaper first: who subscribes a settled reader, and to which revisions; the reader should be woken by a settled revision of what it read, not by the unsettling one. Signal: runs per subject and wake causes for DeriveExecutableFacts in work_graph.applied. Close when each executable's facts run once per settled change of their inputs on p1 and on closure_capture_requirement_projection; no pin rises.",
+  "id": "fz-afu.15",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 2,
+  "status": "open",
+  "title": "A settled reader runs only on a settled change, not to discover it became unsettled",
+  "type": "bug",
+  "updated_at": "2026-10-02T11:07:52Z"
+}
