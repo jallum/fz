@@ -267,10 +267,9 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
 
     /// Drives one root to its backend product and returns the World's
     /// cumulative work-start attribution. The running pull-only guard
-    /// (`work_start_reason_test`) asserts on this: `unsanctioned_work_starts()`,
-    /// `root_scans`, and `drain_discovery_sweeps` must be zero, and `ignition`
-    /// must equal the true external front-door count (one `submit_code` + one
-    /// `submit_root`).
+    /// (`work_start_reason_test`) asserts on this: `unsanctioned_work_starts()`
+    /// must be zero, and `ignition` must equal the true external front-door
+    /// count (one `submit_code` + one `submit_root`).
     #[cfg(test)]
     pub(crate) fn drive_root_backend_work_starts(&mut self, root: RootId) -> Result<super::WorkStartTally, String> {
         self.drive_root_backend_product(root)?;
@@ -449,11 +448,11 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         // `function`'s own definition can cross several such gates (source
         // scoped, then expanded, then defined), each becoming demandable only
         // once its predecessor's fact has actually landed. A job's own
-        // standing wait gets this re-check for free from the stall-pass sweep
-        // every drain (`demand_blocked_wait_producers`); this caller sits
-        // outside the job graph and has no standing wait of its own, so it
-        // repeats the demand itself, once per drive, until the definition
-        // lands or a round advances nothing.
+        // standing wait is re-demanded for free the moment its own record
+        // changes (`World::demand_recorded_needs`); this caller sits outside
+        // the job graph and has no standing wait of its own, so it repeats
+        // the demand itself, once per drive, until the definition lands or a
+        // round advances nothing.
         while self.world.function_defined_revision(function).is_none() {
             let demanded = self.world.demand_fact_producer(
                 &FactKey::FunctionDefined(function),
@@ -523,13 +522,19 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
 
 /// Reports `RootBackendProduct` pull-drive failures as plain `String`s for
 /// the in-memory front door (`run_root_interp`, `product_executable_inventory`,
-/// the CLI dump paths). The three hooks below that name a genuine stall
-/// (`no_ready_producer`, `fact_wait_budget_exceeded`, `did_not_settle`) emit
-/// the same specific diagnostic the push drive would for the identical
-/// unresolved fact, through `ExecutionContext::report_unresolved_waits`; the
-/// returned `String` is a plain fallback for the caller and for the rare
-/// case nothing in the frontier resolves to a named issue -- it names the
+/// the CLI dump paths). `no_ready_producer` is the one genuine dead end
+/// (`pop_runnable` found nothing left to run anywhere); it emits the same
+/// specific diagnostic the push drive would for the identical unresolved
+/// fact, through `ExecutionContext::report_unresolved_waits`. The returned
+/// `String` is a plain fallback for the caller and for the rare case
+/// nothing in the frontier resolves to a named issue -- it names the
 /// wait's kind in plain terms, never the wait's own `Debug` form.
+///
+/// `fact_wait_budget_exceeded` and `did_not_settle` fire on a counter
+/// running out mid-progress, not on a dead end: a need parks a waiter on
+/// its producer as soon as it is recorded, so the frontier at a budget
+/// cutoff is routinely non-terminal work in progress, not a diagnosis.
+/// Neither hook reports.
 impl super::product_drive::ProductDriveError for String {
     fn dependency_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
@@ -569,12 +574,11 @@ impl super::product_drive::ProductDriveError for String {
     }
 
     fn fact_wait_budget_exceeded<T: Telemetry>(
-        world: &mut World,
-        tel: &T,
+        _world: &mut World,
+        _tel: &T,
         root: RootId,
         fact: &FactUse<FactKey>,
     ) -> Self {
-        super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
         format!(
             "compiler2 root {} product path exceeded fact-wait budget for {}",
             root.as_u32(),
@@ -583,12 +587,11 @@ impl super::product_drive::ProductDriveError for String {
     }
 
     fn did_not_settle<T: Telemetry>(
-        world: &mut World,
-        tel: &T,
+        _world: &mut World,
+        _tel: &T,
         root: RootId,
         last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
-        super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
         match last_wait {
             Some((key, waits)) => format!(
                 "compiler2 root {} product backend did not settle waiting on {}, with {} pending wait{}",

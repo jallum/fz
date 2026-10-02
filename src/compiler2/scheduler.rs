@@ -40,35 +40,31 @@ impl<F> ExternalDependencyStates<F> for NoExternalDependencyStates {
 ///   subscription (read or wait) just changed. This is
 ///   the core pull mechanism: readers wake because their ground moved, never
 ///   because a producer pushed them by name.
-/// - `RootFrontier`: `drive::demand_root_frontier_seeds` expanding a
-///   submitted root's standing seed demand through the fact->producer map,
-///   on a later drain after `submit_root`'s own `Ignition` demand redirected
-///   to a gate that was still unmet (that redirect itself is `GateExpansion`,
-///   below).
-/// - `ActivationFrontier`: `drive::demand_activation_frontier_analyses`
-///   expanding a published activation's standing analysis demand through the
-///   fact->producer map. Root entries and caller-discovered callees use this
-///   one path.
-/// - `GateExpansion`: `Job::missing_gates`'s own redirect inside
-///   `World::demand_producer_if_needed`, whenever a job named by any of the
-///   reasons above is not yet runnable: instead of starting that job to
-///   discover from inside its own body the same fact it is missing, the
-///   still-missing gate's own producer is demanded instead. That producer is
-///   a different job than the one that was named, so every caller's gate
-///   detour is tallied here, uniformly, never folded into whichever reason
-///   asked for the job that turned out to be gated. This is load-bearing for
-///   `ActivationFrontier` in particular: its own dedup invariant
-///   (`work_start_reason_test.rs`) requires exactly one credit per
-///   activation, the call that actually places its job on the agenda, never
-///   the prerequisites it waited out along the way.
+/// - `ActivationPublished`: `World::demand_recorded_needs` demanding the
+///   first analysis of an activation `complete_job` just published --
+///   `Activation(key)` without a settled `ActivationAnalyzed(key)` is a
+///   recorded need the instant it is published. Root entries and
+///   caller-discovered callees both use this one path.
+/// - `GateExpansion`: `World::park_on_gates`'s own redirect, whenever a job
+///   named by any of the reasons above is not yet runnable: instead of
+///   starting that job to discover from inside its own body the same fact it
+///   is missing, the still-missing gate's own producer is demanded instead,
+///   and the job is parked on it. That producer is a different job than the
+///   one that was named, so every caller's gate detour is tallied here,
+///   uniformly, never folded into whichever reason asked for the job that
+///   turned out to be gated. This is load-bearing for `ActivationPublished`
+///   in particular: its own dedup invariant (`work_start_reason_test.rs`)
+///   requires exactly one credit per activation, the call that actually
+///   places its job on the agenda, never the prerequisites it waited out
+///   along the way.
 /// - `BlockedWaiterExpansion`: the fact->producer map
-///   (`World::demand_fact_producer`) expanding a blocked waiter's missing
-///   fact to its single producer at a drain/stall point — both the bare
-///   scheduler's `demand_blocked_wait_producers`/`drive_until` stall pass and
-///   the bounded product-pull's own fact-wait loop
-///   (`product_drive::drive_product_fact_wait`) use this, when the demanded
-///   producer is itself runnable; a further gate detour from there is
-///   `GateExpansion` instead.
+///   (`World::demand_fact_producer`) expanding a job's own wait to its
+///   single producer the moment that wait is recorded
+///   (`World::demand_recorded_needs`, at completion) -- the bounded
+///   product-pull's own fact-wait loop
+///   (`product_drive::drive_product_fact_wait`) uses this reason too, when
+///   the demanded producer is itself runnable; a further gate detour from
+///   there is `GateExpansion` instead.
 ///
 /// `Unclassified` is the catch-all default. A future enqueue call site that
 /// does not pass one of the reasons above — a reintroduced `follow_up`-style
@@ -79,8 +75,7 @@ impl<F> ExternalDependencyStates<F> for NoExternalDependencyStates {
 pub enum WorkStartReason {
     Ignition,
     ChangedRevisionWake,
-    RootFrontier,
-    ActivationFrontier,
+    ActivationPublished,
     GateExpansion,
     BlockedWaiterExpansion,
     #[default]
@@ -88,22 +83,18 @@ pub enum WorkStartReason {
 }
 
 /// A snapshot of a scheduler's cumulative work-start attribution: how many
-/// jobs entered the agenda under each `WorkStartReason`, plus how many
-/// whole-fact-table scans (`Scheduler::fact_keys`) and drain-time global
-/// discovery sweeps were taken. Carried out of the scheduler as a single value
-/// so the pull session can record and emit the full breakdown
-/// (`pull.session.finished`) without reaching back into the world.
+/// jobs entered the agenda under each `WorkStartReason`. Carried out of the
+/// scheduler as a single value so the pull session can record and emit the
+/// full breakdown (`pull.session.finished`) without reaching back into the
+/// world.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WorkStartTally {
     pub ignition: u64,
     pub changed_revision_wake: u64,
-    pub root_frontier: u64,
-    pub activation_frontier: u64,
+    pub activation_published: u64,
     pub gate_expansion: u64,
     pub blocked_waiter_expansion: u64,
     pub unclassified: u64,
-    pub root_scans: u64,
-    pub drain_discovery_sweeps: u64,
 }
 
 impl WorkStartTally {
@@ -115,6 +106,19 @@ impl WorkStartTally {
         self.unclassified
     }
 
+    /// Every run this tally has ever charged, summed across every reason.
+    /// `Scheduler::record_run_start` charges exactly one reason the moment
+    /// each job is popped and committed to run, so this total is also the
+    /// number of runs the scheduler has completed.
+    pub fn total(&self) -> u64 {
+        self.ignition
+            + self.changed_revision_wake
+            + self.activation_published
+            + self.gate_expansion
+            + self.blocked_waiter_expansion
+            + self.unclassified
+    }
+
     pub(crate) fn delta_since(self, earlier: Self) -> Self {
         let delta = |current: u64, previous: u64| {
             current
@@ -124,26 +128,20 @@ impl WorkStartTally {
         Self {
             ignition: delta(self.ignition, earlier.ignition),
             changed_revision_wake: delta(self.changed_revision_wake, earlier.changed_revision_wake),
-            root_frontier: delta(self.root_frontier, earlier.root_frontier),
-            activation_frontier: delta(self.activation_frontier, earlier.activation_frontier),
+            activation_published: delta(self.activation_published, earlier.activation_published),
             gate_expansion: delta(self.gate_expansion, earlier.gate_expansion),
             blocked_waiter_expansion: delta(self.blocked_waiter_expansion, earlier.blocked_waiter_expansion),
             unclassified: delta(self.unclassified, earlier.unclassified),
-            root_scans: delta(self.root_scans, earlier.root_scans),
-            drain_discovery_sweeps: delta(self.drain_discovery_sweeps, earlier.drain_discovery_sweeps),
         }
     }
 
     pub(crate) fn add(&mut self, other: Self) {
         self.ignition += other.ignition;
         self.changed_revision_wake += other.changed_revision_wake;
-        self.root_frontier += other.root_frontier;
-        self.activation_frontier += other.activation_frontier;
+        self.activation_published += other.activation_published;
         self.gate_expansion += other.gate_expansion;
         self.blocked_waiter_expansion += other.blocked_waiter_expansion;
         self.unclassified += other.unclassified;
-        self.root_scans += other.root_scans;
-        self.drain_discovery_sweeps += other.drain_discovery_sweeps;
     }
 }
 
@@ -311,20 +309,21 @@ pub struct Scheduler<P: Publisher, F> {
     /// transitive finality; the fact half is `FactSlot::unfinal_publishers`,
     /// keyed by the same publisher identity. An absent entry means zero.
     read_finality: HashMap<P, ReadFinality>,
-    /// Work-start attribution tally: how many jobs actually entered the
-    /// agenda (deduped coalescing does not count) under each
-    /// `WorkStartReason`. Observation-only — see `WorkStartReason`.
+    /// Work-start attribution tally: how many jobs ran, under the reason
+    /// named by the agenda entry that led to that run. Observation-only —
+    /// see `WorkStartReason`.
     work_starts: HashMap<WorkStartReason, u64>,
-    /// How many times a whole-fact-table scan (`fact_keys`) has been taken.
-    /// The pull-cutover anti-pattern is a producer discovering work by
-    /// scanning every fact instead of following named dependencies; this
-    /// must stay zero in production (`root_executable_frontier`, the one
-    /// production caller, was deleted in fz-go4.18.4-fix).
-    root_scans: u64,
-    /// Empty-agenda passes that constructed the ordered activation-frontier
-    /// and unresolved-wait inventories. The exact nonempty indexes guard this
-    /// work, so an unchanged or irrelevant retained request does not increment.
-    drain_discovery_sweeps: u64,
+    /// The reason named by each job's current agenda entry, while that
+    /// entry is still unspent. `enqueue`/`enqueue_step` record a reason only
+    /// when the job was not already queued, so a coalesced demand on a
+    /// still-pending entry leaves its reason untouched: the first demand to
+    /// place an entry on the agenda names it. A job popped off the agenda
+    /// can still turn out to be gated or missing an answer, in which case it
+    /// is parked without running and without being charged — its entry is
+    /// gone, and the ordinary wake that later re-queues it records a fresh
+    /// reason of its own. `record_run_start` spends the entry the one time
+    /// `pop_runnable` commits to actually running it.
+    pending_reason: HashMap<P::Run, WorkStartReason>,
 }
 
 impl<P, F> Default for Scheduler<P, F>
@@ -433,31 +432,23 @@ where
             rebased: HashSet::new(),
             read_finality: HashMap::new(),
             work_starts: HashMap::new(),
-            root_scans: 0,
-            drain_discovery_sweeps: 0,
+            pending_reason: HashMap::new(),
         }
     }
 
     /// The cumulative work-start attribution snapshot: per-reason agenda-entry
     /// counts (coalesced re-demands of an already-pending job do not count —
-    /// they are not a new work start) plus the whole-fact-table-scan count.
+    /// they are not a new work start).
     pub fn work_start_tally(&self) -> WorkStartTally {
         let count = |reason| *self.work_starts.get(&reason).unwrap_or(&0);
         WorkStartTally {
             ignition: count(WorkStartReason::Ignition),
             changed_revision_wake: count(WorkStartReason::ChangedRevisionWake),
-            root_frontier: count(WorkStartReason::RootFrontier),
-            activation_frontier: count(WorkStartReason::ActivationFrontier),
+            activation_published: count(WorkStartReason::ActivationPublished),
             gate_expansion: count(WorkStartReason::GateExpansion),
             blocked_waiter_expansion: count(WorkStartReason::BlockedWaiterExpansion),
             unclassified: count(WorkStartReason::Unclassified),
-            root_scans: self.root_scans,
-            drain_discovery_sweeps: self.drain_discovery_sweeps,
         }
-    }
-
-    pub(crate) fn note_drain_discovery_sweep(&mut self) {
-        self.drain_discovery_sweeps += 1;
     }
 
     /// Whether `job`'s ground has shifted since it last concluded.
@@ -476,16 +467,6 @@ where
 
     pub fn facts(&self) -> &FactTable<P, F> {
         &self.facts
-    }
-
-    /// Iterates every fact key in the table. This is the whole-table-scan
-    /// escape hatch the pull-cutover deleted from production
-    /// (`root_executable_frontier`); any future caller that reaches for it to
-    /// discover work by scanning instead of naming a dependency is the
-    /// "root scan" anti-pattern, so each call is tallied (`root_scans`).
-    pub fn fact_keys(&mut self) -> impl Iterator<Item = &F> {
-        self.root_scans += 1;
-        self.facts.keys()
     }
 
     /// Every key the job claims, in retained publication order.
@@ -571,20 +552,32 @@ where
         self.deps.unresolved(ctx)
     }
 
-    /// Enqueues `job`, tallying the work-start under `reason`. Returns
+    /// Enqueues `job`, naming `reason` as its entry's reason when this
+    /// demand is the one that places the entry on the agenda. Returns
     /// whether the job was newly enqueued (`false` means it was already
-    /// pending and this call coalesced into it — not a new work start, so
-    /// the tally does not count it).
+    /// pending and this call coalesced into it, leaving the pending entry's
+    /// own reason in place).
     pub fn enqueue(&mut self, job: P::Run, reason: WorkStartReason) -> bool {
-        let started = self.agenda.enqueue(job);
+        let started = self.agenda.enqueue(job.clone());
         if started {
-            *self.work_starts.entry(reason).or_insert(0) += 1;
+            self.pending_reason.insert(job, reason);
         }
         started
     }
 
     pub fn pop(&mut self) -> Option<P::Run> {
         self.agenda.pop()
+    }
+
+    /// Charges `job`'s current agenda entry's reason to the tally. Called
+    /// exactly once a job is popped and found genuinely runnable — not
+    /// merely popped, since a pop that turns up a missing gate or missing
+    /// answer parks the job again without running it, and no entry exists
+    /// to charge until the ordinary wake that later re-queues the job names
+    /// a fresh one.
+    pub(crate) fn record_run_start(&mut self, job: &P::Run) {
+        let reason = self.pending_reason.remove(job).unwrap_or_default();
+        *self.work_starts.entry(reason).or_insert(0) += 1;
     }
 
     /// Leaves `job` waiting on `waits` without running it, as a run that
@@ -1119,14 +1112,15 @@ where
     /// the one work-start reason that is never passed in by a caller, since
     /// it names the wake mechanism itself, not an external demand. Records
     /// one `Wake` attributing `job` to `cause`, whatever the disposition —
-    /// there is no dedupe here, since a distinct cause is a distinct
-    /// attribution even when it lands on an already-pending job.
+    /// there is no dedupe on the wake itself, since a distinct cause is a
+    /// distinct attribution even when it lands on an already-pending job.
+    /// This call names the entry's reason only when it is the one placing
+    /// the entry on the agenda; a cause that lands on an already-pending job
+    /// leaves that job's earlier reason in place.
     fn enqueue_step(&mut self, job: P::Run, cause: &FactUse<F>, shift: bool, wakes: &mut Vec<Wake<P::Run, F>>) {
         let disposition = if self.agenda.enqueue(job.clone()) {
-            *self
-                .work_starts
-                .entry(WorkStartReason::ChangedRevisionWake)
-                .or_insert(0) += 1;
+            self.pending_reason
+                .insert(job.clone(), WorkStartReason::ChangedRevisionWake);
             WakeDisposition::Enqueued
         } else {
             WakeDisposition::Coalesced

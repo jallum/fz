@@ -376,9 +376,10 @@ pub(super) fn analyze_activation(
             // the callee's `ReturnType` (so mutual recursion cannot
             // deadlock), so nothing ever blocks on the callee's analysis
             // itself. Publishing `Activation(callee_activation.key)` above is
-            // the frontier's own record site — `World::complete_job` folds it
-            // into `activation_frontier`, and `demand_activation_frontier_analyses`
-            // ignites the callee's first analysis when the agenda drains.
+            // the record site this completion's own `World::complete_job`
+            // reads back: `demand_recorded_needs` demands the callee's first
+            // analysis the instant this completion is recorded, rather than
+            // waiting for the agenda to drain.
         }
     }
 

@@ -289,13 +289,13 @@ Executable(callee_key, need)
 ```
 
 That publication is how executable demand grows. No separate sweep discovers
-reachable callees. Publishing any `Activation(key)` is also the record site
-for `World`'s activation frontier: `World::complete_job` folds the key into
-`activation_frontier` unless `ActivationAnalyzed(key)` has already settled,
-and `World::demand_activation_frontier_analyses` demands its
-`AnalyzeActivation` the next time the agenda drains. Root entries published by
-`SeedRoot` and caller-discovered callees published by `analyze_activation` use
-this one path.
+reachable callees. Publishing any `Activation(key)` is also a recorded need:
+`World::demand_recorded_needs`, reached from `complete_job` right after the
+completion that published it, demands the key's own `AnalyzeActivation` at
+that moment, unless it has already run at least once (its own read/wait
+subscriptions carry every later revision from there). Root entries published
+by `SeedRoot` and caller-discovered callees published by `analyze_activation`
+use this one path.
 `analyze_activation`
 itself never schedules the callee directly: `prepare_function_call` only
 `reads` the callee's `ReturnType` (so mutual recursion cannot deadlock), so
@@ -585,15 +585,16 @@ the basis for the remaining type-system tickets.
   edge is withdrawn by any conclusion, while an omitted `Activation` is
   withdrawn only by a rebased one. It
   schedules no follow-up job of its own: publishing `Activation(callee_key)` is
-  what feeds `World`'s activation frontier. When its OWN `Activation(a)` is
-  absent -- nothing claims `a` -- it concludes on the recorded read and
-  re-lists its standing claims, rather than waiting on a producer that no
-  longer exists for it.
-- `World` owns the `activation_frontier` standing-demand set alongside the
-  scheduler it wraps. `World::complete_job` is its sole maintenance site
-  (insert on an `Activation(key)` publish, retire once `ActivationAnalyzed(key)`
-  settles or once `AnalyzeActivation(key)` has run at all), and
-  `World::demand_activation_frontier_analyses` is its sole reader.
+  a recorded need, and `World::demand_recorded_needs` demands the callee's own
+  first `AnalyzeActivation` the moment that completion is applied. When its
+  OWN `Activation(a)` is absent -- nothing claims `a` -- it concludes on the
+  recorded read and re-lists its standing claims, rather than waiting on a
+  producer that no longer exists for it.
+- `World::demand_recorded_needs` is the sole site that turns a published
+  `Activation(key)` into a demanded `AnalyzeActivation(key)`: there is no
+  separate standing-demand set alongside the scheduler to maintain, since the
+  need is read and discharged in the same step it is recorded, not carried
+  forward for a later sweep to find.
 - Product artifact producers own request-local `ProductValue`s in
   `PullSession`, not scheduler facts. They wait on settled semantic facts by
   exact key and must not publish activation facts or schedule follow-up jobs.

@@ -66,8 +66,11 @@ Read the sections in order, each narrower than the last:
   own table underneath rather than double-counted. The census then
   cross-checks itself against the trace's session-summed `WorkStartTally`:
   matched `enqueued` wakes must equal `work_starts_changed_revision_wake`,
-  and `ignition + activation_frontier + blocked_waiter_expansion` must equal
-  the distinct subject count. Either mismatch prints both numbers and halts
+  and `ignition + activation_published + gate_expansion +
+  blocked_waiter_expansion` must equal the distinct subject count (a subject
+  demanded while its job still has a missing gate is tallied under
+  `gate_expansion`, not folded into `activation_published`). Either mismatch
+  prints both numbers and halts
   the distiller nonzero rather than rendering an unexplained row — a re-run
   the census cannot name is a defect in the census, not a fact to shrug at.
   This is where a ladder shows itself: one fact revised many times, each

@@ -4,7 +4,8 @@
 //! the implementation bodies for current jobs and keeps their helper functions
 //! private to the relevant job family.
 
-use super::drive::{ExecutionContext, FactKey, Job, JobEffects};
+use super::drive::{ExecutionContext, FactKey, Job, JobEffects, current_uses, settled_uses};
+use super::facts::FactUse;
 use super::scheduler::FatalError;
 use super::world::World;
 
@@ -67,35 +68,43 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
 
 impl Job {
     /// The facts this job cannot conclude without, given its subject and the
-    /// facts already present -- current or settled, as each gate's own
-    /// derivation decides. Empty means every gate is satisfied, or this kind
-    /// declares none.
+    /// facts already present, each carrying the readiness it must be present
+    /// at. Empty means every gate is satisfied, or this kind declares none.
     ///
-    /// The scheduler calls this once, before ever starting a never-run job
-    /// (`World::demand_producer_if_needed`), and redirects demand to each
-    /// missing gate's own producer instead of starting the job to discover
-    /// the same fact missing from inside its body. A job kind absent from the
-    /// match below has no gate: it starts the moment anything demands its
-    /// output, exactly as before this method existed.
+    /// The scheduler calls this before handing out ANY popped job
+    /// (`World::pop_runnable`) and before ever starting a never-run job by
+    /// name (`World::demand_producer_if_needed`), and parks on each missing
+    /// gate instead of starting the job to discover the same fact missing
+    /// from inside its body. A job kind absent from the match below has no
+    /// gate: it starts the moment anything demands its output, exactly as
+    /// before this method existed.
     ///
     /// A wait a job's body discovers only while it runs -- a callee reached
     /// by walking a graph, a macro found mid-expansion -- is never a gate: a
     /// gate is nameable from the subject alone, before the job has read
-    /// anything.
-    pub(crate) fn missing_gates(&self, world: &mut World) -> Vec<FactKey> {
+    /// anything. `DeriveRuntimeDemand` and `DeriveExecutableFacts` gate on a
+    /// settled answer, since both read their gate's value rather than merely
+    /// its presence; every other kind gates on current.
+    pub(crate) fn missing_gates(&self, world: &mut World) -> Vec<FactUse<FactKey>> {
         match self {
-            Job::SeedRoot(root_id) => root::seed_root_gates(world, *root_id),
-            Job::DefineFunction(function_id) => source::define_function_gates(world, *function_id),
-            Job::ExpandFunctionSource(function_id) => source::expand_function_source_gates(world, *function_id),
-            Job::ScopeCode(source_owner) => source::scope_code_gates(world, *source_owner),
-            Job::DeriveInputDemand(function_id) => keying::derive_input_demand_gates(world, *function_id),
-            Job::DeriveCallGraphComponent(function_id) => {
-                keying::derive_call_graph_component_gates(world, *function_id)
+            Job::SeedRoot(root_id) => current_uses(root::seed_root_gates(world, *root_id)),
+            Job::DefineFunction(function_id) => current_uses(source::define_function_gates(world, *function_id)),
+            Job::ExpandFunctionSource(function_id) => {
+                current_uses(source::expand_function_source_gates(world, *function_id))
             }
-            Job::DeriveRuntimeDemand(executable) => runtime_demand::derive_runtime_demand_gates(world, executable),
-            Job::LowerFunction(function_id) => body::lower_function_gates(world, *function_id),
-            Job::DeriveStaticCallees(function_id) => keying::derive_static_callees_gates(world, *function_id),
-            Job::AnalyzeActivation(activation) => semantic::analyze_activation_gates(world, activation),
+            Job::ScopeCode(source_owner) => current_uses(source::scope_code_gates(world, *source_owner)),
+            Job::DeriveInputDemand(function_id) => current_uses(keying::derive_input_demand_gates(world, *function_id)),
+            Job::DeriveCallGraphComponent(function_id) => {
+                current_uses(keying::derive_call_graph_component_gates(world, *function_id))
+            }
+            Job::DeriveRuntimeDemand(executable) => {
+                settled_uses(runtime_demand::derive_runtime_demand_gates(world, executable))
+            }
+            Job::LowerFunction(function_id) => current_uses(body::lower_function_gates(world, *function_id)),
+            Job::DeriveStaticCallees(function_id) => {
+                current_uses(keying::derive_static_callees_gates(world, *function_id))
+            }
+            Job::AnalyzeActivation(activation) => current_uses(semantic::analyze_activation_gates(world, activation)),
             Job::IndexCode(_)
             | Job::DefineModule(_)
             | Job::DefineModuleInterface(_)
@@ -104,8 +113,10 @@ impl Job {
             | Job::ReifyGuardDispatch(_)
             | Job::PlanEntryDispatch(_)
             | Job::SeedActivation(_)
-            | Job::DeriveExecutableFacts(_)
             | Job::DeriveCallableConstructionTarget(_) => Vec::new(),
+            Job::DeriveExecutableFacts(executable) => {
+                settled_uses(executable_facts::derive_executable_facts_gates(world, executable))
+            }
         }
     }
 }

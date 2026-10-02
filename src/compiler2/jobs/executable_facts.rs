@@ -7,16 +7,25 @@ use super::super::scheduler::FatalError;
 use super::super::semantic::CallSiteKey;
 use super::super::world::World;
 
+pub(super) fn derive_executable_facts_gates(world: &World, executable: &ExecutableKey) -> Vec<FactKey> {
+    let analyzed = FactKey::ActivationAnalyzed(executable.activation.clone());
+    if world.fact_is_settled(&analyzed) {
+        Vec::new()
+    } else {
+        vec![analyzed]
+    }
+}
+
 pub(super) fn derive_executable_facts(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     executable: &ExecutableKey,
 ) -> Result<JobEffects, FatalError> {
     let activation = &executable.activation;
-    let analyzed = FactKey::ActivationAnalyzed(activation.clone());
-    if !world.fact_is_settled(&analyzed) {
+    let gates = derive_executable_facts_gates(world, executable);
+    if let Some(gate) = gates.into_iter().next() {
         return Ok(JobEffects {
-            waits: settled_uses([analyzed]),
+            waits: settled_uses([gate]),
             ..JobEffects::default()
         });
     }
@@ -25,6 +34,7 @@ pub(super) fn derive_executable_facts(
         .activation_analysis(activation)
         .expect("settled activation analysis fact should have analysis")
         .clone();
+    let analyzed = FactKey::ActivationAnalyzed(activation.clone());
     let mut prerequisites = vec![analyzed, FactKey::EntryDispatch(activation.function)];
     if !world.function_body_shape(activation.function).is_extern() {
         // An extern has no lowered body; its wire ABI comes from its

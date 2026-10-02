@@ -19157,7 +19157,11 @@ const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 17;
 // callee `fz_dbg_value/1` has been analyzed, so it publishes its return once
 // instead of first publishing an intermediate one, and `main/0` hears one
 // `dbg/1` return change instead of two.
-const TUPLE_LADDER_MAIN_ANALYSES: u64 = 21;
+// fz-afu.13: 21 -> 22. A need starts its producer the moment it is recorded
+// instead of waiting for a later drain to discover it, moving one of
+// build/1's ladder revisions earlier relative to main/0's own re-analysis
+// and so changing which rung main/0 observes once more.
+const TUPLE_LADDER_MAIN_ANALYSES: u64 = 22;
 // main/0 re-keys its call to `dbg/1` on `build/1`'s CURRENT return every time
 // it is re-analyzed, so a `dbg/1` activation that settles for one rung is
 // usually stale by the time main/0 reads it again -- `build/1` has already
@@ -19173,7 +19177,19 @@ const TUPLE_LADDER_MAIN_ANALYSES: u64 = 21;
 // fz-xxd.3, `dbg/1`'s return equals its own argument, so main/0's one
 // crossing now carries the correct converged answer (`any`, matching
 // `build/1`'s own settled return) instead of the leaked declared variable.
-const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 1;
+// fz-afu.13: 1 -> 2. Confirmed via `return_type.defined`'s own `World`
+// argument (`activation_return`, canon-displayed): main/0's first publish is
+// `:start`, landing right after `dbg/1`'s own first, narrowest publish of the
+// same answer; its second and final publish is `any`, landing right after
+// `dbg/1`'s own final, widened-top publish once `build/1`'s ladder stops
+// moving. `dbg/1` revises fifteen more times in between (the same ladder as
+// build/1), but main/0 re-keys its call on build/1's CURRENT return each time
+// it is re-analyzed, so every one of those middle rungs is already stale by
+// the time main/0 reads it again -- same mechanism the paragraph above this
+// one describes for the pre-fz-afu.13 one-crossing count, now crossing a
+// second time because a need starting at record time, not drain time, lets
+// main/0 observe dbg/1's cold first answer before dbg/1 has climbed past it.
+const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 2;
 
 #[test]
 fn compiler2_extern_dbg_return_is_its_contract_applied_to_the_row() {
@@ -19432,48 +19448,28 @@ type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 /// measured rather than a budget to spend; recursive denotations delete the
 /// table along with the climb. The ladder is a population as much as a height.
 /// `return_tuple_ladder` is the bare case: one activation, seventeen revisions,
-/// widened. `json_roundtrip` is the goal program, and there the climb spreads
-/// sideways first — `Json.array_item/2` and `Json.array_next/2` each key a dozen
-/// activations, one per level of the recursive value type, and the returns they
-/// share climb to the ceiling on the evidence those levels publish. Reaching
-/// seventeen is not one outcome but two: a widened row ran out of budget and was
-/// coarsened, while an unwidened row arrived at its answer on its own evidence
-/// before the budget could fire.
+/// widened.
+///
+/// `json_roundtrip` no longer reaches the widening budget at all: a need
+/// starts its producer the moment it is recorded instead of waiting for a
+/// later drain to discover it, so each activation's callees settle earlier
+/// relative to it, and the whole climb converges on its own evidence well
+/// under the ceiling.
 const RETURN_LADDERS: &[PinnedLadder] = &[
     ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
     (
         "fixtures2/behavior/json_roundtrip.fz",
         &[
-            ("Json.array/2", 17, true),
-            ("Json.array_element/2", 17, true),
+            ("Json.array/2", 7, false),
+            ("Json.array_element/2", 6, false),
+            ("Json.array_item/2", 6, false),
             ("Json.array_item/2", 6, false),
             ("Json.array_item/2", 7, false),
-            ("Json.array_item/2", 8, false),
-            ("Json.array_item/2", 9, false),
-            ("Json.array_item/2", 10, false),
-            ("Json.array_item/2", 11, false),
-            ("Json.array_item/2", 12, false),
-            ("Json.array_item/2", 13, false),
-            ("Json.array_item/2", 14, false),
-            ("Json.array_item/2", 15, false),
-            ("Json.array_item/2", 16, false),
-            ("Json.array_item/2", 17, false),
-            ("Json.array_item/2", 17, false),
             ("Json.array_next/2", 6, false),
             ("Json.array_next/2", 7, false),
-            ("Json.array_next/2", 8, false),
-            ("Json.array_next/2", 9, false),
-            ("Json.array_next/2", 10, false),
-            ("Json.array_next/2", 11, false),
-            ("Json.array_next/2", 12, false),
-            ("Json.array_next/2", 13, false),
-            ("Json.array_next/2", 14, false),
-            ("Json.array_next/2", 15, false),
-            ("Json.array_next/2", 16, false),
-            ("Json.array_next/2", 17, false),
-            ("Json.decode/1", 17, true),
-            ("Json.val/1", 17, true),
-            ("Json.value/1", 17, true),
+            ("Json.decode/1", 7, false),
+            ("Json.val/1", 7, false),
+            ("Json.value/1", 7, false),
         ],
     ),
 ];

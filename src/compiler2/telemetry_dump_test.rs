@@ -221,7 +221,7 @@ fn jsonl_backend_shows_precipitating_compiler2_actions() {
     );
     assert!(
         log.contains("\"world\":{\"opaque_type\":\"fz::compiler2::world::World\",\"codes\":")
-            && log.contains("\"activation_frontier\":"),
+            && log.contains("\"roots\":"),
         "compiler2 jsonl log should project world state from the borrowed authority:\n{log}"
     );
 }

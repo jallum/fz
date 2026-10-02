@@ -39,7 +39,14 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures/00420_enum_take_drop_split.fz",
         golden: "fixtures/00420_enum_take_drop_split.fz",
-        runtime_demand_walks: 620,
+        // fz-afu.13: 620 -> 616. This fixture's own AnalyzeActivation count
+        // moves under this ticket too (see
+        // `root_entries_and_caller_discovered_callees_share_the_activation_frontier`
+        // in `work_start_reason_test.rs` for the measured, flagged repeat-
+        // analysis cost); a need starting at record time rather than drain
+        // time changes which rung of a climbing read a `DeriveRuntimeDemand`
+        // walk observes, same mechanism, different job family.
+        runtime_demand_walks: 616,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -2172,7 +2179,18 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             uncaused: 0,
             changed_outputs: 244,
             unchanged_outputs: 32,
-            wakes: 73,
+            // fz-afu.13: 73 -> 180. `wakes` sums every completion's raw
+            // subscriber-wake log, counted once per wake regardless of
+            // whether it enqueues a job or coalesces into one already
+            // pending -- it is not a count of jobs run. A need now starts
+            // its producer the moment it is recorded instead of on a later
+            // drain, so a job parked on a missing gate is woken, parked
+            // again, and woken again as each of its gates lands one at a
+            // time, rather than being swept once per drain; every one of
+            // those cycles logs its own wake even though the job still runs
+            // exactly once in the end (evaluations, content-caused, and
+            // changed/unchanged outputs above are all unmoved).
+            wakes: 180,
             blocked_completions: 59,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"

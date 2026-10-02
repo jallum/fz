@@ -652,15 +652,105 @@ pub(crate) fn settled_uses<F>(facts: impl IntoIterator<Item = F>) -> Vec<FactUse
 }
 
 impl World {
+    /// A need starts its producer the moment it is recorded. `complete_job`
+    /// is the one call site: once a run's outputs are applied, this demands
+    /// each fact it still waits on, and the first analysis of every
+    /// activation it published that has never run. Both lists are expanded
+    /// in semantic order, never insertion order.
+    ///
+    /// Demanding here, inside the completion of one known job, is what keeps
+    /// start order a pure function of history rather than of an unordered
+    /// set's iteration: every demand happens in the semantic order of that
+    /// one job's own waits and activations, the agenda is FIFO, so start
+    /// order is a pure function of completion order, which is itself a pure
+    /// function of the previous starts. No step ever consults a set whose
+    /// iteration order is unspecified.
+    pub(crate) fn demand_recorded_needs(&mut self, job: &Job, activations: Vec<ActivationKey>) {
+        let mut waits: Vec<FactKey> = self
+            .work_graph
+            .waits_for(job)
+            .into_iter()
+            .filter_map(|wait| wait.fact().fact().cloned())
+            .collect();
+        waits.sort_by(|left, right| left.semantic_cmp(right, self.types()));
+        waits.dedup();
+        for fact in waits {
+            self.demand_fact_producer(&fact, WorkStartReason::BlockedWaiterExpansion);
+        }
+        let mut activations = activations;
+        activations.sort_by(|left, right| left.semantic_cmp(right, self.types()));
+        activations.dedup();
+        for key in activations {
+            if !self.work_graph.has_run(&Job::AnalyzeActivation(key.clone())) {
+                self.demand_fact_producer(&FactKey::ActivationAnalyzed(key), WorkStartReason::ActivationPublished);
+            }
+        }
+    }
+
+    /// Walks a blocked job's own standing waits, and the waits of any
+    /// producer among them that is itself only blocked (not concluded or
+    /// rebased), looking for the first wait whose producer never ran at
+    /// all. That is the one kind of stale wait nothing else will ever ask
+    /// about again: a failed run concludes nothing and leaves no record,
+    /// so once it drops off the agenda it is gone unless something walks
+    /// back to it. Each job is visited at most once, so a genuine cycle --
+    /// two producers blocked on each other, such as a type definition
+    /// recursive on itself -- is walked once and left exactly as blocked
+    /// as it was, not retried forever. Returns how many producers were
+    /// actually demanded.
+    fn revive_blocked_chain(&mut self, job: &Job) -> u64 {
+        let mut demanded = 0_u64;
+        let mut visited = HashSet::from([job.clone()]);
+        let mut frontier = vec![job.clone()];
+        while let Some(current) = frontier.pop() {
+            let mut waits: Vec<FactKey> = self
+                .work_graph
+                .waits_for(&current)
+                .into_iter()
+                .filter_map(|wait| wait.fact().fact().cloned())
+                .collect();
+            waits.sort_by(|left, right| left.semantic_cmp(right, self.types()));
+            waits.dedup();
+            for fact in waits {
+                let Some(producer) = self.fact_producer(&fact) else {
+                    continue;
+                };
+                if !self.work_graph.has_run(&producer) {
+                    demanded += self.demand_fact_producer(&fact, WorkStartReason::GateExpansion);
+                } else if self.work_graph.blocked(&producer) && visited.insert(producer.clone()) {
+                    frontier.push(producer);
+                }
+            }
+        }
+        demanded
+    }
+
+    /// Parks a never-run job on its own missing gates instead of starting
+    /// it: the job waits on each gate at the readiness `Job::missing_gates`
+    /// named, and each gate's producer is demanded in the same breath, so
+    /// the gate's own landing wakes this job the ordinary way. Returns how
+    /// many producers were actually demanded.
+    fn park_on_gates(&mut self, job: Job, gates: &[FactUse<FactKey>]) -> u64 {
+        let uses = gates.iter().cloned().map(fact_dependency).collect();
+        self.work_graph.wait_without_running(job, uses);
+        gates
+            .iter()
+            .map(|gate| self.demand_fact_producer(gate.fact(), WorkStartReason::GateExpansion))
+            .sum()
+    }
+
     /// Expands a demanded fact to its single producer and demands that
     /// producer when a run could say something new.
     ///
     /// This map is the one legitimate mechanism for work to start absent a
     /// wake (northstar: pull-based): the wait names the fact, the fact names
     /// its producer, and the producer runs because something waits on its
-    /// output — never because another job commanded it. Both the product
-    /// drivers (a `PullWait::Fact` with an empty agenda) and the bare
-    /// scheduler (`drive_until`'s demand-on-stall pass) consult it.
+    /// output — never because another job commanded it. `demand_recorded_needs`
+    /// (a job's waits and published activations, at completion),
+    /// `park_on_gates` (a never-run job's missing gates, at the moment it is
+    /// popped), and the product pull's own fact-wait loop all consult it, each
+    /// at the moment its own need is recorded — there is no drain-time sweep
+    /// left that consults it on a timer.
     ///
     /// Facts whose producers publish them only as a co-output of a broader
     /// job's conclusion (`ModuleIndexed`, `StructDefined`, `ProtocolDispatch`,
@@ -758,13 +848,21 @@ impl World {
         }
     }
 
-    /// The next queued job worth running. A job whose last run read a
-    /// concluded answer that is now being derived again would find that
-    /// answer missing and wait for it, so it waits without running.
+    /// The next queued job worth running. This is the one door: a job
+    /// missing a gate is parked on it instead of run (`Job::missing_gates`),
+    /// and a job whose last run read a concluded answer that is now being
+    /// derived again would find that answer missing and wait for it, so it
+    /// waits without running too.
     pub(crate) fn pop_runnable(&mut self) -> Option<Job> {
         while let Some(job) = self.work_graph.pop() {
+            let gates = job.missing_gates(self);
+            if !gates.is_empty() {
+                self.park_on_gates(job, &gates);
+                continue;
+            }
             let missing = self.concluded_answers_missing(&job);
             if missing.is_empty() {
+                self.work_graph.record_run_start(&job);
                 return Some(job);
             }
             self.work_graph.wait_without_running(job, missing);
@@ -871,49 +969,30 @@ impl World {
 
     fn demand_producer_if_needed(&mut self, job: Job, target_fact: &FactKey, reason: WorkStartReason) -> bool {
         if !self.work_graph.has_run(&job) {
-            // Never run: no wake source exists yet, so only a fresh demand
-            // can start it -- but only once its own gates are satisfied
-            // (`Job::missing_gates`). A job whose gate is missing is not
-            // started; the missing gate's producer is demanded instead, so
-            // the gate's own wake reaches this job the ordinary way once it
-            // lands, instead of spending a run to discover what was already
-            // knowable from the subject alone. That redirected producer is a
-            // different job than `job` -- named by the gate, not by whatever
-            // demanded `job` -- so it is always tallied under `GateExpansion`
-            // instead of whatever reason drove this call, uniformly across
-            // every caller (`ActivationFrontier`'s own dedup invariant,
-            // `demand_activation_frontier_analyses`'s exactly-one-credit-per-
-            // activation tally, is one reason this matters, but every other
-            // reason's own accounting is just as displaced by a gate detour
-            // that runs a different job than the one it named).
+            // Never run: only a demand can start it. A missing gate
+            // redirects that demand to the gate's own producer instead
+            // (`park_on_gates`), a different job than `job`, so it is
+            // tallied under `GateExpansion` rather than this call's reason.
             let gates = job.missing_gates(self);
             if !gates.is_empty() {
-                let demanded: u64 = gates
-                    .iter()
-                    .map(|gate| self.demand_fact_producer(gate, WorkStartReason::GateExpansion))
-                    .sum();
-                return demanded > 0;
+                return self.park_on_gates(job, &gates) > 0;
             }
             self.work_graph.enqueue(job, reason);
             return true;
         }
         if self.work_graph.blocked(&job) {
-            // The producer already ran and paused on waits: those standing
-            // waits make it wake-reachable the moment its missing facts land,
-            // and every missing fact is itself a blocked wait whose producer
-            // the drain expansion demands. Re-demanding the paused job would
-            // only re-run it into the same unsatisfied waits.
-            //
-            // This gates ahead of the rebase test on purpose (fz-kdt.62). The
-            // rebase flag is cleared only by a CONCLUDING run, so a job that
-            // pauses on the same wait every time it runs stays flagged for the
-            // rest of the drive, and a rebase-first order re-enqueues it at
-            // every single drain. Nothing is lost by skipping it:
-            // `Scheduler::enqueue_dependents` never marks a job rebased
-            // without enqueueing it in the same step, so the shifted ground
-            // has already been offered to this job once — and what it did with
-            // the offer was block.
-            return false;
+            // Already blocked on standing waits that wake it the ordinary way
+            // once those facts land -- but a wait's producer, or a producer
+            // further down the same chain, can itself have failed and left
+            // no record (a failed run concludes nothing, by design), in
+            // which case nothing else will ever ask for it again. Chasing
+            // down to the first never-run producer along this job's own
+            // wait chain is the only remaining chance for a link that
+            // silently died to be tried again; it is checked ahead of the
+            // rebase case below because a job is never marked rebased
+            // without being enqueued in the same step, so a blocked job
+            // already saw its shifted ground and chose to wait.
+            return self.revive_blocked_chain(&job) > 0;
         }
         if self.work_graph.rebased(&job) {
             // Ground shifted since its last conclusion: its claims are
@@ -987,137 +1066,19 @@ impl World {
         self.settle_quiescent_with_sessions(&facts, sessions);
     }
 
-    /// Expands every blocked waiter's missing fact to its producer through
-    /// the fact->producer map. This is the drain-time pull: a blocked wait is
-    /// a standing demand for the fact, and the fact names its single
-    /// producer. A producer that is itself paused on waits is not re-demanded
-    /// — its missing facts are themselves blocked waits, so chains expand one
-    /// frontier per pass. Returns how many producers were demanded.
-    ///
-    /// *Which* facts get demanded is provably a set (the dedup below), but
-    /// each demand enqueues its fact's producer job onto the same agenda, so
-    /// the order these calls happen in decides the order those jobs actually
-    /// run — and a job that observes another job's published fact can join
-    /// it under a keep-first merge, so run order is not free to vary.
-    /// `unresolved_waits()` hands back its waits in typed `FactUse` semantic
-    /// order, so one fact's several uses arrive adjacent and dropping the
-    /// repeats leaves each fact once, in that same order.
-    pub(crate) fn demand_blocked_wait_producers(&mut self) -> u64 {
-        let mut facts: Vec<FactKey> = self
-            .unresolved_waits()
-            .into_iter()
-            .filter_map(|wait| wait.fact.into_fact().fact().cloned())
-            .collect();
-        facts.dedup();
-        facts
-            .into_iter()
-            .map(|fact| self.demand_fact_producer(&fact, WorkStartReason::BlockedWaiterExpansion))
-            .sum()
-    }
-
-    /// Expands the standing demand every published activation carries: an
-    /// `Activation(key)` fact without a settled `ActivationAnalyzed(key)` is a
-    /// standing demand for that activation's analysis. This includes root
-    /// entries published by `SeedRoot` and caller-discovered callees published
-    /// by semantic analysis. The expansion only ignites first-run analysis —
-    /// the `has_run` check is load-bearing, not an optimization: a callee whose
-    /// first run blocked (waiting on some other fact, never claiming
-    /// `ActivationAnalyzed`) stays perpetually `rebased` while blocked, and
-    /// `demand_fact_producer`'s rebased branch re-enqueues unconditionally on
-    /// every call — without this guard a permanently blocked-but-rebased
-    /// callee would be re-run every stall pass forever. Once a callee has
-    /// run at all, its own read/wait subscriptions (an unresolved wait's
-    /// fact is separately covered by `demand_blocked_wait_producers`) carry
-    /// every later revision. Retires each such key from the frontier so the
-    /// working set stays bounded. Returns how many analyses were demanded.
-    pub(crate) fn demand_activation_frontier_analyses(&mut self) -> u64 {
-        let mut demanded = 0_u64;
-        let mut keys = self.activation_frontier_keys();
-        // `activation_frontier` is a `HashSet<ActivationKey>` (`world.rs`):
-        // its iteration order is `RandomState`-dependent. `AnalyzeActivation`
-        // mints fresh `Ty` combinations (interned call-site arrows) as a side
-        // effect of running, so demanding two ready activations in a
-        // different relative order between runs mints their arrows in a
-        // different relative order too. Compare the addressed arrows through
-        // their owning `Types`, never through raw intern ids, so demand order
-        // is a function of the activations' structure rather than hash buckets.
-        keys.sort_by(|left, right| left.semantic_cmp(right, self.types()));
-        for key in keys {
-            if self.work_graph.has_run(&Job::AnalyzeActivation(key.clone())) {
-                self.retire_activation_frontier(&key);
-                continue;
-            }
-            #[cfg(test)]
-            let traced_key = key.clone();
-            // `started` also counts a still-missing gate's own producer
-            // getting poked (`demand_producer_if_needed`'s recursive branch),
-            // which is a different job than this activation's own seed or
-            // analysis and must not credit the frontier a second time. The
-            // tally is the precise signal: it moves only when this call
-            // actually placed the activation's own job on the agenda
-            // (`WorkStartReason::GateExpansion` covers everything else).
-            #[cfg(test)]
-            let before = self.work_start_tally().activation_frontier;
-            let started =
-                self.demand_fact_producer(&FactKey::ActivationAnalyzed(key), WorkStartReason::ActivationFrontier);
-            #[cfg(test)]
-            if self.work_start_tally().activation_frontier > before {
-                self.note_activation_frontier_start(traced_key);
-            }
-            demanded += started;
-        }
-        demanded
-    }
-
-    /// Expands the standing demand every submitted root carries: a root
-    /// whose `SeedRoot` job has never run is a standing demand for its own
-    /// gate chain, the same shape as `demand_activation_frontier_analyses`
-    /// above for a published activation without an analysis.
-    /// `World::submit_root` no longer enqueues `SeedRoot` directly — its own
-    /// call demands `RootEntry` through the same gate-checked path every
-    /// other job uses, and this sweep is what keeps demanding it on later
-    /// drains if that first demand redirected to a gate that was still
-    /// unmet. Retires each root once its `SeedRoot` has run. Returns how
-    /// many were demanded.
-    pub(crate) fn demand_root_frontier_seeds(&mut self) -> u64 {
-        let mut demanded = 0_u64;
-        let mut roots = self.root_frontier_keys();
-        roots.sort();
-        for root in roots {
-            if self.work_graph.has_run(&Job::SeedRoot(root)) {
-                self.retire_root_frontier(&root);
-                continue;
-            }
-            demanded += self.demand_fact_producer(&FactKey::RootEntry(root), WorkStartReason::RootFrontier);
-        }
-        demanded
-    }
-
-    /// Pops the next ready job, expanding the three standing demand sources
-    /// when the agenda has drained: submitted roots not yet seeded,
-    /// published root-entry/caller-discovered-callee activations, and
-    /// blocked waiters' fact->producer expansions. Every job loop (the bare
-    /// drive and the product fact-wait loops) pulls through this, so
-    /// first-run ignition is owned by the scheduler boundary, not by any
-    /// job's follow-up.
+    /// Pops the next ready job, settling quiescent waits once if the agenda
+    /// has drained. Every job loop (the bare drive and the product fact-wait
+    /// loops) pulls through this. There is no demand expansion left to do
+    /// here: a need starts its producer when it is recorded
+    /// (`demand_recorded_needs`, `park_on_gates`), never when the agenda
+    /// happens to run dry, so a drain only arbitrates the settled questions
+    /// standing over quiesced ground -- it starts nothing.
     pub(crate) fn next_ready_job(&mut self, sessions: Option<&super::pull::ProductSessions>) -> Option<Job> {
         if let Some(job) = self.pop_runnable() {
             return Some(job);
         }
         self.settle_quiescent_waits(sessions);
-        if let Some(job) = self.pop_runnable() {
-            return Some(job);
-        }
-        let ignited = self.demand_root_frontier_seeds() + self.demand_activation_frontier_analyses();
-        if ignited > 0
-            && let Some(job) = self.pop_runnable()
-        {
-            return Some(job);
-        }
-        if self.demand_blocked_wait_producers() > 0 {
-            return self.pop_runnable();
-        }
-        None
+        self.pop_runnable()
     }
 }
 
@@ -1162,7 +1123,7 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
         &mut self,
         deadline: Option<Instant>,
         timeout: Option<Duration>,
-        discover_standing_demand: bool,
+        settle_quiescent_on_drain: bool,
     ) -> DriveOutcome<Job, DependencyKey> {
         let ExecutionContext {
             world,
@@ -1173,12 +1134,6 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
         world.clear_reported_warnings();
         let span = tel.raw_span0_1::<DriveOutcome<Job, DependencyKey>>(&["fz", "compiler2", "drive"]);
         let mut jobs_ran = 0_u64;
-        // Facts whose producers were already demanded at a stall with no fact
-        // change since: re-demanding them would re-run byte-identical jobs.
-        // Any content change clears the set — shifted ground can make the same
-        // demand productive again.
-        let mut stall_demanded: std::collections::HashSet<FactKey> = std::collections::HashSet::new();
-        let mut changed_since_stall = true;
         let outcome = 'outcome: {
             'drive: loop {
                 while world.work_graph.pending_jobs() > 0 {
@@ -1204,14 +1159,13 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                     match result {
                         Ok(effects) => {
                             jobs_ran += 1;
-                            let completion = ExecutionContext::with_optional_product_sessions(
+                            ExecutionContext::with_optional_product_sessions(
                                 world,
                                 tel,
                                 product_sessions.as_deref_mut(),
                             )
                             .complete_job(job, effects);
                             stop_job_span(job_span);
-                            changed_since_stall |= !completion.changed.is_empty();
                         }
                         Err(_) => {
                             job_span.exception();
@@ -1232,74 +1186,29 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                         };
                     }
                 }
-                if !discover_standing_demand {
+                if !settle_quiescent_on_drain {
                     world.clear_unresolved_diagnostics();
                     ExecutionContext::new(world, tel).flush_reported_warnings();
                     break 'outcome DriveOutcome::Resolved;
                 }
-                // The agenda drained. Three standing demand sources remain,
-                // all pulls: every submitted root not yet seeded demands its
-                // own `SeedRoot` (`demand_root_frontier_seeds`), every
-                // published activation not yet analyzed demands its own
-                // analysis (`demand_activation_frontier_analyses`), and every
-                // blocked waiter's fact names its single producer through the
-                // fact->producer map — the same expansion the product drivers
-                // perform when a fact wait finds an empty agenda. Only a genuine
-                // drain reaches this pass, so it is event-driven, never a
-                // per-iteration sweep. Demanding producers is commutative for
-                // *which* facts get a producer job enqueued, but not for the
-                // *order* those jobs then run in — the agenda is a FIFO, and a
-                // job that observes another's published fact can join it under
-                // a keep-first merge, so the order this loop pokes producers in
-                // is still observable downstream — which is why `unresolved()`
-                // orders its waits by data rather than by map order.
-                if !world.has_drain_demand() {
-                    break 'drive;
-                }
-                world.work_graph.note_drain_discovery_sweep();
-                if std::mem::take(&mut changed_since_stall) {
-                    stall_demanded.clear();
-                }
-                // The agenda is empty, so every settled question standing over
-                // a quiesced cone can be answered now (fz-kdt.44). Doing it
-                // before the demand expansions answers any settled questions
-                // left by the work that just quiesced.
+                // The agenda drained. Every need starts its producer the
+                // moment it is recorded (`World::demand_recorded_needs`,
+                // `World::park_on_gates`), so there is no standing demand
+                // left to discover here -- the only drain work left is
+                // arbitration: every settled question standing over a
+                // quiesced cone is answerable. Answering one can satisfy a
+                // standing settled wait and wake real work, so a wake sends
+                // the loop back around; silence ends the drive.
                 world.settle_quiescent_waits(product_sessions.as_deref());
-                let mut producer_pokes =
-                    world.demand_root_frontier_seeds() + world.demand_activation_frontier_analyses();
-                let unresolved = world.unresolved_waits();
-                for wait in &unresolved {
-                    if let DependencyKey::Fact(fact) = wait.fact.fact()
-                        && stall_demanded.insert(fact.clone())
-                    {
-                        producer_pokes += world.demand_fact_producer(fact, WorkStartReason::BlockedWaiterExpansion);
-                    }
-                }
-                if producer_pokes > 0 {
-                    let mut demanded_facts = stall_demanded.iter().cloned().collect::<Vec<_>>();
-                    demanded_facts.sort_by(|left, right| left.semantic_cmp(right, world.types()));
-                    tel.raw_event2(
-                        &["fz", "compiler2", "drive", "demand_on_stall"],
-                        &producer_pokes,
-                        &demanded_facts,
-                    );
-                }
                 let quiesced = flush_quiescence(world, tel);
                 for step in &quiesced {
                     ExecutionContext::with_optional_product_sessions(world, tel, product_sessions.as_deref_mut())
                         .publish_dependency_movements(&step.movements);
                 }
                 if quiescence_woke_work(&quiesced) {
-                    // The arbiter satisfied a standing settled wait: real work
-                    // is queued, so this drain is not a stall however few
-                    // producers it managed to demand.
-                    changed_since_stall = true;
                     continue 'drive;
                 }
-                if producer_pokes == 0 {
-                    // Nothing left to demand: either resolved, or a genuine stall.
-                    break 'drive;
-                }
+                break 'drive;
             }
             if !world.work_graph.has_unresolved() {
                 world.clear_unresolved_diagnostics();

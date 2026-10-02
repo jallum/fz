@@ -1212,119 +1212,17 @@ fn retained_session_work_is_reported_per_request_instead_of_replaying_the_cold_s
     assert_eq!(unchanged.producer_pokes, 0);
     assert_eq!(unchanged.ignition, 0);
     assert_eq!(unchanged.changed_revision_wake, 0);
-    assert_eq!(unchanged.root_frontier, 0);
-    assert_eq!(unchanged.activation_frontier, 0);
+    assert_eq!(unchanged.activation_published, 0);
     assert_eq!(unchanged.blocked_waiter_expansion, 0);
     assert_eq!(unchanged.unsanctioned_work_starts, 0);
-    assert_eq!(unchanged.root_scans, 0);
-    assert_eq!(unchanged.drain_discovery_sweeps, 0);
 
     let run = CausalReport::derive(trace.events());
     assert_eq!(run.sessions.producer_pokes, cold.producer_pokes);
     assert_eq!(run.sessions.ignition, cold.ignition);
     assert_eq!(run.sessions.changed_revision_wake, cold.changed_revision_wake);
-    assert_eq!(run.sessions.root_frontier, cold.root_frontier);
-    assert_eq!(run.sessions.activation_frontier, cold.activation_frontier);
+    assert_eq!(run.sessions.activation_published, cold.activation_published);
     assert_eq!(run.sessions.blocked_waiter_expansion, cold.blocked_waiter_expansion);
     assert_eq!(run.sessions.unsanctioned_work_starts, cold.unsanctioned_work_starts);
-    assert_eq!(run.sessions.root_scans, cold.root_scans);
-    assert_eq!(run.sessions.drain_discovery_sweeps, cold.drain_discovery_sweeps);
-}
-
-/// fz-kdt.34.5: `demand_on_stall`'s aggregate tally (`pull.session.finished`'s
-/// `work_starts_blocked_waiter_expansion`) says how many work starts were a
-/// blocked-waiter expansion, but never which fact drove any one of them.
-/// This test pins the whole chain from the public log alone, for
-/// `TWO_FORMULA_SOURCE`'s deterministic first stall that actually names a
-/// fact: `main/0` (function id 0) calls `helper/1` (function id 1) before
-/// `helper/1`'s own `FunctionDefined` fact exists, discovered while scoping
-/// `main/0`'s body, so a real waiter blocks on it and a stall pass demands
-/// its producer.
-///
-/// `main/0`'s own startup no longer stalls at all (fz-afu.2):
-/// `World::submit_root` demands `RootEntry` through the same gate-checked
-/// path every other job uses, so `SeedRoot(main)`'s gate chain is walked --
-/// and its bottom-most startable job enqueued -- synchronously at
-/// `submit_root` time, before `drive()` ever reaches a stall pass. The
-/// earliest `demand_on_stall` events in this trace are the standing
-/// `root_frontier`/`activation_frontier` sweeps re-poking that already-queued
-/// chain (`producer_pokes >= 1` with an empty `demanded_facts.facts`, since
-/// those two sweeps don't feed the blocked-waiter fact list); the first stall
-/// that actually names a fact is `helper/1`'s.
-///
-/// (a) `demand_on_stall` is public at all (today it is not in the
-/// allowlist, so this alone is the red assertion), with at least one
-/// producer poked; (b) its `demanded_facts.facts` array names the exact
-/// fact — `{"kind":"FunctionDefined","function_id":1}` — with
-/// `"reason":"blocked_waiter_expansion"`; (c) the chain closes: a later
-/// `work_graph.applied` event's `completion` is `DefineFunction(1)`, the
-/// job `World::demand_fact_producer` maps `FunctionDefined` to
-/// (drive.rs's fact->producer map).
-#[test]
-fn demand_on_stall_names_the_exact_fact_and_closes_to_its_producer() {
-    let trace = PublicTrace::compile(TWO_FORMULA_SOURCE);
-    assert!(matches!(trace.outcome, DriveOutcome::Resolved));
-
-    let events = trace.events();
-    let pinned_fact = serde_json::json!({"kind": "FunctionDefined", "function_id": 1});
-    let (stall_index, stall_event) = events
-        .iter()
-        .enumerate()
-        .find(|(_, ev)| {
-            named(ev, &["fz", "compiler2", "drive", "demand_on_stall"])
-                && ev.metadata_key("demanded_facts").is_some_and(|demanded| {
-                    demanded
-                        .get("facts")
-                        .and_then(|v| v.as_array())
-                        .is_some_and(|facts| facts.contains(&pinned_fact))
-                })
-        })
-        .unwrap_or_else(|| panic!("expected a public fz.compiler2.drive.demand_on_stall event naming {pinned_fact}"));
-
-    // (a) present, with a real producer poke.
-    let producer_pokes = stall_event
-        .metadata_key("producer_pokes")
-        .and_then(|v| v.as_u64())
-        .unwrap_or_else(|| panic!("demand_on_stall missing producer_pokes: {stall_event:?}"));
-    assert!(
-        producer_pokes >= 1,
-        "expected demand_on_stall's producer_pokes >= 1, got {producer_pokes}"
-    );
-
-    // (b) the exact demanded fact, and the uniform reason.
-    let demanded_facts = stall_event
-        .metadata_key("demanded_facts")
-        .unwrap_or_else(|| panic!("demand_on_stall missing demanded_facts: {stall_event:?}"));
-    let facts = demanded_facts
-        .get("facts")
-        .and_then(|v| v.as_array())
-        .unwrap_or_else(|| panic!("demanded_facts missing a facts array: {demanded_facts:?}"));
-    assert!(
-        facts.contains(&pinned_fact),
-        "expected demand_on_stall's demanded_facts.facts to contain {pinned_fact}, got {facts:?}"
-    );
-    assert_eq!(
-        stall_event.metadata_key("reason").and_then(|v| v.as_str()),
-        Some("blocked_waiter_expansion"),
-        "expected demand_on_stall's reason to be blocked_waiter_expansion, got {:?}",
-        stall_event.metadata_key("reason")
-    );
-
-    // (c) the chain closes: the fact->producer map sends `FunctionDefined(1)`
-    // to `Job::DefineFunction(1)` — a later public work_graph.applied event
-    // must run exactly that job.
-    let closes_to_producer = events[stall_index + 1..].iter().any(|ev| {
-        named(ev, &["fz", "compiler2", "work_graph", "applied"])
-            && ev.metadata_key("completion").is_some_and(|completion| {
-                completion.get("kind").and_then(|v| v.as_str()) == Some("DefineFunction")
-                    && completion.get("function_id").and_then(|v| v.as_u64()) == Some(1)
-            })
-    });
-    assert!(
-        closes_to_producer,
-        "expected a work_graph.applied event after the stall pass running DefineFunction(1), \
-         the producer FunctionDefined(1) maps to"
-    );
 }
 
 /// fz-kdt.34's three target fixtures. Chosen by the epic: a convergence-heavy
@@ -1560,7 +1458,14 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             // a guess, and after an edit callees answer before their callers.
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                [[148, 0, 0, 9, 5], [477, 0, 0, 64, 6], [623, 0, 0, 69, 6]][fixture_index][scenario],
+                // fz-afu.13: 00567's replacement scenario walks one fewer
+                // body (5 -> 4), 00571's walks two fewer (6 -> 4), and
+                // 00420's cold scenario walks four fewer (623 -> 619) with
+                // its own replacement scenario walking two fewer (6 -> 4).
+                // A need now starts its producer the moment it is recorded
+                // rather than on a later drain, so bodies these scenarios
+                // used to walk again on a later drain are walked once.
+                [[148, 0, 0, 9, 4], [477, 0, 0, 64, 4], [619, 0, 0, 69, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1602,7 +1507,6 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             );
             assert!(report.sessions.sessions > 0, "{fixture} {name}");
             assert_eq!(report.sessions.unsanctioned_work_starts, 0, "{fixture} {name}");
-            assert_eq!(report.sessions.root_scans, 0, "{fixture} {name}");
             assert_eq!(
                 report.recursive_searches.len() as u64,
                 report.recursive_search.searches,
@@ -2162,7 +2066,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // nothing. The work is the same and the counting is more exact.
         // fz-afu.11: 218 -> 216. Two of the rebases above no longer happen,
         // so their reproducing analyses go with them; zero-change stays 3.
-        analyze_evaluations: 216,
+        // fz-afu.13: 216 -> 215, with nothing else on this fixture's job
+        // census moving -- one activation that used to be re-analyzed once
+        // under the drain-time frontier walk now has its first analysis
+        // demanded once, at the moment its completion published it, and
+        // never again; zero-change stays 3.
+        analyze_evaluations: 215,
         analyze_zero_change: 3,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
@@ -2211,7 +2120,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // extern-activation runs never start blocked-then-real; the ten
         // fewer AnalyzeActivation evaluations are the whole of the drop
         // (216, from 226, pin unchanged below).
-        total_evaluations: 702,
+        // fz-afu.13: 702 -> 701, the same single AnalyzeActivation drop
+        // (216 -> 215) pinned above.
+        total_evaluations: 701,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2414,7 +2325,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // at zero.
         // fz-5xp.30: 263 -> 267. Reached arithmetic result/status helpers
         // add four generic activations and no retractions.
-        activations: lifecycle(267, 267, 0),
+        // fz-afu.13: 267 -> 265. A need now starts its producer the moment
+        // it is recorded rather than on a later drain; two activation keys
+        // this fixture used to mint from a guess that a later re-walk then
+        // widened are never minted, because the re-walk this ticket removes
+        // is the one that used to mint them.
+        activations: lifecycle(265, 265, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -2454,7 +2370,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // denotations; retractions stay flat.
         // fz-5xp.30: 451/461/10 -> 458/468/10. Seven helper-path callsites
         // become reached, without introducing a withdrawal.
-        callsites: lifecycle(458, 468, 10),
+        // fz-afu.13: 458/468/10 -> 457/467/10. One callsite summary that
+        // used to be minted from a guess a later re-walk then widened is
+        // never minted, the same cause as the activation row above;
+        // retractions stay flat.
+        callsites: lifecycle(457, 467, 10),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -2581,7 +2501,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `Range.done?/3` and two lambdas) settles over two more rounds; each
         // of those runs changes its output, and no activation is added or
         // removed. The same compile runs 65 fewer jobs in all.
-        analyze_evaluations: 900,
+        // fz-afu.13: 900 -> 875. A need now starts its producer the moment
+        // it is recorded rather than on a later drain, so this fixture's
+        // deep call graph no longer re-analyzes an activation once per
+        // later drain pass that used to rediscover it still waiting;
+        // zero-change stays flat at 7, so none of the removed runs
+        // reproduced an answer it already had.
+        analyze_evaluations: 875,
         analyze_zero_change: 7,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
@@ -2630,7 +2556,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-xxd.11: 1911 -> 1849. An extern has no body: -28 LowerFunction,
         // -18 PlanEntryDispatch and -18 DeriveFunctionContract for externs no
         // caller reaches, +2 AnalyzeActivation (above).
-        total_evaluations: 1849,
+        // fz-afu.13: 1849 -> 1824. The twenty-five fewer AnalyzeActivation
+        // evaluations above are the whole of the drop.
+        total_evaluations: 1824,
     },
 ];
 

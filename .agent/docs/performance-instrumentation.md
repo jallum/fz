@@ -211,23 +211,29 @@ The drive stop identifies that exact dependency; it attributes no scheduler
 job to a producer that never ran as a job.
 
 **Work starts** — `fz.compiler2.pull.session.finished` carries the
-`WorkStartTally`: `ignition`, `changed_revision_wake`, `activation_frontier`,
-`blocked_waiter_expansion`, plus `unsanctioned_work_starts`, `root_scans`, and
-`drain_discovery_sweeps`. This is the pull-only guard's evidence — every job on
-the agenda must name a sanctioned reason. All three scan/unsanctioned counters
-are zero, and `compiler2::work_start_reason_test` holds them there: a
-reintroduced job-pushes-job path lands in `Unclassified` by construction, and a
-producer that discovers work by scanning the fact table shows up in `root_scans`.
-`drain_discovery_sweeps` counts the narrower empty-agenda pass that clones and
-orders the activation-frontier and unresolved-wait inventories; exact nonempty
-indexes guard that work, so unchanged and irrelevant retained requests do not
-increment it.
-`activation_frontier` counts root-entry and caller-discovered-callee analyses
-ignited from their published `Activation` edges. The typed regression pairs
-`SeedRoot`'s claimed activation with the exact accepted frontier key and pins
-the combined fixture population: 3 root plus 265 callee starts become 268
-starts on the shared frontier, so compensating aggregate counts cannot hide a
-second root path.
+`WorkStartTally`: `ignition`, `changed_revision_wake`, `activation_published`,
+`gate_expansion`, `blocked_waiter_expansion`, and `unclassified`. This is the
+pull-only guard's evidence — every job that enters the agenda must name a
+sanctioned reason, charged once per job per real run (`Scheduler::enqueue`
+records the reason an agenda entry carries without charging anything;
+`record_run_start` spends it, charging the tally only when `pop_runnable`
+actually commits to running the job, so a job parked on a missing gate or
+answer and later re-enqueued for the same eventual run is not charged
+twice). `WorkStartTally::total()` sums every reason, equal to the number of
+applied work steps.
+`unsanctioned_work_starts()` reads `unclassified` alone, and
+`compiler2::work_start_reason_test` holds it at zero: a reintroduced
+job-pushes-job path (an enqueue that forgets to name a reason) lands there by
+construction. There is no drain-time scan or sweep left to instrument —
+`World::demand_recorded_needs` demands every need at the moment it is
+recorded (a job's own waits at completion, and the first analysis of every
+activation a completion publishes), `pop_runnable` demands a never-run job's
+missing gates the moment it is popped, and `activation_published` counts
+exactly those first-analysis demands. The typed regression in
+`work_start_reason_test` pins the exact combined-fixture count for the
+current design; see that test for the live numbers rather than a figure
+repeated here, since the eager-demand design means scheduling, not
+discovery-sweep arithmetic, now decides most of them.
 
 **Runtime-demand facts** — `work_graph.applied` names each
 `DeriveRuntimeDemand(E)` completion, its exact reads, content movements,

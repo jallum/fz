@@ -98,9 +98,10 @@ pub(super) fn seed_root(
     // them via the normal wake mechanism.
     //
     // `AnalyzeActivation` is not pushed either. Publishing `Activation(entry)`
-    // above records the same standing frontier edge as caller-discovered
-    // callees; `demand_activation_frontier_analyses` expands it through the
-    // fact->producer map on both the bare drive and product fact-wait paths.
+    // above records the same standing claim as a caller-discovered callee;
+    // `World::demand_recorded_needs`, called from this job's own completion,
+    // demands its first analysis through the fact->producer map the instant
+    // it is recorded.
     Ok(JobEffects {
         reads: settled_uses(reads),
         outputs,
