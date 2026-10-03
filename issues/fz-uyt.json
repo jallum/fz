@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-03T22:50:29Z",
+  "description": "CI installs dtolnay/rust-toolchain@stable, which moved to Rust 1.99.0 (2026-09-28) while local builds use 1.98.1. 1.99 deprecates AtomicU64::fetch_update (renamed try_update); clippy's -D warnings fails the nested runtime staticlib build in build.rs, so lint fails on every PR (first seen on PR #259; #245 passed before the release).\n\nUses: runtime/src/resource.rs:78, src/compiler2/pull.rs:95.\n\nChange: a rust-toolchain.toml pins the channel (1.99.0, components rustfmt + clippy) as the one source of truth; the workflow installs whatever that file names (rustup toolchain install) instead of @stable; the push job adds llvm-tools-preview on top. Both fetch_update calls become try_update. Upgrades become a deliberate one-line change.\n\nClose when: full gate green locally on 1.99.0 and CI lint + test green on the PR, stacked on #259.",
+  "id": "fz-uyt",
+  "labels": [],
+  "priority": 0,
+  "status": "open",
+  "title": "CI and local build with one pinned toolchain",
+  "type": "task",
+  "updated_at": "2026-10-03T22:50:29Z"
+}
