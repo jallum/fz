@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-afu.15",
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-afu",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Needed work starts when it is needed, not when the queue drains",
   "type": "bug",
-  "updated_at": "2026-10-02T12:09:57Z"
+  "updated_at": "2026-10-03T22:25:38Z"
 }
