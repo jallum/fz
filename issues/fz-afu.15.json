@@ -4,7 +4,8 @@
     "fz-afu.13"
   ],
   "blocks": [
-    "fz-afu.16"
+    "fz-afu.16",
+    "fz-afu.17"
   ],
   "created": "2026-10-02T11:07:52Z",
   "description": "A settled answer is final. Today a reader can observe a fact as settled, run, and then be woken because the fact moves again: settled was announced before everything that could change it had run.\n\nCase (fz-afu.13 probe with the product pull's waits posted as needs, FZ_PROBE_PULL): DeriveExecutableFacts(main/0) runs at step 88, woken by ActivationAnalyzed(main/0) settling. Kernel.+'s analysis then completes and moves the readiness of main/0's ActivationAnalyzed and CallSiteSummary, waking it again at step 126. Cost: exactly +1 job on every worked program (1+2 144 -\u003e 145, s1 243 -\u003e 244, s3 192 -\u003e 193, p1 602 -\u003e 603, ladder 272 -\u003e 273, json 2569 -\u003e 2570). Base hides it by starting that producer only after the last drain.\n\nEarlier shape (base, p1 from fz-afu.13): every drain unsettles the cone above new work and every DeriveExecutableFacts there runs once to discover its input unsettled, then again after it settles (ExecutableFacts blocked on ActivationAnalyzed 312 vs 86). fz-afu.13's ActivationAnalyzed(settled) gate removes that run; this ticket owns the remaining premature settle.\n\nPaper first: what settles ActivationAnalyzed(main/0) at step 88 while a callee analysis that can move it is still pending; settled must mean no pending producer can change it.\nClose when: the product pull's empty-agenda producer demand (product_drive.rs drive_product_fact_waits_with_sessions) is deleted, its waits are demanded when posted, and the six worked programs show no +1; each executable's facts run once per settled change of their inputs on p1 and closure_capture_requirement_projection; no pin rises.",
