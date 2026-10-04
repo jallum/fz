@@ -14,9 +14,15 @@
   "id": "fz-afu.4",
   "labels": [],
   "parent": "fz-afu",
+  "comments": [
+    {
+      "text": "Deep causal audit on fz-uyt/pin-toolchain 6c99b476f: json_roundtrip main/0 has exactly 36 balanced starts/completions: 1 initial + 3 InputDemand wakes (decode, dbg, roundtrip) + 7 Json.decode ReturnType wakes + 7 dbg ReturnType wakes + 8 encode! ReturnType wakes + 10 roundtrip ReturnType wakes. Every rerun has exactly one enqueued wake between its preceding completion and its start; 6 additional wakes coalesce. All uses are Current. Only 4 runs record waits; 32 are wait-free even though callee evidence is unfinished. main ReturnType stays revision 0 through run 34, becomes false on run 35, then false|true on run 36. Union of ALL AnalyzeActivation ReturnType read edges across trace: 27 direct main dependencies, 276 transitive dependencies, zero path back to main; main is not in a semantic return fixpoint with its callees. prepare_function_call at semantic.rs:1990 unconditionally subscribes Current and does not call answer_use; pop_runnable protects only prior Concluded reads. analyze_tail at semantic.rs:861 stops the continuation on absent return evidence, so unknown stalls discovery of independent later calls. Reduced probes: leaf main 1 run; one literal-returning callee then :done gives main 3 runs; 2/4/8 independent zero-arg literal-returning callees give main 5/9/17 runs, each callee once. Recursive probe main: a(3); :done, a(0)-\u003e:end, a(n)-\u003e{n,a(n-1)}: main 19 runs, one InputDemand wake + 17 return revisions from a; main is :done from run 3 onward and unchanged on the remaining 16 runs. Seven historical dbg activation keys read earlier in JSON are absent from main final return-read set (6 decode approximants + false-only roundtrip result), showing provisional evidence creates extra work, not just retries. This supports the existing concluded-outside-partners + explicit unknown design. It does not prove exactly one total AnalyzeActivation evaluation: this job currently must first discover/claim callee activations and their input evidence, and nested result-dependent calls require staged discovery. A global Settled wait is stronger than Concluded and can introduce ownership cycles; preserve the existing readiness distinction. No compiler code changed.",
+      "timestamp": "2026-10-04T03:46:11Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "A caller reads each callee's return once it concludes, and walks past pending calls as unknown",
   "type": "bug",
-  "updated_at": "2026-10-04T03:34:17Z"
+  "updated_at": "2026-10-04T03:46:11Z"
 }
