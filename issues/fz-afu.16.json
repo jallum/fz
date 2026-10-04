@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-04T03:34:17Z",
+  "description": "tests/fixture_matrix.rs turns a run-time deferral into a pass: CheckOutcome::Deferred (line ~148) prints 'deferred: \u003creason\u003e' and returns Ok(()), so the trial counts as passed while nothing ran. Header-declared defers are already ignored trials (with_ignored_flag, lines ~121-131 and ~156); run-time ones are not. Today five build-path trials pass this way: matrix::{00525_test_macro_assert, 00526_test_macro_fail, 00527_multiple_tests_mixed, sample_tests, sample_tests_module}::build ('kind: test fixtures don't yet run via build', run_fz2_build_path). They are visible in CI's test log.\n\nFold: every deferral, header or run-time, is one ignored trial carrying its reason; the pass count counts only trials that ran. Expected: matrix 2012 passed / 3 ignored becomes 2007 passed / 8 ignored (until the build path for kind: test exists).\nClose when: no matrix trial returns Ok without running its check; the ignored list names each reason.",
+  "id": "fz-afu.16",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 2,
+  "status": "open",
+  "title": "A deferred matrix trial reports as ignored, never as passed",
+  "type": "bug",
+  "updated_at": "2026-10-04T03:34:17Z"
+}
