@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-04T03:34:17Z",
+  "description": "run_fz2_build_path (tests/fixture_matrix.rs ~1780) defers every kind: test fixture: fz2 test has run and --interp paths but no AOT path, so the test runner has no three-path parity. Fixtures: 00525_test_macro_assert, 00526_test_macro_fail, 00527_multiple_tests_mixed, fixtures2/behavior/sample_tests, sample_tests_module (kind is explicit or inferred from a missing main, fixture_matrix.rs ~770).\n\nPaper first: how fz2 test discovers tests and reports results under run/--interp; what a built binary does with them (exit code, output shape); answer by hand for 00527 before reading the implementation.\nClose when: the five build trials run and pass with the same output as run/--interp; the 'don't yet run via build' deferral is deleted.",
+  "id": "fz-afu.17",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 2,
+  "status": "open",
+  "title": "kind: test fixtures run through fz2 build",
+  "type": "task",
+  "updated_at": "2026-10-04T03:34:17Z"
+}
