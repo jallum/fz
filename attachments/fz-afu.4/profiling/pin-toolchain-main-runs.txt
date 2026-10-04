@@ -1,0 +1,79 @@
+# 1 @   329.8ms duration=  0.3ms entries=None changes=  4 blocked=FunctionContract(Json.decode/1),InputDemand(Json.decode/1),Recursive(Json.decode/1)
+# 2 @   333.6ms duration=  0.4ms entries=None changes=  6 blocked=-
+    enqueued InputDemand(Json.decode/1) current by DeriveInputDemand(Json.decode/1)
+# 3 @   357.4ms duration=  0.4ms entries=None changes=  4 blocked=FunctionContract(Kernel.dbg/1),InputDemand(Kernel.dbg/1),Recursive(Kernel.dbg/1)
+    enqueued ReturnType(Json.decode/1/a37) current by AnalyzeActivation(Json.decode/1/a37)
+# 4 @   361.2ms duration=  0.6ms entries=None changes= 10 blocked=-
+    enqueued InputDemand(Kernel.dbg/1) current by DeriveInputDemand(Kernel.dbg/1)
+# 5 @   370.8ms duration=  0.7ms entries=None changes= 12 blocked=-
+    enqueued ReturnType(Json.decode/1/a37) current by AnalyzeActivation(Json.decode/1/a37)
+# 6 @   378.0ms duration=  8.9ms entries=None changes=112 blocked=FunctionContract(Json.encode!/1),InputDemand(Json.encode!/1),Recursive(Json.encode!/1)
+    enqueued ReturnType(Kernel.dbg/1/a84) current by AnalyzeActivation(Kernel.dbg/1/a84)
+# 7 @   451.3ms duration=  2.8ms entries=None changes=124 blocked=-
+    enqueued ReturnType(Json.decode/1/a37) current by AnalyzeActivation(Json.decode/1/a37)
+# 8 @   481.9ms duration=  1.0ms entries=None changes= 16 blocked=-
+    enqueued ReturnType(Json.decode/1/a37) current by AnalyzeActivation(Json.decode/1/a37)
+    coalesced ReturnType(Kernel.dbg/1/a191) current by AnalyzeActivation(Kernel.dbg/1/a191)
+# 9 @   498.2ms duration=  9.7ms entries=None changes=128 blocked=-
+    enqueued ReturnType(Kernel.dbg/1/a211) current by AnalyzeActivation(Kernel.dbg/1/a211)
+#10 @   527.7ms duration=  7.6ms entries=None changes=132 blocked=-
+    enqueued ReturnType(Json.encode!/1/a229) current by AnalyzeActivation(Json.encode!/1/a229)
+#11 @   547.1ms duration=  3.2ms entries=None changes=134 blocked=-
+    enqueued ReturnType(Json.decode/1/a37) current by AnalyzeActivation(Json.decode/1/a37)
+#12 @   582.6ms duration=  9.6ms entries=None changes=138 blocked=-
+    enqueued ReturnType(Kernel.dbg/1/a249) current by AnalyzeActivation(Kernel.dbg/1/a249)
+#13 @   611.5ms duration=  7.1ms entries=None changes=144 blocked=-
+    enqueued ReturnType(Json.encode!/1/a277) current by AnalyzeActivation(Json.encode!/1/a277)
+#14 @   684.6ms duration=  3.1ms entries=None changes=146 blocked=-
+    enqueued ReturnType(Json.decode/1/a37) current by AnalyzeActivation(Json.decode/1/a37)
+#15 @   717.8ms duration= 10.5ms entries=None changes=146 blocked=-
+    enqueued ReturnType(Kernel.dbg/1/a358) current by AnalyzeActivation(Kernel.dbg/1/a358)
+#16 @   737.2ms duration=  8.3ms entries=None changes=156 blocked=-
+    enqueued ReturnType(Json.encode!/1/a192) current by AnalyzeActivation(Json.encode!/1/a192)
+#17 @   796.9ms duration=  3.6ms entries=None changes=158 blocked=-
+    enqueued ReturnType(Json.decode/1/a37) current by AnalyzeActivation(Json.decode/1/a37)
+#18 @   823.6ms duration= 10.2ms entries=None changes=158 blocked=-
+    enqueued ReturnType(Kernel.dbg/1/a412) current by AnalyzeActivation(Kernel.dbg/1/a412)
+#19 @   842.2ms duration=  8.2ms entries=None changes=164 blocked=-
+    enqueued ReturnType(Json.encode!/1/a378) current by AnalyzeActivation(Json.encode!/1/a378)
+#20 @   876.7ms duration=  8.7ms entries=None changes=170 blocked=-
+    enqueued ReturnType(Json.encode!/1/a37) current by AnalyzeActivation(Json.encode!/1/a37)
+#21 @   898.4ms duration= 11.7ms entries=None changes=176 blocked=-
+    enqueued ReturnType(Json.encode!/1/a440) current by AnalyzeActivation(Json.encode!/1/a440)
+#22 @   918.4ms duration= 10.3ms entries=None changes=182 blocked=-
+    enqueued ReturnType(Json.encode!/1/a445) current by AnalyzeActivation(Json.encode!/1/a445)
+#23 @   952.4ms duration=  9.9ms entries=None changes= 38 blocked=InputDemand(roundtrip/1),Recursive(roundtrip/1)
+    enqueued ReturnType(Json.encode!/1/a450) current by AnalyzeActivation(Json.encode!/1/a450)
+#24 @   971.5ms duration= 11.0ms entries=None changes=220 blocked=-
+    enqueued InputDemand(roundtrip/1) current by DeriveInputDemand(roundtrip/1)
+#25 @   991.2ms duration= 11.6ms entries=None changes=224 blocked=-
+    enqueued ReturnType(roundtrip/1/a229) current by AnalyzeActivation(roundtrip/1/a229)
+#26 @  1007.6ms duration= 11.7ms entries=None changes=228 blocked=-
+    enqueued ReturnType(Kernel.dbg/1/a471) current by AnalyzeActivation(Kernel.dbg/1/a471)
+#27 @  1028.7ms duration= 11.8ms entries=None changes=228 blocked=-
+    enqueued ReturnType(roundtrip/1/a229) current by AnalyzeActivation(roundtrip/1/a229)
+    coalesced ReturnType(roundtrip/1/a277) current by AnalyzeActivation(roundtrip/1/a277)
+#28 @  1056.2ms duration= 12.7ms entries=None changes=236 blocked=-
+    enqueued ReturnType(Kernel.dbg/1/a489) current by AnalyzeActivation(Kernel.dbg/1/a489)
+#29 @  1076.8ms duration= 12.6ms entries=None changes=246 blocked=-
+    enqueued ReturnType(roundtrip/1/a192) current by AnalyzeActivation(roundtrip/1/a192)
+#30 @  1094.8ms duration= 13.5ms entries=None changes=242 blocked=-
+    enqueued ReturnType(roundtrip/1/a192) current by AnalyzeActivation(roundtrip/1/a192)
+#31 @  1111.8ms duration= 13.0ms entries=None changes=252 blocked=-
+    enqueued ReturnType(roundtrip/1/a378) current by AnalyzeActivation(roundtrip/1/a378)
+#32 @  1133.0ms duration= 13.0ms entries=None changes=258 blocked=-
+    enqueued ReturnType(roundtrip/1/a37) current by AnalyzeActivation(roundtrip/1/a37)
+    coalesced ReturnType(roundtrip/1/a378) current by AnalyzeActivation(roundtrip/1/a378)
+#33 @  1153.6ms duration= 12.9ms entries=None changes=264 blocked=-
+    enqueued ReturnType(roundtrip/1/a440) current by AnalyzeActivation(roundtrip/1/a440)
+    coalesced ReturnType(roundtrip/1/a37) current by AnalyzeActivation(roundtrip/1/a37)
+#34 @  1173.8ms duration= 13.2ms entries=None changes=270 blocked=-
+    enqueued ReturnType(roundtrip/1/a445) current by AnalyzeActivation(roundtrip/1/a445)
+    coalesced ReturnType(roundtrip/1/a440) current by AnalyzeActivation(roundtrip/1/a440)
+#35 @  1194.2ms duration= 13.6ms entries=None changes=276 blocked=-
+    enqueued ReturnType(roundtrip/1/a450) current by AnalyzeActivation(roundtrip/1/a450)
+    coalesced ReturnType(roundtrip/1/a445) current by AnalyzeActivation(roundtrip/1/a445)
+#36 @  1212.3ms duration= 13.5ms entries=None changes=276 blocked=-
+    enqueued ReturnType(roundtrip/1/a450) current by AnalyzeActivation(roundtrip/1/a450)
+COUNTS Counter({('ReturnType(Json.decode/1/a37)', 'enqueued'): 7, ('ReturnType(roundtrip/1/a229)', 'enqueued'): 2, ('ReturnType(roundtrip/1/a192)', 'enqueued'): 2, ('ReturnType(roundtrip/1/a450)', 'enqueued'): 2, ('InputDemand(Json.decode/1)', 'enqueued'): 1, ('InputDemand(Kernel.dbg/1)', 'enqueued'): 1, ('ReturnType(Kernel.dbg/1/a84)', 'enqueued'): 1, ('ReturnType(Kernel.dbg/1/a191)', 'coalesced'): 1, ('ReturnType(Kernel.dbg/1/a211)', 'enqueued'): 1, ('ReturnType(Json.encode!/1/a229)', 'enqueued'): 1, ('ReturnType(Kernel.dbg/1/a249)', 'enqueued'): 1, ('ReturnType(Json.encode!/1/a277)', 'enqueued'): 1, ('ReturnType(Kernel.dbg/1/a358)', 'enqueued'): 1, ('ReturnType(Json.encode!/1/a192)', 'enqueued'): 1, ('ReturnType(Kernel.dbg/1/a412)', 'enqueued'): 1, ('ReturnType(Json.encode!/1/a378)', 'enqueued'): 1, ('ReturnType(Json.encode!/1/a37)', 'enqueued'): 1, ('ReturnType(Json.encode!/1/a440)', 'enqueued'): 1, ('ReturnType(Json.encode!/1/a445)', 'enqueued'): 1, ('ReturnType(Json.encode!/1/a450)', 'enqueued'): 1, ('InputDemand(roundtrip/1)', 'enqueued'): 1, ('ReturnType(Kernel.dbg/1/a471)', 'enqueued'): 1, ('ReturnType(roundtrip/1/a277)', 'coalesced'): 1, ('ReturnType(Kernel.dbg/1/a489)', 'enqueued'): 1, ('ReturnType(roundtrip/1/a378)', 'enqueued'): 1, ('ReturnType(roundtrip/1/a37)', 'enqueued'): 1, ('ReturnType(roundtrip/1/a378)', 'coalesced'): 1, ('ReturnType(roundtrip/1/a440)', 'enqueued'): 1, ('ReturnType(roundtrip/1/a37)', 'coalesced'): 1, ('ReturnType(roundtrip/1/a445)', 'enqueued'): 1, ('ReturnType(roundtrip/1/a440)', 'coalesced'): 1, ('ReturnType(roundtrip/1/a445)', 'coalesced'): 1})
+pending after final []
