@@ -10,11 +10,15 @@
     {
       "text": "PR #260 (6c99b476f), stacked on #259.",
       "timestamp": "2026-10-03T23:09:19Z"
+    },
+    {
+      "text": "Profiled compiler fixtures at 6c99b476f using the up-to-date Rust 1.99.0 debug fz2. Three plain JIT runs each: json_roundtrip median 3.008s; fz_f98_map_reduce 0.708s; fz_f98_range_reduce2 0.411s; grounded_predicate_captures 0.206s; boxed_predicate_cps_sharing 0.225s. Full-process macOS sample on json_roundtrip: 2705 main-thread samples, 1584 (58.6%) native_program_for_root, 1091 (40.3%) compile_native_backend; 930 (34.4% overall) Cranelift define_function. Job completion alone is 471 samples (17.4% overall), quiescent settlement 116 (4.3%). Trace: 2569 jobs / 1763 distinct subjects / 806 excess runs. AnalyzeActivation 825 runs / 279 subjects / 546 excess; main/0 runs 36 times and consumes 300.8ms trace job time. AnalyzeActivation totals 802.5ms of 1375ms job self time; native codegen 1163.8ms, including 1049 define_function spans totaling 1014.5ms. Program execution after last span 6.8ms. Distiller causal cross-check aborts on obsolete work_starts_activation_frontier field; filed fz-afu.18. Artifacts: /tmp/fz-uyt-profile/{timings.json,json.jsonl,json.distilled.txt,json.full.sample.txt}. These are five fixture probes, not a full-matrix ranking; telemetry duration includes rendering overhead.",
+      "timestamp": "2026-10-04T03:35:39Z"
     }
   ],
   "priority": 0,
   "status": "in_progress",
   "title": "CI and local build with one pinned toolchain",
   "type": "task",
-  "updated_at": "2026-10-03T23:09:19Z"
+  "updated_at": "2026-10-04T03:35:39Z"
 }
