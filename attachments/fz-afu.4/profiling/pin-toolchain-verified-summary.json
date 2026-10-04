@@ -1,0 +1,20 @@
+{
+  "sha": "6c99b476f",
+  "total_main_runs": 36,
+  "enqueued_rerun_causes": {
+    "InputDemand(Json.decode/1": 1,
+    "ReturnType(Json.decode/1": 7,
+    "InputDemand(Kernel.dbg/1": 1,
+    "ReturnType(Kernel.dbg/1": 7,
+    "ReturnType(Json.encode!/1": 8,
+    "InputDemand(roundtrip/1": 1,
+    "ReturnType(roundtrip/1": 10
+  },
+  "coalesced_wakes": 6,
+  "direct_return_dependencies_ever": 27,
+  "transitive_return_dependencies_ever": 276,
+  "return_dependency_back_paths": 0,
+  "locally_blocked_runs": 4,
+  "locally_wait_free_runs": 32,
+  "traced_main_ms": 300.77654
+}
