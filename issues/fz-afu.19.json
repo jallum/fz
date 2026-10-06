@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-06T14:45:09Z",
+  "description": "apply_import (src/compiler2/source_publish.rs:1372) has two branches. When the imported module's interface is present it pushes a read of FactKey::ModuleInterface. When it is absent and the import has only:, it binds Callable placeholders and pushes no read. When the interface later arrives the binding becomes Macro(114) and FunctionSource Function(113) moves while its publisher is not dirty: a settled fact changes content outside the normal path.\n\nFound by the settled-move census on fz-afu.13 (6c99b476f): 160 settled facts move across 665 fixtures. 159 are a new claimant joining a cumulative fact (ProtocolDispatch 118, IncomingInputSlot 26, ActivationInputs 12, ModuleIndexed 3) and are sound: no Settled or Concluded subscriber at the move, no product built from a stale settled read, outputs and backends order-independent. The one FunctionSource move in provider_macros_item_macro is this missing read. Evidence: scratch afu4/settled/ (settled_probe.patch, PROBE_FS).\n\nFix: the absent-interface branch records the ModuleInterface read like the present branch, so the interface arriving dirties the derivation and the binding moves through the ordinary wake.\n\nDocs, same commit (.agent/docs/fact-engine.md):\n- Settled means no current publisher can move the fact; a claimant that has not arrived yet can still extend a cumulative fact. Readers re-validate by revision.\n- Around the IncomingInputSlot section, an absent slot is not authoritative: a caller's runtime demand can still add one.\n\nAcceptance: no FunctionSource settled move in provider_macros_item_macro and none across the census; outputs identical; no pin rises.",
+  "id": "fz-afu.19",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 3,
+  "status": "open",
+  "title": "An import of an unindexed module records the interface it reads",
+  "type": "bug",
+  "updated_at": "2026-10-06T14:45:09Z"
+}
