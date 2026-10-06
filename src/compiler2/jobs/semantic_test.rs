@@ -1,7 +1,54 @@
 use super::*;
 use crate::compiler2::drive::ExecutionContext;
-use crate::compiler2::{DriveOutcome, ExecutableNeed};
+use crate::compiler2::dump::DumpStage;
+use crate::compiler2::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::rc::Rc;
+
+/// Every `Job::AnalyzeActivation` span started during a drive, recorded
+/// through the same production telemetry the scheduler itself emits.
+struct JobStarts(Rc<RefCell<Vec<Job>>>);
+
+impl JobStarts {
+    fn install(tel: &ConfiguredTelemetry) -> Self {
+        let starts = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&starts);
+        tel.attach_raw_span1_0::<Job, _, _, _>(
+            &["fz", "compiler2", "job"],
+            move |_, _, _, job| sink.borrow_mut().push(job.clone()),
+            |_, _, _, _| {},
+            |_, _, _, _| {},
+        );
+        Self(starts)
+    }
+
+    /// How many times any activation of `function` was analysed. A
+    /// zero-arity function has exactly one activation, so counting by
+    /// function identity here is the same as counting by activation key.
+    fn count_function(&self, function: FunctionId) -> usize {
+        self.0
+            .borrow()
+            .iter()
+            .filter(|job| matches!(job, Job::AnalyzeActivation(key) if key.function == function))
+            .count()
+    }
+
+    /// Every activation of `function` this drive ever started analysing,
+    /// found by job identity rather than by guessing the function's
+    /// argument types.
+    fn activations(&self, function: FunctionId) -> HashSet<ActivationKey> {
+        self.0
+            .borrow()
+            .iter()
+            .filter_map(|job| match job {
+                Job::AnalyzeActivation(key) if key.function == function => Some(key.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
 
 #[test]
 fn analyze_activation_preserves_real_rows_without_publishing_their_cartesian_blend() {
@@ -312,4 +359,203 @@ end
         !world.types().is_equivalent(&slicer, &any),
         "the calculator should read the var-carrying closure through, not widen it to any",
     );
+}
+
+/// `main/0` reads each callee's return once it concludes rather than on
+/// every revision, so reaching every call site, reading the concluded
+/// returns, and publishing the join costs exactly three analyses however
+/// many independent callees it has.
+#[test]
+fn independent_literal_callees_settle_main_in_three_analyses() {
+    for callee_count in [2usize, 4, 8] {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let mut source = String::new();
+        for i in 0..callee_count {
+            source.push_str(&format!("def callee_{i}(), do: {i}\n"));
+        }
+        source.push_str("def main() do\n");
+        for i in 0..callee_count {
+            source.push_str(&format!("  callee_{i}()\n"));
+        }
+        source.push_str("  :done\nend\n");
+        world.submit_code(Some(format!("independent_{callee_count}.fz")), source);
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let starts = JobStarts::install(&tel);
+
+        assert!(
+            matches!(ExecutionContext::new(&mut world, &tel).drive(), DriveOutcome::Resolved),
+            "{callee_count} independent callees should settle",
+        );
+        let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+        let main_activation = world.activation_key(root, main, &[]);
+        let done = world.types_mut().atom_lit("done");
+        assert_eq!(world.activation_return_evidence(&main_activation), Some(done));
+        assert_eq!(
+            starts.count_function(main),
+            3,
+            "{callee_count} independent callees must still cost main/0 exactly three analyses",
+        );
+    }
+}
+
+/// `a/1`'s return climbs through many revisions as it recurses, but
+/// `main/0` waits for it to conclude and reads it exactly once, so
+/// main/0's analysis count stays at three regardless of how many
+/// revisions a/1's return takes to settle.
+#[test]
+fn recursive_callee_still_settles_main_in_three_analyses() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("recursive_callee_return.fz".to_string()),
+        r#"
+def a(0), do: :end
+def a(n), do: {n, a(n - 1)}
+def main() do
+  a(3)
+  :done
+end
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let starts = JobStarts::install(&tel);
+
+    assert!(matches!(
+        ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+    let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    let main_activation = world.activation_key(root, main, &[]);
+    let done = world.types_mut().atom_lit("done");
+    assert_eq!(world.activation_return_evidence(&main_activation), Some(done));
+    assert_eq!(
+        starts.count_function(main),
+        3,
+        "a/1's climb must not re-run main/0 once for every one of its revisions",
+    );
+}
+
+/// `spin/1` only ever calls itself, so its return is a bottom that never
+/// rises, and nothing can ever arrive at the call that follows it. `g/1`
+/// sequences a call to `spin/1` and then one to `h/0`, so h/0 can never
+/// run and the compiled program must carry no executable for it.
+#[test]
+fn a_call_that_never_returns_strands_the_call_that_follows_it() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("call_that_never_returns.fz".to_string()),
+        text: r#"
+def spin(x), do: spin(x)
+def h(), do: :reached
+def g(x) do
+  spin(x)
+  h()
+end
+def main(), do: g(0)
+"#
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let (program, _) = compiler
+        .drive_root_to_dump_stage(root, DumpStage::Backend)
+        .unwrap_or_else(|error| panic!("the backend product should settle: {error}"));
+
+    let h = compiler.world_mut().reference_function(ModuleId::GLOBAL, "h", 0);
+    assert!(
+        !program
+            .executables()
+            .iter()
+            .any(|executable| executable.key.activation.function == h),
+        "a call that follows a call that never returns can never run, so h/0 must not reach the backend",
+    );
+}
+
+/// `ping/1` and `pong/1` hand off to each other on every non-base call, so
+/// each reads the other's return as a partner — its current value, not a
+/// one-time concluded read. The fixpoint this reaches is small (`:done`
+/// however many hand-offs it takes), and reaching it at all is the point:
+/// a partner cycle must still settle, not stall as a standing wait on
+/// itself.
+#[test]
+fn mutual_recursion_still_climbs_as_partners() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("ping_pong_partners.fz".to_string()),
+        r#"
+def ping(n), do: if n == 0, do: :done, else: pong(n - 1)
+def pong(n), do: if n == 0, do: :done, else: ping(n - 1)
+def main(), do: ping(5)
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert!(
+        matches!(ExecutionContext::new(&mut world, &tel).drive(), DriveOutcome::Resolved),
+        "two functions reading each other's return as partners must still reach a fixpoint",
+    );
+
+    let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    let main_activation = world.activation_key(root, main, &[]);
+    let done = world.types_mut().atom_lit("done");
+    assert_eq!(
+        world.activation_return_evidence(&main_activation),
+        Some(done),
+        "ping and pong only ever hand off to :done, however many times they call each other",
+    );
+}
+
+/// `val/1`'s first clause calls `arr/2`, whose call back into `val/1` has
+/// not settled the first time around, so an unknown absorbs the return:
+/// val/1 must publish nothing while any of its call sites still waits,
+/// never the answer from its other, already-settled clauses.
+#[test]
+fn a_return_is_never_published_from_a_subset_of_call_sites_while_others_wait() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("s3.fz".to_string()),
+        r#"
+def val(<<"[", r :: binary>>), do: arr(r, [])
+def val(<<"{", r :: binary>>), do: {:ok, Map.put(%{}, "k", 1), r}
+def val(<<"t", r :: binary>>), do: {:ok, true, r}
+def val(b), do: {:error, b}
+def arr(<<"]", r :: binary>>, acc), do: {:ok, acc, r}
+def arr(b, acc), do: item(val(b), acc)
+def item({:ok, v, r}, acc), do: arr(r, [v | acc])
+def item(other, _acc), do: other
+def main() do
+  dbg(val("[t,[t]]"))
+end
+"#
+        .to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let starts = JobStarts::install(&tel);
+    assert!(matches!(
+        ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+
+    let val = world.reference_function(ModuleId::GLOBAL, "val", 1);
+    let val_activations = starts.activations(val);
+    assert!(
+        !val_activations.is_empty(),
+        "val/1 should have been analysed at least once"
+    );
+    for activation in val_activations {
+        assert_eq!(
+            world.fact_revision(&FactKey::ReturnType(activation)),
+            Some(1),
+            "val/1 must publish its return exactly once, never from a subset of its clauses \
+             while arr/2's call back into it is still pending",
+        );
+    }
 }

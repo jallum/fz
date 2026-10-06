@@ -218,13 +218,18 @@ current content.
 For a cumulative fact, absence and bottom are the same answer: the store
 maintains a join, a join has a bottom, and `World::activation_return` gates on
 revision presence and returns `None` for both. So a first claim that carries
-no content — `analyze_activation` claims `ReturnType` on every run, evidence
-or not — announces a publisher and moves nothing. It is minted at revision
-**0**: present, at bottom, no content movement (`facts::appearance_revision`),
-and `None` <-> `Some(0)` is not a content change in either direction
-(`FactChange::content_changed`). `Current` readers stay asleep; a `Current`
-wait is now satisfiable, and `Settled` subscribers wake on the readiness edge.
-The first claim that carries real evidence is an ordinary ascent, 0 -> 1.
+no content — `analyze_activation` claiming `ReturnType` on a run none of
+whose reached paths saw an unknown, but whose body answers nothing (every
+path a dead end) — announces a publisher and moves nothing. It is minted at
+revision **0**: present, at bottom, no content movement
+(`facts::appearance_revision`), and `None` <-> `Some(0)` is not a content
+change in either direction (`FactChange::content_changed`). `Current` readers
+stay asleep; a `Current` wait becomes satisfiable, and `Settled` subscribers
+wake on the readiness edge. The first claim that carries real evidence is an
+ordinary ascent, 0 -> 1. A run that instead reaches an unresolved call site or
+an awaited callee (`reached_unknown`) claims nothing at all: an unknown
+absorbs the return, so neither a bottom claim nor a content one is made, and
+the previous claim, if any, simply stands (`jobs/semantic.rs::analyze_activation`).
 
 A REPLACING fact has no bottom to be at, so this never applies to one: whatever
 it says on arrival is content a reader can see and act on — `CallSiteSummary`

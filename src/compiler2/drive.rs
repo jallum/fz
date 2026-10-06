@@ -498,6 +498,68 @@ pub(crate) enum AnswerUse {
     Wait(FactUse<FactKey>),
 }
 
+/// One reader's accumulated use of the facts it consults while it runs:
+/// every answer available to read, and every answer it must still wait for.
+#[derive(Debug, Clone)]
+pub(crate) struct UseCollector {
+    reader: Job,
+    reads: Vec<FactUse<FactKey>>,
+    waits: HashSet<FactUse<FactKey>>,
+}
+
+impl UseCollector {
+    pub(crate) fn new(reader: Job) -> Self {
+        Self {
+            reader,
+            reads: Vec::new(),
+            waits: HashSet::new(),
+        }
+    }
+
+    pub(crate) fn read(&mut self, fact: FactKey) {
+        self.reads.push(FactUse::current(fact));
+    }
+
+    pub(crate) fn wait(&mut self, fact: FactKey) {
+        self.waits.insert(FactUse::current(fact));
+    }
+
+    /// Classifies `fact` through [`World::answer_use`] without recording it.
+    pub(crate) fn classify(&self, world: &World, fact: FactKey) -> AnswerUse {
+        world.answer_use(&self.reader, fact)
+    }
+
+    /// Records a read exactly as classified.
+    pub(crate) fn record_read(&mut self, read: FactUse<FactKey>) {
+        self.reads.push(read);
+    }
+
+    /// Records a wait exactly as classified.
+    pub(crate) fn record_wait(&mut self, wait: FactUse<FactKey>) {
+        self.waits.insert(wait);
+    }
+
+    pub(crate) fn answer(&mut self, world: &World, fact: FactKey) -> AnswerUse {
+        let answer = self.classify(world, fact);
+        match &answer {
+            AnswerUse::Partner(read) | AnswerUse::Concluded(read) => self.record_read(read.clone()),
+            AnswerUse::Wait(wait) => self.record_wait(wait.clone()),
+        }
+        answer
+    }
+
+    pub(crate) fn into_reads_waits(self) -> (Vec<FactUse<FactKey>>, HashSet<FactUse<FactKey>>) {
+        (self.reads, self.waits)
+    }
+
+    /// Whether this run has registered any wait yet. Lets a job assert, at
+    /// the moment it mints a value standing in for an awaited answer, that
+    /// the wait which will wake it is already here.
+    pub(crate) fn has_waits(&self) -> bool {
+        !self.waits.is_empty()
+    }
+}
+
 pub(crate) fn fact_dependency(fact: FactUse<FactKey>) -> FactUse<DependencyKey> {
     match fact {
         FactUse::Current(fact) => FactUse::current(DependencyKey::Fact(fact)),
@@ -834,11 +896,13 @@ impl World {
     /// How `reader` may use the answer `fact` gives. A partner's answer, one
     /// whose producer is waiting on `reader`, is one fixpoint with the
     /// reader's own and is read however unfinished. Any other answer is read
-    /// only once it has concluded, and waited for until then.
+    /// only once it has concluded, and waited for until then. The reader's
+    /// own answer counts as a partner too: a self-recursive job's first run
+    /// has registered no wait yet for `waits_reach` to find.
     pub(crate) fn answer_use(&self, reader: &Job, fact: FactKey) -> AnswerUse {
         let partner = self
             .fact_producer(&fact)
-            .is_some_and(|producer| self.waits_reach(&producer, reader));
+            .is_some_and(|producer| &producer == reader || self.waits_reach(&producer, reader));
         if partner {
             AnswerUse::Partner(FactUse::current(fact))
         } else if self.fact_is_concluded(&fact) {
@@ -870,14 +934,18 @@ impl World {
         None
     }
 
+    /// A job woken on one of several standing waits must not run while
+    /// another is still unanswered, or it would immediately re-park on the
+    /// one it was never actually given.
     fn concluded_answers_missing(&self, job: &Job) -> HashSet<FactUse<DependencyKey>> {
-        self.work_graph
-            .reads(job)
-            .into_iter()
-            .filter_map(|read| match read {
+        let concluded_facts = |uses: HashSet<FactUse<DependencyKey>>| {
+            uses.into_iter().filter_map(|use_| match use_ {
                 FactUse::Concluded(DependencyKey::Fact(fact)) => Some(fact),
                 _ => None,
             })
+        };
+        concluded_facts(self.work_graph.reads(job))
+            .chain(concluded_facts(self.work_graph.waits_for(job)))
             .filter_map(|fact| match self.answer_use(job, fact) {
                 AnswerUse::Wait(wait) => Some(fact_dependency(wait)),
                 AnswerUse::Partner(_) | AnswerUse::Concluded(_) => None,

@@ -1465,7 +1465,11 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // A need now starts its producer the moment it is recorded
                 // rather than on a later drain, so bodies these scenarios
                 // used to walk again on a later drain are walked once.
-                [[148, 0, 0, 9, 4], [477, 0, 0, 64, 4], [619, 0, 0, 69, 4]][fixture_index][scenario],
+                // A caller reads only a callee's concluded answer, so a
+                // cold walk that would otherwise revise a body after
+                // reading a callee's unsettled answer waits instead and
+                // never re-walks it.
+                [[148, 0, 0, 9, 4], [475, 0, 0, 64, 4], [617, 0, 0, 69, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1603,7 +1607,11 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // A job gated on a fact its subject already carries never starts to
     // discover that fact missing, then wake once the fact lands
     // (`Job::missing_gates`).
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 61, 19, 63, 0),
+    // A caller reads only a callee's concluded answer, so a call this
+    // leaves awaited reruns its own component derivation once the callee
+    // concludes instead of settling together with it; StaticCallees work
+    // is unaffected.
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 64, 22, 63, 0),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -1984,7 +1992,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // byte-identical: these 70 claims now appear once and are never withdrawn.
         // fz-5xp.30: 70 -> 74. Range.count/3's ordinary arithmetic calls
         // reach four generic result/status activations; none retracts.
-        activations: lifecycle(74, 74, 0),
+        // A caller reads only a callee's concluded answer, so a call this
+        // leaves awaited mints no activation claim until its callee
+        // concludes, and eight fewer claims appear across the compile.
+        activations: lifecycle(66, 66, 0),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
         //
@@ -1995,7 +2006,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 2 -> 0 retractions with their six absorbed activation identities.
         // The same four ordinary helper activations each publish one callsite
         // lifecycle, so the exact callsite row rises 79 -> 83 without churn.
-        callsites: lifecycle(83, 83, 0),
+        // The same eight fewer activations (`ANALYSIS_CLAIM_RATCHET`
+        // above) each publish one fewer callsite lifecycle of their own.
+        callsites: lifecycle(77, 77, 0),
         // fz-kdt.183: 17 -> 30 shift wakes and 19 -> 127 rebased completions.
         // The RISING row of this landing, and the cause is that `InputDemand`
         // is now a fact that MOVES: the forwarded demand of a function whose
@@ -2037,7 +2050,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-afu.11: 15 -> 7 shift wakes and 21 -> 10 rebased completions.
         // The callback reads no protocol fact at all now, so a `defimpl`
         // landing never rebases it or the callers built on its answer.
-        shifts: shifts(7, 10),
+        // A caller waits for a callee's concluded answer rather than
+        // reading its current one, so a shift it would otherwise see
+        // directly is one more run it instead rebases through before
+        // concluding.
+        shifts: shifts(6, 15),
         // fz-kdt.183: 226 -> 230 evaluations, 13 -> 14 reproducing an answer
         // they already had -- four more runs for the rebasing above, and
         // `uncaused` stays empty, so every one of them names a moved input.
@@ -2071,7 +2088,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // under the drain-time frontier walk now has its first analysis
         // demanded once, at the moment its completion published it, and
         // never again; zero-change stays 3.
-        analyze_evaluations: 215,
+        // A caller reads only a callee's concluded answer, so the
+        // activations behind the eight withdrawn claims (above) are each
+        // analyzed only on the concluded one instead of on every
+        // intermediate answer; zero-change stays 3.
+        analyze_evaluations: 167,
         analyze_zero_change: 3,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
@@ -2122,7 +2143,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // (216, from 226, pin unchanged below).
         // fz-afu.13: 702 -> 701, the same single AnalyzeActivation drop
         // (216 -> 215) pinned above.
-        total_evaluations: 701,
+        // The AnalyzeActivation fall pinned above accounts for most of
+        // this fixture's drop in total evaluations; the rest are
+        // `DeriveInputDemand`/`CallSiteSummary` runs that each run once,
+        // on a callee's concluded answer, instead of re-walking a caller
+        // while one of its callees is still unconcluded.
+        total_evaluations: 656,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2138,7 +2164,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // retractions, so nothing stopped being published.
         // fz-5xp.30: 180 -> 184. The two reached arithmetic helper paths
         // materialize four generic activations, without retractions.
-        activations: lifecycle(184, 184, 0),
+        // A caller reads only a callee's concluded answer, so a call this
+        // leaves awaited mints no activation claim until its callee
+        // concludes; the same cause, and the same count, as
+        // `range_map_converges` above.
+        activations: lifecycle(176, 176, 0),
         // fz-kdt.106: 215 -> 212 distinct (248 -> 245 first appearances,
         // retractions unchanged): the one vanished activation was named from
         // three callsites.
@@ -2148,7 +2178,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // retractions flat): the four new activations bring their edges.
         // fz-5xp.30: 219/252/33 -> 224/257/33. The ordinary helper calls add
         // five reached callsite rows, with no new withdrawal.
-        callsites: lifecycle(224, 257, 33),
+        // A caller that withholds instead of guessing never publishes a
+        // callsite summary minted against a guessed, soon-to-be-revised
+        // answer, so none is ever withdrawn: first appearances meet
+        // distinct, and retractions reach zero.
+        callsites: lifecycle(221, 221, 0),
         // fz-kdt.183: 1 -> 5 shift wakes, 2 -> 22 rebased completions.
         // `InputDemand` is a fact that MOVES -- a function whose forwarding
         // cone is still filling in publishes a demand that climbs the lattice,
@@ -2166,7 +2200,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // callback reads no protocol fact now, so `ProtocolDispatch` never
         // wakes it, and the climb through concluded answers it used to cause
         // is gone with it.
-        shifts: shifts(1, 2),
+        // Every shift is one `ProtocolDispatch` move, published when
+        // `Enumerable.List` is defined. `main/0` walks past its pending
+        // calls, so all 13 `Enum.reduce_while/3` activations exist before
+        // that module lands, and each is shifted; each then runs three
+        // times, twice blocked on the new impl's facts, then concluding.
+        shifts: shifts(13, 39),
         // fz-kdt.105: 553 -> 552. Canonical clause order at the interner
         // makes one more re-derived union reproduce its previous id instead
         // of minting a permuted twin, so one AnalyzeActivation run that used
@@ -2196,7 +2235,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // more run. Every wake cause is the same; only the order moved.
         // fz-afu.11: 552 -> 550. Two of the rebases above no longer happen,
         // so their reproducing analyses go with them.
-        analyze_evaluations: 550,
+        // A caller reads only a callee's concluded return, so it does not
+        // re-run on every intermediate answer.
+        analyze_evaluations: 503,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -2210,7 +2251,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-afu.3: 3 -> 1 on the same 551 runs. Two runs that reproduce
         // their answers also conclude facts they publish, which `Concluded`
         // readers hear as a change.
-        analyze_zero_change: 1,
+        // None of these sixteen runs publishes anything, because each
+        // blocks: thirteen are the shifted `Enum.reduce_while/3` siblings'
+        // first runs, waiting on the new impl's keying facts, and three are
+        // `List.reduce_while_step/3` runs waiting for
+        // `List.reduce_while_cont/3`'s concluded return once cont concludes
+        // and stops being its partner.
+        analyze_zero_change: 16,
         // 1364 -> 1363: the same single evaluation, seen from the whole-run
         // denominator. fz-kdt.106: 1363 -> 1350, the same thirteen.
         // fz-kdt.127: 1350 -> 1349, the same single evaluation.
@@ -2259,7 +2306,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // until its `EntryDispatch` exists, so eight of this fixture's
         // extern-activation runs never start blocked-then-real (550, from
         // 558, pin unchanged below).
-        total_evaluations: 1113,
+        // The AnalyzeActivation fall pinned above accounts for most of
+        // this fixture's drop in total evaluations; the rest are the same
+        // `DeriveInputDemand`/`CallSiteSummary` reruns withholding removes
+        // everywhere else on this fixture.
+        total_evaluations: 1101,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2330,7 +2381,14 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // this fixture used to mint from a guess that a later re-walk then
         // widened are never minted, because the re-walk this ticket removes
         // is the one that used to mint them.
-        activations: lifecycle(265, 265, 0),
+        // Grouped by function, the same 103 distinct functions reach the
+        // frontier, confirmed by grouping this fixture's demand-frontier
+        // activations by `FunctionId` alone; several are reached under
+        // fewer distinct `arrow` shapes, because a caller does not
+        // propagate a callee's unconcluded, soon-to-be-revised answer into
+        // a further call that would otherwise analyze under the guessed
+        // shape and then again under the real one.
+        activations: lifecycle(232, 232, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -2374,7 +2432,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // used to be minted from a guess a later re-walk then widened is
         // never minted, the same cause as the activation row above;
         // retractions stay flat.
-        callsites: lifecycle(457, 467, 10),
+        // The withdrawn guessed activations (above) take their callsite
+        // edges with them; withholding never publishes a callsite summary
+        // minted against a guessed arrow, so first appearances fall to
+        // meet distinct and retractions reach zero, the same collapse
+        // already pinned above on `enum_predicate_search`.
+        callsites: lifecycle(420, 420, 0),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -2405,7 +2468,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // callback reads no `ProtocolDispatch`/`ModuleDefined` fact, so an
         // implementation landing later shifts nothing it stands on; the
         // re-keys that answer used to cause are gone with it.
-        shifts: shifts(6, 10),
+        // As in `enum_predicate_search`, the shifts come from impls
+        // landing: `main/0` walks past its pending calls, so protocol-call
+        // readers exist when each impl lands (4, then 10 of them); each
+        // shifted reader passes through a blocked run before concluding.
+        shifts: shifts(14, 29),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
         // the same change bought: the accumulator that used to widen to
@@ -2507,7 +2574,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // later drain pass that used to rediscover it still waiting;
         // zero-change stays flat at 7, so none of the removed runs
         // reproduced an answer it already had.
-        analyze_evaluations: 875,
+        // `main/0`'s thirty-eight `dbg` calls each read one callee's
+        // answer and wait for its concluded answer, so `main/0` is woken
+        // once per callee instead of on every intermediate revision that
+        // callee publishes on its own way there; zero-change stays flat
+        // at 7. This is the fixture the schedule-dependent convergence
+        // behavior noted above was measured on.
+        analyze_evaluations: 617,
         analyze_zero_change: 7,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
@@ -2558,7 +2631,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // caller reaches, +2 AnalyzeActivation (above).
         // fz-afu.13: 1849 -> 1824. The twenty-five fewer AnalyzeActivation
         // evaluations above are the whole of the drop.
-        total_evaluations: 1824,
+        // The AnalyzeActivation fall pinned above accounts for most of
+        // this fixture's drop in total evaluations; the rest are the same
+        // `DeriveInputDemand`/`CallSiteSummary` reruns withholding removes
+        // everywhere else on this fixture.
+        total_evaluations: 1604,
     },
 ];
 

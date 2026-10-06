@@ -33,7 +33,7 @@ use super::contract::{FunctionContract, FunctionContractMap};
 use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{DependencyKey, fact_dependency};
-use super::drive::{ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
+use super::drive::{ExecutionContext, FactKey, Job, JobEffects, UseCollector, WorkGraph};
 use super::facts::FactUse;
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
@@ -2009,26 +2009,21 @@ impl World {
     /// the brand erasure (`InputDemand`). Both are named in ONE ask so a caller
     /// spends one block on a callee's keying prerequisites, never a ladder
     /// (fz-kdt.86; waits are AND-satisfied).
-    pub(crate) fn require_activation_key_facts(
-        &self,
-        function: FunctionId,
-        reads: &mut Vec<FactKey>,
-        waits: &mut HashSet<FactKey>,
-    ) -> bool {
+    pub(crate) fn require_activation_key_facts(&self, function: FunctionId, uses: &mut UseCollector) -> bool {
         let recursive = FactKey::Recursive(function);
         let recursive_ready = self.has_fact(&recursive);
         if recursive_ready {
-            reads.push(recursive);
+            uses.read(recursive);
         } else {
-            waits.insert(recursive);
+            uses.wait(recursive);
         }
 
         let input_demand = FactKey::InputDemand(function);
         let input_demand_ready = self.has_fact(&input_demand);
         if input_demand_ready {
-            reads.push(input_demand);
+            uses.read(input_demand);
         } else {
-            waits.insert(input_demand);
+            uses.wait(input_demand);
         }
 
         recursive_ready && input_demand_ready

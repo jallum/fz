@@ -46,14 +46,19 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // analysis cost); a need starting at record time rather than drain
         // time changes which rung of a climbing read a `DeriveRuntimeDemand`
         // walk observes, same mechanism, different job family.
-        runtime_demand_walks: 616,
+        // A caller reads only a callee's concluded answer, so two
+        // `DeriveRuntimeDemand` walks that would otherwise run again on an
+        // intermediate, soon-to-be-revised answer run once, on the
+        // concluded one.
+        runtime_demand_walks: 614,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures/00571_enum_predicate_search.fz",
         golden: "fixtures/00571_enum_predicate_search.fz",
-        runtime_demand_walks: 474,
+        // The same cause as `00420_enum_take_drop_split` above.
+        runtime_demand_walks: 472,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -2190,8 +2195,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // those cycles logs its own wake even though the job still runs
             // exactly once in the end (evaluations, content-caused, and
             // changed/unchanged outputs above are all unmoved).
-            wakes: 180,
-            blocked_completions: 59,
+            // A caller waits for a callee's concluded `ReturnType` instead
+            // of reading its current one, and each of those waits logs its
+            // own wake and its own blocked completion without changing
+            // which run concludes what.
+            wakes: 182,
+            blocked_completions: 72,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );

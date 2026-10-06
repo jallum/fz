@@ -4,7 +4,7 @@
 //! dispatch, derives direct-call summaries, and settles per-activation return
 //! types without calling the legacy whole-program pipeline.
 
-use std::collections::{BTreeMap, HashMap, HashSet, hash_map::Entry};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry};
 
 use crate::ast::{BinOp, UnOp};
 use crate::diag::driver::emit_through;
@@ -14,11 +14,12 @@ use crate::source::Span;
 
 use super::super::SourceOwner;
 use super::super::body::{
-    CallSiteId, ControlDestination, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, ValueId,
+    CallArg, CallSiteId, ControlDestination, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail,
+    ValueId,
 };
 use super::super::contract::{AppliedFunctionContract, FunctionContract};
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses};
 use super::super::identity::{ActivationKey, FunctionId, ModuleId, TypeName, function_id_of_closure_target};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
@@ -47,6 +48,11 @@ struct SemanticValues {
     types: BTreeMap<ValueId, Ty>,
     tuple_arities: BTreeMap<ValueId, usize>,
     tuple_fields: BTreeMap<ValueId, TupleFieldProjection>,
+    /// Values whose content is not known on this walk: an awaited call's
+    /// result, or anything built from one. A value in this set still carries
+    /// a placeholder type in `types` so ordinary steps have something to
+    /// compute with, but no reader may treat that placeholder as evidence.
+    unknown: BTreeSet<ValueId>,
 }
 
 impl SemanticValues {
@@ -78,11 +84,24 @@ impl SemanticValues {
         self.tuple_fields.get(&value).copied()
     }
 
+    fn mark_unknown(&mut self, value: ValueId) {
+        self.unknown.insert(value);
+    }
+
+    fn is_unknown(&self, value: ValueId) -> bool {
+        self.unknown.contains(&value)
+    }
+
+    fn any_unknown(&self, values: impl IntoIterator<Item = ValueId>) -> bool {
+        values.into_iter().any(|value| self.is_unknown(value))
+    }
+
     fn empty_scope(&self) -> Self {
         Self {
             types: BTreeMap::new(),
             tuple_arities: self.tuple_arities.clone(),
             tuple_fields: self.tuple_fields.clone(),
+            unknown: self.unknown.clone(),
         }
     }
 }
@@ -124,11 +143,11 @@ type ValueTypes = HashMap<ValueId, Ty>;
 /// needs instead of a type that already lost which one happened.
 type RefinedCallSurface = (Vec<Ty>, Option<AppliedFunctionContract>);
 /// One reached call: what it resolved to, the activation demand it
-/// contributes, and its return evidence.
+/// contributes, and its return.
 type ResolvedCall = (
     CallSiteResolution<CallSiteSummary>,
     Vec<ActivationContribution>,
-    Option<Ty>,
+    CallReturn,
 );
 
 /// A call the walk REACHED. It exists for every live call on a reached path;
@@ -226,16 +245,15 @@ pub(super) fn analyze_activation(
     let lowered_fact = FactKey::LoweredBody(function);
     let dispatch_fact = FactKey::EntryDispatch(function);
 
-    let mut reads = vec![
-        FactKey::Activation(activation.clone()),
-        FactKey::ActivationInputs(activation.clone()),
-        function_fact,
-        dispatch_fact,
-    ];
+    let mut uses = UseCollector::new(Job::AnalyzeActivation(activation.clone()));
+    uses.read(FactKey::Activation(activation.clone()));
+    uses.read(FactKey::ActivationInputs(activation.clone()));
+    uses.read(function_fact);
+    uses.read(dispatch_fact);
     if !is_extern {
-        reads.push(lowered_fact);
+        uses.read(lowered_fact);
     }
-    let mut waits = HashSet::new();
+    let mut walk = SemanticWalk::new(&mut uses);
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
 
@@ -298,8 +316,7 @@ pub(super) fn analyze_activation(
                 &mut values,
                 &mut analysis_calls,
                 activation,
-                &mut reads,
-                &mut waits,
+                &mut walk,
             )?;
             merge_value_types(world, &mut value_types, &values);
             let clause_return = analyze_entry(
@@ -312,17 +329,13 @@ pub(super) fn analyze_activation(
                 &mut value_types,
                 &mut analysis_calls,
                 activation,
-                &mut reads,
-                &mut waits,
+                &mut walk,
             )?;
             return_evidence = join_evidence(world, return_evidence, clause_return);
         }
     }
-
     for row in alternatives.rows() {
-        if let Some(contract_return_ty) =
-            activation_contract_return(world, tel, function, row.columns(), &mut reads, &mut waits)?
-        {
+        if let Some(contract_return_ty) = activation_contract_return(world, tel, function, row.columns(), walk.uses)? {
             return_evidence = if is_extern {
                 // An extern's declaration is its only witness: the contract
                 // applied to this row IS the return, not a refinement of a
@@ -330,14 +343,11 @@ pub(super) fn analyze_activation(
                 // union, the same rule the clause arm above uses.
                 join_evidence(world, return_evidence, Some(contract_return_ty))
             } else {
-                refine_call_return(world, return_evidence, Some(contract_return_ty))
+                return_evidence.map(|ty| refine_observed_return(world, ty, Some(contract_return_ty)))
             };
         }
     }
 
-    // Waits no longer bail: a waiting completion extends the job's standing
-    // claims (it cannot retract), so partial evidence publishes safely and
-    // the waits simply ride the final effects.
     analysis_calls = coalesce_call_emissions(world, analysis_calls)?;
 
     let mut emitted_activations = HashSet::new();
@@ -372,12 +382,12 @@ pub(super) fn analyze_activation(
             if emitted_activation_inputs.insert((&callee_activation.key, callee_activation.inputs.as_slice())) {
                 activation_input_contributions.push((callee_activation.key.clone(), callee_activation.inputs.clone()));
             }
-            // No wait+push pair here: `prepare_function_call` only `reads`
-            // the callee's `ReturnType` (so mutual recursion cannot
-            // deadlock), so nothing ever blocks on the callee's analysis
-            // itself. Publishing `Activation(callee_activation.key)` above is
-            // the record site this completion's own `World::complete_job`
-            // reads back: `demand_recorded_needs` demands the callee's first
+            // Publishing `Activation(callee_activation.key)` is unconditional
+            // here, regardless of what `prepare_function_call` read or
+            // waited for on the callee's `ReturnType`: discovering a callee
+            // and reading its return are separate questions. This is the
+            // record site this completion's own `World::complete_job` reads
+            // back: `demand_recorded_needs` demands the callee's first
             // analysis the instant this completion is recorded, rather than
             // waiting for the agenda to drain.
         }
@@ -393,12 +403,14 @@ pub(super) fn analyze_activation(
             || world.activation_return_evidence(activation).is_none(),
         "a ReturnType claim is absent while its store holds content -- revision-0 minting would lie"
     );
-    let return_changed =
-        super::super::drive::ExecutionContext::new(world, tel).define_activation_return(activation, return_evidence);
-    let return_fact = FactKey::ReturnType(activation.clone());
-    outputs.push(return_fact.clone());
-    if return_changed {
-        changed.push(return_fact);
+    if !walk.withholds_return() {
+        let return_changed = super::super::drive::ExecutionContext::new(world, tel)
+            .define_activation_return(activation, return_evidence);
+        let return_fact = FactKey::ReturnType(activation.clone());
+        outputs.push(return_fact.clone());
+        if return_changed {
+            changed.push(return_fact);
+        }
     }
 
     emit_semantic_walk(tel, function, walks.entries_walked);
@@ -435,9 +447,10 @@ pub(super) fn analyze_activation(
         changed.push(analyzed_fact);
     }
 
+    let (reads, waits) = uses.into_reads_waits();
     Ok(JobEffects {
-        reads: current_uses(reads),
-        waits: current_uses(waits),
+        reads,
+        waits: waits.into_iter().collect(),
         outputs: dedupe_facts(outputs),
         changed: dedupe_facts(changed),
         activation_input_contributions,
@@ -457,6 +470,32 @@ fn emit_semantic_walk(tel: &impl crate::telemetry::Telemetry, function: Function
     );
 }
 
+/// Every fact use the body walk has made, and whether it has crossed an
+/// awaited call on any path. An unknown absorbs the return: once
+/// [`Self::mark_unknown`] is called, [`Self::withholds_return`] answers true
+/// for the rest of this activation's analysis.
+struct SemanticWalk<'a> {
+    uses: &'a mut UseCollector,
+    reached_unknown: bool,
+}
+
+impl<'a> SemanticWalk<'a> {
+    fn new(uses: &'a mut UseCollector) -> Self {
+        Self {
+            uses,
+            reached_unknown: false,
+        }
+    }
+
+    fn mark_unknown(&mut self) {
+        self.reached_unknown = true;
+    }
+
+    fn withholds_return(&self) -> bool {
+        self.reached_unknown
+    }
+}
+
 fn analyze_entry(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -467,8 +506,7 @@ fn analyze_entry(
     value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
+    walk: &mut SemanticWalk,
 ) -> Result<Option<Ty>, FatalError> {
     // What this walk finds depends only on the entry and the scope flowing
     // in. A join reached again with the same scope answers with the same
@@ -481,7 +519,7 @@ fn analyze_entry(
     }
     let entry = &entries[entry_id.as_u32() as usize];
     let mut local = values.clone();
-    apply_steps(world, &entry.steps, &mut local, calls, activation, reads, waits)?;
+    apply_steps(world, &entry.steps, &mut local, calls, activation, walk)?;
     merge_value_types(world, value_types, &local);
     let answer = analyze_tail(
         world,
@@ -493,8 +531,7 @@ fn analyze_entry(
         value_types,
         calls,
         activation,
-        reads,
-        waits,
+        walk,
     )?;
     walks.record(key, answer);
     Ok(answer)
@@ -506,23 +543,43 @@ fn apply_steps(
     values: &mut SemanticValues,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
+    walk: &mut SemanticWalk,
 ) -> Result<(), FatalError> {
     for step in steps {
-        apply_step(world, step, values, calls, activation, reads, waits)?;
+        apply_step(world, step, values, calls, activation, walk)?;
     }
     Ok(())
 }
 
+/// Run one step, then spread "unknown" from its inputs to its outputs.
 fn apply_step(
+    world: &mut World,
+    step: &LoweredStep,
+    values: &mut SemanticValues,
+    calls: &mut Vec<CallEmission>,
+    activation: &ActivationKey,
+    walk: &mut SemanticWalk,
+) -> Result<(), FatalError> {
+    let mut used = Vec::new();
+    super::super::body::step_used_values(step, &mut used);
+    let step_saw_unknown = values.any_unknown(used);
+    apply_step_evidence(world, step, values, calls, activation, walk.uses)?;
+    if step_saw_unknown {
+        walk.mark_unknown();
+        for defined in super::super::body::step_defined_values(step) {
+            values.mark_unknown(defined);
+        }
+    }
+    Ok(())
+}
+
+fn apply_step_evidence(
     world: &mut World,
     step: &LoweredStep,
     values: &mut SemanticValues,
     _calls: &mut Vec<CallEmission>,
     _activation: &ActivationKey,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
+    uses: &mut UseCollector,
 ) -> Result<(), FatalError> {
     match step {
         LoweredStep::Const { value, literal } => {
@@ -657,7 +714,7 @@ fn apply_step(
             let Some(source_ty) = value_ty(values, *source) else {
                 return Ok(());
             };
-            let asserted = struct_assertion_ty(world, *module, reads, waits);
+            let asserted = struct_assertion_ty(world, *module, uses);
             let refined = world.types_mut().intersect(source_ty, asserted);
             refine_value(world, values, *source, refined);
         }
@@ -777,6 +834,65 @@ fn join_evidence(world: &mut World, a: Option<Ty>, b: Option<Ty>) -> Option<Ty> 
     }
 }
 
+/// What a called function's return currently is, for the caller resolving
+/// the call. [`World::answer_use`] decides which of the three a given read
+/// becomes: a partner's current answer or a concluded one is `Known` (or
+/// `Bottom`, when that answer has not produced a value at all), and anything
+/// still waited for is `Awaited`.
+///
+/// `Bottom` ends the path. `Awaited` does not: the caller marks the
+/// delivered value unknown and keeps walking past it, so a later,
+/// independent call in the same body is still discovered this run, and the
+/// run's own return publishes nothing new, so it never rises from a path
+/// whose true value nobody has seen yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallReturn {
+    Known(Ty),
+    Awaited,
+    Bottom,
+}
+
+impl CallReturn {
+    fn of_evidence(evidence: Option<Ty>) -> Self {
+        match evidence {
+            Some(ty) => CallReturn::Known(ty),
+            None => CallReturn::Bottom,
+        }
+    }
+
+    fn evidence(self) -> Option<Ty> {
+        match self {
+            CallReturn::Known(ty) => Some(ty),
+            CallReturn::Awaited | CallReturn::Bottom => None,
+        }
+    }
+
+    /// The only constructor that mints `Awaited`. Every production site
+    /// reaches it with `uses` already carrying the wait that will wake this
+    /// run, so a path that mints `Awaited` with nothing left to wake it
+    /// fails here immediately.
+    fn awaited(uses: &UseCollector) -> Self {
+        debug_assert!(
+            uses.has_waits(),
+            "CallReturn::Awaited minted with no wait registered to wake it"
+        );
+        CallReturn::Awaited
+    }
+}
+
+/// Join two targets of the same call (several protocol targets, or several
+/// closure clauses). `Bottom` is the identity, exactly like `join_evidence`;
+/// `Awaited` dominates, because the call's true return depends on every
+/// target's, and one target left unanswered leaves the whole call unanswered
+/// too.
+fn join_call_return(world: &mut World, a: CallReturn, b: CallReturn) -> CallReturn {
+    match (a, b) {
+        (CallReturn::Awaited, _) | (_, CallReturn::Awaited) => CallReturn::Awaited,
+        (CallReturn::Bottom, other) | (other, CallReturn::Bottom) => other,
+        (CallReturn::Known(a), CallReturn::Known(b)) => CallReturn::of_evidence(join_evidence(world, Some(a), Some(b))),
+    }
+}
+
 /// Analyze one entry reached as a plain branch (no delivered value).
 #[allow(clippy::too_many_arguments)]
 fn analyze_branch(
@@ -790,8 +906,7 @@ fn analyze_branch(
     value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
+    walk: &mut SemanticWalk,
 ) -> Result<Option<Ty>, FatalError> {
     let scope = entry_scope(entries, entry_id, values, None, params);
     analyze_entry(
@@ -804,9 +919,15 @@ fn analyze_branch(
         value_types,
         calls,
         activation,
-        reads,
-        waits,
+        walk,
     )
+}
+
+/// Whether a call's callee or any of its arguments still carries an
+/// awaited call's placeholder rather than a value the call can resolve
+/// against.
+fn call_inputs_unknown(values: &SemanticValues, callee: Option<ValueId>, args: &[CallArg]) -> bool {
+    callee.is_some_and(|callee| values.is_unknown(callee)) || values.any_unknown(args.iter().map(|arg| arg.value))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -820,8 +941,7 @@ fn analyze_tail(
     value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
+    walk: &mut SemanticWalk,
 ) -> Result<Option<Ty>, FatalError> {
     match tail {
         LoweredTail::Value { value, dest } => deliver_tail_value(
@@ -835,8 +955,7 @@ fn analyze_tail(
             value_types,
             calls,
             activation,
-            reads,
-            waits,
+            walk,
         ),
         LoweredTail::DirectCall {
             value,
@@ -853,30 +972,28 @@ fn analyze_tail(
                 calls.push(reached_but_unresolved(activation, *callsite));
                 return Ok(None);
             };
-            let (emission, return_ty) =
-                resolve_direct_call(world, tel, activation, *callsite, *callee, arg_types, reads, waits)?;
+            let (emission, call_return) = if call_inputs_unknown(values, None, args) {
+                calls.push(reached_but_unresolved(activation, *callsite));
+                (None, CallReturn::awaited(walk.uses))
+            } else {
+                resolve_direct_call(world, tel, activation, *callsite, *callee, arg_types, walk.uses)?
+            };
             if let Some(emission) = emission {
                 calls.push(emission);
             }
-            let Some(return_ty) = return_ty else {
-                return Ok(None);
-            };
-            let mut delivered = values.clone();
-            delivered.insert(*value, return_ty);
-            merge_value_types(world, value_types, &delivered);
-            deliver_tail_value(
+            deliver_call_return(
                 world,
                 tel,
                 entries,
                 dest,
                 *value,
-                &delivered,
+                call_return,
+                values,
                 walks,
                 value_types,
                 calls,
                 activation,
-                reads,
-                waits,
+                walk,
             )
         }
         LoweredTail::ClosureCall {
@@ -895,30 +1012,28 @@ fn analyze_tail(
                 calls.push(reached_but_unresolved(activation, *callsite));
                 return Ok(None);
             };
-            let (emission, return_ty) =
-                resolve_closure_call(world, tel, activation, *callsite, callee_ty, arg_types, reads, waits)?;
+            let (emission, call_return) = if call_inputs_unknown(values, Some(*callee), args) {
+                calls.push(reached_but_unresolved(activation, *callsite));
+                (None, CallReturn::awaited(walk.uses))
+            } else {
+                resolve_closure_call(world, tel, activation, *callsite, callee_ty, arg_types, walk.uses)?
+            };
             if let Some(emission) = emission {
                 calls.push(emission);
             }
-            let Some(return_ty) = return_ty else {
-                return Ok(None);
-            };
-            let mut delivered = values.clone();
-            delivered.insert(*value, return_ty);
-            merge_value_types(world, value_types, &delivered);
-            deliver_tail_value(
+            deliver_call_return(
                 world,
                 tel,
                 entries,
                 dest,
                 *value,
-                &delivered,
+                call_return,
+                values,
                 walks,
                 value_types,
                 calls,
                 activation,
-                reads,
-                waits,
+                walk,
             )
         }
         LoweredTail::If {
@@ -935,8 +1050,7 @@ fn analyze_tail(
                 value_types,
                 calls,
                 activation,
-                reads,
-                waits,
+                walk,
             )?;
             let else_ty = analyze_branch(
                 world,
@@ -949,8 +1063,7 @@ fn analyze_tail(
                 value_types,
                 calls,
                 activation,
-                reads,
-                waits,
+                walk,
             )?;
             Ok(join_evidence(world, then_ty, else_ty))
         }
@@ -962,6 +1075,14 @@ fn analyze_tail(
             else {
                 return Ok(None);
             };
+            if values.any_unknown(inputs.iter().copied()) {
+                // A dispatch picks its path from the value itself; an
+                // awaited call's placeholder cannot stand in for that
+                // choice, so the walk stops here rather than guessing a
+                // branch the real value might not take.
+                walk.mark_unknown();
+                return Ok(None);
+            }
             let reachability = calculate_dispatch_reachability(world.types_mut(), &dispatch.plan, &input_tys);
             let mut merged = None;
             for (outcome, refined_inputs) in reachability.outcome_inputs {
@@ -997,8 +1118,7 @@ fn analyze_tail(
                     value_types,
                     calls,
                     activation,
-                    reads,
-                    waits,
+                    walk,
                 )?;
                 merged = join_evidence(world, merged, arm_ty);
             }
@@ -1013,8 +1133,7 @@ fn analyze_tail(
                 value_types,
                 calls,
                 activation,
-                reads,
-                waits,
+                walk,
             )?;
             Ok(join_evidence(world, merged, miss_ty))
         }
@@ -1051,8 +1170,7 @@ fn analyze_tail(
                     value_types,
                     calls,
                     activation,
-                    reads,
-                    waits,
+                    walk,
                 )?;
                 merged = join_evidence(world, merged, clause_ty);
             }
@@ -1068,8 +1186,7 @@ fn analyze_tail(
                     value_types,
                     calls,
                     activation,
-                    reads,
-                    waits,
+                    walk,
                 )?;
                 merged = join_evidence(world, merged, after_ty);
             }
@@ -1092,9 +1209,14 @@ fn deliver_tail_value(
     value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
+    walk: &mut SemanticWalk,
 ) -> Result<Option<Ty>, FatalError> {
+    // The value may have picked up its unknown mark anywhere upstream in
+    // this entry's steps, not only at a call tail, so a plain `Value` tail
+    // delivering it flags the run too.
+    if values.is_unknown(value) {
+        walk.mark_unknown();
+    }
     // No evidence for the delivered value means no evidence for the path.
     let Some(delivered) = value_ty(values, value) else {
         return Ok(None);
@@ -1118,11 +1240,55 @@ fn deliver_tail_value(
                 value_types,
                 calls,
                 activation,
-                reads,
-                waits,
+                walk,
             )
         }
     }
+}
+
+/// Delivers a resolved call's [`CallReturn`] into the walk that reached it.
+#[allow(clippy::too_many_arguments)]
+fn deliver_call_return(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    entries: &[LoweredEntry],
+    dest: &ControlDestination,
+    value: ValueId,
+    call_return: CallReturn,
+    values: &SemanticValues,
+    walks: &mut EntryWalkTable,
+    value_types: &mut ValueTypes,
+    calls: &mut Vec<CallEmission>,
+    activation: &ActivationKey,
+    walk: &mut SemanticWalk,
+) -> Result<Option<Ty>, FatalError> {
+    let delivered_ty = match call_return {
+        CallReturn::Known(ty) => ty,
+        CallReturn::Awaited => {
+            walk.mark_unknown();
+            any_ty(world)
+        }
+        CallReturn::Bottom => return Ok(None),
+    };
+    let mut delivered = values.clone();
+    delivered.insert(value, delivered_ty);
+    if matches!(call_return, CallReturn::Awaited) {
+        delivered.mark_unknown(value);
+    }
+    merge_value_types(world, value_types, &delivered);
+    deliver_tail_value(
+        world,
+        tel,
+        entries,
+        dest,
+        value,
+        &delivered,
+        walks,
+        value_types,
+        calls,
+        activation,
+        walk,
+    )
 }
 
 /// Build an entry's scope from whatever evidence exists. Captures are the
@@ -1139,10 +1305,16 @@ fn entry_scope(
 ) -> SemanticValues {
     let entry = &entries[entry_id.as_u32() as usize];
     let mut scope = values.empty_scope();
-    if let Some((_, value)) = delivered
+    if let Some((source, value)) = delivered
         && let Some(input) = entry.origin.input_value()
     {
         scope.insert(input, value);
+        // The delivered value crosses into the child entry under a new
+        // name; its unknown-ness must cross with it, or a value built from
+        // an awaited call would look like ordinary evidence one step later.
+        if values.is_unknown(source) {
+            scope.mark_unknown(input);
+        }
     }
     for (param, value) in params {
         scope.insert(*param, *value);
@@ -1179,20 +1351,19 @@ fn resolve_direct_call(
     callsite: CallSiteId,
     function: FunctionId,
     arg_types: Vec<Ty>,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
+    uses: &mut UseCollector,
+) -> Result<(Option<CallEmission>, CallReturn), FatalError> {
     // A proven-empty argument type is a real fact: no value can reach this
     // call, the path is dead. (Absence cannot arrive here — an unresolved
     // upstream call already short-circuited the path.) A call that never
     // happens is no edge, so it publishes nothing: that is the one thing the
     // fact's absence still says (fz-kdt.69.2).
     if arg_types.iter().any(|arg| world.types().is_empty(arg)) {
-        return Ok((None, Some(none_ty(world))));
+        return Ok((None, CallReturn::Known(none_ty(world))));
     }
 
-    let (resolution, activations, return_ty) =
-        resolve_function_call(world, tel, caller, function, arg_types, callsite.span(), reads, waits)?;
+    let (resolution, activations, call_return) =
+        resolve_function_call(world, tel, caller, function, arg_types, callsite.span(), uses)?;
     Ok((
         Some(CallEmission {
             key: CallSiteKey {
@@ -1202,7 +1373,7 @@ fn resolve_direct_call(
             resolution,
             activations,
         }),
-        return_ty,
+        call_return,
     ))
 }
 
@@ -1214,6 +1385,12 @@ fn resolve_direct_call(
 /// and belongs to activation-key canonicalization.
 fn merge_value_types(world: &mut World, merged: &mut ValueTypes, observed: &SemanticValues) {
     for (&value, &ty) in &observed.types {
+        // An unknown value carries only a placeholder, not evidence: joining
+        // it in would union a stale guess into the published summary, and
+        // that union never retracts once the real type arrives.
+        if observed.is_unknown(value) {
+            continue;
+        }
         match merged.get(&value).copied() {
             Some(current) if current != ty => {
                 let joined = world.types_mut().union(current, ty);
@@ -1283,8 +1460,7 @@ fn resolve_function_call(
     function: FunctionId,
     input_types: Vec<Ty>,
     call_span: Span,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
+    uses: &mut UseCollector,
 ) -> Result<ResolvedCall, FatalError> {
     if let Some(callback) = world.protocol_callback(function) {
         return resolve_protocol_call(
@@ -1295,15 +1471,14 @@ fn resolve_function_call(
             callback.protocol,
             input_types,
             call_span,
-            reads,
-            waits,
+            uses,
         );
     }
-    if wait_for_unresolved_function_module(world, function, waits) {
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+    if wait_for_unresolved_function_module(world, function, uses) {
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
     }
-    let Some(shape) = require_direct_call_prerequisites(world, function, reads, waits) else {
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+    let Some(shape) = require_direct_call_prerequisites(world, function, uses) else {
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
     };
     let caller_owner = world.function_definition(caller.function).0.owner;
     let (input_types, applied_contract) =
@@ -1326,11 +1501,12 @@ fn resolve_function_call(
                 return_ty: Some(return_ty),
             }),
             Vec::new(),
-            Some(return_ty),
+            CallReturn::Known(return_ty),
         ));
     }
-    let (activation, return_evidence) = prepare_function_call(world, caller, function, &input_types, reads);
-    let return_ty = refine_call_return(world, return_evidence, contract_return_ty);
+    let (activation, observed_return) = prepare_function_call(world, uses, caller, function, &input_types);
+    let call_return = refine_call_return(world, observed_return, contract_return_ty);
+    let return_ty = call_return.evidence();
     Ok((
         CallSiteResolution::Resolved(CallSiteSummary {
             targets: vec![CallTargetSummary {
@@ -1347,7 +1523,7 @@ fn resolve_function_call(
             key: activation,
             inputs: input_types.clone(),
         }],
-        return_ty,
+        call_return,
     ))
 }
 
@@ -1359,8 +1535,7 @@ fn resolve_protocol_call(
     protocol: ModuleId,
     input_types: Vec<Ty>,
     call_span: Span,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
+    uses: &mut UseCollector,
 ) -> Result<ResolvedCall, FatalError> {
     // VERDICT (fz-rh2.17.5.9): body readiness, not interface visibility.
     // Defining the protocol module is what registers its callbacks and
@@ -1369,10 +1544,10 @@ fn resolve_protocol_call(
     // it is not a stand-in for ModuleInterface.
     let protocol_fact = FactKey::ModuleDefined(protocol);
     if world.module_defined_revision(protocol).is_none() {
-        wait_for_protocol_module(world, tel, protocol, waits);
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+        wait_for_protocol_module(world, tel, protocol, uses);
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
     }
-    reads.push(protocol_fact);
+    uses.read(protocol_fact);
     let dispatch_fact = FactKey::ProtocolDispatch(protocol);
     if !world.has_fact(&dispatch_fact) {
         // `ProtocolDispatch` is a co-output of the same `Job::DefineModule`
@@ -1385,10 +1560,10 @@ fn resolve_protocol_call(
         // this fact for a true protocol module; this branch is defensive
         // (unreachable in practice) rather than provably dead by construction,
         // so it stays a bare wait instead of an assert/panic.
-        waits.insert(dispatch_fact);
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+        uses.wait(dispatch_fact);
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
     }
-    reads.push(dispatch_fact);
+    uses.read(dispatch_fact);
 
     let receiver_ty = input_types.first().cloned().unwrap_or_else(|| any_ty(world));
 
@@ -1398,7 +1573,11 @@ fn resolve_protocol_call(
         .expect("protocol dispatch fact should be stored before semantic reads it")
         .clone();
     for arm in dispatch.arms {
-        let target_ty = world.module_impl_target_ty(arm.target, reads);
+        let mut target_reads = Vec::new();
+        let target_ty = world.module_impl_target_ty(arm.target, &mut target_reads);
+        for read in target_reads {
+            uses.read(read);
+        }
         if !protocol_receiver_target_overlaps(world, receiver_ty, target_ty) {
             continue;
         }
@@ -1421,64 +1600,100 @@ fn resolve_protocol_call(
         // discovery would never re-wake this callsite. There is no
         // receiver-type module-name scan: referencing the protocol is the
         // single discovery path.
-        reads.push(FactKey::ProtocolImplProviders(protocol));
+        uses.read(FactKey::ProtocolImplProviders(protocol));
+        let mut any_undefined = false;
         for (target, provider) in world.protocol_impl_providers(protocol) {
-            let target_ty = world.module_impl_target_ty(target, reads);
+            let mut target_reads = Vec::new();
+            let target_ty = world.module_impl_target_ty(target, &mut target_reads);
+            for read in target_reads {
+                uses.read(read);
+            }
             if !protocol_receiver_target_overlaps(world, receiver_ty, target_ty) {
                 continue;
             }
             if world.module_defined_revision(provider).is_none() {
-                waits.insert(FactKey::ModuleDefined(provider));
+                // Every overlapping provider not yet defined earns its own
+                // wait: any of them may still supply the matching
+                // implementation once it is.
+                uses.wait(FactKey::ModuleDefined(provider));
+                any_undefined = true;
             }
         }
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+        // When every overlapping provider is already defined and none
+        // matched, no further `defimpl` can appear here unnoticed: the
+        // `ProtocolImplProviders` read above re-wakes this callsite if one
+        // does, so the call is bottom, not an open wait.
+        return Ok((
+            CallSiteResolution::Unresolved,
+            Vec::new(),
+            if any_undefined {
+                CallReturn::awaited(uses)
+            } else {
+                CallReturn::Bottom
+            },
+        ));
     }
 
     let matches = merge_protocol_matches_by_function(world, matches);
+
+    if !every_target_ready(world, &matches, uses) {
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
+    }
+
+    // Every target is ready, so resolving one here cannot strand another's
+    // side effects (seeding its activation, demanding its body).
     let mut targets = Vec::new();
     let mut activations = Vec::new();
-    let mut return_ty = None;
+    let mut call_return = CallReturn::Bottom;
     for (selected, overlap) in matches {
-        // VERDICT (fz-rh2.17.5.9): the old ModuleDefined(owner_module) wait
-        // here was over-waiting — holding a ProtocolCallbackImpl proves the
-        // impl fragment already published its function, and re-serializing
-        // every protocol call behind whole-module scoping is readiness the
-        // call does not require. Gate per FUNCTION, exactly as the
-        // direct-call path does.
-        if wait_for_unresolved_function_module(world, selected.function, waits) {
-            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
-        }
-
-        if !require_callee_prerequisites(world, selected.function, reads, waits) {
-            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
-        }
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
         let caller_owner = world.function_definition(caller.function).0.owner;
         let (refined_inputs, applied_contract) =
             refine_function_call_surface(world, tel, selected.function, refined_inputs, caller_owner, call_span)?;
         let contract_return_ty = applied_contract_return(applied_contract);
         let (activation, observed_return) =
-            prepare_function_call(world, caller, selected.function, &refined_inputs, reads);
+            prepare_function_call(world, uses, caller, selected.function, &refined_inputs);
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
-        return_ty = join_evidence(world, return_ty, target_return);
+        call_return = join_call_return(world, call_return, target_return);
         targets.push(call_target_summary(
             world,
             SelectedCallee::Function(selected.function),
             refined_inputs.clone(),
             Some(activation.clone()),
             Some(refined_inputs.clone()),
-            target_return,
+            target_return.evidence(),
         ));
         activations.push(ActivationContribution {
             key: activation,
             inputs: refined_inputs.clone(),
         });
     }
+    let return_ty = call_return.evidence();
     Ok((
         CallSiteResolution::Resolved(CallSiteSummary { targets, return_ty }),
         activations,
-        return_ty,
+        call_return,
     ))
+}
+
+/// A protocol call asks every matching target for its return, or none of
+/// them: resolving one target and then discarding that work because a later
+/// target is not ready would seed the first target's activation for
+/// nothing. Every target is still checked, never short-circuited, so a
+/// caller missing more than one target's prerequisites learns about all of
+/// them at once.
+///
+/// Gated per function: holding a `ProtocolCallbackImpl` already proves the
+/// impl fragment published its function, so each target's own module is
+/// the readiness this call needs, not `owner_module` as a whole.
+fn every_target_ready(world: &mut World, matches: &[(ProtocolCallbackImpl, Ty)], uses: &mut UseCollector) -> bool {
+    let mut all_ready = true;
+    for (selected, _) in matches {
+        let module_ready = !wait_for_unresolved_function_module(world, selected.function, uses);
+        let prerequisites_ready = require_callee_prerequisites(world, selected.function, uses);
+        all_ready &= module_ready && prerequisites_ready;
+    }
+    all_ready
 }
 
 fn protocol_receiver_target_overlaps(world: &mut World, receiver_ty: Ty, target_ty: Ty) -> bool {
@@ -1549,9 +1764,8 @@ fn resolve_closure_call(
     callsite: CallSiteId,
     callee_ty: Ty,
     arg_types: Vec<Ty>,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
+    uses: &mut UseCollector,
+) -> Result<(Option<CallEmission>, CallReturn), FatalError> {
     let key = CallSiteKey {
         activation: caller.clone(),
         callsite,
@@ -1562,27 +1776,27 @@ fn resolve_closure_call(
         // short-circuits upstream before any argument reaches a call. A call
         // that never happens is no edge, so it publishes nothing: that is the
         // one thing the fact's absence still says (fz-kdt.69.2).
-        return Ok((None, Some(none_ty(world))));
+        return Ok((None, CallReturn::Known(none_ty(world))));
     }
-    let unresolved = |return_ty| {
+    let unresolved = |call_return| {
         Ok((
             Some(CallEmission {
                 key: key.clone(),
                 resolution: CallSiteResolution::Unresolved,
                 activations: Vec::new(),
             }),
-            return_ty,
+            call_return,
         ))
     };
     let Some(clauses) = world.types_mut().callable_value_clauses(&callee_ty) else {
         if !callee_is_a_dynamic_edge(world, callee_ty) {
-            return unresolved(None);
+            return unresolved(CallReturn::Bottom);
         }
-        return unresolved(Some(any_ty(world)));
+        return unresolved(CallReturn::Known(any_ty(world)));
     };
     let mut selected_targets = Vec::new();
     let mut activations = Vec::new();
-    let mut return_ty = None;
+    let mut call_return = CallReturn::Bottom;
 
     // A closure-shaped clause whose arity matches names a concrete target. Its
     // analysis may still be pending this round (no summary yet), which is
@@ -1618,28 +1832,25 @@ fn resolve_closure_call(
         let mut inputs = closure.captures;
         inputs.extend(arg_types.iter().copied());
         let (resolution, clause_activations, observed_return) =
-            resolve_function_call(world, tel, caller, function, inputs, callsite.span(), reads, waits)?;
+            resolve_function_call(world, tel, caller, function, inputs, callsite.span(), uses)?;
+        let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
+        call_return = join_call_return(world, call_return, clause_return);
 
         if let CallSiteResolution::Resolved(summary) = resolution {
             for target in summary.targets {
-                let target_return = refine_call_return(world, target.return_ty, Some(clause.ret));
-                return_ty = join_evidence(world, return_ty, target_return);
                 let rebuilt_target = call_target_summary(
                     world,
                     target.callee,
                     arg_types.clone(),
                     target.activation,
                     target.activation_inputs,
-                    target_return,
+                    clause_return.evidence(),
                 );
                 if !selected_targets.contains(&rebuilt_target) {
                     selected_targets.push(rebuilt_target);
                 }
             }
             activations.extend(clause_activations);
-        } else {
-            let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
-            return_ty = join_evidence(world, return_ty, clause_return);
         }
     }
 
@@ -1647,24 +1858,24 @@ fn resolve_closure_call(
         // Two ways to reach here without a target, and both are absence of
         // evidence: a matching closure clause named a concrete target whose
         // analysis is still pending, or the callee is not known yet at all.
-        // Report the evidence gathered so far and let the `reads`/`waits`
+        // Report the evidence gathered so far and let the reads/waits
         // registered above re-wake this call; only a genuine dynamic edge
         // earns `any`.
         if named_concrete_target || !callee_is_a_dynamic_edge(world, callee_ty) {
-            return unresolved(return_ty);
+            return unresolved(call_return);
         }
-        return unresolved(Some(any_ty(world)));
+        return unresolved(CallReturn::Known(any_ty(world)));
     };
     Ok((
         Some(CallEmission {
             key,
             resolution: CallSiteResolution::Resolved(CallSiteSummary {
                 targets: selected_targets,
-                return_ty,
+                return_ty: call_return.evidence(),
             }),
             activations,
         }),
-        return_ty,
+        call_return,
     ))
 }
 
@@ -1672,21 +1883,16 @@ fn resolve_closure_call(
 /// one cannot have its call surface refined until `FunctionContract` is
 /// present. A function that declares none asks for nothing — no wait, no
 /// read, and nothing ever demands its contract.
-fn require_function_contract(
-    world: &mut World,
-    function: FunctionId,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> bool {
+fn require_function_contract(world: &mut World, function: FunctionId, uses: &mut UseCollector) -> bool {
     if !world.function_declares_contract(function) {
         return true;
     }
     let contract_fact = FactKey::FunctionContract(function);
     if world.function_contract_revision(function).is_none() {
-        waits.insert(contract_fact);
+        uses.wait(contract_fact);
         return false;
     }
-    reads.push(contract_fact);
+    uses.read(contract_fact);
     true
 }
 
@@ -1695,14 +1901,9 @@ fn require_function_contract(
 /// register in ONE pass — waits are AND-satisfied, so a caller missing all
 /// three sleeps once instead of learning the next rung only after the first
 /// one lands.
-fn require_callee_prerequisites(
-    world: &mut World,
-    function: FunctionId,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> bool {
-    let contract_ready = require_function_contract(world, function, reads, waits);
-    let keying_ready = world.require_activation_key_facts(function, reads, waits);
+fn require_callee_prerequisites(world: &mut World, function: FunctionId, uses: &mut UseCollector) -> bool {
+    let contract_ready = require_function_contract(world, function, uses);
+    let keying_ready = world.require_activation_key_facts(function, uses);
     let shape = world.function_body_shape(function);
     if let Some(gate) = shape.undefined_gate(function) {
         // The caller here is never a provider boundary or a protocol
@@ -1713,7 +1914,7 @@ fn require_callee_prerequisites(
         // bundles with the two waits already registered above so this caller
         // settles all three together in one re-run, instead of discovering
         // them one gate at a time.
-        waits.insert(gate);
+        uses.wait(gate);
         return false;
     }
     if shape.is_extern() {
@@ -1725,9 +1926,9 @@ fn require_callee_prerequisites(
     let lowered = FactKey::LoweredBody(function);
     let lowered_ready = world.has_fact(&lowered);
     if lowered_ready {
-        reads.push(lowered);
+        uses.read(lowered);
     } else {
-        waits.insert(lowered);
+        uses.wait(lowered);
     }
     contract_ready && keying_ready && lowered_ready
 }
@@ -1748,13 +1949,12 @@ enum CalleeShape {
 fn require_direct_call_prerequisites(
     world: &mut World,
     function: FunctionId,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
+    uses: &mut UseCollector,
 ) -> Option<CalleeShape> {
     if world.function_is_provider_boundary(function) {
-        return require_function_contract(world, function, reads, waits).then_some(CalleeShape::Boundary);
+        return require_function_contract(world, function, uses).then_some(CalleeShape::Boundary);
     }
-    require_callee_prerequisites(world, function, reads, waits).then_some(CalleeShape::Activation)
+    require_callee_prerequisites(world, function, uses).then_some(CalleeShape::Activation)
 }
 
 /// Pure contract APPLICATION. Readiness was asked for and proven by
@@ -1859,13 +2059,12 @@ fn activation_contract_return(
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
     input_types: &[Ty],
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
+    uses: &mut UseCollector,
 ) -> Result<Option<Ty>, FatalError> {
     let (source, surface) = world.function_definition(function);
     let violation_span = surface.span;
     let caller_owner = source.owner;
-    if !require_function_contract(world, function, reads, waits) {
+    if !require_function_contract(world, function, uses) {
         return Ok(None);
     }
     let (_, applied_contract) =
@@ -1935,14 +2134,15 @@ fn refine_contract_inputs<'a>(world: &mut World, observed: Vec<Ty>, arrows: impl
         .collect()
 }
 
-fn refine_call_return(world: &mut World, observed: Option<Ty>, contract: Option<Ty>) -> Option<Ty> {
-    let Some(observed) = observed else {
-        // No body evidence yet: a contract bounds the eventual value but
-        // does not witness that the call returns at all. Nothing is
-        // manufactured from absence.
-        return None;
-    };
-    Some(refine_observed_return(world, observed, contract))
+/// Apply a declared contract on top of the callee's observed return. A
+/// contract only ever narrows a return that evidence already witnessed:
+/// `Awaited` and `Bottom` both mean nothing has been observed yet, so the
+/// contract does not get to manufacture a value in evidence's place.
+fn refine_call_return(world: &mut World, observed: CallReturn, contract: Option<Ty>) -> CallReturn {
+    match observed {
+        CallReturn::Known(observed) => CallReturn::Known(refine_observed_return(world, observed, contract)),
+        awaited_or_bottom => awaited_or_bottom,
+    }
 }
 
 fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>) -> Ty {
@@ -1972,24 +2172,28 @@ fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>)
     }
 }
 
-/// Keys the callee's activation and reads its return evidence. The facts the
-/// key is built from were asked for and proven by
-/// `require_callee_prerequisites`, so this cannot block.
+/// Keys the callee's activation and classifies what this caller may do with
+/// its return. The key is built from facts `require_callee_prerequisites`
+/// already proved present, so keying cannot block; reading the return
+/// itself, through `World::answer_use`, can still come back `Awaited`. Two
+/// partners read each other's current, unfinished answer instead of
+/// waiting, so mutual recursion cannot deadlock.
 fn prepare_function_call(
     world: &mut World,
+    uses: &mut UseCollector,
     caller: &ActivationKey,
     function: FunctionId,
     arg_types: &[Ty],
-    reads: &mut Vec<FactKey>,
-) -> (ActivationKey, Option<Ty>) {
+) -> (ActivationKey, CallReturn) {
     let activation = world.activation_key(caller.root, function, arg_types);
-    // The read is the subscription that re-wakes this caller when the
-    // callee's return evidence rises — chaotic iteration needs no wait here,
-    // so mutual recursion cannot deadlock. Absent evidence stays absent: it
-    // is the ascent's bottom, never the type `none`.
-    reads.push(FactKey::ReturnType(activation.clone()));
-    let return_evidence = world.activation_return(&activation);
-    (activation, return_evidence)
+    let fact = FactKey::ReturnType(activation.clone());
+    let call_return = match uses.answer(world, fact) {
+        AnswerUse::Partner(_) | AnswerUse::Concluded(_) => {
+            CallReturn::of_evidence(world.activation_return(&activation))
+        }
+        AnswerUse::Wait(_) => CallReturn::awaited(uses),
+    };
+    (activation, call_return)
 }
 
 /// VERDICT (fz-rh2.17.5.9): body readiness. A runtime module's defimpls
@@ -2000,22 +2204,22 @@ fn wait_for_protocol_module(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     protocol: ModuleId,
-    waits: &mut HashSet<FactKey>,
+    uses: &mut UseCollector,
 ) {
     if let Some(source_owner) = super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(protocol) {
         let indexed_fact = FactKey::CodeIndexed(source_owner);
         if !world.has_fact(&indexed_fact) {
-            waits.insert(indexed_fact);
+            uses.wait(indexed_fact);
         }
     }
-    waits.insert(FactKey::ModuleDefined(protocol));
+    uses.wait(FactKey::ModuleDefined(protocol));
 }
 
 /// VERDICT (fz-rh2.17.5.9): body readiness. The caller holds a FunctionId
 /// and needs its DEFINITION, which module scope publication produces; the
 /// exported-callable surface (ModuleInterface) answers a different question
 /// and is consumed where names resolve — body lowering — not here.
-fn wait_for_unresolved_function_module(world: &mut World, function: FunctionId, waits: &mut HashSet<FactKey>) -> bool {
+fn wait_for_unresolved_function_module(world: &mut World, function: FunctionId, uses: &mut UseCollector) -> bool {
     if world.function_defined_revision(function).is_some() {
         return false;
     }
@@ -2036,7 +2240,7 @@ fn wait_for_unresolved_function_module(world: &mut World, function: FunctionId, 
     // effect. `demand_function_scope`'s `CodeScoped`/`ScopeCode` branch (for
     // `module.is_global()`) is unreachable from here: the early return above
     // already rules out a global module before this wait registers.
-    waits.insert(FactKey::ModuleDefined(module));
+    uses.wait(FactKey::ModuleDefined(module));
     true
 }
 
@@ -2227,12 +2431,7 @@ fn lowered_map_key(
     Some(map_key_from_ty(world, key_ty))
 }
 
-fn struct_assertion_ty(
-    world: &mut World,
-    module: ModuleId,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> Ty {
+fn struct_assertion_ty(world: &mut World, module: ModuleId, uses: &mut UseCollector) -> Ty {
     // Honor the struct's declared field types (`@type t`) so a destructure
     // recovers them even after a value crossed a protocol boundary that erased
     // its concrete shape (fz-f98.8: an integer `Range` whose fields graduate to
@@ -2250,12 +2449,12 @@ fn struct_assertion_ty(
     if world.type_decl(&name).is_some() {
         let fact = FactKey::TypeDefined(name);
         if world.has_fact(&fact) {
-            reads.push(fact);
+            uses.read(fact);
             if let Some(declared) = world.declared_struct_value_ty(module) {
                 return declared;
             }
         } else {
-            waits.insert(fact);
+            uses.wait(fact);
         }
     }
     // The field schema itself is fact-backed too: `module` is always a real
@@ -2266,11 +2465,11 @@ fn struct_assertion_ty(
     let struct_fact = FactKey::StructDefined(module);
     let field_names = match world.struct_def(module) {
         Some(def) => {
-            reads.push(struct_fact);
+            uses.read(struct_fact);
             def.fields.clone()
         }
         None => {
-            waits.insert(struct_fact);
+            uses.wait(struct_fact);
             Vec::new()
         }
     };
