@@ -630,6 +630,73 @@ existing stall and terminal boundaries.
 the diagnostic goes out through telemetry. Closure never masks an error, and
 there is no diagnostics fact family to reconcile.
 
+## Gates: starting only once a job's inputs exist
+
+A handful of job kinds cannot conclude anything useful the moment they start —
+their very first read is a fact that may not exist yet, and a run that finds
+it missing has nothing to do but record a wait and return. `Job::missing_gates`
+(`jobs/mod.rs`) names that fact up front, from the job's subject alone, before
+the job has read anything: `World::demand_producer_if_needed` (`drive.rs`)
+consults it for every never-run job, and when a gate is missing it demands
+that gate's own producer instead of starting the job to discover the same
+fact missing from inside its body. The gate's own wake then reaches the job
+the ordinary way, through `demand_fact_producer`'s fact->producer map, once it
+lands.
+
+Nine job kinds declare gates — `SeedRoot`, `DefineFunction`,
+`ExpandFunctionSource`, `ScopeCode`, `DeriveInputDemand`,
+`DeriveCallGraphComponent`, `DeriveRuntimeDemand`, `LowerFunction`, and
+`DeriveStaticCallees` — each in the `jobs/*.rs` module that owns the kind's
+body, named `<job>_gates` beside it. Every other kind has no arm in
+`missing_gates`'s match and starts the moment anything demands its output,
+exactly as before gates existed.
+
+A gate is not the same thing as a wait a job's body discovers only while it
+runs — a callee reached by walking a call graph, a macro found mid-expansion.
+Those stay ordinary `JobEffects::waits`, returned from inside the job after it
+has already done real work; a gate is nameable before the job runs at all, so
+naming it lets the scheduler skip the run entirely rather than shortening it.
+
+A gate must ask whether its fact is genuinely still missing, not merely name
+the fact that would eventually produce it. `World::demand_function_scope`
+names the scope fact (`ModuleDefined`, `CodeIndexed`, `CodeScoped`) that would
+answer where a function's source comes from, but a module that is already
+fully, finally defined without that function still names `ModuleDefined` —
+even though the fact is already present and will never move again.
+`ExpandFunctionSource`'s gate filters `demand_function_scope`'s answer down to
+facts not yet present (`source.rs`'s `still_missing_scope`); once every named
+fact is already settled, the gate reports ready, the job runs, and its own
+body applies that same filter to fall back to waiting on its own source
+directly — the terminal case an unresolvable reference produces, and the
+standing wait the drive's unresolved-frontier diagnostics later read to
+report the missing definition.
+
+A caller that is not itself a job — the compiler's own entry points
+(`submit_root`, `submit_code`, `Compiler2::demand`) and
+`Compiler2::run_macro_on_source` — has no `JobEffects` of its own and so no
+standing wait the drain's stall pass will keep re-demanding on its behalf.
+`submit_code` and `demand` still sidestep gates: they enqueue their first job
+directly, the ignition path every entry point used before gates existed,
+because nothing else could ever start that job's very first run.
+`submit_root` no longer does — a submitted root demands its own `RootEntry`
+fact through the gate-checked path (`demand_fact_producer`) instead of
+enqueuing `SeedRoot` directly, so "may this job start?" gets one answer no
+matter how the job was queued. When the root's function is not yet defined,
+that demand redirects through `SeedRoot`'s gate to `DefineFunction`, and, if
+the source has not even been scoped yet, one hop further to
+`ExpandFunctionSource` — the same chain any other demand for that root would
+walk. Because `submit_root` runs once, before the standing infrastructure
+inside a drive exists to notice a later-arriving definition, `root_frontier`
+(`World`) stands in for the missing per-job wait: it names every root whose
+`SeedRoot` has not yet run, and the drive's stall pass
+(`demand_root_frontier_seeds`, `drive.rs`) re-demands each one on every
+drain, the same way `activation_frontier` stands in for a published
+activation with no analysis. `run_macro_on_source` demands an ordinary gated
+fact (`FactKey::FunctionDefined`), so a single demand call may only advance
+one gate hop — the fact chain from source to expansion to definition can
+cross several — and it repeats the demand after every drive until the
+definition lands or a round demands nothing further.
+
 ## Product pulls for artifacts
 
 Everything above this section is the scheduler: a push engine that reacts to

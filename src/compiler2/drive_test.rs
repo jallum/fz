@@ -14169,20 +14169,31 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
     let outcome = compiler.drive();
     match outcome {
         DriveOutcome::Unresolved { waits } => {
+            // `World::submit_root` demands `RootEntry` through the same
+            // gate-checked path every other job uses (fz-afu.2), so
+            // `SeedRoot` never starts here: its own gate
+            // (`FunctionDefined`) is missing, and demand redirects to
+            // `DefineFunction`, whose own gate (`ExpandedFunctionSource`)
+            // redirects to `ExpandFunctionSource` in turn. No code has been
+            // submitted, so `ExpandFunctionSource` has no scope to gate on
+            // (`source::expand_function_source_gates`) and is the one that
+            // actually starts, discovering the true leaf cause -- there is
+            // no function named `main/0` anywhere -- as a mid-run wait on
+            // `FunctionSource`, one gate hop deeper than before this fix.
             assert!(
                 waits.iter().any(|wait| {
-                    wait.fact == super::drive::fact_dependency(settled_fact(FactKey::FunctionDefined(function_id)))
-                        && wait.jobs.contains(&Job::SeedRoot(root_id))
+                    wait.fact == super::drive::fact_dependency(FactUse::current(FactKey::FunctionSource(function_id)))
+                        && wait.jobs.contains(&Job::ExpandFunctionSource(function_id))
                 }),
-                "unresolved drive should report SeedRoot waiting on the entry definition"
+                "unresolved drive should report ExpandFunctionSource waiting on the function's source"
             );
             assert!(
                 work_graph
                     .all()
                     .into_iter()
                     .any(
-                        |step| step.blocked.contains(&super::drive::fact_dependency(settled_fact(
-                            FactKey::FunctionDefined(function_id)
+                        |step| step.blocked.contains(&super::drive::fact_dependency(FactUse::current(
+                            FactKey::FunctionSource(function_id)
                         )))
                     ),
                 "work-graph telemetry should carry the exact fact that blocked the seed job"
@@ -20020,6 +20031,12 @@ fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
 const TUPLE_LADDER_BUILD_ANALYSES: u64 = 19;
 const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 17;
 const TUPLE_LADDER_MAIN_ANALYSES: u64 = 22;
+// This is a baseline red (fz-xxd.3): main/0 measures 1 revision today because
+// an extern's un-instantiated declared return (`a0`) poses as an observation
+// and wins over the correctly-instantiated `int` (`jobs/semantic.rs:216`,
+// `:1805-1829`). The pin stays 2 -- the value fz-xxd.3's fix measures -- so
+// this constant does not bless the leak. fz-afu.2's `root_frontier` change
+// does not move this number.
 const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 2;
 
 #[test]
