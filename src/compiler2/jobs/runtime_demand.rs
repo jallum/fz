@@ -383,7 +383,7 @@ impl CalleeAnswers {
         }
         let reader = Job::DeriveRuntimeDemand(executable.clone());
         match world.answer_use(&reader, FactKey::RuntimeDemandInputs(callee.clone())) {
-            AnswerUse::Read(read) => reads.push(read),
+            AnswerUse::Partner(read) | AnswerUse::Concluded(read) => reads.push(read),
             AnswerUse::Wait(wait) => {
                 self.waits.push(wait);
                 self.unanswered.insert(callee.clone());

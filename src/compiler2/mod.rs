@@ -146,6 +146,8 @@ mod frontdoor_test;
 #[cfg(test)]
 mod gated_job_starts_test;
 #[cfg(test)]
+mod input_demand_answers_test;
+#[cfg(test)]
 mod namespace_test;
 #[cfg(test)]
 mod native_inventory_test;

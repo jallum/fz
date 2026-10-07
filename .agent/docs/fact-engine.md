@@ -776,11 +776,13 @@ exact first-class target. Newly exposed local callables extend that finite
 keyed read set until it stops growing; there is no function or executable scan.
 
 A callee's `RuntimeDemandInputs` is its answer: how much of each argument it
-needs. `World::answer_use` says how a run may use it. A partner's answer, one
-whose producer is already waiting on this run (`World::waits_reach`), is read
-`Current`, however unfinished: the two are one fixpoint. Any other answer is
-read only once it has concluded (`Concluded`), and until then the run waits for
-it and the callee is unanswered. An unanswered callee is never read as bottom:
+needs. `World::answer_use` says how a run may use it, as an `AnswerUse`. A
+partner's answer, one whose producer is already waiting on this run
+(`World::waits_reach`), is read `Current`, however unfinished: the two are one
+fixpoint (`AnswerUse::Partner`). Any other answer is read only once it has
+concluded (`AnswerUse::Concluded`), and until then the run waits for it
+(`AnswerUse::Wait`) and the callee is unanswered. `DeriveInputDemand` asks the
+same question of its callees' `InputDemand` (see type-specialization.md). An unanswered callee is never read as bottom:
 
 - A run with an unanswered callee is blocked. `DeriveRuntimeDemand` asserts
   that no run concludes without every callee's answer.

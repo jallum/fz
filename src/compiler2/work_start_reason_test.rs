@@ -263,7 +263,16 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-afu.3: 3168 -> 2794. A run missing a callee's answer waits for it
         // instead of concluding on `ignore`, so no caller re-runs to revise
         // what it concluded.
-        (2794, 9, 19, 232),
+        // fz-afu.10: 2794 -> 2797. DeriveInputDemand falls 197 -> 190: a
+        // caller reads each callee's concluded answer instead of walking the
+        // callee's body. AnalyzeActivation rises 888 -> 898. Four of those
+        // runs are `InputDemand` wakes: a protocol callback's answer covers
+        // the implementations defined so far, and with callers now reading
+        // that answer, each new implementation moves more of them, which
+        // re-keys their activations. The other six are callee `ReturnType`
+        // (369 -> 373 enqueued, 25 -> 26 coalesced) and `Recursive`
+        // (46 -> 47) wakes.
+        (2797, 9, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -284,7 +293,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-afu.2: 781 -> 779. `SeedRoot(main)`'s two now-eliminated
         // blocked-only runs (see above) each published one non-demand
         // changed revision on their way to discovering their own gate.
-        779,
+        // fz-afu.10: 779 -> 757. DeriveInputDemand's wakes fall 94 -> 63: the
+        // 84 it took from callee `EntryDispatch` and `StaticCallees` facts,
+        // one per callee its walk discovered, become 57 wakes on concluded
+        // callee answers, and `ProtocolDispatch` shifts wake it 10 -> 6 times.
+        // AnalyzeActivation's nine extra runs (see above) add nine.
+        757,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -299,7 +313,13 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // demands through `submit_root`'s own ignition call and the
         // `root_frontier` standing demand instead, so those hops move off
         // this count rather than adding to it.
-        1103,
+        // fz-afu.10: 1103 -> 1127, all of it DeriveInputDemand (102 -> 126
+        // starts). A caller composes from its callees' answers, so each
+        // callee its walk used to cross inline now derives an answer of its
+        // own, started by the caller that waits for it: 103 -> 127 distinct
+        // functions. Those starts replace re-runs rather than adding to them
+        // -- DeriveInputDemand runs fall 197 -> 190.
+        1127,
         "the blocked-waiter census includes every ordinary generic helper prerequisite",
     );
     assert_eq!(
@@ -346,7 +366,13 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         ),
         // fz-5xp.30: 261 -> 265. Four ordinary generic result/status helper
         // activations enter through the same attributed frontier.
-        (2, 265, 0, 0, 0),
+        // fz-afu.10: 265 -> 266. `Enum.drop_positive/2` is now analyzed once
+        // while its accumulator is still only `empty_list()`, so it names an
+        // intermediate `Enum.drop_positive_finish/1` activation,
+        // `({empty_list(), int})`, before the settled `({list(int), int})`.
+        // `drop_positive_finish/1`'s own input demand is derived once,
+        // identically; only the order its caller runs in moved.
+        (2, 266, 0, 0, 0),
         "ordinary generic helper activations preserve the pull-only frontier",
     );
 
