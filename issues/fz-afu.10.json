@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-10-07T21:57:33Z",
+  "close_reason": "landed PR #252",
   "created": "2026-09-26T17:18:38Z",
   "description": "DeriveInputDemand(f) walks f's whole forwarding cone, reading every callee's raw\nfacts (StaticCallees, EntryDispatch, LoweredBody), and re-solves it from scratch\n(collect_input_forwarding_graph, jobs/keying.rs). A caller re-reads everything its\ncallees already read, and a walk that meets a missing fact deep in the cone restarts.\nApproved plan (2026-09-26): artifact https://claude.ai/artifact/4oTQk8Y5WBdUqEKVkewhHb\n(/Users/j5n/Workspace/fz-afu.10.html). Built on fz-afu.3 (PR #250, 4ccbb3dda).\n\n## Rule\nFor each callee f forwards a parameter to, World::answer_use(DeriveInputDemand(f),\nInputDemand(callee)):\n- Concluded: read it; the callee enters solve_forwarded_demand as a node whose local\n  masks ARE its answer (forwarded_dispatch / returned) with no edges. Exact: the answer\n  is already the least fixpoint of its cone.\n- Partner (callee waits on f): walk into it as today and solve the cycle in this run.\n  InputDemand is read by activation keying, so a partial answer is never published.\n- Wait: wait at Concluded, publish nothing.\nAnswerUse becomes Partner / Concluded / Wait (DeriveRuntimeDemand and\nWorld::concluded_answers_missing move to the names, same behaviour).\n\n## Measured on the probe (fz-afu.3 + the rule)\n- chain h\u003c-g\u003c-f\u003c-main: DeriveInputDemand 7 runs, reads 35 -\u003e 23, max 9 -\u003e 4.\n- Enum.take: 102 -\u003e 100 runs, reads 2071 -\u003e 369, max 77 -\u003e 8; all jobs 775 -\u003e 774.\n- 00181: 34 -\u003e 28 runs, 242 -\u003e 97 reads; product 296 -\u003e 290.\n- predicate_search: 109 runs, 1208 -\u003e 392 reads.\n- range_map: 185 -\u003e 91 runs, 8807 -\u003e 352 reads; all jobs 1046 -\u003e 952; ShiftWork 18/123 -\u003e 15/21.\n- 00420: 197 -\u003e 190 runs, 6757 -\u003e 720 reads; work_start census 2794 -\u003e 2797\n  (AUTHORIZED raise 2026-09-26: AnalyzeActivation 888 -\u003e 898 because protocol-callback\n  answers rise as implementations land -- moved InputDemand answers 5 -\u003e 13; fz-afu.11).\n- tuple ladder main/0 analyses 22 -\u003e 21.\n\n## Tests first (jobs/keying_test.rs), failing on 4ccbb3dda\n- chain: runs [f 2, g 2, h 1], 23 reads, max 4, no DeriveInputDemand(x) reads EntryDispatch(y), y != x.\n- ping/pong cycle (pong forwards n to Kernel.-/2 as well): pong walks ping as partner,\n  ping reads InputDemand(pong) at Concluded; answers equal today's (pinned first).\n- Enum.take: DeriveInputDemand 100 runs, 369 reads, max 8.\n\n## Removal ledger\n- the walk across every non-partner callee (both recursions, keying.rs:484, 557) -\u003e visit_callee.\n- reads of non-partner callees' StaticCallees/EntryDispatch/LoweredBody/FunctionDefined/\n  ModuleDefined/ProtocolDispatch -\u003e one InputDemand read at Concluded.\n- AnswerUse::Read(FactUse) meaning two things -\u003e Partner / Concluded.\n\n## Docs\ntype-specialization.md:219 (no longer \"never from another function's published demand\");\nfact-engine.md answer_use paragraph (second reader); derive_input_demand_gates doc comment.",
   "id": "fz-afu.10",
   "labels": [],
   "parent": "fz-afu",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "InputDemand composes from callee answers",
   "type": "bug",
-  "updated_at": "2026-09-26T17:18:45Z"
+  "updated_at": "2026-10-07T21:57:33Z"
 }
