@@ -1,5 +1,5 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
-use super::drive_test::assert_resolved;
+use super::drive_harness::assert_resolved;
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
 use crate::diag::codes;
 use crate::telemetry::{Capture, ConfiguredTelemetry};

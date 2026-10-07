@@ -1,29 +1,49 @@
 # Fixtures
 
-A fixture is a small `.fz` program under `fixtures2/behavior/` that proves one
-thing about the language and proves it on every execution path that applies.
-`tests/fixture_matrix.rs` is the harness: it discovers every behavioural source
-file, reads the source-frontmatter block at the top, and runs the file through
-the compiler2 matrix (`run`, `interp`, `build`) unless the filename narrows
-that set. It scores each run against sibling sidecars. The same file also holds
-a set of static trials (the Elixir oracle, compiler2 metrics, CLIF-shape proofs)
-that don't fit the per-path mould.
+A fixture is a small `.fz` program that proves one thing about the language
+and proves it on every execution path that applies. `fixtures/` is its home: a
+flat directory of `NNNNN_name.fz` files, each numbered, each carrying a
+`purpose:` in its frontmatter, each discovered by both the behavioural matrix
+and, by number, the compiler2 test harness. `fixtures2/` is the directory
+`fixtures/` is draining: its `behavior/` subdirectory still holds unnumbered
+behavioural fixtures, and its top level still holds numbered compiler-contract
+fixtures, both moved into `fixtures/` as the tests that use them are touched.
+
+`tests/fixture_matrix.rs` is the behavioural harness: it discovers every `.fz`
+under `fixtures/` and `fixtures2/behavior/`, reads the source-frontmatter block
+at the top, and runs the file through the compiler2 matrix (`run`, `interp`,
+`build`) unless the filename narrows that set. It scores each run against
+sibling sidecars. The same file also holds a set of static trials (the Elixir
+oracle, compiler2 metrics, CLIF-shape proofs, the fixture self-description
+check) that don't fit the per-path mould.
+
+A compiler2 unit test reaches a fixture by number, never by an inline source
+string: `Drive::fixture(559)` (in `src/compiler2/drive_harness.rs`) finds
+`fixtures/00559_*.fz`, falling back to `fixtures2/00559_*.fz` while a fixture
+that number's tests still use has not yet moved. `.settle()` drives it to
+`DriveOutcome::Resolved` and returns a `Settled` exposing the settled
+`Compiler2`, its telemetry captures, and lookup methods (`function`, `module`,
+`lowered_body`, `backend_program`, and more) for whatever the test needs to
+read back.
 
 ## Anatomy
 
 ```text
-fixtures2/behavior/<name>.fz
-fixtures2/behavior/<name>.expected.txt
-fixtures2/behavior/<name>.expected.<path>.txt
-fixtures2/behavior/<name>.expected.diagnostics
-fixtures2/behavior/<name>.expected.<path>.diagnostics
-fixtures2/behavior/<name>.expected.stderr
-fixtures2/behavior/<name>.expected.<path>.stderr
-fixtures2/behavior/<name>.oracle.exs
+fixtures/<NNNNN>_<name>.fz
+fixtures/<NNNNN>_<name>.expected.txt
+fixtures/<NNNNN>_<name>.expected.<path>.txt
+fixtures/<NNNNN>_<name>.expected.diagnostics
+fixtures/<NNNNN>_<name>.expected.<path>.diagnostics
+fixtures/<NNNNN>_<name>.expected.stderr
+fixtures/<NNNNN>_<name>.expected.<path>.stderr
+fixtures/<NNNNN>_<name>.oracle.exs
 ```
 
-`discover()` returns every `.fz` under `fixtures2/behavior/`. The matrix derives
-every sidecar path from the file stem.
+`fixtures2/behavior/<name>.fz` and its sidecars follow the same shape, minus
+the number: `fixtures2` predates the numbering requirement.
+
+`discover()` returns every `.fz` under `fixtures/` and `fixtures2/behavior/`,
+sorted by name. The matrix derives every sidecar path from the file stem.
 
 ### Frontmatter
 
@@ -47,6 +67,11 @@ only the keys below:
 - `oracle:` — relative path to a sibling Elixir twin whose stdout owns
   `expected.txt`.
 - `timeout.<path>_secs:` — per-path wall-clock hang-guard override.
+
+Every `fixtures/*.fz` file's stem matches `NNNNN_name` and its number is
+unique across `fixtures/` and `fixtures2/`, checked by the static trial
+`fixtures_describe_themselves`. `fixtures2/` predates both rules and is not
+held to them.
 
 Fixtures already live in that comment-frontmatter form:
 
@@ -238,7 +263,6 @@ through `erlef/setup-beam`.
 ## The media
 
 A fixture pins its claim in the most direct medium for what it tests.
-`fixtures2/GOLDEN.md` holds the choosing rule and the per-fixture map.
 
 1. **In-language assertion** — `assert(expr == expected, "why")` / `refute`.
    The program checks itself and aborts on failure, so the claim is verified on
@@ -268,6 +292,38 @@ A fixture pins its claim in the most direct medium for what it tests.
 6. **Compiler2 contract** — `fixtures2` comment-frontmatter plus optional
    sidecars. Use when the point is compiler2's own semantic/codegen surface:
    metrics, canonical call-edge facts, or a dense snapshot of those facts.
+
+### Choosing rule
+
+> Pin in the medium your *purpose* requires. One fixture, one job.
+
+- Purpose is "this feature computes / dispatches / matches correctly" →
+  **assertion**, no golden.
+- Purpose is "this value renders as exactly this string" → **rendering golden**.
+- Purpose is "this allocates exactly this much" → **memory-floor stats**.
+- Purpose is "this lowers to this shape" → a **compiler2 contract**.
+- Purpose is "this is rejected / aborts" → **expect-failure** (`expect:` +
+  `expected.stderr`).
+
+Behavioural correctness is path-invariant, so an assertion runs all three paths
+for free. Compiler-shape and memory facts are not the program's behaviour, so
+they do not belong in the program; they stay as contract metrics and stats
+goldens respectively. Do **not** add an assertion to a shape-primary fixture: the
+`assert` adds IR (an `==`, an `if`, a panic branch) and pollutes the very shape
+it pins.
+
+### Source comment convention
+
+A fixture's source comments are a plain statement of facts about the current
+state: what the fixture proves, in present tense, no adornment and no
+chronology. They do not contain duplicated code — the code is the `.fz` file
+itself. State the fact instead.
+
+The `purpose:` frontmatter line is the single source of the one-line
+description. The prose comments below the frontmatter are **optional**:
+include them only when they say something `purpose:` does not — a mechanism, a
+rationale, an allocation target. When `purpose:` is the whole story, the file
+should just keep the frontmatter and the program.
 
 ## Compiler-Shape Signals
 

@@ -48,7 +48,7 @@ impl ReturnWideningCounter {
 
 fn discover_contract_fixtures() -> Vec<ContractFixture> {
     let filter = std::env::var("FIXTURE2_CONTRACT_FILTER").ok();
-    let mut pending = vec![PathBuf::from("fixtures2")];
+    let mut pending = vec![PathBuf::from("fixtures2"), PathBuf::from("fixtures")];
     let mut paths = Vec::new();
     while let Some(dir) = pending.pop() {
         for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {}: {}", dir.display(), e)) {
