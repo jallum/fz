@@ -278,7 +278,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // implementation defined later never revises it or the callers built
         // on it, so the four extra `InputDemand` wakes fz-afu.10 added above
         // are gone with the join.
-        (2771, 9, 19, 232),
+        // fz-p8p.19: 2771 -> 2747. The exhaustiveness check that used to run
+        // per function head is gone; redundancy is checked from the compiled
+        // dispatch plan instead, which removes its own source job from every
+        // function that declared a contract.
+        (2747, 9, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -308,7 +312,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // callback's wake at all -- the callback reads no protocol fact, so
         // those six wakes and the extra `InputDemand` wakes they fed (above)
         // both go with the join.
-        731,
+        // fz-p8p.19: 731 -> 707. The exhaustiveness check that used to run
+        // per function head is gone; redundancy is checked from the compiled
+        // dispatch plan instead, which removes its own changed revision from
+        // every function that declared a contract.
+        707,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(

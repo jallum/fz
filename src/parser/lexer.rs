@@ -35,22 +35,13 @@ pub enum Tok {
     Require,
     Do,
     End,
-    If,
     Else,
-    Case,
-    Cond,
     When,
-    With,
-    Quote,
-    Unquote,
     Type,
     In,  // membership operator: `x in xs`
     Not, // boolean negation and `not in`
     And, // boolean conjunction: `a and b`
     Or,  // boolean disjunction: `a or b`
-    // fz-5vj — selective `receive do … after … end` syntax. Plain
-    // `receive()` has been removed; `receive` is a reserved keyword.
-    Receive,
     After,
 
     // punctuation
@@ -716,16 +707,9 @@ impl<'a> Lexer<'a> {
             "require" => Tok::Require,
             "do" => Tok::Do,
             "end" => Tok::End,
-            "if" => Tok::If,
             "else" => Tok::Else,
-            "case" => Tok::Case,
-            "cond" => Tok::Cond,
             "when" => Tok::When,
-            "with" => Tok::With,
-            "receive" => Tok::Receive,
             "after" => Tok::After,
-            "quote" => Tok::Quote,
-            "unquote" => Tok::Unquote,
             "type" => Tok::Type,
             "in" => Tok::In,
             "not" => Tok::Not,

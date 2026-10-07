@@ -1,12 +1,13 @@
 use crate::ast::{
     AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, CallableName, Endian, Expr, FnClause,
-    LambdaClause, MatchClause, Pattern, Spanned, SpecDecl, TypeExprBody, UnOp, WithBinding,
+    LambdaClause, MatchClause, Pattern, Spanned, SpecDecl, TypeExprBody, UnOp, Var, VarContext, WithBinding,
 };
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
 use crate::source::{SourceMap, Span};
 
+use super::identity::FunctionId;
 use super::quoted_surface::function_head_args;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::token_payload;
@@ -292,19 +293,12 @@ fn decode_expr(
         if let Some(module) = node.meta.module_denotation()? {
             return Ok(Spanned::new(Expr::Module(module), span));
         }
-        // A retained callable settles the target. The head beside it is the
-        // spelling the call was written with and says nothing about where the
-        // call goes, so it is never read back as source here.
-        if let Some(function) = node.meta.bound_callable()? {
-            if !is_list_like(&node.tail) {
-                return Err(QuotedSourceError::new("a retained callable needs an argument list"));
-            }
-            let args = decode_exprs(occurrences, &node.tail.list_items()?, Some(span), sources)?;
-            let callee = Spanned::new(Expr::BoundFunction(function), span);
-            return Ok(Spanned::new(Expr::Call(Box::new(callee), args), span));
-        }
-        if !is_list_like(&node.tail) {
-            return Ok(Spanned::new(Expr::Var(atom_name(&node.head)?), span));
+        if !node.tail.is_list_like() {
+            let var = Var {
+                name: atom_name(&node.head)?,
+                context: decode_var_context(&node)?,
+            };
+            return Ok(Spanned::new(Expr::Var(var), span));
         }
 
         let args = node.tail.list_items()?;
@@ -324,12 +318,26 @@ fn decode_expr(
                     return Ok(Spanned::new(Expr::Index(Box::new(base), Box::new(key)), span));
                 }
             }
-            let callee = decode_expr(occurrences, &node.head, Some(span), sources)?;
+            // This is an ordinary call with an expression callee (a remote
+            // call, most often). A retained callable settles its target; the
+            // head is then only the spelling the call was written with, and
+            // is never read back as source.
             let call_args = decode_exprs(occurrences, &args, Some(span), sources)?;
+            let callee = match node.meta.bound_callable()? {
+                Some(function) => Spanned::new(Expr::BoundFunction(function), span),
+                None => decode_expr(occurrences, &node.head, Some(span), sources)?,
+            };
             return Ok(Spanned::new(Expr::Call(Box::new(callee), call_args), span));
         }
 
-        return decode_named_expr(occurrences, atom_name(&node.head)?, &args, span, sources);
+        return decode_named_expr(
+            occurrences,
+            atom_name(&node.head)?,
+            node.meta.bound_callable()?,
+            &args,
+            span,
+            sources,
+        );
     }
 
     let span = fallback_span.unwrap_or(Span::DUMMY);
@@ -383,6 +391,7 @@ fn decode_expr(
 fn decode_named_expr(
     occurrences: &mut LambdaOccurrences,
     name: String,
+    bound: Option<FunctionId>,
     args: &[QuotedSourceCursor],
     span: Span,
     sources: &SourceMap,
@@ -424,7 +433,7 @@ fn decode_named_expr(
             let ty = quoted_type_expr_body(&args[1], sources)?;
             Ok(Spanned::new(Expr::Ascribe(Box::new(value), ty), span))
         }
-        ("__aliases__", _) => Ok(Spanned::new(Expr::Var(alias_name_from_args(args)?), span)),
+        ("__aliases__", _) => Ok(Spanned::new(Expr::Var(Var::user(alias_name_from_args(args)?)), span)),
         (".", 2) => {
             let base = decode_expr(occurrences, &args[0], Some(span), sources)?;
             let field = Spanned::new(Expr::Atom(args[1].atom_name()?), span);
@@ -434,13 +443,26 @@ fn decode_named_expr(
             Expr::Block(decode_exprs(occurrences, args, Some(span), sources)?),
             span,
         )),
-        ("if", 2) => decode_if(occurrences, args, span, sources),
-        ("case", 1 | 2) => decode_case(occurrences, args, span, sources),
-        ("cond", 1) => decode_cond(occurrences, args, span, sources),
-        ("with", _) => decode_with(occurrences, args, span, sources),
-        ("receive", 1) => decode_receive(occurrences, args, span, sources),
+        ("if", 2) if quoted_do_entry(&args[1]).is_some() => decode_if(occurrences, args, span, sources),
+        ("case", 1 | 2)
+            if args
+                .last()
+                .and_then(quoted_do_entry)
+                .is_some_and(|body| quoted_clause_list_shaped(&body, sources)) =>
+        {
+            decode_case(occurrences, args, span, sources)
+        }
+        ("cond", 1) if quoted_do_entry(&args[0]).is_some_and(|body| quoted_clause_list_shaped(&body, sources)) => {
+            decode_cond(occurrences, args, span, sources)
+        }
+        ("with", _) if args.last().is_some_and(|kw| quoted_do_entry(kw).is_some()) => {
+            decode_with(occurrences, args, span, sources)
+        }
+        ("receive", 1) if quoted_do_entry(&args[0]).is_some_and(|body| quoted_clause_list_shaped(&body, sources)) => {
+            decode_receive(occurrences, args, span, sources)
+        }
         ("fn", _) => decode_lambda(occurrences, args, span, sources),
-        ("quote", 1) => decode_quote(occurrences, args, span, sources),
+        ("quote", 1) if quoted_do_entry(&args[0]).is_some() => decode_quote(occurrences, args, span, sources),
         ("unquote", 1) => {
             let inner = decode_expr(occurrences, &args[0], Some(span), sources)?;
             Ok(Spanned::new(Expr::Unquote(Box::new(inner)), span))
@@ -453,7 +475,13 @@ fn decode_named_expr(
         ("<<>>", _) => decode_bitstring_expr(occurrences, args, span, sources),
         ("&", 1) => decode_fn_ref_expr(&args[0], span, sources),
         _ => {
-            let callee = Spanned::new(Expr::Var(name), span);
+            // An ordinary call named `name`. A retained callable settles its
+            // target; the head is then only the spelling the call was
+            // written with, and is never read back as source.
+            let callee = match bound {
+                Some(function) => Spanned::new(Expr::BoundFunction(function), span),
+                None => Spanned::new(Expr::Var(Var::user(name)), span),
+            };
             let call_args = decode_exprs(occurrences, args, Some(span), sources)?;
             Ok(Spanned::new(Expr::Call(Box::new(callee), call_args), span))
         }
@@ -467,13 +495,16 @@ fn decode_pattern(
 ) -> Result<Spanned<Pattern>, QuotedSourceError> {
     if let Some(node) = cursor.ast_node(sources)? {
         let span = node.span.unwrap_or(Span::DUMMY);
-        if !is_list_like(&node.tail) {
+        if !node.tail.is_list_like() {
             let name = atom_name(&node.head)?;
             return Ok(Spanned::new(
                 if name == "_" {
                     Pattern::Wildcard
                 } else {
-                    Pattern::Var(name)
+                    Pattern::Var(Var {
+                        name,
+                        context: decode_var_context(&node)?,
+                    })
                 },
                 span,
             ));
@@ -598,12 +629,36 @@ fn decode_case(
     let Some((_, body)) = entries.into_iter().find(|(key, _)| key == "do") else {
         return Err(QuotedSourceError::new("quoted `case` is missing `do` clauses"));
     };
-    let clauses = body
-        .list_items()?
+    let clauses = decode_clause_list_or_empty_block(occurrences, &body, "case", sources)?;
+    Ok(Spanned::new(Expr::Case(subject.map(Box::new), clauses), span))
+}
+
+/// A clause-list `do` body, such as `case`'s, is ordinarily a list of `->`
+/// clauses. An *empty* body is the one exception: Elixir quotes `case x do
+/// end` with `{:__block__, [], []}` in that position rather than `[]`, since
+/// the same do-block grammar produces an empty block everywhere else. This
+/// reads either shape as the same empty clause list, so a case with no
+/// clauses compiles and only aborts if it is ever reached, matching Elixir.
+fn decode_clause_list_or_empty_block(
+    occurrences: &mut LambdaOccurrences,
+    body: &QuotedSourceCursor,
+    head: &str,
+    sources: &SourceMap,
+) -> Result<Vec<MatchClause>, QuotedSourceError> {
+    if let Some(node) = body.ast_node(sources)?
+        && atom_name(&node.head)? == "__block__"
+    {
+        if node.tail.list_items()?.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(QuotedSourceError::new(format!(
+            "quoted `{head}` body expects `->` clauses"
+        )));
+    }
+    body.list_items()?
         .into_iter()
         .map(|clause| decode_match_clause(occurrences, &clause, sources))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Spanned::new(Expr::Case(subject.map(Box::new), clauses), span))
+        .collect()
 }
 
 fn decode_cond(
@@ -764,10 +819,55 @@ fn decode_quote(
     let Some((_, body)) = entries.into_iter().find(|(key, _)| key == "do") else {
         return Err(QuotedSourceError::new("quoted `quote` is missing `do` body"));
     };
-    Ok(Spanned::new(
-        Expr::Quote(Box::new(decode_expr(occurrences, &body, Some(span), sources)?)),
-        span,
-    ))
+    let mut splices = Vec::new();
+    collect_quoted_splices(occurrences, &body, sources, &mut splices)?;
+    Ok(Spanned::new(Expr::Quote(body, splices), span))
+}
+
+/// Every `unquote(e)` inside a quote's body, each decoded as an ordinary
+/// expression with the same `LambdaOccurrences` counter the rest of the
+/// enclosing function uses, in the same depth-first order quote lowering
+/// later walks the same cursor. Everything else in the body stays quoted
+/// data, untouched, until the cursor or one of these splices is used.
+fn collect_quoted_splices(
+    occurrences: &mut LambdaOccurrences,
+    cursor: &QuotedSourceCursor,
+    sources: &SourceMap,
+    out: &mut Vec<Spanned<Expr>>,
+) -> Result<(), QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
+        return match cursor.root().tag() {
+            fz_runtime::any_value::ValueKind::LIST => {
+                for item in cursor.list_items()? {
+                    collect_quoted_splices(occurrences, &item, sources, out)?;
+                }
+                Ok(())
+            }
+            fz_runtime::any_value::ValueKind::STRUCT => {
+                for item in cursor.tuple_items()? {
+                    collect_quoted_splices(occurrences, &item, sources, out)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        };
+    };
+    if !node.tail.is_list_like() {
+        return Ok(()); // a bare variable mention, nothing to splice
+    }
+    let args = node.tail.list_items()?;
+    if node.head.root().tag() == fz_runtime::any_value::ValueKind::ATOM {
+        if node.head.atom_name()? == "unquote" && args.len() == 1 {
+            out.push(decode_expr(occurrences, &args[0], node.span, sources)?);
+            return Ok(());
+        }
+    } else {
+        collect_quoted_splices(occurrences, &node.head, sources, out)?;
+    }
+    for arg in &args {
+        collect_quoted_splices(occurrences, arg, sources, out)?;
+    }
+    Ok(())
 }
 
 fn decode_map_expr(
@@ -1258,6 +1358,35 @@ fn decode_keyword_entries(cursor: &QuotedSourceCursor) -> Result<Vec<(String, Qu
     Ok(out)
 }
 
+/// The `do:` entry of a quoted keyword list, if the cursor is a keyword
+/// list at all and carries one. `decode_named_expr` asks this before
+/// handing a call named `if`/`case`/`cond`/`with`/`receive`/`quote` to its
+/// decoder: those decoders assume their trailing argument already has this
+/// shape, so a call that doesn't reach it — a bare value where a keyword
+/// list belongs, or a keyword list with no `do:` — is not that special
+/// form, whatever its name, and falls through to the ordinary call it
+/// looks like instead.
+fn quoted_do_entry(cursor: &QuotedSourceCursor) -> Option<QuotedSourceCursor> {
+    decode_keyword_entries(cursor)
+        .ok()?
+        .into_iter()
+        .find(|(key, _)| key == "do")
+        .map(|(_, value)| value)
+}
+
+/// Whether a quoted value is shaped like a `->` clause list: `case`,
+/// `cond` and `receive` all quote their `do:` body this way, either as an
+/// actual list or, for an empty `do ... end`, as `{:__block__, [], []}`
+/// (see `decode_clause_list_or_empty_block`). A `do:` value that is
+/// neither — a bare literal, say — means the call only looks like the
+/// special form; `decode_named_expr` treats it as the ordinary call it
+/// actually is rather than handing it to a decoder built to assume a
+/// clause list is already there.
+fn quoted_clause_list_shaped(cursor: &QuotedSourceCursor, sources: &SourceMap) -> bool {
+    cursor.is_list_like()
+        || matches!(cursor.ast_node(sources), Ok(Some(node)) if atom_name(&node.head).is_ok_and(|name| name == "__block__"))
+}
+
 fn decode_module_target(
     cursor: &QuotedSourceCursor,
     sources: &SourceMap,
@@ -1277,15 +1406,18 @@ fn decode_module_target(
     )))
 }
 
+/// A wildcard has no context to decode — it cannot be referenced again, so
+/// naming it `_` for an as-bind or pin site is always `Var::user`, never a
+/// macro's or sugar's own context.
 fn pattern_var_name(
     cursor: &QuotedSourceCursor,
     fallback_span: Option<Span>,
     sources: &SourceMap,
-) -> Result<Option<String>, QuotedSourceError> {
+) -> Result<Option<Var>, QuotedSourceError> {
     let decoded = decode_pattern(cursor, fallback_span, sources)?;
     Ok(match decoded.node {
-        Pattern::Var(name) => Some(name),
-        Pattern::Wildcard => Some("_".to_string()),
+        Pattern::Var(var) => Some(var),
+        Pattern::Wildcard => Some(Var::user("_")),
         _ => None,
     })
 }
@@ -1442,7 +1574,7 @@ fn apply_bit_spec_modifier(
 ) -> Result<(), QuotedSourceError> {
     if let Some(node) = cursor.ast_node(sources)? {
         let node_span = node.span.unwrap_or(Span::DUMMY);
-        let args = if is_list_like(&node.tail) {
+        let args = if node.tail.is_list_like() {
             node.tail.list_items()?
         } else {
             Vec::new()
@@ -1525,12 +1657,20 @@ fn decode_bit_size(
         });
     }
     if let Some(node) = cursor.ast_node(sources)?
-        && !is_list_like(&node.tail)
+        && !node.tail.is_list_like()
     {
-        return Ok(BitSize::Var(atom_name(&node.head)?));
+        return Ok(BitSize::Var(Var {
+            name: atom_name(&node.head)?,
+            context: decode_var_context(&node)?,
+        }));
     }
     match cursor.root().tag() {
-        fz_runtime::any_value::ValueKind::ATOM => Ok(BitSize::Var(cursor.atom_name()?)),
+        // A bare atom, unlike the `Var`-shaped node above, has no tail and no
+        // meta to carry a macro's or sugar's context in — it is structurally
+        // only ever a variable the user wrote. No producer in this compiler
+        // emits a bitstring size this way today; a future one that does
+        // still cannot mean anything but `User`.
+        fz_runtime::any_value::ValueKind::ATOM => Ok(BitSize::Var(Var::user(cursor.atom_name()?))),
         other => Err(QuotedSourceError::user(
             crate::diag::codes::PARSE_BITSTRING_BAD_SIZE,
             Some(error_span),
@@ -1842,6 +1982,42 @@ fn atom_name(cursor: &QuotedSourceCursor) -> Result<String, QuotedSourceError> {
     cursor.atom_name()
 }
 
+/// A `Var`-shaped node's tail carries its hygiene context, exactly as
+/// [`super::source::QuotedSourceBuilder::variable`] wrote it: `nil` for a
+/// variable the user wrote, the quoting macro's coordinate for one it
+/// introduced, or the `generated` marker for one sugar introduced. The
+/// latter two also carry an expansion ordinal, stamped beside the context in
+/// `meta`.
+fn decode_var_context(node: &QuotedAstNode) -> Result<VarContext, QuotedSourceError> {
+    match node.tail.root().tag() {
+        fz_runtime::any_value::ValueKind::ATOM => match node.tail.atom_name()?.as_str() {
+            "nil" => Ok(VarContext::User),
+            "generated" => Ok(VarContext::Generated(hygiene_ordinal(node)?)),
+            other => Err(QuotedSourceError::new(format!(
+                "a variable's context atom must be `nil` or `generated`, got `{other}`"
+            ))),
+        },
+        fz_runtime::any_value::ValueKind::INT => {
+            let coordinate = u32::try_from(node.tail.int_value()?).map_err(|_| {
+                QuotedSourceError::new("a macro variable's context is outside the function coordinate space")
+            })?;
+            Ok(VarContext::Macro(
+                FunctionId::from_coordinate(coordinate),
+                hygiene_ordinal(node)?,
+            ))
+        }
+        other => Err(QuotedSourceError::new(format!(
+            "a variable's context must be `nil`, an int, or `generated`, got a {other:?}"
+        ))),
+    }
+}
+
+fn hygiene_ordinal(node: &QuotedAstNode) -> Result<u32, QuotedSourceError> {
+    node.meta
+        .hygiene_ordinal()?
+        .ok_or_else(|| QuotedSourceError::new("a macro- or sugar-generated variable is missing its hygiene ordinal"))
+}
+
 /// True when `node.head` is itself an atom equal to `name`.
 ///
 /// An AST node's `head` is not always an atom: remote calls and closure
@@ -1887,10 +2063,6 @@ fn is_bracket_access_callee(head_node: &QuotedAstNode) -> Result<bool, QuotedSou
         return Ok(false);
     };
     Ok(value.atom_name()? == "true")
-}
-
-fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
-    cursor.root().tag() == fz_runtime::any_value::ValueKind::LIST
 }
 
 fn binop_from_name(name: &str) -> Option<BinOp> {

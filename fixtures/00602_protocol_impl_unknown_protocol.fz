@@ -1,0 +1,9 @@
+#---
+# purpose: a defimpl naming a protocol that is never defined anywhere is an error, at the defimpl line.
+# expect: diagnostic
+#---
+defimpl NoSuchProtocol, for: List do
+  def each(x), do: x
+end
+
+def main(), do: dbg(:ok)

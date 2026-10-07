@@ -252,8 +252,24 @@ and its ABI shape.
 ## How Macro Bodies Are Lowered
 
 Macro bodies decode through the same quoted-function reader as ordinary
-functions. `quoted_function.rs` turns quoted `quote` into `Expr::Quote(...)`
-and quoted `unquote` into `Expr::Unquote(...)`.
+functions, with one exception: decoding stops at `quote`. `quoted_function.rs`
+turns a quoted `quote do ... end` into `Expr::Quote(cursor, splices)`, holding
+the quoted-source cursor for the body untouched, rather than a decoded `Expr`
+tree, alongside every `unquote(e)` reachable inside that body, each already
+decoded into an ordinary `Expr` in the same walk (`collect_quoted_splices`,
+called from `decode_quote`) and in the same walk order lowering later
+revisits. The body inside a quote otherwise stays quoted data until something
+actually splices it in elsewhere; nothing about it but its `unquote` holes is
+decoded, resolved, or rejected while the quote itself is only being defined.
+Decoding an `unquote`'s content eagerly, alongside the quote, rather than
+lazily at lowering time, matters for two reasons: free-name collection (for
+lambda capture) can see into an `unquote` like any other expression instead of
+treating the whole quote as opaque, and every lambda literal anywhere in the
+enclosing function — whether inside an `unquote` or not — gets its occurrence
+number from one shared `LambdaOccurrences` counter instead of two independent
+ones. Quoted `unquote` outside a quote's body still decodes as an ordinary
+`Expr::Unquote(...)`, since an `unquote` only makes sense already inside a
+quote that is being lowered.
 
 `jobs/body.rs` then lowers macro bodies with one macro-specific rule:
 
@@ -262,19 +278,35 @@ and quoted `unquote` into `Expr::Unquote(...)`.
 
 The body lowerer keeps quote-specific work behind the dedicated
 `QuoteLowerer` helper in `jobs/body.rs`, so the ordinary body lowerer only
-hands off `Expr::Quote(...)` instead of owning the quoted-AST construction
-logic inline.
+hands off the cursor and its splices in `Expr::Quote(cursor, splices)`
+instead of owning the quoted-AST construction logic inline.
 
-That quote seam treats quote/unquote specially:
+`QuoteLowerer::lower` walks that cursor directly, as one recursive case per
+quoted-source shape rather than one case per language construct:
 
-- `Expr::Quote(inner)` hands off to the dedicated `QuoteLowerer`
-- `Expr::Unquote(inner)` is legal only inside `quote`
-- inside quote lowering, `unquote(...)` evaluates the inner expression and
-  splices its runtime value into the quoted tree being constructed
-- literal two-tuples lower directly to two-element tuples, matching Elixir's
-  quoted representation; every other tuple arity lowers to the `{}` AST form.
-  Keyword entries depend on this distinction because each `[key: value]`
-  element is a structural two-tuple rather than a tuple-literal AST node.
+- a literal (int, float, atom, bitstring) lowers to the matching constant
+- a list recurses over its items
+- a two-element tuple recurses over its two items and lowers to a two-element
+  tuple directly, matching Elixir's quoted representation; every other tuple
+  arity is never a bare tuple at this layer — it already arrived as the
+  three-item `{}` AST node, so it falls out of the next case instead. Keyword
+  entries depend on this distinction, because each `[key: value]` element is a
+  structural two-tuple rather than a tuple-literal AST node.
+- a `{head, meta, args}` AST node either:
+  - splices `unquote(e)` by taking the next already-decoded splice in walk
+    order and lowering it with the same `lower_expr` any other expression
+    goes through, exactly as if `e` had been written at that position
+    directly
+  - binds an atom-headed call to its callable through
+    `resolve_quoted_callable`/`lower_call_node`, the same pair every other
+    quoted call site uses
+  - or, when the node's tail is not list-shaped, builds a bare variable
+    reference
+
+Because this walk dispatches on quoted-source shape rather than on which
+language construct produced it, a `case`, an `fn`, a bitstring, a struct, or
+any other construct made only of these four shapes lowers through it too —
+there is no per-construct list to keep in sync.
 
 The result is a backend program that builds Fz-shaped AST values on the process
 heap. The backend interpreter then runs that program like any other backend
@@ -288,6 +320,60 @@ Two important guardrails fall out of this:
   runtime roots reject macros, and macro roots reject ordinary functions. A
   captured macro binding cannot execute an ordinary replacement using the macro ABI.
 
+## Variable Hygiene
+
+A variable's identity is its spelling plus where that spelling was written —
+`Var { name, context }` (`src/ast/mod.rs`). `VarContext::User` is a variable
+written by hand. `VarContext::Macro(function, ordinal)` is a variable a
+macro's own `quote` wrote, distinguished by which of that macro's expansions
+produced it. `VarContext::Generated(ordinal)` is a variable the compiler
+synthesized itself — the capture (`&1`) and multi-clause lambda-sugar
+parameters — with no source spelling for a user's own variable to collide
+with. `Expr::Var`, `Pattern::Var`, `Pattern::Pinned`, an as-pattern's name, and
+a bitstring's `size(n)` all carry a `Var`, and every map that resolves a
+variable by name — the lowering environment, closure free/bound-name
+tracking, and dispatch_matrix's pattern-binding tables — is keyed by `Var`,
+never by a bare string. Two variables with the same spelling but a different
+context never share a binding: a macro's own `t = 99` cannot shadow, or be
+shadowed by, the caller's `t`.
+
+A quoted variable's tail carries its context, the same slot a call's argument
+list would otherwise occupy: `nil` for a variable a user wrote, a macro's
+`FunctionId` (as a bare integer) for one written inside that macro's own
+`quote`, or the atom `generated` for one the compiler synthesized.
+`QuotedSourceBuilder::variable` is the one constructor for this shape; the
+front door, quote lowering, and sugar's capture and lambda desugaring all
+build a variable node through it, and decode reads the tail back into a
+`VarContext`.
+
+A macro's `FunctionId` alone cannot tell one call to that macro apart from the
+next, so quote lowering writes only that bare marker, with no ordinal yet.
+One walk, run over the macro's own returned tree immediately after it runs and
+before the expansion is memoized, then stamps this invocation's ordinal onto
+every variable still carrying that macro's bare marker. The ordinal is local
+to the job attempt: it advances once per macro invocation the attempt visits,
+whether or not the memoization cache already holds an answer, so a retry
+reproduces the identical sequence. A variable spliced in by `unquote`, or one
+a nested macro's own expansion already stamped with a concrete ordinal, does
+not carry this macro's bare marker and is left untouched.
+
+This is the same underlying question `bound_callable` answers for a call
+written inside a quote — "where was this written" — asked at a different
+cardinality. A call's target does not fork per invocation, so it is resolved
+once, eagerly, at quote-lowering time, and baked into meta as a `FunctionId`.
+A variable's binding does fork per invocation — two calls to the same macro
+need two distinct `t` bindings — so it is resolved in two steps: a bare
+marker at lowering time, and a concrete `(FunctionId, ordinal)` pair once the
+expansion it belongs to is known.
+
+`var!(x)`, an ordinary macro in `lib/runtime.fz`, rewrites a quoted
+variable's context back to `nil` and drops its ordinal, so it reads and binds
+exactly as if the caller had written it by hand.
+
+An undefined macro variable — one whose context names a macro but whose name
+was never bound anywhere lowering can see — reports `lower/unbound`, and the
+message names the macro.
+
 ## How The Macro Actually Runs
 
 `ExecutionContext::run_macro_on_source(...)` is the final handoff.
@@ -299,8 +385,11 @@ It:
    `[__CALLER__, arg1, arg2, ...]`
 3. borrows the quoted source heap's process with `source.lend_process(...)`
 4. runs `ir_interp::run_backend_entry_on_process(...)`
-5. requires the return to be `RuntimeValue::Ref(root)`
-6. wraps that root back into `QuotedSourceRoot` with `source.subroot(root)`
+5. boxes the return onto that same process with `AnyValue::as_any_value_ref(...)` —
+   a heap ref already has this form, and a bare literal (a number, an atom, a
+   string, or a 2-tuple) gets one the same way a scalar argument does, so a
+   macro body may end in `quote do: ...` or in a literal outright
+6. wraps that boxed word back into `QuotedSourceRoot` with `source.subroot(root)`
 
 The returned root is therefore still rooted in the same quoted-source heap as
 the input carrier root.

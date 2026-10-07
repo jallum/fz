@@ -11,7 +11,7 @@ use super::super::quoted_expander::{
 use super::super::quoted_surface::{is_function_definition_head, read_compiler_fragment_surface, read_scope_surface};
 use super::super::scheduler::FatalError;
 use super::super::scope::ScopeSnapshot;
-use super::super::source::{QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceRoot};
+use super::super::source::{QuotedSourceCursor, QuotedSourceRoot};
 use super::super::source_publish::{self, ScopePublication};
 use super::super::world::World;
 use super::super::{QuotedCodeSource, parse_quoted_program};
@@ -247,23 +247,7 @@ pub(super) fn define_module(
         };
     }
 
-    if let Some((source_owner, parent_module)) = world.module_indexed_parent(module_id) {
-        if parent_module.is_global() {
-            return Ok(JobEffects::wait_on_current(FactKey::CodeScoped(source_owner)));
-        }
-        return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module)));
-    }
-
-    if let Some(source_owner) = super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(module_id)
-    {
-        return Ok(JobEffects::wait_on_current(FactKey::CodeIndexed(source_owner)));
-    }
-
-    if let Some(parent_module) = world.module_named_parent(module_id) {
-        return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module)));
-    }
-
-    Ok(JobEffects::wait_on_current(FactKey::ModuleIndexed(module_id)))
+    Ok(super::super::drive::ExecutionContext::new(world, tel).wait_for_module_indexed(module_id))
 }
 
 pub(super) fn define_module_interface(
@@ -323,25 +307,6 @@ pub(super) fn define_function(
     let surface =
         crate::compiler2::quoted_function::derive_function_surface(&expanded_source.source, &source_map.borrow())
             .map_err(|error| emit_surface_read_error(tel, "quoted function decode failed", &error))?;
-    let declares_contract = surface.extern_abi.is_some()
-        || surface
-            .attrs
-            .iter()
-            .any(|attr| matches!(attr, crate::ast::Attribute::Spec(_)));
-    let mut resolver = super::super::dispatch::SourcePatternResolver {
-        world,
-        namespace: raw_source.namespace,
-        owner: raw_source.owner_module,
-        guard: |_world: &mut World, _callee: &crate::ast::Callee, _arity: usize| Ok(None),
-    };
-    let warnings = if declares_contract {
-        crate::compiler2::source_diagnostics::function_body_warnings(&surface, &mut resolver)
-    } else {
-        crate::compiler2::source_diagnostics::function_warnings(&surface, &mut resolver)
-    };
-    for diagnostic in warnings {
-        super::super::drive::ExecutionContext::new(world, tel).emit_warning_once(diagnostic);
-    }
     source_publish::record_function_type_refs(world, tel, function_id, &surface)?;
     let changed = super::super::drive::ExecutionContext::new(world, tel).define_function(
         function_id,
@@ -477,6 +442,9 @@ struct FunctionSourceExpander<'world, 'tel, T: crate::telemetry::Telemetry> {
     namespace: Namespace,
     required_remote_macros: HashSet<FunctionId>,
     reads: Vec<FactKey>,
+    /// See `ScopeSession::next_hygiene_counter` (source_publish.rs): one
+    /// ordinal per macro invocation this expander visits.
+    next_hygiene_counter: u32,
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for FunctionSourceExpander<'world, 'tel, T> {
@@ -524,6 +492,15 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
             _ => None,
         }
     }
+
+    fn next_hygiene_ordinal(&mut self) -> u32 {
+        let ordinal = self.next_hygiene_counter;
+        self.next_hygiene_counter = self
+            .next_hygiene_counter
+            .checked_add(1)
+            .expect("hygiene ordinal space exhausted");
+        ordinal
+    }
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world, 'tel, T> {
@@ -545,6 +522,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             namespace: source.namespace,
             required_remote_macros: source.required_remote_macros.iter().copied().collect(),
             reads: Vec::new(),
+            next_hygiene_counter: 0,
         }
     }
 
@@ -555,12 +533,9 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         // __ENV__; it is transient — it is never recorded on the function.
         let def_scope = ScopeSnapshot::function(self.current_module, self.namespace, self.function);
         let builder = source.source.builder();
-        let env = self
-            .world
-            .project_env_value(&builder, def_scope, QuotedLexicalContextKind::Definition)
-            .map_err(|error| {
-                emit_internal_surface_error(self.telemetry, format!("__ENV__ projection failed: {error}"))
-            })?;
+        let env = self.world.project_env_value(&builder, def_scope).map_err(|error| {
+            emit_internal_surface_error(self.telemetry, format!("__ENV__ projection failed: {error}"))
+        })?;
         let env = source.source.subroot(env);
         let namespace = self
             .world

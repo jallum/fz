@@ -60,11 +60,15 @@ contract and are checked through module interfaces.</p>
   <span class="kw">def</span> <span class="fn">count</span>(list), <span class="kw">do:</span> {:ok, <span class="fn">count_list</span>(list, <span class="num">0</span>)}
 <span class="kw">end</span></pre>
 
-<p>Every callback declared by the protocol must be present in the
-implementation with the required arity. Duplicate implementations for the same
-protocol and target are errors. Callback functions are compiled under the
-protocol's implementation namespace, such as <code>Sized.List.count/1</code>,
-so they do not replace ordinary functions on <code>List</code>.</p>
+<p>Every callback declared by the protocol should be present in the
+implementation with the required arity. A missing one warns under
+<code>protocol/missing-callback</code>, naming the arity the implementation
+defines instead when the callback exists at one — the same warning Elixir's
+behaviour checker gives a <code>@behaviour</code> that skips a callback.
+Duplicate implementations for the same protocol and target are errors.
+Callback functions are compiled under the protocol's implementation
+namespace, such as <code>Sized.List.count/1</code>, so they do not replace
+ordinary functions on <code>List</code>.</p>
 
 <h2 id="domain">4. <code>Protocol.t(...)</code> specs</h2>
 

@@ -1,0 +1,6 @@
+error[resolve/unknown-module]: module `NoSuchProtocol` is not defined
+  --> fixtures/00602_protocol_impl_unknown_protocol.fz:1:1
+   |
+1 | defimpl NoSuchProtocol, for: List do
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |

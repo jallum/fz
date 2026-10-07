@@ -1,0 +1,9 @@
+#---
+# purpose: a redundant clause is flagged the same way whether or not its function declares an @spec
+#---
+defmodule M do
+  @spec f(integer) :: atom
+  def f(_), do: :any
+  def f(0), do: :zero
+end
+def main(), do: assert(M.f(0) == :any, "the wildcard clause matches first regardless of the spec")

@@ -1,5 +1,5 @@
 #---
-# purpose: a defimpl callback defined at the wrong arity resolves without an arity-mismatch error.
+# purpose: a defimpl callback defined at the wrong arity warns under protocol/missing-callback, naming the arity it found instead.
 #---
 defprotocol P do
   def each(x)

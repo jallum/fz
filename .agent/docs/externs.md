@@ -499,17 +499,21 @@ extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer 
 ```
 
 `resource(T)` is a real type constructor on the `Types` trait; the variable binds
-from the payload, so `make_resource(42, &close/1)` is `resource(integer)`. When
-that call sits in a module that declares `@type t :: opaque resource(integer)`,
-the planner mints the nominal opaque alias (`mint_owned_resource_aliases`) owned
-by that module. The alias is nominal — two opaques with different names are
-lattice-disjoint (see [`set-theoretic-types`](set-theoretic-types.md)) — so a
-plain `resource(integer)` is not interchangeable with the opaque handle, and only
-the owning module's functions mint it.
+from the payload, so `make_resource(42, &close/1)` is `resource(integer)`. A
+module that declares `@type t :: opaque resource(integer)` brands that shape as
+`t` wherever a position is annotated `t` — `mint_brand(resource(integer), tag)`,
+the identical mechanism `refines` uses (see
+[`set-theoretic-types`](set-theoretic-types.md)). The brand is nominal — two
+brands over one inner meet at empty — so a plain `resource(integer)` and the
+module's `t` are two different `@spec` positions, even though every `t` value is
+structurally a `resource(integer)`.
 
-Inside the owning module, `.value` on a resource handle projects the payload.
-Lowering keeps this as ordinary field access, and both backend interpreter and
-native/JIT/AOT paths read it through the shared named-field runtime ABI.
+`.value` on a resource handle projects the payload from any module that holds
+one; lowering keeps this as ordinary field access, and both backend interpreter
+and native/JIT/AOT paths read it through the shared named-field runtime ABI. An
+opaque type's structure is not hidden from code outside its declaring
+module — routing every read through an accessor the declaring module defines
+is a convention, not an enforced boundary.
 
 `Kernel.claim_resource/1` is the deterministic counterpart to fallback
 cleanup. It reads the payload and then atomically claims the shared off-heap

@@ -2193,7 +2193,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-afu.11: 751 -> 740. The callback no longer reads or waits on
         // `ProtocolDispatch`/`ModuleDefined` at all, so it and the callers
         // built on it never re-run once an implementation lands.
-        total_evaluations: 740,
+        // fz-p8p.19: 740 -> 735. The exhaustiveness check that used to run
+        // per function head is gone; redundancy is checked from the compiled
+        // dispatch plan instead, which removes its own evaluation from every
+        // function that declared a contract.
+        total_evaluations: 735,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2315,7 +2319,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-afu.11: 1171 -> 1165. The callback reads and waits on nothing
         // protocol-shaped, so it and the callers built on it never re-run
         // once an implementation lands.
-        total_evaluations: 1165,
+        // fz-p8p.19: 1165 -> 1152. The exhaustiveness check that used to run
+        // per function head is gone; redundancy is checked from the compiled
+        // dispatch plan instead, which removes its own evaluation from every
+        // function that declared a contract.
+        total_evaluations: 1152,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2577,7 +2585,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // AnalyzeActivation rises by the four runs above.
         // fz-afu.11: 1940 -> 1916. The callback and the callers built on it
         // never re-run once an implementation lands.
-        total_evaluations: 1916,
+        // fz-p8p.19: 1916 -> 1892. The exhaustiveness check that used to run
+        // per function head is gone; redundancy is checked from the compiled
+        // dispatch plan instead, which removes its own evaluation from every
+        // function that declared a contract.
+        total_evaluations: 1892,
     },
 ];
 

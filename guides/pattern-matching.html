@@ -300,24 +300,23 @@ same DispatchGraph every time:</p>
   </tbody>
 </table>
 
-<p>Function-head coverage follows the function's declared input contract. For
-example, clauses for <code>[]</code> and <code>[head | tail]</code> cover a
-parameter declared as <code>[a]</code>; they do not need a wildcard for values
-the contract excludes. Each <code>@spec</code> overload is checked as its own
-argument row, so separate overloads such as <code>(:a, :x)</code> and
-<code>(:b, :y)</code> do not invent the cross-pairs <code>(:a, :y)</code> or
-<code>(:b, :x)</code>.</p>
+<p>A missing clause is not a compile-time diagnostic, with or without a
+declared <code>@spec</code>. Function clauses, <code>case</code> arms, and
+<code>with else</code> arms are never checked against a domain for coverage.
+An input that reaches none of them halts at runtime with
+<code>:function_clause</code> or <code>:case_clause</code>, the same fault
+Elixir raises for the same program.</p>
 
-<p>Bounds introduced by <code>when</code> are part of that domain. A parameter
-<code>t</code> constrained by <code>when t: :a | :b</code> is covered by clauses
-for <code>:a</code> and <code>:b</code>, including when <code>t</code> appears
-inside a tuple or list. An unconstrained type variable remains open-ended.</p>
-
-<p>Without a declared contract, function clauses are checked against all fz
-values. Guards do not promise coverage: if a declared input can make the guard
-false and no later clause matches, the compiler reports
-<code>type/no-matching-clause</code>. Nested <code>case</code> and
-<code>with else</code> checks are independent of the function-head contract.</p>
+<p>What the compiler does flag at compile time is the opposite shape: a
+clause that can never run because an earlier clause already matches
+everything it could see. The check reads the same compiled DispatchGraph
+every surface form lowers to — real guards, real annotation preconditions,
+nothing normalized away — so a guarded clause is never mistaken for
+redundant, and a parameter annotation that actually partitions the input
+(<code>f(x :: integer)</code> beside <code>f(x :: atom)</code>) is never
+mistaken for overlap. The warning is <code>type/redundant-clause</code>,
+worded the way Elixir words the same warning: "this clause cannot match
+because a previous clause at line N always matches".</p>
 
 <p>Receive is the odd-looking one only because the scheduler has to run
 the dispatch plan against mailbox messages over time. The decision language

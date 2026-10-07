@@ -1,0 +1,29 @@
+#---
+# purpose: a quote body containing a case, an fn, and a bitstring each lower and run, the same as any other quoted-source shape
+#---
+defmacro classify_via_case(flag) do
+  quote do
+    case unquote(flag) do
+      true -> 1 + 0
+      false -> 2 + 0
+    end
+  end
+end
+
+defmacro make_adder(amount) do
+  quote do
+    fn (x) -> x + unquote(amount) end
+  end
+end
+
+defmacro pack_two() do
+  quote do: <<1, 2>>
+end
+
+def main() do
+  assert(classify_via_case(true) == 1, "a case's true arm lowers and runs inside a quote")
+  assert(classify_via_case(false) == 2, "a case's other arm lowers and runs inside a quote")
+  adder = make_adder(10)
+  assert(adder.(5) == 15, "an fn literal inside a quote lowers to a working closure")
+  assert(pack_two() == <<1, 2>>, "a bitstring literal inside a quote lowers to its bytes")
+end

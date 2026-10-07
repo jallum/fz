@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use super::identity::{FunctionId, ModuleId};
+use crate::modules::identity::ModuleName;
 
 /// Current resolved identity for a protocol-domain contract obligation.
 ///
@@ -20,23 +21,13 @@ use super::identity::{FunctionId, ModuleId};
 /// structural `spec/violation` checks.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProtocolDomainObligation {
-    tag: String,
+    protocol: ModuleName,
 }
 
 impl ProtocolDomainObligation {
-    pub(crate) fn from_marker_tag(tag: impl Into<String>) -> Self {
-        let tag = tag.into();
-        debug_assert!(is_protocol_domain_tag(&tag));
-        Self { tag }
+    pub(crate) fn from_protocol(protocol: ModuleName) -> Self {
+        Self { protocol }
     }
-}
-
-pub(crate) fn protocol_domain_tag(protocol: impl std::fmt::Display) -> String {
-    format!("protocol::{}.t", protocol)
-}
-
-pub(crate) fn is_protocol_domain_tag(tag: &str) -> bool {
-    tag.starts_with("protocol::") && tag.ends_with(".t")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -175,7 +175,7 @@ fn compiler2_quoted_surface_uses_lexer_authority_for_local_definition_names() {
         .expect("head node");
     let builder = root.builder();
 
-    for invalid_name in ["_", "Foo", "if"] {
+    for invalid_name in ["_", "Foo", "do"] {
         let invalid_head = builder
             .tuple(&[
                 builder.atom(invalid_name),

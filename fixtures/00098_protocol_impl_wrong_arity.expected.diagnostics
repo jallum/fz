@@ -1,0 +1,8 @@
+warning[protocol/missing-callback]: function each/1 required by protocol P is not implemented (in module P.List)
+  --> fixtures/00098_protocol_impl_wrong_arity.fz:5:1
+   |
+5 | defimpl P, for: List do
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: P.List defines each/2 instead
+

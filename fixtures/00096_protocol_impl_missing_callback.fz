@@ -1,5 +1,5 @@
 #---
-# purpose: a defimpl that omits a declared protocol callback resolves without enforcing that the callback is present.
+# purpose: a defimpl that omits a declared protocol callback warns under protocol/missing-callback.
 #---
 defprotocol P do
   def each(x)

@@ -24,8 +24,6 @@ const NIL_ATOM: &str = "nil";
 const TRUE_ATOM: &str = "true";
 const FALSE_ATOM: &str = "false";
 
-const META_LEXICAL_KEY: &str = "__fz_lexical__";
-const META_NAMESPACE_ID_KEY: &str = "__fz_namespace_id__";
 pub(crate) const META_MODULE_KEY: &str = "__fz_module__";
 pub(crate) const META_SPAN_KEY: &str = "__fz_span__";
 pub(crate) const META_SPAN_START_KEY: &str = "start";
@@ -55,6 +53,11 @@ pub(crate) const META_FROM_BRACKETS_KEY: &str = "__fz_from_brackets__";
 /// when the call was quoted. The head beside it is display spelling: once this
 /// is present nothing re-reads that spelling to choose a target.
 pub(crate) const META_BOUND_CALLABLE_KEY: &str = "__fz_bound__";
+
+/// The expansion ordinal the hygiene-stamping walk gave a macro- or
+/// sugar-generated variable. A variable the user wrote carries no such
+/// ordinal; its `Var` context is `User` and this key is absent.
+pub(crate) const META_HYGIENE_KEY: &str = "__fz_hygiene__";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuotedSourceError {
@@ -124,55 +127,11 @@ pub struct QuotedSourceKey {
     pub root: AnyValueRef,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuotedLexicalContextKind {
-    Source,
-    Definition,
-    Caller,
-    Generated,
-}
-
-impl QuotedLexicalContextKind {
-    fn atom_name(self) -> &'static str {
-        match self {
-            Self::Source => "source",
-            Self::Definition => "definition",
-            Self::Caller => "caller",
-            Self::Generated => "generated",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QuotedLexicalContext {
-    pub kind: QuotedLexicalContextKind,
-    pub module: Vec<String>,
-    pub scope: Vec<String>,
-    pub namespace_id: Option<u32>,
-}
-
-impl QuotedLexicalContext {
-    pub fn new(kind: QuotedLexicalContextKind, module: Vec<String>, scope: Vec<String>) -> Self {
-        Self {
-            kind,
-            module,
-            scope,
-            namespace_id: None,
-        }
-    }
-
-    pub fn with_namespace_id(mut self, namespace_id: u32) -> Self {
-        self.namespace_id = Some(namespace_id);
-        self
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QuotedSourceMetadata {
     /// Exact portable target of a projected module alias. Its visible segments
     /// remain macro-readable display data.
     pub module: Option<ModuleDenotation>,
-    pub lexical_context: Option<QuotedLexicalContext>,
     /// The one callable this quoted call resolved to. `None` means the call
     /// was not classified where it was quoted and its spelling is still to be
     /// resolved in the context it is inserted into.
@@ -185,6 +144,9 @@ pub struct QuotedSourceMetadata {
     /// line/column. Quoting and reading a span are free copies; line/column is
     /// derived only when a diagnostic is rendered by the `SourceMap`.
     pub span: Option<Span>,
+    /// Set by [`QuotedSourceBuilder::variable`] itself from the `Var`'s own
+    /// context; a caller building metadata for anything else never sets this.
+    pub hygiene_ordinal: Option<u32>,
 }
 
 /// Owns the source-process heap that backs one quoted-source graph.
@@ -367,26 +329,7 @@ impl QuotedSourceBuilder {
         proc.heap.alloc_map_refs(entries).map_err(QuotedSourceError::from)
     }
 
-    pub fn lexical_context(&self, context: &QuotedLexicalContext) -> Result<AnyValueRef, QuotedSourceError> {
-        let kind_key = self.atom("kind");
-        let module_key = self.atom("module");
-        let scope_key = self.atom("scope");
-        let namespace_key = self.atom(META_NAMESPACE_ID_KEY);
-        let kind_value = self.atom(context.kind.atom_name());
-        let module_value = self.atom_list(&context.module)?;
-        let scope_value = self.atom_list(&context.scope)?;
-        let mut entries = vec![
-            (kind_key, kind_value),
-            (module_key, module_value),
-            (scope_key, scope_value),
-        ];
-        if let Some(namespace_id) = context.namespace_id {
-            entries.push((namespace_key, self.int(namespace_id as i64)));
-        }
-        self.map(&entries)
-    }
-
-    fn span(&self, span: &Span) -> Result<AnyValueRef, QuotedSourceError> {
+    pub(crate) fn span(&self, span: &Span) -> Result<AnyValueRef, QuotedSourceError> {
         let entries = quoted_span_entries(*span).map(|(key, value)| (self.atom(key), self.int(value)));
         self.map(&entries)
     }
@@ -395,9 +338,6 @@ impl QuotedSourceBuilder {
         let mut entries = Vec::new();
         if let Some(module) = &meta.module {
             entries.push((self.atom(META_MODULE_KEY), self.module_denotation(module)?));
-        }
-        if let Some(context) = &meta.lexical_context {
-            entries.push((self.atom(META_LEXICAL_KEY), self.lexical_context(context)?));
         }
         if let Some(span) = meta.span.filter(|span| !span.is_dummy()) {
             entries.push((self.atom(META_SPAN_KEY), self.span(&span)?));
@@ -410,6 +350,9 @@ impl QuotedSourceBuilder {
         }
         if meta.from_brackets {
             entries.push((self.atom(META_FROM_BRACKETS_KEY), self.bool(true)));
+        }
+        if let Some(ordinal) = meta.hygiene_ordinal {
+            entries.push((self.atom(META_HYGIENE_KEY), self.int(i64::from(ordinal))));
         }
         self.map(&entries)
     }
@@ -432,13 +375,27 @@ impl QuotedSourceBuilder {
         self.tuple(&fields)
     }
 
-    pub fn variable(&self, name: &str, meta: &QuotedSourceMetadata) -> Result<AnyValueRef, QuotedSourceError> {
-        let context = if let Some(context) = &meta.lexical_context {
-            self.lexical_context(context)?
-        } else {
-            self.nil()
+    /// The one constructor for a `Var`-shaped quoted node, front door, quote
+    /// lowering and sugar alike. Elixir's own layout: the context sits in the
+    /// tail, exactly where a call's arguments would be, and the expansion
+    /// ordinal a macro- or sugar-generated variable carries sits in `meta`
+    /// beside its span. A user-written variable carries neither: its tail is
+    /// `nil` and its `meta` has no hygiene entry.
+    pub fn variable(
+        &self,
+        var: &crate::ast::Var,
+        meta: &QuotedSourceMetadata,
+    ) -> Result<AnyValueRef, QuotedSourceError> {
+        let (tail, ordinal) = match var.context {
+            crate::ast::VarContext::User => (self.nil(), None),
+            crate::ast::VarContext::Generated(ordinal) => (self.atom("generated"), Some(ordinal)),
+            crate::ast::VarContext::Macro(function, ordinal) => (self.int(i64::from(function.as_u32())), Some(ordinal)),
         };
-        self.ast_node(self.atom(name), meta, context)
+        let meta = QuotedSourceMetadata {
+            hygiene_ordinal: ordinal,
+            ..meta.clone()
+        };
+        self.ast_node(self.atom(&var.name), &meta, tail)
     }
 
     pub fn call(
@@ -607,6 +564,15 @@ pub struct QuotedAstNode {
 }
 
 impl QuotedSourceCursor {
+    /// An AST node's tail is a call's argument list, or a variable's
+    /// context (`nil`, a macro's `FunctionId`, or the atom `generated`) —
+    /// the same slot, holding one or the other depending on what got
+    /// written there. Only a list is arguments; anything else is a bare
+    /// name, whatever context it carries.
+    pub(crate) fn is_list_like(&self) -> bool {
+        self.root.tag() == ValueKind::LIST
+    }
+
     pub(crate) fn module_denotation(&self) -> Result<Option<ModuleDenotation>, QuotedSourceError> {
         if self.root.tag() != ValueKind::MAP {
             return Ok(None);
@@ -649,6 +615,20 @@ impl QuotedSourceCursor {
             QuotedSourceError::new("quoted callable classification is outside the function coordinate space")
         })?;
         Ok(Some(FunctionId::from_coordinate(coordinate)))
+    }
+
+    /// The expansion ordinal stamped on a macro- or sugar-generated
+    /// variable's meta. `None` on a variable a user wrote themselves.
+    pub(crate) fn hygiene_ordinal(&self) -> Result<Option<u32>, QuotedSourceError> {
+        if self.root.tag() != ValueKind::MAP {
+            return Ok(None);
+        }
+        let Some(value) = self.map_value(META_HYGIENE_KEY)? else {
+            return Ok(None);
+        };
+        let ordinal =
+            u32::try_from(value.int_value()?).map_err(|_| QuotedSourceError::new("hygiene ordinal is outside u32"))?;
+        Ok(Some(ordinal))
     }
 
     pub fn root(&self) -> AnyValueRef {
@@ -930,7 +910,7 @@ fn included_map_entries(
         let key_ref = storage_ref(unsafe { keys.add(index) }, map_key_kind(tag))?;
         if key_ref.tag() == ValueKind::ATOM {
             let atom_name = render_atom_name(proc, key_ref.load_atom().map_err(QuotedSourceError::from)? as u32)?;
-            if atom_name == META_NAMESPACE_ID_KEY || atom_name == META_SPAN_KEY {
+            if atom_name == META_SPAN_KEY {
                 continue;
             }
         }

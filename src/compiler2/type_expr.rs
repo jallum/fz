@@ -72,8 +72,14 @@ pub enum NominalKind {
     Plain,
     /// `@type B :: refines T` — a brand over the structural inner `T`.
     Refines,
-    /// `@type T :: opaque U` — a nominal opaque declaration with body `U`.
+    /// `@type T :: opaque U` — a brand over the structural inner `U`, exactly
+    /// like `Refines`. A value of `T` is a value of `U`; hiding `U`'s
+    /// structure from code outside the declaring module is unbuilt.
     Opaque,
+    /// The synthetic `Protocol.t` domain marker `note_protocol_domain_type`
+    /// installs. Resolves to a bare nominal tag with no inner structure — no
+    /// source expression can produce this kind directly.
+    ProtocolDomain,
 }
 
 /// The parsed body of an `@type` declaration: a nominal kind over an inner

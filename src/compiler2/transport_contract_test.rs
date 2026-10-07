@@ -152,7 +152,11 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // fz-afu.11: 290 -> 286. The protocol callback no longer joins over
 // `ProtocolDispatch`'s arms, so an implementation defined later never
 // revises the callback or re-runs the callers built on it.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 286;
+// fz-p8p.19: 286 -> 282. The exhaustiveness check that used to run per
+// function head is gone; redundancy is checked from the compiled dispatch
+// plan instead, which removes its own source job from every function that
+// declared a contract.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 282;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {
@@ -5632,7 +5636,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
     }
 
     fn no_ready_producer<T: crate::telemetry::Telemetry>(
-        _world: &World,
+        _world: &mut World,
         _tel: &T,
         root: super::RootId,
         fact: &FactUse<FactKey>,
@@ -5641,7 +5645,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
     }
 
     fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
-        _world: &World,
+        _world: &mut World,
         _tel: &T,
         root: super::RootId,
         fact: &FactUse<FactKey>,
@@ -5650,7 +5654,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
     }
 
     fn did_not_settle<T: crate::telemetry::Telemetry>(
-        _world: &World,
+        _world: &mut World,
         _tel: &T,
         root: super::RootId,
         last_wait: Option<(&ProductKey, &[PullWait])>,

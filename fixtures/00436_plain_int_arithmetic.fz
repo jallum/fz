@@ -1,4 +1,4 @@
 #---
-# purpose: plain integer arithmetic does not trigger the opaque-arithmetic diagnostic.
+# purpose: plain integer arithmetic succeeds.
 #---
 def main(), do: 1 + 1

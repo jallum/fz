@@ -22,8 +22,8 @@
 # - no struct is allocated between the two snapshots, so `struct_allocs` and
 #   `struct_bytes` are both `0` on `run`, `interp`, and `build` alike.
 #
-# The last `unwrap/1` clause draws a `type/no-matching-clause` warning, which
-# the diagnostics sidecar records.
+# `unwrap/1`'s two clauses cover both booleans, so neither is redundant and
+# the diagnostics sidecar stays empty.
 defp pair(n), do: if n > 0, do: {n, false}, else: {n, true}
 defp unwrap({v, false}), do: v
 defp unwrap({_, true}), do: -1

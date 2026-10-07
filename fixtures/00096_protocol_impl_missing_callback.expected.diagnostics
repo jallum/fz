@@ -1,0 +1,7 @@
+warning[protocol/missing-callback]: function each/1 required by protocol P is not implemented (in module P.List)
+  --> fixtures/00096_protocol_impl_missing_callback.fz:5:1
+   |
+5 | defimpl P, for: List do
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+

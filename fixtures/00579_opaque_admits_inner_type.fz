@@ -1,0 +1,12 @@
+#---
+# purpose: a parameter typed by a user opaque type admits a value of the opaque's inner structural type, because minting an opaque type keeps the inner type instead of narrowing to a bare disjoint tag no value can ever match
+#---
+defmodule A do
+  @type t :: opaque any
+
+  def get(h :: t), do: h
+end
+
+def main() do
+  assert(A.get(1) == 1)
+end

@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use crate::ast::{
     AfterClause, BitField, BitSize, CallableName, Callee, Expr, FnClause, LambdaClause, MatchClause, Pattern, Spanned,
-    WithBinding,
+    Var, VarContext, WithBinding,
 };
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -22,11 +22,13 @@ use crate::dispatch_matrix::pattern::{
 use crate::extern_contract::{
     explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty,
 };
+use fz_runtime::any_value::ValueKind;
+
 use crate::function_surface::FunctionSurface;
 use crate::fz_ir::ExternAbi;
 use crate::ground_value::GroundValue;
 use crate::modules::identity::ModuleDenotation;
-use crate::source::Span;
+use crate::source::{SourceMap, Span};
 
 use super::super::body::{
     BodyTables, CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin,
@@ -38,7 +40,9 @@ use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource, ModuleId};
 use super::super::module_interface::{InterfaceCallableKind, InterfaceRequester};
 use super::super::namespace::{CallableQualifier, Namespace, NamespaceSymbol};
+use super::super::quoted_expander::emit_surface_read_error;
 use super::super::scheduler::FatalError;
+use super::super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError};
 use super::super::world::World;
 use super::dispatch::{collect_guard_calls_in_expr, resolve_guard_callee, resolve_guard_callee_checked};
 
@@ -637,8 +641,14 @@ fn collect_local_dispatch_requirements(
         Expr::Ascribe(rhs, _) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) | Expr::Unquote(rhs) => {
             collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, rhs, reads, waits)?;
         }
-        Expr::Quote(rhs) => {
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, rhs, reads, waits)?;
+        Expr::Quote(_, splices) => {
+            // The quote's own text is data, not code, until whatever it
+            // expands into is spliced somewhere and decoded on its own; only
+            // its already-decoded `unquote` splices run here, so only they
+            // can need a fact.
+            for expr in splices {
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, expr, reads, waits)?;
+            }
         }
         Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
             collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, left, reads, waits)?;
@@ -875,260 +885,6 @@ fn record_struct_reference<'a>(
     Ok(())
 }
 
-fn collect_unquote_dispatch_requirements(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    namespace: Namespace,
-    owner_module: ModuleId,
-    owner: SourceOwner,
-    expr: &Spanned<Expr>,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> Result<(), FatalError> {
-    match &expr.node {
-        Expr::Unquote(inner) => {
-            collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, inner, reads, waits)
-        }
-        Expr::Ascribe(inner, _) | Expr::Quote(inner) => {
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, inner, reads, waits)
-        }
-        Expr::Case(subject, clauses) => {
-            if let Some(subject) = subject {
-                collect_unquote_dispatch_requirements(
-                    world,
-                    tel,
-                    namespace,
-                    owner_module,
-                    owner,
-                    subject,
-                    reads,
-                    waits,
-                )?;
-            }
-            for clause in clauses {
-                if let Some(guard) = &clause.guard {
-                    collect_unquote_dispatch_requirements(
-                        world,
-                        tel,
-                        namespace,
-                        owner_module,
-                        owner,
-                        guard,
-                        reads,
-                        waits,
-                    )?;
-                }
-                collect_unquote_dispatch_requirements(
-                    world,
-                    tel,
-                    namespace,
-                    owner_module,
-                    owner,
-                    &clause.body,
-                    reads,
-                    waits,
-                )?;
-            }
-            Ok(())
-        }
-        Expr::With(bindings, body, else_clauses) => {
-            for binding in bindings {
-                match binding {
-                    WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
-                        collect_unquote_dispatch_requirements(
-                            world,
-                            tel,
-                            namespace,
-                            owner_module,
-                            owner,
-                            expr,
-                            reads,
-                            waits,
-                        )?;
-                    }
-                }
-            }
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, body, reads, waits)?;
-            for clause in else_clauses {
-                if let Some(guard) = &clause.guard {
-                    collect_unquote_dispatch_requirements(
-                        world,
-                        tel,
-                        namespace,
-                        owner_module,
-                        owner,
-                        guard,
-                        reads,
-                        waits,
-                    )?;
-                }
-                collect_unquote_dispatch_requirements(
-                    world,
-                    tel,
-                    namespace,
-                    owner_module,
-                    owner,
-                    &clause.body,
-                    reads,
-                    waits,
-                )?;
-            }
-            Ok(())
-        }
-        Expr::If(cond, then_expr, else_expr) => {
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, cond, reads, waits)?;
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, then_expr, reads, waits)?;
-            if let Some(else_expr) = else_expr {
-                collect_unquote_dispatch_requirements(
-                    world,
-                    tel,
-                    namespace,
-                    owner_module,
-                    owner,
-                    else_expr,
-                    reads,
-                    waits,
-                )?;
-            }
-            Ok(())
-        }
-        Expr::Cond(arms) => {
-            for (cond, body) in arms {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, cond, reads, waits)?;
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, body, reads, waits)?;
-            }
-            Ok(())
-        }
-        Expr::Receive { clauses, after } => {
-            for clause in clauses {
-                if let Some(guard) = &clause.guard {
-                    collect_unquote_dispatch_requirements(
-                        world,
-                        tel,
-                        namespace,
-                        owner_module,
-                        owner,
-                        guard,
-                        reads,
-                        waits,
-                    )?;
-                }
-                collect_unquote_dispatch_requirements(
-                    world,
-                    tel,
-                    namespace,
-                    owner_module,
-                    owner,
-                    &clause.body,
-                    reads,
-                    waits,
-                )?;
-            }
-            if let Some(after) = after {
-                collect_unquote_dispatch_requirements(
-                    world,
-                    tel,
-                    namespace,
-                    owner_module,
-                    owner,
-                    &after.timeout,
-                    reads,
-                    waits,
-                )?;
-                collect_unquote_dispatch_requirements(
-                    world,
-                    tel,
-                    namespace,
-                    owner_module,
-                    owner,
-                    &after.body,
-                    reads,
-                    waits,
-                )?;
-            }
-            Ok(())
-        }
-        Expr::Match(_, rhs) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) => {
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, rhs, reads, waits)
-        }
-        Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, left, reads, waits)?;
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, right, reads, waits)
-        }
-        Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, target, reads, waits)?;
-            for arg in args {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, arg, reads, waits)?;
-            }
-            Ok(())
-        }
-        Expr::List(items, tail) => {
-            for item in items {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, item, reads, waits)?;
-            }
-            if let Some(tail) = tail {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, tail, reads, waits)?;
-            }
-            Ok(())
-        }
-        Expr::Tuple(items) => {
-            for item in items {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, item, reads, waits)?;
-            }
-            Ok(())
-        }
-        Expr::Bitstring(fields) => {
-            for field in fields {
-                collect_unquote_dispatch_requirements(
-                    world,
-                    tel,
-                    namespace,
-                    owner_module,
-                    owner,
-                    &field.value,
-                    reads,
-                    waits,
-                )?;
-            }
-            Ok(())
-        }
-        Expr::Map(entries) | Expr::MapUpdate(_, entries) => {
-            if let Expr::MapUpdate(base, _) = &expr.node {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, base, reads, waits)?;
-            }
-            for (key, value) in entries {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, key, reads, waits)?;
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, value, reads, waits)?;
-            }
-            Ok(())
-        }
-        Expr::Struct { fields, .. } => {
-            for (_, value) in fields {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, value, reads, waits)?;
-            }
-            Ok(())
-        }
-        Expr::Block(exprs) => {
-            for expr in exprs {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, expr, reads, waits)?;
-            }
-            Ok(())
-        }
-        Expr::Lambda { .. }
-        | Expr::Module(_)
-        | Expr::BoundFunction(_)
-        | Expr::CaptureArg(_)
-        | Expr::FnRef { .. }
-        | Expr::Var(_)
-        | Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Binary(_)
-        | Expr::Atom(_)
-        | Expr::Bool(_)
-        | Expr::Nil => Ok(()),
-    }
-}
-
 fn collect_local_guard_requirements(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -1175,158 +931,154 @@ struct Lowerer<'w, 'tel, T: crate::telemetry::Telemetry> {
     ownership_steps_scanned: u64,
 }
 
-struct QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> {
+struct QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, 'q, T: crate::telemetry::Telemetry> {
     lowerer: &'a mut Lowerer<'w, 'tel, T>,
-    env: &'env mut HashMap<String, ValueId>,
+    env: &'env mut HashMap<Var, ValueId>,
     steps: &'steps mut Vec<ExprStep>,
+    /// Every `unquote(e)` inside this quote, already decoded in the same
+    /// walk order this lowering walk encounters them. `next_splice` tracks
+    /// how many have been taken so far.
+    splices: &'q [Spanned<Expr>],
+    next_splice: usize,
 }
 
-impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, T> {
+impl<'a, 'w, 'tel, 'env, 'steps, 'q, T: crate::telemetry::Telemetry> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, 'q, T> {
     fn new(
         lowerer: &'a mut Lowerer<'w, 'tel, T>,
-        env: &'env mut HashMap<String, ValueId>,
+        env: &'env mut HashMap<Var, ValueId>,
         steps: &'steps mut Vec<ExprStep>,
+        splices: &'q [Spanned<Expr>],
     ) -> Self {
-        Self { lowerer, env, steps }
+        Self {
+            lowerer,
+            env,
+            steps,
+            splices,
+            next_splice: 0,
+        }
     }
 
-    fn lower(&mut self, expr: &Spanned<Expr>) -> Result<ValueId, FatalError> {
-        match &expr.node {
-            Expr::Unquote(inner) => self.lowerer.lower_expr(inner, self.env, self.steps),
-            Expr::Ascribe(inner, _) => self.lower(inner),
-            Expr::Int(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::Int(*value))),
-            Expr::Float(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::from_f64(*value))),
-            Expr::Binary(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::Binary(value.clone()))),
-            Expr::Atom(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::Atom(value.clone()))),
-            Expr::Bool(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::Bool(*value))),
-            Expr::Nil => Ok(self.lowerer.push_const(self.steps, GroundValue::Nil)),
-            Expr::Var(name) => self.lower_variable(name, expr.span),
-            Expr::Module(module) => Ok(self.lower_module(module, expr.span)),
-            Expr::List(items, None) => {
+    /// Walks a quoted-source node and reconstructs the equivalent quoted
+    /// value: literals and lists and 2-tuples recurse structurally, and every
+    /// `{head, meta, args}` node either splices an `unquote`, binds a call to
+    /// its callable, or builds a variable reference. One case per shape, not
+    /// one per language construct, so anything Elixir can quote, fz can too.
+    fn lower(&mut self, cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<ValueId, FatalError> {
+        match self.ast_node(cursor, sources)? {
+            Some(node) => self.lower_ast_node(&node, sources),
+            None => self.lower_literal(cursor, sources),
+        }
+    }
+
+    fn ast_node(&self, cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Option<QuotedAstNode>, FatalError> {
+        cursor.ast_node(sources).map_err(|error| self.surface_error(error))
+    }
+
+    fn surface_error(&self, error: QuotedSourceError) -> FatalError {
+        emit_surface_read_error(self.lowerer.telemetry, "compiler2 quote lowering", &error)
+    }
+
+    fn lower_literal(&mut self, cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<ValueId, FatalError> {
+        match cursor.root().tag() {
+            ValueKind::INT => {
+                let value = cursor.int_value().map_err(|error| self.surface_error(error))?;
+                Ok(self.lowerer.push_const(self.steps, GroundValue::Int(value)))
+            }
+            ValueKind::FLOAT => {
+                let value = cursor
+                    .root()
+                    .load_float()
+                    .map_err(|error| self.surface_error(error.into()))?;
+                Ok(self.lowerer.push_const(self.steps, GroundValue::from_f64(value)))
+            }
+            ValueKind::ATOM => {
+                let atom = cursor.atom_name().map_err(|error| self.surface_error(error))?;
+                let literal = match atom.as_str() {
+                    "true" => GroundValue::Bool(true),
+                    "false" => GroundValue::Bool(false),
+                    "nil" => GroundValue::Nil,
+                    _ => GroundValue::Atom(atom),
+                };
+                Ok(self.lowerer.push_const(self.steps, literal))
+            }
+            ValueKind::BITSTRING | ValueKind::PROCBIN => {
+                let bytes = cursor.raw_bytes().map_err(|error| self.surface_error(error))?;
+                Ok(self.lowerer.push_const(self.steps, GroundValue::Binary(bytes)))
+            }
+            ValueKind::LIST => {
+                let items = cursor.list_items().map_err(|error| self.surface_error(error))?;
                 let values = items
                     .iter()
-                    .map(|item| self.lower(item))
+                    .map(|item| self.lower(item, sources))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(self.push_list(values, None))
             }
-            Expr::List(_, Some(_)) => Err(emit_job_diagnostic(
-                self.lowerer.telemetry,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    "compiler2 quote does not lower improper source lists yet".to_string(),
-                    expr.span,
-                ),
-            )),
-            Expr::Tuple(items) => {
+            ValueKind::STRUCT => {
+                let items = cursor.tuple_items().map_err(|error| self.surface_error(error))?;
                 let values = items
                     .iter()
-                    .map(|item| self.lower(item))
+                    .map(|item| self.lower(item, sources))
                     .collect::<Result<Vec<_>, _>>()?;
-                if values.len() == 2 {
-                    Ok(self.push_tuple(values))
-                } else {
-                    self.lower_atom_node("{}", values, expr.span)
-                }
+                Ok(self.push_tuple(values))
             }
-            Expr::Map(entries) => {
-                let values = entries
-                    .iter()
-                    .map(|(key, value)| {
-                        let key = self.lower(key)?;
-                        let value = self.lower(value)?;
-                        Ok(self.push_tuple(vec![key, value]))
-                    })
-                    .collect::<Result<Vec<_>, FatalError>>()?;
-                self.lower_atom_node("%{}", values, expr.span)
-            }
-            Expr::Call(callee, args) => {
-                let values = args.iter().map(|arg| self.lower(arg)).collect::<Result<Vec<_>, _>>()?;
-                match &callee.node {
-                    Expr::Var(name) => {
-                        let bound = self.resolve_quoted_callable(name, values.len());
-                        Ok(self.lower_call_node(name, bound, values, expr.span))
-                    }
-                    Expr::BoundFunction(function) => {
-                        let spelling = self.lowerer.world.function_ref(*function).display_name();
-                        Ok(self.lower_call_node(&spelling, Some(*function), values, expr.span))
-                    }
-                    _ => {
-                        let head = self.lower(callee)?;
-                        let tail = self.push_list(values, None);
-                        Ok(self.push_ast_node(head, tail, expr.span))
-                    }
-                }
-            }
-            Expr::BinOp(op, left, right) => {
-                let left = self.lower(left)?;
-                let right = self.lower(right)?;
-                self.lower_atom_node(quoted_binop_atom(*op), vec![left, right], expr.span)
-            }
-            Expr::UnOp(op, input) => {
-                let input = self.lower(input)?;
-                self.lower_atom_node(quoted_unop_atom(*op), vec![input], expr.span)
-            }
-            Expr::Match(pattern, rhs) => {
-                let Pattern::Var(name) = &pattern.node else {
-                    return Err(emit_job_diagnostic(
-                        self.lowerer.telemetry,
-                        Diagnostic::error(
-                            codes::LOWER_UNSUPPORTED,
-                            "compiler2 quote only supports variable match patterns today".to_string(),
-                            pattern.span,
-                        ),
-                    ));
-                };
-                let lhs = self.lower_variable(name, pattern.span)?;
-                let rhs = self.lower(rhs)?;
-                self.lower_atom_node("=", vec![lhs, rhs], expr.span)
-            }
-            Expr::Block(exprs) => {
-                let values = exprs
-                    .iter()
-                    .map(|expr| self.lower(expr))
-                    .collect::<Result<Vec<_>, _>>()?;
-                self.lower_atom_node("__block__", values, expr.span)
-            }
-            Expr::If(cond, then_expr, else_expr) => {
-                let cond = self.lower(cond)?;
-                let then_value = self.lower(then_expr)?;
-                let mut keywords = vec![self.push_keyword("do", then_value)];
-                if let Some(else_expr) = else_expr {
-                    let else_value = self.lower(else_expr)?;
-                    keywords.push(self.push_keyword("else", else_value));
-                }
-                let keyword_list = self.push_list(keywords, None);
-                self.lower_atom_node("if", vec![cond, keyword_list], expr.span)
-            }
-            Expr::Index(base, key) => self.lower_index(base, key, expr.span),
-            Expr::Quote(_)
-            | Expr::BoundFunction(_)
-            | Expr::FnRef { .. }
-            | Expr::Capture(_)
-            | Expr::CaptureArg(_)
-            | Expr::Bitstring(_)
-            | Expr::MapUpdate(_, _)
-            | Expr::Struct { .. }
-            | Expr::ClosureCall(_, _)
-            | Expr::Case(_, _)
-            | Expr::Cond(_)
-            | Expr::With(_, _, _)
-            | Expr::Receive { .. }
-            | Expr::Lambda { .. } => Err(emit_job_diagnostic(
-                self.lowerer.telemetry,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    format!("compiler2 quote does not lower `{}` yet", expr_name(&expr.node)),
-                    expr.span,
-                ),
-            )),
+            other => Err(self.surface_error(QuotedSourceError::new(format!(
+                "unsupported quoted source runtime kind {other:?}"
+            )))),
         }
+    }
+
+    fn lower_ast_node(&mut self, node: &QuotedAstNode, sources: &SourceMap) -> Result<ValueId, FatalError> {
+        let span = node.span.unwrap_or(Span::DUMMY);
+        if node.tail.root().tag() != ValueKind::LIST {
+            let name = node.head.atom_name().map_err(|error| self.surface_error(error))?;
+            return self.lower_variable(&name, span);
+        }
+
+        let args = node.tail.list_items().map_err(|error| self.surface_error(error))?;
+
+        if node.head.root().tag() == ValueKind::ATOM {
+            let name = node.head.atom_name().map_err(|error| self.surface_error(error))?;
+            if name == "unquote" && args.len() == 1 {
+                return self.lower_unquote();
+            }
+            let values = args
+                .iter()
+                .map(|arg| self.lower(arg, sources))
+                .collect::<Result<Vec<_>, _>>()?;
+            let bound = self.resolve_quoted_callable(&name, values.len());
+            return Ok(self.lower_call_node(&name, bound, values, span));
+        }
+
+        let head = self.lower(&node.head, sources)?;
+        let values = args
+            .iter()
+            .map(|arg| self.lower(arg, sources))
+            .collect::<Result<Vec<_>, _>>()?;
+        let tail = self.push_list(values, None);
+        Ok(self.push_ast_node(head, tail, span))
+    }
+
+    /// `unquote(e)` splices `e`'s runtime value in place: `e` was already
+    /// decoded alongside the quote itself, so lowering just takes the next
+    /// one in walk order and lowers it as an ordinary expression, in the
+    /// surrounding scope, exactly as if it had been written there directly.
+    fn lower_unquote(&mut self) -> Result<ValueId, FatalError> {
+        let index = self.next_splice;
+        self.next_splice += 1;
+        let expr = self.splices[index].clone();
+        self.lowerer.lower_expr(&expr, self.env, self.steps)
     }
 
     /// The callable this quoted call names here, where the quote is written.
     /// `None` leaves the call unclassified, to be resolved in whatever context
     /// the quoted syntax is inserted into.
+    ///
+    /// This asks the same question `decode_named_expr` asks when reading the
+    /// call back, but from the opposite end: `decode_named_expr` dispatches
+    /// on `name` structurally before ever consulting a retained callable, so
+    /// a structural spelling such as `+` or `if` decodes as its form no
+    /// matter what this resolves it to. Classifying every spelling here,
+    /// including one that is also a real callable's name, is therefore safe.
     fn resolve_quoted_callable(&mut self, name: &str, arity: usize) -> Option<FunctionId> {
         match self
             .lowerer
@@ -1341,27 +1093,14 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
     }
 
     fn lower_variable(&mut self, name: &str, span: Span) -> Result<ValueId, FatalError> {
-        if quoted_alias_segments(name).is_some() {
-            return self.lower_alias(name, span);
-        }
         let head = self.lowerer.push_const(self.steps, GroundValue::Atom(name.to_string()));
-        let tail = self.lowerer.push_const(self.steps, GroundValue::Nil);
-        Ok(self.push_ast_node(head, tail, span))
-    }
-
-    fn lower_alias(&mut self, name: &str, span: Span) -> Result<ValueId, FatalError> {
-        let segments = quoted_alias_segments(name).expect("checked quoted alias name");
-        let head = self
-            .lowerer
-            .push_const(self.steps, GroundValue::Atom("__aliases__".to_string()));
-        let mut items = Vec::with_capacity(segments.len());
-        for segment in segments {
-            items.push(
-                self.lowerer
-                    .push_const(self.steps, GroundValue::Atom(segment.to_string())),
-            );
-        }
-        let tail = self.push_list(items, None);
+        // Every variable this quote's own body writes is, by construction,
+        // written inside this macro's quote. Its tail carries the macro's
+        // `FunctionId` as an unstamped marker; the walk in `stamp_hygiene`
+        // (quoted_expander.rs) rewrites it to `Var{context: Macro(fid, ordinal)}`
+        // once this expansion's ordinal is known, right after the macro runs.
+        let owner = i64::from(self.lowerer.owner.as_u32());
+        let tail = self.lowerer.push_const(self.steps, GroundValue::Int(owner));
         Ok(self.push_ast_node(head, tail, span))
     }
 
@@ -1394,31 +1133,6 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
             .map(|segment| self.lowerer.push_const(self.steps, GroundValue::Atom(segment.clone())))
             .collect();
         self.push_list(items, None)
-    }
-
-    fn lower_index(&mut self, base: &Spanned<Expr>, key: &Spanned<Expr>, span: Span) -> Result<ValueId, FatalError> {
-        let Expr::Atom(field) = &key.node else {
-            return Err(emit_job_diagnostic(
-                self.lowerer.telemetry,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    "compiler2 quote only lowers atom field access today".to_string(),
-                    span,
-                ),
-            ));
-        };
-        let base = self.lower(base)?;
-        let field = self.lowerer.push_const(self.steps, GroundValue::Atom(field.clone()));
-        let head = self.lowerer.push_const(self.steps, GroundValue::Atom(".".to_string()));
-        let meta = self.push_meta(span, Vec::new());
-        let tail = self.push_list(vec![base, field], None);
-        Ok(self.push_tuple(vec![head, meta, tail]))
-    }
-
-    fn lower_atom_node(&mut self, name: &str, args: Vec<ValueId>, span: Span) -> Result<ValueId, FatalError> {
-        let head = self.lowerer.push_const(self.steps, GroundValue::Atom(name.to_string()));
-        let tail = self.push_list(args, None);
-        Ok(self.push_ast_node(head, tail, span))
     }
 
     /// A call node whose head is display spelling and whose metadata retains
@@ -1470,11 +1184,6 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
             quoted_span: (!span.is_dummy()).then_some(span),
         });
         value
-    }
-
-    fn push_keyword(&mut self, key: &str, value: ValueId) -> ValueId {
-        let key = self.lowerer.push_const(self.steps, GroundValue::Atom(key.to_string()));
-        self.push_tuple(vec![key, value])
     }
 
     fn push_tuple(&mut self, items: Vec<ValueId>) -> ValueId {
@@ -1660,7 +1369,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         if self.surface.is_macro {
             let value = self.fresh_value();
             params.push(value);
-            env.insert("__CALLER__".to_string(), value);
+            env.insert(Var::user("__CALLER__"), value);
         }
         for capture in self.source.capture_params.clone() {
             let value = self.fresh_value();
@@ -1686,7 +1395,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_expr_as_block(
         &mut self,
         expr: &Spanned<Expr>,
-        mut env: HashMap<String, ValueId>,
+        mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
         let mut steps = Vec::new();
         let result = self.lower_expr(expr, &mut env, &mut steps)?;
@@ -1700,7 +1409,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_expr(
         &mut self,
         expr: &Spanned<Expr>,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         match &expr.node {
@@ -1710,12 +1419,36 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             Expr::Atom(value) => Ok(self.push_const(steps, GroundValue::Atom(value.clone()))),
             Expr::Bool(value) => Ok(self.push_const(steps, GroundValue::Bool(*value))),
             Expr::Nil => Ok(self.push_const(steps, GroundValue::Nil)),
-            Expr::Module(module) => Ok(QuoteLowerer::new(self, env, steps).lower_module(module, expr.span)),
+            Expr::Module(module) => Ok(QuoteLowerer::new(self, env, steps, &[]).lower_module(module, expr.span)),
             Expr::Var(name) => {
                 if let Some(value) = env.get(name) {
                     return Ok(*value);
                 }
-                match self.world.lookup_namespace(self.namespace, name) {
+                if let VarContext::Macro(function, _) = name.context {
+                    let macro_name = self.world.function_ref(function).display_name();
+                    return Err(emit_job_diagnostic(
+                        self.telemetry,
+                        Diagnostic::error(
+                            codes::LOWER_UNBOUND,
+                            format!(
+                                "compiler2 lowering found unbound variable `{}` (context {macro_name})",
+                                name.name
+                            ),
+                            expr.span,
+                        ),
+                    ));
+                }
+                if matches!(name.context, VarContext::Generated(_)) {
+                    return Err(emit_job_diagnostic(
+                        self.telemetry,
+                        Diagnostic::error(
+                            codes::LOWER_UNBOUND,
+                            format!("compiler2 lowering found unbound generated variable `{}`", name.name),
+                            expr.span,
+                        ),
+                    ));
+                }
+                match self.world.lookup_namespace(self.namespace, &name.name) {
                     Some(NamespaceSymbol::Function(function)) => {
                         let value = self.fresh_value();
                         steps.push(ExprStep::FunctionRef { value, function });
@@ -2003,7 +1736,13 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             }
             Expr::Receive { clauses, after } => self.lower_receive(expr.span, clauses, after.as_deref(), env, steps),
             Expr::Lambda { occurrence, clauses } => self.lower_lambda(*occurrence, expr.span, clauses, env, steps),
-            Expr::Quote(inner) => QuoteLowerer::new(self, env, steps).lower(inner),
+            Expr::Quote(cursor, splices) => {
+                let source_map = self.world.source_map();
+                let sources = source_map.borrow();
+                let result = QuoteLowerer::new(self, env, steps, splices).lower(cursor, &sources);
+                drop(sources);
+                result
+            }
             Expr::Unquote(_) => Err(emit_job_diagnostic(
                 self.telemetry,
                 Diagnostic::error(
@@ -2248,7 +1987,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_call_args(
         &mut self,
         args: &[Spanned<Expr>],
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<Vec<CallArg>, FatalError> {
         let mut lowered = Vec::with_capacity(args.len());
@@ -2271,7 +2010,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         span: Span,
         module: &crate::ast::ModuleTarget,
         fields: &[(String, Spanned<Expr>)],
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let module_id = self.resolve_struct_module(module, span)?;
@@ -2316,7 +2055,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_bitstring_expr(
         &mut self,
         fields: &[BitField<Spanned<Expr>>],
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let mut lowered = Vec::with_capacity(fields.len());
@@ -2347,7 +2086,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         signed: bool,
         unit: Option<u32>,
         span: Span,
-        env: &HashMap<String, ValueId>,
+        env: &HashMap<Var, ValueId>,
     ) -> Result<LoweredBitFieldSpec, FatalError> {
         Ok(LoweredBitFieldSpec {
             ty,
@@ -2362,7 +2101,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         size: &Option<BitSize>,
         span: Span,
-        env: &HashMap<String, ValueId>,
+        env: &HashMap<Var, ValueId>,
     ) -> Result<Option<LoweredBitSize>, FatalError> {
         Ok(match size {
             None => None,
@@ -2404,7 +2143,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         span: Span,
         subject: &Spanned<Expr>,
         clauses: &[MatchClause],
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let subject_value = self.lower_expr(subject, env, steps)?;
@@ -2433,7 +2172,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         span: Span,
         arms: &[(Spanned<Expr>, Spanned<Expr>)],
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let block = self.lower_cond_block(span, arms, env.clone())?;
@@ -2447,7 +2186,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         bindings: &[WithBinding],
         body: &Spanned<Expr>,
         else_clauses: &[MatchClause],
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let block = self.lower_with_block(span, bindings, body, else_clauses, env.clone())?;
@@ -2459,7 +2198,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         span: Span,
         arms: &[(Spanned<Expr>, Spanned<Expr>)],
-        mut env: HashMap<String, ValueId>,
+        mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
         let Some((cond, body)) = arms.first() else {
             return Ok(self.halt_block(span, "cond_clause"));
@@ -2503,7 +2242,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         bindings: &[WithBinding],
         body: &Spanned<Expr>,
         else_clauses: &[MatchClause],
-        mut env: HashMap<String, ValueId>,
+        mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
         let Some((binding, rest)) = bindings.split_first() else {
             return self.lower_expr_as_block(body, env);
@@ -2557,7 +2296,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         span: Span,
         failed: ValueId,
         else_clauses: &[MatchClause],
-        env: HashMap<String, ValueId>,
+        env: HashMap<Var, ValueId>,
     ) -> Result<ExprBlock, FatalError> {
         if else_clauses.is_empty() {
             return Ok(ExprBlock {
@@ -2599,7 +2338,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         span: Span,
         clauses: &[MatchClause],
         after: Option<&AfterClause>,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         if clauses.is_empty() && after.is_none() {
@@ -2643,7 +2382,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         outcome: &crate::dispatch_matrix::pattern::PatternDispatchOutcome,
         clause: &MatchClause,
-        mut env: HashMap<String, ValueId>,
+        mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprOutcome, FatalError> {
         let arguments = self.bind_outcome_arguments(outcome, &mut env);
         let block = self.lower_expr_as_block(&clause.body, env)?;
@@ -2653,7 +2392,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn bind_outcome_arguments(
         &mut self,
         outcome: &crate::dispatch_matrix::pattern::PatternDispatchOutcome,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
     ) -> Box<[super::super::body::OutcomeArgument]> {
         outcome
             .bindings
@@ -2678,6 +2417,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
         let source = SourcePatternRows::lexical(1, rows);
         let namespace = self.namespace;
+        let redundancy_check = (source.rows.len() > 1).then(|| source.clone());
         let mut resolver = super::super::dispatch::SourcePatternResolver {
             world: self.world,
             namespace,
@@ -2687,8 +2427,25 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 Ok(Some(world.guard_dispatch(callee)))
             },
         };
-        pattern_dispatch_from_source_with_resolver(source, &mut resolver)
-            .map_err(|error| emit_local_dispatch_error(self.telemetry, label, span, error))
+        let plan = pattern_dispatch_from_source_with_resolver(source, &mut resolver)
+            .map_err(|error| emit_local_dispatch_error(self.telemetry, label, span, error))?;
+        if let Some(source) = redundancy_check {
+            let redundant_rows = crate::dispatch_matrix::pattern::source::find_redundant_rows_with_resolver(
+                &source,
+                &plan,
+                &mut resolver,
+            );
+            for redundant in redundant_rows {
+                let always_matches_span = source.rows[redundant.always_matches as usize].patterns[0].span;
+                let always_matches_line = self.world.source_map().borrow().locate(always_matches_span).line;
+                let diagnostic = super::super::source_diagnostics::redundant_clause_diagnostic(
+                    source.rows[redundant.body_id as usize].patterns[0].span,
+                    always_matches_line,
+                );
+                super::super::drive::ExecutionContext::new(self.world, self.telemetry).emit_warning_once(diagnostic);
+            }
+        }
+        Ok(plan)
     }
 
     fn compile_single_pattern_dispatch(
@@ -2730,7 +2487,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_dispatch_bindings(
         &mut self,
         plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
-        env: &HashMap<String, ValueId>,
+        env: &HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<DispatchBindings, FatalError> {
         let pinned = plan
@@ -2796,7 +2553,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         clauses: &[MatchClause],
         after: Option<&AfterClause>,
-        env: &HashMap<String, ValueId>,
+        env: &HashMap<Var, ValueId>,
     ) -> Vec<ValueId> {
         let mut free = HashSet::new();
         let mut bound = HashSet::new();
@@ -2818,7 +2575,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         &mut self,
         after: &AfterClause,
         timeout: ValueId,
-        env: &HashMap<String, ValueId>,
+        env: &HashMap<Var, ValueId>,
     ) -> Result<ExprReceiveAfter, FatalError> {
         Ok(ExprReceiveAfter {
             span: after.span,
@@ -2847,7 +2604,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         occurrence: crate::ast::LambdaOccurrence,
         span: Span,
         clauses: &[LambdaClause],
-        env: &HashMap<String, ValueId>,
+        env: &HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let value = self.fresh_value();
@@ -3345,7 +3102,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         pattern: &Pattern,
         span: Span,
         source: ValueId,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<(), FatalError> {
         match pattern {
@@ -3463,7 +3220,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         pattern: &Pattern,
         span: Span,
         source: ValueId,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<(), FatalError> {
         match pattern {
@@ -3522,7 +3279,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         entries: &[(Spanned<Pattern>, Spanned<Pattern>)],
         span: Span,
         source: ValueId,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
         with_asserts: bool,
     ) -> Result<(), FatalError> {
@@ -3558,7 +3315,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         fields: &[(String, Spanned<Pattern>)],
         span: Span,
         source: ValueId,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
         with_asserts: bool,
     ) -> Result<(), FatalError> {
@@ -3606,7 +3363,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         fields: &[BitField<Spanned<Pattern>>],
         span: Span,
         source: ValueId,
-        env: &mut HashMap<String, ValueId>,
+        env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
         with_asserts: bool,
     ) -> Result<(), FatalError> {
@@ -4526,7 +4283,7 @@ fn child_entries(tail: &LoweredTail) -> Vec<ControlEntryId> {
     }
 }
 
-fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<String> {
+fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<Var> {
     let mut free = HashSet::new();
     for clause in clauses {
         let mut bound = HashSet::new();
@@ -4548,7 +4305,7 @@ fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<String> {
     free
 }
 
-fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<String>) {
+fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<Var>) {
     match pattern {
         Pattern::Var(name) | Pattern::Pinned(name) => {
             bound.insert(name.clone());
@@ -4596,7 +4353,7 @@ fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<String>) {
     }
 }
 
-fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut HashSet<String>) {
+fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
     match expr {
         Expr::Int(_)
         | Expr::Float(_)
@@ -4608,6 +4365,15 @@ fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut 
         | Expr::BoundFunction(_)
         | Expr::FnRef { .. }
         | Expr::CaptureArg(_) => {}
+        // A quote's own text names quoted data, not a real reference to
+        // anything in the enclosing scope. Its `unquote` splices are
+        // ordinary code, already decoded, so they contribute captures like
+        // any other expression.
+        Expr::Quote(_, splices) => {
+            for spliced in splices {
+                collect_expr_free_names(&spliced.node, bound, free);
+            }
+        }
         Expr::Capture(body) => collect_expr_free_names(&body.node, bound, free),
         Expr::Var(name) => {
             if !bound.contains(name) {
@@ -4664,7 +4430,7 @@ fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut 
             collect_expr_free_names(&left.node, bound, free);
             collect_expr_free_names(&right.node, bound, free);
         }
-        Expr::UnOp(_, expr) | Expr::Ascribe(expr, _) | Expr::Quote(expr) | Expr::Unquote(expr) => {
+        Expr::UnOp(_, expr) | Expr::Ascribe(expr, _) | Expr::Unquote(expr) => {
             collect_expr_free_names(&expr.node, bound, free)
         }
         Expr::If(cond, then_expr, else_expr) => {
@@ -4738,7 +4504,7 @@ fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut 
     }
 }
 
-fn collect_pattern_free_names(pattern: &Pattern, bound: &mut HashSet<String>, free: &mut HashSet<String>) {
+fn collect_pattern_free_names(pattern: &Pattern, bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
     match pattern {
         Pattern::Pinned(name) => {
             if !bound.contains(name) {
@@ -4786,7 +4552,7 @@ fn collect_pattern_free_names(pattern: &Pattern, bound: &mut HashSet<String>, fr
     }
 }
 
-fn collect_match_clause_free_names(clauses: &[MatchClause], bound: &mut HashSet<String>, free: &mut HashSet<String>) {
+fn collect_match_clause_free_names(clauses: &[MatchClause], bound: &mut HashSet<Var>, free: &mut HashSet<Var>) {
     for clause in clauses {
         let mut clause_bound = bound.clone();
         collect_pattern_free_names(&clause.pattern.node, &mut clause_bound, free);
@@ -4924,42 +4690,8 @@ fn expr_name(expr: &Expr) -> &'static str {
         Expr::Match(_, _) => "Match",
         Expr::Block(_) => "Block",
         Expr::Lambda { .. } => "Lambda",
-        Expr::Quote(_) => "Quote",
+        Expr::Quote(_, _) => "Quote",
         Expr::Unquote(_) => "Unquote",
-    }
-}
-
-fn quoted_binop_atom(op: crate::ast::BinOp) -> &'static str {
-    match op {
-        crate::ast::BinOp::Add => "+",
-        crate::ast::BinOp::Sub => "-",
-        crate::ast::BinOp::Mul => "*",
-        crate::ast::BinOp::Div => "/",
-        crate::ast::BinOp::Rem => "%",
-        crate::ast::BinOp::Eq => "==",
-        crate::ast::BinOp::Neq => "!=",
-        crate::ast::BinOp::Lt => "<",
-        crate::ast::BinOp::LtEq => "<=",
-        crate::ast::BinOp::Gt => ">",
-        crate::ast::BinOp::GtEq => ">=",
-        crate::ast::BinOp::And => "and",
-        crate::ast::BinOp::Or => "or",
-        crate::ast::BinOp::Pipe => "|>",
-        crate::ast::BinOp::Cons => "|",
-        crate::ast::BinOp::ListConcat => "++",
-        crate::ast::BinOp::ListSubtract => "--",
-        crate::ast::BinOp::BinConcat => "<>",
-        crate::ast::BinOp::Range => "..",
-        crate::ast::BinOp::RangeStep => "//",
-        crate::ast::BinOp::In => "in",
-        crate::ast::BinOp::NotIn => "not in",
-    }
-}
-
-fn quoted_unop_atom(op: crate::ast::UnOp) -> &'static str {
-    match op {
-        crate::ast::UnOp::Neg => "-",
-        crate::ast::UnOp::Not => "not",
     }
 }
 
@@ -4967,7 +4699,7 @@ fn quoted_unop_atom(op: crate::ast::UnOp) -> &'static str {
 ///
 /// Which shapes name a callable is [`Callee`]'s question; the only thing added
 /// here is that a bound local wins over a same-spelled definition.
-fn direct_callee(expr: &Spanned<Expr>, arity: usize, env: &HashMap<String, ValueId>) -> Option<Callee> {
+fn direct_callee(expr: &Spanned<Expr>, arity: usize, env: &HashMap<Var, ValueId>) -> Option<Callee> {
     let mut current = &expr.node;
     loop {
         match current {
@@ -5011,21 +4743,6 @@ fn direct_operator_name(op: crate::ast::BinOp) -> Option<&'static str> {
         | crate::ast::BinOp::RangeStep
         | crate::ast::BinOp::In
         | crate::ast::BinOp::NotIn => None,
-    }
-}
-
-fn quoted_alias_segments(name: &str) -> Option<Vec<&str>> {
-    let segments = name.split('.').collect::<Vec<_>>();
-    if segments.len() < 2 {
-        return None;
-    }
-    if segments.iter().all(|segment| {
-        let mut chars = segment.chars();
-        matches!(chars.next(), Some(ch) if ch.is_uppercase()) && chars.all(|ch| ch.is_alphanumeric() || ch == '_')
-    }) {
-        Some(segments)
-    } else {
-        None
     }
 }
 

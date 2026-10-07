@@ -1,0 +1,7 @@
+warning[type/redundant-clause]: this clause cannot match because a previous clause at line 4 always matches
+  --> fixtures/00151_wildcard_makes_unreachable.fz:2:1
+   |
+2 | def classify(0), do: :zero
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^ unreachable
+   |
+

@@ -113,10 +113,6 @@ impl FunctionContract {
         }
     }
 
-    pub(crate) fn input_domain_rows(&self, types: &mut Types) -> Vec<Vec<Ty>> {
-        self.arrows.iter().map(|arrow| arrow.input_domain_row(types)).collect()
-    }
-
     pub fn apply(&self, types: &mut Types, arg_tys: &[Ty]) -> AppliedFunctionContract {
         let mut matched_arrows = Vec::new();
         let mut result = None;
@@ -250,7 +246,7 @@ impl FunctionContract {
 }
 
 impl ContractArrow {
-    fn input_domain_row(&self, types: &mut Types) -> Vec<Ty> {
+    pub(crate) fn input_domain_row(&self, types: &mut Types) -> Vec<Ty> {
         types
             .arrow_params(&self.arrow)
             .into_iter()

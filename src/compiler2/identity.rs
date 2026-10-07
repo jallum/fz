@@ -272,7 +272,7 @@ pub struct FunctionSource {
     pub owner: SourceOwner,
     pub owner_module: ModuleId,
     pub namespace: Namespace,
-    pub capture_params: Vec<String>,
+    pub capture_params: Vec<crate::ast::Var>,
     pub required_remote_macros: Vec<FunctionId>,
     pub variadic: bool,
     pub source: QuotedSourceRoot,

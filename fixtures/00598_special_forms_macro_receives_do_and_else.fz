@@ -1,0 +1,25 @@
+#---
+# purpose: a user macro called with `do ... else ... end` receives both sections
+#---
+defmacro pick2(flag, [do: then_body, else: else_body]) do
+  if flag do
+    then_body
+  else
+    else_body
+  end
+end
+
+def main() do
+  a = pick2(true) do
+    1
+  else
+    2
+  end
+  b = pick2(false) do
+    1
+  else
+    2
+  end
+  assert(a == 1, "pick2(true) receives the do section")
+  assert(b == 2, "pick2(false) receives the else section")
+end

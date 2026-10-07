@@ -1,0 +1,17 @@
+#---
+# purpose: a macro's quoted body can put another macro's call on the left of `=`; the inner call only expands once the outer quote's own expansion is spliced in, not while the outer quote is still being defined
+#---
+defmacro ident(x) do
+  quote do: unquote(x)
+end
+
+defmacro bind_five() do
+  quote do
+    ident(u) = 5
+    u
+  end
+end
+
+def main() do
+  assert(bind_five() == 5, "ident(u) expands to the bare variable u once bind_five()'s own expansion runs, so u = 5 binds u")
+end
