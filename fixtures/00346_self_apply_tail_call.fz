@@ -1,0 +1,6 @@
+#---
+# purpose: a self-applying closure in tail position reuses its frame across iterations
+#---
+def loop_with(f, 0, acc), do: acc
+def loop_with(f, n, acc), do: f.(f, n - 1, acc + 1)
+def main(), do: assert(loop_with(loop_with, 100000, 0) == 100000, "a self-applying tail call reuses its frame across iterations")

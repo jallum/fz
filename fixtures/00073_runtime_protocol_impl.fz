@@ -1,0 +1,8 @@
+#---
+# purpose: a runtime module with a protocol implementation pulls in both the module's and the protocol's interfaces.
+#---
+defmodule User do
+  def run(), do: Range.new(1, 3, 1)
+end
+
+def main(), do: dbg(User.run())

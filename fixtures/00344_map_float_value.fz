@@ -1,0 +1,10 @@
+#---
+# purpose: a map with a float value allocates exactly one map object; whether the float is separately boxed is path-variant
+#---
+def main() do
+  m = %{a: 3.14}
+  dbg(m)
+  stats = Process.heap_alloc_stats()
+  dbg(stats[:map_allocs])
+  dbg(stats[:scalar_box_allocs])
+end

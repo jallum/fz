@@ -1,0 +1,12 @@
+#---
+# purpose: a receive guard calling an impure helper is a compile-time error
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+def helper(), do: make_ref()
+def rx() do
+  receive do
+    {:foo, _} when helper() -> 0
+  end
+end
+def main() do rx() end

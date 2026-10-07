@@ -1,0 +1,5 @@
+#---
+# purpose: a lambda that captures an outer value infers as a closure carrying that capture payload
+#---
+def mk(x), do: fn(y) -> x + y end
+def main(), do: mk(1)

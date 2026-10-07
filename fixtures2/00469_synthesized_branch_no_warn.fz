@@ -1,6 +1,0 @@
-def fst(0), do: :zero
-def fst(_), do: :other
-def main() do
-  {a, b} = {1, 2}
-  fst(a + b)
-end

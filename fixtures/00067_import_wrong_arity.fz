@@ -1,0 +1,14 @@
+#---
+# purpose: importing a name at an arity the module does not export is an error.
+# expect: diagnostic
+# diagnostic.code: resolve/unknown-import
+#---
+defmodule Math do
+  def add(x, y), do: x + y
+end
+defmodule User do
+  import Math, only: [add: 1]
+  def run(x), do: add(x)
+end
+
+def main(), do: dbg(User.run(1))

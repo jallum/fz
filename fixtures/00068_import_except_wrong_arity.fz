@@ -1,0 +1,14 @@
+#---
+# purpose: import except: [] referencing a non-exported arity is an error.
+# expect: diagnostic
+# diagnostic.code: resolve/unknown-import
+#---
+defmodule Math do
+  def add(x, y), do: x + y
+end
+defmodule User do
+  import Math, except: [add: 1]
+  def run(x, y), do: add(x, y)
+end
+
+def main(), do: dbg(User.run(1, 2))

@@ -1,0 +1,8 @@
+#---
+# purpose: a plain add helper over untyped parameters settles to the union of Kernel.+/2's successful return types
+#---
+def add(left, right), do: left + right
+
+def main() do
+  assert(add(1, 2) == 3, "add(1, 2) settles through Kernel.+/2's declared overload set")
+end

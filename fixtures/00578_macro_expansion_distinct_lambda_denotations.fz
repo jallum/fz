@@ -1,0 +1,12 @@
+#---
+# purpose: separate expansion sites of the same defmacro produce distinct lambda denotations, not aliases of one shared quote span
+#---
+defmacro make(value) do
+  {:fn, %{}, [{:"->", %{}, [[], value]}]}
+end
+
+def main() do
+  first = make(1)
+  second = make(2)
+  assert(first.() * 10 + second.() == 12, "each expansion site's lambda is independent: first.()=1, second.()=2")
+end

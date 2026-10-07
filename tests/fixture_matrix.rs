@@ -310,12 +310,6 @@ end\n",
     let _ = fs::remove_dir(&dir);
 }
 
-/// The known `00556` collision predates this trial: two unrelated
-/// `fixtures2/` contract fixtures already share a number. It is resolved by
-/// renumbering when those files move into `fixtures/`; until then it is an
-/// explicit, named exemption rather than a silent gap in the check below.
-const KNOWN_FIXTURE_NUMBER_COLLISION: &str = "00556";
-
 /// True when `stem` matches `^\d{5}_[a-z0-9][a-z0-9_-]*$` — five digits, an
 /// underscore, then a lowercase-alnum-led name (route codes like
 /// `00001_ja-name` are legal; see `fixture_matrix_paths_from_filename`).
@@ -340,9 +334,6 @@ fn record_fixture_number(
     violations: &mut Vec<String>,
 ) {
     let number = &stem[..5];
-    if number == KNOWN_FIXTURE_NUMBER_COLLISION {
-        return;
-    }
     if let Some(first) = numbers.get(number) {
         violations.push(format!(
             "{}: number `{number}` reused (already used by {})",

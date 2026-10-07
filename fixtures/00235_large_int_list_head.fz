@@ -1,0 +1,5 @@
+#---
+# purpose: a large integer survives extraction via a list head pattern match
+#---
+def first([h | _]), do: h
+def main(), do: assert(first([4611686018427387904]) == 4611686018427387904, "the head binding preserves the full integer")

@@ -1,5 +1,0 @@
-def child(), do: nil
-
-def main() do
-  spawn(child)
-end

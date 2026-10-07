@@ -1,9 +1,0 @@
-defmodule Long do
-  defmodule Path do
-    def f(x), do: x
-  end
-end
-defmodule User do
-  alias Long.Path, as: P
-  def caller(), do: P.f(9)
-end

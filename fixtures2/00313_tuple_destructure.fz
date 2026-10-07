@@ -1,3 +1,0 @@
-def fst({a, _}), do: a
-def snd({_, b}), do: b
-def main(), do: fst({10, 20}) + snd({30, 40})

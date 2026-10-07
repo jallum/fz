@@ -1,0 +1,14 @@
+#---
+# purpose: evaluating an expression that reads a variable does not rebind it
+#---
+def check() do
+  x = 10
+  _ = x + 5
+  x
+end
+
+def main() do
+  result = check()
+  assert(result == 10, "evaluating x + 5 without binding it leaves x unchanged")
+  result
+end

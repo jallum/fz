@@ -1,0 +1,6 @@
+#---
+# purpose: Enum.find halts at the first match and never evaluates the panic in a later predicate call
+#---
+def main() do
+  dbg(Enum.find([1, 2], :none, fn (x) -> if x == 1, do: true, else: panic("late find") end))
+end

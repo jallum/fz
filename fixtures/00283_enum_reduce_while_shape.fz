@@ -1,0 +1,19 @@
+#---
+# purpose: Enum.reduce_while halts with a shape-changing accumulator at the correct element
+#---
+def finish({:found, index}), do: index
+def finish({:not_found, _index}), do: -1
+
+def collapsed() do
+  Enum.reduce_while([1, 2, 3], {:not_found, 0}, fn (entry, {:not_found, index}) ->
+    if entry == 2 do
+      {:halt, {:found, index}}
+    else
+      {:cont, {:not_found, index + 1}}
+    end
+  end)
+end
+
+def main() do
+  assert(finish(collapsed()) == 1, "reduce_while halts at the element that flips the accumulator's shape")
+end

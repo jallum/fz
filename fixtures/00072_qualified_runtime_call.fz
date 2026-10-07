@@ -1,0 +1,8 @@
+#---
+# purpose: a qualified call into a runtime module namespace fetches that module's interface lazily.
+#---
+defmodule User do
+  def run(bytes), do: Utf8.valid?(bytes)
+end
+
+def main(), do: dbg(User.run("ok"))

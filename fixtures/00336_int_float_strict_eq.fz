@@ -1,0 +1,4 @@
+#---
+# purpose: an integer and a float with the same numeric value compare equal; == is numeric, not type-and-value strict
+#---
+def main(), do: assert(1 == 1.0, "== compares integers and floats numerically, not by strict type-and-value")

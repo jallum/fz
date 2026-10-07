@@ -1,0 +1,9 @@
+#---
+# purpose: a function matching on an atom argument dispatches to the clause for that atom by concrete input.
+#---
+def pick(:left), do: :one
+def pick(:right), do: :two
+
+def main() do
+  {pick(:left), pick(:right)}
+end

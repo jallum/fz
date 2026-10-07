@@ -1,0 +1,7 @@
+#---
+# purpose: a mixed integer/float/atom list renders element by element
+#---
+def main() do
+  x = [1, 2.5, :a]
+  dbg(x)
+end

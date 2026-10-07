@@ -1,0 +1,9 @@
+warning[type/no-matching-clause]: function clauses don't cover every input
+  --> fixtures/00529_protocol_reduce_fixpoint.fz:8:3
+   |
+8 |   def reduce(_list, {:halt, acc}, _reducer), do: {:halted, acc}
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+

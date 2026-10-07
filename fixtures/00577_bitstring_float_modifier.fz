@@ -1,0 +1,6 @@
+#---
+# purpose: a bitstring modifier that is a float literal rather than a recognized modifier is a parse-time error.
+# expect: diagnostic
+# diagnostic.code: parse/bitstring-bad-modifier
+#---
+def main(), do: dbg(<<1::3.14>>)

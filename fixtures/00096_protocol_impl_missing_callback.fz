@@ -1,0 +1,12 @@
+#---
+# purpose: a defimpl that omits a declared protocol callback resolves without enforcing that the callback is present.
+#---
+defprotocol P do
+  def each(x)
+end
+
+defimpl P, for: List do
+  def other(x), do: x
+end
+
+def main(), do: dbg(P.__info__(:functions))

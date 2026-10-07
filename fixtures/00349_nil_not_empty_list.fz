@@ -1,0 +1,6 @@
+#---
+# purpose: nil does not match the empty-list pattern; calling with nil aborts with a function-clause fault
+# expect: abort
+#---
+def f([]), do: 1
+def main(), do: f(nil)

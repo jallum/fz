@@ -1,0 +1,6 @@
+#---
+# purpose: a specific clause preceding a wildcard clause is exhaustive and reachable, with no diagnostics
+#---
+def classify(0), do: :zero
+def classify(_), do: :other
+def main(), do: classify(7)

@@ -1,8 +1,0 @@
-def main() do
-  ref = make_ref()
-  send(self(), {:reply, ref, 7})
-  v = receive do
-    {:reply, ^ref, val} -> val
-  end
-  dbg(v)
-end

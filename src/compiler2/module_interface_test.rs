@@ -1,4 +1,7 @@
+use super::super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use super::*;
+use crate::fz_ir::{DirectCallTarget, Term};
+use crate::telemetry::ConfiguredTelemetry;
 
 fn callable(id: u32, name: &str, arity: usize, kind: InterfaceCallableKind) -> ModuleInterfaceCallable {
     ModuleInterfaceCallable {
@@ -84,4 +87,73 @@ fn module_interface_expectations_preserve_requested_kind() {
 
     assert_eq!(interface.expectations().len(), 2);
     assert_ne!(interface.expectations()[0].kind, interface.expectations()[1].kind);
+}
+
+// Ported from src/frontend/resolve_test.rs: import resolves against provider interface without source body
+#[test]
+fn import_from_external_interface_carries_provider_boundary_call_without_provider_body() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    let math = compiler
+        .world_mut()
+        .reference_module(crate::modules::identity::ModuleName::parse_dotted("Math").unwrap());
+    let add = compiler.world_mut().reference_function(math, "add".to_string(), 2);
+    let reference = compiler.world().function_ref(add).clone();
+    compiler.submit_module_interface(
+        "Math".to_string(),
+        ModuleInterface::new(vec![ModuleInterfaceCallable {
+            function: add,
+            reference,
+            kind: InterfaceCallableKind::PublicFunction,
+            variadic: false,
+        }]),
+    );
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/00069_import_from_external_interface.fz".to_string()),
+        text: include_str!("../../fixtures/00069_import_from_external_interface.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: Some("User".to_string()),
+        name: "run".to_string(),
+        arity: 2,
+        need: ExecutableNeed::Value,
+    });
+    let (_, native) = compiler
+        .drive_root_to_dump_stage(root, super::super::dump::DumpStage::Native)
+        .expect("interface-only provider call should settle");
+    assert!(
+        compiler.world().module_defined_revision(math).is_none(),
+        "external interface imports should not require a provider module body",
+    );
+    assert!(
+        compiler.world().module_interface_revision(math).is_some(),
+        "external interface imports should publish the provider interface fact",
+    );
+    let program = native.expect("native dump stage must return its native product");
+    let edges = program.module.external_call_edges();
+    assert_eq!(
+        edges.len(),
+        1,
+        "provider-boundary call should produce one derived import edge"
+    );
+    assert_eq!(edges[0].target.module.to_string(), "Math");
+    assert_eq!(edges[0].target.name, "add");
+    assert_eq!(edges[0].target.arity, 2);
+    assert!(
+        program.module.fns.iter().any(|function| {
+            function.blocks.iter().any(|block| {
+                matches!(
+                    &block.terminator,
+                    Term::Call {
+                        callee: DirectCallTarget::ProviderBoundary(target),
+                        ..
+                    } | Term::TailCall {
+                        callee: DirectCallTarget::ProviderBoundary(target),
+                        ..
+                    } if target.module.to_string() == "Math" && target.name == "add" && target.arity == 2
+                )
+            })
+        }),
+        "native program should carry provider-boundary call in the raw IR term"
+    );
 }

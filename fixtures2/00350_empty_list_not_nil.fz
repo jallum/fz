@@ -1,2 +1,0 @@
-def f(nil), do: 1
-def main(), do: f([])

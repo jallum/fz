@@ -1,6 +1,0 @@
-defmodule M do
-  @type id :: integer
-  @type pair :: {id, id}
-  @type keyword(t) :: [{atom, t}]
-  def one(), do: 1
-end

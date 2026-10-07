@@ -1,0 +1,13 @@
+#---
+# purpose: a well-typed named-function-reference reducer returning the bare accumulator settles Enum.reduce to int
+#---
+defmodule Main do
+  def reducer(entry, acc) do
+    acc + entry
+  end
+end
+
+def main() do
+  Enum.reduce([1, 2, 3], 0, &Main.reducer/2)
+  |> dbg()
+end

@@ -1,0 +1,6 @@
+#---
+# purpose: an empty case expression halts at runtime when it is actually reached
+# expect: abort
+#---
+def f() do case 1 do end end
+def main() do f() end

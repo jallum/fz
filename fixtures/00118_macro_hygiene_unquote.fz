@@ -1,0 +1,10 @@
+#---
+# purpose: an unquoted variable splices the caller's value into the macro expansion
+#---
+defmacro emit(x) do
+  quote do: unquote(x) + 1
+end
+def main() do
+  x = 7
+  assert(emit(x) == 8, "unquote(x) splices 7, so 7 + 1 == 8")
+end

@@ -1,0 +1,5 @@
+#---
+# purpose: a non-tail call's result feeds directly into an enclosing arithmetic expression
+#---
+def add1(n), do: n + 1
+def main(), do: assert(add1(40) + 2 == 43, "a non-tail call's result is usable in an enclosing binop")

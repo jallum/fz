@@ -1,0 +1,7 @@
+#---
+# purpose: a function with no @spec annotation produces no validation diagnostics
+#---
+defmodule M do
+  def double(x), do: x * 2
+end
+def main(), do: dbg(M.double(7))

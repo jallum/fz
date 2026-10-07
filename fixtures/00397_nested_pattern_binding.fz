@@ -1,0 +1,9 @@
+#---
+# purpose: a pattern that binds a value nested inside a tuple-in-list types the binding as that nested value's type.
+#---
+def pick({:ok, [h | _t]}), do: h
+def pick(:error), do: :error
+
+def main() do
+  {pick({:ok, [1]}), pick(:error)}
+end

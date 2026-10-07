@@ -1,0 +1,9 @@
+warning[type/no-matching-clause]: function clauses don't cover every input
+  --> fixtures/00205_match_tuple_arity.fz:3:1
+   |
+3 | def pick(:other), do: :other
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+

@@ -1,0 +1,11 @@
+#---
+# purpose: a pinned name in a receive pattern that is not bound anywhere is a compile-time error
+# expect: diagnostic
+# diagnostic.code: lower/unbound
+#---
+def rx() do
+  receive do
+    {^nope, _} -> 0
+  end
+end
+def main() do rx() end

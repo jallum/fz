@@ -1,0 +1,4 @@
+#---
+# purpose: a two-element tuple literal renders correctly
+#---
+def main(), do: dbg({1, 2})

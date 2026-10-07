@@ -1,0 +1,9 @@
+#---
+# purpose: the same function called at empty-list and non-empty-list inputs selects the matching decision-tree leaf per activation
+#---
+def pick([]), do: :empty
+def pick([_h | _t]), do: :cons
+
+def main() do
+  {pick([]), pick([1])}
+end

@@ -1,3 +1,0 @@
-def bump(x :: integer), do: x + 7
-def bump(_), do: 0
-def main(), do: bump(4611686018427387904)

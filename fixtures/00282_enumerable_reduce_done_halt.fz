@@ -1,0 +1,12 @@
+#---
+# purpose: Enumerable.reduce returns :done when fully consumed and :halted when told to stop
+#---
+def main() do
+  assert(
+    {
+      Enumerable.reduce([1, 2], {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end),
+      Enumerable.reduce([1, 2], {:halt, 7}, fn (x, acc) -> {:cont, acc + x} end)
+    } == {{:done, 3}, {:halted, 7}},
+    "Enumerable.reduce reports :done or :halted matching how the reduction ended"
+  )
+end

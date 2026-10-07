@@ -1,4 +1,0 @@
-defmodule Range do
-  defstruct [:first, :last, :step]
-  @type t :: %Range{first: integer, last: integer, step: integer}
-end

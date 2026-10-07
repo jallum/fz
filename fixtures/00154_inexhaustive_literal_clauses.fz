@@ -1,0 +1,7 @@
+#---
+# purpose: a function with only literal clauses and no wildcard is inexhaustive; an unmatched call aborts at runtime with a no-matching-clause fault
+# expect: abort
+#---
+def classify(0), do: :zero
+def classify(1), do: :one
+def main(), do: classify(7)

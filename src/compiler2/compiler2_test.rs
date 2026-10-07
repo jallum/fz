@@ -496,7 +496,7 @@ fn compiler2_contract_harness_keeps_code_ingest_isolated_from_production_compile
         ContractCase {
             name: "inline_main",
             source_name: "inline_main.fz",
-            source_text: include_str!("../../fixtures2/00009_no_runtime.fz"),
+            source_text: include_str!("../../fixtures/00009_no_runtime.fz"),
         },
         ContractCase {
             name: "fixture_add1",
@@ -1006,7 +1006,7 @@ fn compiler2_run_root_jit_executes_resources() {
 /// that span.
 #[test]
 fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
-    let source = include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz");
+    let source = include_str!("../../fixtures/00181_enum_reduce_operator_ref.fz");
 
     // Interp front door: BackendProgram only, NativeProgram absent.
     {
@@ -1775,7 +1775,7 @@ fn unreached_function_bodies_are_never_expanded() {
         ),
         (
             "enum_reduce_operator_ref.fz",
-            include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz"),
+            include_str!("../../fixtures/00181_enum_reduce_operator_ref.fz"),
         ),
     ] {
         let (expanded, scoped) = drive_and_count_expanded_against_scoped_sources(name, source);

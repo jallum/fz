@@ -1,0 +1,9 @@
+#---
+# purpose: operator-headed Kernel functions are ordinary zero-capture callables, reached via a qualified path and via prelude import
+#---
+def main() do
+  {
+    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
+    Enum.reduce([1, 2, 3], 0, &+/2)
+  }
+end

@@ -1,0 +1,16 @@
+#---
+# purpose: a protocol and its implementation defined in one module are called through another module, resolving and executing across that module boundary.
+#---
+defmodule Contracts do
+  defprotocol Collectable do
+    def id(value)
+  end
+
+  defimpl Collectable, for: List do
+    def id(value), do: 42
+  end
+end
+defmodule User do
+  def run(), do: Contracts.Collectable.id([1])
+end
+def main(), do: User.run()
