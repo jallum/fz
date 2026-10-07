@@ -171,8 +171,12 @@ fn owner_fact_redefinition_replaces_the_target_through_its_producer() {
     let mut replacement_analysis = owner_facts.analysis;
     let atom = world.types_mut().atom();
     replacement_analysis.value_types.insert(producer.captures[0], atom);
-    let replacement_facts =
-        crate::compiler2::executable_facts::project_executable_facts(&mut world, &key.owner, replacement_analysis);
+    let replacement_facts = crate::compiler2::executable_facts::project_executable_facts(
+        &mut world,
+        &tel,
+        &key.owner,
+        replacement_analysis,
+    );
     assert!(world.define_executable_facts(key.owner.clone(), replacement_facts));
     let owner_fact = FactKey::ExecutableFacts(key.owner.clone());
     world.complete_job(

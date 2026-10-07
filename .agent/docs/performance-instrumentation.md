@@ -164,6 +164,16 @@ at twice the body's step count however many constructions the body holds. A
 count that grows with the constructions is a pass that went back to searching
 the body.
 
+**Entry walks** — `fz.compiler2.semantic.walk`, `fz.compiler2.runtime_demand.walk`
+and `fz.compiler2.executable_facts.walk`, one per activation/executable per
+walker, each carrying its `function_id` and `entries_walked`: how many
+`(entry, input)` pairs that walker actually answered. Type analysis keys an
+entry by the scope delivered to it, runtime demand by the outgoing demand,
+and executable facts by the outgoing need; a walk table local to the run
+answers each key once and returns the cached answer on a repeat, so
+`entries_walked` stays proportional to the entry graph and the distinct
+scopes reaching it, not to how many branches arrive at a shared join.
+
 **Backend requests and pull sessions** —
 `fz.compiler2.backend_request.started` / `finished` bracket one request for a
 root backend program. Both boundaries use one gate and one typed payload;

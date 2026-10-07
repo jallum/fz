@@ -29,18 +29,24 @@ use super::super::semantic::{
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct TupleFieldProjection {
     source: ValueId,
     index: usize,
     arity: usize,
 }
 
-#[derive(Clone, Default)]
+/// A walk's incoming scope, keyed in canonical (sorted) form so two walks
+/// that saw the same values compare equal regardless of insertion order.
+/// This is what makes `SemanticValues` usable as half of a walk-table key:
+/// [`analyze_entry`] reuses a stored answer only when the whole scope --
+/// delivered value, captures, and the tuple evidence carried alongside them
+/// -- matches exactly.
+#[derive(Clone, Default, PartialEq, Eq, Hash)]
 struct SemanticValues {
-    types: HashMap<ValueId, Ty>,
-    tuple_arities: HashMap<ValueId, usize>,
-    tuple_fields: HashMap<ValueId, TupleFieldProjection>,
+    types: BTreeMap<ValueId, Ty>,
+    tuple_arities: BTreeMap<ValueId, usize>,
+    tuple_fields: BTreeMap<ValueId, TupleFieldProjection>,
 }
 
 impl SemanticValues {
@@ -74,10 +80,39 @@ impl SemanticValues {
 
     fn empty_scope(&self) -> Self {
         Self {
-            types: HashMap::new(),
+            types: BTreeMap::new(),
             tuple_arities: self.tuple_arities.clone(),
             tuple_fields: self.tuple_fields.clone(),
         }
+    }
+}
+
+/// One walk's memo: an entry reached with a given incoming scope answers with
+/// the same return evidence every time, because that evidence is derived from
+/// nothing else. The first arrival walks and records the answer; a later
+/// arrival with an equal scope reuses it and walks nothing below it. The
+/// table lives for one [`analyze_activation`] call and is never published --
+/// its keys, deduplicated by entry, become `ActivationAnalysis.reachable_entries`.
+#[derive(Default)]
+struct EntryWalkTable {
+    answers: HashMap<(super::super::body::ControlEntryId, SemanticValues), Option<Ty>>,
+    /// How many entries this walk actually visited, as opposed to answered
+    /// from the memo. [`emit_semantic_walk`] reports it.
+    entries_walked: u64,
+}
+
+impl EntryWalkTable {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, key: &(super::super::body::ControlEntryId, SemanticValues)) -> Option<Option<Ty>> {
+        self.answers.get(key).copied()
+    }
+
+    fn record(&mut self, key: (super::super::body::ControlEntryId, SemanticValues), answer: Option<Ty>) {
+        self.answers.insert(key, answer);
+        self.entries_walked += 1;
     }
 }
 
@@ -204,7 +239,7 @@ pub(super) fn analyze_activation(
     let entry_reachability = super::super::semantic::EntryReachability::new(reachable_clauses, fail_reachable);
 
     let mut analysis_calls = Vec::new();
-    let mut reachable_entries = HashSet::new();
+    let mut walks = EntryWalkTable::new();
     let mut value_types = HashMap::new();
     // The activation's return evidence. `None` is the ascent's bottom — "no
     // path has produced a value yet" — never the type `none`, which remains
@@ -246,7 +281,7 @@ pub(super) fn analyze_activation(
                     entries.as_slice(),
                     clause.entry,
                     &values,
-                    &mut reachable_entries,
+                    &mut walks,
                     &mut value_types,
                     &mut analysis_calls,
                     activation,
@@ -331,13 +366,20 @@ pub(super) fn analyze_activation(
         changed.push(return_fact);
     }
 
+    emit_semantic_walk(tel, function, walks.entries_walked);
     let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
         activation,
         ActivationAnalysis {
             input_rows: alternatives.rows().iter().map(|row| row.columns().to_vec()).collect(),
             entry_reachability,
             reachable_entries: {
-                let mut entries = reachable_entries.into_iter().collect::<Vec<_>>();
+                let mut entries = walks
+                    .answers
+                    .keys()
+                    .map(|(entry, _)| *entry)
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
                 entries.sort_by_key(|entry| entry.as_u32());
                 entries
             },
@@ -368,37 +410,59 @@ pub(super) fn analyze_activation(
     })
 }
 
+/// How many distinct (entry, scope) pairs this activation's walk actually
+/// visited. A join reached again with a scope the walk table already answered
+/// costs nothing further, so this count grows with the entries the body
+/// contains rather than with the number of paths that reach them.
+fn emit_semantic_walk(tel: &impl crate::telemetry::Telemetry, function: FunctionId, entries_walked: u64) {
+    tel.dispatch(
+        &["fz", "compiler2", "semantic", "walk"],
+        &crate::measurements! { entries_walked: entries_walked },
+        &crate::metadata! { function_id: u64::from(function.as_u32()) },
+    );
+}
+
 fn analyze_entry(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     entries: &[LoweredEntry],
     entry_id: super::super::body::ControlEntryId,
     values: &SemanticValues,
-    reachable_entries: &mut HashSet<super::super::body::ControlEntryId>,
+    walks: &mut EntryWalkTable,
     value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<Option<Ty>, FatalError> {
-    reachable_entries.insert(entry_id);
+    // What this walk finds depends only on the entry and the scope flowing
+    // in. A join reached again with the same scope answers with the same
+    // evidence it already recorded -- walking it again would record nothing
+    // new (`merge_value_types` and every call-emission join are idempotent on
+    // equal input), so the second arrival just returns the stored answer.
+    let key = (entry_id, values.clone());
+    if let Some(answer) = walks.get(&key) {
+        return Ok(answer);
+    }
     let entry = &entries[entry_id.as_u32() as usize];
     let mut local = values.clone();
     apply_steps(world, &entry.steps, &mut local, calls, activation, reads, waits)?;
     merge_value_types(world, value_types, &local);
-    analyze_tail(
+    let answer = analyze_tail(
         world,
         tel,
         entries,
         &entry.tail,
         &local,
-        reachable_entries,
+        walks,
         value_types,
         calls,
         activation,
         reads,
         waits,
-    )
+    )?;
+    walks.record(key, answer);
+    Ok(answer)
 }
 
 fn apply_steps(
@@ -687,7 +751,7 @@ fn analyze_branch(
     entry_id: super::super::body::ControlEntryId,
     values: &SemanticValues,
     params: &[(ValueId, Ty)],
-    reachable_entries: &mut HashSet<super::super::body::ControlEntryId>,
+    walks: &mut EntryWalkTable,
     value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
@@ -701,7 +765,7 @@ fn analyze_branch(
         entries,
         entry_id,
         &scope,
-        reachable_entries,
+        walks,
         value_types,
         calls,
         activation,
@@ -717,7 +781,7 @@ fn analyze_tail(
     entries: &[LoweredEntry],
     tail: &LoweredTail,
     values: &SemanticValues,
-    reachable_entries: &mut HashSet<super::super::body::ControlEntryId>,
+    walks: &mut EntryWalkTable,
     value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
@@ -732,7 +796,7 @@ fn analyze_tail(
             dest,
             *value,
             values,
-            reachable_entries,
+            walks,
             value_types,
             calls,
             activation,
@@ -772,7 +836,7 @@ fn analyze_tail(
                 dest,
                 *value,
                 &delivered,
-                reachable_entries,
+                walks,
                 value_types,
                 calls,
                 activation,
@@ -814,7 +878,7 @@ fn analyze_tail(
                 dest,
                 *value,
                 &delivered,
-                reachable_entries,
+                walks,
                 value_types,
                 calls,
                 activation,
@@ -832,7 +896,7 @@ fn analyze_tail(
                 *then_entry,
                 values,
                 &[],
-                reachable_entries,
+                walks,
                 value_types,
                 calls,
                 activation,
@@ -846,7 +910,7 @@ fn analyze_tail(
                 *else_entry,
                 values,
                 &[],
-                reachable_entries,
+                walks,
                 value_types,
                 calls,
                 activation,
@@ -894,7 +958,7 @@ fn analyze_tail(
                     arm_entry,
                     &refined_values,
                     &params,
-                    reachable_entries,
+                    walks,
                     value_types,
                     calls,
                     activation,
@@ -910,7 +974,7 @@ fn analyze_tail(
                 dispatch.miss_entry,
                 values,
                 &[],
-                reachable_entries,
+                walks,
                 value_types,
                 calls,
                 activation,
@@ -948,7 +1012,7 @@ fn analyze_tail(
                     edge.target,
                     values,
                     &clause_params,
-                    reachable_entries,
+                    walks,
                     value_types,
                     calls,
                     activation,
@@ -965,7 +1029,7 @@ fn analyze_tail(
                     after.entry,
                     values,
                     &[],
-                    reachable_entries,
+                    walks,
                     value_types,
                     calls,
                     activation,
@@ -989,7 +1053,7 @@ fn deliver_tail_value(
     dest: &ControlDestination,
     value: ValueId,
     values: &SemanticValues,
-    reachable_entries: &mut HashSet<super::super::body::ControlEntryId>,
+    walks: &mut EntryWalkTable,
     value_types: &mut ValueTypes,
     calls: &mut Vec<CallEmission>,
     activation: &ActivationKey,
@@ -1015,7 +1079,7 @@ fn deliver_tail_value(
                 entries,
                 *entry_id,
                 &scope,
-                reachable_entries,
+                walks,
                 value_types,
                 calls,
                 activation,

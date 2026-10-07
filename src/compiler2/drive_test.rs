@@ -553,6 +553,98 @@ fn compiler2_tuple_ownership_reads_the_body_a_fixed_number_of_times() {
     );
 }
 
+/// Source for the join-walk probe: `if`, `case`, `cond` and `with` chained in
+/// one body, each result asserted right after it. Every construct lowers to
+/// one shared resume entry that both arms flow into, so this body
+/// carries four joins in a row.
+const WALK_CHAIN_SOURCE: &str = "def main() do\n  a = if true do 1 else 2 end\n  assert(a == 1 or a == 2)\n\n  b = case 1 do\n    1 -> :one\n    _ -> :other\n  end\n  assert(b == :one or b == :other)\n\n  c = cond do\n    1 == 2 -> :a\n    true -> :b\n  end\n  assert(c == :a or c == :b)\n\n  d = with {:ok, x} <- {:ok, 1}, {:ok, y} <- {:ok, 2} do\n    x + y\n  end\n  assert(d == 3)\nend\n";
+
+/// Every recorder the three entry walkers fill is a lattice join, so a join
+/// reached twice with the same input records nothing new the second time.
+/// This pins how many entries each walker actually visits for
+/// [`WALK_CHAIN_SOURCE`] -- one visit per (entry, input) pair, not one per
+/// arriving branch.
+#[test]
+fn compiler2_join_walk_visits_each_entry_and_scope_once() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &["fz", "compiler2"]);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("walk_chain.fz".into()),
+        text: WALK_CHAIN_SOURCE.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "the join chain reaches the backend product");
+
+    let main = function_id(&functions, "main", 0);
+    let entries_walked = |walker_event: &[&'static str]| -> Vec<u64> {
+        capture
+            .events()
+            .iter()
+            .filter(|event| event.name == walker_event)
+            .filter(|event| {
+                matches!(event.metadata.get("function_id"), Some(Value::U64(id)) if *id == u64::from(main.as_u32()))
+            })
+            .filter_map(|event| match event.measurements.get("entries_walked") {
+                Some(Value::U64(entries_walked)) => Some(*entries_walked),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, main) else {
+        panic!("clause body")
+    };
+    assert_eq!(
+        entries.len(),
+        29,
+        "if/case/cond/with chained once each, an assert after each, lower main/0 to 29 resume entries"
+    );
+
+    // Type analysis re-runs main/0's activation as callee facts settle (`assert`
+    // and the comparisons it chains are ordinary calls, so early rounds see
+    // absent evidence and stop short); each round's own walk still visits an
+    // entry once per distinct scope, so the last round -- the settled one --
+    // is what this test pins. Five of the 29 entries are joins an arm reaches
+    // with two different delivered values, so the walk answers each of those
+    // twice; the other 24 answer once.
+    assert_eq!(
+        entries_walked(&["fz", "compiler2", "semantic", "walk"]).last().copied(),
+        Some(34),
+        "type analysis walks 29 entries, twice each at 5 of them"
+    );
+    // Runtime demand and executable facts walk backwards from a constant
+    // outgoing demand/need, so every entry answers from one scope: one walk
+    // apiece. Runtime demand does not reach the entry the `case` clause
+    // dispatch never selects at this call's fixed input, one fewer than the
+    // 29 lowering keeps for type analysis's broader reachability.
+    assert_eq!(
+        entries_walked(&["fz", "compiler2", "runtime_demand", "walk"])
+            .last()
+            .copied(),
+        Some(28),
+        "runtime demand walks 28 reachable entries exactly once each"
+    );
+    assert_eq!(
+        entries_walked(&["fz", "compiler2", "executable_facts", "walk"])
+            .last()
+            .copied(),
+        Some(29),
+        "executable facts walks all 29 entries exactly once each"
+    );
+}
+
 #[test]
 fn compiler2_list_reconstruction_keeps_conditional_and_projected_rewrite_permission() {
     for (name, source, arity, expected) in [
