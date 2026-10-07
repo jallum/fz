@@ -75,7 +75,7 @@ impl ResourceId {
     fn fresh() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         Self(
-            NEXT.fetch_update(
+            NEXT.try_update(
                 std::sync::atomic::Ordering::Relaxed,
                 std::sync::atomic::Ordering::Relaxed,
                 |id| id.checked_add(1),

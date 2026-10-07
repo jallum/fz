@@ -92,7 +92,7 @@ impl ProductRequestIds {
 
 fn allocate_pull_session_id(counter: &AtomicU64) -> PullSessionId {
     let id = counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
             (next != 0).then(|| next.checked_add(1).unwrap_or(0))
         })
         .unwrap_or_else(|_| panic!("pull session identity exhausted"));
