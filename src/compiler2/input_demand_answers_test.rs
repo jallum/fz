@@ -60,6 +60,17 @@ fn function_name(world: &World, function: FunctionId) -> String {
     format!("{}/{}", denotation.display_name(), denotation.arity)
 }
 
+/// Module-qualified, so a protocol callback (`Enumerable.reduce_while/3`)
+/// never collides in a name census with the `Enum` helper that calls it
+/// (`Enum.reduce_while/3`).
+fn qualified_function_name(world: &World, function: FunctionId) -> String {
+    let denotation = world.function_ref(function);
+    match world.module_denotation(denotation.module) {
+        Some(module) => format!("{module}.{}/{}", denotation.display_name(), denotation.arity),
+        None => format!("{}/{}", denotation.display_name(), denotation.arity),
+    }
+}
+
 fn demand_read(world: &World, read: &FactUse<DependencyKey>) -> Option<DemandRead> {
     let DependencyKey::Fact(fact) = read.fact() else {
         return None;
@@ -110,6 +121,12 @@ fn input_demand_work(source: &str) -> DemandWork {
         },
     );
 
+    run_main(tel, source);
+    std::mem::take(&mut *work.borrow_mut())
+}
+
+/// Compiles and runs `source`'s `main/0`, with `tel`'s observers attached.
+fn run_main(tel: ConfiguredTelemetry, source: &str) {
     let mut compiler = super::Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("input_demand_answers.fz".to_string()),
@@ -124,7 +141,6 @@ fn input_demand_work(source: &str) -> DemandWork {
     compiler
         .run_root_interp(root)
         .expect("the program should compile and run");
-    std::mem::take(&mut *work.borrow_mut())
 }
 
 fn runs_of<'a>(work: &'a DemandWork, function: &str) -> Vec<&'a DemandRun> {
@@ -222,6 +238,80 @@ fn enum_take_derives_input_demand_proportionally() {
     let work = input_demand_work("def main(), do: Enum.take([1, 2, 3], 2)\n");
     assert_eq!(
         (work.runs.len(), total_reads(&work), most_reads_in_one_run(&work)),
-        (100, 369, 8)
+        (76, 264, 8)
     );
+}
+
+/// `Enum.all?/1` reaches the protocol callback `Enumerable.reduce_while/3`.
+/// The callback's own question is which implementation to reach, answered
+/// from the receiver's type alone -- it depends on no other fact, so its
+/// answer is published once. What an implementation asks of its inputs is
+/// asked where it is called, not by the callback, so the callback's demand
+/// is `Whole` on the receiver and nothing else.
+///
+/// So no function's `InputDemand` is revised after it is published, even
+/// though `Enumerable.List` is defined only after the callback's answer is.
+/// An answer that joined the implementations defined so far would be
+/// revised when it lands, and so would its callers `Enum.reduce_while/3`
+/// and `Enum.all?/1`.
+#[test]
+fn a_protocol_callback_s_input_demand_is_published_once() {
+    let work = revised_input_demand_work("def main(), do: Enum.all?([1])\n");
+    assert_eq!(
+        work.revised,
+        Vec::<String>::new(),
+        "no function's InputDemand should be revised after it is published: {:?}",
+        work.revised
+    );
+    assert_eq!(
+        work.answers.get("Enumerable.reduce_while/3"),
+        Some(
+            &"InputDemand { local_dispatch: [Whole, Ignore, Ignore], \
+              forwarded_dispatch: [Whole, Ignore, Ignore], returned: [Ignore, Ignore, Ignore] }"
+                .to_string()
+        ),
+        "the callback asks Whole of its receiver and nothing of its other slots"
+    );
+}
+
+/// Every `InputDemand` publication that replaced an earlier one, and each
+/// function's final answer.
+#[derive(Default)]
+struct RevisionWork {
+    /// Every function whose `InputDemand` was published more than once, one
+    /// entry per revision after the first.
+    revised: Vec<String>,
+    answers: BTreeMap<String, String>,
+}
+
+fn revised_input_demand_work(source: &str) -> RevisionWork {
+    let tel = ConfiguredTelemetry::new();
+    let work: Rc<RefCell<RevisionWork>> = Rc::default();
+    let observed = Rc::clone(&work);
+    tel.attach_raw_event2::<World, JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, world, completion| {
+            let Job::DeriveInputDemand(function) = completion.job else {
+                return;
+            };
+            let name = qualified_function_name(world, function);
+            let mut work = observed.borrow_mut();
+            for change in &completion.step.changed {
+                let DependencyKey::Fact(FactKey::InputDemand(revised)) = &change.key else {
+                    continue;
+                };
+                if change.old_revision.is_some() {
+                    work.revised.push(qualified_function_name(world, *revised));
+                }
+            }
+            if completion.step.blocked.is_empty()
+                && let Some(demand) = world.input_demand(function)
+            {
+                work.answers.insert(name, format!("{demand:?}"));
+            }
+        },
+    );
+
+    run_main(tel, source);
+    std::mem::take(&mut *work.borrow_mut())
 }

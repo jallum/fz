@@ -504,8 +504,8 @@ impl<'w> ForwardingWalk<'w> {
             return;
         }
         self.read(callees);
-        if let Some(callback) = self.world.protocol_callback(function) {
-            self.visit_protocol_callback(function, callback.protocol);
+        if self.world.protocol_callback(function).is_some() {
+            self.visit_protocol_callback(function);
             return;
         }
         let lowered = FactKey::LoweredBody(function);
@@ -545,65 +545,30 @@ impl<'w> ForwardingWalk<'w> {
         );
     }
 
-    /// A protocol callback has no body: it is a NAME for the set of
-    /// implementations dispatch can reach. Every input is handed to every
-    /// implementation unchanged, so its demand is the join over them -- the
-    /// same forwarding edge, one per implementation.
+    /// A protocol callback has no body: it is a name dispatch resolves to an
+    /// implementation. Its own question is which implementation to reach,
+    /// and that is answered from the receiver's type, so its published
+    /// demand is `Whole` on the receiver and `Ignore` everywhere else.
     ///
-    /// This is a STATIC OVER-APPROXIMATION of a runtime dispatch, and the cost
-    /// is anti-monotone in the program: an unrelated `defimpl` that asks more
-    /// about its argument raises the demand of every forwarder that reaches the
-    /// callback, because the static arm set names it whether or not any value
-    /// can reach it. `ProtocolDispatch` is READ, so an implementation landing
-    /// later grows this demand rather than leaving the conclusion frozen.
-    fn visit_protocol_callback(&mut self, function: FunctionId, protocol: super::super::identity::ModuleId) {
-        // The same rung order as `semantic::resolve_protocol_call`: `ModuleDefined`
-        // first, because it is the arm-covered wait that can actually be produced;
-        // `ProtocolDispatch` is a co-output of the same `Job::DefineModule` run
-        // (`source_publish::publish_protocol_surface` pushes both into one
-        // `JobEffects`), so it carries no arm of its own in
-        // `World::demand_fact_producer` -- its demand rides `ModuleDefined`'s. A
-        // waiter re-runs only when ALL of its waits are satisfied, so an arm-less
-        // wait must never be the first rung.
-        let world = self.world;
-        let protocol_fact = FactKey::ModuleDefined(protocol);
-        if world.module_defined_revision(protocol).is_none() {
-            self.wait(protocol_fact);
-            return;
+    /// What an implementation asks of its inputs is asked where it is
+    /// called: `resolve_protocol_call` (`jobs/semantic.rs`) picks the
+    /// implementation from the receiver's type and keys its activation
+    /// through `prepare_function_call` with the implementation's own
+    /// demand, not the callback's. The callback forwards to nothing, so
+    /// this answer depends on no other fact -- it is published once and
+    /// never revised.
+    fn visit_protocol_callback(&mut self, function: FunctionId) {
+        let arity = self.world.function_arity(function);
+        let mut local = vec![DispatchDemand::Ignore; arity];
+        if let Some(receiver) = local.first_mut() {
+            *receiver = DispatchDemand::Whole;
         }
-        self.read(protocol_fact);
-        let dispatch_fact = FactKey::ProtocolDispatch(protocol);
-        let Some(dispatch) = world.protocol_dispatch(protocol) else {
-            // `ModuleDefined(protocol)` is proven `Some` above, so the run that
-            // claims this fact has already happened; defensive rather than
-            // provably dead, exactly as the twin, and a bare wait rather than an
-            // assert.
-            self.wait(dispatch_fact);
-            return;
-        };
-        self.read(dispatch_fact);
-        let arity = world.function_arity(function);
-        let mut forwards = Vec::new();
-        for arm in &dispatch.arms {
-            let Some(implementation) = arm.callbacks.get(&function).map(|target| target.function) else {
-                continue;
-            };
-            for slot in 0..arity.min(world.function_arity(implementation)) {
-                forwards.push(ForwardEdge {
-                    slot,
-                    callee: implementation,
-                    callee_slot: slot,
-                });
-            }
-        }
-        forwards.sort_unstable();
-        forwards.dedup();
         self.visit_node(
             function,
             DemandNode {
-                local: vec![DispatchDemand::Ignore; arity],
+                local,
                 local_result: vec![DispatchDemand::Ignore; arity],
-                forwards,
+                forwards: Vec::new(),
             },
         );
     }

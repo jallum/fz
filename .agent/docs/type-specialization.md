@@ -211,10 +211,15 @@ consed accumulators stay ONE activation while `List.reduce_step/3` splits.
 The returned axis inherits this narrowness: a reconstructed or projected
 forwarding argument is not an edge for it either, and neither is a
 `LoweredTail::DirectCall`'s `dest` (fz-kdt.214 owns the edge set).
-A protocol callback forwards every input to
-every implementation — a STATIC over-approximation of a runtime dispatch, so an
-unrelated `defimpl` that asks more about its argument raises the demand of every
-forwarder that reaches the callback.
+A protocol callback has no body: it is a name dispatch resolves to an
+implementation. Its own question is which implementation to reach, answered
+from the receiver's type, so its published demand is `Whole` on the receiver
+and `Ignore` elsewhere, with no forwards. What an implementation asks of its
+inputs is asked where it is called: `resolve_protocol_call` picks the
+implementation from the receiver's type and keys its activation through
+`prepare_function_call` with the implementation's own demand, not the
+callback's. The callback's answer depends on no other fact, so it is
+published once and never revised.
 
 One job (`Job::DeriveInputDemand`) builds the demand from its callees'
 answers (`ForwardingWalk` in `jobs/keying.rs`). A callee's concluded

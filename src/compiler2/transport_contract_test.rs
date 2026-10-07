@@ -149,7 +149,10 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // fz-afu.10: 296 -> 290, all of it DeriveInputDemand (34 -> 28). A caller
 // reads each callee's concluded answer instead of walking the callee's
 // body, so it no longer re-runs once per callee fact that lands.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 290;
+// fz-afu.11: 290 -> 286. The protocol callback no longer joins over
+// `ProtocolDispatch`'s arms, so an implementation defined later never
+// revises the callback or re-runs the callers built on it.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 286;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {
