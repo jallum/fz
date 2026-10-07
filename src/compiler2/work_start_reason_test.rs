@@ -305,7 +305,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // it is recorded instead of waiting for a later drain sweep to
         // discover it; the eight fewer applied steps are blocked-only runs
         // the sweep used to take before its real run, now skipped entirely.
-        (2688, 9, 19, 232),
+        // A caller reads only a callee's concluded answer, so a run that
+        // would otherwise revise its own conclusion after reading a
+        // callee's unsettled answer instead waits for the concluded one,
+        // and never reruns to revise what it never got to conclude early.
+        (2466, 9, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -376,7 +380,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // job is actually popped to run, in `Scheduler::record_run_start`);
         // correcting that tally is what moves this number from a transient
         // 1156 (the inflated, double-counted reading) to this exact 1045.
-        1045,
+        // main/0 wakes on a `dbg` callee's concluded answer rather than on
+        // each intermediate one landing, so it publishes one non-demand
+        // changed revision per callee instead of one per callee wake.
+        857,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -421,7 +428,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // only the direct expansions a completion's own waits trigger, which
         // no longer dominates the demand frontier's own key count, so the
         // two counts are compared directly instead of by subtraction.
-        282,
+        // A caller waits on the return of nearly every activation it
+        // mints, so the wait starts that activation's analysis before the
+        // publish does: activation-published starts fall to 3 while these
+        // blocked-waiter starts rise to 500.
+        500,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -460,7 +471,13 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // settles, the same discovery-bounce shape in a different job. The
         // whole-input-vector slot falls by one, the single wake the new
         // settled-executable-facts slot intercepts earlier than before.
-        (562, 562, [24, 232, 79, 227, 0]),
+        // A caller reads only a callee's concluded answer, so two
+        // `DeriveRuntimeDemand` formulas that would otherwise complete once
+        // on a guess and again on the concluded answer complete just once,
+        // on the concluded answer alone; the wake count and its cause
+        // split are unaffected, since each formula already waits on the
+        // same fact it completes against.
+        (560, 562, [24, 232, 79, 227, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
@@ -529,7 +546,16 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // is also the count xxd.11 named for the same shape of gate detour,
         // one layer up (raw credits vs. distinct activations); the two tens
         // are not independently confirmed to be the same ten functions.
-        (1, 255, 0),
+        // `World::demand_recorded_needs` expands a completion's waits
+        // before it expands the activations that same completion
+        // published. This fixture's callers wait on a callee's concluded
+        // `ReturnType` in the same run that first publishes that callee's
+        // `Activation` edge, so the wait loop already starts the callee's
+        // analysis under `BlockedWaiterExpansion` before the activation
+        // loop reaches it; `has_run` is already true by then, so this
+        // reason credits only the few activations no caller happened to
+        // wait on in their publishing run.
+        (1, 3, 0),
         "ordinary generic helper activations preserve the pull-only frontier",
     );
 
@@ -551,15 +577,27 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // weighed against fz-afu.13's own net job-count win (2696 -> 2688, still
     // a decrease) or diagnosed against the separately-tracked schedule-
     // dependent convergence behavior already known on this exact fixture.
+    // `main/0`'s thirty-eight `dbg` calls each read one callee's answer,
+    // and each read waits for its callee's concluded answer, so `main/0`
+    // is woken once per callee, on its concluded answer, rather than once
+    // per intermediate revision that callee happens to publish on its own
+    // way there.
     assert_eq!(
         analyzed_activations.len(),
-        875,
+        617,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
+    // Grouped by `FunctionId` alone, the same 103 distinct functions reach
+    // the frontier, but several are reached under fewer distinct `arrow`
+    // shapes: a caller that propagates a callee's unconcluded,
+    // soon-to-be-revised answer into a further call analyzes that call
+    // under a guessed input, then is re-analyzed again once the real
+    // answer arrives, so each guessed shape inflates this count without
+    // naming a new function.
     assert_eq!(
         frontier_analyses.len(),
-        265,
+        232,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );
 

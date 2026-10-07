@@ -47,7 +47,13 @@ silently constrain a later element.
 There is no separate inference IR and no per-cell solver lattice. `AnalyzeActivation`
 walks the clause bodies once, threading a `values: HashMap<ValueId, Ty>` map, and
 the cross-activation fixpoint lives entirely in the fact graph: a call reads its
-callee's `ReturnType` fact, and when that fact widens the caller re-runs.
+callee's `ReturnType` fact through `World::answer_use` (`prepare_function_call`).
+A partner — the caller itself, or a callee already waiting on the caller —
+reads it current and re-runs on every widen, the two forming one fixpoint. Any
+other callee is read once it concludes; until then the call is `CallReturn::Awaited`,
+the caller's own return withholds instead of publishing from an incomplete walk,
+and the caller re-runs once, when the wait resolves, not once per intermediate
+revision.
 
 ## Typing a body
 
@@ -61,8 +67,10 @@ FunctionRef    fn_ref_lit(target, arity)
 Lambda         closure_ty(function, captures)     captures typed from `values`
 BinaryOp       binop_ty(op, l, r)                 arithmetic -> int/float, cmp -> bool
 UnaryOp        unop_ty(op, x)
-DirectCall /   resolve_*_call -> callee activation + its current ReturnType
-ClosureCall      (closure target read from the callee value's closure-lit type)
+DirectCall /   resolve_*_call -> callee activation + its ReturnType via
+ClosureCall      answer_use (current if partner, concluded otherwise, else
+                 CallReturn::Awaited; closure target read from the callee
+                 value's closure-lit type)
 MapIndex /     any()                              not value-tracked
 NamedFunctionRef
 ```
@@ -100,17 +108,24 @@ guard demands it.
 A call does not recurse into the callee's body. `resolve_function_call` computes
 the callee activation key (reading `Recursive`/`InputDemand`, see
 [`semantic-fixpoint`](semantic-fixpoint.md)), contributes the callee's input
-types to its `Activation` fact, subscribes the caller to the callee's
-`ReturnType`, and returns the callee's *current* return estimate. When the callee
-later widens its return, the caller re-runs and re-unions. Every moving part is
-monotone: return evidence joins upward, equivalent type representatives are
-quiet, an `AnalyzeActivation` publisher preserves its prior activation-input
-evidence and `Activation` claims within an epoch instead of retracting a
-callsite whose targets are temporarily unnamed, and a callsite edge that
-resolves nothing this round republishes as `Unresolved` — the lattice bottom,
-which never overwrites a resolved answer
-([`semantic-fixpoint`](semantic-fixpoint.md)). The cross-activation loop
-therefore settles without downstream phases reconstructing semantic decisions.
+types to its `Activation` fact, and asks `World::answer_use` how to read its
+`ReturnType`. A partner reads it current and re-runs and re-unions on every
+later widen. Any other callee is read once concluded; until then the call
+returns `CallReturn::Awaited`, the value it would have delivered is marked
+unknown, and that mark propagates through every value computed from it
+(`SemanticValues::any_unknown`) to the activation's own return: an unknown
+reaching a reachable path absorbs the whole return, so the run publishes no
+`ReturnType`, and the previous claim, if any, stands until a run that
+finishes every path comes back. Every moving part is monotone: return
+evidence joins upward, equivalent type representatives are quiet, an
+`AnalyzeActivation` publisher preserves its prior activation-input evidence
+and `Activation` claims within an epoch instead of retracting a callsite
+whose targets are temporarily unnamed, and a callsite edge that resolves
+nothing this round republishes as `Unresolved` — the lattice bottom, which
+never overwrites a resolved answer ([`semantic-fixpoint`](semantic-fixpoint.md)).
+The cross-activation loop therefore settles without downstream phases
+reconstructing semantic decisions, and without ever publishing a return built
+from a subset of its call sites while the rest are still waited for.
 
 ## Specialization stays finite
 
@@ -348,7 +363,9 @@ Three states stay distinct, and conflating them poisons the fixpoint:
   (`world.activation_return` yields `None`). Absence never becomes a type: the
   walk's path results are `Option<Ty>` and an evidence-less path contributes
   the join identity (`jobs/semantic.rs`), while the caller's subscription to
-  the `ReturnType` fact re-wakes it when evidence rises. At the settled
+  the `ReturnType` fact — current if it is a partner, otherwise a wait that
+  re-wakes it once the callee concludes — re-runs it when evidence arrives. At
+  the settled
   fixpoint, still-absent evidence IS the fact "provably never returns" and
   only there converts to `none` (`CallTargetSummary::settled_return`,
   the materializer).

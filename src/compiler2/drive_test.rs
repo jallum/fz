@@ -19151,7 +19151,12 @@ fn compiler2_tuple_return_ladder_revises_once_per_nesting_level() {
 /// resets `ActivationSlot::ascents` to zero and starts the climb again, and
 /// every revision in the new epoch still fires `return_type.defined`, so a
 /// warm or re-driven world counts the epochs together while `ascents` does not.
-const TUPLE_LADDER_BUILD_ANALYSES: u64 = 19;
+// build/1's first run has one of Kernel.-/2's clauses still unknown, and a
+// caller that reads only a callee's concluded return publishes nothing on
+// that run, so the run that publishes `:start` is the one that reads its
+// own return as bottom, one analysis after the run that observes the
+// unknown clause. The climb above it still carries seventeen revisions.
+const TUPLE_LADDER_BUILD_ANALYSES: u64 = 20;
 const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 17;
 // fz-afu.10: 22 -> 21. `dbg/1`'s first activation now re-runs only after its
 // callee `fz_dbg_value/1` has been analyzed, so it publishes its return once
@@ -19161,7 +19166,10 @@ const TUPLE_LADDER_BUILD_RETURN_REVISIONS: u64 = 17;
 // instead of waiting for a later drain to discover it, moving one of
 // build/1's ladder revisions earlier relative to main/0's own re-analysis
 // and so changing which rung main/0 observes once more.
-const TUPLE_LADDER_MAIN_ANALYSES: u64 = 22;
+// main/0 re-keys its call to `dbg/1` on build/1's concluded return, so it
+// is re-analyzed only when that concluded return moves, not on every one
+// of build/1's intermediate rungs.
+const TUPLE_LADDER_MAIN_ANALYSES: u64 = 5;
 // main/0 re-keys its call to `dbg/1` on `build/1`'s CURRENT return every time
 // it is re-analyzed, so a `dbg/1` activation that settles for one rung is
 // usually stale by the time main/0 reads it again -- `build/1` has already
@@ -19189,7 +19197,10 @@ const TUPLE_LADDER_MAIN_ANALYSES: u64 = 22;
 // one describes for the pre-fz-afu.13 one-crossing count, now crossing a
 // second time because a need starting at record time, not drain time, lets
 // main/0 observe dbg/1's cold first answer before dbg/1 has climbed past it.
-const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 2;
+// main/0 reads only dbg/1's concluded return, so it never observes dbg/1's
+// cold first, narrowest publish, only the final, widened-top one once
+// build/1's ladder stops moving.
+const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 1;
 
 #[test]
 fn compiler2_extern_dbg_return_is_its_contract_applied_to_the_row() {
@@ -19450,28 +19461,13 @@ type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 /// `return_tuple_ladder` is the bare case: one activation, seventeen revisions,
 /// widened.
 ///
-/// `json_roundtrip` no longer reaches the widening budget at all: a need
-/// starts its producer the moment it is recorded instead of waiting for a
-/// later drain to discover it, so each activation's callees settle earlier
-/// relative to it, and the whole climb converges on its own evidence well
-/// under the ceiling.
+/// `json_roundtrip`'s ladder is empty: a caller that reads only a callee's
+/// concluded answer skips the intermediate, partial revisions a callee
+/// publishes while still missing a clause, so every activation here
+/// settles at or under the ceiling.
 const RETURN_LADDERS: &[PinnedLadder] = &[
     ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
-    (
-        "fixtures2/behavior/json_roundtrip.fz",
-        &[
-            ("Json.array/2", 7, false),
-            ("Json.array_element/2", 6, false),
-            ("Json.array_item/2", 6, false),
-            ("Json.array_item/2", 6, false),
-            ("Json.array_item/2", 7, false),
-            ("Json.array_next/2", 6, false),
-            ("Json.array_next/2", 7, false),
-            ("Json.decode/1", 7, false),
-            ("Json.val/1", 7, false),
-            ("Json.value/1", 7, false),
-        ],
-    ),
+    ("fixtures2/behavior/json_roundtrip.fz", &[]),
 ];
 
 /// The other four `json_*` fixtures share this one's decode loop and measure the

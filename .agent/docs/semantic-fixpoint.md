@@ -110,11 +110,23 @@ publish a fact or consult `World`.
 
 `AnalyzeActivation(a)` follows `a`'s reachable clauses, infers value and return
 types, and publishes semantic outputs. Path results are
-`Option<Ty>`: `None` means "no evidence on this path yet" — a pending callee
-(`prepare_function_call` returns the callee's return evidence as-is and keeps
-the subscription that re-wakes the caller; no waits on returns, so mutual
-recursion cannot deadlock), a halt, a dead arm, or a read of a value whose
-defining path has produced nothing. All of these are the join's identity.
+`Option<Ty>`: `None` means "no evidence on this path yet" — a halt, a dead
+arm, or a read of a value whose defining path has produced nothing. All of
+these are the join's identity.
+
+A pending callee is different: `prepare_function_call` asks `World::answer_use`
+how to read the callee's `ReturnType`. A partner — the caller itself, or a
+callee already waiting on the caller — is read current, so mutual recursion
+cannot deadlock. Any other callee is read once it concludes; until then the
+call is `CallReturn::Awaited`, a wait on the callee's own completion, and the
+value it would have delivered is marked unknown (`SemanticValues::mark_unknown`).
+An unknown is not `None`: it still carries a provisional type (so later steps
+can keep walking and reach every other independent call site in the same run),
+but it marks every value computed from it unknown in turn, and a callsite
+whose argument or callee is unknown publishes its edge unresolved rather than
+naming a target. Reaching an unknown on any path this activation's return
+depends on withholds the whole return (`reached_unknown`, below) — unlike a
+bare `None`, which only withholds the one path that produced it.
 Availability is enforced per READ (`value_ty` returns `Option<Ty>`; a step
 with an absent operand defines nothing), not per entry: an entry's capture
 list is the transitive free-value closure of its children, so gating a whole
@@ -208,10 +220,16 @@ activation key is built from (`Recursive`, `InputDemand`, via
 registers both in one pass at each of the three resolve sites, before either
 is consumed, so a caller that holds neither blocks once rather than a rung at
 a time ([`fact-engine`](fact-engine.md), *One block per prerequisite set*).
-`refine_function_call_surface` is then pure contract APPLICATION and
-`prepare_function_call` pure keying: neither can block. A provider boundary
-names no compiler2 activation, so it asks for the contract alone; the
-boundary test is contract-independent and runs before the ask.
+`refine_function_call_surface` is then pure contract APPLICATION: it cannot
+block. `prepare_function_call` keys the activation purely too, but then asks
+`World::answer_use` for the callee's `ReturnType`; that ask may register a
+wait rather than a read (`AnswerUse::Wait`), so the CALL can withhold the
+caller's own return while the surrounding keying step itself never needs a
+prerequisite ladder of its own: `require_callee_prerequisites` already
+secures everything the key is built from, in one pass, before either
+function runs. A provider boundary names no compiler2 activation, so it asks
+for the contract alone; the boundary test is contract-independent and runs
+before the ask.
 
 Every callsite the walk REACHES publishes its edge, resolved or not
 (`CallSiteResolution`, semantic.rs). Three answers, three representations:
@@ -297,10 +315,15 @@ subscriptions carry every later revision from there). Root entries published
 by `SeedRoot` and caller-discovered callees published by `analyze_activation`
 use this one path.
 `analyze_activation`
-itself never schedules the callee directly: `prepare_function_call` only
-`reads` the callee's `ReturnType` (so mutual recursion cannot deadlock), so
+itself never schedules the callee directly: publishing `Activation(callee_key)`
+is unconditional, for every callee a reached callsite names, whatever
+`prepare_function_call` learns about its `ReturnType` (a partner's current
+read, a concluded one, or a wait that leaves the call `CallReturn::Awaited`).
+Discovering a callee and reading its return are two different questions, so
 nothing about discovering a callee blocks on its analysis, and the frontier is
-the ignition path for that caller-discovered callee's first analysis pass.
+the ignition path for that caller-discovered callee's first analysis pass. A
+partner's `ReturnType` read stays current, so mutual recursion cannot
+deadlock; any other callee's read is a wait, not a block on discovery.
 `ActivationInputs(a)` is cumulative for semantic-analysis
 publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
 the publisher keeps its prior activation-input frontier and only adds/widens new
@@ -425,7 +448,8 @@ only **settled** fact evidence.
 Examples:
 
 ```text
-AnalyzeActivation(a)      reads Current(ReturnType(callee))
+AnalyzeActivation(a)      reads Current(ReturnType(callee))      when callee is a partner
+                           or   waits on Concluded(ReturnType(callee))  otherwise
 MaterializedExecutable(E) waits on Settled(ReturnType(a))
 AbiExecutable(E)          waits on Product(MaterializedExecutable(E))
 BackendExecutable(E)      waits on Product(AbiExecutable(E))
@@ -445,12 +469,16 @@ Settled + no
 stored return  the Kleene answer IS bottom: a never returns
 ```
 
-`analyze_activation` claims the key unconditionally, so the claim appears as
-soon as the activation is analysed at all, before any evidence exists. That
-first claim is presence, not content, so it is minted at revision 0 and wakes no
-`Current` reader ([fact-engine](fact-engine.md), *Absence is bottom*): a
-`Current` reader of the empty join sees exactly what a reader of the absent key
-sees.
+`analyze_activation` claims the key as soon as the activation is analysed at
+all, before any evidence exists, provided this run never crossed an awaited
+call (`reached_unknown` stays clear). That first claim is presence, not
+content, so it is minted at revision 0 and wakes no `Current` reader
+([fact-engine](fact-engine.md), *Absence is bottom*): a `Current` reader of
+the empty join sees exactly what a reader of the absent key sees. A run that
+crosses an awaited call withholds the claim entirely, however many of its
+other paths concluded with real evidence: an unknown absorbs the whole
+return, so nothing is claimed, revision 0 included, and the previous claim,
+or the continued absence of one, simply stands until a run reaches every path.
 
 The third line is a real answer with four consumers, and it is why the empty
 claim cannot simply be withheld until evidence arrives: `Settled(ReturnType(a))`

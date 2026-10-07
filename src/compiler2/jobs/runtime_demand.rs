@@ -6,7 +6,7 @@ use super::super::body::{
     LoweredEntry, LoweredStep, LoweredTail, ValueId, callsite_call_args, callsite_input_modes,
 };
 use super::super::callsite_dispatch::dispatch_stress;
-use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, settled_uses};
+use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, settled_uses};
 use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, RuntimeDemandFacts};
 #[cfg(test)]
 use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
@@ -164,12 +164,13 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
             .executable_facts(executable)
             .expect("settled executable facts should have a value"),
     );
-    let mut reads = vec![FactUse::current(executable_fact)];
+    let mut uses = UseCollector::new(Job::DeriveRuntimeDemand(executable.clone()));
+    uses.read(executable_fact);
     #[cfg(test)]
     let identity_inventory = world.types().identity_inventory();
 
     let input_fact = FactKey::RuntimeDemandInput(executable.clone());
-    reads.push(FactUse::current(input_fact));
+    uses.read(input_fact);
     let self_fact = FactKey::RuntimeDemand(executable.clone());
     let self_inputs_fact = FactKey::RuntimeDemandInputs(executable.clone());
     let contribution = world.runtime_demand_input(executable).cloned();
@@ -181,7 +182,7 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     ordered_peers.sort_by(|left, right| left.semantic_cmp(right, world.types()));
     let mut peers = HashMap::new();
     for peer in ordered_peers.iter() {
-        if let Some(demands) = answers.read(world, executable, peer, &mut reads) {
+        if let Some(demands) = answers.read(world, &mut uses, executable, peer) {
             peers.insert(peer.clone(), demands);
         }
     }
@@ -245,7 +246,7 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
             if target == *executable {
                 calls_itself = true;
                 input_grew = true;
-            } else if let Some(demands) = answers.read(world, executable, &target, &mut reads) {
+            } else if let Some(demands) = answers.read(world, &mut uses, executable, &target) {
                 input.current.target_inputs.insert(target, demands);
                 input_grew = true;
             }
@@ -262,14 +263,15 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
         call_return_demand_contributions(&input.facts, derived.call_return_demands, &returns_awaiting_answers);
     #[cfg(test)]
     let observed_return_contributions = return_contributions.clone();
-    let mut waits = std::mem::take(&mut answers.waits);
     for key in &callable_target_reads {
         let fact = FactKey::CallableConstructionTarget(key.clone());
-        reads.push(FactUse::current(fact.clone()));
+        uses.read(fact.clone());
         if unresolved_construction_targets.contains(key) {
-            waits.push(FactUse::current(fact));
+            uses.wait(fact);
         }
     }
+    let (reads, waits) = uses.into_reads_waits();
+    let waits = waits.into_iter().collect::<Vec<_>>();
     finish_callable_flows(plans, &mut derived.demand);
     let retained_returns = derived
         .demand
@@ -393,11 +395,10 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     })
 }
 
-/// The callees this run has no answer from, and the waits for their answers.
+/// The callees this run has no answer from yet.
 #[derive(Default)]
 struct CalleeAnswers {
     unanswered: HashSet<ExecutableKey>,
-    waits: Vec<FactUse<FactKey>>,
 }
 
 impl CalleeAnswers {
@@ -409,18 +410,16 @@ impl CalleeAnswers {
     fn read(
         &mut self,
         world: &World,
+        uses: &mut UseCollector,
         executable: &ExecutableKey,
         callee: &ExecutableKey,
-        reads: &mut Vec<FactUse<FactKey>>,
     ) -> Option<Vec<RuntimeDemand>> {
         if callee == executable {
             return None;
         }
-        let reader = Job::DeriveRuntimeDemand(executable.clone());
-        match world.answer_use(&reader, FactKey::RuntimeDemandInputs(callee.clone())) {
-            AnswerUse::Partner(read) | AnswerUse::Concluded(read) => reads.push(read),
-            AnswerUse::Wait(wait) => {
-                self.waits.push(wait);
+        match uses.answer(world, FactKey::RuntimeDemandInputs(callee.clone())) {
+            AnswerUse::Partner(_) | AnswerUse::Concluded(_) => {}
+            AnswerUse::Wait(_) => {
                 self.unanswered.insert(callee.clone());
                 return None;
             }

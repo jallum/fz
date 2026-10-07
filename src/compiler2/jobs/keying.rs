@@ -5,8 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path};
 
 use super::super::body::{CallInputMode, LoweredBody, LoweredStep, LoweredTail, ValueId};
-use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, current_uses};
-use super::super::facts::FactUse;
+use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses};
 use super::super::identity::FunctionId;
 use super::super::keying::{BodyKeying, InputDemand};
 use super::super::scheduler::FatalError;
@@ -431,9 +430,8 @@ pub(super) fn derive_input_demand(
 ) -> Result<JobEffects, FatalError> {
     let mut walk = ForwardingWalk::new(world, function);
     walk.visit_body(function);
-    let ForwardingWalk {
-        reads, waits, graph, ..
-    } = walk;
+    let ForwardingWalk { uses, graph, .. } = walk;
+    let (reads, waits) = uses.into_reads_waits();
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads,
@@ -472,9 +470,7 @@ pub(super) fn derive_input_demand(
 /// - otherwise this run waits for its answer and publishes nothing.
 struct ForwardingWalk<'w> {
     world: &'w World,
-    reader: Job,
-    reads: Vec<FactUse<FactKey>>,
-    waits: HashSet<FactUse<FactKey>>,
+    uses: UseCollector,
     graph: BTreeMap<FunctionId, DemandNode>,
 }
 
@@ -482,27 +478,29 @@ impl<'w> ForwardingWalk<'w> {
     fn new(world: &'w World, function: FunctionId) -> Self {
         Self {
             world,
-            reader: Job::DeriveInputDemand(function),
-            reads: Vec::new(),
-            waits: HashSet::new(),
+            uses: UseCollector::new(Job::DeriveInputDemand(function)),
             graph: BTreeMap::new(),
         }
     }
 
     fn read(&mut self, fact: FactKey) {
-        self.reads.push(FactUse::current(fact));
+        self.uses.read(fact);
     }
 
     fn wait(&mut self, fact: FactKey) {
-        self.waits.insert(FactUse::current(fact));
+        self.uses.wait(fact);
     }
 
     fn visit_callee(&mut self, callee: FunctionId) {
         if self.graph.contains_key(&callee) {
             return;
         }
+        // Classified, not answered: a partner callee is walked whole below,
+        // so its plain `InputDemand` fact is never itself a read. Recording
+        // one here, the way `answer` would, would subscribe this walk to a
+        // fact it otherwise never touches.
         let fact = FactKey::InputDemand(callee);
-        match self.world.answer_use(&self.reader, fact) {
+        match self.uses.classify(self.world, fact) {
             AnswerUse::Concluded(read) => {
                 let answer = self
                     .world
@@ -513,13 +511,11 @@ impl<'w> ForwardingWalk<'w> {
                     local_result: answer.returned.clone(),
                     forwards: Vec::new(),
                 };
-                self.reads.push(read);
+                self.uses.record_read(read);
                 self.graph.insert(callee, leaf);
             }
             AnswerUse::Partner(_) => self.visit_body(callee),
-            AnswerUse::Wait(wait) => {
-                self.waits.insert(wait);
-            }
+            AnswerUse::Wait(wait) => self.uses.record_wait(wait),
         }
     }
 
