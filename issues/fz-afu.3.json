@@ -5,14 +5,16 @@
     "fz-afu.6"
   ],
   "blocks": [],
+  "closed_at": "2026-10-07T21:57:33Z",
+  "close_reason": "landed PR #250",
   "created": "2026-09-25T20:28:35Z",
   "description": "Demand derivation re-ran once per call-chain level: a DeriveRuntimeDemand run\nread a callee's answer before that callee had finished deriving it, published\non the strength of it, and was woken again each time the answer moved.\nApproved proposal (2026-09-26): artifact https://claude.ai/artifact/YT7S1GcnSwxxRTM3ctW5qR.\nBuilt on fz-afu.2 (PR #243, bf70cf13e).\n\n## What changed\n1. One question, one implementation: `World::answer_use(reader, fact)` says how a run\n   may use a callee's answer. A partner (its producer's waits reach the reader,\n   `World::waits_reach`) is read Current: the two are one fixpoint. A concluded answer\n   is read `FactUse::Concluded`. Anything else is waited on at Concluded, and the\n   callee is unanswered, never read as bottom. `CalleeAnswers::read` in\n   runtime_demand.rs uses it; the `stands_alone`/`waits_on` rules are deleted.\n2. `World::pop_runnable` is the one way a job leaves the agenda. A job whose last run\n   read a Concluded answer that is being derived again waits for it without running\n   (`Scheduler::wait_without_running`) and is woken like any other waiter. Every pop\n   site uses it (drive.rs, product_drive.rs).\n3. Waiting extends, concluding replaces, for RuntimeDemandInputs too: a blocked run\n   joins into the standing answer (`World::extend_runtime_demand_inputs`), a concluding\n   run replaces it (`World::conclude_runtime_demand_inputs`). No A-\u003eB-\u003eA dips.\n4. Causal replay: several change records for one key in one completion fold to first\n   old vs last new (`record_movements`); wakes whose cause use is concluded replay as\n   `Cause::Concluded` (`concluded_caused` in FormulaWork).\n5. Send demand and input slots publish as their own derivations on conclusion\n   (`DerivationKey::Executable`, `DerivationKey::InputSlot`).\n\n## Measured (pins lowered, each with its cause in a comment)\n- Walks cold, range_map / predicate_search / take_drop_split: 237/592/1117 -\u003e 148/477/623.\n- fz2_cli runtime_demand_walks: take 1114 -\u003e 620, predicate 589 -\u003e 474, range_map 234 -\u003e 145.\n- work_start_reason: (937, 705, [58,0,165,482,0]) -\u003e (563, 331, [24,0,79,228,0]).\n- 00181 FormulaWork: DeriveRuntimeDemand runs 37 -\u003e 29, wakes into it 36 -\u003e 13.\n- AnalyzeActivation zero-change pins reclassified by conclusion flips: 9-\u003e3, 3-\u003e1, 16-\u003e7.\n\n## Moved out\n\"DeriveInputDemand composes from callee InputDemand\" (part 2 of the original\ndescription) is fz-afu.10. The call-graph-component design proposed here for it is\nunsound: a protocol callback is a static-graph leaf but forwards to every\nimplementation, so a forwarding cycle through it is invisible to CallGraphComponent.\n\n## Gate\nlib 2242 passed, 2 failed -- compiler2_contracts (00548-00552) and\ncompiler2_tuple_return_ladder_revises_once_per_nesting_level, red on develop since\nd91cae495 and owned by fz-xxd.3. fixture_matrix 828, fz2_cli 33, doc tests green.",
   "id": "fz-afu.3",
   "labels": [],
   "parent": "fz-afu",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Demand answers are read once they have concluded",
   "type": "bug",
-  "updated_at": "2026-09-26T17:17:26Z"
+  "updated_at": "2026-10-07T21:57:33Z"
 }
