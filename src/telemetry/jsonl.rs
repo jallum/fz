@@ -687,31 +687,6 @@ impl JsonlBackend {
                 );
             },
         );
-        let stall_backend = Rc::clone(backend);
-        telemetry.attach_raw_event2::<u64, Vec<crate::compiler2::FactKey>, _>(
-            &["fz", "compiler2", "drive", "demand_on_stall"],
-            move |name, span_id, parent_span_id, producer_pokes, demanded_facts| {
-                stall_backend.handle_raw_event(
-                    name,
-                    span_id,
-                    parent_span_id,
-                    crate::metadata! {
-                        producer_pokes: *producer_pokes,
-                        demanded_facts: crate::telemetry::opaque(demanded_facts),
-                        // Hard-coded, not read off the emit: `demand_on_stall`
-                        // has exactly one emit site (drive.rs's `drive_until`
-                        // stall pass), and every fact it names was demanded
-                        // through that single call to
-                        // `world.demand_fact_producer(fact,
-                        // WorkStartReason::BlockedWaiterExpansion)` — the
-                        // reason is uniform by construction, so projecting it
-                        // here is safe without threading it through the emit
-                        // itself.
-                        reason: "blocked_waiter_expansion",
-                    },
-                );
-            },
-        );
         let demand_backend = Rc::clone(backend);
         telemetry.attach_raw_event2::<crate::compiler2::FunctionId, crate::compiler2::InputDemand, _>(
             &["fz", "compiler2", "input_demand", "derived"],
@@ -1225,7 +1200,6 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "callsite", "defined"]
             | ["fz", "compiler2", "drive", "stalled"]
             | ["fz", "compiler2", "drive", "timed_out"]
-            | ["fz", "compiler2", "drive", "demand_on_stall"]
             | ["fz", "compiler2", "job"]
             | ["fz", "compiler2", "work_graph", "applied"]
             | ["fz", "compiler2", "activation_inputs", "budget_collapsed"]
@@ -1664,15 +1638,12 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
             ("producer_pokes", session.producer_pokes()),
             ("work_starts_ignition", work_starts.ignition),
             ("work_starts_changed_revision_wake", work_starts.changed_revision_wake),
-            ("work_starts_root_frontier", work_starts.root_frontier),
-            ("work_starts_activation_frontier", work_starts.activation_frontier),
+            ("work_starts_activation_published", work_starts.activation_published),
             (
                 "work_starts_blocked_waiter_expansion",
                 work_starts.blocked_waiter_expansion,
             ),
             ("unsanctioned_work_starts", work_starts.unclassified),
-            ("root_scans", work_starts.root_scans),
-            ("drain_discovery_sweeps", work_starts.drain_discovery_sweeps),
         ] {
             out.push(',');
             write_str_lit(out, name);
@@ -1930,7 +1901,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push_str(if completion.rebased { "true" } else { "false" });
         write_applied_step_body(out, &completion.step);
     } else if let Some(world) = opaque.downcast_ref::<crate::compiler2::World>() {
-        let (codes, roots, frontier) = world.telemetry_counts();
+        let (codes, roots) = world.telemetry_counts();
         out.push(',');
         write_str_lit(out, "codes");
         out.push(':');
@@ -1939,10 +1910,6 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "roots");
         out.push(':');
         push_u64(out, roots as u64);
-        out.push(',');
-        write_str_lit(out, "activation_frontier");
-        out.push(':');
-        push_u64(out, frontier as u64);
     } else if let Some(ty) = opaque.downcast_ref::<crate::compiler2::Ty>() {
         out.push(',');
         write_str_lit(out, "interned");

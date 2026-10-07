@@ -6278,7 +6278,6 @@ fn assert_materialized_executable_fact_authority(world: &World, session: &PullSe
         starts.unclassified, 0,
         "direct fact production must not start unsanctioned work"
     );
-    assert_eq!(starts.root_scans, 0, "direct fact production must not scan roots");
     for (executable, _) in session.memo().materialized_executables() {
         let fact = FactKey::ExecutableFacts(executable.clone());
         let job = Job::DeriveExecutableFacts(executable.clone());

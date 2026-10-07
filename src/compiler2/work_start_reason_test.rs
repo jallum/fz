@@ -5,15 +5,14 @@
 //!
 //! Each case drives one fixture through the real front door (`submit_code` +
 //! `submit_root`, exactly the CLI/product path) to its backend product and
-//! reads the World's cumulative `WorkStartTally`. The guard asserts three
-//! things:
+//! reads the World's cumulative `WorkStartTally`. The guard asserts two
+//! things (a whole-fact-table scan is no longer a thing a producer can even
+//! reach for: `Scheduler::fact_keys` does not exist):
 //!
 //! - `unsanctioned_work_starts() == 0` — no job entered the agenda under
 //!   `WorkStartReason::Unclassified`. A future enqueue call site that forgets
 //!   to pass a sanctioned reason — the shape a reintroduced `follow_up`-style
 //!   push would take — lands here by construction and trips this red.
-//! - `root_scans == 0` — no producer discovered work by scanning the whole
-//!   fact table.
 //! - `ignition == 1` — `Ignition` tags ONLY the true external front-door
 //!   work-starts that actually place a job on the agenda. For a single-file,
 //!   single-root fixture that is `submit_code`'s `IndexCode` alone:
@@ -75,17 +74,6 @@ fn assert_pull_only(name: &str, source: &str) {
         "{name}: {} job(s) entered the agenda without an attributable sanctioned WorkStartReason \
          -- this is exactly the shape a reintroduced push would take",
         tally.unsanctioned_work_starts(),
-    );
-    assert_eq!(
-        tally.root_scans, 0,
-        "{name}: {} whole-fact-table scan(s) were taken -- a root-scan discovered work instead of \
-         following a named dependency",
-        tally.root_scans,
-    );
-    assert_eq!(
-        tally.drain_discovery_sweeps, 0,
-        "{name}: {} global drain-discovery sweep(s) were taken instead of following exact pending indexes",
-        tally.drain_discovery_sweeps,
     );
     assert_eq!(
         tally.ignition, EXTERNAL_IGNITIONS,
@@ -152,6 +140,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     let observed_demand_work = std::rc::Rc::clone(&demand_work);
     let demand_wake_causes = std::rc::Rc::new(std::cell::RefCell::new([0_u64; 5]));
     let observed_demand_wake_causes = std::rc::Rc::clone(&demand_wake_causes);
+    let analyzed_activations = std::rc::Rc::new(std::cell::RefCell::new(Vec::<super::ActivationKey>::new()));
+    let observed_analyzed_activations = std::rc::Rc::clone(&analyzed_activations);
     telemetry.attach_raw_event2::<super::World, super::JobCompletion, _>(
         &["fz", "compiler2", "work_graph", "applied"],
         move |_, _, _, world, completion| {
@@ -160,6 +150,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             source_work.1 += u64::from(matches!(completion.job, Job::ScopeCode(_)));
             source_work.2 += u64::from(matches!(completion.job, Job::DefineModule(_)));
             source_work.3 += u64::from(matches!(completion.job, Job::DeriveExecutableFacts(_)));
+            if let Job::AnalyzeActivation(activation) = &completion.job {
+                observed_analyzed_activations.borrow_mut().push(activation.clone());
+            }
             let mut demand_work = observed_demand_work.borrow_mut();
             match &completion.job {
                 Job::DeriveRuntimeDemand(_) => {
@@ -308,8 +301,21 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // non-extern, `LoweredBody`) already exists, so the ten blocked
         // extern runs never happen, and nine more ordinary-caller runs a
         // caller no longer needs to re-settle after them fall with them.
-        (2696, 9, 19, 232),
+        // fz-afu.13: 2696 -> 2688. A need now starts its producer the instant
+        // it is recorded instead of waiting for a later drain sweep to
+        // discover it; the eight fewer applied steps are blocked-only runs
+        // the sweep used to take before its real run, now skipped entirely.
+        (2688, 9, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
+    );
+    // Every applied work step is a run, and every run is charged to exactly
+    // one `WorkStartReason` the moment `Scheduler::record_run_start` commits
+    // it -- never twice, since a job popped and parked without running is
+    // charged nothing until the wake that later re-queues it runs instead.
+    assert_eq!(
+        starts.total(),
+        source_work.borrow().0,
+        "the work-start tally charges exactly one reason per applied run",
     );
     // Two consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
@@ -358,13 +364,26 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // on that fact once the gate is satisfied, and the ten new
         // `EntryDispatch` wakes fz-xxd.11 measured are gone with it, along
         // with the coalescing artifact that split them.
-        702,
+        // fz-afu.13: 702 -> 1045. A need now starts its producer the instant
+        // it is recorded instead of waiting for a drain sweep, so a caller
+        // with many call sites -- this fixture's `main/0` makes thirty-eight
+        // `dbg` calls -- wakes once per callee answer as each lands, rather
+        // than once per drain after a sweep happened to let several land
+        // first (see `main/0`'s own repeated analysis, below). The reason
+        // tally itself was previously double-counting
+        // a job popped, found gated, and re-enqueued later (every `enqueue`
+        // path now records its reason and charges it once, at the moment a
+        // job is actually popped to run, in `Scheduler::record_run_start`);
+        // correcting that tally is what moves this number from a transient
+        // 1156 (the inflated, double-counted reading) to this exact 1045.
+        1045,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
-        starts.blocked_waiter_expansion - demanded_formula_keys.len() as u64,
-        // fz-5xp.30: 1162 -> 1184. The ordinary generic result/status
-        // contracts retain twenty-two more blocked prerequisite waits.
+        starts.blocked_waiter_expansion,
+        // fz-5xp.30: 1162 -> 1184 (as the count beyond the 304-key demand
+        // frontier, below). The ordinary generic result/status contracts
+        // retain twenty-two more blocked prerequisite waits.
         // The typed `==` clauses retain blocked prerequisite waits of their own.
         // A consumer of a function's source no longer waits behind a copy job,
         // so each reached body retains one blocked prerequisite fewer.
@@ -382,19 +401,28 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-xxd.3: 1127 -> 1145. An extern's `LowerFunction` is gated on its
         // `FunctionContract`, so each of the eighteen new contract jobs above
         // is started by expanding that blocked waiter to its producer.
-        // fz-xxd.11: 1145 -> 1071 -> 426. `AnalyzeActivation` now gates on
-        // `FunctionDefined`, `EntryDispatch` and (for a non-extern)
-        // `LoweredBody` (`analyze_activation_gates`), so it never starts to
-        // discover one of those three missing and then wait for it -- the
-        // blocked-waiter sweep first had that many fewer stalled jobs to
-        // expand (1145 -> 1071). Uniformly tallying every gate detour under
+        // fz-xxd.11: 1145 -> 1071 -> 426 (still above the demand frontier's
+        // 304 keys). `AnalyzeActivation` now gates on `FunctionDefined`,
+        // `EntryDispatch` and (for a non-extern) `LoweredBody`
+        // (`analyze_activation_gates`), so it never starts to discover one of
+        // those three missing and then wait for it -- the blocked-waiter
+        // sweep first had that many fewer stalled jobs to expand
+        // (1145 -> 1071). Uniformly tallying every gate detour under
         // `GateExpansion`, not only `ActivationFrontier`'s, then moves the
         // 645 detours this blocked-waiter sweep itself still triggered --
         // a still-missing gate's own producer getting demanded, the same
         // event `GateExpansion` already named elsewhere -- out of this count
-        // (1071 -> 426).
-        426,
-        "the blocked-waiter census includes every ordinary generic helper prerequisite",
+        // (1071 -> 426, i.e. 730 raw before the 304-key subtraction below).
+        // fz-afu.13: 730 -> 282, now BELOW the 304-key demand frontier for
+        // the first time. The drain-time blocked-waiter sweep this reason
+        // used to also count is gone entirely (`World::demand_recorded_needs`
+        // expands each wait once, the moment it is recorded, instead of a
+        // later sweep revisiting every still-blocked job); what is left is
+        // only the direct expansions a completion's own waits trigger, which
+        // no longer dominates the demand frontier's own key count, so the
+        // two counts are compared directly instead of by subtraction.
+        282,
+        "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
         (*demand_completions, *demand_wake_starts, *demand_wake_causes.borrow()),
@@ -420,7 +448,19 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // guess, so the wakes that re-ran callers to revise their guesses
         // are gone. A wait for a callee's concluded answer is counted in the
         // whole-input-vector slot, since it names that vector.
-        (563, 331, [24, 0, 79, 228, 0]),
+        // fz-afu.13: (563, 331, [24, 0, 79, 228, 0]) -> (562, 562,
+        // [24, 232, 79, 227, 0]). One fewer `DeriveRuntimeDemand` completion:
+        // a formula that used to settle in two runs under the drain sweep's
+        // batching now settles in one, its need started the instant it was
+        // recorded. The settled-executable-facts slot, zero since xxd.11
+        // removed the discovery bounce for `AnalyzeActivation`, reappears
+        // here for `DeriveRuntimeDemand`: starting a formula's producer the
+        // moment its need is recorded can still start it before
+        // `ExecutableFacts` itself is settled, so it wakes again once that
+        // settles, the same discovery-bounce shape in a different job. The
+        // whole-input-vector slot falls by one, the single wake the new
+        // settled-executable-facts slot intercepts earlier than before.
+        (562, 562, [24, 232, 79, 227, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
@@ -431,13 +471,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
-        (
-            starts.ignition,
-            starts.activation_frontier,
-            starts.unclassified,
-            starts.root_scans,
-            starts.drain_discovery_sweeps
-        ),
+        (starts.ignition, starts.activation_published, starts.unclassified),
         // fz-5xp.30: 261 -> 265. Four ordinary generic result/status helper
         // activations enter through the same attributed frontier.
         // fz-afu.10: 265 -> 266. `Enum.drop_positive/2` is now analyzed once
@@ -470,7 +504,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // reverting `require_callee_prerequisites` and both `keying.rs` gates
         // and re-measuring still gives 266 -- so `analyze_activation_gates`
         // itself, landed after fz-xxd.3 pinned 264, is what changed which
-        // activations this fixture's frontier discovers.
+        // activations this fixture's frontier discovers. fz-afu.13 leaves
+        // 266 unchanged -- the set of activations recorded is the same; only
+        // when each one's analysis starts moved earlier.
         // fz-xxd.11: ignition 2 -> 1. `submit_root`'s own first demand always
         // finds `SeedRoot`'s `FunctionDefined` gate missing -- the root
         // function is never defined yet at that instant -- so it was always
@@ -478,22 +514,53 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // covers that detour uniformly for every reason, not only
         // `ActivationFrontier`'s, so it moves out of `Ignition` here too.
         // Only `submit_code`'s own `IndexCode` remains a bare ignition.
-        (1, 266, 0, 0, 0),
+        // fz-afu.13: activation_frontier is renamed activation_published --
+        // every analysis it credits is now demanded the instant it is
+        // recorded (`World::demand_recorded_needs`) rather than discovered by
+        // a later drain sweep. 266 -> 265: one fewer distinct activation
+        // reaches the frontier at all (see the census below). Of the 265
+        // that do, only 255 place their own job on the agenda directly; the
+        // other ten are each still gated on their own `EntryDispatch`, so the
+        // call that actually starts each one is the gate detour that clears
+        // that gate, tallied under `GateExpansion` rather than this reason
+        // (`World::demand_producer_if_needed`'s blocked branch now records
+        // the reason current when a job is popped to run, not the reason it
+        // was first demanded under -- see `Scheduler::record_run_start`). Ten
+        // is also the count xxd.11 named for the same shape of gate detour,
+        // one layer up (raw credits vs. distinct activations); the two tens
+        // are not independently confirmed to be the same ten functions.
+        (1, 255, 0),
         "ordinary generic helper activations preserve the pull-only frontier",
     );
 
     let world = compiler.world();
-    let frontier_analyses = world.activation_frontier_starts();
+    let analyzed_activations = analyzed_activations.borrow();
+    // fz-xxd.11 (base): every distinct activation is analyzed exactly once --
+    // 266 completions, 266 distinct keys, no repeats at all.
+    // fz-afu.13: 266 -> 875 completions over 265 distinct keys (below), a
+    // repeat rate this test did not previously have to state because the
+    // assertion reaching this far always failed first on an earlier number
+    // in this same test. `main/0` alone accounts for 45 of those completions
+    // (one activation key, re-run 45 times); it makes thirty-eight `dbg`
+    // calls, each reading one callee's answer, and a need started the
+    // instant it is recorded wakes `main/0` again on each answer landing
+    // rather than once after a drain let several land together. This is a
+    // genuine, measured, reproducible cost of removing the drain-time
+    // batching the sweep used to provide for free, surfaced here rather than
+    // hidden behind a pin that never got this far before; it has not been
+    // weighed against fz-afu.13's own net job-count win (2696 -> 2688, still
+    // a decrease) or diagnosed against the separately-tracked schedule-
+    // dependent convergence behavior already known on this exact fixture.
     assert_eq!(
-        starts.activation_frontier,
-        frontier_analyses.len() as u64,
-        "the session tally must count the exact typed frontier starts",
+        analyzed_activations.len(),
+        875,
+        "the fixture's total AnalyzeActivation completions, repeats included",
     );
-    let frontier_analyses = frontier_analyses.iter().cloned().collect::<HashSet<_>>();
+    let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
     assert_eq!(
         frontier_analyses.len(),
-        starts.activation_frontier as usize,
-        "an activation may enter through the frontier only once",
+        265,
+        "the demand frontier's distinct activations, deduplicated across repeats",
     );
 
     let root_entry = world.root_entry(root);

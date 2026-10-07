@@ -504,17 +504,22 @@ fn failed_macro_product_remains_demanded_after_retirement_and_source_repair() {
         compiler.run_root_interp(root).is_err(),
         "an absent macro dependency cannot certify expanded source"
     );
-    let events = diagnostics.events();
-    let diagnostic = events.iter().find_map(|event| event.diagnostic.as_ref()).unwrap();
-    assert_eq!(diagnostic.code, crate::diag::codes::LOWER_UNBOUND);
-    assert_eq!(
-        diagnostic.primary.span.source_version,
-        compiler
-            .world()
-            .source_version(failed_code)
-            .expect("failed source version")
-    );
-    assert_eq!((diagnostic.primary.span.start, diagnostic.primary.span.end), (40, 53));
+    {
+        // Scoped so the `Ref` this borrows drops before the repaired
+        // second call below, which needs `diagnostics` free to record its
+        // own events.
+        let events = diagnostics.events();
+        let diagnostic = events.iter().find_map(|event| event.diagnostic.as_ref()).unwrap();
+        assert_eq!(diagnostic.code, crate::diag::codes::LOWER_UNBOUND);
+        assert_eq!(
+            diagnostic.primary.span.source_version,
+            compiler
+                .world()
+                .source_version(failed_code)
+                .expect("failed source version")
+        );
+        assert_eq!((diagnostic.primary.span.start, diagnostic.primary.span.end), (40, 53));
+    }
     let function = compiler.world_mut().reference_function(ModuleId::GLOBAL, "answer", 0);
     let macro_root = compiler.world_mut().macro_root(function);
     assert_eq!(

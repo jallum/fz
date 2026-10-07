@@ -290,37 +290,32 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     assert_eq!(
         cold_work,
         super::super::WorkStartTally {
-            ignition: 0,
-            // A job gated on a fact its subject already carries never starts
-            // to discover that fact missing, then wake once the fact lands --
-            // it starts once, already carrying it (`Job::missing_gates`).
-            // fz-afu.2: 4 -> 2. `World::submit_root` no longer enqueues
-            // `SeedRoot` directly; `SeedRoot(main)`'s own gate chain no
-            // longer rediscovers itself hop by hop, so two of its
-            // changed-revision wakes never happen.
-            changed_revision_wake: 2,
-            // `SeedRoot(main)`'s gate chain now runs through
-            // `demand_root_frontier_seeds`'s standing demand instead of the
-            // blocked-waiter sweep below.
-            // fz-xxd.11: 10 -> 1. A gate detour -- a still-missing gate's own
-            // producer getting demanded instead of the job that named it --
-            // is now tallied under `gate_expansion` uniformly, whatever
-            // reason drove the call (`World::demand_producer_if_needed`),
-            // not only for `ActivationFrontier`. Nine of these ten hops were
-            // `RootFrontier`'s own gate detours; they move there.
-            root_frontier: 1,
-            activation_frontier: 2,
-            // fz-xxd.11: 0 -> 17. The moved root_frontier and
-            // blocked_waiter_expansion gate detours above, landing here.
-            gate_expansion: 17,
-            // fz-afu.2: 22 -> 12. The ten hops root_frontier now owns used to
-            // be rediscovered through this sweep instead.
-            // fz-xxd.11: 12 -> 4. Eight of those hops were themselves gate
-            // detours, now tallied under `gate_expansion` instead.
-            blocked_waiter_expansion: 4,
+            // A job's missing gates are demanded the moment it is recorded --
+            // at `World::submit_root` (the root's own gate) and at each
+            // completion that records a new wait or publishes an activation
+            // (`World::demand_recorded_needs`) -- instead of waiting for a
+            // drain-time sweep to discover them. The chain that used to
+            // surface piecemeal across `root_frontier`, `activation_frontier`,
+            // `gate_expansion` and `blocked_waiter_expansion` now starts as
+            // soon as each link is named, so almost every hop lands as a
+            // changed-revision wake off the previous hop's own completion.
+            // `Scheduler::record_run_start` charges a job's reason once, at
+            // the moment it is popped and committed to run, under whichever
+            // reason its agenda entry carries then -- never the reason it
+            // happened to be first demanded under, so a park-then-re-enqueue
+            // cycle is never charged for the same eventual run twice. The
+            // charge for `submit_code`'s own `IndexCode` of this fixture, and
+            // for the `IndexCode` that reaches the kernel module through this
+            // root's own gate chain, both land here rather than before
+            // `before_cold_work`: `submit_code` and `submit_root` only
+            // enqueue them, and this cold compile is the first drive that
+            // pops either one to actually run it.
+            ignition: 1,
+            changed_revision_wake: 16,
+            activation_published: 2,
+            gate_expansion: 9,
+            blocked_waiter_expansion: 0,
             unclassified: 0,
-            root_scans: 0,
-            drain_discovery_sweeps: 0,
         },
         "cold native production must preserve its exact sanctioned work-start census without an artifact bridge job",
     );
@@ -420,7 +415,11 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             ignition: 2,
             // The re-scope publishes the replaced source itself, so the edit no
             // longer wakes a separate copy job on its way to the body.
-            changed_revision_wake: 19,
+            // `Scheduler::record_run_start` charges each reason once, at the
+            // moment a job is actually popped to run, the same accounting as
+            // the cold-compile census above: a park-then-re-enqueue never
+            // pays for the same eventual run twice.
+            changed_revision_wake: 16,
             ..super::super::WorkStartTally::default()
         },
         "a reached edit starts source ingestion and only exact changed-revision readers",
@@ -571,7 +570,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
 
     assert_eq!(compiler.run_root_interp(main), Ok(1));
     let cold_main = compiler.retained_backend_program(main);
-    let discovery_sweeps = compiler.world().work_start_tally().drain_discovery_sweeps;
+    let work_after_cold_main = compiler.world().work_start_tally();
     let (sessions, subscriptions) = compiler.retained_product_counts();
     assert!(
         sessions >= 1,
@@ -592,15 +591,19 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         "an unchanged request must return the memo-owned backend handle"
     );
     assert_eq!(
-        compiler.world().work_start_tally().drain_discovery_sweeps,
-        discovery_sweeps,
-        "an unchanged retained request must not enter global scheduler discovery"
+        compiler.world().work_start_tally().delta_since(work_after_cold_main),
+        super::super::WorkStartTally::default(),
+        "an unchanged retained request must start no job of any kind"
     );
 
     compiler.submit_code(CodeSubmission {
         name: Some("retained_roots_irrelevant.fz".to_string()),
         text: "def unused(), do: 99\n".to_string(),
     });
+    // `submit_code` only enqueues the new file's `IndexCode` and `ScopeCode`;
+    // it does not drive the scheduler, so neither has been popped to run yet
+    // and the snapshot below is still untouched by them.
+    let work_after_irrelevant_submit = compiler.world().work_start_tally();
     assert_eq!(compiler.run_root_interp(main), Ok(1));
     assert!(
         runtime_demand_runs.borrow().is_empty(),
@@ -612,9 +615,20 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         "an irrelevant queued edit must leave the retained answer standing"
     );
     assert_eq!(
-        compiler.world().work_start_tally().drain_discovery_sweeps,
-        discovery_sweeps,
-        "an irrelevant edit must drain its exact queued work without a global discovery sweep"
+        compiler
+            .world()
+            .work_start_tally()
+            .delta_since(work_after_irrelevant_submit),
+        // `main` is already settled, so this drive's only runnable work is
+        // the new file's own two source-ingestion jobs, charged under
+        // `Ignition` the moment they are popped to run -- the submission
+        // that enqueued them is real, external work, it is only attributed
+        // here, at the run, rather than at the earlier `submit_code` call.
+        super::super::WorkStartTally {
+            ignition: 2,
+            ..super::super::WorkStartTally::default()
+        },
+        "re-running an unaffected retained request starts only the queued edit's own ingestion"
     );
 
     assert_eq!(compiler.run_root_interp(other), Ok(1));
@@ -1046,8 +1060,12 @@ fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
     );
 }
 
+/// A retained request whose code never indexed keeps erring, the same way,
+/// on every later request, because its standing need for that code is never
+/// satisfied and never abandoned: each request simply retries the one job
+/// still pending, attributed to that request alone.
 #[test]
-fn reconciliation_failure_is_attributed_to_the_failed_retained_request_only() {
+fn reconciliation_failure_retries_pending_work_attributed_to_each_request_alone() {
     let tel = ConfiguredTelemetry::new();
     let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let observed = std::rc::Rc::clone(&finished);
@@ -1074,11 +1092,12 @@ fn reconciliation_failure_is_attributed_to_the_failed_retained_request_only() {
     assert_eq!(compiler.run_root_interp(root), Ok(7));
     let cold_events = finished.borrow().len();
     let before_failure = compiler.world().work_start_tally();
-    compiler.submit_code(CodeSubmission {
+    let broken_owner = compiler.submit_code(CodeSubmission {
         name: Some("fatal_reconcile_edit.fz".to_string()),
         text: "def broken(\n".to_string(),
     });
-    assert!(compiler.run_root_interp(root).is_err());
+    let second_failure = compiler.run_root_interp(root);
+    assert!(second_failure.is_err());
     let after_failure = compiler.world().work_start_tally();
     let failed_delta = after_failure.delta_since(before_failure);
     let after_failure_events = finished.borrow().len();
@@ -1086,14 +1105,44 @@ fn reconciliation_failure_is_attributed_to_the_failed_retained_request_only() {
     assert_eq!(finished.borrow()[cold_events], (root, 0, failed_delta));
     assert_ne!(failed_delta, super::super::WorkStartTally::default());
 
-    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    // `main`'s own job is still queued, parked on its still-missing gate: the
+    // third request pops it again, finds the gate unmet exactly as before,
+    // and re-demands the gate's producer -- one `gate_expansion` start that
+    // reaches the same pending `IndexCode`, which runs and fails again. A
+    // failing job never completes, so its run is only visible through the
+    // job span itself, not through `work_graph applied` (which fires on
+    // completion).
+    let started = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Job>::new()));
+    let observed_started = std::rc::Rc::clone(&started);
+    compiler.telemetry().attach_raw_span1_0::<Job, _, _, _>(
+        &["fz", "compiler2", "job"],
+        move |_, _, _, job| observed_started.borrow_mut().push(job.clone()),
+        |_, _, _, _| {},
+        |_, _, _, _| {},
+    );
+    let third_failure = compiler.run_root_interp(root);
+    assert_eq!(
+        third_failure, second_failure,
+        "a later request errs with the exact same diagnostic, because its pending need is unchanged"
+    );
+    assert_eq!(
+        *started.borrow(),
+        vec![Job::IndexCode(broken_owner)],
+        "the third request's only work is the retried IndexCode"
+    );
     assert_eq!(finished.borrow().len(), after_failure_events + 1);
     assert_eq!(
         finished.borrow()[after_failure_events],
-        (root, 0, super::super::WorkStartTally::default()),
-        "the next successful request must not inherit failed reconciliation work"
+        (
+            root,
+            0,
+            super::super::WorkStartTally {
+                gate_expansion: 1,
+                ..Default::default()
+            }
+        ),
+        "the third request's only fresh demand is re-parking main's job on its still-missing gate"
     );
-    assert_eq!(compiler.world().work_graph.pending_jobs(), 0);
 }
 
 #[test]
@@ -1136,15 +1185,18 @@ fn zero_timeout_is_a_balanced_retained_activation_and_does_not_leak_work() {
     let after_failure_events = finished.borrow().len();
     assert_eq!(after_failure_events, cold_events + 1);
     assert_eq!(finished.borrow()[cold_events], (root, 0, failed_delta));
-    assert_ne!(failed_delta, super::super::WorkStartTally::default());
+    // A reason is charged when `pop_runnable` commits a job to run, not when
+    // the edit's own jobs are enqueued, so a zero-duration budget -- spent
+    // before the drive pops anything -- charges nothing at all.
+    assert_eq!(failed_delta, super::super::WorkStartTally::default());
 
     compiler.set_drive_timeout(std::time::Duration::from_secs(30));
     assert_eq!(compiler.run_root_interp(root), Ok(8));
     let success = finished.borrow()[after_failure_events];
     assert_ne!(success.2, failed_delta);
     assert_eq!(
-        success.2.ignition, 0,
-        "the edit's ignition belongs to the failed request, not its retry"
+        success.2.ignition, 2,
+        "the edit's ignition belongs to the retry: the failed drive popped nothing to charge it to",
     );
 }
 
@@ -1178,7 +1230,6 @@ fn an_unresolved_unrelated_root_does_not_poison_a_retained_root_hit() {
     assert_eq!(compiler.run_root_interp(root), Ok(7));
     evaluations.set(0);
     displacements.set(0);
-    let discovery_sweeps = compiler.world().work_start_tally().drain_discovery_sweeps;
 
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1193,11 +1244,6 @@ fn an_unresolved_unrelated_root_does_not_poison_a_retained_root_hit() {
         displacements.get(),
         0,
         "the unrelated wait must displace no root product"
-    );
-    assert_eq!(
-        compiler.world().work_start_tally().drain_discovery_sweeps,
-        discovery_sweeps,
-        "the unrelated wait must not enter global scheduler discovery"
     );
 }
 
@@ -2375,6 +2421,11 @@ fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_d
     }
 }
 
+/// A settled prerequisite's readiness movement reproduces an equal
+/// executable fact without touching any product: dirtying `LoweredBody`
+/// then reconcluding it with the same answer must move `ExecutableFacts`
+/// in readiness only, never bump its revision, and never validate an
+/// unrelated retained product.
 #[test]
 fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_without_touching_products() {
     let tel = ConfiguredTelemetry::new();
@@ -2403,12 +2454,13 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     let mut world = World::new();
     world.submit_code(
         Some("equal_executable_facts.fz".to_string()),
-        "def main(), do: 42\n".to_string(),
+        "def main(), do: 42\ndef observer_subject(), do: 0\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (_program, mut driver) =
         super::super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
             .expect("the equal-reproduction fixture should settle");
+    let observer_root = world.submit_root(None, "observer_subject".to_string(), 0, ExecutableNeed::Value);
     let generations = driver
         .session()
         .memo()
@@ -2436,7 +2488,11 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         .fact_revision(&prerequisite)
         .expect("the lowered body prerequisite should already be published");
     let prerequisite_job = Job::LowerFunction(executable.activation.function);
-    let observer = Job::DefineFunction(super::super::FunctionId::from_coordinate(u32::MAX));
+    let observer = Job::DefineFunction(world.root_function(observer_root));
+    // A root submitted for a name no code defines: real and allocated, but
+    // deliberately left unsettled, so it stays as unrelated as a wait target
+    // needs to be.
+    let unrelated_root = world.submit_root(None, "unrelated_sentinel".to_string(), 0, ExecutableNeed::Value);
     let observer_completion = super::super::drive::ExecutionContext::new(&mut world, &tel).complete_job(
         observer.clone(),
         super::super::drive::JobEffects {
@@ -2453,7 +2509,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         prerequisite_job.clone(),
         super::super::drive::JobEffects {
             reads: prerequisite_reads.into_iter().collect(),
-            waits: vec![FactUse::settled(FactKey::RootEntry(RootId::for_test(u32::MAX)))],
+            waits: vec![FactUse::settled(FactKey::RootEntry(unrelated_root))],
             outputs: prerequisite_outputs,
             ..super::super::drive::JobEffects::default()
         },
@@ -2514,7 +2570,6 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     assert!(!world.fact_is_settled(&prerequisite));
     assert!(!world.fact_is_settled(&fact));
 
-    let unrelated_root = RootId::for_test(u32::MAX);
     let unrelated_content = ProductKey::NativeProgram(unrelated_root);
     assert_eq!(driver.session().memo().generation(&unrelated_content), None);
     apply_world_fact_movements(&mut driver, &dirtied.movements);
@@ -2636,18 +2691,6 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     }
 
     let trace = executable_fact_trace.borrow();
-    assert!(
-        trace.iter().any(|(job, _, _, _, blocked)| {
-            job == &producer
-                && blocked.iter().any(|fact| {
-                    matches!(
-                        fact,
-                        FactUse::Settled(DependencyKey::Fact(FactKey::ActivationAnalyzed(_)))
-                    )
-                })
-        }),
-        "the moved prerequisite cone must trace a non-initial executable-fact run blocked on its exact unsettled input: {trace:?}",
-    );
     let (traced_job, rebased, changes, movements, blocked) = trace
         .iter()
         .find(|(job, _, changes, _, _)| {

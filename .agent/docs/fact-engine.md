@@ -95,8 +95,9 @@ A job that cannot proceed records `waits` and returns; it never names another
 job to run. Restarting blocked work is the fact->producer map's job, not the
 blocked job's: `World::demand_fact_producer` (`drive.rs`) maps a fact to its
 single producing job, and every path that discovers a blocked wait —
-`demand_blocked_wait_producers` at drain time, the standing activation
-frontier expansion, and the product pull driver's fact waits —
+`World::demand_recorded_needs` the instant a completion records the wait or
+publishes an activation, `pop_runnable`'s own gate check for a job popped
+before its gates landed, and the product pull driver's fact waits —
 demands that producer through the map. A fact with more than one possible
 producer (for example `ModuleInterface`, produced by either `DefineModule` or
 `DefineModuleInterface` depending on whether the module has source state) maps
@@ -630,22 +631,28 @@ also reconciles product-pull requests each time the agenda empties (see
 deadline (`DriveOutcome::TimedOut`) or an unproducible product
 (`DriveOutcome::DependencyFailed`).
 
-When the agenda drains, standing demands expand before the drive ends: every
-published activation — root entry or caller-discovered callee — demands its
-own analysis (`World::demand_activation_frontier_analyses`), and
-every blocked waiter's fact names its single producer through the
-fact->producer map (`World::demand_fact_producer` — the same expansion the
-product fact-wait loops reach through `World::next_ready_job`). The activation
-frontier expansion is first-run ignition only: it checks
-`Scheduler::has_run` for its `AnalyzeActivation` job and skips a key that has
-already run at least once, because the graph's own read/wait subscriptions
-carry every later revision from there — a key whose first run blocked without
-settling stays reachable through the blocked-waiter expansion instead, never
-through repeated re-demand. A stall pass only re-demands a blocked fact after
-some fact content changed, so byte-identical re-runs cannot loop. The loop
-ends only when nothing more can be demanded: `Resolved` (no waiters), or
-`Unresolved { waits }` (blocked facts with no mapped producer). A job that
-returns an error ends the loop as `Fatal { job }` instead.
+A need starts its producer the moment it is recorded, not when the agenda
+happens to run dry. `World::demand_recorded_needs` is the one call site,
+reached from `complete_job` right after a run's outputs are applied: it
+demands the producer of every fact the completed job still waits on, and the
+first analysis of every activation the completion published — root entry or
+caller-discovered callee — that has never run (`Scheduler::has_run` skips a
+key already run at least once, because the graph's own read/wait
+subscriptions carry every later revision from there). `pop_runnable` demands
+again for a job it pops before that job's own gates have landed
+(`park_on_gates`), and the product pull's fact-wait loop demands its own
+waits the same way. There is no drain-time sweep left that walks standing
+demand on a timer; when the agenda drains, `settle_quiescent_waits` only
+arbitrates facts that are already quiescent over quiesced ground — it starts
+nothing. A chain whose producer failed silently (a failed run concludes
+nothing and leaves no record, so nothing else will ever ask for it again) is
+the one case demand-at-record cannot reach on its own; `demand_producer_if_needed`
+calls `revive_blocked_chain` to walk a blocked job's own wait chain for the
+first never-run producer and demand it, each time something re-demands that
+blocked job. The loop ends only when nothing more can be demanded: `Resolved`
+(no waiters), or `Unresolved { waits }` (blocked facts with no mapped
+producer). A job that returns an error ends the loop as `Fatal { job }`
+instead.
 
 Standing waits come from a `HashMap`, but the dependency index does not guess
 their identity. `DependencyIndex::unresolved` uses the same typed semantic
@@ -664,12 +671,18 @@ A handful of job kinds cannot conclude anything useful the moment they start —
 their very first read is a fact that may not exist yet, and a run that finds
 it missing has nothing to do but record a wait and return. `Job::missing_gates`
 (`jobs/mod.rs`) names that fact up front, from the job's subject alone, before
-the job has read anything: `World::demand_producer_if_needed` (`drive.rs`)
-consults it for every never-run job, and when a gate is missing it demands
-that gate's own producer instead of starting the job to discover the same
-fact missing from inside its body. The gate's own wake then reaches the job
-the ordinary way, through `demand_fact_producer`'s fact->producer map, once it
-lands.
+the job has read anything. `World::pop_runnable` (`drive.rs`) is the one place
+that decides whether a popped job may run: it checks `missing_gates` for
+every job it pops and parks a job whose gate is missing instead of running it
+(`park_on_gates`), demanding the gate's own producer in the same breath so the
+gate's landing wakes the parked job the ordinary way, through
+`demand_fact_producer`'s fact->producer map. `World::demand_producer_if_needed`
+checks the same gates for a never-run job before it is even enqueued, so a
+demand that would only enqueue something `pop_runnable` would immediately
+park instead redirects straight to the gate's own producer and is tallied
+under `GateExpansion` rather than the calling demand's own reason. Both call
+sites consult the one `missing_gates` answer; neither keeps its own notion of
+readiness.
 
 Ten job kinds declare gates — `SeedRoot`, `DefineFunction`,
 `ExpandFunctionSource`, `ScopeCode`, `DeriveInputDemand`,
@@ -724,13 +737,12 @@ matter how the job was queued. When the root's function is not yet defined,
 that demand redirects through `SeedRoot`'s gate to `DefineFunction`, and, if
 the source has not even been scoped yet, one hop further to
 `ExpandFunctionSource` — the same chain any other demand for that root would
-walk. Because `submit_root` runs once, before the standing infrastructure
-inside a drive exists to notice a later-arriving definition, `root_frontier`
-(`World`) stands in for the missing per-job wait: it names every root whose
-`SeedRoot` has not yet run, and the drive's stall pass
-(`demand_root_frontier_seeds`, `drive.rs`) re-demands each one on every
-drain, the same way `activation_frontier` stands in for a published
-activation with no analysis. `run_macro_on_source` demands an ordinary gated
+walk. That one demand call, made once from `submit_root` itself, is enough:
+once `DefineFunction` or `ExpandFunctionSource` actually runs it is an
+ordinary job with its own waits, and `demand_recorded_needs` carries the
+chain the rest of the way to `SeedRoot` as each link's completion publishes
+the next. There is no standing root frontier left to re-demand on a timer.
+`run_macro_on_source` demands an ordinary gated
 fact (`FactKey::FunctionDefined`), so a single demand call may only advance
 one gate hop — the fact chain from source to expansion to definition can
 cross several — and it repeats the demand after every drive until the

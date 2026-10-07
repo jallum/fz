@@ -428,40 +428,24 @@ and elapsed time on its payload-free stop. `work_graph.applied` is the one
 signal that observes every completion — it is the causality record, the job
 span is the clock.
 
-When the agenda drains, `ExecutionContext::drive_until` (`drive.rs`) runs its
-demand pass. It first expands published root-entry and caller-discovered-callee
-activations through `demand_activation_frontier_analyses`, attributed to
-`ActivationFrontier`. Then, for each blocked waiter's fact not already demanded
-since the last content change, it pokes that fact's mapped producer through
-`demand_fact_producer`, attributed to `BlockedWaiterExpansion`. If the combined
-expansions poke at least one producer, the pass emits
-`[fz, compiler2, drive, demand_on_stall]` (raw event, no span) with `&u64` for
-that combined `producer_pokes` total and the cumulative blocked-waiter
-`stall_demanded` facts as a typed owner-ordered vector.
-
-`demand_on_stall` is public (allowlisted in
-`is_public_compiler2_trace_event`, `jsonl.rs`). Its projected metadata carries
-`"producer_pokes"`, plus a `"demanded_facts"` object with `"count"`, a
-`"facts"` array of full fact identities (`kind` + ids) in that typed owner
-order, and a hard-coded
-`"reason":"blocked_waiter_expansion"`. That reason qualifies only the
-`demanded_facts`: every member of that set passed through
-`demand_fact_producer(fact, WorkStartReason::BlockedWaiterExpansion)`. The
-`producer_pokes` total may also include activation-frontier work. The
-`pull.session.finished` fields `work_starts_activation_frontier` and
-`work_starts_blocked_waiter_expansion` split how many agenda insertions each
-authority started; `demanded_facts` names which exact waiter facts the latter
-authority has attempted in the current stable-content window.
-
-One caveat: `stall_demanded` (and so `"demanded_facts"`) is
-cumulative across stall passes within a single drive — it is cleared only
-when something changed since the last stall (`changed_since_stall`) — so
-each event carries the running demanded set at that pass, not a per-pass
-delta; a later event's `"facts"` is a superset of an earlier one's unless the
-set was cleared in between. After the quiescence flush, a round with
-`producer_pokes == 0` and no readiness wake is a genuine stall: the drive
-breaks out without emitting the event, then reports `DriveOutcome::Resolved`
-when no waiters remain or `DriveOutcome::Unresolved` otherwise. Separately,
+There is no drain-time demand pass left to instrument: a need starts its
+producer the moment it is recorded, not when the agenda happens to run dry
+(fz-afu.13). `World::demand_recorded_needs`, reached from `complete_job`
+right after a completion's outputs are applied, demands the producer of
+every fact that completion still waits on (`BlockedWaiterExpansion`) and the
+first `AnalyzeActivation` of every activation it published that has never
+run (`ActivationPublished`). `pop_runnable` demands a never-run job's own
+missing gates the moment it pops that job (`GateExpansion`), rather than
+starting the job to discover the same fact missing from inside its body.
+None of these three emit a standalone raw event the way the old drain pass's
+`demand_on_stall` did — each demanded enqueue is an ordinary
+`Scheduler::enqueue`, visible as any other agenda insertion through the
+charging job's own `work_graph.applied` completion and through the
+`pull.session.finished` fields below. After the agenda empties,
+`settle_quiescent_waits` only arbitrates facts that are already quiescent
+over quiesced ground; it starts nothing, so a round that settles nothing new
+is a genuine stall, and the drive then reports `DriveOutcome::Resolved` when
+no waiters remain or `DriveOutcome::Unresolved` otherwise. Separately,
 `[fz, compiler2, drive, timed_out]` fires
 when a deadline passed to `drive` elapses mid-agenda, before any stall pass
 runs. It carries only the independently semantic raw configured timeout;
@@ -556,36 +540,47 @@ repeating the same snapshot. Standalone `Compiler2::drive` owns the work across
 its balanced boundary, so a nested session excludes the drive's prefix and the
 next retained request cannot inherit it. The event carries the raw
 `PullSession`, from which handlers derive its root and demanded set cardinalities,
-`producer_pokes`, per-reason work-start breakdown,
-`unsanctioned_work_starts`, `root_scans`, and `drain_discovery_sweeps` during
-the callback. The emitter does not duplicate those values into measurements.
-The separate World-cumulative guard in `work_start_reason_test` asserts the
-whole production path: its
-`pull_only_guard_holds_for_*` cases assert `unsanctioned_work_starts == 0`,
-`root_scans == 0`, `drain_discovery_sweeps == 0`, AND `ignition == 2` (the true
-external front-door count) for every fixture they drive.
+`producer_pokes`, per-reason work-start breakdown, and
+`unsanctioned_work_starts` during the callback. The emitter does not
+duplicate those values into measurements. The separate World-cumulative guard
+in `work_start_reason_test` asserts the whole production path: its
+`pull_only_guard_holds_for_*` cases assert `unsanctioned_work_starts == 0` AND
+`ignition == 2` (the true external front-door count: one `submit_code` before
+any root exists, one `submit_root`) for every fixture they drive.
 
 ### Work-Start Attribution (`WorkStartReason`)
 
-`Scheduler::enqueue` tags each agenda insertion with the existing reason it
-started and tallies those tags in `WorkStartTally`; the finished `PullSession`
-is the raw telemetry authority. The sanctioned reasons mirror the pull model:
+`Scheduler::enqueue` tags each new agenda entry with the reason it started,
+recording it in a `pending_reason` map without charging anything yet.
+`record_run_start` spends that entry's reason into `WorkStartTally`, charging
+it the moment `pop_runnable` commits the job to actually run -- never when
+the entry is merely gated and parked without running, so a job re-enqueued
+for the same eventual run is not charged twice. The finished `PullSession` is
+the raw telemetry authority. The sanctioned reasons mirror the pull model:
 
 - `Ignition` is the one job started by an external code, interface, or root
   submission.
 - `ChangedRevisionWake` is scheduler-owned wake propagation after a subscribed
   fact changes.
-- `ActivationFrontier` expands a published activation's standing semantic
-  demand through the fact-to-producer map. Root entries and caller-discovered
-  callees use the same path.
-- `GateExpansion` is `ActivationFrontier`'s own redirect when a frontier
-  activation's job has a missing gate (`Job::missing_gates`): the still-missing
-  gate's own producer is a different job than the activation waiting on it, so
-  it is tallied here instead of folding into `ActivationFrontier`, which
-  credits exactly one start per activation. Every other reason's own
-  gate-poke still carries that reason unchanged.
-- `BlockedWaiterExpansion` expands a drained waiter's missing fact to its
-  producer, including runtime-module indexing.
+- `ActivationPublished` is `World::demand_recorded_needs` demanding the first
+  `AnalyzeActivation` of an activation the instant a completion publishes
+  it — never on a later drain. Root entries and caller-discovered callees use
+  the same path, and a key that has already run at least once is skipped,
+  since its own read/wait subscriptions carry every later revision from
+  there.
+- `GateExpansion` is `park_on_gates`'s own tag when `pop_runnable` pops a job
+  and finds a gate still missing (`Job::missing_gates`): the still-missing
+  gate's own producer is a different job than the one waiting on it, so it is
+  tallied here instead of folding into whichever reason the parked job was
+  itself demanded under. `demand_producer_if_needed` checks the same gates
+  before even enqueuing a never-run job, redirecting straight to the gate's
+  producer under this same reason, so a job that would only be popped and
+  immediately parked is never enqueued at all.
+- `BlockedWaiterExpansion` is `World::demand_recorded_needs` demanding the
+  producer of a fact a completion still waits on, the instant that
+  completion is applied — never on a later drain. `revive_blocked_chain`
+  (walking a blocked job's own wait chain for a producer that failed
+  silently and left no record) tags its own demands this way too.
 
 `Unclassified` is the default and makes an untagged enqueue fail the running
 guard through `unsanctioned_work_starts`. The fixture guard also pins

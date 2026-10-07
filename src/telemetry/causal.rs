@@ -470,12 +470,9 @@ pub struct SessionWork {
     pub producer_pokes: u64,
     pub ignition: u64,
     pub changed_revision_wake: u64,
-    pub root_frontier: u64,
-    pub activation_frontier: u64,
+    pub activation_published: u64,
     pub blocked_waiter_expansion: u64,
     pub unsanctioned_work_starts: u64,
-    pub root_scans: u64,
-    pub drain_discovery_sweeps: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -688,11 +685,9 @@ impl CausalReport {
             ("producer_pokes", session.producer_pokes),
             ("ignition", session.ignition),
             ("changed_revision_wake", session.changed_revision_wake),
-            ("activation_frontier", session.activation_frontier),
+            ("activation_published", session.activation_published),
             ("blocked_waiter_expansion", session.blocked_waiter_expansion),
             ("unsanctioned_work_starts", session.unsanctioned_work_starts),
-            ("root_scans", session.root_scans),
-            ("drain_discovery_sweeps", session.drain_discovery_sweeps),
         ] {
             put_count(&mut multiset, format!("session\u{1}{dimension}"), count);
         }
@@ -1657,12 +1652,9 @@ impl Replay {
         tally.producer_pokes += count("producer_pokes");
         tally.ignition += count("work_starts_ignition");
         tally.changed_revision_wake += count("work_starts_changed_revision_wake");
-        tally.root_frontier += count("work_starts_root_frontier");
-        tally.activation_frontier += count("work_starts_activation_frontier");
+        tally.activation_published += count("work_starts_activation_published");
         tally.blocked_waiter_expansion += count("work_starts_blocked_waiter_expansion");
         tally.unsanctioned_work_starts += count("unsanctioned_work_starts");
-        tally.root_scans += count("root_scans");
-        tally.drain_discovery_sweeps += count("drain_discovery_sweeps");
     }
 }
 

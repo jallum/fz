@@ -46,13 +46,19 @@ const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 /// Restating one of those under a different code buries the message that
 /// named the program's actual problem.
 ///
-/// The other three -- a wait with no producer, an exhausted budget, a drive
-/// that never settled -- are the ones nobody has spoken for yet. They report
-/// through `ExecutionContext::report_unresolved_waits`, the same
+/// `no_ready_producer` is the one genuine dead end: `pop_runnable` found
+/// nothing left to run anywhere, so the standing waits really are terminal.
+/// It reports through `ExecutionContext::report_unresolved_waits`, the same
 /// `World::unresolved_waits` -> specific-issue path the push drive
 /// (`Compiler2::drive`) uses, so a nested product pull's stall names the
 /// same unknown-module/unbound-function/etc. issue the top-level drive
 /// would have named for the identical stall.
+///
+/// `fact_wait_budget_exceeded` and `did_not_settle` are not dead ends --
+/// they are a counter (`jobs_ran`, the outer product-stack budget) running
+/// out mid-progress, while a need parks a waiter on its producer as soon as
+/// it is recorded, so the frontier a budget cutoff catches is routinely
+/// non-terminal. Neither hook reports.
 impl super::super::product_drive::ProductDriveError for FatalError {
     fn dependency_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
@@ -93,22 +99,20 @@ impl super::super::product_drive::ProductDriveError for FatalError {
     }
 
     fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
-        world: &mut World,
-        tel: &T,
+        _world: &mut World,
+        _tel: &T,
         _root: RootId,
         _fact: &FactUse<FactKey>,
     ) -> Self {
-        super::super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
         FatalError
     }
 
     fn did_not_settle<T: crate::telemetry::Telemetry>(
-        world: &mut World,
-        tel: &T,
+        _world: &mut World,
+        _tel: &T,
         _root: RootId,
         _last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
-        super::super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
         FatalError
     }
 }

@@ -179,22 +179,6 @@ pub struct World {
     reported_unresolved: HashSet<UnresolvedIssueKey>,
     reported_warnings: HashSet<WarningDiagnosticKey>,
     warning_diagnostics: Vec<Diagnostic>,
-    /// Published activations whose `ActivationAnalyzed` fact is not yet
-    /// settled: the standing demand `drive::demand_activation_frontier_analyses`
-    /// expands. Root entries and caller-discovered callees share this one
-    /// frontier.
-    /// `complete_job` is the sole maintenance site — it inserts a key when a
-    /// job outputs `Activation(key)` (unless already settled) and removes it
-    /// once `ActivationAnalyzed(key)` settles.
-    activation_frontier: HashSet<ActivationKey>,
-    #[cfg(test)]
-    activation_frontier_starts: Vec<ActivationKey>,
-    /// Roots `submit_root` has minted whose `SeedRoot` job has not yet run:
-    /// the standing demand `drive::demand_root_frontier_seeds` expands, the
-    /// same shape as `activation_frontier` above for a published activation
-    /// without an analysis. `submit_root` is the sole insertion site; the
-    /// sweep itself retires a key once `SeedRoot` has run.
-    root_frontier: HashSet<RootId>,
     /// Readiness steps the drain arbiter produced since the last flush
     /// (`drive::settle_quiescent`). `World` owns the mutation; the execution
     /// context observes it — the same split `warning_diagnostics` uses, and
@@ -356,10 +340,6 @@ impl World {
             reported_unresolved: HashSet::new(),
             reported_warnings: HashSet::new(),
             warning_diagnostics: Vec::new(),
-            activation_frontier: HashSet::new(),
-            #[cfg(test)]
-            activation_frontier_starts: Vec::new(),
-            root_frontier: HashSet::new(),
             quiescence_steps: Vec::new(),
             work_graph: WorkGraph::new(),
             #[cfg(test)]
@@ -375,8 +355,8 @@ impl World {
         &self.types
     }
 
-    pub(crate) fn telemetry_counts(&self) -> (usize, usize, usize) {
-        (self.code.len(), self.roots.len(), self.activation_frontier.len())
+    pub(crate) fn telemetry_counts(&self) -> (usize, usize) {
+        (self.code.len(), self.roots.len())
     }
 
     pub(crate) fn types_mut(&mut self) -> &mut Types {
@@ -731,19 +711,12 @@ impl World {
         let outputs = dedupe_job_facts(outputs);
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
         let changed = dedupe_job_facts(changed);
-        // Captured before `outputs` moves into `complete`: the two record
-        // sites keep `activation_frontier` in lockstep with the fact table.
+        // Captured before `outputs` moves into `complete`: `demand_recorded_needs`
+        // demands the first analysis of each activation this run published.
         let activation_published: Vec<ActivationKey> = outputs
             .iter()
             .filter_map(|fact| match fact {
                 FactKey::Activation(key) => Some(key.clone()),
-                _ => None,
-            })
-            .collect();
-        let analyzed_published: Vec<ActivationKey> = outputs
-            .iter()
-            .filter_map(|fact| match fact {
-                FactKey::ActivationAnalyzed(key) => Some(key.clone()),
                 _ => None,
             })
             .collect();
@@ -765,14 +738,7 @@ impl World {
             external,
             &self.types,
         );
-        for key in analyzed_published {
-            if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
-                self.activation_frontier.remove(&key);
-            }
-        }
-        for key in activation_published {
-            self.note_activation_frontier(key);
-        }
+        self.demand_recorded_needs(&job, activation_published);
         JobCompletion {
             runtime_demand_evaluations: effects.runtime_demand_evaluations,
             job,
@@ -811,54 +777,6 @@ impl World {
         (claims, reads)
     }
 
-    /// The SOLE insertion point into `activation_frontier`: a discovered
-    /// `Activation(key)` publish becomes a standing analysis demand unless
-    /// its `ActivationAnalyzed` fact has already settled.
-    fn note_activation_frontier(&mut self, key: ActivationKey) {
-        if !self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
-            self.activation_frontier.insert(key);
-        }
-    }
-
-    /// The activations `drive::demand_activation_frontier_analyses` still
-    /// owes a first-run demand. The set has no order; its reader sorts the
-    /// snapshot before those demands enter the ordered agenda.
-    pub(crate) fn activation_frontier_keys(&self) -> Vec<ActivationKey> {
-        self.activation_frontier.iter().cloned().collect()
-    }
-
-    /// Whether an empty agenda still has standing demand to discover. Both
-    /// sources maintain exact nonempty indexes, so the common drained case is
-    /// O(1) and does not clone or order either inventory.
-    pub(crate) fn has_drain_demand(&self) -> bool {
-        !self.activation_frontier.is_empty() || !self.root_frontier.is_empty() || self.work_graph.has_unresolved()
-    }
-
-    /// Drops a key `demand_activation_frontier_analyses` has determined no
-    /// longer needs first-run ignition (already analyzed at least once, or
-    /// settled).
-    pub(crate) fn retire_activation_frontier(&mut self, key: &ActivationKey) {
-        self.activation_frontier.remove(key);
-    }
-
-    /// The SOLE insertion point into `root_frontier`: every `submit_root`
-    /// call names its own new root id, which can never have run before this
-    /// moment.
-    fn note_root_frontier(&mut self, root: RootId) {
-        self.root_frontier.insert(root);
-    }
-
-    /// The roots `drive::demand_root_frontier_seeds` still needs to check.
-    pub(crate) fn root_frontier_keys(&self) -> Vec<RootId> {
-        self.root_frontier.iter().copied().collect()
-    }
-
-    /// Drops a root `demand_root_frontier_seeds` has determined no longer
-    /// needs first-run ignition: its `SeedRoot` job has run.
-    pub(crate) fn retire_root_frontier(&mut self, root: &RootId) {
-        self.root_frontier.remove(root);
-    }
-
     /// The manual, unattributed demand entry point: nothing here names a
     /// sanctioned reason, so this always tallies `Unclassified`. Production
     /// never calls this directly (the front door is `submit_code`/
@@ -875,16 +793,6 @@ impl World {
     /// whole-fact-table-scan count. See `WorkStartReason` for the taxonomy.
     pub fn work_start_tally(&self) -> WorkStartTally {
         self.work_graph.work_start_tally()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn activation_frontier_starts(&self) -> &[ActivationKey] {
-        &self.activation_frontier_starts
-    }
-
-    #[cfg(test)]
-    pub(crate) fn note_activation_frontier_start(&mut self, key: ActivationKey) {
-        self.activation_frontier_starts.push(key);
     }
 
     pub(crate) fn clear_unresolved_diagnostics(&mut self) {
@@ -3145,16 +3053,13 @@ impl World {
             need,
             kind: RootKind::Runtime,
         });
-        self.note_root_frontier(root_id);
         // `SeedRoot` takes the same gate-checked demand path as every other
         // job: a submitted root's very first spark is a demand for
         // `RootEntry`, not a direct enqueue, so a root submitted before its
         // function is even indexed redirects to the job that actually has
         // work to do (`Job::missing_gates`) instead of running once just to
-        // discover that. `demand_root_frontier_seeds` (`drive.rs`) is the
-        // standing demand that keeps demanding this root across later
-        // drains, the same way `demand_activation_frontier_analyses` does
-        // for a published activation without an analysis.
+        // discover that. If that redirect parks `SeedRoot` on a still-unmet
+        // gate, the gate's own landing wakes it the ordinary way.
         self.demand_fact_producer(&FactKey::RootEntry(root_id), WorkStartReason::Ignition);
         root_id
     }
@@ -3588,7 +3493,17 @@ impl World {
             let mut pending = Vec::new();
             for source_owner in self.code.ids() {
                 match self.code.get(source_owner) {
-                    CodeState::Pending { .. } => pending.push(FactKey::CodeIndexed(source_owner)),
+                    // A pending owner whose own `IndexCode` already ran and
+                    // failed will never reach `Indexed`: `CodeIndexed` is a
+                    // fact that will never move again, the same reason an
+                    // already-settled name is excluded elsewhere, so it is
+                    // left out of the wait instead of stalling every other
+                    // function behind one file that will never index.
+                    CodeState::Pending { .. } => {
+                        if !self.work_graph.has_run(&Job::IndexCode(source_owner)) {
+                            pending.push(FactKey::CodeIndexed(source_owner));
+                        }
+                    }
                     CodeState::Reserved => {}
                     CodeState::Indexed { source, .. } => {
                         match code_surface_function_match(source, &function_ref, &self.code.source_map().borrow())
@@ -3619,7 +3534,16 @@ impl World {
         if self.module_has_source_state(module) || self.ensure_runtime_module(module).is_some() {
             return Ok(vec![FactKey::ModuleDefined(module)]);
         }
-        Ok(Vec::new())
+        // The module itself is not known yet -- a function requested in it
+        // before any submitted code names it (`submit_root` ahead of
+        // `submit_code`, the macro-root pattern). `ModuleIndexed` is the same
+        // fact `DefineModule`'s own fallback waits on (`wait_for_module_indexed`)
+        // when its module scope is not yet present: whichever submission
+        // later indexes this module publishes it as a changed revision, which
+        // wakes this wait the ordinary way. Naming it, rather than giving up
+        // with no scope fact at all, is what lets a need recorded before its
+        // module exists still start that module's own definition once it does.
+        Ok(vec![FactKey::ModuleIndexed(module)])
     }
 
     fn duplicate_function_diagnostic(&self, function_ref: &FunctionRef, certain_homes: &[SourceOwner]) -> Diagnostic {

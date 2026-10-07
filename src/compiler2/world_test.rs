@@ -1380,95 +1380,6 @@ fn completion_outputs_movements_and_wakes_use_semantic_order_across_seeds() {
     );
 }
 
-/// The bare drive's demand-on-stall pass: a waiter blocked on a fact whose
-/// mapped producer has never run must not stall — the wait is the demand, the
-/// fact->producer map expands it, and the drive completes.
-#[test]
-fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    capture.install(&tel, &["fz", "compiler2", "drive", "demand_on_stall"]);
-    let demanded_facts: std::rc::Rc<std::cell::RefCell<Vec<Vec<FactKey>>>> =
-        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let demanded_facts_sink = std::rc::Rc::clone(&demanded_facts);
-    tel.attach_raw_event2::<u64, Vec<FactKey>, _>(
-        &["fz", "compiler2", "drive", "demand_on_stall"],
-        move |_, _, _, _, facts| {
-            demanded_facts_sink.borrow_mut().push(facts.clone());
-        },
-    );
-    let mut world = World::new();
-    let mut sessions = super::pull::ProductSessions::default();
-    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
-    // `submit_root` demands `RootEntry` through the same gate-checked path
-    // every other job uses (fz-afu.2): a submitted root now carries a
-    // standing demand (`drive::demand_root_frontier_seeds`) that keeps
-    // re-poking `SeedRoot`'s gate chain on every later stall until it has
-    // actually run, so `main/0` can no longer be starved by discarding its
-    // seed job once (that would leave it unresolved forever and pollute the
-    // isolated stall pass below). Defining it here settles it for real,
-    // before the isolated stall pass under test; `root` is otherwise used
-    // only as an identity namespace for the activation keys fabricated below.
-    world.submit_code(Some("main.fz".to_string()), "def main(), do: 0\n".to_string());
-    world.submit_code(Some("stall.fz".to_string()), "def echoval(a), do: a\n".to_string());
-    let function = world.reference_function(ModuleId::GLOBAL, "echoval", 1);
-    // Settle echoval/1's own facts up front (outside the isolated stall pass
-    // below): the activation frontier now demands full analysis for every
-    // discovered activation, so `key_a`'s later `AnalyzeActivation` needs a
-    // real, fully-lowered callee to conclude against.
-    world.demand(Job::DefineFunction(function));
-    world.demand(Job::LowerFunction(function));
-    world.demand(Job::PlanEntryDispatch(function));
-    world.demand(Job::DeriveCallGraphComponent(function));
-    world.demand(Job::DeriveInputDemand(function));
-    assert_eq!(
-        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
-        DriveOutcome::Resolved,
-        "echoval/1's own facts should settle before the isolated stall-pass setup",
-    );
-    let input_a = world.types_mut().atom_lit("a");
-    let input_b = world.types_mut().atom_lit("b");
-    let key_a = world.activation_key(root, function, &[input_a]);
-    let key_b = world.activation_key(root, function, &[input_b]);
-
-    // A real waiter blocks on a fact no enqueued or concluded job produces.
-    world.complete_job(
-        Job::SeedActivation(key_b.clone()),
-        JobEffects {
-            waits: vec![FactUse::settled(FactKey::Activation(key_a.clone()))],
-            ..JobEffects::default()
-        },
-    );
-    assert_eq!(world.work_graph.pending_jobs(), 0);
-
-    assert_eq!(
-        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
-        DriveOutcome::Resolved,
-        "the stall pass should demand the blocked fact's mapped producer and complete the drive",
-    );
-    assert!(
-        world.has_fact(&FactKey::Activation(key_a.clone())),
-        "the demanded producer should have run and published the blocked fact",
-    );
-    assert!(
-        world.has_fact(&FactKey::Activation(key_b)),
-        "the woken waiter should have concluded once its wait settled",
-    );
-    assert!(
-        !capture
-            .find(&["fz", "compiler2", "drive", "demand_on_stall"])
-            .is_empty(),
-        "the drive should report that the demand-on-stall pass fired",
-    );
-    assert!(
-        demanded_facts
-            .borrow()
-            .iter()
-            .any(|facts| facts.contains(&FactKey::Activation(key_a.clone()))),
-        "demand_on_stall should name the blocked fact it poked a producer for",
-    );
-}
-
 /// The other half of the arm above (fz-kdt.69.1): a callee's `Activation` is
 /// its CALLER's claim, and `Job::SeedActivation` is not its producer.
 ///
@@ -1546,6 +1457,19 @@ fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
         "the caller's analysis is the callee activation's publisher",
     );
 
+    // Publishing the claim already demanded the callee's own first analysis,
+    // the instant it was recorded (`World::demand_recorded_needs`). Pop it
+    // out now, without running it yet, to hold it exactly where a real drive
+    // would have found it pending -- so the ground shift below can retract
+    // the claim out from under it before it ever gets to run.
+    let callee_analysis = world.work_graph.pop();
+    assert_eq!(
+        callee_analysis,
+        Some(Job::AnalyzeActivation(callee.clone())),
+        "publishing the callee's claim must demand its first analysis immediately",
+    );
+    let callee_analysis = callee_analysis.unwrap();
+
     // The ground shifts. The caller rebases, re-derives, and no longer reaches
     // the callee, so its claim on the key is withdrawn.
     world.complete_job(Job::DeriveTypeDef(ground), JobEffects::default());
@@ -1558,6 +1482,25 @@ fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
     assert!(
         !world.has_fact(&FactKey::Activation(callee.clone())),
         "a rebased conclusion that omits the callee withdraws the caller's claim",
+    );
+
+    // Now let the stale, already-demanded callee analysis actually run, for
+    // real, against the withdrawn key: it must not resurrect the caller's
+    // claim or start any downstream work of its own.
+    let effects = super::jobs::run(
+        &mut super::drive::ExecutionContext::new(&mut world, &tel),
+        &callee_analysis,
+    )
+    .expect("echoval/1's own analysis has a real, fully-lowered body to conclude against");
+    world.complete_job(callee_analysis, effects);
+    assert!(
+        !world.has_fact(&FactKey::Activation(callee.clone())),
+        "a callee's own analysis never republishes the caller's withdrawn claim on it",
+    );
+    assert_eq!(
+        world.work_graph.pending_jobs(),
+        0,
+        "a withdrawn key's own stale analysis must start no further downstream work",
     );
 
     assert_eq!(
@@ -1834,6 +1777,15 @@ fn compiler2_demand_leaves_a_blocked_producer_alone_even_when_it_is_rebased() {
     );
     world.complete_job(producer.clone(), pause());
 
+    // Recording that wait already demanded its producer, the instant it was
+    // recorded (`World::demand_recorded_needs`, called unconditionally from
+    // `complete_job`) -- no later drain or sweep is needed to surface it.
+    assert_eq!(
+        world.work_graph.pop(),
+        Some(Job::DeriveFunctionContract(function)),
+        "the paused producer's own standing wait must demand its producer immediately",
+    );
+
     // Ground shifts under it: `FunctionDefined` is a replacing fact, so a
     // second publication is a shift, which rebases the producer and enqueues
     // it in the same step.
@@ -1846,20 +1798,31 @@ fn compiler2_demand_leaves_a_blocked_producer_alone_even_when_it_is_rebased() {
         Some(producer.clone()),
         "the shift must have offered the producer its own re-run",
     );
-    // It takes the offer and pauses on the same wait again.
+    // It takes the offer and pauses on the same wait again. Recording the
+    // same standing wait a second time demands its producer again --
+    // `DeriveFunctionContract` has still never run (`pause` claims no
+    // output), so every recording of this wait keeps asking for it.
     world.complete_job(producer.clone(), pause());
     assert!(
         world.work_graph.rebased(&producer) && world.work_graph.blocked(&producer),
         "the scenario needs a producer that is blocked AND still flagged rebased",
     );
     assert_eq!(
+        world.work_graph.pop(),
+        Some(Job::DeriveFunctionContract(function)),
+        "the re-paused producer's standing wait must demand its producer again",
+    );
+    assert_eq!(
         world.work_graph.pending_jobs(),
         0,
-        "nothing may be ready before the drain"
+        "the demanded producer is the only thing ready; the blocked producer itself must not be"
     );
 
-    // A standing demand for the fact this producer is mapped to: exactly what
-    // a blocked waiter presents to the drain.
+    // A root's own standing wait on the fact this producer is mapped to --
+    // exactly what a blocked waiter presents -- demands that fact's producer
+    // too. The map's arm is sole-producer, and a demand starts only a job
+    // that has never run: the producer itself already ran (twice), so this
+    // must leave it alone.
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     world.complete_job(
         Job::SeedRoot(root),
@@ -1868,9 +1831,6 @@ fn compiler2_demand_leaves_a_blocked_producer_alone_even_when_it_is_rebased() {
             ..JobEffects::default()
         },
     );
-    while world.work_graph.pop().is_some() {}
-
-    let pokes = world.demand_blocked_wait_producers();
 
     let mut started = Vec::new();
     while let Some(job) = world.work_graph.pop() {
@@ -1878,18 +1838,8 @@ fn compiler2_demand_leaves_a_blocked_producer_alone_even_when_it_is_rebased() {
     }
     assert!(
         !started.contains(&producer),
-        "a blocked producer's standing waits ARE its wake source; the drain re-enqueued it \
-         anyway, so every drain re-runs it into the wait it just failed. Started: {started:?}",
-    );
-    assert!(
-        started.contains(&Job::DeriveFunctionContract(function)),
-        "the expansion must still poke the producer of the fact the paused job is waiting ON; \
-         that is the chain that can actually make progress. Started: {started:?}",
-    );
-    assert_eq!(
-        pokes,
-        started.len() as u64,
-        "every poke the expansion counted must be a job it actually started",
+        "a blocked producer's standing waits ARE its wake source; recording a new demand must \
+         never re-run it into the wait it just failed. Started: {started:?}",
     );
 }
 
