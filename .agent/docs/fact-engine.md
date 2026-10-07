@@ -256,6 +256,10 @@ and never reconstructs its direction from revisions or key shape:
   recomputed outputs actually differ — narrowing keeps today's minimal-rerun
   incrementality.
 
+Satisfying a wait is never a shift: a waiter has not consumed the fact it
+waits for, so it runs as an ascent. A job that also read the fact is a
+subscriber, and hears the shift that way.
+
 The revision is a change token, not a content hash: stores report `changed`
 only on real content movement (equal joins and equal withdrawals are quiet),
 and `ContentMovement` determines whether subscribers ascend or rebase. The
@@ -315,8 +319,8 @@ derivations of the same run can be clean and dirty at once. The agenda and
 standing waits stay per job — a job's run is one unit of scheduling even when
 it yields several answers.
 
-Today the scope walk (`source_publish.rs`) is the one publisher that reaches
-more than its own answer: `ScopeSession::define_source_function` records a
+The scope walk (`source_publish.rs`) is one publisher that reaches more than
+its own answer: `ScopeSession::define_source_function` records a
 `Function(f)` derivation as soon as it defines each function, carrying the
 reads accumulated up to that point (`ground_derivations` in `jobs/source.rs`
 splices in the reads the scope walk's own job had before the walk began, so an
@@ -344,6 +348,17 @@ walk's re-derivation of a shorter function list (a definition dropped by a
 rebase upstream) retracts exactly the `Function(f)` derivations it no longer
 reaches, the same way an ordinary job's shrinking output list retracts a fact.
 
+`DeriveRuntimeDemand` is the other. When its run concludes, the demand it
+sends each callee (`RuntimeDemandInput(callee)`, `DerivationKey::Executable`)
+and the sources it records for each input slot (`IncomingInputSlot`,
+`DerivationKey::InputSlot`) are answers of their own
+(`runtime_demand_contribution_derivations`). A send stands on the reads the run
+names for it (`JobEffects::send_reads`), or on everything the run read when it
+names none, so a caller's demand on a callee does not rest on that callee's
+reply, and an acyclic program's demand settles as it is published instead of
+waiting for the drain to break a read cycle. While the run waits, the sends and
+slots stay with the job's own derivation and extend like any other claim.
+
 Source-publisher jobs follow this rule with typed `SourceOwner` keys; exact
 text provenance stays in `SourceVersion` spans rather than becoming a second
 publisher identity. See
@@ -351,9 +366,10 @@ publisher identity. See
 
 Cumulative-claim discipline (`ContributionMap`, `preserved_analysis_claims`,
 `activation_input_contributions` — see *Absence is bottom* and *Withdrawal is
-scoped, not lost* above) is unaffected: those contributions are owned by a
+scoped, not lost* above) is unaffected: apart from `DeriveRuntimeDemand`'s
+concluded sends and input slots above, those contributions are owned by a
 job's own run, not split per derivation, because the jobs that make them
-(`analyze_activation` and friends) answer one question per run today.
+(`analyze_activation` and friends) answer one question per run.
 
 Each fact use wakes a subscribed job once. Distinct causes retain distinct
 `Wake` records, including coalesced attempts to enqueue an already pending
@@ -412,6 +428,12 @@ of the same slot and answered separately.
 - **Local cleanliness** — `is_locally_settled`: present, and no publisher is
   queued to re-run or paused on a wait. This is one hop. It says nothing about
   whether the publisher's own inputs have stopped moving.
+- **Concluded** — `FactUse::Concluded` asks local cleanliness of a reader: it
+  sees an answer only once no publisher is still deriving it. Content that
+  moves while a publisher is deriving reaches `Concluded` readers when the last
+  such publisher concludes, as one movement
+  (`FactSlot::movement_for_concluded_readers`). Concluding again with nothing
+  moved satisfies a `Concluded` wait and wakes no other reader.
 - **Transitive finality** — `is_settled`: locally clean, AND no publisher is
   itself reading a fact that can still move. This is what `FactUse::Settled`
   projects, what the public stream's `settled` bit renders, and the only
@@ -586,7 +608,7 @@ group DNF clauses and must not determine activation order.
 ## The drive loop
 
 ```text
-while let Some(job) = agenda.pop():
+while let Some(job) = pop_runnable():
     effects = run(job)              # may return Err -> fatal
     step    = complete(job, effects)
         waiting?  extend reads/claims, dirty every owned claim
@@ -595,6 +617,12 @@ while let Some(job) = agenda.pop():
         classify each change: ascent -> wake; shift -> rebase + wake
         enqueue dependents and dirty their claims
 ```
+
+`World::pop_runnable` is the one way a job leaves the agenda. A job whose last
+run read an answer at `Concluded` that is being derived again would find it
+missing and wait for it (`World::answer_use`), so it waits for that answer
+without running (`Scheduler::wait_without_running`) and is woken by it like any
+other waiter. After an edit this lets callees answer before their callers walk.
 
 This is the shape of `ExecutionContext::drive_until`, simplified; the real loop
 also reconciles product-pull requests each time the agenda empties (see
@@ -746,9 +774,35 @@ the `RuntimeDemandInputs(target)` sub-facts named by direct or first-class
 callable edges. `CallableConstructionTarget(owner, value, surface)` supplies an
 exact first-class target. Newly exposed local callables extend that finite
 keyed read set until it stops growing; there is no function or executable scan.
-Absence is bottom. An owned formula publishes provisional demand and
-caller-local return contributions, then withholds only peer-dependent
-capture/input contributions while an exact non-self target is absent. Product
+
+A callee's `RuntimeDemandInputs` is its answer: how much of each argument it
+needs. `World::answer_use` says how a run may use it. A partner's answer, one
+whose producer is already waiting on this run (`World::waits_reach`), is read
+`Current`, however unfinished: the two are one fixpoint. Any other answer is
+read only once it has concluded (`Concluded`), and until then the run waits for
+it and the callee is unanswered. An unanswered callee is never read as bottom:
+
+- A run with an unanswered callee is blocked. `DeriveRuntimeDemand` asserts
+  that no run concludes without every callee's answer.
+- The demand sent down to a callee is withheld while that call's returned value
+  reaches an argument of an unanswered callee (`callsite_returns_reaching`). In
+  `k(h(1))`, `h` hears from its caller only after `k` has answered.
+- The run waits first on the unanswered callees it sent demand to
+  (`callees_in_answer_order`). When every unanswered callee's result feeds
+  another unanswered callee, they are one fixpoint: each is sent the lower
+  bound, and the run waits on all of them while they climb.
+- A waiting run's own answer joins the one standing
+  (`World::extend_runtime_demand_inputs`), and only a concluding run replaces it
+  (`World::conclude_runtime_demand_inputs`), the same rule its contributions
+  follow (*Waiting extends, concluding replaces*). A re-derivation that waits
+  never takes back what its readers already have.
+- A call to itself is answered within the run (`derive_up_before_down`), so it
+  is not a read.
+
+On the chain `main -> f -> g -> h` that is two runs per caller and one for the
+leaf, with no shift wake, and every demand fact settles as it is published
+(`runtime_demand_answers_test.rs`). Peer-dependent capture and input
+contributions still wait while an exact non-self target is absent. Product
 producers read settled full `RuntimeDemand(E)` values through ordinary fact
 dependencies; neither demand fact has a product memo entry or bridge.
 

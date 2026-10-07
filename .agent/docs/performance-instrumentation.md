@@ -343,7 +343,7 @@ off the event, and causation is derived by replay.
 counts. Nothing else is needed — not a `World`, not the process that wrote it.
 
 Per FORMULA (canonical job identity): evaluations, split into `initial`,
-`content_caused`, `readiness_caused` and `uncaused`; changed vs unchanged
+`content_caused`, `readiness_caused`, `concluded_caused` and `uncaused`; changed vs unchanged
 outputs; wakes emitted; completions that ended blocked. Product rows retain the
 raw structured `ProductKey`, so arena-distinct keys cannot overwrite each
 other. `canonical_multiset()` is a separate projection which folds equivalent

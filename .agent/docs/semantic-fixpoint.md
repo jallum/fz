@@ -369,10 +369,15 @@ targets. First-class surfaces name exact
 input vector can expose another captured local callable, so the formula follows
 only those newly named target keys to a finite local closure; it does not
 inventory functions or executables. A self sub-fact is read only when an exact
-self edge names it. Absence is bottom. An owned job publishes its provisional
-demand and caller-local/direct or construction-owner return contributions. An
-absent non-self target adds a presence wait; only peer-dependent capture/input
-contributions wait for it. It never waits for a cyclic peer to settle.
+self edge names it. A non-self target's answer is read once it has concluded;
+a target already waiting on this job is its partner in one fixpoint, and its
+present answer is read however unfinished. Any other target without a
+concluded answer is waited for, never read as bottom. The job sends a callee
+its return demand once that call's returned value reaches no unanswered
+callee's argument, and a run that waits only adds to the answers it already
+gave (see `fact-engine.md`, "Executable facts and runtime demand").
+Peer-dependent capture/input contributions wait for an absent target. It never
+waits for a cyclic peer to settle.
 
 Each formula conclusion owns a complete forward contribution set. A wait-free
 conclusion atomically replaces that publisher's exact target contributions, so

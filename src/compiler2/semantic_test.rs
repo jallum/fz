@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_demand_input_subfact_moves_only_with_the_stored_input_vector() {
+    fn runtime_demand_and_its_input_answer_move_independently() {
         let mut world = World::new();
         let tel = ConfiguredTelemetry::new();
         let activation = test_key(&mut world, &tel);
@@ -275,53 +275,51 @@ mod tests {
             },
         );
 
-        let first_value = Rc::new(ExecutableRuntimeDemand::default());
-        assert_eq!(
-            world.define_runtime_demand(executable.clone(), first_value),
-            (true, true)
-        );
-        let first = world.complete_job(
-            writer.clone(),
-            JobEffects {
-                outputs: vec![fact.clone(), inputs_fact.clone()],
-                changed: vec![fact.clone(), inputs_fact.clone()],
-                ..JobEffects::default()
-            },
-        );
+        let publish = |world: &mut World, changed: Vec<FactKey>| {
+            world.complete_job(
+                writer.clone(),
+                JobEffects {
+                    outputs: vec![fact.clone(), inputs_fact.clone()],
+                    changed,
+                    ..JobEffects::default()
+                },
+            )
+        };
+        let reread = |world: &mut World| {
+            world.complete_job(
+                full_reader.clone(),
+                JobEffects {
+                    reads: vec![FactUse::current(fact.clone())],
+                    ..JobEffects::default()
+                },
+            );
+            world.complete_job(
+                input_reader.clone(),
+                JobEffects {
+                    reads: vec![FactUse::current(inputs_fact.clone())],
+                    ..JobEffects::default()
+                },
+            );
+        };
+
+        assert!(world.define_runtime_demand(executable.clone(), Rc::new(ExecutableRuntimeDemand::default())));
+        assert!(world.conclude_runtime_demand_inputs(executable.clone(), Vec::new()));
+        let first = publish(&mut world, vec![fact.clone(), inputs_fact.clone()]);
         assert!(first.wakes.iter().any(|wake| wake.job == full_reader));
         assert!(first.wakes.iter().any(|wake| wake.job == input_reader));
         let first_inputs_revision = world.fact_revision(&inputs_fact);
 
-        world.complete_job(
-            full_reader.clone(),
-            JobEffects {
-                reads: vec![FactUse::current(fact.clone())],
-                ..JobEffects::default()
-            },
-        );
-        world.complete_job(
-            input_reader.clone(),
-            JobEffects {
-                reads: vec![FactUse::current(inputs_fact.clone())],
-                ..JobEffects::default()
-            },
-        );
+        reread(&mut world);
         let return_only = Rc::new(ExecutableRuntimeDemand {
             return_demand: RuntimeDemand::whole(),
             ..ExecutableRuntimeDemand::default()
         });
-        assert_eq!(
-            world.define_runtime_demand(executable.clone(), return_only),
-            (true, false)
+        assert!(world.define_runtime_demand(executable.clone(), return_only));
+        assert!(
+            !world.conclude_runtime_demand_inputs(executable.clone(), Vec::new()),
+            "a new return demand leaves the input answer where it was"
         );
-        let return_change = world.complete_job(
-            writer.clone(),
-            JobEffects {
-                outputs: vec![fact.clone(), inputs_fact.clone()],
-                changed: vec![fact.clone()],
-                ..JobEffects::default()
-            },
-        );
+        let return_change = publish(&mut world, vec![fact.clone()]);
         assert!(return_change.wakes.iter().any(|wake| wake.job == full_reader));
         assert!(!return_change.wakes.iter().any(|wake| wake.job == input_reader));
         assert_eq!(world.fact_revision(&inputs_fact), first_inputs_revision);
@@ -331,94 +329,90 @@ mod tests {
             input_demands: vec![RuntimeDemand::whole()],
             ..ExecutableRuntimeDemand::default()
         });
-        assert_eq!(
-            world.define_runtime_demand(executable.clone(), input_change),
-            (true, true)
-        );
-        let input_change = world.complete_job(
-            writer.clone(),
-            JobEffects {
-                outputs: vec![fact.clone(), inputs_fact.clone()],
-                changed: vec![fact.clone(), inputs_fact.clone()],
-                ..JobEffects::default()
-            },
-        );
+        assert!(world.define_runtime_demand(executable.clone(), input_change));
+        assert!(world.conclude_runtime_demand_inputs(executable.clone(), vec![RuntimeDemand::whole()]));
+        let input_change = publish(&mut world, vec![fact.clone(), inputs_fact.clone()]);
         assert!(input_change.wakes.iter().any(|wake| wake.job == input_reader));
 
         let retained = Rc::clone(world.runtime_demand(&executable).unwrap());
-        let stored_inputs = retained.input_demands.as_ptr();
-        assert_eq!(
-            world.runtime_demand_inputs(&executable).unwrap().as_ptr(),
-            stored_inputs,
-            "the input fact must project the one stored RuntimeDemand allocation",
-        );
-        let equal_value = Rc::new((*retained).clone());
-        assert_eq!(
-            world.define_runtime_demand(executable.clone(), equal_value),
-            (false, false)
-        );
+        assert!(!world.define_runtime_demand(executable.clone(), Rc::new((*retained).clone())));
         assert!(Rc::ptr_eq(world.runtime_demand(&executable).unwrap(), &retained));
 
         let retracted = world.complete_job(writer.clone(), JobEffects::default());
-        assert!(
-            retracted
-                .changed
-                .iter()
-                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(fact.clone()))
-        );
-        assert!(
-            retracted
-                .changed
-                .iter()
-                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(inputs_fact.clone()))
-        );
+        for retracted_fact in [&fact, &inputs_fact] {
+            assert!(
+                retracted
+                    .changed
+                    .iter()
+                    .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(retracted_fact.clone()))
+            );
+        }
         assert!(world.runtime_demand(&executable).is_none());
         assert!(world.runtime_demand_inputs(&executable).is_none());
 
-        world.complete_job(
-            full_reader.clone(),
-            JobEffects {
-                reads: vec![FactUse::current(fact.clone())],
-                ..JobEffects::default()
-            },
-        );
-        world.complete_job(
-            input_reader.clone(),
-            JobEffects {
-                reads: vec![FactUse::current(inputs_fact.clone())],
-                ..JobEffects::default()
-            },
-        );
-        assert_eq!(
-            world.define_runtime_demand(executable.clone(), Rc::new((*retained).clone())),
-            (false, false),
+        reread(&mut world);
+        assert!(
+            !world.define_runtime_demand(executable.clone(), Rc::new((*retained).clone())),
             "reappearance must reuse the equal stored semantic value",
         );
-        let reappeared = world.complete_job(
-            writer,
-            JobEffects {
-                outputs: vec![fact.clone(), inputs_fact.clone()],
-                ..JobEffects::default()
-            },
-        );
-        assert!(
-            reappeared
-                .changed
-                .iter()
-                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(fact.clone()))
-        );
-        assert!(
-            reappeared
-                .changed
-                .iter()
-                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(inputs_fact.clone()))
-        );
+        assert!(!world.conclude_runtime_demand_inputs(executable.clone(), vec![RuntimeDemand::whole()]));
+        let reappeared = publish(&mut world, Vec::new());
+        for reappeared_fact in [&fact, &inputs_fact] {
+            assert!(
+                reappeared
+                    .changed
+                    .iter()
+                    .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(reappeared_fact.clone()))
+            );
+        }
         assert!(reappeared.wakes.iter().any(|wake| wake.job == full_reader));
         assert!(reappeared.wakes.iter().any(|wake| wake.job == input_reader));
         assert!(Rc::ptr_eq(world.runtime_demand(&executable).unwrap(), &retained));
         assert_eq!(
-            world.runtime_demand_inputs(&executable).unwrap().as_ptr(),
-            stored_inputs
+            world.runtime_demand_inputs(&executable),
+            Some([RuntimeDemand::whole()].as_slice())
+        );
+    }
+
+    #[test]
+    fn a_waiting_run_adds_to_the_standing_input_answer_but_never_lowers_it() {
+        let mut world = World::new();
+        let tel = ConfiguredTelemetry::new();
+        let executable = ExecutableKey {
+            activation: test_key(&mut world, &tel),
+            need: ExecutableNeed::Value,
+        };
+        let writer = Job::DeriveRuntimeDemand(executable.clone());
+        let publish = |world: &mut World| {
+            world.complete_job(
+                writer.clone(),
+                JobEffects {
+                    outputs: vec![FactKey::RuntimeDemandInputs(executable.clone())],
+                    ..JobEffects::default()
+                },
+            );
+        };
+
+        assert!(world.extend_runtime_demand_inputs(executable.clone(), vec![RuntimeDemand::ignore()]));
+        publish(&mut world);
+        assert!(world.conclude_runtime_demand_inputs(executable.clone(), vec![RuntimeDemand::whole()]));
+        publish(&mut world);
+
+        assert!(
+            !world.extend_runtime_demand_inputs(executable.clone(), vec![RuntimeDemand::ignore()]),
+            "an answer derived without a callee's answer does not take back what was concluded"
+        );
+        assert_eq!(
+            world.runtime_demand_inputs(&executable),
+            Some([RuntimeDemand::whole()].as_slice())
+        );
+        assert!(
+            world.conclude_runtime_demand_inputs(executable.clone(), vec![RuntimeDemand::ignore()]),
+            "a concluded answer replaces the standing one"
+        );
+        assert!(
+            world.extend_runtime_demand_inputs(executable.clone(), vec![RuntimeDemand::whole()]),
+            "a waiting run may still add to the answer"
         );
     }
 
