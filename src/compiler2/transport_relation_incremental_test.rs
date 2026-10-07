@@ -347,9 +347,8 @@ fn generic_callable_owner_appears_and_withdraws_with_its_positioned_obligation()
         .find(|(key, _)| compiler.world().function_ref(key.activation.function).is_named("main"))
         .map(|(key, abi)| (key.clone(), Rc::clone(abi)))
         .unwrap();
-    let super::body::LoweredBody::Clauses { entries, .. } = &abi.materialized.body else {
-        unreachable!()
-    };
+    let super::body::LoweredBody::Clauses { entries, .. } = &abi.materialized.body;
+
     let value = entries
         .iter()
         .find_map(|entry| match &entry.tail {

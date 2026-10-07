@@ -1,14 +1,16 @@
 use std::collections::{BTreeSet, HashMap};
 
+use crate::diag::codes;
 use crate::modules::identity::ModuleName;
-use crate::telemetry::ConfiguredTelemetry;
+use crate::telemetry::{Capture, ConfiguredTelemetry};
 use crate::type_expr::ResolvedSpecDecl;
 
 use super::contract::{ContractArrow, ResolvedContractArrow};
+use super::drive_harness::metadata_str;
 use super::protocol::ProtocolDomainObligation;
 use super::{
     CallableValueKind, ClosureTarget, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, FunctionContract,
-    MapKey, RootSubmission, TypeVarId, Types,
+    MapKey, ModuleId, RootSubmission, TypeVarId, Types,
 };
 
 /// The `Enumerable` protocol identity every domain-obligation test below
@@ -333,7 +335,9 @@ fn addressed_function_contract_keeps_reduce_halt_payload_free_until_callable_ret
             arrow,
             bounds: HashMap::new(),
             protocol_domain_obligations: BTreeSet::new(),
+            variadic_tail: None,
         }],
+        extern_wire: None,
     };
 
     let int = types.int();
@@ -1058,5 +1062,357 @@ fn kdt192_c4_none_argument_ground_contract() {
         ),
         "satisfied=true enforceable_satisfied=true",
         "C4 none argument, ground contract"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// fz-xxd.1: a variadic extern's contract carries its tail. These drive a real
+// extern declaration through the ordinary front end (indexing, scoping,
+// contract derivation) exactly as a fixture would, then apply the published
+// contract directly to a hand-built row, the way `FunctionContract::apply`'s
+// caller does.
+// ---------------------------------------------------------------------------
+
+/// Drives `source` to a settled program and hands back the named function's
+/// published contract, the way a real call site would find it.
+fn drive_extern_contract(
+    source: &str,
+    extern_name: &str,
+    fixed_arity: usize,
+) -> (Compiler2<ConfiguredTelemetry>, FunctionContract) {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some(format!("{extern_name}.fz")),
+        text: source.to_string(),
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Resolved),
+        "a variadic extern and its caller should resolve like any other program"
+    );
+    let function = compiler
+        .world_mut()
+        .reference_function(ModuleId::GLOBAL, extern_name, fixed_arity);
+    let contract = compiler
+        .world()
+        .function_contract(function)
+        .unwrap_or_else(|| panic!("{extern_name} should publish a function contract"))
+        .clone();
+    (compiler, contract)
+}
+
+#[test]
+fn variadic_open_contract_accepts_a_row_widened_from_its_tail_domain() {
+    let (mut compiler, contract) = drive_extern_contract(
+        "extern \"C\" defp libc::open(path :: c_string, flags :: c_int, ...) :: c_int\n\
+         def main() do\n  libc::open(\"/x\", 0, 0o644 :: integer)\nend\n",
+        "libc::open",
+        2,
+    );
+    let types = compiler.world_mut().types_mut();
+    let binary = types.str_t();
+    let int = types.int();
+
+    let applied = contract.apply(types, &[binary, int, int]);
+    assert!(
+        applied.enforceable_satisfied,
+        "open(path, flags, mode) is exactly the declared prefix plus one tail argument"
+    );
+    let result = applied.result.expect("a fully known row should publish a result");
+    assert!(
+        types.is_equivalent(&result, &int),
+        "open's declared return is integer: {}",
+        types.display(&result)
+    );
+}
+
+#[test]
+fn variadic_open_contract_rejects_a_row_shorter_than_its_fixed_prefix() {
+    let (mut compiler, contract) = drive_extern_contract(
+        "extern \"C\" defp libc::open(path :: c_string, flags :: c_int, ...) :: c_int\n\
+         def main() do\n  libc::open(\"/x\", 0, 0o644 :: integer)\nend\n",
+        "libc::open",
+        2,
+    );
+    let types = compiler.world_mut().types_mut();
+    let binary = types.str_t();
+
+    let applied = contract.apply(types, &[binary]);
+    assert!(
+        !applied.enforceable_satisfied,
+        "a row shorter than open's declared (path, flags) prefix is still Invalid"
+    );
+    assert!(applied.result.is_none());
+}
+
+#[test]
+fn variadic_printf_contract_accepts_any_number_of_integer_tail_arguments() {
+    let (mut compiler, contract) = drive_extern_contract(
+        "extern \"C\" defp libc::printf(fmt :: c_string, ...) :: c_int\n\
+         def main() do\n  libc::printf(\"%lld %lld %lld\\n\", 11, 22, 33)\nend\n",
+        "libc::printf",
+        1,
+    );
+    let types = compiler.world_mut().types_mut();
+    let binary = types.str_t();
+    let int = types.int();
+
+    let three_tail_args = contract.apply(types, &[binary, int, int, int]);
+    assert!(
+        three_tail_args.enforceable_satisfied,
+        "printf(fmt, 11, 22, 33) widens the tail to three integers"
+    );
+    let one_tail_arg = contract.apply(types, &[binary, int]);
+    assert!(
+        one_tail_arg.enforceable_satisfied,
+        "printf(fmt, 9) widens the tail to one integer"
+    );
+}
+
+#[test]
+fn variadic_printf_contract_rejects_a_float_tail_argument() {
+    let (mut compiler, contract) = drive_extern_contract(
+        "extern \"C\" defp libc::printf(fmt :: c_string, ...) :: c_int\n\
+         def main() do\n  libc::printf(\"%d\", 7)\nend\n",
+        "libc::printf",
+        1,
+    );
+    let types = compiler.world_mut().types_mut();
+    let binary = types.str_t();
+    let float = types.float();
+
+    let applied = contract.apply(types, &[binary, float]);
+    assert!(
+        !applied.enforceable_satisfied,
+        "a float tail argument is outside the declaration's tail domain: printf(fmt, 1.5) has no answer"
+    );
+    assert!(applied.result.is_none());
+}
+
+#[test]
+fn variadic_printf_contract_accepts_a_binary_tail_argument() {
+    let (mut compiler, contract) = drive_extern_contract(
+        "extern \"C\" defp libc::printf(fmt :: c_string, ...) :: c_int\n\
+         def main() do\n  libc::printf(\"%d\", 7)\nend\n",
+        "libc::printf",
+        1,
+    );
+    let types = compiler.world_mut().types_mut();
+    let binary = types.str_t();
+
+    let applied = contract.apply(types, &[binary, binary]);
+    assert!(
+        applied.enforceable_satisfied,
+        "an ascribed binary tail argument reaches the wire, so the contract must accept it: printf(fmt, s :: cstring)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// fz-xxd.5: a row that overlaps a clause gets that clause's answer. `any`
+// means the argument's type is unknown, not that it is every value, so it is
+// narrowed to the clause's own domain before matching. Every other column
+// still needs the ordinary subset test, so a genuinely wrong value is still
+// rejected.
+// ---------------------------------------------------------------------------
+
+/// Drives a program that reaches `Kernel`'s private `fz_resource_claim`
+/// extern and hands back its published contract, the way a real call site
+/// would find it. `"fz"`-ABI externs are reserved to bootstrap source
+/// (`declared_by_runtime_library`), so this drives the REAL declaration in
+/// `lib/kernel.fz` — which is loaded for every program — instead of
+/// restating one in test source.
+fn drive_kernel_resource_claim_contract() -> (Compiler2<ConfiguredTelemetry>, FunctionContract) {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("drives_kernel_resource_claim.fz".to_string()),
+        text: "def main() do\n  Kernel.claim_resource(Kernel.make_resource(42, fn (_x) -> nil end))\nend\n".to_string(),
+    });
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Resolved),
+        "a program that reaches Kernel.claim_resource should resolve like any other: {outcome:?}"
+    );
+    let kernel = compiler
+        .world_mut()
+        .reference_module(ModuleName::parse_dotted("Kernel").expect("Kernel module name"));
+    let function = compiler.world_mut().reference_function(kernel, "fz_resource_claim", 1);
+    let contract = compiler
+        .world()
+        .function_contract(function)
+        .expect("fz_resource_claim should publish a function contract")
+        .clone();
+    (compiler, contract)
+}
+
+#[test]
+fn fz_resource_claim_contract_applied_to_an_any_argument_answers_boolean() {
+    let (mut compiler, contract) = drive_kernel_resource_claim_contract();
+    let types = compiler.world_mut().types_mut();
+    let any = types.any();
+
+    let applied = contract.apply(types, &[any]);
+    assert!(
+        applied.satisfied,
+        "a handle whose type is unknown (any) is narrowed to the resource domain, not rejected as a mismatch"
+    );
+    let boolean = types.bool();
+    let result = applied
+        .result
+        .expect("a handle narrowed into the resource domain still publishes a result");
+    assert!(
+        types.is_equivalent(&result, &boolean),
+        "fz_resource_claim's declared return is boolean: {}",
+        types.display(&result)
+    );
+}
+
+#[test]
+fn fz_resource_claim_contract_rejects_an_atom_argument() {
+    let (mut compiler, contract) = drive_kernel_resource_claim_contract();
+    let types = compiler.world_mut().types_mut();
+    let atom = types.atom_lit("atom");
+
+    let applied = contract.apply(types, &[atom]);
+    assert!(
+        !applied.satisfied,
+        "an atom is a precisely known value outside the resource domain, not an imprecise one to narrow"
+    );
+    assert!(applied.result.is_none());
+}
+
+#[test]
+fn a_precise_but_wrong_union_member_still_violates_an_integer_domain() {
+    let mut types = Types::new();
+    let int = types.int();
+    let resolved = ResolvedSpecDecl {
+        params: vec![int],
+        result: int,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let weird = types.atom_lit("weird");
+    let int_or_weird = types.union(int, weird);
+    let applied = contract.apply(&mut types, &[int_or_weird]);
+
+    assert!(
+        !applied.satisfied,
+        "integer | :weird is precisely known and partly outside the domain, so it is rejected, not narrowed"
+    );
+    assert!(applied.result.is_none());
+}
+
+#[test]
+fn the_any_rule_narrows_one_column_and_a_wrong_sibling_column_still_rejects() {
+    let mut types = Types::new();
+    let int = types.int();
+    let resolved = ResolvedSpecDecl {
+        params: vec![int, int],
+        result: int,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let any = types.any();
+    let weird = types.atom_lit("weird");
+    let applied = contract.apply(&mut types, &[any, weird]);
+
+    assert!(
+        !applied.satisfied,
+        "the any column alone would narrow to integer, but :weird in the sibling column still violates it"
+    );
+    assert!(applied.result.is_none());
+}
+
+// fz-xxd.6: an extern's declaration is its whole contract. `libc::abs` takes
+// one `c_int`, and `:nope` fits no clause of that contract, so the call is
+// rejected at compile time on every door -- there is no extern body to fall
+// back into, and no backend may be asked to make the call.
+#[test]
+fn extern_row_outside_its_declared_contract_is_a_spec_violation() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/00605_libc_abs_arg_outside_declared_domain.fz".to_string()),
+        text: include_str!("../../fixtures/00605_libc_abs_arg_outside_declared_domain.fz").to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "an extern row outside its declared contract should fail to compile",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("the rejected extern row must surface as a diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::SPEC_VIOLATION.0);
+    let message = metadata_str(&diagnostic, "message");
+    assert!(
+        message.contains("libc::abs"),
+        "the diagnostic should name the extern, got: {message}",
+    );
+    assert!(
+        message.contains(":nope"),
+        "the diagnostic should name the rejected row, got: {message}",
+    );
+    assert!(
+        message.contains("declared domain is (int)"),
+        "the diagnostic should name the declared domain, got: {message}",
+    );
+}
+
+// fz-xxd.6: a variadic extern's contract accepts more past its fixed
+// parameters, so a violation naming only the fixed parameters understates
+// what the call was actually checked against. `libc::printf` declares one
+// fixed parameter (`fmt`); the domain named here must also name what its
+// tail accepts.
+#[test]
+fn variadic_extern_violation_names_the_tail_domain_past_the_fixed_params() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/00253_variadic_float_error.fz".to_string()),
+        text: include_str!("../../fixtures/00253_variadic_float_error.fz").to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "a float tail argument is outside the declaration's tail domain",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("the rejected extern row must surface as a diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::SPEC_VIOLATION.0);
+    let message = metadata_str(&diagnostic, "message");
+    assert!(
+        message.contains("declared domain is (binary, ..."),
+        "the domain should name the fixed `fmt` parameter and then the tail's own domain \
+         marked `...`, not stop at the fixed parameters, got: {message}",
     );
 }

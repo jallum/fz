@@ -5,9 +5,9 @@ def id(n), do: n
 
 def main() do
   parent = self()
-  spawn(fn () -> send(parent, receive do x -> x end) end)
+  child = spawn(fn () -> send(parent, receive do x -> x end) end)
   _ = id(42)
-  send(2, 7)
+  send(child, 7)
   result = receive do x -> x end
   assert(result == 7, "the blocked child resumes and relays the later-sent value")
   result

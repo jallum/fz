@@ -613,10 +613,12 @@ fn lower_backend_body(
     lowerer: &mut BackendLowerer<'_, '_, impl crate::telemetry::Telemetry>,
     abi: &AbiReadyExecutable,
 ) -> Result<BackendBody, FatalError> {
-    match &abi.materialized.body {
-        LoweredBody::Extern { signature } => Ok(BackendBody::Extern {
+    if let Some(signature) = &abi.materialized.extern_wire {
+        return Ok(BackendBody::Extern {
             signature: signature.clone(),
-        }),
+        });
+    }
+    match &abi.materialized.body {
         LoweredBody::Clauses {
             clauses,
             entries,

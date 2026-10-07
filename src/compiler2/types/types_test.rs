@@ -229,7 +229,7 @@ fn impossible_map_returns_before_the_type_boundary() {
         "the last value for a duplicate map key remains the required field"
     );
     assert_eq!(
-        t.map_field_lookup(&overwritten, &shadowed),
+        t.field_lookup(&overwritten, &shadowed),
         Some(int),
         "the last value for a duplicate map key remains its field type"
     );
@@ -272,7 +272,7 @@ fn impossible_struct_returns_before_the_type_boundary() {
         "the last value for a duplicate struct field remains required"
     );
     assert_eq!(
-        t.map_field_lookup(&overwritten, &shadowed),
+        t.field_lookup(&overwritten, &shadowed),
         Some(int),
         "the last value for a duplicate struct field remains its field type"
     );
@@ -911,10 +911,10 @@ fn tagged_map_identity_and_fields_remain_atomic_through_the_algebra() {
     assert!(t.is_empty(&meet));
     let without_plain = t.difference(joined, plain);
     assert!(t.is_equivalent(&without_plain, &foo));
-    assert_eq!(t.map_field_lookup(&foo, &key), Some(int));
+    assert_eq!(t.field_lookup(&foo, &key), Some(int));
     let extra = MapKey::Atom("extra".to_string());
     let refined = t.refine_map_field(&foo, &extra, &int);
-    assert_eq!(t.map_field_lookup(&refined, &extra), Some(int));
+    assert_eq!(t.field_lookup(&refined, &extra), Some(int));
     assert_eq!(
         t.runtime_type_predicate(&refined).named_structs,
         FiniteSet::lit(module_name("Pkg.Foo")),
@@ -959,7 +959,7 @@ fn semantic_struct_envelopes_keep_projectable_fields_and_predicate_envelopes_kee
     let nested = t.tuple(&[record]);
     let semantic = t.runtime_envelope(nested);
     let semantic_record = t.tuple_field_type(&semantic, 0);
-    let semantic_fields = t.map_field_lookup(&semantic_record, &key).unwrap();
+    let semantic_fields = t.field_lookup(&semantic_record, &key).unwrap();
     assert_eq!(t.tuple_field_type(&semantic_fields, 0), hit);
     let any = t.any();
     assert_eq!(
@@ -969,7 +969,7 @@ fn semantic_struct_envelopes_keep_projectable_fields_and_predicate_envelopes_kee
     );
     let predicate = t.runtime_type_test_envelope(nested);
     let predicate_record = t.tuple_field_type(&predicate, 0);
-    assert_eq!(t.map_field_lookup(&predicate_record, &key), Some(any));
+    assert_eq!(t.field_lookup(&predicate_record, &key), Some(any));
     assert_eq!(
         t.runtime_type_predicate(&semantic),
         t.runtime_type_predicate(&predicate),
@@ -1464,12 +1464,12 @@ macro_rules! seam_helper_conformance_tests {
             }
 
             #[test]
-            fn map_field_lookup_returns_known_field_type() {
+            fn field_lookup_returns_known_field_type() {
                 let mut t = $ctor;
                 let forty_two = t.int_lit(42);
                 let map = t.map(&[(MapKey::Atom("ok".to_string()), forty_two.clone())]);
                 let field = t
-                    .map_field_lookup(&map, &MapKey::Atom("ok".to_string()))
+                    .field_lookup(&map, &MapKey::Atom("ok".to_string()))
                     .expect("known field");
                 assert!(t.is_equivalent(&field, &forty_two));
             }
@@ -1481,7 +1481,7 @@ macro_rules! seam_helper_conformance_tests {
                 let value = t.int_lit(7);
                 let refined = t.refine_map_field(&map, &MapKey::Atom("n".to_string()), &value);
                 let field = t
-                    .map_field_lookup(&refined, &MapKey::Atom("n".to_string()))
+                    .field_lookup(&refined, &MapKey::Atom("n".to_string()))
                     .expect("refined field");
                 assert!(t.is_subtype(&value, &field));
                 assert!(!t.is_empty(&field));

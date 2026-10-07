@@ -63,11 +63,19 @@ pub struct ContractArrow {
     pub arrow: Ty,
     pub bounds: HashMap<TypeVarId, Ty>,
     pub protocol_domain_obligations: BTreeSet<ProtocolDomainObligation>,
+    /// A variadic extern's tail: the type every argument past the arrow's
+    /// declared parameters must belong to. `None` for an ordinary arrow.
+    pub variadic_tail: Option<Ty>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionContract {
     pub arrows: Vec<ContractArrow>,
+    /// An extern's wire ABI: how its declared surface crosses into foreign
+    /// code. `None` for an ordinary function, which has a lowered body
+    /// instead. This is the one resolution of an extern's declared surface;
+    /// nothing else derives it a second time.
+    pub extern_wire: Option<super::body::LoweredExtern>,
 }
 
 /// The contract applied to observed arguments: the instantiated parameter
@@ -97,7 +105,26 @@ impl FunctionContract {
         Self::from_classified_arrows(types, arrows)
     }
 
+    /// A variadic extern's contract: every clause additionally accepts any
+    /// number of arguments past its declared parameters, each drawn from
+    /// `tail` (`extern_contract::variadic_tail_domain`).
+    pub(crate) fn from_resolved_variadic(types: &mut Types, arrows: Vec<ResolvedSpecDecl<Ty>>, tail: Ty) -> Self {
+        let arrows = arrows
+            .into_iter()
+            .map(|decl| ResolvedContractArrow::classify(types, decl))
+            .collect();
+        Self::from_classified_arrows_with_tail(types, arrows, Some(tail))
+    }
+
     pub(crate) fn from_classified_arrows(types: &mut Types, arrows: Vec<ResolvedContractArrow>) -> Self {
+        Self::from_classified_arrows_with_tail(types, arrows, None)
+    }
+
+    fn from_classified_arrows_with_tail(
+        types: &mut Types,
+        arrows: Vec<ResolvedContractArrow>,
+        variadic_tail: Option<Ty>,
+    ) -> Self {
         Self {
             arrows: arrows
                 .into_iter()
@@ -108,9 +135,20 @@ impl FunctionContract {
                     arrow: types.arrow(&arrow.decl.params, arrow.decl.result),
                     bounds: arrow.decl.constraints,
                     protocol_domain_obligations: arrow.protocol_domain_obligations,
+                    variadic_tail,
                 })
                 .collect(),
+            extern_wire: None,
         }
+    }
+
+    /// Attaches the wire ABI this contract's own extern declaration resolves
+    /// to. The one place that calls this is `derive_function_contract`,
+    /// which is also the one place with a declared surface to resolve it
+    /// from.
+    pub(crate) fn with_extern_wire(mut self, wire: super::body::LoweredExtern) -> Self {
+        self.extern_wire = Some(wire);
+        self
     }
 
     pub fn apply(&self, types: &mut Types, arg_tys: &[Ty]) -> AppliedFunctionContract {
@@ -122,7 +160,7 @@ impl FunctionContract {
         for clause in &self.arrows {
             let clause_enforceable = clause.protocol_domain_obligations.is_empty();
             enforceable |= clause_enforceable;
-            let params = types.arrow_params(&clause.arrow);
+            let params = clause.matched_params(types, arg_tys.len());
             let clause_result = types
                 .arrow_result(&clause.arrow)
                 .expect("a contract clause is an arrow with a result slot");
@@ -151,7 +189,7 @@ impl FunctionContract {
             enforceable_matched = true;
             matched_any = true;
             for clause in &self.arrows {
-                let Some(narrowed) = self.narrow_args_to_clause(types, clause, arg_tys) else {
+                let Some(narrowed) = clause.narrow_args(types, arg_tys) else {
                     continue;
                 };
                 let params = types.arrow_params(&clause.arrow);
@@ -178,6 +216,18 @@ impl FunctionContract {
             enforceable,
             enforceable_satisfied: !enforceable || enforceable_matched,
         }
+    }
+
+    /// Every clause's domain, rendered for naming what a rejected call of
+    /// `row_len` arguments was measured against: one string per clause, in
+    /// declaration order. Built from `ContractArrow::matched_params`, the
+    /// exact row `apply` widens by the tail and matches the call against, so
+    /// the message can never claim a domain the check did not use.
+    pub(crate) fn matched_domain_rows(&self, types: &mut Types, row_len: usize) -> Vec<String> {
+        self.arrows
+            .iter()
+            .map(|clause| clause.matched_domain_display(types, row_len))
+            .collect()
     }
 
     /// Arrow-SET coverage of a ground argument row: no single arrow accepted
@@ -221,37 +271,67 @@ impl FunctionContract {
         let observed = types.tuple(arg_tys);
         types.is_subtype(&observed, &domain)
     }
-
-    /// The argument row narrowed positionally into one clause's domain, or
-    /// `None` when the clause overlaps no member of the arguments.
-    fn narrow_args_to_clause(&self, types: &mut Types, clause: &ContractArrow, arg_tys: &[Ty]) -> Option<Vec<Ty>> {
-        let row = clause.input_domain_row(types);
-        if row.len() != arg_tys.len() {
-            return None;
-        }
-        let mut narrowed = Vec::with_capacity(arg_tys.len());
-        for (arg, param) in arg_tys.iter().zip(row.iter()) {
-            if types.has_vars(param) {
-                narrowed.push(*arg);
-                continue;
-            }
-            let overlap = types.intersect(*arg, *param);
-            if types.is_empty(&overlap) {
-                return None;
-            }
-            narrowed.push(overlap);
-        }
-        Some(narrowed)
-    }
 }
 
 impl ContractArrow {
+    /// The clause's parameter list, widened to a variadic row: a tail domain
+    /// repeats past the declared parameters until the lists are the same
+    /// length. A row no longer than the parameters is untouched, so
+    /// `match_arrow`'s own arity check still refuses one that is too short.
+    fn matched_params(&self, types: &Types, row_len: usize) -> Vec<Ty> {
+        let params = types.arrow_params(&self.arrow);
+        let Some(tail) = self.variadic_tail else {
+            return params;
+        };
+        if row_len <= params.len() {
+            return params;
+        }
+        let mut widened = params;
+        widened.resize(row_len, tail);
+        widened
+    }
+
     pub(crate) fn input_domain_row(&self, types: &mut Types) -> Vec<Ty> {
-        types
-            .arrow_params(&self.arrow)
-            .into_iter()
-            .map(|param| instantiate_domain(types, param, &self.bounds))
-            .collect()
+        let params = types.arrow_params(&self.arrow);
+        types.clause_domain_row(&params, &self.bounds)
+    }
+
+    /// This clause's domain for a call of `row_len` arguments, rendered as a
+    /// single readable string: each fixed position named individually, and,
+    /// past them, the variadic tail's type named once and marked `...` (the
+    /// widened positions all share that one type, so they name nothing new
+    /// repeated).
+    fn matched_domain_display(&self, types: &mut Types, row_len: usize) -> String {
+        let fixed_len = types.arrow_params(&self.arrow).len();
+        let widened = self.matched_params(types, row_len);
+        let tail = widened.get(fixed_len).copied();
+        let mut parts: Vec<String> = widened[..fixed_len.min(widened.len())]
+            .iter()
+            .map(|ty| types.display_for_diag(ty))
+            .collect();
+        if let Some(tail) = tail {
+            parts.push(format!("...{}", types.display_for_diag(&tail)));
+        }
+        parts.join(", ")
+    }
+
+    /// This clause's own domain row, narrowed against `arg_tys` position by
+    /// position; `None` when the clause overlaps no member of the arguments.
+    fn narrow_args(&self, types: &mut Types, arg_tys: &[Ty]) -> Option<Vec<Ty>> {
+        let params = types.arrow_params(&self.arrow);
+        if params.len() != arg_tys.len() {
+            return None;
+        }
+        let domain = types.clause_domain_row(&params, &self.bounds);
+        let mut narrowed = Vec::with_capacity(arg_tys.len());
+        for (arg, domain) in arg_tys.iter().zip(domain.iter()) {
+            let narrowed_col = types.narrow_to_clause_domain(*arg, domain);
+            if types.is_empty(&narrowed_col) {
+                return None;
+            }
+            narrowed.push(narrowed_col);
+        }
+        Some(narrowed)
     }
 }
 
@@ -266,12 +346,6 @@ fn domain_row_at_any(types: &mut Types, row: Vec<Ty>) -> Vec<Ty> {
             types.instantiate(&param, &free_at_any)
         })
         .collect()
-}
-
-fn instantiate_domain(types: &mut Types, mut domain: Ty, bounds: &HashMap<TypeVarId, Ty>) -> Ty {
-    let closed = types.close_bounds(bounds, &HashMap::new());
-    domain = types.instantiate(&domain, &closed);
-    domain
 }
 
 impl FunctionContractMap {

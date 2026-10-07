@@ -137,12 +137,9 @@ defmodule Kernel do
   @doc """
   Sends `msg` to `pid` and returns `msg`.
 
-  The receiver is a pid or its raw integer index; the runtime addresses
-  processes by index and has no registry.
-
   ## Examples
 
-      Kernel.send(1, 42)
+      Kernel.send(self(), 42)
       #=> 42
 
       receive do
@@ -151,7 +148,7 @@ defmodule Kernel do
       #=> 42
 
   """
-  @spec send(pid | integer, t) :: t when t: any
+  @spec send(pid, t) :: t when t: any
   def send(pid, msg), do: fz_send(pid, msg)
 
   extern "fz" defp fz_send(pid, t) :: t when t: any

@@ -304,7 +304,7 @@ pub(crate) fn project_subject(
     match &projection.kind {
         ProjectionKind::TupleField(index) => types.tuple_field_type(&source, *index as usize),
         ProjectionKind::StructField(field) => types
-            .map_field_lookup(&source, &crate::types::MapKey::Atom(field.clone()))
+            .field_lookup(&source, &crate::types::MapKey::Atom(field.clone()))
             .unwrap_or_else(|| types.any()),
         ProjectionKind::ListHead => types.list_element_type(&source),
         ProjectionKind::ListTail => {
@@ -313,7 +313,7 @@ pub(crate) fn project_subject(
         }
         ProjectionKind::MapValue { key } => key
             .as_map_key()
-            .and_then(|key| types.map_field_lookup(&source, &key))
+            .and_then(|key| types.field_lookup(&source, &key))
             .unwrap_or_else(|| types.any()),
         ProjectionKind::BitstringField(extraction) => match extraction.spec.kind {
             BitstringFieldKind::Integer

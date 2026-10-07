@@ -14,15 +14,19 @@
 //!   push would take — lands here by construction and trips this red.
 //! - `root_scans == 0` — no producer discovered work by scanning the whole
 //!   fact table.
-//! - `ignition == 2` — `Ignition` tags ONLY the true external front-door
-//!   work-starts (one `submit_code`'s `IndexCode`, one `submit_root`'s
-//!   `SeedRoot`). This is the soundness assertion: it fails if any internal
-//!   (mid-job) caller ever drives a job as `Ignition` again — the exact hole
-//!   this guard originally exposed in `ensure_runtime_module` (a runtime
-//!   module minted mid-job via `submit_code`, mislabeled the external front
-//!   door). With that push eliminated, `unsanctioned == 0` holds because
-//!   there is no misclassified push left, not because one is hidden under
-//!   `Ignition`.
+//! - `ignition == 1` — `Ignition` tags ONLY the true external front-door
+//!   work-starts that actually place a job on the agenda. For a single-file,
+//!   single-root fixture that is `submit_code`'s `IndexCode` alone:
+//!   `submit_root`'s own first demand always finds `SeedRoot`'s
+//!   `FunctionDefined` gate missing (the root function is never defined yet
+//!   at that instant), so it is a gate detour -- `GateExpansion` -- not a
+//!   bare `SeedRoot` start. This is the soundness assertion: it fails if any
+//!   internal (mid-job) caller ever drives a job as `Ignition` again — the
+//!   exact hole this guard originally exposed in `ensure_runtime_module` (a
+//!   runtime module minted mid-job via `submit_code`, mislabeled the
+//!   external front door). With that push eliminated, `unsanctioned == 0`
+//!   holds because there is no misclassified push left, not because one is
+//!   hidden under `Ignition`.
 //!
 //! NOTE ON THE GUARD'S BOUNDARY: this catches an *untagged* enqueue (a new
 //! call site that omits a reason → `Unclassified`). It does not by itself
@@ -37,12 +41,15 @@ use super::drive::Job;
 use super::{CodeSubmission, Compiler2, ExecutableNeed, FactKey, FactUse, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 
-/// One `submit_code` (its `IndexCode`) plus one `submit_root` (its `SeedRoot`)
-/// are the only external ignitions for a single-file, single-root fixture.
-/// `ScopeCode` is only enqueued by `submit_code` when a root already exists,
-/// which it does not at `submit_code` time here (the root is submitted after),
-/// so it is not an ignition — it is pulled.
-const EXTERNAL_IGNITIONS: u64 = 2;
+/// `submit_code`'s own `IndexCode` is the only external ignition for a
+/// single-file, single-root fixture. `ScopeCode` is only enqueued by
+/// `submit_code` when a root already exists, which it does not at
+/// `submit_code` time here (the root is submitted after), so it is not an
+/// ignition — it is pulled. `submit_root`'s own first demand always finds
+/// `SeedRoot`'s `FunctionDefined` gate missing at this instant -- nothing has
+/// driven yet, so the root function is never defined -- so it is always a
+/// gate detour (`GateExpansion`), never a bare `SeedRoot` start.
+const EXTERNAL_IGNITIONS: u64 = 1;
 
 fn assert_pull_only(name: &str, source: &str) {
     let tel = ConfiguredTelemetry::new();
@@ -282,7 +289,26 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // per function head is gone; redundancy is checked from the compiled
         // dispatch plan instead, which removes its own source job from every
         // function that declared a contract.
-        (2747, 9, 19, 232),
+        // fz-xxd.3: 2747 -> 2761. +18 DeriveFunctionContract: eighteen Kernel
+        // operator externs this fixture lowers but never calls. Their
+        // declarations used to be resolved a second time inside
+        // `LowerFunction`, where no job was counted; now their own contract
+        // job resolves them once. AnalyzeActivation falls by 4.
+        // fz-xxd.11: 2761 -> 2715 -> 2696, net of LowerFunction -28,
+        // PlanEntryDispatch -18, DeriveFunctionContract -18,
+        // AnalyzeActivation -19. The eighteen Kernel operator externs this
+        // fixture never calls no longer get a LowerFunction or
+        // PlanEntryDispatch job at all, and -- since nothing needs their
+        // body to compute static callees any more -- most no longer get
+        // their FunctionContract demanded either. AnalyzeActivation's own
+        // fall is `analyze_activation_gates` (`Job::missing_gates`): each
+        // called extern's activation used to start once blocked on its own
+        // `EntryDispatch`, changing nothing, before its real run; the gate
+        // now holds the job back until `EntryDispatch` (and, for a
+        // non-extern, `LoweredBody`) already exists, so the ten blocked
+        // extern runs never happen, and nine more ordinary-caller runs a
+        // caller no longer needs to re-settle after them fall with them.
+        (2696, 9, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -316,7 +342,23 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // per function head is gone; redundancy is checked from the compiled
         // dispatch plan instead, which removes its own changed revision from
         // every function that declared a contract.
-        707,
+        // fz-xxd.3: 707 -> 705.
+        // fz-xxd.11: 705 -> 719 -> 702. Removing the caller-side wait on an
+        // extern callee's `LoweredBody` (it has none) briefly raised this to
+        // 719: some caller activations used to wait on that `LoweredBody`
+        // together with the callee's `EntryDispatch`/`ReturnType`, and
+        // AND-semantics coalesced their settlement into one wake attributed
+        // to whichever fact -- always the FunctionContract-gated
+        // LowerFunction publishing `LoweredBody` late -- settled last; with
+        // that fact out of the wait set, the same two settle events
+        // (EntryDispatch, then ReturnType) surfaced as two wakes instead of
+        // one. `analyze_activation_gates` (`Job::missing_gates`) removes the
+        // root cause instead: an extern's own `AnalyzeActivation` no longer
+        // starts before its `EntryDispatch` exists, so it never wakes again
+        // on that fact once the gate is satisfied, and the ten new
+        // `EntryDispatch` wakes fz-xxd.11 measured are gone with it, along
+        // with the coalescing artifact that split them.
+        702,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -337,7 +379,21 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // own, started by the caller that waits for it: 103 -> 127 distinct
         // functions. Those starts replace re-runs rather than adding to them
         // -- DeriveInputDemand runs fall 197 -> 190.
-        1127,
+        // fz-xxd.3: 1127 -> 1145. An extern's `LowerFunction` is gated on its
+        // `FunctionContract`, so each of the eighteen new contract jobs above
+        // is started by expanding that blocked waiter to its producer.
+        // fz-xxd.11: 1145 -> 1071 -> 426. `AnalyzeActivation` now gates on
+        // `FunctionDefined`, `EntryDispatch` and (for a non-extern)
+        // `LoweredBody` (`analyze_activation_gates`), so it never starts to
+        // discover one of those three missing and then wait for it -- the
+        // blocked-waiter sweep first had that many fewer stalled jobs to
+        // expand (1145 -> 1071). Uniformly tallying every gate detour under
+        // `GateExpansion`, not only `ActivationFrontier`'s, then moves the
+        // 645 detours this blocked-waiter sweep itself still triggered --
+        // a still-missing gate's own producer getting demanded, the same
+        // event `GateExpansion` already named elsewhere -- out of this count
+        // (1071 -> 426).
+        426,
         "the blocked-waiter census includes every ordinary generic helper prerequisite",
     );
     assert_eq!(
@@ -390,7 +446,39 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // `({empty_list(), int})`, before the settled `({list(int), int})`.
         // `drop_positive_finish/1`'s own input demand is derived once,
         // identically; only the order its caller runs in moved.
-        (2, 266, 0, 0, 0),
+        // fz-xxd.3: 266 -> 264. `Kernel.dbg/1`, `Kernel.fz_dbg_value/1`, and
+        // the `{empty_list(), int}` shapes of `Enum.drop_positive_finish/1`
+        // and `Enum.take_positive_finish/1` are no longer activated;
+        // `Range.reduce_while_step/6` and `List.reduce_while_step/3` each gain
+        // one activation.
+        // fz-xxd.11: activation_frontier 264 -> 276 -> 266.
+        // `AnalyzeActivation` now gates on `FunctionDefined`, `EntryDispatch`
+        // and (for a non-extern) `LoweredBody` (`analyze_activation_gates`).
+        // Ten called Kernel operator externs -- `fz_dbg_value`, `fz_panic`,
+        // and `fz_op_{add,sub,div,rem,lt,gt,eq,eq_ii}` -- reach the frontier
+        // before their own `EntryDispatch` exists, so each was credited twice
+        // under the raw `started>0` count: once when its missing gate was
+        // expanded, again once the gate cleared and its `AnalyzeActivation`
+        // was actually queued (confirmed by tracing every credited key: ten
+        // repeat, no others). A still-missing gate's own producer is a
+        // different job than the activation waiting on it, so it is now
+        // tallied under `GateExpansion` instead
+        // (`World::demand_producer_if_needed`), and the frontier credits only
+        // the call that actually places the activation's own job on the
+        // agenda. That retires the false ten: 276 raw credits, 266 distinct
+        // activations. The two above fz-xxd.3's 264 predate this fix --
+        // reverting `require_callee_prerequisites` and both `keying.rs` gates
+        // and re-measuring still gives 266 -- so `analyze_activation_gates`
+        // itself, landed after fz-xxd.3 pinned 264, is what changed which
+        // activations this fixture's frontier discovers.
+        // fz-xxd.11: ignition 2 -> 1. `submit_root`'s own first demand always
+        // finds `SeedRoot`'s `FunctionDefined` gate missing -- the root
+        // function is never defined yet at that instant -- so it was always
+        // a gate detour, not a bare `SeedRoot` start; `GateExpansion` now
+        // covers that detour uniformly for every reason, not only
+        // `ActivationFrontier`'s, so it moves out of `Ignition` here too.
+        // Only `submit_code`'s own `IndexCode` remains a bare ignition.
+        (1, 266, 0, 0, 0),
         "ordinary generic helper activations preserve the pull-only frontier",
     );
 

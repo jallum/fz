@@ -130,10 +130,8 @@ end
         entries,
         generated,
         ..
-    } = (*world.lowered_body(first)).clone()
-    else {
-        panic!("the source fixture should lower first/0 to clauses");
-    };
+    } = (*world.lowered_body(first)).clone();
+
     let withdrawn = entries
         .into_iter()
         .map(|entry| LoweredEntry {
@@ -220,5 +218,98 @@ fn only_an_uninhabitable_callee_makes_a_call_dead() {
         !callee_has_no_inhabitants(&types, carries_a_var),
         "a callable carrying an un-instantiated result is still a real pointer: absence of \
              analysis, not absence of values",
+    );
+}
+
+/// `LoweredStep::FieldAccess` asks the shared field lookup for `.value` on a
+/// resource the same way it asks for any map field. The lookup must answer
+/// the resource's payload type rather than falling back to `any`.
+#[test]
+fn field_access_on_a_resource_types_as_its_payload() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("resource_value_field_access.fz".to_string()),
+        r#"
+extern "C" defp opaque_handle() :: resource(c_pointer)
+
+def main() do
+  r = opaque_handle()
+  r.value
+end
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert!(matches!(
+        ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+
+    let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    let main_activation = world.activation_key(root, main, &[]);
+    let c_pointer = world.types_mut().c_pointer();
+    assert_eq!(
+        world.activation_return_evidence(&main_activation),
+        Some(c_pointer),
+        "opaque_handle() is resource(c_pointer), so r.value should type as c_pointer, not any",
+    );
+}
+
+/// `Enumerable.slice(map)` returns `{:ok, n, slicer}` where `slicer` is an
+/// uncalled closure: its surface still carries a free variable for its
+/// argument and its result. `@spec slice(t(a)) :: {:ok, integer, any} | ...`
+/// bounds the third field with `any`, so this is the shape
+/// `observed_is_unconstrained`'s dead `has_vars(observed)` disjunct used to
+/// see. The disjunct is gone; the calculator alone must still read the
+/// closure through, rather than collapsing it to `any`.
+#[test]
+fn refine_observed_return_keeps_a_var_carrying_closure_out_of_a_protocol_return() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("map_enumerable_slice.fz".to_string()),
+        r#"
+def main() do
+  map = %{1 => :one, 2 => :two}
+  Enumerable.slice(map)
+end
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert!(matches!(
+        ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+
+    let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    let main_activation = world.activation_key(root, main, &[]);
+    let returned = world
+        .activation_return_evidence(&main_activation)
+        .expect("main should settle to a return type");
+
+    let tag = world.types_mut().tuple_field_type(&returned, 0);
+    let count = world.types_mut().tuple_field_type(&returned, 1);
+    let slicer = world.types_mut().tuple_field_type(&returned, 2);
+    let ok = world.types_mut().atom_lit("ok");
+    let int = world.types_mut().int();
+    let any = world.types_mut().any();
+
+    assert!(
+        world.types().is_equivalent(&tag, &ok),
+        "the tuple's first field should still tag the result :ok",
+    );
+    assert!(
+        world.types().is_equivalent(&count, &int),
+        "the tuple's second field should still type as the map's entry count",
+    );
+    assert!(
+        world.types().has_vars(&slicer),
+        "the slicer closure is never called here, so its surface still carries a free variable",
+    );
+    assert!(
+        !world.types().is_equivalent(&slicer, &any),
+        "the calculator should read the var-carrying closure through, not widen it to any",
     );
 }

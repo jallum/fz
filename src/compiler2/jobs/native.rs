@@ -742,7 +742,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let prim = Prim::Extern(callsite, extern_id, extern_args);
         if let ExternReturn::Pair(fields) = signature.ret {
             let (values, stmt_idx) = ctx.emit_let_many(2, prim);
-            let field_tys = self.world.types_mut().tuple_projections(&signature.return_ty, 2);
+            let field_tys = self
+                .world
+                .types_mut()
+                .tuple_projections(&executable.abi.materialized.return_ty, 2);
             for (value, ty) in values.iter().copied().zip(field_tys) {
                 ctx.value_types.insert(value, ty);
             }

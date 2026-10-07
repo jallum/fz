@@ -1,0 +1,6 @@
+#---
+# purpose: send's receiver is a pid; an integer index is rejected with a spec/violation diagnostic on every path
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+def main(), do: send(1, 42)

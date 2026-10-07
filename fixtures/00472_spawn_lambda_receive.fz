@@ -6,8 +6,8 @@ def p(parent) do
 end
 def main() do
   parent = self()
-  p(parent)
-  send(2, 55)
+  child = p(parent)
+  send(child, 55)
   result = receive do x -> x end
   assert(result == 55, "p/1 returns without blocking; the spawned lambda's own receive relays the value")
   result

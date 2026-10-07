@@ -377,10 +377,10 @@ fn produce_generic_callable_owner(
             TransportPosition::EntryCapture {
                 entry, capture_index, ..
             } => {
-                if let LoweredBody::Clauses { entries, .. } = facts.body()
-                    && let Some(capture) = entries
-                        .get(entry.as_u32() as usize)
-                        .and_then(|entry| entry.captures.get(*capture_index))
+                let LoweredBody::Clauses { entries, .. } = facts.body();
+                if let Some(capture) = entries
+                    .get(entry.as_u32() as usize)
+                    .and_then(|entry| entry.captures.get(*capture_index))
                 {
                     source_positions.push(TransportPosition::Value {
                         executable: position.executable().clone(),
@@ -402,18 +402,20 @@ fn produce_generic_callable_owner(
                     }) {
                         source_positions.clear();
                     }
-                } else if let LoweredBody::Clauses { entries, .. } = facts.body()
-                    && let Some(value) = entries
+                } else {
+                    let LoweredBody::Clauses { entries, .. } = facts.body();
+                    if let Some(value) = entries
                         .get(entry.as_u32() as usize)
                         .and_then(|entry| match entry.origin {
                             super::super::body::ControlEntryOrigin::DeliveredResume { value } => Some(value),
                             _ => None,
                         })
-                {
-                    source_positions.push(TransportPosition::Value {
-                        executable: position.executable().clone(),
-                        value,
-                    });
+                    {
+                        source_positions.push(TransportPosition::Value {
+                            executable: position.executable().clone(),
+                            value,
+                        });
+                    }
                 }
             }
         }
@@ -595,17 +597,13 @@ fn generic_owner_ty_and_demand(
             )
         }
         TransportPosition::ResumePayload { entry, .. } => {
-            let value = match facts.body() {
-                LoweredBody::Clauses { entries, .. } => {
-                    entries
-                        .get(entry.as_u32() as usize)
-                        .and_then(|entry| match entry.origin {
-                            super::super::body::ControlEntryOrigin::DeliveredResume { value } => Some(value),
-                            _ => None,
-                        })
-                }
-                LoweredBody::Extern { .. } => None,
-            };
+            let LoweredBody::Clauses { entries, .. } = facts.body();
+            let value = entries
+                .get(entry.as_u32() as usize)
+                .and_then(|entry| match entry.origin {
+                    super::super::body::ControlEntryOrigin::DeliveredResume { value } => Some(value),
+                    _ => None,
+                });
             (
                 value
                     .and_then(|value| facts.analysis().value_types.get(&value).copied())
@@ -1615,9 +1613,7 @@ fn produce_local_callable_construction(
 /// (`ControlDestination::Return`), where the result aliases the caller's
 /// return. `None` when the callsite id names no call tail in this body.
 fn callsite_result(facts: &ExecutableFacts, callsite: CallSiteId) -> Option<(ValueId, bool)> {
-    let LoweredBody::Clauses { entries, .. } = facts.body() else {
-        return None;
-    };
+    let LoweredBody::Clauses { entries, .. } = facts.body();
     entries.iter().find_map(|entry| match &entry.tail {
         LoweredTail::DirectCall {
             value,
@@ -1636,27 +1632,23 @@ fn callsite_result(facts: &ExecutableFacts, callsite: CallSiteId) -> Option<(Val
 }
 
 fn resume_payload_value(facts: &ExecutableFacts, entry: ControlEntryId) -> ValueId {
-    match facts.body() {
-        LoweredBody::Clauses { entries, .. } => entries
-            .get(entry.as_u32() as usize)
-            .and_then(|entry| match entry.origin {
-                super::super::body::ControlEntryOrigin::DeliveredResume { value } => Some(value),
-                _ => None,
-            })
-            .expect("a resume payload position must name a delivered-resume entry"),
-        LoweredBody::Extern { .. } => panic!("an extern executable cannot own a resume payload"),
-    }
+    let LoweredBody::Clauses { entries, .. } = facts.body();
+    entries
+        .get(entry.as_u32() as usize)
+        .and_then(|entry| match entry.origin {
+            super::super::body::ControlEntryOrigin::DeliveredResume { value } => Some(value),
+            _ => None,
+        })
+        .expect("a resume payload position must name a delivered-resume entry -- an extern executable owns none")
 }
 
 /// The value an entry-capture position names, if the entry has that capture.
 fn entry_capture_value(facts: &ExecutableFacts, entry: ControlEntryId, capture_index: usize) -> Option<ValueId> {
-    match facts.body() {
-        LoweredBody::Clauses { entries, .. } => entries
-            .get(entry.as_u32() as usize)
-            .and_then(|entry| entry.captures.get(capture_index))
-            .copied(),
-        LoweredBody::Extern { .. } => None,
-    }
+    let LoweredBody::Clauses { entries, .. } = facts.body();
+    entries
+        .get(entry.as_u32() as usize)
+        .and_then(|entry| entry.captures.get(capture_index))
+        .copied()
 }
 
 /// The analyzed type of an entry capture — an invariant, not a lookup with a
@@ -1973,7 +1965,7 @@ fn produce_named_transport_position(
         RecipeLayout::Exact(layout) => layout,
         RecipeLayout::Cut(evidence) => cut_transport_layout(world, ty, &demand, &evidence),
     };
-    if extern_position_requires_value_ref(world, facts.body(), position, layout) {
+    if extern_position_requires_value_ref(world, facts.extern_wire(), position, layout) {
         layout = with_value_ref_carrier(world, ty, layout);
     }
     Some(PullOutcome::Produced(ProductValue::TransportShape(
@@ -1983,11 +1975,11 @@ fn produce_named_transport_position(
 
 fn extern_position_requires_value_ref(
     world: &World,
-    body: &LoweredBody,
+    extern_wire: Option<&super::super::body::LoweredExtern>,
     position: &TransportPosition,
     layout: TransportLayout,
 ) -> bool {
-    let LoweredBody::Extern { signature } = body else {
+    let Some(signature) = extern_wire else {
         return false;
     };
     let composite = matches!(

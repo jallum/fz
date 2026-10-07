@@ -671,13 +671,24 @@ fact missing from inside its body. The gate's own wake then reaches the job
 the ordinary way, through `demand_fact_producer`'s fact->producer map, once it
 lands.
 
-Nine job kinds declare gates — `SeedRoot`, `DefineFunction`,
+Ten job kinds declare gates — `SeedRoot`, `DefineFunction`,
 `ExpandFunctionSource`, `ScopeCode`, `DeriveInputDemand`,
-`DeriveCallGraphComponent`, `DeriveRuntimeDemand`, `LowerFunction`, and
-`DeriveStaticCallees` — each in the `jobs/*.rs` module that owns the kind's
-body, named `<job>_gates` beside it. Every other kind has no arm in
-`missing_gates`'s match and starts the moment anything demands its output,
-exactly as before gates existed.
+`DeriveCallGraphComponent`, `DeriveRuntimeDemand`, `LowerFunction`,
+`DeriveStaticCallees`, and `AnalyzeActivation` — each in the `jobs/*.rs`
+module that owns the kind's body, named `<job>_gates` beside it. Every other
+kind has no arm in `missing_gates`'s match and starts the moment anything
+demands its output, exactly as before gates existed.
+
+`AnalyzeActivation`'s gate is its function's `FunctionDefined`, its
+`EntryDispatch`, and -- for a non-extern, the only kind that gets one -- its
+`LoweredBody`. Before this gate existed, a caller's own wait on an extern
+callee's `LoweredBody` doubled as an accidental barrier that delayed
+publishing the extern's activation until its `EntryDispatch` existed too;
+removing that wait (an extern has no `LoweredBody` to wait on) let a called
+extern's `AnalyzeActivation` start before its own `EntryDispatch`, block,
+and change nothing. The gate holds the job back until all three inputs
+exist, the same way `LowerFunction`'s gate holds it back from discovering a
+missing `FunctionDefined` by running into it.
 
 A gate is not the same thing as a wait a job's body discovers only while it
 runs — a callee reached by walking a call graph, a macro found mid-expansion.

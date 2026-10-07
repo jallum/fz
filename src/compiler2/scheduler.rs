@@ -43,17 +43,32 @@ impl<F> ExternalDependencyStates<F> for NoExternalDependencyStates {
 /// - `RootFrontier`: `drive::demand_root_frontier_seeds` expanding a
 ///   submitted root's standing seed demand through the fact->producer map,
 ///   on a later drain after `submit_root`'s own `Ignition` demand redirected
-///   to a gate that was still unmet.
+///   to a gate that was still unmet (that redirect itself is `GateExpansion`,
+///   below).
 /// - `ActivationFrontier`: `drive::demand_activation_frontier_analyses`
 ///   expanding a published activation's standing analysis demand through the
 ///   fact->producer map. Root entries and caller-discovered callees use this
 ///   one path.
+/// - `GateExpansion`: `Job::missing_gates`'s own redirect inside
+///   `World::demand_producer_if_needed`, whenever a job named by any of the
+///   reasons above is not yet runnable: instead of starting that job to
+///   discover from inside its own body the same fact it is missing, the
+///   still-missing gate's own producer is demanded instead. That producer is
+///   a different job than the one that was named, so every caller's gate
+///   detour is tallied here, uniformly, never folded into whichever reason
+///   asked for the job that turned out to be gated. This is load-bearing for
+///   `ActivationFrontier` in particular: its own dedup invariant
+///   (`work_start_reason_test.rs`) requires exactly one credit per
+///   activation, the call that actually places its job on the agenda, never
+///   the prerequisites it waited out along the way.
 /// - `BlockedWaiterExpansion`: the fact->producer map
 ///   (`World::demand_fact_producer`) expanding a blocked waiter's missing
 ///   fact to its single producer at a drain/stall point — both the bare
 ///   scheduler's `demand_blocked_wait_producers`/`drive_until` stall pass and
 ///   the bounded product-pull's own fact-wait loop
-///   (`product_drive::drive_product_fact_wait`) use this.
+///   (`product_drive::drive_product_fact_wait`) use this, when the demanded
+///   producer is itself runnable; a further gate detour from there is
+///   `GateExpansion` instead.
 ///
 /// `Unclassified` is the catch-all default. A future enqueue call site that
 /// does not pass one of the reasons above — a reintroduced `follow_up`-style
@@ -66,6 +81,7 @@ pub enum WorkStartReason {
     ChangedRevisionWake,
     RootFrontier,
     ActivationFrontier,
+    GateExpansion,
     BlockedWaiterExpansion,
     #[default]
     Unclassified,
@@ -83,6 +99,7 @@ pub struct WorkStartTally {
     pub changed_revision_wake: u64,
     pub root_frontier: u64,
     pub activation_frontier: u64,
+    pub gate_expansion: u64,
     pub blocked_waiter_expansion: u64,
     pub unclassified: u64,
     pub root_scans: u64,
@@ -109,6 +126,7 @@ impl WorkStartTally {
             changed_revision_wake: delta(self.changed_revision_wake, earlier.changed_revision_wake),
             root_frontier: delta(self.root_frontier, earlier.root_frontier),
             activation_frontier: delta(self.activation_frontier, earlier.activation_frontier),
+            gate_expansion: delta(self.gate_expansion, earlier.gate_expansion),
             blocked_waiter_expansion: delta(self.blocked_waiter_expansion, earlier.blocked_waiter_expansion),
             unclassified: delta(self.unclassified, earlier.unclassified),
             root_scans: delta(self.root_scans, earlier.root_scans),
@@ -121,6 +139,7 @@ impl WorkStartTally {
         self.changed_revision_wake += other.changed_revision_wake;
         self.root_frontier += other.root_frontier;
         self.activation_frontier += other.activation_frontier;
+        self.gate_expansion += other.gate_expansion;
         self.blocked_waiter_expansion += other.blocked_waiter_expansion;
         self.unclassified += other.unclassified;
         self.root_scans += other.root_scans;
@@ -429,6 +448,7 @@ where
             changed_revision_wake: count(WorkStartReason::ChangedRevisionWake),
             root_frontier: count(WorkStartReason::RootFrontier),
             activation_frontier: count(WorkStartReason::ActivationFrontier),
+            gate_expansion: count(WorkStartReason::GateExpansion),
             blocked_waiter_expansion: count(WorkStartReason::BlockedWaiterExpansion),
             unclassified: count(WorkStartReason::Unclassified),
             root_scans: self.root_scans,

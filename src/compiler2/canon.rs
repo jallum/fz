@@ -46,7 +46,6 @@ use crate::dispatch_matrix::{
     DispatchNode, EdgeEvidence, GroundValue, ProjectionKind, Proof, Region, RegionPredicate, Subject, SubjectSource,
 };
 use crate::source::Span;
-use crate::type_expr::ResolvedSpecDecl;
 
 use super::artifact::{
     AbiValueRepr, BackendBody, BackendCallArg, BackendClause, BackendConstructionCapture,
@@ -59,6 +58,7 @@ use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
     LoweredBitFieldSpec, LoweredBitSize, LoweredExtern, OutcomeEdge, ReceiveAfter, ValueId,
 };
+use super::contract::ContractArrow;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId};
 use super::semantic::{
     CallableDemand, CallableFlowEdge, CallableFlowFact, CallableSurface, CallableTarget, ExecutableRuntimeDemand,
@@ -66,8 +66,8 @@ use super::semantic::{
 };
 use super::transport::{BoundaryId, CallableId, LaneId, ShapeDescr, ShapeId, TransportCarrier, TransportLayout};
 #[cfg(test)]
-use super::types::{ClosureSurfacePos, decode_closure_surface_var};
-use super::types::{Ty, TyCanon, TypeVarId};
+use super::types::{ClosureSurfacePos, TypeVarId, decode_closure_surface_var};
+use super::types::{Ty, TyCanon};
 use super::world::World;
 
 /// The canonical external form of one root's `BackendProgram`.
@@ -370,7 +370,7 @@ impl<'a> ProgramCanon<'a> {
         self.names = Names::default();
         // The body is rendered FIRST so value and callsite names are handed out
         // in body-walk order; the sections that only reference them follow.
-        let body = self.body(&executable.body);
+        let body = self.body(executable.key.activation.function, &executable.body);
         let demand = self.runtime_demand(&executable.abi.materialized.runtime_demand);
         let values = self.value_table(executable);
         let dispatch = executable
@@ -847,10 +847,10 @@ impl ProgramCanon<'_> {
 // ----------------------------------------------------------------------
 
 impl ProgramCanon<'_> {
-    fn body(&mut self, body: &BackendBody) -> Vec<String> {
+    fn body(&mut self, function: FunctionId, body: &BackendBody) -> Vec<String> {
         let mut out = Out::default();
         match body {
-            BackendBody::Extern { signature } => self.lowered_extern(&mut out, signature),
+            BackendBody::Extern { signature } => self.lowered_extern(&mut out, function, signature),
             BackendBody::Clauses {
                 clauses,
                 entries,
@@ -874,29 +874,44 @@ impl ProgramCanon<'_> {
         lines(out)
     }
 
-    fn lowered_extern(&mut self, out: &mut Out, signature: &LoweredExtern) {
+    fn lowered_extern(&mut self, out: &mut Out, function: FunctionId, signature: &LoweredExtern) {
         out.enter(&format!("extern {} {}", signature.abi, signature.symbol));
         out.put(&format!(
             "params {:?} variadic={}",
             signature.params, signature.variadic
         ));
-        out.put(&format!("ret {:?} {}", signature.ret, self.ty(signature.return_ty)));
-        out.put(&format!("contract {}", self.spec_decl(&signature.semantic_contract)));
+        out.put(&format!("ret {:?}", signature.ret));
+        // An extern's declared types and bounds are not carried on
+        // `LoweredExtern` -- they live on its `FunctionContract`, the one
+        // resolver of a function's declared surface (`jobs/contract.rs`).
+        let clause = self
+            .world
+            .function_contract(function)
+            .and_then(|contract| contract.arrows.first())
+            .cloned()
+            .expect("an extern's FunctionContract carries exactly one resolved arrow");
+        out.put(&format!("contract {}", self.contract_arrow(&clause)));
         out.exit();
     }
 
-    /// `constraints` is a `HashMap<TypeVarId, Ty>`, so it is rendered as sorted
+    /// `bounds` is a `HashMap<TypeVarId, Ty>`, so it is rendered as sorted
     /// rows. A var renders through the arrow language's own naming — a
     /// structural address where it has one — never as its raw id.
-    fn spec_decl(&mut self, decl: &ResolvedSpecDecl<Ty>) -> String {
-        let params: Vec<String> = decl.params.iter().map(|ty| self.ty(*ty)).collect();
-        let result = self.ty(decl.result);
-        let constraints: Vec<(TypeVarId, Ty)> = decl.constraints.iter().map(|(var, ty)| (*var, *ty)).collect();
-        let mut bound: Vec<String> = constraints
-            .into_iter()
+    fn contract_arrow(&mut self, clause: &ContractArrow) -> String {
+        let params = self.world.types().arrow_params(&clause.arrow);
+        let result = self
+            .world
+            .types()
+            .arrow_result(&clause.arrow)
+            .expect("a contract clause is an arrow with a result slot");
+        let params: Vec<String> = params.iter().map(|ty| self.ty(*ty)).collect();
+        let result = self.ty(result);
+        let mut bound: Vec<String> = clause
+            .bounds
+            .iter()
             .map(|(var, ty)| {
-                let name = self.tyc.var(self.world.types(), var);
-                format!("{name}={}", self.ty(ty))
+                let name = self.tyc.var(self.world.types(), *var);
+                format!("{name}={}", self.ty(*ty))
             })
             .collect();
         bound.sort();

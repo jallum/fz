@@ -19,13 +19,9 @@ use crate::dispatch_matrix::pattern::{
     PatternBodyId, PatternDispatchError, PatternRow, SourcePatternError, SourcePatternRows,
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
 };
-use crate::extern_contract::{
-    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty,
-};
 use fz_runtime::any_value::ValueKind;
 
 use crate::function_surface::FunctionSurface;
-use crate::fz_ir::ExternAbi;
 use crate::ground_value::GroundValue;
 use crate::modules::identity::ModuleDenotation;
 use crate::source::{SourceMap, Span};
@@ -33,7 +29,7 @@ use crate::source::{SourceMap, Span};
 use super::super::body::{
     BodyTables, CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin,
     DispatchBindings, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry,
-    LoweredExtern, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, SubjectOriginRoot, ValueId, step_used_values,
+    LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, SubjectOriginRoot, ValueId, step_used_values,
 };
 use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses};
@@ -237,14 +233,13 @@ enum ExprStep {
     },
 }
 
-/// The one fact `lower_function` cannot conclude without: the function's own
+/// The facts `lower_function` cannot conclude without: the function's own
 /// definition.
 pub(super) fn lower_function_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
     if world.function_defined_revision(function).is_none() {
-        vec![FactKey::FunctionDefined(function)]
-    } else {
-        Vec::new()
+        return vec![FactKey::FunctionDefined(function)];
     }
+    Vec::new()
 }
 
 /// Lowers one demanded function into Compiler2's structured body form.
@@ -252,44 +247,26 @@ pub(super) fn lower_function_gates(world: &World, function: FunctionId) -> Vec<F
 /// This job reads the frozen function definition and emits one reusable body
 /// fact keyed by `FunctionId`. It lowers only that function, plus any lambda
 /// definitions it syntactically owns, and leaves unrelated bodies cold.
+///
+/// An extern has no body of its own -- its wire ABI is resolved once, by its
+/// own `FunctionContract` (`jobs/contract.rs`) -- so nothing ever demands
+/// `LoweredBody` for one, and this job never runs for one either.
 pub(super) fn lower_function(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
 ) -> Result<JobEffects, FatalError> {
-    if !lower_function_gates(world, function).is_empty() {
-        return Ok(world.wait_for_function_definition(function));
+    if let Some(gate) = lower_function_gates(world, function).into_iter().next() {
+        return Ok(JobEffects::wait_on_current(gate));
     }
     let (source, surface) = world.function_definition(function);
+    debug_assert!(
+        surface.extern_abi.is_none(),
+        "an extern has no LoweredBody; nothing should ever demand one for {function:?}"
+    );
 
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let mut waits = HashSet::new();
-    if surface.extern_abi.is_some() {
-        for referenced in world.function_type_refs(function).iter().cloned() {
-            let fact = FactKey::TypeDefined(referenced);
-            if world.has_fact(&fact) {
-                reads.push(fact);
-            } else {
-                waits.insert(fact);
-            }
-        }
-        // Same wait, `StructDefined` side: an extern contract that names
-        // `%Mod{...}` resolves through the shared `TypeExpr::StructRecord` arm
-        // (`resolve_extern_signature` -> `resolve_spec_decl`), which needs
-        // `Mod`'s settled schema. Resolving before the defstruct lands would
-        // validate and type the tagged record against an incomplete field set.
-        // This waits on the extern spec's struct refs, mirroring the
-        // `TypeDefined` loop above; it is spec-type resolution, distinct from
-        // the struct-literal/pattern lowering wait recorded below.
-        for module in world.function_type_struct_refs(function).iter().copied() {
-            let fact = FactKey::StructDefined(module);
-            if world.has_fact(&fact) {
-                reads.push(fact);
-            } else {
-                waits.insert(fact);
-            }
-        }
-    }
     for clause in &surface.clauses {
         for param in &clause.params {
             collect_local_pattern_requirements(
@@ -361,99 +338,6 @@ fn emit_ownership_scan(tel: &impl crate::telemetry::Telemetry, function: Functio
         &crate::measurements! { steps_scanned: steps_scanned },
         &crate::metadata! { function_id: u64::from(function.as_u32()) },
     );
-}
-
-fn extern_wire_ty(
-    types: &mut super::super::types::Types,
-    body: &crate::ast::TypeExprBody,
-    semantic_ty: &super::super::types::Ty,
-    constraints: &HashMap<super::super::types::TypeVarId, super::super::types::Ty>,
-) -> crate::fz_ir::ExternTy {
-    if let Some(hint) = explicit_extern_wire_hint(body) {
-        return hint;
-    }
-    let upper_bound = if constraints.is_empty() {
-        *semantic_ty
-    } else {
-        types.instantiate(semantic_ty, constraints)
-    };
-    ty_to_extern_ty(types, &upper_bound)
-}
-
-fn extern_param_wire(
-    types: &mut super::super::types::Types,
-    body: &crate::ast::TypeExprBody,
-    semantic_ty: &super::super::types::Ty,
-    constraints: &HashMap<super::super::types::TypeVarId, super::super::types::Ty>,
-    abi: crate::fz_ir::ExternAbi,
-) -> Result<crate::fz_ir::ExternTy, String> {
-    let resolved = if constraints.is_empty() {
-        *semantic_ty
-    } else {
-        types.instantiate(semantic_ty, constraints)
-    };
-    if abi == crate::fz_ir::ExternAbi::C && types.max_tuple_arity(&resolved) != 0 {
-        return Err("C extern aggregate arguments are unsupported; pass an opaque value reference or define an exact scalar C signature".to_string());
-    }
-    Ok(extern_wire_ty(types, body, semantic_ty, constraints))
-}
-
-fn extern_return_wire(
-    types: &mut super::super::types::Types,
-    body: &crate::ast::TypeExprBody,
-    semantic_ty: &super::super::types::Ty,
-    constraints: &HashMap<super::super::types::TypeVarId, super::super::types::Ty>,
-    abi: crate::fz_ir::ExternAbi,
-) -> Result<crate::fz_ir::ExternReturn, String> {
-    let resolved = if constraints.is_empty() {
-        *semantic_ty
-    } else {
-        types.instantiate(semantic_ty, constraints)
-    };
-    let tuple_arity = {
-        let predicate = types.runtime_type_predicate(&resolved);
-        let arities = predicate.tuples.arities();
-        (!arities.cofinite && arities.values.len() == 1)
-            .then(|| arities.values.iter().next().copied())
-            .flatten()
-    };
-    if let Some(arity) = tuple_arity {
-        if abi != crate::fz_ir::ExternAbi::C {
-            return Err("fixed scalar-pair returns are supported only by the `C` ABI".to_string());
-        }
-        if arity != 2 {
-            return Err(format!(
-                "C extern aggregate returns require exactly two scalar fields, found tuple arity {arity}"
-            ));
-        }
-        let fields = types.tuple_projections(&resolved, 2);
-        let fields: [crate::fz_ir::ExternTy; 2] = fields
-            .iter()
-            .map(|field| ty_to_extern_ty(types, field))
-            .collect::<Vec<_>>()
-            .try_into()
-            .expect("two tuple projections");
-        if fields.iter().any(|field| {
-            !matches!(
-                field,
-                crate::fz_ir::ExternTy::I64 | crate::fz_ir::ExternTy::F64 | crate::fz_ir::ExternTy::Bool
-            )
-        }) {
-            return Err(format!(
-                "C extern aggregate return fields must be integer, float, or boolean, found {fields:?}"
-            ));
-        }
-        return Ok(crate::fz_ir::ExternReturn::Pair(fields));
-    }
-    if types.max_tuple_arity(&resolved) != 0 {
-        return Err("C extern aggregate return must resolve to one exact two-field tuple".to_string());
-    }
-    Ok(crate::fz_ir::ExternReturn::Scalar(extern_wire_ty(
-        types,
-        body,
-        semantic_ty,
-        constraints,
-    )))
 }
 
 fn collect_local_dispatch_requirements(
@@ -1225,11 +1109,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     }
 
     fn lower(&mut self) -> Result<(LoweredBody, Vec<Output>, Vec<Changed>), FatalError> {
-        if self.surface.extern_abi.is_some() {
-            let signature = self.resolve_extern_signature()?;
-            return Ok((LoweredBody::Extern { signature }, Vec::new(), Vec::new()));
-        }
-
         let mut clause_defs = Vec::new();
         for clause in self.surface.clauses.clone() {
             clause_defs.push(self.lower_clause(&clause)?);
@@ -1241,125 +1120,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             std::mem::take(&mut self.generated),
             std::mem::take(&mut self.generated_changed),
         ))
-    }
-
-    /// The declared calling convention, or a diagnostic.
-    ///
-    /// Three ways to get it wrong, and every one of them is refused HERE
-    /// rather than in a door's lowering, because a diagnostic raised in the
-    /// shared front end is the only kind every door raises identically. Each
-    /// of these was, at some point, a per-door check that protected fewer
-    /// doors than it appeared to.
-    ///
-    /// 1. An unrecognised name must not fall back to C: the conventions
-    ///    disagree about the implicit process argument and about what a
-    ///    `binary` parameter is, so a wrong guess is a crash inside the callee.
-    ///
-    /// 2. `"fz"` is reserved to the runtime library, because it passes fz's
-    ///    own `*mut Process` and fz's internal value representation. Both
-    ///    belong to the runtime, and a foreign function cannot accept either.
-    ///
-    /// 3. There is no variadic `"fz"`: a variadic call goes through a
-    ///    fixed-arity C dispatcher with nowhere to put the process.
-    fn resolve_extern_abi(&self) -> Result<ExternAbi, FatalError> {
-        let declared = self
-            .surface
-            .extern_abi
-            .as_deref()
-            .expect("extern signatures only resolve for extern fns");
-        let Some(abi) = ExternAbi::parse(declared) else {
-            return Err(self.extern_abi_error(format!(
-                "unknown extern ABI `{}` on `{}`; expected one of {}",
-                declared,
-                self.surface.name,
-                ExternAbi::ALL
-                    .iter()
-                    .map(|known| format!("`{known}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
-        };
-        if abi.takes_process() && !self.declared_by_runtime_library() {
-            return Err(self.extern_abi_error(format!(
-                "`{}` declares the `fz` ABI, which is reserved for fz's own runtime library; \
-                 it passes the running process and fz's internal value representation, \
-                 so declare a foreign symbol `extern \"C\"` instead",
-                self.surface.name
-            )));
-        }
-        if abi.takes_process() && self.surface.variadic {
-            return Err(self.extern_abi_error(format!(
-                "`{}` is variadic and declares the `fz` ABI; every variadic call goes through a \
-                 fixed-arity C dispatcher, which has nowhere to put the implicit process argument",
-                self.surface.name
-            )));
-        }
-        Ok(abi)
-    }
-
-    fn declared_by_runtime_library(&self) -> bool {
-        self.world.is_bootstrap(self.source.owner)
-    }
-
-    fn extern_abi_error(&self, message: String) -> FatalError {
-        emit_job_diagnostic(
-            self.telemetry,
-            Diagnostic::error(codes::LOWER_UNSUPPORTED, message, self.surface.name_span),
-        )
-    }
-
-    fn resolve_extern_signature(&mut self) -> Result<LoweredExtern, FatalError> {
-        // Checked first: it is the cheapest question, and a wrong answer makes
-        // every later one moot.
-        let abi = self.resolve_extern_abi()?;
-        let contract = extern_semantic_contract(&self.surface).map_err(|error| {
-            emit_job_diagnostic(
-                self.telemetry,
-                error.diagnostic(&self.surface.name, self.surface.name_span),
-            )
-        })?;
-        let semantic_contract = self
-            .world
-            .resolve_spec_decl(self.namespace, &contract)
-            .map_err(|error| {
-                emit_job_diagnostic(
-                    self.telemetry,
-                    Diagnostic::error(
-                        codes::RESOLVE_TYPE_ALIAS,
-                        format!(
-                            "compiler2 could not resolve extern contract for `{}`: {}",
-                            self.surface.name, error.msg
-                        ),
-                        error.span,
-                    ),
-                )
-            })?;
-        let params: Vec<_> = self
-            .surface
-            .extern_param_tokens
-            .iter()
-            .zip(semantic_contract.params.iter())
-            .map(|(body, ty)| extern_param_wire(self.world.types_mut(), body, ty, &semantic_contract.constraints, abi))
-            .collect::<Result<_, _>>()
-            .map_err(|message| self.extern_abi_error(format!("`{}`: {message}", self.surface.name)))?;
-        let ret = extern_return_wire(
-            self.world.types_mut(),
-            &self.surface.extern_ret_tokens,
-            &semantic_contract.result,
-            &semantic_contract.constraints,
-            abi,
-        )
-        .map_err(|message| self.extern_abi_error(format!("`{}`: {message}", self.surface.name)))?;
-        let symbol = extern_symbol_from_name(&self.surface.name);
-        Ok(LoweredExtern {
-            abi,
-            symbol: symbol.to_string(),
-            params,
-            variadic: self.surface.variadic,
-            ret,
-            return_ty: semantic_contract.result,
-            semantic_contract,
-        })
     }
 
     fn lower_clause(&mut self, clause: &FnClause) -> Result<ExprClause, FatalError> {
@@ -2688,9 +2448,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         let scanned = Cell::new(0);
         let clause_bounds = clause_bounds(body);
         let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
-        let LoweredBody::Clauses { entries, .. } = body else {
-            unreachable!()
-        };
+        let LoweredBody::Clauses { entries, .. } = body;
         let constructions = scan_steps(entries, &scanned)
             .filter_map(|(entry, step, instruction)| {
                 let LoweredStep::List {
@@ -2713,9 +2471,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             let source = match origin {
                 TransportOrigin::LocalValue(source) => *source,
                 TransportOrigin::OutcomeSubject { owner, subject } => {
-                    let LoweredBody::Clauses { entries, .. } = body else {
-                        unreachable!()
-                    };
+                    let LoweredBody::Clauses { entries, .. } = body;
                     let (target, existing) = {
                         let edge = entries[owner.as_u32() as usize]
                             .tail
@@ -2762,9 +2518,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 ListRewritePermission::RetainOnly,
             );
         }
-        let LoweredBody::Clauses { entries, tables, .. } = body else {
-            unreachable!()
-        };
+        let LoweredBody::Clauses { entries, tables, .. } = body;
         let semantic = compute_entry_captures(entries, tables, &clause_bounds, false);
         let mut physical = compute_entry_captures(entries, tables, &clause_bounds, true);
         for entry in entries.iter() {
@@ -3563,9 +3317,7 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
 /// The values a clause binds before its entry runs: the clause parameters and
 /// everything its projections define.
 fn clause_bounds(body: &LoweredBody) -> HashMap<ControlEntryId, HashSet<ValueId>> {
-    let LoweredBody::Clauses { clauses, tables, .. } = body else {
-        return HashMap::new();
-    };
+    let LoweredBody::Clauses { clauses, tables, .. } = body;
     clauses
         .iter()
         .enumerate()
@@ -3623,9 +3375,7 @@ fn list_source_origin(
             kind: ProjectionKind::ListHead,
         } => Some(TransportOrigin::LocalValue(*source)),
         TransportOrigin::OutcomeSubject { owner, subject } => {
-            let LoweredBody::Clauses { entries, .. } = body else {
-                return None;
-            };
+            let LoweredBody::Clauses { entries, .. } = body;
             let SubjectSource::Projection(projection) =
                 entries[owner.as_u32() as usize].tail.dispatch_plan().subject(*subject)
             else {
@@ -3726,9 +3476,7 @@ fn list_can_rewrite(
     step: usize,
 ) -> bool {
     use super::super::executable_facts::TransportOrigin;
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return false;
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
     let LoweredStep::List {
         value,
         items,
@@ -3755,9 +3503,7 @@ fn source_used_after(
     step: usize,
     source: &SourcePath,
 ) -> bool {
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return true;
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
     let exempt = match entries[entry].steps.get(step) {
         Some(LoweredStep::List { value, .. } | LoweredStep::Tuple { value, .. }) => Some(*value),
         _ => None,
@@ -3791,9 +3537,7 @@ fn any_later_ownership_use(
     mut competes: impl FnMut(ValueId, super::super::body::ValueRole) -> bool,
 ) -> bool {
     use super::super::body::ValueRole;
-    let LoweredBody::Clauses { entries, tables, .. } = body else {
-        return true;
-    };
+    let LoweredBody::Clauses { entries, tables, .. } = body;
     let mut pending = vec![(ControlEntryId::from_u32(entry as u32), step as u32 + 1)];
     let mut visited = HashSet::new();
     while let Some((block_id, start)) = pending.pop() {
@@ -4050,9 +3794,7 @@ fn construct_call_ownership(
 ) {
     use super::super::executable_facts::TransportOrigin;
     use crate::fz_ir::OwnershipMode;
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return;
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
     let calls = entries
         .iter()
         .enumerate()
@@ -4079,9 +3821,7 @@ fn construct_call_ownership(
                         arg_index != peer_index && values_overlap(body, origins, *arg, *peer)
                     });
                     let retained_overlap = if let ControlDestination::Deliver(target) = dest {
-                        let LoweredBody::Clauses { entries, .. } = &*body else {
-                            unreachable!()
-                        };
+                        let LoweredBody::Clauses { entries, .. } = &*body;
                         let target = &entries[target.as_u32() as usize];
                         target
                             .captures
@@ -4105,9 +3845,7 @@ fn construct_call_ownership(
                     }
                 })
                 .collect::<Vec<_>>();
-        let LoweredBody::Clauses { entries, .. } = body else {
-            unreachable!()
-        };
+        let LoweredBody::Clauses { entries, .. } = body;
         let args = match &mut entries[index].tail {
             LoweredTail::DirectCall { args, .. } | LoweredTail::ClosureCall { args, .. } => args,
             _ => unreachable!(),
@@ -4126,9 +3864,7 @@ fn construct_tuple_ownership(
     use super::super::body::ValueRole;
     use super::super::executable_facts::TransportOrigin;
     use crate::fz_ir::OwnershipMode;
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return;
-    };
+    let LoweredBody::Clauses { entries, .. } = body;
     let tuples = scan_steps(entries, scanned)
         .filter_map(|(entry, step, instruction)| match instruction {
             LoweredStep::Tuple { value, items } => Some((
@@ -4165,9 +3901,7 @@ fn construct_tuple_ownership(
                 }
             })
             .collect::<Vec<_>>();
-        let LoweredBody::Clauses { entries, .. } = body else {
-            unreachable!()
-        };
+        let LoweredBody::Clauses { entries, .. } = body;
         let LoweredStep::Tuple { items, .. } = &mut entries[entry].steps[step] else {
             unreachable!()
         };
@@ -4231,10 +3965,7 @@ pub(super) fn retained_value_ids(body: &LoweredBody) -> HashSet<ValueId> {
         entries,
         tables,
         ..
-    } = body
-    else {
-        return HashSet::new();
-    };
+    } = body;
     let mut retained = HashSet::new();
     for (index, clause) in clauses.iter().enumerate() {
         retained.extend(clause.params.iter().copied());
