@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-08T02:01:31Z",
+  "description": "fz-xxd.10's R3 answers \"is this return edge on a cycle\" with executable_reaches (jobs/transport.rs): a depth-first search over settled ExecutableFacts, once per edge per product evaluation, registering a settled read for every visited node.\n\nMeasured on fz-xxd.10 probe V3 (scratch xxd10/r6, timing.json, median of 3 interleaved rounds, same-build binaries, exit codes matching): json_roundtrip 1,767 searches over 329 distinct (from, owner) pairs, 33,301 node visits (4,917 if each pair were searched once). Wall clock: 734-fixture sum develop 15.34 s, V3 15.16 s; 17 heavy fixtures develop 2.92 s, V3 2.99 s; json 174 -\u003e 192 ms. Memoizing per pair while replaying the reads gains nothing (json 193); dropping the replay (unsound) gives json 181: the cost is the per-visit settled reads and their validation, not the search. The old component cut is no faster (json 182) and costs 20,000 jobs.\n\nDesign direction (approved 2026-10-07, ../fz-xxd.10.html): reach as a product in the product layer (pull.rs ProductKey / ProductReadContext), one per (from, owner, arm), computed once and its read set validated once per evaluation. Paper first: the product key, its read set, how a grown ExecutableFacts target set re-opens it, and the predicted read counts on json.\n\nAcceptance: executable_reaches' per-visit reads deleted; json within noise of 181 ms; 17 heavy fixtures within noise of develop (\u003c= +10 ms); the 734 sum \u003c= develop; census jobs and outputs unchanged against fz-xxd.10; no pin rises.",
+  "id": "fz-xxd.13",
+  "labels": [],
+  "parent": "fz-xxd",
+  "priority": 2,
+  "status": "open",
+  "title": "Transport reads each reach once per evaluation",
+  "type": "bug",
+  "updated_at": "2026-10-08T02:01:31Z"
+}
