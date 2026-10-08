@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-08T02:01:31Z",
+  "description": "keying.rs (recursion_supplied_positions doc, ~785-795) records a measurement and cites fz-kdt.213 as its owner; no such ticket exists on the board. The recorded fact: across the fixtures, of the executables added (attributed to the function they key) 36 land on a function that gains a distinct published return and 91 do not, dominated by List.reduce_cont/3 (21), List.reduce_while_cont/3 (18), Range.reduce_while_cont/6 (9) and List.reduce_while_step/3 (6) minting empty_list()/list(tau) ascent rungs across the cont\u003c-\u003estep cycle. The comment proposes the strong component and the reverse call edge, because the rebuild belongs to the callee's position.\n\nfz-xxd.10 deletes FactKey::CallGraphComponent (nothing reads it after R3), so the comment's proposed input no longer exists and the comment is rewritten there.\n\nInvestigate on develop after fz-xxd.10: re-measure the 36/91 split; paper first (shrunk program, predicted rungs) before any design.",
+  "id": "fz-y5x",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "The cont\u003c-\u003estep reduce recursion mints ascent rungs that no distinct return needs",
+  "type": "bug",
+  "updated_at": "2026-10-08T02:01:31Z"
+}
