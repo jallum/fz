@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-08T02:01:31Z",
+  "description": "Interface expectations (World::reference_module_interface_callable, world.rs ~1721, recorded by LowerFunction via jobs/body.rs ~1598/1662) are checked by validate_module_interface_expectations, which runs once, inside Job::DefineModule's own completion (jobs/source.rs ~226), against the expectations present at that moment. Whether a reference is checked therefore depends on scheduling.\n\nEvidence (fz-xxd.10 probe B1, scratch xxd10/r8/B, fsrc.patch): letting a caller resolve an unresolved callee by waiting on FactKey::FunctionSource(callee) instead of ModuleDefined(module) makes 10 fixtures report a false \"module `Enum` does not export `count/1`\" (00282_enumerable_reduce_done_halt, 00568_enum_count_member_reduce, enum_reduce_halt_arm_order, enum_reduce_suspend, enumerable_protocol_dispatch, heredoc, map_enumerable, range_enumerable, string_interpolation, to_string). develop prints {3, true, 6, {:done, 6}} for 00568. The exact path from scheduling to the false diagnostic is not proven: paper first.\n\nFacts that shape the cure: def/defp/extern heads are read at indexing (quoted_surface.rs read_scope_surface, inside Job::IndexCode); each function's FunctionSource is its own derivation (source_publish.rs ~856) and lands before its module's ModuleDefined (k.fz traces: 8-10 ms earlier). Whether a function is exported is fixed by its head.\n\nDirection: each reference reads its answer (exported or not) from the noted head; the one-shot validation is deleted. With it fixed, B1 (wait on FunctionSource) becomes safe and the module stage can be revisited without fz-xxd.10's M2 body walk.\n\nAcceptance: B1 on the census gives identical outputs; validate_module_interface_expectations deleted; a test where a reference is recorded after its module is defined still reports a genuinely missing export; no pin rises.",
+  "id": "fz-afu.20",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 2,
+  "status": "open",
+  "title": "A module's exports are answered from its function heads, not validated once at definition",
+  "type": "bug",
+  "updated_at": "2026-10-08T02:01:31Z"
+}
