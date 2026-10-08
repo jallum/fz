@@ -765,9 +765,13 @@ fn compiler2_inline_forwarding_preserves_input_return_demand() {
     let functions = FunctionCapture::new();
     functions.install(&tel);
     let mut compiler = Compiler2::new(tel);
+    // `junk` is threaded through unread: carrying a list keeps the row off
+    // R1's self-keyed shortcut (a ground int argument alone answers its own
+    // `Recursive`/`InputDemand` with no fact asked at all), so `forward`'s
+    // demand is genuinely derived here.
     compiler.submit_code(CodeSubmission {
         name: Some("inline_forwarding.fz".into()),
-        text: "def forward(x), do: (case x do y -> y end)\ndef main(), do: forward(42)\n".into(),
+        text: "def forward(x, junk), do: (case x do y -> y end)\ndef main(), do: forward(42, [1])\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -776,15 +780,19 @@ fn compiler2_inline_forwarding_preserves_input_return_demand() {
         need: ExecutableNeed::Value,
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42));
-    let forward = function_id(&functions, "forward", 1);
+    let forward = function_id(&functions, "forward", 2);
     assert_eq!(
         compiler
             .world()
             .input_demand(forward)
             .expect("forward demand settled")
             .returned,
-        [crate::dispatch_matrix::demand::DispatchDemand::Whole],
-        "a winning whole-input binding forwards the original input into the return"
+        [
+            crate::dispatch_matrix::demand::DispatchDemand::Whole,
+            crate::dispatch_matrix::demand::DispatchDemand::Ignore,
+        ],
+        "a winning whole-input binding forwards the original input into the return; \
+         junk never reaches it"
     );
 }
 
@@ -14517,33 +14525,32 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
     );
 }
 
-/// fz-kdt.56's acceptance shape: a call chain three deep plus one mutually
-/// recursive pair, so the same program carries a plain reachability answer
-/// (nothing on the chain reaches itself) and a cyclic one.
+/// A call chain three deep plus one mutually recursive pair, so the same
+/// program carries a plain reachability answer (nothing on the chain reaches
+/// itself) and a cyclic one. Every function also takes a `junk` list
+/// parameter it threads unchanged and never reads: carrying a list keeps the
+/// row off the self-keyed shortcut (a ground int argument alone answers its
+/// own recursion and edges with no fact asked at all), so `StaticCallees` and
+/// `Recursive` are genuinely derived here rather than skipped.
 const STATIC_CALL_GRAPH_SOURCE: &str = r#"
-def c(x), do: x + 1
-def b(x), do: c(x) + 1
-def a(x), do: b(x) + 1
-def pong(n), do: ping(n - 1)
-def ping(n) do
+def c(x, junk), do: x + 1
+def b(x, junk), do: c(x, junk) + 1
+def a(x, junk), do: b(x, junk) + 1
+def pong(n, junk), do: ping(n - 1, junk)
+def ping(n, junk) do
   if n <= 0 do
     0
   else
-    pong(n)
+    pong(n, junk)
   end
 end
-def main(), do: dbg(a(1) + ping(3))
+def main(), do: dbg(a(1, [1]) + ping(3, [1]))
 "#;
 
-/// fz-kdt.56: the static call graph is a per-function FACT, extracted from one
-/// body once, and recursion is answered by walking those edges.
-///
-/// Before this ticket `DeriveRecursive` owned the whole traversal: every
-/// evaluation re-extracted the callees of every body it could reach, so
-/// discovering one more layer of the graph cost a full re-scan of the layers
-/// already known (165 evaluations over 100 functions on
-/// `enum_take_drop_split`, 65 of them concluding nothing). Three things have to
-/// hold together for the edge fact to be the honest replacement:
+/// The static call graph is a per-function FACT, extracted from one body
+/// once, and recursion is answered by walking those edges. Three things have
+/// to hold together for the edge fact to be an honest replacement for a
+/// whole-graph re-walk:
 ///
 /// (a) the edges are the body's real callees -- `main` reaches `a` and `ping`,
 ///     the chain steps `a -> b -> c` one hop at a time, `c` is a leaf, and the
@@ -14578,11 +14585,23 @@ fn compiler2_static_callee_facts_are_extracted_once_per_body_and_answer_recursio
     let id = |name: &str, arity: u64| function_id(&functions, name, arity);
     let (main, a, b, c, ping, pong) = (
         id("main", 0),
-        id("a", 1),
-        id("b", 1),
-        id("c", 1),
-        id("ping", 1),
-        id("pong", 1),
+        id("a", 2),
+        id("b", 2),
+        id("c", 2),
+        id("ping", 2),
+        id("pong", 2),
+    );
+
+    // `main/0` takes no arguments, so its own activation is self-keyed by
+    // construction (fz-xxd.10's R1): nothing ever asks for its edges or its
+    // recursion answer, since nothing needs to key an activation that
+    // carries no type variables. Demanded here so the claims below still
+    // cover the entry point itself, exactly as asking for it once would.
+    compiler.demand(Job::DeriveStaticCallees(main));
+    compiler.demand(Job::DeriveRecursive(main));
+    assert_resolved(
+        compiler.drive(),
+        "demanding main's own edges and recursion should still settle",
     );
 
     // (a) the edges themselves. Named rather than id-compared, because the
@@ -14664,30 +14683,17 @@ fn compiler2_static_callee_facts_are_extracted_once_per_body_and_answer_recursio
     }
 }
 
-/// fz-kdt.61: the call graph's strong components are a per-function FACT, and
-/// recursion is a projection of it.
+/// `Recursive(f)` is a per-function FACT derived from `StaticCallees` by one
+/// job, `DeriveRecursive`, walking the reachable subgraph. Two things hold
+/// together on the same chain-plus-cycle fixture the edge facts use:
 ///
-/// `CallGraphComponent(f)` stores the SMALLEST `FunctionId` mutually reachable
-/// with `f`. A strong component is a set and its minimum is a function of that
-/// set alone, so two functions are mutually reachable exactly when their
-/// stored ids are EQUAL -- membership becomes a comparison of two fact reads
-/// instead of a traversal at every asking site.
-///
-/// Three things hold together on the same chain-plus-cycle fixture the edge
-/// facts use:
-///
-/// (a) the cycle shares one canonical id and the chain does not, and the id is
-///     genuinely the smallest member rather than whichever node was walked
-///     first;
-/// (b) recursion agrees with component membership everywhere -- `recursive` is
-///     true for exactly the functions whose component has more than one member
-///     or whose own edge set names them. This is the same answer the deleted
-///     `reaches_self` walk produced, now read off the component;
-/// (c) both facts come from ONE evaluation. The walk is not paid for twice:
-///     the evaluation that publishes `CallGraphComponent(f)` is the same one
-///     that publishes `Recursive(f)`.
+/// (a) `recursive` is true for exactly the functions that reach themselves
+///     through those edges -- the mutual pair, never the chain or `main`,
+///     which calls into the cycle without being in it;
+/// (b) the walk is not paid for twice: the evaluation that publishes
+///     `Recursive(f)` is the only one that does.
 #[test]
-fn compiler2_call_graph_components_are_canonical_and_answer_recursion() {
+fn compiler2_recursive_fact_is_derived_once_and_answers_mutual_recursion() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
     outputs.install(&tel);
@@ -14710,50 +14716,25 @@ fn compiler2_call_graph_components_are_canonical_and_answer_recursion() {
     let id = |name: &str, arity: u64| function_id(&functions, name, arity);
     let (main, a, b, c, ping, pong) = (
         id("main", 0),
-        id("a", 1),
-        id("b", 1),
-        id("c", 1),
-        id("ping", 1),
-        id("pong", 1),
+        id("a", 2),
+        id("b", 2),
+        id("c", 2),
+        id("ping", 2),
+        id("pong", 2),
     );
-    let component = |function: FunctionId| {
-        compiler
-            .world()
-            .call_graph_component(function)
-            .unwrap_or_else(|| panic!("call graph component for {function:?}"))
-    };
 
-    // (a) the mutual pair is one component; the chain is four separate ones.
-    assert_eq!(
-        component(ping),
-        component(pong),
-        "ping and pong reach each other, so they share one component",
+    // `main/0` takes no arguments, so its own activation is self-keyed by
+    // construction (fz-xxd.10's R1): nothing ever asks whether it is
+    // recursive, since nothing needs to key an activation that carries no
+    // type variables. Demanded here so the recursion claim below still
+    // covers the entry point itself, exactly as asking for it once would.
+    compiler.demand(Job::DeriveRecursive(main));
+    assert_resolved(
+        compiler.drive(),
+        "demanding main's own recursion answer should still settle",
     );
-    assert_eq!(
-        component(ping),
-        ping.min(pong),
-        "the canonical member is the SMALLEST id in the component, not whichever \
-         node the walk happened to start from",
-    );
-    for function in [main, a, b, c] {
-        assert_eq!(
-            component(function),
-            function,
-            "{function:?} reaches nothing that reaches it back, so it is its own component",
-        );
-    }
-    let chain = [main, a, b, c, ping];
-    for (index, left) in chain.iter().enumerate() {
-        for right in &chain[index + 1..] {
-            assert_ne!(
-                component(*left),
-                component(*right),
-                "{left:?} and {right:?} are not mutually reachable and must not share an id",
-            );
-        }
-    }
 
-    // (b) recursion is that same answer, read off the component.
+    // (a) the mutual pair is recursive; the chain and `main` are not.
     let recursive = |function: FunctionId| {
         compiler
             .world()
@@ -14761,18 +14742,6 @@ fn compiler2_call_graph_components_are_canonical_and_answer_recursion() {
             .unwrap_or_else(|| panic!("body keying for {function:?}"))
             .recursive
     };
-    for function in [main, a, b, c, ping, pong] {
-        let members = [main, a, b, c, ping, pong]
-            .into_iter()
-            .filter(|other| component(*other) == component(function))
-            .count();
-        let self_edge = compiler.world().static_callees(function).contains(&function);
-        assert_eq!(
-            recursive(function),
-            members > 1 || self_edge,
-            "{function:?}: recursion must agree with its component membership",
-        );
-    }
     assert!(recursive(ping) && recursive(pong), "the mutual pair is recursive");
     for function in [main, a, b, c] {
         assert!(
@@ -14781,22 +14750,22 @@ fn compiler2_call_graph_components_are_canonical_and_answer_recursion() {
         );
     }
 
-    // (c) one walk, two facts. A split job would pay for the traversal twice.
+    // (b) one walk, one publication. `DeriveRecursive` may block while it waits
+    // for a callee's edges -- that is demand, not work -- but exactly one of
+    // its evaluations may conclude and publish the answer.
     for function in [main, a, b, c, ping, pong] {
         let publications = outputs
-            .stops_matching(|job| *job == Job::DeriveCallGraphComponent(function))
+            .stops_matching(|job| *job == Job::DeriveRecursive(function))
             .into_iter()
             .filter(|stop| {
-                stop.effects.as_ref().is_some_and(|effects| {
-                    effects.outputs.contains(&FactKey::CallGraphComponent(function))
-                        && effects.outputs.contains(&FactKey::Recursive(function))
-                })
+                stop.effects
+                    .as_ref()
+                    .is_some_and(|effects| effects.outputs.contains(&FactKey::Recursive(function)))
             })
             .count();
         assert_eq!(
             publications, 1,
-            "{function:?}: the component and the keying it decides must publish from exactly \
-             one evaluation of one walk",
+            "{function:?} should have its recursion answered by exactly one evaluation",
         );
     }
 }
@@ -14839,8 +14808,8 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     );
     assert!(
         outputs
-            .take(Job::DeriveCallGraphComponent(build_id))
-            .expect("DeriveCallGraphComponent job effects for build/2")
+            .take(Job::DeriveRecursive(build_id))
+            .expect("DeriveRecursive job effects for build/2")
             .contains(&presence(FactKey::Recursive(build_id), true)),
         "the recursive fact should be published for closure-mediated recursion",
     );
@@ -16116,6 +16085,207 @@ fn compiler2_kernel_operator_wrappers_lower_to_private_gateway_calls() {
 }
 
 #[test]
+fn compiler2_one_plus_two_never_starts_a_job_for_the_untaken_coercion_externs() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    outputs.install(&tel);
+    let modules = ModuleCapture::new();
+    modules.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/one_plus_two.fz".to_string()),
+        text: "defmodule Main do\n  def main(), do: 1 + 2\nend\n".to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("Main".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "1 + 2 should resolve through its int/int extern alone",
+    );
+
+    let kernel = module_id(&modules, "Kernel");
+    // Neither coercion extern is ever defined by this compile, so neither can
+    // be found through `FunctionCapture` or the module's public interface.
+    // `reference_function` is the same lookup dispatch resolution itself uses
+    // to name a callee by its module, name and arity: the drive is already
+    // quiescent, so this is a pure registry lookup of an id indexing already
+    // minted, not a new reference that could start a job of its own.
+    let extern_if = compiler.world_mut().reference_function(kernel, "fz_op_add_if", 2);
+    let extern_ff = compiler.world_mut().reference_function(kernel, "fz_op_add_ff", 2);
+
+    // Every job kind whose subject names a function directly, or (for
+    // `AnalyzeActivation`) through the activation it analyzes.
+    let jobs_touching = |function: FunctionId| {
+        outputs.stops_matching(move |job: &Job| match job {
+            Job::DefineFunction(f)
+            | Job::ExpandFunctionSource(f)
+            | Job::DeriveFunctionContract(f)
+            | Job::LowerFunction(f)
+            | Job::ReifyGuardDispatch(f)
+            | Job::PlanEntryDispatch(f)
+            | Job::DeriveStaticCallees(f)
+            | Job::DeriveRecursive(f)
+            | Job::DeriveInputDemand(f) => *f == function,
+            Job::AnalyzeActivation(activation) => activation.function == function,
+            _ => false,
+        })
+    };
+
+    let if_jobs = jobs_touching(extern_if);
+    let ff_jobs = jobs_touching(extern_ff);
+    assert!(
+        if_jobs.is_empty(),
+        "fz_op_add_if/2 is a dispatch arm `1 + 2` never takes, so no job should ever run for it: {if_jobs:?}",
+    );
+    assert!(
+        ff_jobs.is_empty(),
+        "fz_op_add_ff/2 is a dispatch arm `1 + 2` never takes, so no job should ever run for it: {ff_jobs:?}",
+    );
+}
+
+#[test]
+fn compiler2_an_extern_reached_by_a_recursive_caller_is_still_a_leaf() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    outputs.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let modules = ModuleCapture::new();
+    modules.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/recursive_extern_leaf.fz".to_string()),
+        text: concat!(
+            "extern \"C\" defp step(integer) :: integer\n",
+            "defmodule Main do\n",
+            "  def loop(0, _junk), do: 0\n",
+            "  def loop(n, junk), do: step(loop(n - 1, junk))\n",
+            "  def main(), do: loop(3, [1])\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("Main".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(compiler.drive(), "a recursive loop should reach its extern callee");
+
+    let step = function_id(&functions, "step", 1);
+    assert!(
+        compiler.world().static_callees(step).is_empty(),
+        "an extern names no fz callees, even when a recursive caller reaches it",
+    );
+    let reads = outputs.effects(Job::DeriveStaticCallees(step)).reads;
+    assert!(
+        !reads
+            .iter()
+            .any(|read| matches!(read.fact(), FactKey::LoweredBody(f) if *f == step)),
+        "an extern's wire ABI is known from its source head alone, so deriving its callees must never read a lowered body: {reads:?}",
+    );
+}
+
+#[test]
+fn compiler2_recursive_answers_mutual_recursion_and_a_non_recursive_chain() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/recursive_fact_mix.fz".to_string()),
+        text: concat!(
+            "def a(x, junk), do: b(x, junk)\n",
+            "def b(x, junk), do: a(x, junk)\n",
+            "def leaf(x, _junk), do: x\n",
+            "def mid(x, junk), do: leaf(x, junk)\n",
+            "def main(), do: {a(1, [1]), mid(1, [1])}\n",
+        )
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "a mutually recursive pair and a non-recursive chain should both resolve",
+    );
+
+    let a = function_id(&functions, "a", 2);
+    let b = function_id(&functions, "b", 2);
+    let mid = function_id(&functions, "mid", 2);
+    let leaf = function_id(&functions, "leaf", 2);
+
+    let recursive = |function: FunctionId| {
+        compiler
+            .world()
+            .body_keying(function)
+            .unwrap_or_else(|| panic!("Recursive fact for {function:?}"))
+            .recursive
+    };
+    assert!(recursive(a), "a/2 reaches itself through b/2, so it is recursive");
+    assert!(recursive(b), "b/2 reaches itself through a/2, so it is recursive");
+    assert!(
+        !recursive(mid),
+        "mid/2 -> leaf/2 never comes back, so it is not recursive"
+    );
+    assert!(!recursive(leaf), "leaf/2 calls nothing, so it is not recursive");
+}
+
+#[test]
+fn compiler2_a_call_into_an_undefined_module_costs_its_caller_no_extra_analysis_run() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    outputs.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/module_wait.fz".to_string()),
+        text: "defmodule Main do\n  def main(), do: K.helper(1)\nend\ndefmodule K do\n  def helper(x), do: x\nend\n"
+            .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("Main".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "main/0 should resolve, reaching K.helper across modules",
+    );
+
+    // The module gate in `analyze_activation_gates` names a callee's
+    // not-yet-defined module straight from `direct_callees` over the lowered
+    // body the analysis is already holding, so finding that wait never
+    // costs a `DeriveStaticCallees` run of its own on the caller.
+    let main = function_id(&functions, "main", 0);
+    assert!(
+        outputs
+            .stops_matching(|job| matches!(job, Job::DeriveStaticCallees(f) if *f == main))
+            .is_empty(),
+        "discovering K's undefined module should read main/0's lowered body directly, never derive main/0's own StaticCallees",
+    );
+}
+
+#[test]
 fn compiler2_kernel_float_remainder_uses_the_declared_private_c_extern_at_every_door() {
     let source = "defmodule Main do\n  def main(), do: dbg(-7.5 % 2.0)\nend\n";
 
@@ -16933,9 +17103,13 @@ fn compiler2_nested_guard_demand_names_only_caller_arguments() {
     let functions = FunctionCapture::new();
     functions.install(&tel);
     let mut compiler = Compiler2::new(tel);
+    // `junk` is threaded through unread: carrying a list keeps the row off
+    // R1's self-keyed shortcut (ground atom/int arguments alone answer their
+    // own `Recursive`/`InputDemand` with no fact asked at all), so `choose`'s
+    // demand is genuinely derived here.
     compiler.submit_code(CodeSubmission {
         name: Some("guard_input_owner.fz".into()),
-        text: "def wanted(_, value) when value == 42, do: true\ndef wanted(_, _), do: false\ndef choose(_guard_subject, _unused, value) when wanted(0, value), do: 42\ndef choose(_, _, _), do: 7\ndef main(), do: choose(:guard_subject, :unused, 42)\n".into(),
+        text: "def wanted(_, value) when value == 42, do: true\ndef wanted(_, _), do: false\ndef choose(_guard_subject, _unused, value, _junk) when wanted(0, value), do: 42\ndef choose(_, _, _, _), do: 7\ndef main(), do: choose(:guard_subject, :unused, 42, [1])\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -16947,15 +17121,16 @@ fn compiler2_nested_guard_demand_names_only_caller_arguments() {
     assert_eq!(
         compiler
             .world()
-            .input_demand(function_id(&functions, "choose", 3))
+            .input_demand(function_id(&functions, "choose", 4))
             .unwrap()
             .local_dispatch,
         [
             crate::dispatch_matrix::demand::DispatchDemand::Ignore,
             crate::dispatch_matrix::demand::DispatchDemand::Ignore,
-            crate::dispatch_matrix::demand::DispatchDemand::Whole
+            crate::dispatch_matrix::demand::DispatchDemand::Whole,
+            crate::dispatch_matrix::demand::DispatchDemand::Ignore,
         ],
-        "a guard demands what it reads, not the subject that carries the question"
+        "a guard demands what it reads, not the subject that carries the question, nor junk"
     );
 }
 
@@ -19461,13 +19636,17 @@ type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 /// `return_tuple_ladder` is the bare case: one activation, seventeen revisions,
 /// widened.
 ///
-/// `json_roundtrip`'s ladder is empty: a caller that reads only a callee's
-/// concluded answer skips the intermediate, partial revisions a callee
-/// publishes while still missing a clause, so every activation here
-/// settles at or under the ceiling.
+/// How deep json's recursive value type climbs before widening depends on
+/// when its readers first observe the intermediate rungs: asking a contract
+/// callee's keying facts early lets one more nesting rung be observed, so
+/// `Json.array/2` and `Json.array_next/2` each take one extra revision to
+/// settle.
 const RETURN_LADDERS: &[PinnedLadder] = &[
     ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
-    ("fixtures2/behavior/json_roundtrip.fz", &[]),
+    (
+        "fixtures2/behavior/json_roundtrip.fz",
+        &[("Json.array/2", 6, false), ("Json.array_next/2", 6, false)],
+    ),
 ];
 
 /// The other four `json_*` fixtures share this one's decode loop and measure the

@@ -33,6 +33,30 @@ impl LambdaOccurrences {
     }
 }
 
+pub(crate) struct SourceHeads {
+    pub(crate) is_extern: bool,
+    pub(crate) declares_spec: bool,
+}
+
+pub(crate) fn source_heads(root: &QuotedSourceRoot, sources: &SourceMap) -> Result<SourceHeads, QuotedSourceError> {
+    let mut heads = SourceHeads {
+        is_extern: false,
+        declares_spec: false,
+    };
+    let mut first_form = true;
+    for item in root.cursor().list_items()? {
+        let node = expect_ast_node(&item, "grouped function item", sources)?;
+        let head = atom_name(&node.head)?;
+        if head == "@spec" {
+            heads.declares_spec = true;
+        } else if !head.starts_with('@') && first_form {
+            heads.is_extern = head == "extern";
+            first_form = false;
+        }
+    }
+    Ok(heads)
+}
+
 pub(crate) fn derive_function_surface(
     root: &QuotedSourceRoot,
     sources: &SourceMap,

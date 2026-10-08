@@ -1591,7 +1591,7 @@ fn family_work(report: &CausalReport, kind: &str) -> (u64, FormulaWork) {
 /// (126, 26): `derive_input_demand` waits on `StaticCallees` before it walks
 /// anything, so the edge facts a component walk needs are already demanded
 /// when it starts and eight of its restarts never happen.
-const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
+const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // fz-5xp.18: 101 -> 125 evaluations and 51 -> 63 blocked. Each comparison
     // operator now has a clause per orderable operand pair, and this fixture
     // reaches four of them; the callees of each are derived once.
@@ -1611,7 +1611,11 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // leaves awaited reruns its own component derivation once the callee
     // concludes instead of settling together with it; StaticCallees work
     // is unaffected.
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 64, 22, 63, 0),
+    // fz-xxd.10: 64/22 -> 40/20 DeriveRecursive evaluations/unchanged, and
+    // 63 -> 58 DeriveStaticCallees evaluations. `Recursive` and
+    // `StaticCallees` are no longer asked for every monomorphic activation
+    // this fixture's Range/Map helpers key under (R1's self-keyed shortcut).
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 40, 20, 58, 0),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -1621,7 +1625,17 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // A job gated on a fact its subject already carries never starts to
     // discover that fact missing, then wake once the fact lands
     // (`Job::missing_gates`).
-    ("fixtures/00571_enum_predicate_search.fz", 71, 8, 81, 0),
+    // fz-xxd.10: 71/8 -> 48/28 DeriveRecursive evaluations/unchanged, and
+    // 81 -> 37 DeriveStaticCallees evaluations. `Recursive` and
+    // `StaticCallees` are no longer asked for every monomorphic activation
+    // this fixture's predicate helpers key under (R1's self-keyed
+    // shortcut). Measured: the subjects that vanish are exactly the
+    // self-keyed leaves (Kernel operators, def/1, defp/1, main/0 and its
+    // lambdas). On the subjects that remain, every added run is a run that
+    // changes nothing: each remaining first-level caller now walks the
+    // shared static graph itself and blocks once per level, where before
+    // main/0 walked it first.
+    ("fixtures/00571_enum_predicate_search.fz", 48, 28, 37, 0),
     // fz-5xp.6: `Range.count` uses `div/2`, so fewer bodies are extracted.
     // fz-5xp.30: 126 -> 128 component evaluations. The reached arithmetic
     // result/status helpers are ordinary generic calls.
@@ -1642,7 +1656,51 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // link known only once the previous one is. That per-function reachable
     // walk is fz-afu.8's subject ("one walk per program, not one per
     // function"); recursive answers and compiled programs are unchanged.
-    ("fixtures/00420_enum_take_drop_split.fz", 128, 25, 133, 0),
+    // fz-xxd.10: 128/25 -> 113/50 DeriveRecursive evaluations/unchanged, and
+    // 133 -> 105 DeriveStaticCallees evaluations. `Recursive` and
+    // `StaticCallees` are no longer asked for every monomorphic activation
+    // this fixture's Enum helpers key under (R1's self-keyed shortcut).
+    // Measured: the subjects that vanish are exactly the self-keyed leaves
+    // (Kernel operators, def/1, defp/1, main/0 and its lambdas). On the
+    // subjects that remain, every added run is a run that changes nothing:
+    // each remaining first-level caller now walks the shared static graph
+    // itself and blocks once per level, where before main/0 walked it
+    // first.
+    ("fixtures/00420_enum_take_drop_split.fz", 113, 50, 105, 0),
+    // fz-xxd.10: 00607-00610 pin the shared-walk shape directly. Four
+    // callers (p1-p4) share one call chain of depth eight; each first-level
+    // caller walks the shared static graph itself and blocks once per
+    // level, so a run that changes nothing grows with callers times depth.
+    // Source order (callees defined before callers, or callers before
+    // callees) does not change the counts.
+    (
+        "fixtures/00607_static_reach_shared_chain_callees_first.fz",
+        44,
+        32,
+        20,
+        0,
+    ),
+    (
+        "fixtures/00608_static_reach_shared_chain_callers_first.fz",
+        44,
+        32,
+        20,
+        0,
+    ),
+    (
+        "fixtures/00609_static_reach_chain_into_recursion_callees_first.fz",
+        62,
+        48,
+        27,
+        0,
+    ),
+    (
+        "fixtures/00610_static_reach_chain_into_recursion_callers_first.fz",
+        62,
+        48,
+        27,
+        0,
+    ),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -1674,11 +1732,11 @@ fn deriving_recursion_from_call_graph_facts_extracts_each_body_once() {
         );
         let report = CausalReport::derive(trace.events());
 
-        let (_, recursive) = family_work(&report, "DeriveCallGraphComponent");
+        let (_, recursive) = family_work(&report, "DeriveRecursive");
         assert_eq!(
             (recursive.evaluations, recursive.unchanged_outputs),
             (evaluations, concluded_nothing),
-            "{fixture}: DeriveCallGraphComponent work moved off its fz-kdt.56 pin; re-measure \
+            "{fixture}: DeriveRecursive work moved off its fz-kdt.56 pin; re-measure \
              and re-pin with the reason. Full row: {recursive:?}"
         );
 
@@ -2092,7 +2150,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // activations behind the eight withdrawn claims (above) are each
         // analyzed only on the concluded one instead of on every
         // intermediate answer; zero-change stays 3.
-        analyze_evaluations: 167,
+        // fz-xxd.10: 167 -> 168. Measured: the same 66 subjects;
+        // `Enum.to_list/1` gains a run that changes something -- a caller
+        // woken once more because the early keying ask subscribed it to a
+        // callee's `Recursive` and `InputDemand`; zero-change stays 3.
+        analyze_evaluations: 168,
         analyze_zero_change: 3,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
@@ -2148,7 +2210,16 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `DeriveInputDemand`/`CallSiteSummary` runs that each run once,
         // on a callee's concluded answer, instead of re-walking a caller
         // while one of its callees is still unconcluded.
-        total_evaluations: 656,
+        // fz-xxd.10: 656 -> 591. `Recursive`, `InputDemand` and
+        // `StaticCallees` are no longer asked for every monomorphic
+        // activation this fixture's Range/Map helpers key under (R1's
+        // self-keyed shortcut): DeriveCallGraphComponent(64) is replaced by
+        // DeriveRecursive(40), net -24; DeriveInputDemand -12;
+        // DeriveStaticCallees -5. Fewer sources ever reach a definition once
+        // their only callers are among those: DefineFunction -12,
+        // ExpandFunctionSource -12, PlanEntryDispatch -2. AnalyzeActivation
+        // +1 and DeriveTypeDef +1 are small knock-ons of the same drop.
+        total_evaluations: 591,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2237,7 +2308,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // so their reproducing analyses go with them.
         // A caller reads only a callee's concluded return, so it does not
         // re-run on every intermediate answer.
-        analyze_evaluations: 503,
+        // fz-xxd.10: 503 -> 498. Asking a contract callee's keying facts on
+        // the same pass removes five reruns that used to wait for a later
+        // pass to see them.
+        analyze_evaluations: 498,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -2310,7 +2384,18 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // this fixture's drop in total evaluations; the rest are the same
         // `DeriveInputDemand`/`CallSiteSummary` reruns withholding removes
         // everywhere else on this fixture.
-        total_evaluations: 1101,
+        // fz-xxd.10: 1101 -> 911. `Recursive`, `InputDemand` and
+        // `StaticCallees` are no longer asked for every monomorphic
+        // activation this fixture's predicate helpers key under (R1's
+        // self-keyed shortcut): DeriveCallGraphComponent(71) is replaced by
+        // DeriveRecursive(48), net -23; DeriveInputDemand -83;
+        // DeriveStaticCallees -44. Fewer sources ever reach a definition
+        // once their only callers are among those: DefineFunction -17,
+        // ExpandFunctionSource -17. LowerFunction -1 and PlanEntryDispatch
+        // -1 are the same externs-no-caller-reaches drop as above.
+        // AnalyzeActivation -5 (pinned above) and DeriveTypeDef +1 are small
+        // knock-ons of the same drop.
+        total_evaluations: 911,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2472,7 +2557,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // landing: `main/0` walks past its pending calls, so protocol-call
         // readers exist when each impl lands (4, then 10 of them); each
         // shifted reader passes through a blocked run before concluding.
-        shifts: shifts(14, 29),
+        // fz-xxd.10: 14 -> 15 shift wakes, 29 -> 32 rebased completions.
+        // Asking a contract callee's keying facts on the same pass starts
+        // watching its `InputDemand` one pass earlier, while it is still
+        // climbing, so one more shift reaches a reader directly and the
+        // activations keyed off that reader rebase through three more of
+        // the climb's steps before it settles.
+        shifts: shifts(15, 32),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
         // the same change bought: the accumulator that used to widen to
@@ -2580,8 +2671,14 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // callee publishes on its own way there; zero-change stays flat
         // at 7. This is the fixture the schedule-dependent convergence
         // behavior noted above was measured on.
-        analyze_evaluations: 617,
-        analyze_zero_change: 7,
+        // fz-xxd.10: 617 -> 619, zero-change 7 -> 8. Measured: the same 232
+        // subjects. `Enum.to_list/1` and `Kernel.-/2` each gain a run that
+        // changes something; `Enum.reduce_while/3` gains one that changes
+        // nothing; `Enum.drop_positive/2`'s lambda loses one. Each added run
+        // is a caller woken once more because the early keying ask
+        // subscribed it to a callee's `Recursive` and `InputDemand`.
+        analyze_evaluations: 619,
+        analyze_zero_change: 8,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
         // this fixture's deep call graph is where the removed starts pile
@@ -2635,7 +2732,18 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // this fixture's drop in total evaluations; the rest are the same
         // `DeriveInputDemand`/`CallSiteSummary` reruns withholding removes
         // everywhere else on this fixture.
-        total_evaluations: 1604,
+        // fz-xxd.10: 1604 -> 1476. `Recursive`, `InputDemand` and
+        // `StaticCallees` are no longer asked for every monomorphic
+        // activation this fixture's Enum helpers key under (R1's
+        // self-keyed shortcut): DeriveCallGraphComponent(128) is replaced
+        // by DeriveRecursive(113), net -15; DeriveInputDemand -51;
+        // DeriveStaticCallees -28. Fewer sources ever reach a definition
+        // once their only callers are among those: DefineFunction -18,
+        // ExpandFunctionSource -18. PlanEntryDispatch -1 is the same
+        // externs-no-caller-reaches drop as above. AnalyzeActivation +2
+        // (pinned above) and DeriveTypeDef +1 are small knock-ons of the
+        // same drop.
+        total_evaluations: 1476,
     },
 ];
 
@@ -2735,9 +2843,13 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
 }
 
 /// A callee whose `@spec` makes it a contract-declaring function. Analyzing
-/// `main` reaches the call while `M.helper/1` has neither its contract nor
-/// the facts that key its activation.
-const CONTRACT_CALLEE_SOURCE: &str = "defmodule M do\n  @spec helper(integer) :: integer\n  def helper(x), do: x + 1\nend\ndef main(), do: M.helper(41)\n";
+/// `main` reaches the call while `M.helper/2` has neither its contract nor
+/// the facts that key its activation. `junk` is an unused list parameter
+/// threaded through unread: carrying a list keeps the row off R1's
+/// self-keyed shortcut (a ground int argument alone answers its own
+/// `Recursive`/`InputDemand` with no fact asked at all), so this call
+/// genuinely asks for them.
+const CONTRACT_CALLEE_SOURCE: &str = "defmodule M do\n  @spec helper(integer, [integer]) :: integer\n  def helper(x, junk), do: x + 1\nend\ndef main(), do: M.helper(41, [1])\n";
 
 /// The function-keyed facts a completion reports itself blocked on, as
 /// `"Kind(function_id)"` — kind plus `function_id` is the whole identity the
@@ -2769,7 +2881,7 @@ fn function_id_named(trace: &PublicTrace, label: &str) -> u64 {
 
 /// fz-kdt.86: a callee's prerequisites are ONE ask, never a ladder.
 ///
-/// Before a call to `M.helper/1` can resolve, the callee's contract must be
+/// Before a call to `M.helper/2` can resolve, the callee's contract must be
 /// applied to the surface AND the facts that key its activation
 /// (`Recursive`, `InputDemand`) must exist. When the analysis first reaches
 /// the callsite none of the three is there yet. Waits are AND-satisfied, so
@@ -2789,7 +2901,7 @@ fn an_analysis_asks_for_a_callees_contract_and_keying_facts_in_one_block() {
         "the contract-callee source must compile for its blocks to describe a whole drive"
     );
 
-    let helper = function_id_named(&trace, "M.helper/1");
+    let helper = function_id_named(&trace, "M.helper/2");
     let prerequisites = ["FunctionContract", "Recursive", "InputDemand"]
         .into_iter()
         .map(|kind| format!("{kind}({helper})"))
@@ -2811,7 +2923,7 @@ fn an_analysis_asks_for_a_callees_contract_and_keying_facts_in_one_block() {
     assert_eq!(
         blocks.len(),
         1,
-        "an analysis must spend exactly ONE block on M.helper/1's prerequisites; \
+        "an analysis must spend exactly ONE block on M.helper/2's prerequisites; \
          each extra block is a rung of a ladder. Blocks seen: {blocks:?}"
     );
     assert!(

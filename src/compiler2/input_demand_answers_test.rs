@@ -169,25 +169,35 @@ fn most_reads_in_one_run(work: &DemandWork) -> usize {
 
 #[test]
 fn a_chain_reads_each_callee_answer_once_and_no_callee_body() {
-    let work = input_demand_work("def h(x), do: x\ndef g(x), do: h(x)\ndef f(x), do: g(x)\ndef main(), do: f(1)\n");
-    let counts = ["f/1", "g/1", "h/1", "main/0"].map(|function| (function, runs_of(&work, function).len()));
-    assert_eq!(counts, [("f/1", 2), ("g/1", 2), ("h/1", 1), ("main/0", 1)]);
+    // `junk` is threaded through unread: carrying a list keeps every row off
+    // R1's self-keyed shortcut (a ground int argument alone answers its own
+    // `Recursive`/`InputDemand` with no fact asked at all), so the chain's
+    // demand is genuinely derived here.
+    let work = input_demand_work(
+        "def h(x, junk), do: x\ndef g(x, junk), do: h(x, junk)\ndef f(x, junk), do: g(x, junk)\ndef main(), do: f(1, [1])\n",
+    );
+    let counts = ["f/2", "g/2", "h/2", "main/0"].map(|function| (function, runs_of(&work, function).len()));
+    // `main/0` takes no arguments, so it is self-keyed by construction (R1):
+    // nothing ever calls it, so nothing ever demands its own `InputDemand`.
+    assert_eq!(counts, [("f/2", 2), ("g/2", 2), ("h/2", 1), ("main/0", 0)]);
     assert_eq!(
         body_reads_of_other_functions(&work),
         Vec::new(),
         "an acyclic caller reads its callees' answers, never their bodies"
     );
-    let f = runs_of(&work, "f/1");
+    let f = runs_of(&work, "f/2");
     assert!(
         f[1].reads.contains(&DemandRead {
             fact: "InputDemand",
-            of: "g/1".to_string(),
+            of: "g/2".to_string(),
             concluded: true,
         }),
         "f reads g's answer once it has concluded: {:?}",
         f[1].reads
     );
-    assert_eq!((total_reads(&work), most_reads_in_one_run(&work)), (23, 4));
+    // main/0's own `InputDemand` is never derived, so its run and its reads
+    // are not among these: five runs total (f twice, g twice, h once).
+    assert_eq!((total_reads(&work), most_reads_in_one_run(&work)), (17, 4));
 }
 
 /// `ping` and `pong` hand `x` back and forth, so their demands are one
@@ -199,22 +209,26 @@ fn a_chain_reads_each_callee_answer_once_and_no_callee_body() {
 /// By hand: ping 2, pong 2, `-` 2, each extern 1.
 #[test]
 fn a_forwarding_cycle_is_solved_by_the_callee_that_is_waited_on() {
+    // `junk` is threaded through unread: carrying a list keeps every row off
+    // R1's self-keyed shortcut (ground int/atom arguments alone answer their
+    // own `Recursive`/`InputDemand` with no fact asked at all), so the cycle's
+    // demand is genuinely derived here.
     let work = input_demand_work(
-        "def ping(n, x), do: pong(n, x)\ndef pong(0, x), do: x\ndef pong(n, x), do: ping(n - 1, x)\ndef main(), do: ping(3, :a)\n",
+        "def ping(n, x, junk), do: pong(n, x, junk)\ndef pong(0, x, junk), do: x\ndef pong(n, x, junk), do: ping(n - 1, x, junk)\ndef main(), do: ping(3, :a, [1])\n",
     );
-    assert_eq!(work.answers.get("ping/2"), Some(&PING_ANSWER.to_string()));
-    assert_eq!(work.answers.get("pong/2"), Some(&PONG_ANSWER.to_string()));
-    let counts = ["ping/2", "pong/2", "-/2"].map(|function| (function, runs_of(&work, function).len()));
-    assert_eq!(counts, [("ping/2", 2), ("pong/2", 2), ("-/2", 2)]);
+    assert_eq!(work.answers.get("ping/3"), Some(&PING_ANSWER.to_string()));
+    assert_eq!(work.answers.get("pong/3"), Some(&PONG_ANSWER.to_string()));
+    let counts = ["ping/3", "pong/3", "-/2"].map(|function| (function, runs_of(&work, function).len()));
+    assert_eq!(counts, [("ping/3", 2), ("pong/3", 2), ("-/2", 2)]);
     let partner_body = ["EntryDispatch", "LoweredBody", "StaticCallees"].map(|fact| DemandRead {
         fact,
-        of: "ping/2".to_string(),
+        of: "ping/3".to_string(),
         concluded: false,
     });
     let expected = [&partner_body[..], &partner_body[..]]
         .concat()
         .into_iter()
-        .map(|read| ("pong/2".to_string(), read))
+        .map(|read| ("pong/3".to_string(), read))
         .collect::<Vec<_>>();
     assert_eq!(
         body_reads_of_other_functions(&work),
@@ -224,11 +238,12 @@ fn a_forwarding_cycle_is_solved_by_the_callee_that_is_waited_on() {
 }
 
 /// The answers the whole-cone walk derived for the cycle above, before
-/// composition. Composing from answers must not change them.
-const PING_ANSWER: &str =
-    "InputDemand { local_dispatch: [Ignore, Ignore], forwarded_dispatch: [Whole, Ignore], returned: [Ignore, Whole] }";
-const PONG_ANSWER: &str =
-    "InputDemand { local_dispatch: [Whole, Ignore], forwarded_dispatch: [Whole, Ignore], returned: [Ignore, Whole] }";
+/// composition. Composing from answers must not change them. `junk` (slot 2)
+/// is never read, matched, or returned, so it carries `Ignore` throughout.
+const PING_ANSWER: &str = "InputDemand { local_dispatch: [Ignore, Ignore, Ignore], forwarded_dispatch: \
+     [Whole, Ignore, Ignore], returned: [Ignore, Whole, Ignore] }";
+const PONG_ANSWER: &str = "InputDemand { local_dispatch: [Whole, Ignore, Ignore], forwarded_dispatch: \
+     [Whole, Ignore, Ignore], returned: [Ignore, Whole, Ignore] }";
 
 /// `Enum.take/2` forwards its list and count through a dozen Enum helpers, a
 /// protocol callback and its implementation. Reading answers instead of
@@ -245,7 +260,7 @@ fn enum_take_derives_input_demand_proportionally() {
     let work = input_demand_work("def main(), do: Enum.take([1, 2, 3], 2)\n");
     assert_eq!(
         (work.runs.len(), total_reads(&work), most_reads_in_one_run(&work)),
-        (76, 282, 8)
+        (45, 149, 6)
     );
 }
 

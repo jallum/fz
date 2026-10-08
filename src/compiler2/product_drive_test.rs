@@ -310,11 +310,17 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             // `before_cold_work`: `submit_code` and `submit_root` only
             // enqueue them, and this cold compile is the first drive that
             // pops either one to actually run it.
+            // `main/0` takes no arguments, so it is self-keyed by
+            // construction (R1): nothing ever asks for its `StaticCallees`,
+            // `Recursive` or `InputDemand`. Removing those three job kinds
+            // also changes which code path first discovers the root's own
+            // activation, so its completions land as a `blocked_waiter_expansion`
+            // wake rather than an `activation_published` one.
             ignition: 1,
-            changed_revision_wake: 16,
-            activation_published: 2,
+            changed_revision_wake: 11,
+            activation_published: 0,
             gate_expansion: 9,
-            blocked_waiter_expansion: 0,
+            blocked_waiter_expansion: 1,
             unclassified: 0,
         },
         "cold native production must preserve its exact sanctioned work-start census without an artifact bridge job",
@@ -418,8 +424,10 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             // `Scheduler::record_run_start` charges each reason once, at the
             // moment a job is actually popped to run, the same accounting as
             // the cold-compile census above: a park-then-re-enqueue never
-            // pays for the same eventual run twice.
-            changed_revision_wake: 16,
+            // pays for the same eventual run twice. `main/0` is self-keyed
+            // (R1), so this re-run never wakes its `StaticCallees`,
+            // `Recursive` or `InputDemand` either.
+            changed_revision_wake: 11,
             ..super::super::WorkStartTally::default()
         },
         "a reached edit starts source ingestion and only exact changed-revision readers",
