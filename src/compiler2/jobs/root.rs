@@ -3,7 +3,7 @@ use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::source::Span;
 
-use super::super::drive::{FactKey, JobEffects, settled_uses};
+use super::super::drive::{FactKey, Job, JobEffects, UseCollector, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, RootId, RootKind};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, TargetDemandContribution};
@@ -14,19 +14,16 @@ use super::super::world::World;
 /// activation. Both rungs are named from the root alone, so the scheduler
 /// checks them before ever starting a never-run `SeedRoot`
 /// (`Job::missing_gates`).
-pub(super) fn seed_root_gates(world: &World, root_id: RootId) -> Vec<FactKey> {
-    let function = world.root_entry(root_id).function;
+pub(super) fn seed_root_gates(world: &mut World, root_id: RootId) -> Vec<FactKey> {
+    let root = world.root_entry(root_id);
+    let function = root.function;
     if world.function_defined_revision(function).is_none() {
         return vec![FactKey::FunctionDefined(function)];
     }
-    let mut gates = Vec::new();
-    if !world.has_fact(&FactKey::Recursive(function)) {
-        gates.push(FactKey::Recursive(function));
-    }
-    if !world.has_fact(&FactKey::InputDemand(function)) {
-        gates.push(FactKey::InputDemand(function));
-    }
-    gates
+    let mut uses = UseCollector::new(Job::SeedRoot(root_id));
+    world.require_activation_key_facts(root_id, function, &root.input, &mut uses);
+    let (_, waits) = uses.into_reads_waits();
+    waits.into_iter().map(|wait| wait.into_fact()).collect()
 }
 
 /// Seeds one semantic root once its entry definition exists.
@@ -76,8 +73,10 @@ pub(super) fn seed_root(
             ),
         ));
     }
-    reads.push(FactKey::Recursive(root.function));
-    reads.push(FactKey::InputDemand(root.function));
+    let mut key_uses = UseCollector::new(Job::SeedRoot(root_id));
+    world.require_activation_key_facts(root_id, root.function, &root.input, &mut key_uses);
+    let (key_reads, _) = key_uses.into_reads_waits();
+    reads.extend(key_reads.into_iter().map(|read| read.into_fact()));
 
     let entry_activation = world.activation_key(root_id, root.function, &root.input);
     let activation_fact = FactKey::Activation(entry_activation.clone());
@@ -89,13 +88,13 @@ pub(super) fn seed_root(
     };
     outputs.push(FactKey::Executable(entry_executable.clone()));
     // LowerFunction/PlanEntryDispatch are not re-emitted here: reaching this
-    // point means `seed_root_gates` above already observed both
-    // `Recursive(function)` and `InputDemand(function)` present, and their
-    // producers (`derive_call_graph_component`, `derive_input_demand`) only
-    // conclude after `LoweredBody`/`EntryDispatch` exist -- so those jobs have
-    // already run. First-run demand for them lives in
-    // DeriveCallGraphComponent/DeriveInputDemand; later change waves reach
-    // them via the normal wake mechanism.
+    // point means `seed_root_gates` above already proved the entry's row
+    // keyed -- either self-keyed (no `Recursive`/`InputDemand` ask at all) or
+    // with both present, and their producers (`derive_recursive`,
+    // `derive_input_demand`) only conclude after `LoweredBody`/`EntryDispatch`
+    // exist -- so when they were asked, those jobs have already run.
+    // First-run demand for them lives in DeriveRecursive/DeriveInputDemand;
+    // later change waves reach them via the normal wake mechanism.
     //
     // `AnalyzeActivation` is not pushed either. Publishing `Activation(entry)`
     // above records the same standing claim as a caller-discovered callee;

@@ -30,6 +30,12 @@
 //! walk finds mid-run, never nameable from the subject alone, so it is not a
 //! gate. `ScopeCode` runs 3 times for that one subject.
 //!
+//! `main/0` and the `def/1` macro root both take ground arguments, so both
+//! activations are self-keyed: nothing ever asks for `DeriveStaticCallees`,
+//! `DeriveRecursive`, or `DeriveInputDemand` on either subject, since keying
+//! an activation with no type variables asks no fact at all. That drops 28
+//! to 22, and the 26 (kind, subject) pairs to 20.
+//!
 //! Every other kind, and every other subject of a gated kind -- including
 //! every `SeedRoot` -- runs exactly once.
 
@@ -56,7 +62,7 @@ fn job_kind(job: &Job) -> &'static str {
         Job::ReifyGuardDispatch(_) => "ReifyGuardDispatch",
         Job::PlanEntryDispatch(_) => "PlanEntryDispatch",
         Job::DeriveStaticCallees(_) => "DeriveStaticCallees",
-        Job::DeriveCallGraphComponent(_) => "DeriveCallGraphComponent",
+        Job::DeriveRecursive(_) => "DeriveRecursive",
         Job::DeriveInputDemand(_) => "DeriveInputDemand",
         Job::SeedRoot(_) => "SeedRoot",
         Job::SeedActivation(_) => "SeedActivation",
@@ -76,7 +82,7 @@ const GATED_KINDS: &[&str] = &[
     "ExpandFunctionSource",
     "ScopeCode",
     "DeriveInputDemand",
-    "DeriveCallGraphComponent",
+    "DeriveRecursive",
     "DeriveRuntimeDemand",
     "LowerFunction",
     "DeriveStaticCallees",
@@ -136,8 +142,8 @@ fn def_main_do_1_starts_each_job_once_per_subject() {
     };
     assert_eq!(
         runs.len(),
-        28,
-        "expected 28 job starts, saw {}:\n{:#?}",
+        22,
+        "expected 22 job starts, saw {}:\n{:#?}",
         runs.len(),
         subjects_and_kinds(),
     );
@@ -148,8 +154,8 @@ fn def_main_do_1_starts_each_job_once_per_subject() {
     }
     assert_eq!(
         per_subject.len(),
-        26,
-        "expected 26 distinct (kind, subject) pairs, saw {}",
+        20,
+        "expected 20 distinct (kind, subject) pairs, saw {}",
         per_subject.len(),
     );
 

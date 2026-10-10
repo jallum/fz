@@ -10,7 +10,7 @@ use super::super::body::{
 use super::super::drive::FactKey;
 use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, TransportOrigin as TransportSource};
 use super::super::facts::FactUse;
-use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId};
 use super::super::incoming_inputs::InputSlot;
 use super::super::pull::{
     ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
@@ -1935,7 +1935,7 @@ fn produce_named_transport_position(
     if demand.is_ignore() {
         return Some(bottom_transport_shape(world));
     }
-    let names_in_component_direct_return = match cut_recursive_edges(world, context, executable, &mut recipe) {
+    let names_in_component_direct_return = match cut_in_component_returns(world, context, executable, &mut recipe) {
         Ok(names_direct) => names_direct,
         Err(fact) => return Some(PullOutcome::wait_on_fact(fact)),
     };
@@ -2105,71 +2105,114 @@ fn layout_carries(world: &mut World, layout: TransportLayout, ty: Ty) -> bool {
     }
 }
 
-/// Cuts the recursion out of a recipe before it is evaluated, so evaluation is
-/// a function of settled facts and of products that can settle without it.
+fn executable_reaches(
+    world: &World,
+    context: &mut ProductReadContext<'_>,
+    from: ExecutableKey,
+    owner: &ExecutableKey,
+    direct_only: bool,
+) -> Result<bool, FactUse<FactKey>> {
+    let mut seen = std::collections::HashSet::new();
+    let mut frontier = vec![from];
+    while let Some(executable) = frontier.pop() {
+        if &executable == owner {
+            return Ok(true);
+        }
+        if !seen.insert(executable.clone()) {
+            continue;
+        }
+        let fact = FactUse::settled(FactKey::ExecutableFacts(executable.clone()));
+        if !context.read_fact(world, fact.clone()) {
+            return Err(fact);
+        }
+        let facts = world.executable_facts(&executable).expect("settled executable facts");
+        for (callsite, summary) in facts.callsites() {
+            if direct_only
+                && matches!(
+                    facts.callsite_return_origin(*callsite),
+                    Some(super::super::executable_facts::TransportOrigin::ClosureCallReturn { .. })
+                )
+            {
+                continue;
+            }
+            let need = facts
+                .callsite_needs()
+                .get(callsite)
+                .copied()
+                .unwrap_or(ExecutableNeed::Value);
+            for target in &summary.targets {
+                if let Some(activation) = &target.activation {
+                    frontier.push(ExecutableKey {
+                        activation: activation.clone(),
+                        need,
+                    });
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Cuts the recursion out of a recipe before it is evaluated, so evaluation
+/// is a function of settled facts and of products that can settle without
+/// it, and answers whether the recipe named an in-cycle return AT ALL -- cut
+/// or kept.
 ///
 /// Every cycle in the position graph runs through some executable return: a
 /// body's own positions follow its acyclic def-use, so leaving a body means
 /// naming a callee's return. There are two kinds of such edge and each is cut
 /// on its own terms.
 ///
-/// A DIRECT call's edge is an edge of the static call graph. Both its ends lie
-/// on the cycle, so they are mutually reachable and share a component -- and
-/// the edges of one cycle cannot all climb, so at least one names a callee
-/// whose function id does not rise. Cutting exactly those leaves the surviving
-/// same-component edges strictly climbing, and cross-component ones can close
-/// nothing because the condensation is a DAG.
+/// A DIRECT call's edge is tested by exact reach: does the callee executable
+/// reach the owner through settled `ExecutableFacts` call-site targets,
+/// skipping edges whose origin is a `ClosureCallReturn` (`executable_reaches`,
+/// `direct_only`)? Both ends on one cycle are mutually reachable this way --
+/// and the edges of one cycle cannot all climb, so at least one names a
+/// callee whose function id does not rise. Cutting exactly those leaves the
+/// surviving in-cycle edges strictly climbing, and an edge off any cycle can
+/// close nothing because reach from its callee back to the owner fails.
 ///
-/// A GROUNDED CLOSURE call's edge is not in that graph at all: it reaches its
-/// callee through a value. A closure built outside a recursion and threaded
-/// back through it leaves caller and lambda in different components, so the
-/// argument above has nothing to stand on and would leave the cycle whole.
-/// `cut_in_component_returns` asks the one-way question instead, which keeps
-/// the condensation a DAG and the whole argument true.
+/// A GROUNDED CLOSURE call's edge reaches its callee through a value, so it
+/// carries no `ClosureCallReturn` origin to skip: a closure built outside a
+/// recursion and threaded back through it would otherwise leave the cycle
+/// whole. Asking the one-way reach question with every edge included keeps
+/// the argument above true for this edge too.
 ///
-/// Both choices read call-graph facts alone, so the same edges are cut in
-/// every run. What keeps one recursive chain on one form is not the surviving
-/// edges -- they run one way round the cycle only -- but the contract every
-/// return on the cycle publishes: the answer this returns says which returns
-/// those are.
-fn cut_recursive_edges(
-    world: &World,
-    context: &mut ProductReadContext<'_>,
-    executable: &ExecutableKey,
-    recipe: &mut TransportRecipe,
-) -> Result<bool, FactUse<FactKey>> {
-    let owner = executable.activation.function;
-    let component = settled_component(world, context, owner)?;
-    cut_in_component_returns(world, context, component, owner, recipe)
-}
-
-/// Cuts the in-component return edges that do not rise, and answers whether the
-/// recipe named an in-component return AT ALL -- cut or kept. Both ends of such
-/// an edge lie on one recursion cycle, and the position that owns this recipe
-/// is one of them.
+/// Both tests read only settled `ExecutableFacts`, so the same edges are cut
+/// in every run. What keeps one recursive chain on one form is not the
+/// surviving edges -- they run one way round the cycle only -- but the
+/// contract every return on the cycle publishes: the answer this returns
+/// says which returns those are.
 fn cut_in_component_returns(
     world: &World,
     context: &mut ProductReadContext<'_>,
-    component: FunctionId,
-    owner: FunctionId,
+    owner_executable: &ExecutableKey,
     recipe: &mut TransportRecipe,
 ) -> Result<bool, FactUse<FactKey>> {
+    let owner = owner_executable.activation.function;
+    let root = owner_executable.activation.root;
     let mut on_cycle = false;
     match recipe {
         TransportRecipe::Alias(child @ TransportPosition::ExecutableReturn { .. }) => {
             let callee = child.executable().activation.function;
-            on_cycle = settled_component(world, context, callee)? == component;
+            on_cycle = executable_reaches(
+                world,
+                context,
+                executable_key_for_transport_position(root, child),
+                owner_executable,
+                true,
+            )?;
             if on_cycle && callee.as_u32() <= owner.as_u32() {
                 *recipe = TransportRecipe::CutEdge;
             }
         }
         TransportRecipe::Alternatives(children) | TransportRecipe::Tuple(children) => {
             for child in children {
-                on_cycle |= cut_in_component_returns(world, context, component, owner, child)?;
+                on_cycle |= cut_in_component_returns(world, context, owner_executable, child)?;
             }
         }
         TransportRecipe::Projection { source: tuple, .. } => {
-            on_cycle = cut_in_component_returns(world, context, component, owner, tuple)?;
+            on_cycle = cut_in_component_returns(world, context, owner_executable, tuple)?;
         }
         TransportRecipe::ClosureCallReturn { grounded, .. } => {
             // A closure call reaches its callee through a VALUE, so the static
@@ -2189,7 +2232,13 @@ fn cut_in_component_returns(
             // records the residual).
             if let Some(grounded) = grounded.as_deref_mut()
                 && let TransportRecipe::Alias(child) = &grounded.return_recipe
-                && statically_reaches(world, context, child.executable().activation.function, owner)?
+                && executable_reaches(
+                    world,
+                    context,
+                    executable_key_for_transport_position(root, child),
+                    owner_executable,
+                    false,
+                )?
             {
                 grounded.return_recipe = TransportRecipe::CutEdge;
             }
@@ -2200,54 +2249,6 @@ fn cut_in_component_returns(
         | TransportRecipe::Alias(_) => {}
     }
     Ok(on_cycle)
-}
-
-/// Whether `from` reaches `owner` through the static call graph, walking the
-/// `StaticCallees` edge facts the same way `derive_call_graph_component` does.
-///
-/// `CallGraphComponent` answers MUTUAL reachability, which is an equality; a
-/// closure call needs the one-way question, and only for the rare grounded
-/// edge, so it is asked here rather than turned into a fact of its own. The
-/// walk looks for `owner` itself and never consults a component: reaching any
-/// member of `owner`'s component means reaching `owner`, because the members
-/// of a component all reach each other, so the transitive walk finds `owner`
-/// too.
-fn statically_reaches(
-    world: &World,
-    context: &mut ProductReadContext<'_>,
-    from: FunctionId,
-    owner: FunctionId,
-) -> Result<bool, FactUse<FactKey>> {
-    let mut seen = BTreeSet::new();
-    let mut frontier = vec![from];
-    while let Some(function) = frontier.pop() {
-        if function == owner {
-            return Ok(true);
-        }
-        if !seen.insert(function) {
-            continue;
-        }
-        let fact = FactUse::settled(FactKey::StaticCallees(function));
-        if !context.read_fact(world, fact.clone()) {
-            return Err(fact);
-        }
-        frontier.extend(world.static_callees(function).iter().copied());
-    }
-    Ok(false)
-}
-
-fn settled_component(
-    world: &World,
-    context: &mut ProductReadContext<'_>,
-    function: FunctionId,
-) -> Result<FunctionId, FactUse<FactKey>> {
-    let fact = FactUse::settled(FactKey::CallGraphComponent(function));
-    if !context.read_fact(world, fact.clone()) {
-        return Err(fact);
-    }
-    Ok(world
-        .call_graph_component(function)
-        .unwrap_or_else(|| panic!("settled CallGraphComponent({function:?}) must name a component")))
 }
 
 fn bottom_transport_shape(world: &mut World) -> PullOutcome {

@@ -385,15 +385,14 @@ caused it.
 ## One job, several facts
 
 One job may own more than one fact when both follow from its answer.
-`Job::DeriveCallGraphComponent` walks the `StaticCallees` edge facts
-once and publishes both `CallGraphComponent(f)` -- the smallest `FunctionId`
-mutually reachable with `f`, so "are these two functions mutually reachable"
-is an equality of two fact reads rather than a traversal at the asking site --
-and `Recursive(f)`, which that component decides. They stay two facts, not one
-value: a component merging and a body's keying moving wake different readers.
-`World::demand_fact_producer` maps both keys to the one job, exactly as
-`Activation`/`ActivationInputs` both map to `SeedActivation` when that job is
-their producer at all (see *One activation, one existence producer*).
+`Job::AnalyzeActivation` walks one activation's dispatch-reachable clauses
+once and publishes `ActivationAnalyzed`, `ReturnType`, and a
+`CallSiteSummary`/`CallSiteTargets` pair per callsite it names, all from that
+one walk. They stay distinct facts, not one value: a return type moving and a
+callsite's targets moving wake different readers. `World::demand_fact_producer`
+maps every one of those keys to the one job, exactly as `Activation`/
+`ActivationInputs` both map to `SeedActivation` when that job is their
+producer at all (see *One activation, one existence producer*).
 
 ## One activation, one existence producer
 
@@ -691,7 +690,7 @@ readiness.
 
 Ten job kinds declare gates — `SeedRoot`, `DefineFunction`,
 `ExpandFunctionSource`, `ScopeCode`, `DeriveInputDemand`,
-`DeriveCallGraphComponent`, `DeriveRuntimeDemand`, `LowerFunction`,
+`DeriveRecursive`, `DeriveRuntimeDemand`, `LowerFunction`,
 `DeriveStaticCallees`, and `AnalyzeActivation` — each in the `jobs/*.rs`
 module that owns the kind's body, named `<job>_gates` beside it. Every other
 kind has no arm in `missing_gates`'s match and starts the moment anything
@@ -707,6 +706,16 @@ extern's `AnalyzeActivation` start before its own `EntryDispatch`, block,
 and change nothing. The gate holds the job back until all three inputs
 exist, the same way `LowerFunction`'s gate holds it back from discovering a
 missing `FunctionDefined` by running into it.
+
+Once its own three inputs exist, `analyze_activation_gates` reads the
+`LoweredBody` it is about to walk anyway for the direct callees it names
+(`keying::direct_callees`, the same `static_edges` walk `DeriveStaticCallees`
+runs) rather than deriving a `StaticCallees` fact just to find them. Any
+callee whose own module is not yet defined -- not global, not a runtime
+module, undefined, and carrying source still to process -- adds that
+module's `ModuleDefined` as one more gate, so the caller is held back before
+it ever starts rather than starting, discovering the callee's module
+missing from inside its own run, and running again once it lands.
 
 A gate is not the same thing as a wait a job's body discovers only while it
 runs — a callee reached by walking a call graph, a macro found mid-expansion.
@@ -884,11 +893,14 @@ product and never enters this graph; its exact World-fact dependencies converge
 through ordinary content-changing wakes. Recursive
 `CallableConstruction(position)` products settle their position groups from
 external anchors. `TransportShape(position)` has no
-group: it cuts its own recursion from `CallGraphComponent` and `StaticCallees`
-facts at recipe construction, so its evaluation is a function of settled facts
-and of products that can settle without it. Component membership answers
-mutual reachability, which is an equality; a grounded closure-call edge has no
-static edge of its own. The group query records the prospective
+group: it cuts its own recursion at recipe construction by asking settled
+`ExecutableFacts` call targets directly (`executable_reaches`, a DFS from the
+candidate return to the position's own owner), so its evaluation is a
+function of settled facts and of products that can settle without it. An
+edge whose callee reaches the owner this way, and whose function id does not
+rise, is cut; a grounded closure-call edge has no static edge of its own, so
+it asks the same reachability question with every callsite included rather
+than skipping it. The group query records the prospective
 `current -> dependency` read before borrowing the dependency map, so no graph
 copy precedes the one Tarjan traversal that both detects a cycle and returns
 the component containing the dependency. It follows the dependencies
