@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-xxd.10"
+  ],
   "blocks": [
     "fz-xxd.13"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A product derived from facts alone needs no root",
   "type": "task",
-  "updated_at": "2026-10-10T19:40:45Z"
+  "updated_at": "2026-10-10T19:41:00Z"
 }
