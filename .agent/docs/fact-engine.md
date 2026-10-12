@@ -983,8 +983,11 @@ attempts, rather than attributing only validation-triggered refreshes.
 
 ### Product sessions and executable artifacts
 
-`PullSession` owns one root's retained product memo and scheduling relations
-for that root's lifetime in `Compiler2`. A `TransportShape(position)` answer remains in its
+A `PullSession` owns one scope's retained product memo and scheduling
+relations. Most sessions are root sessions, living for that root's lifetime
+in `Compiler2`; `ProductSessions` additionally keeps one program session,
+whose `PullSession` has no root and lives for the compiler's lifetime. A
+`TransportShape(position)` answer remains in its
 memo entry until an exact consumer reads it. `MaterializedExecutable` embeds the
 positioned layout answers it consumed. A closure callee's carrier selects its
 physical invocation: `ValueRef` uses the public wrapper, while `Absent` permits
@@ -1108,16 +1111,41 @@ return-only change cannot wake an input-only reader. Artifact products read the
 full demand fact at settled readiness and use the normal fact-generation
 dependency path for invalidation.
 
-### Product sessions per root
+### Product sessions per root, and the one program session
 
-`Compiler2` retains one `PullSession` per root. Its memo emits a subscription
-change exactly when the first reader of a fact appears or the last disappears.
-A Compiler2-owned `FactKey -> roots` index routes each job-completion or
-quiescence movement only to those roots. Dormant sessions receive it directly;
-roots paused around a nested macro drive receive it once in an active inbox.
-Repeated movements of one fact coalesce to the final `FactState` before the
-next pull. This path scans neither roots, facts, products, nor dependencies,
-and equal final state leaves readers settled.
+`ProductSessions` retains one `PullSession` per root plus one program
+session, keyed by `ProductScope` rather than by root alone. Each session's
+memo emits a subscription change exactly when the first reader of a fact
+appears or the last disappears. A `ProductSessions`-owned `FactKey -> scopes`
+index routes each job-completion or quiescence movement only to the
+subscribed scopes, root or program alike. Dormant sessions receive it
+directly; scopes paused around a nested macro drive receive it once in an
+active inbox. Repeated movements of one fact coalesce to the final
+`FactState` before the next pull. This path scans neither roots, facts,
+products, nor dependencies, and equal final state leaves readers settled.
+
+A fact-only key such as `StructSchema(module)` is program-scoped
+(`ProductKey::is_program_scoped`): every root asking for it resolves to the
+same `ProductScope::Program` address (`ProductKey::scope`,
+`ProductAddress::of`), so the program session evaluates it once no matter
+how many roots read it. Publishing a change to a program-scoped product
+raises `DependencyKey::Product` for that one program address; a root session
+that has read the key holds only a local *membership* edge to it (the
+rooted-membership witness that already tracks local dependencies), never a
+second copy of the value. When `ProductSessions::publish` observes a change
+on the program scope it calls `propagate_program_changes`, which, for each
+other retained root, first calls `ProductMemo::mark_rooted_member_changed`
+and then the ordinary `ProductMemo::invalidate_products` dirty pass — the
+same path a locally produced dependency's change already takes through
+`rooted_member_dirty`. The first call is the one that makes the change
+*visible*: `rooted_member_dirty` alone clears the member's "current" bit, but
+the owning `RootBackendProduct` only re-patches the members recorded in its
+session's `RootedProducts::changes` set, and nothing populates that set for a
+member whose value is never committed inside that root's own memo.
+`mark_rooted_member_changed` is that missing counterpart to
+`committed_rooted_member`, which performs the equivalent step for a
+same-memo member at the moment its own commit reaches its own rooted
+readers.
 
 Root requests reconcile queued source work before reading retained products. An
 empty agenda costs O(1); queued work follows ordinary FIFO execution and exact

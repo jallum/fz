@@ -290,10 +290,10 @@ fn a_real_leaf_edit_retains_schema_allocations_without_schema_work() {
     let item_key = ProductKey::StructSchema(item);
     let other_key = ProductKey::StructSchema(other);
     let item_generation = compiler
-        .retained_product_generation(root, &item_key)
+        .retained_program_product_generation(&item_key)
         .expect("Item schema product");
     let other_generation = compiler
-        .retained_product_generation(root, &other_key)
+        .retained_program_product_generation(&other_key)
         .expect("Other schema product");
     let before = compiler.retained_backend_program(root);
     let item_allocations = schema_allocations(&before, "Item");
@@ -316,11 +316,11 @@ fn a_real_leaf_edit_retains_schema_allocations_without_schema_work() {
         "a leaf body edit reads no changed schema definition"
     );
     assert_eq!(
-        compiler.retained_product_generation(root, &item_key),
+        compiler.retained_program_product_generation(&item_key),
         Some(item_generation)
     );
     assert_eq!(
-        compiler.retained_product_generation(root, &other_key),
+        compiler.retained_program_product_generation(&other_key),
         Some(other_generation)
     );
 }
@@ -362,8 +362,18 @@ fn a_published_schema_edit_moves_only_its_exact_retained_contribution() {
     let other = world.reference_module(fz_runtime::module_name::ModuleName::from_segments(vec!["Other".into()]));
     let item_key = ProductKey::StructSchema(item);
     let other_key = ProductKey::StructSchema(other);
-    let item_generation = sessions.get(root).unwrap().memo().generation(&item_key).unwrap();
-    let other_generation = sessions.get(root).unwrap().memo().generation(&other_key).unwrap();
+    let item_generation = sessions
+        .get(crate::compiler2::pull::ProductScope::Program)
+        .unwrap()
+        .memo()
+        .generation(&item_key)
+        .unwrap();
+    let other_generation = sessions
+        .get(crate::compiler2::pull::ProductScope::Program)
+        .unwrap()
+        .memo()
+        .generation(&other_key)
+        .unwrap();
     let item_allocations = schema_allocations(&before, "Item");
     let other_allocations = schema_allocations(&before, "Other");
     let fact = FactKey::StructDefined(item);
@@ -393,11 +403,19 @@ fn a_published_schema_edit_moves_only_its_exact_retained_contribution() {
     assert!(Rc::ptr_eq(&other_allocations.0, &untouched_other.0));
     assert!(Rc::ptr_eq(&other_allocations.1, &untouched_other.1));
     assert_eq!(
-        sessions.get(root).unwrap().memo().generation(&item_key),
+        sessions
+            .get(crate::compiler2::pull::ProductScope::Program)
+            .unwrap()
+            .memo()
+            .generation(&item_key),
         Some(item_generation + 1)
     );
     assert_eq!(
-        sessions.get(root).unwrap().memo().generation(&other_key),
+        sessions
+            .get(crate::compiler2::pull::ProductScope::Program)
+            .unwrap()
+            .memo()
+            .generation(&other_key),
         Some(other_generation)
     );
     assert_eq!(
@@ -411,4 +429,133 @@ fn a_published_schema_edit_moves_only_its_exact_retained_contribution() {
         &["value".to_string()]
     );
     assert!(Rc::ptr_eq(&item_allocations.1, &schema_allocations(&before, "Item").1));
+}
+
+#[test]
+fn two_roots_sharing_a_struct_module_evaluate_its_schema_once() {
+    use crate::compiler2::product_drive::drive_retained_root_backend_product;
+    use crate::compiler2::pull::{ProductKey, ProductRequestId, ProductSessions, PullOutcome};
+    use std::cell::RefCell;
+
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let evaluations = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&evaluations);
+    tel.attach_raw_event3::<ProductKey, ProductRequestId, PullOutcome, _>(
+        &["fz", "compiler2", "pull", "product", "evaluated"],
+        move |_, _, _, key, _, _| {
+            if matches!(key, ProductKey::StructSchema(_)) {
+                observed.borrow_mut().push(key.clone());
+            }
+        },
+    );
+    let mut world = World::new();
+    world.submit_code(
+        Some("shared_schema.fz".to_string()),
+        concat!(
+            "defmodule Item do\n  defstruct [:value]\nend\n",
+            "def main_a() do\n  %Item{value: 1}.value\nend\n",
+            "def main_b() do\n  %Item{value: 2}.value\nend\n",
+        )
+        .to_string(),
+    );
+    let root_a = world.submit_root(None, "main_a".to_string(), 0, ExecutableNeed::Value);
+    let root_b = world.submit_root(None, "main_b".to_string(), 0, ExecutableNeed::Value);
+    let mut sessions = ProductSessions::default();
+    let program_a = drive_retained_root_backend_product(&mut world, &tel, &mut sessions, root_a, None).unwrap();
+    let program_b = drive_retained_root_backend_product(&mut world, &tel, &mut sessions, root_b, None).unwrap();
+
+    let item = world.reference_module(fz_runtime::module_name::ModuleName::from_segments(vec!["Item".into()]));
+    let item_key = ProductKey::StructSchema(item);
+    assert_eq!(
+        evaluations.borrow().iter().filter(|key| **key == item_key).count(),
+        1,
+        "two roots sharing one struct module settle its schema through a single program-scoped evaluation"
+    );
+
+    let (name_a, fields_a) = schema_allocations(&program_a, "Item");
+    let (name_b, fields_b) = schema_allocations(&program_b, "Item");
+    assert!(
+        Rc::ptr_eq(&name_a, &name_b) && Rc::ptr_eq(&fields_a, &fields_b),
+        "both roots package the one program-scoped schema's exact allocation, not a per-root copy"
+    );
+}
+
+#[test]
+fn an_edit_to_a_shared_struct_module_wakes_both_roots_reading_it() {
+    use crate::compiler2::drive::{ExecutionContext, JobEffects};
+    use crate::compiler2::product_drive::drive_retained_root_backend_product;
+    use crate::compiler2::pull::{ProductKey, ProductRequestId, ProductSessions, PullOutcome};
+    use crate::compiler2::{FactKey, Job};
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let evaluations = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&evaluations);
+    tel.attach_raw_event3::<ProductKey, ProductRequestId, PullOutcome, _>(
+        &["fz", "compiler2", "pull", "product", "evaluated"],
+        move |_, _, _, key, _, _| {
+            if matches!(key, ProductKey::StructSchema(_)) {
+                observed.borrow_mut().push(key.clone());
+            }
+        },
+    );
+    let mut world = World::new();
+    world.submit_code(
+        Some("shared_schema_edit.fz".to_string()),
+        concat!(
+            "defmodule Item do\n  defstruct [:value]\nend\n",
+            "def main_a() do\n  %Item{value: 1}.value\nend\n",
+            "def main_b() do\n  %Item{value: 2}.value\nend\n",
+        )
+        .to_string(),
+    );
+    let root_a = world.submit_root(None, "main_a".to_string(), 0, ExecutableNeed::Value);
+    let root_b = world.submit_root(None, "main_b".to_string(), 0, ExecutableNeed::Value);
+    let mut sessions = ProductSessions::default();
+    let before_a = drive_retained_root_backend_product(&mut world, &tel, &mut sessions, root_a, None).unwrap();
+    let before_b = drive_retained_root_backend_product(&mut world, &tel, &mut sessions, root_b, None).unwrap();
+    assert_eq!(schema_allocations(&before_a, "Item").1.as_ref(), &["value".to_string()]);
+    assert_eq!(schema_allocations(&before_b, "Item").1.as_ref(), &["value".to_string()]);
+    evaluations.borrow_mut().clear();
+
+    let item = world.reference_module(fz_runtime::module_name::ModuleName::from_segments(vec!["Item".into()]));
+    let item_key = ProductKey::StructSchema(item);
+    let mut definition = world.struct_def(item).unwrap().clone();
+    definition.fields.push("added".to_string());
+    assert!(world.define_struct_def(item, definition));
+    let fact = FactKey::StructDefined(item);
+    let job = Job::DefineModule(item);
+    let (outputs, reads) = world.standing_claims_and_reads(&job);
+    ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).complete_job(
+        job,
+        JobEffects {
+            reads: reads.into_iter().collect(),
+            outputs,
+            changed: vec![fact],
+            ..JobEffects::default()
+        },
+    );
+
+    let after_a = drive_retained_root_backend_product(&mut world, &tel, &mut sessions, root_a, None).unwrap();
+    let after_b = drive_retained_root_backend_product(&mut world, &tel, &mut sessions, root_b, None).unwrap();
+    assert_eq!(
+        schema_allocations(&after_a, "Item").1.as_ref(),
+        &["value".to_string(), "added".to_string()],
+        "root A's own reader wakes on the shared schema's edit"
+    );
+    assert_eq!(
+        schema_allocations(&after_b, "Item").1.as_ref(),
+        &["value".to_string(), "added".to_string()],
+        "root B's own reader wakes on the same shared schema's edit, with no edit of its own"
+    );
+    assert!(Rc::ptr_eq(
+        &schema_allocations(&after_a, "Item").1,
+        &schema_allocations(&after_b, "Item").1
+    ));
+    assert_eq!(
+        evaluations.borrow().iter().cloned().collect::<HashSet<_>>(),
+        HashSet::from([item_key]),
+        "one edit re-evaluates the one program-scoped schema once, not once per reading root"
+    );
 }

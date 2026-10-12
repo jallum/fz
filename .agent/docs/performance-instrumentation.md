@@ -193,10 +193,13 @@ prefix nor charge a later cache hit for work performed outside its request.
 Root backend and native artifacts live in retained product memos. Their
 `pull.product.settled` records identify the product, generation, and whether
 its value changed. Scheduler consumers read the product through
-`DependencyKey::Product(ProductAddress { root, key })`; the address identifies
-both its retained root session and its product. Fact dependencies retain their
-flat typed JSON identity; product dependencies carry the owning `root_id` and
-a nested `product` identity.
+`DependencyKey::Product(ProductAddress { scope, key })`; the address names
+the owning session (a specific root, or the one shared program session for a
+fact-only key such as `StructSchema`) and its product. Fact dependencies
+retain their flat typed JSON identity; product dependencies carry a
+`root_id` and a nested `product` identity. A program-scoped address writes
+`root_id: null` rather than omitting the field, so every `Product`
+dependency identity carries the same keys regardless of scope.
 
 `work_graph.dependencies_moved` carries the one causal `AppliedStep` for
 external product changes or readiness propagation. Its changes, movements,

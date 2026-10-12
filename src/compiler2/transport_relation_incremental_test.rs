@@ -199,26 +199,33 @@ fn observe(telemetry: &ConfiguredTelemetry) -> Rc<RefCell<Relations>> {
         &["fz", "compiler2", "pull", "session", "finished"],
         move |_, _, _, session| {
             let mut observed = observed.borrow_mut();
+            let events = observed.pending.pop().expect("balanced retained activation");
+            // The program session also starts and finishes (it produces the
+            // struct schemas any root's callable inputs can name), but this
+            // relation is root-keyed: it has nothing to record for a session
+            // with no root, only the balanced pop above.
+            let Some(root) = session.root() else {
+                return;
+            };
             observed.abis.insert(
-                session.root(),
+                root,
                 session
                     .memo()
                     .abi_executables()
                     .map(|(key, abi)| (key.clone(), Rc::clone(abi)))
                     .collect(),
             );
-            let events = observed.pending.pop().expect("balanced retained activation");
             for event in events {
                 match event {
-                    ProductEvent::Requested(key) => observed.requested.push((session.root(), key)),
-                    ProductEvent::Cached(key) => observed.cached.push((session.root(), key)),
+                    ProductEvent::Requested(key) => observed.requested.push((root, key)),
+                    ProductEvent::Cached(key) => observed.cached.push((root, key)),
                     ProductEvent::Evaluated(key) => {
                         if matches!(
                             &key,
                             ProductKey::CallableConstruction(TransportPosition::ExecutableInput { .. })
                         ) {
                             observed.reads.insert(
-                                (session.root(), key.clone()),
+                                (root, key.clone()),
                                 session
                                     .memo()
                                     .fact_dependencies(&key)
@@ -228,10 +235,10 @@ fn observe(telemetry: &ConfiguredTelemetry) -> Rc<RefCell<Relations>> {
                                     .collect(),
                             );
                         }
-                        observed.evaluated.push((session.root(), key));
+                        observed.evaluated.push((root, key));
                     }
-                    ProductEvent::Waiting(key, waits) => observed.waited.push((session.root(), key, waits)),
-                    ProductEvent::Displaced(key) => observed.displaced.push((session.root(), key)),
+                    ProductEvent::Waiting(key, waits) => observed.waited.push((root, key, waits)),
+                    ProductEvent::Displaced(key) => observed.displaced.push((root, key)),
                 }
             }
         },

@@ -1515,10 +1515,7 @@ fn drive_world_backend_product(
         world,
         telemetry,
         sessions,
-        super::drive::ProductAddress {
-            root,
-            key: ProductKey::RootBackendProduct(root),
-        },
+        super::drive::ProductAddress::of(ProductKey::RootBackendProduct(root), root),
     )
     .expect("the retained backend product should settle");
 }
@@ -21328,10 +21325,7 @@ fn a_refused_program_reports_its_one_diagnostic() {
         &mut world,
         &tel,
         &mut sessions,
-        super::drive::ProductAddress {
-            root,
-            key: ProductKey::RootBackendProduct(root),
-        },
+        super::drive::ProductAddress::of(ProductKey::RootBackendProduct(root), root),
     );
 
     assert!(

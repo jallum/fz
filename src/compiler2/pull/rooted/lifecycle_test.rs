@@ -263,7 +263,7 @@ fn clean_ordinary_and_rooted_reads_allocate_no_visiting_set() {
     for key in [member(0), packaging()] {
         let mut visiting = ProductValidationWalk::default();
         assert_eq!(
-            memo.stale_dependency_inner(&ConfiguredTelemetry::new(), &key, &mut visiting, &types, true),
+            memo.stale_dependency_inner(&ConfiguredTelemetry::new(), &key, &mut visiting, &types, true, None),
             None
         );
         assert_eq!(
@@ -290,7 +290,8 @@ fn stale_membership_validates_its_owner_before_demanding_a_retired_child() {
             &packaging(),
             &mut ProductValidationWalk::default(),
             &types,
-            true
+            true,
+            None
         ),
         Some(member(2)),
         "a child's membership is justified only after its dirty owner validates"
@@ -302,7 +303,8 @@ fn stale_membership_validates_its_owner_before_demanding_a_retired_child() {
             &packaging(),
             &mut ProductValidationWalk::default(),
             &types,
-            true
+            true,
+            None
         ),
         None
     );
@@ -353,7 +355,7 @@ fn rooted_validation_visits_shared_ancestor_paths_once() {
             &types,
         );
         measurements.borrow_mut().clear();
-        assert_eq!(memo.stale_dependency(&tel, &packaging(), &types), None);
+        assert_eq!(memo.stale_dependency(&tel, &packaging(), &types, None), None);
         let recorded = measurements.borrow();
         assert_eq!(recorded.len(), 1);
         let work = recorded[0];
@@ -401,7 +403,7 @@ fn an_independent_member_proof_does_not_clear_its_readers_stale_later_control() 
     memo.mutate_product_wave(&tel, vec![(ReaderMutation::Dirty, member(0))], &types);
     memo.invalidate_products(&tel, [member(1)], &types);
     memo.external_changes.clear();
-    assert_eq!(memo.stale_dependency(&tel, &packaging(), &types), Some(member(1)));
+    assert_eq!(memo.stale_dependency(&tel, &packaging(), &types, None), Some(member(1)));
     assert!(
         !memo.dirty_descendants.contains(&member(0)),
         "independent complete proof is accepted"
@@ -422,7 +424,7 @@ fn an_independent_member_proof_does_not_clear_its_readers_stale_later_control() 
             .any(|change| change.key == packaging() && change.new_settled)
     );
     assert!(commit(&mut memo, member(1), membership(&[])));
-    assert_eq!(memo.stale_dependency(&tel, &packaging(), &types), None);
+    assert_eq!(memo.stale_dependency(&tel, &packaging(), &types, None), None);
     assert!(memo.external_state(&packaging()).settled);
 }
 
@@ -448,14 +450,14 @@ fn a_mixed_membership_and_value_cycle_validates_equal_observations_together() {
     root.changes.clear();
     memo.mutate_product_wave(&tel, vec![(ReaderMutation::Dirty, member(0))], &types);
     let mut visiting = ProductValidationWalk::default();
-    let stale = memo.stale_dependency_inner(&tel, &packaging(), &mut visiting, &types, true);
+    let stale = memo.stale_dependency_inner(&tel, &packaging(), &mut visiting, &types, true, None);
     assert_eq!(stale, None, "dirty state alone is not changed evidence");
     assert_eq!(
         visiting.checked,
         HashSet::from([packaging(), member(0)]),
         "both sides of the cycle must be validated"
     );
-    assert_eq!(memo.stale_dependency(&tel, &packaging(), &types), None);
+    assert_eq!(memo.stale_dependency(&tel, &packaging(), &types, None), None);
     assert!(memo.dirty_descendants.is_empty());
     assert!(memo.rooted[&packaging()].dirty.is_empty());
     assert_eq!(memo.generation(&packaging()), Some(1));

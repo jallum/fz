@@ -92,7 +92,7 @@ pub use module_interface::{
     ReadyOrPending,
 };
 pub use namespace::{BindingId, CallableQualifier, Namespace, NamespaceStore, NamespaceSymbol};
-pub(crate) use pull::{ProductKey, PullSession};
+pub(crate) use pull::{ProductKey, ProductScope, PullSession};
 pub use scheduler::{
     AppliedStep, DriveOutcome, FatalError, Scheduler, Wake, WakeDisposition, WorkStartReason, WorkStartTally,
 };

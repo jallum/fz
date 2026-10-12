@@ -130,7 +130,7 @@ pub(crate) fn produce_materialized_executable_product(
     let Ok(call_edges) = materialize_call_edges(
         world,
         tel,
-        context.session().root(),
+        context.session().root().expect("executable products are root-scoped"),
         &transport_plan,
         executable,
         &analysis,

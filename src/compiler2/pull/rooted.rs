@@ -407,6 +407,21 @@ impl ProductMemo {
             .collect()
     }
 
+    /// A same-memo member's committed change reaches its rooted readers'
+    /// `changes` through `committed_rooted_member`, at the point it commits.
+    /// A program-scoped member's change has no such moment in a root's own
+    /// memo: the root never commits it, so nothing there ever marks it
+    /// changed, only dirty. This is that missing counterpart, called once
+    /// per root from `propagate_program_changes` for exactly the keys the
+    /// program session just changed.
+    pub(super) fn mark_rooted_member_changed(&mut self, member: &ProductKey) {
+        for reader in self.rooted_readers.get(member).cloned().unwrap_or_default() {
+            if let Some(rooted) = self.rooted.get_mut(&reader) {
+                rooted.changes.insert(member.clone());
+            }
+        }
+    }
+
     pub(super) fn rooted_member_refresh(
         &mut self,
         member: &ProductKey,
@@ -441,18 +456,24 @@ impl ProductMemo {
         visiting: &mut ProductValidationWalk,
         types: &super::super::types::Types,
         complete: bool,
+        external: Option<&ProductMemo>,
     ) -> Option<ProductKey> {
         let rooted = self.rooted.get(reader)?;
         let (mut cursor, visits) = rooted.dirty.first(&rooted.seed);
         visiting.work.witness_visits += visits;
         let mut outcome = None;
         while let Some(member) = cursor {
-            if self.get(&member).is_none() {
+            let missing = if member.is_program_scoped() {
+                external.is_none_or(|memo| memo.get(&member).is_none())
+            } else {
+                self.get(&member).is_none()
+            };
+            if missing {
                 outcome = Some(member);
                 break;
             }
             if complete {
-                if let Some(stale) = self.stale_dependency_inner(tel, &member, visiting, types, true) {
+                if let Some(stale) = self.stale_dependency_inner(tel, &member, visiting, types, true, external) {
                     outcome = Some(stale);
                     break;
                 }
@@ -461,7 +482,7 @@ impl ProductMemo {
                 visiting.work.witness_visits += u64::from(cursor.is_some());
             } else {
                 let mut member_walk = ProductValidationWalk::default();
-                let stale = self.stale_dependency_inner(tel, &member, &mut member_walk, types, true);
+                let stale = self.stale_dependency_inner(tel, &member, &mut member_walk, types, true, external);
                 visiting
                     .work
                     .include(self.finish_validation(tel, member_walk, stale.is_none(), Some(reader), types));
@@ -644,24 +665,19 @@ impl ProductReadContext<'_> {
         let mut walk = ProductValidationWalk::default();
         walk.work
             .include(self.session.memo.register_rooted(reader.clone(), seed, types));
+        let external = self.session.external.clone();
+        let external = external.as_ref().map(|handle| handle.borrow());
+        let external_memo = external.as_deref().map(PullSession::memo);
         let work = self.session.memo.rooted[&reader].visit_dirty(|member| {
-            if self.session.memo.get(member).is_none() {
-                waits.push(PullWait::Product(member.clone()));
-                return true;
-            }
-            if self.session.memo.has_unsettled_inputs(member)
-                || self
-                    .session
-                    .memo
-                    .rooted
-                    .get(member)
-                    .is_some_and(|rooted| !rooted.dirty.is_empty())
-            {
-                waits.push(PullWait::Product(member.clone()));
-                true
+            let current = if member.is_program_scoped() {
+                external_memo.is_some_and(|memo| memo.product_is_current(member))
             } else {
-                false
+                self.session.memo.product_is_current(member)
+            };
+            if !current {
+                waits.push(PullWait::Product(member.clone()));
             }
+            !current
         });
         walk.work.include(work);
         let result = if waits.is_empty() {
@@ -681,10 +697,17 @@ impl ProductReadContext<'_> {
             Ok(changes
                 .into_iter()
                 .map(|key| {
-                    let value = self.session.memo.rooted[&reader]
-                        .parents
-                        .contains_key(&key)
-                        .then(|| self.session.memo.get(&key).expect("ready rooted member").clone());
+                    let value = self.session.memo.rooted[&reader].parents.contains_key(&key).then(|| {
+                        if key.is_program_scoped() {
+                            external_memo
+                                .expect("a program-scoped rooted member has a program session")
+                                .get(&key)
+                                .expect("ready rooted member")
+                                .clone()
+                        } else {
+                            self.session.memo.get(&key).expect("ready rooted member").clone()
+                        }
+                    });
                     (key, value)
                 })
                 .collect())

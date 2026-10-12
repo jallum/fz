@@ -147,6 +147,48 @@ fn product_rank(product: &ProductKey) -> u8 {
     }
 }
 
+/// Where a product's one shared answer lives: a specific root's own
+/// session, or the program session every root and job reads through.
+///
+/// A key's scope is a property of what its value depends on, not of who is
+/// asking: `ProductKey::scope` names the home for any key. A reader's address
+/// comes from `ProductAddress::of`; a session naming its own entries uses
+/// `ProductAddress::in_session`, which checks the key belongs there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ProductScope {
+    Program,
+    Root(RootId),
+}
+
+impl std::fmt::Display for ProductScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Program => write!(f, "program"),
+            Self::Root(root) => write!(f, "root {}", root.as_u32()),
+        }
+    }
+}
+
+impl ProductKey {
+    /// A product whose value depends on facts alone, never on which root
+    /// asked. Its one answer is computed in the program session and shared
+    /// by every root and job that reads it.
+    pub(crate) fn is_program_scoped(&self) -> bool {
+        matches!(self, Self::StructSchema(_))
+    }
+
+    /// The session this key's one answer lives in. `asking` only matters
+    /// when the key is not program-scoped: it names the root whose own
+    /// session owns the entry.
+    pub fn scope(&self, asking: RootId) -> ProductScope {
+        if self.is_program_scoped() {
+            ProductScope::Program
+        } else {
+            ProductScope::Root(asking)
+        }
+    }
+}
+
 impl ProductKey {
     pub fn kind(&self) -> &'static str {
         match self {
@@ -684,6 +726,15 @@ impl ProductMemo {
     }
     pub fn get(&self, key: &ProductKey) -> Option<&ProductValue> {
         self.produced.get(key).map(|entry| &entry.value)
+    }
+
+    /// Whether `key` has a value here that is settled and not dirty -- the
+    /// one readiness question a root's own memo and a program memo it reads
+    /// through both ask about a member.
+    pub(super) fn product_is_current(&self, key: &ProductKey) -> bool {
+        self.get(key).is_some()
+            && !self.has_unsettled_inputs(key)
+            && self.rooted.get(key).is_none_or(|rooted| rooted.dirty.is_empty())
     }
 
     pub fn generation(&self, key: &ProductKey) -> Option<u64> {
@@ -1339,6 +1390,7 @@ impl ProductMemo {
         tel: &impl Telemetry,
         key: &ProductKey,
         types: &super::types::Types,
+        external: Option<&ProductMemo>,
     ) -> Option<ProductKey> {
         let mut walk = ProductValidationWalk::default();
         let resumable = self.pending_dependencies.get(key).is_some_and(|pending| {
@@ -1349,10 +1401,10 @@ impl ProductMemo {
                 && !self.fact_stale_dependencies.contains_key(key)
         });
         let stale = if resumable {
-            self.rooted_stale_dependency(tel, key, &mut walk, types, false)
+            self.rooted_stale_dependency(tel, key, &mut walk, types, false, external)
                 .or_else(|| Some(key.clone()))
         } else {
-            self.stale_dependency_inner(tel, key, &mut walk, types, false)
+            self.stale_dependency_inner(tel, key, &mut walk, types, false, external)
         };
         self.finish_validation(tel, walk, stale.is_none(), None, types)
             .report(tel, key);
@@ -1409,6 +1461,7 @@ impl ProductMemo {
         visiting: &mut ProductValidationWalk,
         types: &super::types::Types,
         complete: bool,
+        external: Option<&ProductMemo>,
     ) -> Option<ProductKey> {
         if self.fact_stale_dependencies.contains_key(key) {
             return Some(key.clone());
@@ -1426,7 +1479,7 @@ impl ProductMemo {
             return None;
         }
         visiting.work.vertex_visits += 1;
-        self.stale_observation(tel, key, visiting, types, complete)
+        self.stale_observation(tel, key, visiting, types, complete, external)
     }
 
     fn stale_observation(
@@ -1436,13 +1489,14 @@ impl ProductMemo {
         visiting: &mut ProductValidationWalk,
         types: &super::types::Types,
         complete: bool,
+        external: Option<&ProductMemo>,
     ) -> Option<ProductKey> {
         let dependencies = Rc::clone(&self.produced[key].dependencies);
         let count = dependencies.products.len();
         let rooted_read = dependencies.rooted_read;
         for index in 0..count {
             if let Some(read) = rooted_read.filter(|read| read.position == index) {
-                if let Some(stale) = self.rooted_stale_dependency(tel, key, visiting, types, complete) {
+                if let Some(stale) = self.rooted_stale_dependency(tel, key, visiting, types, complete, external) {
                     return Some(stale);
                 }
                 if !read.delivered {
@@ -1460,14 +1514,14 @@ impl ProductMemo {
                 });
             }
             if generation.is_some()
-                && let Some(stale) = self.stale_dependency_inner(tel, dependency, visiting, types, complete)
+                && let Some(stale) = self.stale_dependency_inner(tel, dependency, visiting, types, complete, external)
             {
                 return Some(stale);
             }
         }
         if let Some(read) = rooted_read.filter(|read| read.position == count) {
             return self
-                .rooted_stale_dependency(tel, key, visiting, types, complete)
+                .rooted_stale_dependency(tel, key, visiting, types, complete, external)
                 .or_else(|| (!read.delivered).then(|| key.clone()));
         }
         None
@@ -1478,7 +1532,7 @@ impl ProductMemo {
 pub struct PullSession {
     id: Option<PullSessionId>,
     request_ids: ProductRequestIds,
-    root: RootId,
+    scope: ProductScope,
     memo: ProductMemo,
     demanded_executables: HashSet<ExecutableKey>,
     // Request-local counters reset whenever this retained session is
@@ -1486,24 +1540,36 @@ pub struct PullSession {
     producer_pokes: u64,
     work_starts: WorkStartTally,
     pending_fact_states: HashMap<FactKey, FactState>,
+    /// The program session, for a root session to read a program-scoped
+    /// member's answer from. Always `None` on the program session itself.
+    external: Option<Rc<RefCell<PullSession>>>,
 }
 
 impl PullSession {
-    pub fn new(root: RootId) -> Self {
+    pub fn new(scope: ProductScope) -> Self {
         Self {
             id: None,
             request_ids: ProductRequestIds::new(),
-            root,
+            scope,
             memo: ProductMemo::default(),
             demanded_executables: HashSet::new(),
             producer_pokes: 0,
             work_starts: WorkStartTally::default(),
             pending_fact_states: HashMap::new(),
+            external: None,
         }
     }
 
-    pub fn root(&self) -> RootId {
-        self.root
+    pub fn scope(&self) -> ProductScope {
+        self.scope
+    }
+
+    /// This session's root, when it has one. The program session has none.
+    pub fn root(&self) -> Option<RootId> {
+        match self.scope {
+            ProductScope::Root(root) => Some(root),
+            ProductScope::Program => None,
+        }
     }
 
     pub fn id(&self) -> Option<PullSessionId> {
@@ -1570,10 +1636,10 @@ impl PullSession {
 /// sessions that currently read it.
 #[derive(Debug, Default)]
 pub(crate) struct ProductSessions {
-    sessions: HashMap<RootId, Rc<RefCell<PullSession>>>,
-    subscriptions_by_root: HashMap<RootId, HashSet<FactKey>>,
-    roots_by_fact: HashMap<FactKey, HashSet<RootId>>,
-    active_roots: HashMap<RootId, ActiveRootProduct>,
+    sessions: HashMap<ProductScope, Rc<RefCell<PullSession>>>,
+    subscriptions_by_scope: HashMap<ProductScope, HashSet<FactKey>>,
+    scopes_by_fact: HashMap<FactKey, HashSet<ProductScope>>,
+    active_scopes: HashMap<ProductScope, ActiveRootProduct>,
     work_start_cursor: WorkStartTally,
     active_work_starts: Vec<WorkStartOwner>,
     pending_requests: super::agenda::Agenda<ProductAddress>,
@@ -1589,21 +1655,21 @@ struct ActiveRootProduct {
 #[derive(Debug)]
 enum WorkStartOwner {
     StandaloneDrive,
-    Root(RootId, WorkStartTally),
+    Scope(ProductScope, WorkStartTally),
 }
 
 impl ProductSessions {
     pub(crate) fn observe(&mut self, address: &ProductAddress) {
         self.sessions
-            .entry(address.root)
-            .or_insert_with(|| Rc::new(RefCell::new(PullSession::new(address.root))))
+            .entry(address.scope)
+            .or_insert_with(|| Rc::new(RefCell::new(PullSession::new(address.scope))))
             .borrow_mut()
             .memo
             .observed_products
             .insert(address.key.clone());
         if !self
-            .get(address.root)
-            .expect("observed root exists")
+            .get(address.scope)
+            .expect("observed scope exists")
             .memo
             .external_state(&address.key)
             .settled
@@ -1613,7 +1679,7 @@ impl ProductSessions {
     }
 
     pub(crate) fn unobserve(&mut self, address: &ProductAddress) {
-        if let Some(session) = self.sessions.get(&address.root) {
+        if let Some(session) = self.sessions.get(&address.scope) {
             session.borrow_mut().memo.observed_products.remove(&address.key);
         }
         self.requested.remove(address);
@@ -1630,7 +1696,7 @@ impl ProductSessions {
             if !self.requested.contains(&address) {
                 continue;
             }
-            if let Some(active) = self.active_roots.get_mut(&address.root) {
+            if let Some(active) = self.active_scopes.get_mut(&address.scope) {
                 active.parked_requests.push(address);
             } else {
                 self.observe(&address);
@@ -1645,7 +1711,7 @@ impl ProductSessions {
     }
 
     pub(crate) fn product(&self, address: &ProductAddress) -> Option<ProductValue> {
-        let session = self.get(address.root)?;
+        let session = self.get(address.scope)?;
         session
             .memo
             .external_state(&address.key)
@@ -1656,10 +1722,10 @@ impl ProductSessions {
 
     pub(crate) fn take_product_changes(
         &mut self,
-        root: RootId,
+        scope: ProductScope,
         types: &super::types::Types,
     ) -> Vec<FactChange<DependencyKey>> {
-        let Some(session) = self.sessions.get(&root) else {
+        let Some(session) = self.sessions.get(&scope) else {
             return Vec::new();
         };
         let changes = std::mem::take(&mut session.borrow_mut().memo.external_changes);
@@ -1677,7 +1743,7 @@ impl ProductSessions {
             .into_values()
             .map(|change| {
                 FactChange::replacing(
-                    DependencyKey::Product(ProductAddress { root, key: change.key }),
+                    DependencyKey::Product(ProductAddress::in_session(scope, change.key)),
                     change.old_revision,
                     change.new_revision,
                     change.old_settled,
@@ -1699,10 +1765,54 @@ impl ProductSessions {
         }
         changes
     }
+
+    /// A program-session product's change can leave a root session's own
+    /// rooted-membership witness holding a stale member: the witness
+    /// recorded that edge locally the first time it discovered the member
+    /// (membership is a root's own bookkeeping of what it touches; only the
+    /// value lives in the program session). Reaching into every other
+    /// session's `invalidate_products` for the changed keys dirties those
+    /// witnesses through `rooted_member_dirty`, the identical path a
+    /// locally produced dependency's change already takes.
+    fn propagate_program_changes(
+        &mut self,
+        tel: &impl Telemetry,
+        types: &super::types::Types,
+        changes: &[FactChange<DependencyKey>],
+    ) {
+        let keys = changes
+            .iter()
+            .filter_map(|change| match &change.key {
+                DependencyKey::Product(address) if address.scope == ProductScope::Program => Some(address.key.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            return;
+        }
+        let mut roots = self
+            .sessions
+            .keys()
+            .filter_map(|scope| match scope {
+                ProductScope::Root(root) => Some(*root),
+                ProductScope::Program => None,
+            })
+            .collect::<Vec<_>>();
+        roots.sort_unstable();
+        for root in roots {
+            let session = Rc::clone(&self.sessions[&ProductScope::Root(root)]);
+            let mut session = session.borrow_mut();
+            for key in &keys {
+                session.memo.mark_rooted_member_changed(key);
+            }
+            session.memo.invalidate_products(tel, keys.clone(), types);
+        }
+    }
+
     pub(crate) fn begin_standalone_drive(&mut self, work_starts: WorkStartTally) {
         assert!(
-            self.active_work_starts.is_empty() && self.active_roots.is_empty(),
-            "a standalone drive cannot begin inside a root product activation"
+            self.active_work_starts.is_empty() && self.active_scopes.is_empty(),
+            "a standalone drive cannot begin inside a product session activation"
         );
         let _ = self.take_work_start_delta(work_starts);
         self.active_work_starts.push(WorkStartOwner::StandaloneDrive);
@@ -1712,50 +1822,62 @@ impl ProductSessions {
         let _ = self.take_work_start_delta(work_starts);
         match self.active_work_starts.pop() {
             Some(WorkStartOwner::StandaloneDrive) => {}
-            Some(WorkStartOwner::Root(..)) => panic!("a root product activation outlived its standalone drive"),
+            Some(WorkStartOwner::Scope(..)) => panic!("a product session activation outlived its standalone drive"),
             None => panic!("finishing a standalone drive that never began"),
         }
         assert!(
-            self.active_roots.is_empty(),
-            "a root product activation outlived its standalone drive"
+            self.active_scopes.is_empty(),
+            "a product session activation outlived its standalone drive"
         );
     }
 
-    pub(crate) fn take(&mut self, root: RootId, work_starts: WorkStartTally) -> (Rc<RefCell<PullSession>>, bool) {
+    pub(crate) fn take(
+        &mut self,
+        scope: ProductScope,
+        work_starts: WorkStartTally,
+    ) -> (Rc<RefCell<PullSession>>, bool) {
         assert!(
-            self.active_roots.insert(root, ActiveRootProduct::default()).is_none(),
-            "one root product session cannot be driven recursively"
+            self.active_scopes.insert(scope, ActiveRootProduct::default()).is_none(),
+            "one product session cannot be driven recursively"
         );
         let delta = self.take_work_start_delta(work_starts);
         let initial = match self.active_work_starts.last_mut() {
             Some(WorkStartOwner::StandaloneDrive) => WorkStartTally::default(),
-            Some(WorkStartOwner::Root(_, outer)) => {
+            Some(WorkStartOwner::Scope(_, outer)) => {
                 outer.add(delta);
                 WorkStartTally::default()
             }
             None => delta,
         };
-        self.active_work_starts.push(WorkStartOwner::Root(root, initial));
-        let retained = self.sessions.contains_key(&root);
+        self.active_work_starts.push(WorkStartOwner::Scope(scope, initial));
+        let retained = self.sessions.contains_key(&scope);
         let session = Rc::clone(
             self.sessions
-                .entry(root)
-                .or_insert_with(|| Rc::new(RefCell::new(PullSession::new(root)))),
+                .entry(scope)
+                .or_insert_with(|| Rc::new(RefCell::new(PullSession::new(scope)))),
         );
         session.borrow_mut().begin_activation();
         (session, retained)
     }
 
-    pub(crate) fn finish_activation(&mut self, root: RootId, session: &mut PullSession, work_starts: WorkStartTally) {
+    pub(crate) fn finish_activation(
+        &mut self,
+        scope: ProductScope,
+        session: &mut PullSession,
+        work_starts: WorkStartTally,
+    ) {
         let delta = self.take_work_start_delta(work_starts);
-        let (active_root, mut tally) = match self.active_work_starts.pop() {
-            Some(WorkStartOwner::Root(active_root, tally)) => (active_root, tally),
+        let (active_scope, mut tally) = match self.active_work_starts.pop() {
+            Some(WorkStartOwner::Scope(active_scope, tally)) => (active_scope, tally),
             Some(WorkStartOwner::StandaloneDrive) => {
-                panic!("finishing a root without an active root work tally")
+                panic!("finishing a product session without an active work tally")
             }
-            None => panic!("finishing a root without an active work tally"),
+            None => panic!("finishing a product session without an active work tally"),
         };
-        assert_eq!(active_root, root, "root product activations must finish in stack order");
+        assert_eq!(
+            active_scope, scope,
+            "product session activations must finish in stack order"
+        );
         tally.add(delta);
         session.finish_activation(tally);
     }
@@ -1766,29 +1888,33 @@ impl ProductSessions {
         delta
     }
 
-    pub(crate) fn sync_subscriptions(&mut self, root: RootId, session: &mut PullSession) {
+    pub(crate) fn sync_subscriptions(&mut self, scope: ProductScope, session: &mut PullSession) {
         for (fact, subscribe) in session.memo.take_fact_subscription_changes() {
             if subscribe {
-                let inserted = self.subscriptions_by_root.entry(root).or_default().insert(fact.clone());
+                let inserted = self
+                    .subscriptions_by_scope
+                    .entry(scope)
+                    .or_default()
+                    .insert(fact.clone());
                 if inserted {
-                    self.roots_by_fact.entry(fact).or_default().insert(root);
+                    self.scopes_by_fact.entry(fact).or_default().insert(scope);
                 }
             } else {
                 let removed = self
-                    .subscriptions_by_root
-                    .get_mut(&root)
+                    .subscriptions_by_scope
+                    .get_mut(&scope)
                     .is_some_and(|facts| facts.remove(&fact));
                 if removed {
-                    let remove_fact = self.roots_by_fact.get_mut(&fact).is_some_and(|roots| {
-                        roots.remove(&root);
-                        roots.is_empty()
+                    let remove_fact = self.scopes_by_fact.get_mut(&fact).is_some_and(|scopes| {
+                        scopes.remove(&scope);
+                        scopes.is_empty()
                     });
                     if remove_fact {
-                        self.roots_by_fact.remove(&fact);
+                        self.scopes_by_fact.remove(&fact);
                     }
                 }
-                if self.subscriptions_by_root.get(&root).is_some_and(HashSet::is_empty) {
-                    self.subscriptions_by_root.remove(&root);
+                if self.subscriptions_by_scope.get(&scope).is_some_and(HashSet::is_empty) {
+                    self.subscriptions_by_scope.remove(&scope);
                 }
             }
         }
@@ -1802,20 +1928,20 @@ impl ProductSessions {
     ) -> Vec<FactChange<DependencyKey>> {
         let Self {
             sessions,
-            roots_by_fact,
-            active_roots,
+            scopes_by_fact,
+            active_scopes,
             ..
         } = self;
-        let mut observed_roots = HashSet::new();
+        let mut observed_scopes = HashSet::new();
         for movement in movements {
-            for root in roots_by_fact.get(&movement.key).into_iter().flatten() {
-                let session = sessions.get(root).expect("subscribed root retains its session");
+            for scope in scopes_by_fact.get(&movement.key).into_iter().flatten() {
+                let session = sessions.get(scope).expect("subscribed scope retains its session");
                 if !session.borrow().memo.observed_products.is_empty() {
                     session
                         .borrow_mut()
                         .apply_fact_movements(std::slice::from_ref(movement));
-                    observed_roots.insert(*root);
-                } else if let Some(active) = active_roots.get_mut(root) {
+                    observed_scopes.insert(*scope);
+                } else if let Some(active) = active_scopes.get_mut(scope) {
                     active.movements.insert(movement.key.clone(), movement.state);
                 } else {
                     session
@@ -1825,53 +1951,69 @@ impl ProductSessions {
             }
         }
         let mut changes = Vec::new();
-        let mut observed_roots = observed_roots.into_iter().collect::<Vec<_>>();
-        observed_roots.sort_unstable();
-        for root in observed_roots {
-            self.sessions[&root].borrow_mut().reconcile_fact_movements(tel, types);
-            changes.extend(self.take_product_changes(root, types));
+        let mut observed_scopes = observed_scopes.into_iter().collect::<Vec<_>>();
+        observed_scopes.sort();
+        for scope in observed_scopes {
+            self.sessions[&scope].borrow_mut().reconcile_fact_movements(tel, types);
+            let scope_changes = self.take_product_changes(scope, types);
+            if scope == ProductScope::Program {
+                self.propagate_program_changes(tel, types, &scope_changes);
+            }
+            changes.extend(scope_changes);
         }
         changes
     }
 
-    pub(crate) fn drain_active_movements(&mut self, root: RootId, session: &mut PullSession) {
+    pub(crate) fn drain_active_movements(&mut self, scope: ProductScope, session: &mut PullSession) {
         let pending = self
-            .active_roots
-            .get_mut(&root)
+            .active_scopes
+            .get_mut(&scope)
             .map(|active| &mut active.movements)
-            .expect("draining a root that is not active");
+            .expect("draining a scope that is not active");
         if !pending.is_empty() {
             session.pending_fact_states.extend(std::mem::take(pending));
         }
     }
 
     pub(crate) fn restore(&mut self, session: Rc<RefCell<PullSession>>) {
-        let root = session.borrow().root();
-        self.drain_active_movements(root, &mut session.borrow_mut());
-        self.sync_subscriptions(root, &mut session.borrow_mut());
+        let scope = session.borrow().scope();
+        self.drain_active_movements(scope, &mut session.borrow_mut());
+        self.sync_subscriptions(scope, &mut session.borrow_mut());
         let active = self
-            .active_roots
-            .remove(&root)
-            .expect("restoring a root that is not active");
+            .active_scopes
+            .remove(&scope)
+            .expect("restoring a scope that is not active");
         for address in active.parked_requests {
             self.pending_requests.enqueue(address);
         }
         assert!(Rc::ptr_eq(
-            self.sessions.get(&root).expect("active root retains its session"),
+            self.sessions.get(&scope).expect("active scope retains its session"),
             &session
         ));
     }
 
-    pub(crate) fn get(&self, root: RootId) -> Option<Ref<'_, PullSession>> {
-        self.sessions.get(&root).map(|session| session.borrow())
+    pub(crate) fn get(&self, scope: ProductScope) -> Option<Ref<'_, PullSession>> {
+        self.sessions.get(&scope).map(|session| session.borrow())
+    }
+
+    /// A lazily created handle to the shared program session, cloned so a
+    /// root session's read context can consult it (never drive it: this
+    /// call never marks it active).
+    pub(crate) fn program_handle(&mut self) -> Rc<RefCell<PullSession>> {
+        Rc::clone(
+            self.sessions
+                .entry(ProductScope::Program)
+                .or_insert_with(|| Rc::new(RefCell::new(PullSession::new(ProductScope::Program)))),
+        )
     }
 
     pub(crate) fn retire(&mut self, root: RootId, types: &super::types::Types) -> bool {
+        let scope = ProductScope::Root(root);
         assert!(
-            !self.active_roots.contains_key(&root),
+            !self.active_scopes.contains_key(&scope),
             "cannot retire an active root session"
         );
-        let Some(session) = self.sessions.remove(&root) else {
+        let Some(session) = self.sessions.remove(&scope) else {
             return false;
         };
         let mut observed = session
@@ -1883,22 +2025,23 @@ impl ProductSessions {
             .collect::<Vec<_>>();
         observed.sort_by(|left, right| left.semantic_cmp(right, types));
         for key in observed {
-            self.request(ProductAddress { root, key });
+            self.request(ProductAddress::in_session(scope, key));
         }
-        for fact in self.subscriptions_by_root.remove(&root).unwrap_or_default() {
-            let remove_fact = self.roots_by_fact.get_mut(&fact).is_some_and(|roots| {
-                roots.remove(&root);
-                roots.is_empty()
+        for fact in self.subscriptions_by_scope.remove(&scope).unwrap_or_default() {
+            let remove_fact = self.scopes_by_fact.get_mut(&fact).is_some_and(|scopes| {
+                scopes.remove(&scope);
+                scopes.is_empty()
             });
             if remove_fact {
-                self.roots_by_fact.remove(&fact);
+                self.scopes_by_fact.remove(&fact);
             }
         }
         true
     }
 
     pub(crate) fn retirement_changes(&self, root: RootId) -> Vec<FactChange<DependencyKey>> {
-        let Some(session) = self.get(root) else {
+        let scope = ProductScope::Root(root);
+        let Some(session) = self.get(scope) else {
             return Vec::new();
         };
         session
@@ -1908,7 +2051,7 @@ impl ProductSessions {
             .map(|key| {
                 let before = session.memo.external_state(key);
                 FactChange::replacing(
-                    DependencyKey::Product(ProductAddress { root, key: key.clone() }),
+                    DependencyKey::Product(ProductAddress::in_session(scope, key.clone())),
                     before.revision,
                     None,
                     before.settled,
@@ -1922,7 +2065,7 @@ impl ProductSessions {
     pub(crate) fn counts(&self) -> (usize, usize) {
         (
             self.sessions.len(),
-            self.subscriptions_by_root.values().map(HashSet::len).sum(),
+            self.subscriptions_by_scope.values().map(HashSet::len).sum(),
         )
     }
 }
@@ -1931,7 +2074,7 @@ impl super::scheduler::ExternalDependencyStates<DependencyKey> for ProductSessio
     fn external_state(&self, key: &DependencyKey) -> Option<FactState> {
         match key {
             DependencyKey::Fact(_) => None,
-            DependencyKey::Product(address) => Some(self.get(address.root).map_or(
+            DependencyKey::Product(address) => Some(self.get(address.scope).map_or(
                 FactState {
                     revision: None,
                     settled: false,
@@ -2130,7 +2273,10 @@ impl<'s> ProductReadContext<'s> {
         key: ProductKey,
         types: &super::types::Types,
     ) -> Option<&ProductValue> {
-        if let Some(stale) = self.session.memo.stale_dependency(tel, &key, types) {
+        let external = self.session.external.clone();
+        let external = external.as_ref().map(|handle| handle.borrow());
+        let external_memo = external.as_deref().map(PullSession::memo);
+        if let Some(stale) = self.session.memo.stale_dependency(tel, &key, types, external_memo) {
             self.product_reads_delivered = false;
             self.session.memo.prepare_stale_for_reproduction(tel, &stale, types);
             let generation = self.session.memo.generation(&key);
@@ -2283,7 +2429,7 @@ pub struct ProductDriver<'a, T: Telemetry> {
 impl<'a, T: Telemetry> ProductDriver<'a, T> {
     #[cfg(test)]
     pub fn new(tel: &'a T, root: RootId) -> Self {
-        Self::with_session(tel, PullSession::new(root))
+        Self::with_session(tel, PullSession::new(ProductScope::Root(root)))
     }
 
     #[cfg(test)]
@@ -2364,6 +2510,14 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         self.session_mut().apply_fact_movements(movements);
     }
 
+    /// Links this (root) session to the program session it defers a
+    /// program-scoped member's answer to. Set once, on first need, rather
+    /// than on every activation: a root that never reads a program-scoped
+    /// product never forces the program session to exist.
+    pub(super) fn link_external(&mut self, external: Rc<RefCell<PullSession>>) {
+        self.session_mut().external = Some(external);
+    }
+
     pub(super) fn reconcile_wait_frames(&mut self, types: &super::types::Types) -> Option<(usize, ProductRequestId)> {
         self.wait_frames_canceled(types);
         self.session_mut().memo.canceled_wait_frame.take()
@@ -2429,10 +2583,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     }
 
     pub(super) fn product_is_current(&self, key: &ProductKey) -> bool {
-        let session = self.session();
-        session.memo.get(key).is_some()
-            && !session.memo.has_unsettled_inputs(key)
-            && session.memo.rooted.get(key).is_none_or(|root| root.dirty.is_empty())
+        self.session().memo.product_is_current(key)
     }
 
     pub(super) fn collect_wait_frame_work(&self, reader: &ProductKey, work: &mut ProductValidation) {
@@ -2464,10 +2615,13 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         self.session_mut()
             .reconcile_fact_movements(tel, producers.product_types());
         self.session_mut().note_product_request(key);
+        let external = self.session().external.clone();
+        let external = external.as_ref().map(|handle| handle.borrow());
+        let external_memo = external.as_deref().map(PullSession::memo);
         let stale = self
             .session_mut()
             .memo
-            .stale_dependency(tel, key, producers.product_types());
+            .stale_dependency(tel, key, producers.product_types(), external_memo);
         if let Some(stale) = stale {
             self.session_mut()
                 .memo
