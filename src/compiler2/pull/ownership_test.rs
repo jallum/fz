@@ -242,7 +242,10 @@ fn ownership_pull(
     root: &ProductKey,
 ) -> PullOutcome {
     let mut world = World::new();
-    let session_root = driver.session().root();
+    let session_root = driver
+        .session()
+        .root()
+        .expect("ownership pull drives a root-scoped session");
     match super::super::product_drive::drive_root_product_with_producers::<_, String>(
         &mut world,
         driver.tel,
@@ -2319,7 +2322,7 @@ fn equal_recursive_validation_visits_shared_inputs_once_and_only_mutates_its_ext
         memo.invalidate_products(&tel, [input.clone()], &types);
         finish_test_product(&mut memo, &input, ProductValue::Unit, []);
         work.borrow_mut().clear();
-        assert_eq!(memo.stale_dependency(&tel, &members[0], &types), None);
+        assert_eq!(memo.stale_dependency(&tel, &members[0], &types, None), None);
         let mut validation = ProductValidation::default();
         for work in work.borrow().iter() {
             validation.include(*work);
@@ -2346,7 +2349,7 @@ fn equal_recursive_validation_visits_shared_inputs_once_and_only_mutates_its_ext
             assert_eq!(memo.generation(member), Some(1));
         }
         work.borrow_mut().clear();
-        assert_eq!(memo.stale_dependency(&tel, &members[0], &types), None);
+        assert_eq!(memo.stale_dependency(&tel, &members[0], &types, None), None);
         assert!(
             work.borrow().is_empty(),
             "a validated cycle does no further validation work"

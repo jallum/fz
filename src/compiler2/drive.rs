@@ -12,7 +12,7 @@ use crate::telemetry::{RawSpanGuard, RawSpanStop0, RawSpanStop1 as _, RawSpanTel
 use super::code::SourceOwner;
 use super::facts::{ClaimShape, FactUse, Publisher};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
-use super::pull::ProductKey;
+use super::pull::{ProductKey, ProductScope};
 use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
 use super::semantic::{CallSiteKey, CallableConstructionTargetKey, SemanticOrd};
 use super::types::Types;
@@ -446,8 +446,29 @@ impl ClaimShape for FactKey {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ProductAddress {
-    pub(crate) root: RootId,
+    pub(crate) scope: ProductScope,
     pub(crate) key: ProductKey,
+}
+
+impl ProductAddress {
+    /// The address a reader asks for: a key's scope is a property of what it
+    /// depends on, decided by `ProductKey::scope`, never supplied
+    /// independently by a caller.
+    pub(crate) fn of(key: ProductKey, asking: RootId) -> Self {
+        let scope = key.scope(asking);
+        Self { scope, key }
+    }
+
+    /// The address of an entry a session already holds. The session's scope
+    /// must be the one the key's own scope names.
+    pub(crate) fn in_session(scope: ProductScope, key: ProductKey) -> Self {
+        assert_eq!(
+            key.is_program_scoped(),
+            scope == ProductScope::Program,
+            "{key:?} does not live in the {scope} session"
+        );
+        Self { scope, key }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -476,8 +497,8 @@ impl SemanticOrd<Types> for DependencyKey {
         match (self, other) {
             (Self::Fact(left), Self::Fact(right)) => left.semantic_cmp(right, types),
             (Self::Product(left), Self::Product(right)) => left
-                .root
-                .cmp(&right.root)
+                .scope
+                .cmp(&right.scope)
                 .then_with(|| left.key.semantic_cmp(&right.key, types)),
             (Self::Fact(_), Self::Product(_)) => std::cmp::Ordering::Less,
             (Self::Product(_), Self::Fact(_)) => std::cmp::Ordering::Greater,

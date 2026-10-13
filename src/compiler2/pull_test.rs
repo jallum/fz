@@ -64,7 +64,7 @@ fn finish_test_group(
 
 fn retained_test_session(root: RootId, fact: &FactKey, types: &super::super::types::Types) -> PullSession {
     let tel = ConfiguredTelemetry::new();
-    let mut session = PullSession::new(root);
+    let mut session = PullSession::new(ProductScope::Root(root));
     let key = ProductKey::RootBackendProduct(root);
     assert!(finish_test_entry(
         &mut session.memo,
@@ -94,10 +94,7 @@ fn retiring_a_never_produced_observed_product_preserves_its_pending_demand() {
 
     let types = fake_types();
     let root = RootId::for_test(1);
-    let address = ProductAddress {
-        root,
-        key: ProductKey::RootBackendProduct(root),
-    };
+    let address = ProductAddress::of(ProductKey::RootBackendProduct(root), root);
     let mut sessions = ProductSessions::default();
     sessions.observe(&address);
     let mut scheduler = Scheduler::new();
@@ -128,7 +125,7 @@ fn retiring_a_never_produced_observed_product_preserves_its_pending_demand() {
     );
     assert!(scheduler.has_dependency_consumers(&DependencyKey::Product(address.clone())));
     assert!(
-        sessions.get(root).is_none(),
+        sessions.get(ProductScope::Root(root)).is_none(),
         "retirement must release the memo before any later drive"
     );
     assert_eq!(
@@ -138,7 +135,7 @@ fn retiring_a_never_produced_observed_product_preserves_its_pending_demand() {
     );
     assert!(
         sessions
-            .get(root)
+            .get(ProductScope::Root(root))
             .unwrap()
             .memo
             .observed_products
@@ -159,10 +156,7 @@ fn retiring_a_never_produced_observed_product_preserves_its_pending_demand() {
 #[test]
 fn renewed_product_demand_does_not_revive_duplicate_stale_queue_entries() {
     let root = RootId::for_test(1);
-    let address = ProductAddress {
-        root,
-        key: ProductKey::RootBackendProduct(root),
-    };
+    let address = ProductAddress::of(ProductKey::RootBackendProduct(root), root);
     let mut sessions = ProductSessions::default();
     sessions.observe(&address);
     sessions.unobserve(&address);
@@ -188,16 +182,16 @@ fn retained_session_broker_fans_runtime_demand_movement_to_dormant_and_nested_ac
         retained_test_session(right, &fact, &types),
         retained_test_session(dormant, &fact, &types),
     ] {
-        let root = session.root();
-        sessions.active_roots.insert(root, ActiveRootProduct::default());
+        let scope = session.scope();
+        sessions.active_scopes.insert(scope, ActiveRootProduct::default());
         let session = Rc::new(RefCell::new(session));
-        sessions.sessions.insert(root, Rc::clone(&session));
+        sessions.sessions.insert(scope, Rc::clone(&session));
         sessions.restore(session);
     }
     assert_eq!(sessions.counts(), (3, 3));
 
-    let (active_left, _) = sessions.take(left, WorkStartTally::default());
-    let (active_right, _) = sessions.take(right, WorkStartTally::default());
+    let (active_left, _) = sessions.take(ProductScope::Root(left), WorkStartTally::default());
+    let (active_right, _) = sessions.take(ProductScope::Root(right), WorkStartTally::default());
     let tel = ConfiguredTelemetry::new();
     sessions.publish(
         &tel,
@@ -221,8 +215,8 @@ fn retained_session_broker_fans_runtime_demand_movement_to_dormant_and_nested_ac
             },
         }],
     );
-    sessions.drain_active_movements(left, &mut active_left.borrow_mut());
-    sessions.drain_active_movements(right, &mut active_right.borrow_mut());
+    sessions.drain_active_movements(ProductScope::Root(left), &mut active_left.borrow_mut());
+    sessions.drain_active_movements(ProductScope::Root(right), &mut active_right.borrow_mut());
     let final_state = FactState {
         revision: Some(2),
         settled: true,
@@ -236,17 +230,30 @@ fn retained_session_broker_fans_runtime_demand_movement_to_dormant_and_nested_ac
         HashMap::from([(fact.clone(), final_state)])
     );
     assert_eq!(
-        sessions.sessions[&dormant].borrow().pending_fact_states,
+        sessions.sessions[&ProductScope::Root(dormant)]
+            .borrow()
+            .pending_fact_states,
         HashMap::from([(fact.clone(), final_state)])
     );
-    sessions.finish_activation(right, &mut active_right.borrow_mut(), WorkStartTally::default());
+    sessions.finish_activation(
+        ProductScope::Root(right),
+        &mut active_right.borrow_mut(),
+        WorkStartTally::default(),
+    );
     sessions.restore(active_right);
-    sessions.finish_activation(left, &mut active_left.borrow_mut(), WorkStartTally::default());
+    sessions.finish_activation(
+        ProductScope::Root(left),
+        &mut active_left.borrow_mut(),
+        WorkStartTally::default(),
+    );
     sessions.restore(active_left);
 
     assert!(sessions.retire(left, &types));
     assert_eq!(sessions.counts(), (2, 2));
-    assert_eq!(sessions.roots_by_fact[&fact], HashSet::from([right, dormant]));
+    assert_eq!(
+        sessions.scopes_by_fact[&fact],
+        HashSet::from([ProductScope::Root(right), ProductScope::Root(dormant)])
+    );
 }
 
 #[test]
@@ -258,9 +265,10 @@ fn equal_fact_delivery_keeps_both_retained_root_products_settled() {
     let mut sessions = ProductSessions::default();
     for root in roots {
         let session = retained_test_session(root, &fact, &types);
-        sessions.active_roots.insert(root, ActiveRootProduct::default());
+        let scope = ProductScope::Root(root);
+        sessions.active_scopes.insert(scope, ActiveRootProduct::default());
         let session = Rc::new(RefCell::new(session));
-        sessions.sessions.insert(root, Rc::clone(&session));
+        sessions.sessions.insert(scope, Rc::clone(&session));
         sessions.restore(session);
     }
     sessions.publish(
@@ -275,7 +283,11 @@ fn equal_fact_delivery_keeps_both_retained_root_products_settled() {
         }],
     );
     for root in roots {
-        let mut session = sessions.sessions.get(&root).expect("retained root").borrow_mut();
+        let mut session = sessions
+            .sessions
+            .get(&ProductScope::Root(root))
+            .expect("retained root")
+            .borrow_mut();
         session.reconcile_fact_movements(&tel, &types);
         assert!(session.memo.get(&ProductKey::RootBackendProduct(root)).is_some());
     }
@@ -499,7 +511,7 @@ fn recursive_reads_record_exact_dependency_generation_on_every_outcome() {
     let missing = ProductKey::AbiExecutable(fake_executable_with_function(root, 851));
     let ready = ProductKey::AbiExecutable(fake_executable_with_function(root, 852));
     let cyclic = ProductKey::AbiExecutable(fake_executable_with_function(root, 853));
-    let mut session = PullSession::new(root);
+    let mut session = PullSession::new(ProductScope::Root(root));
 
     {
         let mut context = ProductReadContext::new(&mut session);
@@ -2029,7 +2041,7 @@ fn pull_session_id_exhaustion_never_wraps_or_emits_a_reserved_identity() {
         observed.set(observed.get() + 1);
     });
     let result = catch_unwind(AssertUnwindSafe(|| {
-        ProductDriver::with_session_id_source(&tel, PullSession::new(RootId::for_test(8)), || {
+        ProductDriver::with_session_id_source(&tel, PullSession::new(ProductScope::Root(RootId::for_test(8))), || {
             panic!("pull session identity exhausted")
         })
     }));
@@ -2535,9 +2547,9 @@ fn callable_owner_products_aggregate_order_free_and_retract_independently() {
     );
     assert!(!replaced.callables[&callable].resolutions.contains(&left_resolution));
     assert_eq!(memo.generation(&right_key), right_generation);
-    assert!(memo.stale_dependency(&tel, &left_abi, &types).is_some());
-    assert!(memo.stale_dependency(&tel, &right_abi, &types).is_none());
-    assert!(memo.stale_dependency(&tel, &root_key, &types).is_some());
+    assert!(memo.stale_dependency(&tel, &left_abi, &types, None).is_some());
+    assert!(memo.stale_dependency(&tel, &right_abi, &types, None).is_none());
+    assert!(memo.stale_dependency(&tel, &root_key, &types, None).is_some());
 
     let reproduced = memo.get(&left_key).cloned().expect("replaced owner product");
     memo.remove(&tel, &left_key, &types);
@@ -3585,7 +3597,7 @@ fn callable_owner_group_is_atomic_replacement_safe_and_frontier_relative() {
         [],
     );
     assert!(keys.iter().all(|key| memo.get(key).is_none()));
-    assert!(memo.stale_dependency(&tel, &parent, &types).is_some());
+    assert!(memo.stale_dependency(&tel, &parent, &types, None).is_some());
     let replacement_answers = settle_owner_equations(
         &equations(second_resolution.clone(), replacement_position.clone()),
         true,

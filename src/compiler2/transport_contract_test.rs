@@ -5480,7 +5480,9 @@ fn pull_backend_for_test<'a>(
 }
 
 fn root_backend_answer_for_test(session: &super::pull::PullSession) -> &Rc<super::BackendProgram> {
-    match session.memo().get(&ProductKey::RootBackendProduct(session.root())) {
+    match session.memo().get(&ProductKey::RootBackendProduct(
+        session.root().expect("root-scoped session"),
+    )) {
         Some(ProductValue::RootBackendProduct(answer)) => answer,
         Some(other) => panic!("root backend product produced unexpected value {other:?}"),
         None => panic!("root backend product should be memoized"),
@@ -5635,54 +5637,48 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
     fn product_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
         _tel: &T,
-        root: super::RootId,
+        scope: super::pull::ProductScope,
         product: &ProductKey,
     ) -> Self {
-        panic!("root {} product {product:?} failed", root.as_u32());
+        panic!("{scope} product {product:?} failed");
     }
 
     fn job_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
         _tel: &T,
-        root: super::RootId,
+        scope: super::pull::ProductScope,
         fact: &FactUse<FactKey>,
         job: &Job,
         source: super::scheduler::FatalError,
     ) -> Self {
-        panic!(
-            "root {} job {job:?} failed producing {fact:?}: {source:?}",
-            root.as_u32()
-        );
+        panic!("{scope} job {job:?} failed producing {fact:?}: {source:?}");
     }
 
     fn no_ready_producer<T: crate::telemetry::Telemetry>(
         _world: &mut World,
         _tel: &T,
-        root: super::RootId,
+        scope: super::pull::ProductScope,
         fact: &FactUse<FactKey>,
     ) -> Self {
-        panic!("root {} no ready producer for {fact:?}", root.as_u32());
+        panic!("{scope} no ready producer for {fact:?}");
     }
 
     fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
         _world: &mut World,
         _tel: &T,
-        root: super::RootId,
+        scope: super::pull::ProductScope,
         fact: &FactUse<FactKey>,
     ) -> Self {
-        panic!("root {} fact-wait budget exceeded for {fact:?}", root.as_u32());
+        panic!("{scope} fact-wait budget exceeded for {fact:?}");
     }
 
     fn did_not_settle<T: crate::telemetry::Telemetry>(
         _world: &mut World,
         _tel: &T,
-        root: super::RootId,
+        scope: super::pull::ProductScope,
         last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
-        panic!(
-            "root {} product did not settle; last wait: {last_wait:?}",
-            root.as_u32()
-        );
+        panic!("{scope} product did not settle; last wait: {last_wait:?}");
     }
 }
 
@@ -5897,7 +5893,10 @@ fn producer_owner_for_flow<'a>(
             let TransportPosition::Value { executable, value } = &positioned.position else {
                 return None;
             };
-            let key = super::jobs::backend::executable_key_for_symbol(session.root(), executable);
+            let key = super::jobs::backend::executable_key_for_symbol(
+                session.root().expect("root-scoped session"),
+                executable,
+            );
             let demand = world.runtime_demand(&key)?;
             (demand.callable_flows.get(value) == Some(flow)).then_some(positioned.owner.as_ref())
         })

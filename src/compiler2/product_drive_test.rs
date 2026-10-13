@@ -47,7 +47,7 @@ use super::super::facts::FactUse;
 use super::super::identity::{ExecutableNeed, RootId};
 use super::super::product_drive::ProductDriveError;
 use super::super::pull::{
-    ProductKey, ProductProducers, ProductSettlement, ProductValue, PullOutcome, PullSession, PullWait,
+    ProductKey, ProductProducers, ProductScope, ProductSettlement, ProductValue, PullOutcome, PullSession, PullWait,
     WorldProductProducers,
 };
 use super::super::scheduler::{DriveOutcome, FatalError};
@@ -65,7 +65,7 @@ fn drive_retained_backend_fatal(
         world,
         tel,
         &mut sessions,
-        root,
+        ProductScope::Root(root),
         |world, tel, sessions, driver, _| {
             super::super::product_drive::drive_active_root_backend_product(world, tel, sessions, root, driver)
         },
@@ -187,7 +187,7 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
         &mut world,
         &tel,
         &mut sessions,
-        root,
+        ProductScope::Root(root),
         |world, tel, sessions, driver, retained| {
             assert!(!retained);
             super::super::product_drive::drive_root_product_with_producers::<_, String>(
@@ -204,7 +204,9 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
     );
     assert!(failed.is_err());
     assert_eq!(sessions.counts().0, 1);
-    let session = sessions.get(root).expect("failed session must be restored");
+    let session = sessions
+        .get(ProductScope::Root(root))
+        .expect("failed session must be restored");
     let session_id = session.id().expect("observed retained session identity");
     assert_eq!(finished.borrow().as_slice(), [Some(session_id)]);
     assert_eq!(session.memo().get(&ProductKey::NativeProgram(root)), None);
@@ -219,7 +221,7 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
         &mut world,
         &tel,
         &mut sessions,
-        root,
+        ProductScope::Root(root),
         |world, tel, sessions, driver, retained| {
             assert!(retained);
             super::super::product_drive::drive_root_product_with_producers::<_, String>(
@@ -236,7 +238,10 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
     );
     assert_eq!(retry, Ok(()));
     assert_eq!(sessions.counts().0, 1);
-    assert_eq!(sessions.get(root).and_then(|session| session.id()), Some(session_id));
+    assert_eq!(
+        sessions.get(ProductScope::Root(root)).and_then(|session| session.id()),
+        Some(session_id)
+    );
     assert_eq!(finished.borrow().as_slice(), [Some(session_id), Some(session_id)]);
     assert_eq!(
         backend_requests.get(),
@@ -245,7 +250,7 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
     );
     assert_eq!(
         sessions
-            .get(root)
+            .get(ProductScope::Root(root))
             .and_then(|session| session.memo().generation(&ProductKey::NativeProgram(root))),
         Some(1),
     );
@@ -928,24 +933,24 @@ fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hi
     let macro_roots = finished
         .borrow()
         .iter()
-        .filter_map(|(candidate, _, _)| (*candidate != root).then_some(*candidate))
+        .filter_map(|(candidate, _, _)| (*candidate != Some(root)).then_some(*candidate))
         .collect::<std::collections::HashSet<_>>();
     assert!(
         !macro_roots.is_empty(),
         "the fixture must open a retained macro-root session"
     );
     assert!(
-        macro_roots.iter().all(|macro_root| evaluated
-            .borrow()
+        macro_roots
             .iter()
-            .any(|key| key == &ProductKey::RootBackendProduct(*macro_root))),
+            .all(|macro_root| evaluated.borrow().iter().any(|key| {
+                key == &ProductKey::RootBackendProduct(macro_root.expect("macro root sessions are root-scoped"))
+            })),
         "each nested macro root must evaluate its backend product",
     );
     assert!(
-        evaluated
-            .borrow()
-            .iter()
-            .all(|key| !matches!(key, ProductKey::NativeProgram(native_root) if macro_roots.contains(native_root))),
+        evaluated.borrow().iter().all(
+            |key| !matches!(key, ProductKey::NativeProgram(native_root) if macro_roots.contains(&Some(*native_root)))
+        ),
         "typed product telemetry must show that macro roots never evaluate NativeProgram",
     );
     let mut cold_work = super::super::WorkStartTally::default();
@@ -1048,7 +1053,7 @@ fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
     );
     let mut nested_work = super::super::WorkStartTally::default();
     for (nested_root, work) in &finished.borrow()[cold_events..] {
-        assert_ne!(*nested_root, root, "the unrelated runtime root must stay cold");
+        assert_ne!(*nested_root, Some(root), "the unrelated runtime root must stay cold");
         nested_work.add(*work);
     }
     let total_work = compiler.world().work_start_tally().delta_since(before_drive);
@@ -1063,7 +1068,7 @@ fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
     assert_eq!(finished.borrow().len(), nested_events + 1);
     assert_eq!(
         finished.borrow()[nested_events],
-        (root, super::super::WorkStartTally::default()),
+        (Some(root), super::super::WorkStartTally::default()),
         "the next direct cache hit must not inherit completed standalone work"
     );
 }
@@ -1110,7 +1115,7 @@ fn reconciliation_failure_retries_pending_work_attributed_to_each_request_alone(
     let failed_delta = after_failure.delta_since(before_failure);
     let after_failure_events = finished.borrow().len();
     assert_eq!(after_failure_events, cold_events + 1);
-    assert_eq!(finished.borrow()[cold_events], (root, 0, failed_delta));
+    assert_eq!(finished.borrow()[cold_events], (Some(root), 0, failed_delta));
     assert_ne!(failed_delta, super::super::WorkStartTally::default());
 
     // `main`'s own job is still queued, parked on its still-missing gate: the
@@ -1142,7 +1147,7 @@ fn reconciliation_failure_retries_pending_work_attributed_to_each_request_alone(
     assert_eq!(
         finished.borrow()[after_failure_events],
         (
-            root,
+            Some(root),
             0,
             super::super::WorkStartTally {
                 gate_expansion: 1,
@@ -1192,7 +1197,7 @@ fn zero_timeout_is_a_balanced_retained_activation_and_does_not_leak_work() {
     let failed_delta = after_failure.delta_since(before_failure);
     let after_failure_events = finished.borrow().len();
     assert_eq!(after_failure_events, cold_events + 1);
-    assert_eq!(finished.borrow()[cold_events], (root, 0, failed_delta));
+    assert_eq!(finished.borrow()[cold_events], (Some(root), 0, failed_delta));
     // A reason is charged when `pop_runnable` commits a job to run, not when
     // the edit's own jobs are enqueued, so a zero-duration budget -- spent
     // before the drive pops anything -- charges nothing at all.
@@ -1372,15 +1377,19 @@ fn root_backend_schema_contributions_depend_on_exactly_their_struct_facts() {
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (program, driver) =
-        super::super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+    let mut sessions = super::super::pull::ProductSessions::default();
+    let program =
+        super::super::product_drive::drive_retained_root_backend_product(&mut world, &tel, &mut sessions, root, None)
             .expect("the exact struct dependency fixture should settle");
-    let session = driver.session();
     let needed = world.reference_module(module_name("Needed"));
     let spare = world.reference_module(module_name("Spare"));
     assert!(program.schema(&module_name("Needed")).is_some());
     assert_eq!(program.struct_schemas.len(), 1, "only the reached schema is packaged");
-    let dependencies = session
+    // A struct schema's one answer lives in the program session: every root
+    // that reaches `Needed` shares this exact entry, never a copy in its own
+    // session.
+    let program_session = sessions.get(ProductScope::Program).expect("program session");
+    let dependencies = program_session
         .memo()
         .fact_dependencies(&ProductKey::StructSchema(needed))
         .expect("the exact schema contribution should retain its fact dependencies");
@@ -1396,7 +1405,7 @@ fn root_backend_schema_contributions_depend_on_exactly_their_struct_facts() {
     );
     assert!(!structs.contains(&FactUse::settled(FactKey::StructDefined(spare))));
     assert!(
-        session.memo().get(&ProductKey::StructSchema(spare)).is_none(),
+        program_session.memo().get(&ProductKey::StructSchema(spare)).is_none(),
         "the unrelated schema is never requested"
     );
 }
@@ -1884,7 +1893,8 @@ fn string_error_reports_fact_wait_budget_exceeded() {
     let root = RootId::for_test(7);
     let fact = some_fact();
 
-    let message = <String as ProductDriveError>::fact_wait_budget_exceeded(&mut world, &tel, root, &fact);
+    let message =
+        <String as ProductDriveError>::fact_wait_budget_exceeded(&mut world, &tel, ProductScope::Root(root), &fact);
 
     assert_eq!(
         message,
@@ -1906,7 +1916,7 @@ fn string_error_reports_did_not_settle_with_last_wait() {
     let message = <String as ProductDriveError>::did_not_settle(
         &mut world,
         &tel,
-        root,
+        ProductScope::Root(root),
         last_wait.as_ref().map(|(key, waits)| (key, waits.as_slice())),
     );
 
@@ -2914,7 +2924,7 @@ mod wait_frame_tests {
         fn job_failed<T: crate::telemetry::Telemetry>(
             _: &World,
             _: &T,
-            _: RootId,
+            _: ProductScope,
             _: &FactUse<FactKey>,
             _: &Job,
             _: FatalError,
@@ -2924,7 +2934,7 @@ mod wait_frame_tests {
         fn no_ready_producer<T: crate::telemetry::Telemetry>(
             _: &mut World,
             _: &T,
-            _: RootId,
+            _: ProductScope,
             _: &FactUse<FactKey>,
         ) -> Self {
             panic!("unexpected missing producer")
@@ -2932,12 +2942,12 @@ mod wait_frame_tests {
         fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
             _: &mut World,
             _: &T,
-            _: RootId,
+            _: ProductScope,
             _: &FactUse<FactKey>,
         ) -> Self {
             panic!("unexpected fact budget failure")
         }
-        fn product_failed<T: crate::telemetry::Telemetry>(_: &World, _: &T, _: RootId, _: &ProductKey) -> Self {
+        fn product_failed<T: crate::telemetry::Telemetry>(_: &World, _: &T, _: ProductScope, _: &ProductKey) -> Self {
             panic!("unexpected product failure")
         }
         fn dependency_failed<T: crate::telemetry::Telemetry>(
@@ -2951,7 +2961,7 @@ mod wait_frame_tests {
         fn did_not_settle<T: crate::telemetry::Telemetry>(
             world: &mut World,
             tel: &T,
-            root: RootId,
+            scope: ProductScope,
             last_wait: Option<(&ProductKey, &[PullWait])>,
         ) -> Self {
             let (_, waits) = last_wait.as_ref().expect("the drive observed a wait");
@@ -2964,7 +2974,7 @@ mod wait_frame_tests {
                         Some(positioned_input(key))
                     })
                     .collect(),
-                message: String::did_not_settle(world, tel, root, last_wait),
+                message: String::did_not_settle(world, tel, scope, last_wait),
             }
         }
     }
@@ -3022,7 +3032,7 @@ mod wait_frame_tests {
             let error = drive_root_product_with::<_, WaitStorage>(
                 &mut world,
                 &tel,
-                root,
+                ProductScope::Root(root),
                 root_key.clone(),
                 &mut driver,
                 None,
@@ -3089,7 +3099,7 @@ mod wait_frame_tests {
             let error = drive_root_product_with::<_, WaitStorage>(
                 &mut world,
                 &tel,
-                root,
+                ProductScope::Root(root),
                 root_key.clone(),
                 &mut driver,
                 None,
@@ -3169,7 +3179,7 @@ mod wait_frame_tests {
         let error = drive_root_product_with::<_, String>(
             &mut world,
             &tel,
-            root,
+            ProductScope::Root(root),
             root_key.clone(),
             &mut driver,
             None,
@@ -3197,7 +3207,7 @@ mod wait_frame_tests {
         let result = drive_root_product_with::<_, String>(
             &mut world,
             &tel,
-            root,
+            ProductScope::Root(root),
             root_key.clone(),
             &mut driver,
             None,
@@ -3254,7 +3264,7 @@ mod wait_frame_tests {
         let result = drive_root_product_with::<_, String>(
             &mut world,
             &tel,
-            root,
+            ProductScope::Root(root),
             root_key.clone(),
             &mut driver,
             None,
@@ -3444,7 +3454,7 @@ mod wait_frame_tests {
         let result = drive_root_product_with::<_, String>(
             &mut world,
             &tel,
-            root,
+            ProductScope::Root(root),
             ProductKey::RootBackendProduct(root),
             &mut driver,
             None,
@@ -3452,7 +3462,12 @@ mod wait_frame_tests {
             PRODUCT_DRIVE_BUDGET,
             |_, _, _| PullOutcome::Waiting(waits.clone()),
         );
-        let expected = <String as ProductDriveError>::no_ready_producer(&mut world, &tel, root, &expected_fact);
+        let expected = <String as ProductDriveError>::no_ready_producer(
+            &mut world,
+            &tel,
+            ProductScope::Root(root),
+            &expected_fact,
+        );
         assert_eq!(
             result,
             Err(expected),
@@ -3515,7 +3530,7 @@ mod wait_frame_tests {
             let result = drive_root_product_with::<_, String>(
                 &mut world,
                 &tel,
-                root,
+                ProductScope::Root(root),
                 keys[0].clone(),
                 &mut driver,
                 None,

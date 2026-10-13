@@ -71,7 +71,7 @@ impl super::super::product_drive::ProductDriveError for FatalError {
     fn product_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
         _tel: &T,
-        _root: RootId,
+        _scope: super::super::pull::ProductScope,
         _product: &ProductKey,
     ) -> Self {
         FatalError
@@ -80,7 +80,7 @@ impl super::super::product_drive::ProductDriveError for FatalError {
     fn job_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
         _tel: &T,
-        _root: RootId,
+        _scope: super::super::pull::ProductScope,
         _fact: &FactUse<FactKey>,
         _job: &Job,
         source: FatalError,
@@ -91,7 +91,7 @@ impl super::super::product_drive::ProductDriveError for FatalError {
     fn no_ready_producer<T: crate::telemetry::Telemetry>(
         world: &mut World,
         tel: &T,
-        _root: RootId,
+        _scope: super::super::pull::ProductScope,
         _fact: &FactUse<FactKey>,
     ) -> Self {
         super::super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
@@ -101,7 +101,7 @@ impl super::super::product_drive::ProductDriveError for FatalError {
     fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
         _world: &mut World,
         _tel: &T,
-        _root: RootId,
+        _scope: super::super::pull::ProductScope,
         _fact: &FactUse<FactKey>,
     ) -> Self {
         FatalError
@@ -110,7 +110,7 @@ impl super::super::product_drive::ProductDriveError for FatalError {
     fn did_not_settle<T: crate::telemetry::Telemetry>(
         _world: &mut World,
         _tel: &T,
-        _root: RootId,
+        _scope: super::super::pull::ProductScope,
         _last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
         FatalError
@@ -213,7 +213,7 @@ pub(crate) fn produce_backend_executable_product(
         panic!("ABI executable product produced unexpected value {value:?}");
     };
     let abi = Rc::clone(abi);
-    let root = context.session().root();
+    let root = context.session().root().expect("executable products are root-scoped");
     let mut dependencies = HashSet::new();
     for edge in abi.call_edges.values() {
         let flows = match edge.target() {

@@ -447,10 +447,7 @@ pub(crate) trait QuotedExpansionCtx {
         }
         self.note_read(definition);
         let root = self.world().macro_root(function);
-        let address = ProductAddress {
-            root,
-            key: ProductKey::RootBackendProduct(root),
-        };
+        let address = ProductAddress::of(ProductKey::RootBackendProduct(root), root);
         let Some(ProductValue::RootBackendProduct(program)) =
             self.products().and_then(|products| products.product(&address))
         else {

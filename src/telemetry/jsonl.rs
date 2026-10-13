@@ -2017,6 +2017,16 @@ fn write_root_id(out: &mut String, root: crate::compiler2::RootId) {
     write_id_field(out, "root_id", root.as_u32());
 }
 
+/// A program-scoped product has no owning root: it names the shared answer
+/// by `root_id: null` rather than omitting the field, so every `Product`
+/// dependency identity carries the same keys regardless of scope.
+fn write_product_scope(out: &mut String, scope: crate::compiler2::ProductScope) {
+    match scope {
+        crate::compiler2::ProductScope::Root(root) => write_root_id(out, root),
+        crate::compiler2::ProductScope::Program => out.push_str(",\"root_id\":null"),
+    }
+}
+
 fn write_type_name(out: &mut String, name: &crate::compiler2::TypeName) {
     write_module_id(out, name.module);
     out.push(',');
@@ -2273,7 +2283,7 @@ fn write_dependency_identity(out: &mut String, dependency: &crate::compiler2::De
         }
         DependencyKey::Product(address) => {
             write_str_lit(out, "Product");
-            write_root_id(out, address.root);
+            write_product_scope(out, address.scope);
             out.push_str(",\"product\":{\"kind\":");
             write_str_lit(out, address.key.kind());
             write_product_key_identity(out, &address.key);

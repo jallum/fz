@@ -181,7 +181,10 @@ pub(crate) fn produce_transport_shape_product(
     context: &mut ProductReadContext<'_>,
     position: &TransportPosition,
 ) -> PullOutcome {
-    let executable = executable_key_for_transport_position(context.session().root(), position);
+    let executable = executable_key_for_transport_position(
+        context.session().root().expect("transport products are root-scoped"),
+        position,
+    );
     if let Some(outcome) = produce_named_transport_position(world, tel, context, &executable, position) {
         return outcome;
     }
@@ -195,7 +198,10 @@ pub(crate) fn produce_callable_construction_product(
     context: &mut ProductReadContext<'_>,
     position: &TransportPosition,
 ) -> PullOutcome {
-    let executable = executable_key_for_transport_position(context.session().root(), position);
+    let executable = executable_key_for_transport_position(
+        context.session().root().expect("transport products are root-scoped"),
+        position,
+    );
     let facts = context.read_executable_facts(world, &executable);
     let runtime = context.read_runtime_demand_fact(world, &executable);
     let mut waits = Vec::new();
@@ -470,7 +476,10 @@ fn project_group_member_owner(
     let layout = context
         .callable_group_layout(member)
         .expect("callable owner group member must have a settled transport shape");
-    let executable = executable_key_for_transport_position(context.session().root(), position);
+    let executable = executable_key_for_transport_position(
+        context.session().root().expect("transport products are root-scoped"),
+        position,
+    );
     let facts = world
         .executable_facts(&executable)
         .cloned()

@@ -193,7 +193,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
                 let native = self.native_program_for_root(root)?;
                 let backend = match self
                     .product_sessions
-                    .get(root)
+                    .get(super::pull::ProductScope::Root(root))
                     .and_then(|session| session.memo().get(&ProductKey::RootBackendProduct(root)).cloned())
                 {
                     Some(super::pull::ProductValue::RootBackendProduct(backend)) => backend,
@@ -356,7 +356,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     pub(crate) fn retained_backend_program(&self, root: RootId) -> Rc<BackendProgram> {
         match self
             .product_sessions
-            .get(root)
+            .get(super::pull::ProductScope::Root(root))
             .and_then(|session| session.memo().get(&ProductKey::RootBackendProduct(root)).cloned())
         {
             Some(super::pull::ProductValue::RootBackendProduct(answer)) => Rc::clone(&answer),
@@ -368,7 +368,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     pub(crate) fn retained_native_program(&self, root: RootId) -> Rc<NativeProgram> {
         match self
             .product_sessions
-            .get(root)
+            .get(super::pull::ProductScope::Root(root))
             .and_then(|session| session.memo().get(&ProductKey::NativeProgram(root)).cloned())
         {
             Some(super::pull::ProductValue::NativeProgram(program)) => program,
@@ -378,7 +378,21 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
 
     #[cfg(test)]
     pub(crate) fn retained_product_generation(&self, root: RootId, key: &ProductKey) -> Option<u64> {
-        self.product_sessions.get(root)?.memo().generation(key)
+        self.product_sessions
+            .get(super::pull::ProductScope::Root(root))?
+            .memo()
+            .generation(key)
+    }
+
+    /// Like `retained_product_generation`, for a key whose one answer lives
+    /// in the program session (e.g. `StructSchema`) rather than in any
+    /// root's own session.
+    #[cfg(test)]
+    pub(crate) fn retained_program_product_generation(&self, key: &ProductKey) -> Option<u64> {
+        self.product_sessions
+            .get(super::pull::ProductScope::Program)?
+            .memo()
+            .generation(key)
     }
 
     #[cfg(test)]
@@ -544,31 +558,38 @@ impl super::product_drive::ProductDriveError for String {
     ) -> Self {
         format!("compiler2 product dependency {address:?} failed")
     }
-    fn product_failed<T: Telemetry>(_world: &World, _tel: &T, root: RootId, product: &ProductKey) -> Self {
-        format!("compiler2 root {} failed producing {product:?}", root.as_u32())
+    fn product_failed<T: Telemetry>(
+        _world: &World,
+        _tel: &T,
+        scope: super::pull::ProductScope,
+        product: &ProductKey,
+    ) -> Self {
+        format!("compiler2 {scope} failed producing {product:?}")
     }
 
     fn job_failed<T: Telemetry>(
         _world: &World,
         _tel: &T,
-        root: RootId,
+        scope: super::pull::ProductScope,
         fact: &FactUse<FactKey>,
         job: &Job,
         _source: super::scheduler::FatalError,
     ) -> Self {
         format!(
-            "compiler2 root {} product path failed while producing {:?}: {:?}",
-            root.as_u32(),
-            fact,
-            job
+            "compiler2 {scope} product path failed while producing {:?}: {:?}",
+            fact, job
         )
     }
 
-    fn no_ready_producer<T: Telemetry>(world: &mut World, tel: &T, root: RootId, fact: &FactUse<FactKey>) -> Self {
+    fn no_ready_producer<T: Telemetry>(
+        world: &mut World,
+        tel: &T,
+        scope: super::pull::ProductScope,
+        fact: &FactUse<FactKey>,
+    ) -> Self {
         super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
         format!(
-            "compiler2 root {} product path waited on {} with no ready producer",
-            root.as_u32(),
+            "compiler2 {scope} product path waited on {} with no ready producer",
             fact.fact().kind_label()
         )
     }
@@ -576,12 +597,11 @@ impl super::product_drive::ProductDriveError for String {
     fn fact_wait_budget_exceeded<T: Telemetry>(
         _world: &mut World,
         _tel: &T,
-        root: RootId,
+        scope: super::pull::ProductScope,
         fact: &FactUse<FactKey>,
     ) -> Self {
         format!(
-            "compiler2 root {} product path exceeded fact-wait budget for {}",
-            root.as_u32(),
+            "compiler2 {scope} product path exceeded fact-wait budget for {}",
             fact.fact().kind_label()
         )
     }
@@ -589,18 +609,17 @@ impl super::product_drive::ProductDriveError for String {
     fn did_not_settle<T: Telemetry>(
         _world: &mut World,
         _tel: &T,
-        root: RootId,
+        scope: super::pull::ProductScope,
         last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
         match last_wait {
             Some((key, waits)) => format!(
-                "compiler2 root {} product backend did not settle waiting on {}, with {} pending wait{}",
-                root.as_u32(),
+                "compiler2 {scope} product backend did not settle waiting on {}, with {} pending wait{}",
                 key.kind(),
                 waits.len(),
                 if waits.len() == 1 { "" } else { "s" }
             ),
-            None => format!("compiler2 root {} product backend did not settle", root.as_u32()),
+            None => format!("compiler2 {scope} product backend did not settle"),
         }
     }
 }

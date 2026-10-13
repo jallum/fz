@@ -15,8 +15,8 @@ use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
 use super::ordered_worklist::OrderedWorklist;
 use super::pull::{
-    ProductDriver, ProductKey, ProductRequestId, ProductSessions, ProductValidation, ProductValue, PullOutcome,
-    PullWait, WorldProductProducers,
+    ProductDriver, ProductKey, ProductRequestId, ProductScope, ProductSessions, ProductValidation, ProductValue,
+    PullOutcome, PullWait, WorldProductProducers,
 };
 use super::scheduler::{DriveOutcome, FatalError, WorkStartReason};
 use super::semantic::SemanticOrd;
@@ -35,18 +35,24 @@ pub(crate) fn drive_retained_product<T: crate::telemetry::RawSpanTelemetry>(
     sessions: &mut ProductSessions,
     address: ProductAddress,
 ) -> Result<ProductValue, FatalError> {
-    with_retained_root_request(world, tel, sessions, address.root, |world, tel, sessions, driver, _| {
-        drive_root_product_with_driver(
-            world,
-            tel,
-            address.root,
-            address.key,
-            driver,
-            Some(sessions),
-            PRODUCT_DRIVE_BUDGET,
-            PRODUCT_DRIVE_BUDGET,
-        )
-    })
+    with_retained_root_request(
+        world,
+        tel,
+        sessions,
+        address.scope,
+        |world, tel, sessions, driver, _| {
+            drive_root_product_with_driver(
+                world,
+                tel,
+                address.scope,
+                address.key,
+                driver,
+                Some(sessions),
+                PRODUCT_DRIVE_BUDGET,
+                PRODUCT_DRIVE_BUDGET,
+            )
+        },
+    )
 }
 
 impl<T: crate::telemetry::RawSpanTelemetry> ExecutionContext<'_, T> {
@@ -93,7 +99,7 @@ pub(crate) trait ProductDriveError: Sized {
     fn job_failed<T: crate::telemetry::Telemetry>(
         world: &World,
         tel: &T,
-        root: RootId,
+        scope: ProductScope,
         fact: &FactUse<FactKey>,
         job: &Job,
         source: FatalError,
@@ -106,14 +112,14 @@ pub(crate) trait ProductDriveError: Sized {
     fn no_ready_producer<T: crate::telemetry::Telemetry>(
         world: &mut World,
         tel: &T,
-        root: RootId,
+        scope: ProductScope,
         fact: &FactUse<FactKey>,
     ) -> Self;
     /// The fact-wait for `fact` ran more jobs than the budget allows.
     fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
         world: &mut World,
         tel: &T,
-        root: RootId,
+        scope: ProductScope,
         fact: &FactUse<FactKey>,
     ) -> Self;
     /// The outer product-pull stack exhausted its budget before the requested
@@ -122,7 +128,7 @@ pub(crate) trait ProductDriveError: Sized {
     fn did_not_settle<T: crate::telemetry::Telemetry>(
         world: &mut World,
         tel: &T,
-        root: RootId,
+        scope: ProductScope,
         last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self;
     /// `product` returned `PullOutcome::Failed`, which means the producer
@@ -131,7 +137,7 @@ pub(crate) trait ProductDriveError: Sized {
     fn product_failed<T: crate::telemetry::Telemetry>(
         world: &World,
         tel: &T,
-        root: RootId,
+        scope: ProductScope,
         product: &ProductKey,
     ) -> Self;
     fn dependency_failed<T: crate::telemetry::Telemetry>(
@@ -173,7 +179,7 @@ pub(super) fn drive_root_backend_product_with_budgets<
     fact_wait_budget: u64,
 ) -> Result<(Rc<BackendProgram>, ProductDriver<'a, T>), E> {
     let mut sessions = ProductSessions::default();
-    let (session, _) = sessions.take(root, world.work_start_tally());
+    let (session, _) = sessions.take(ProductScope::Root(root), world.work_start_tally());
     let mut driver = ProductDriver::with_shared_session(tel, Rc::clone(&session));
     let result = drive_root_backend_product_with_driver(
         world,
@@ -184,7 +190,11 @@ pub(super) fn drive_root_backend_product_with_budgets<
         product_stack_budget,
         fact_wait_budget,
     );
-    sessions.finish_activation(root, &mut driver.session_mut(), world.work_start_tally());
+    sessions.finish_activation(
+        ProductScope::Root(root),
+        &mut driver.session_mut(),
+        world.work_start_tally(),
+    );
     sessions.restore(session);
     let program = result?;
     Ok((program, driver))
@@ -214,7 +224,7 @@ pub(crate) fn drive_retained_root_native_program<T: crate::telemetry::RawSpanTel
         let value = drive_root_product_with_driver::<T, String>(
             world,
             tel,
-            root,
+            ProductScope::Root(root),
             key,
             driver,
             Some(sessions),
@@ -240,29 +250,35 @@ pub(crate) fn with_reconciled_root_request<'a, T, R>(
 where
     T: crate::telemetry::RawSpanTelemetry,
 {
-    with_retained_root_request(world, tel, sessions, root, |world, tel, sessions, driver, retained| {
-        reconcile_request(world, tel, sessions, root, timeout, retained)?;
-        let result = run(world, tel, sessions, driver)?;
-        let mut context = ExecutionContext::with_product_sessions(world, tel, sessions);
-        drain_request_context(&mut context, root, timeout)?;
-        Ok(result)
-    })
+    with_retained_root_request(
+        world,
+        tel,
+        sessions,
+        ProductScope::Root(root),
+        |world, tel, sessions, driver, retained| {
+            reconcile_request(world, tel, sessions, root, timeout, retained)?;
+            let result = run(world, tel, sessions, driver)?;
+            let mut context = ExecutionContext::with_product_sessions(world, tel, sessions);
+            drain_request_context(&mut context, root, timeout)?;
+            Ok(result)
+        },
+    )
 }
 
 pub(crate) fn with_retained_root_request<'a, T, E, R>(
     world: &mut World,
     tel: &'a T,
     sessions: &mut ProductSessions,
-    root: RootId,
+    scope: ProductScope,
     run: impl FnOnce(&mut World, &'a T, &mut ProductSessions, &mut ProductDriver<'a, T>, bool) -> Result<R, E>,
 ) -> Result<R, E>
 where
     T: crate::telemetry::RawSpanTelemetry,
 {
-    let (session, retained) = sessions.take(root, world.work_start_tally());
+    let (session, retained) = sessions.take(scope, world.work_start_tally());
     let mut driver = ProductDriver::with_shared_session(tel, session);
     let result = run(world, tel, sessions, &mut driver, retained);
-    sessions.finish_activation(root, &mut driver.session_mut(), world.work_start_tally());
+    sessions.finish_activation(scope, &mut driver.session_mut(), world.work_start_tally());
     let session = driver.into_session();
     sessions.restore(session);
     result
@@ -300,7 +316,7 @@ fn drive_root_backend_product_with_driver<T: crate::telemetry::RawSpanTelemetry,
     let value = drive_root_product_with_driver(
         world,
         tel,
-        root,
+        ProductScope::Root(root),
         root_key,
         driver,
         sessions,
@@ -316,7 +332,7 @@ fn drive_root_backend_product_with_driver<T: crate::telemetry::RawSpanTelemetry,
 fn drive_root_product_with_driver<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
     world: &mut World,
     tel: &T,
-    root: RootId,
+    scope: ProductScope,
     root_key: ProductKey,
     driver: &mut ProductDriver<'_, T>,
     sessions: Option<&mut ProductSessions>,
@@ -326,7 +342,7 @@ fn drive_root_product_with_driver<T: crate::telemetry::RawSpanTelemetry, E: Prod
     drive_root_product_with(
         world,
         tel,
-        root,
+        scope,
         root_key,
         driver,
         sessions,
@@ -352,7 +368,7 @@ pub(super) fn drive_root_product_with_producers<T: crate::telemetry::RawSpanTele
     drive_root_product_with(
         world,
         tel,
-        root,
+        ProductScope::Root(root),
         root_key,
         driver,
         sessions,
@@ -563,7 +579,7 @@ fn next_waiting_product<T: crate::telemetry::Telemetry>(
 fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
     world: &mut World,
     tel: &T,
-    root: RootId,
+    scope: ProductScope,
     root_key: ProductKey,
     driver: &mut ProductDriver<'_, T>,
     mut sessions: Option<&mut ProductSessions>,
@@ -580,7 +596,7 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
     let result = (|| {
         for _ in 0..product_stack_budget {
             if let Some(sessions) = sessions.as_deref_mut() {
-                sessions.drain_active_movements(root, &mut driver.session_mut());
+                sessions.drain_active_movements(scope, &mut driver.session_mut());
             }
             if let Some(owner) = reconcile_wait_frames(
                 &mut stack,
@@ -591,10 +607,40 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
             ) {
                 current = Some(owner);
             }
-            let outcome = pull(world, driver, current.as_ref().expect("selected product").key());
+            let key = current.as_ref().expect("selected product").key();
+            let outcome = match scope {
+                // Driving a waited product activates its address's scope: a
+                // program-scoped key that surfaces while a root is active
+                // belongs to the program session, never this one, so its one
+                // answer is settled there instead of asking this driver's
+                // producer for it. Every other key keeps the exact key the
+                // selection already borrows, uncloned, as every other
+                // producer call here always has.
+                ProductScope::Root(root) if key.scope(root) != scope => {
+                    let address = ProductAddress::of(key.clone(), root);
+                    let sessions = sessions
+                        .as_deref_mut()
+                        .expect("a program-scoped product wait requires retained sessions");
+                    // A rooted product reading a program product records a
+                    // dependency on that address: observing it is what makes
+                    // a later program-session change surface as an external
+                    // change at all, which is what `propagate_program_changes`
+                    // dirties every root's rooted witness from. Linking this
+                    // root's session to the program session it just forced
+                    // into existence is what lets its own very next rooted
+                    // read find the answer instead of asking again.
+                    sessions.observe(&address);
+                    driver.link_external(sessions.program_handle());
+                    match drive_retained_product(world, tel, sessions, address.clone()) {
+                        Ok(value) => PullOutcome::Produced(value),
+                        Err(source) => return Err(E::dependency_failed(world, tel, address, source)),
+                    }
+                }
+                _ => pull(world, driver, key),
+            };
             if let Some(sessions) = sessions.as_deref_mut() {
-                sessions.sync_subscriptions(root, &mut driver.session_mut());
-                let changes = sessions.take_product_changes(root, world.types());
+                sessions.sync_subscriptions(scope, &mut driver.session_mut());
+                let changes = sessions.take_product_changes(scope, world.types());
                 ExecutionContext::with_product_sessions(world, tel, sessions).apply_product_changes(changes);
             }
             if let Some(owner) = reconcile_wait_frames(
@@ -673,7 +719,7 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
                     let producer_pokes = drive_product_fact_waits_with_sessions::<T, E>(
                         world,
                         tel,
-                        root,
+                        scope,
                         driver,
                         sessions.as_deref_mut(),
                         facts,
@@ -696,7 +742,7 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
                     return Err(E::product_failed(
                         world,
                         tel,
-                        root,
+                        scope,
                         current.as_ref().expect("failed selection").key(),
                     ));
                 }
@@ -705,7 +751,7 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
         Err(E::did_not_settle(
             world,
             tel,
-            root,
+            scope,
             last_wait.as_ref().map(|batch| (&batch.owner, batch.waits.as_slice())),
         ))
     })();
@@ -751,7 +797,15 @@ pub(super) fn drive_product_fact_wait<T: crate::telemetry::RawSpanTelemetry, E: 
     fact: FactUse<FactKey>,
     fact_wait_budget: u64,
 ) -> Result<u64, E> {
-    drive_product_fact_waits_with_sessions(world, tel, root, driver, None, std::iter::once(&fact), fact_wait_budget)
+    drive_product_fact_waits_with_sessions(
+        world,
+        tel,
+        ProductScope::Root(root),
+        driver,
+        None,
+        std::iter::once(&fact),
+        fact_wait_budget,
+    )
 }
 
 #[cfg(test)]
@@ -763,13 +817,21 @@ pub(super) fn drive_product_fact_waits<T: crate::telemetry::RawSpanTelemetry, E:
     facts: &[FactUse<FactKey>],
     fact_wait_budget: u64,
 ) -> Result<u64, E> {
-    drive_product_fact_waits_with_sessions(world, tel, root, driver, None, facts.iter(), fact_wait_budget)
+    drive_product_fact_waits_with_sessions(
+        world,
+        tel,
+        ProductScope::Root(root),
+        driver,
+        None,
+        facts.iter(),
+        fact_wait_budget,
+    )
 }
 
 fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
     world: &mut World,
     tel: &T,
-    root: RootId,
+    scope: ProductScope,
     driver: &mut ProductDriver<'_, T>,
     mut sessions: Option<&mut ProductSessions>,
     facts: impl Iterator<Item = &'facts FactUse<FactKey>> + Clone,
@@ -785,7 +847,7 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
         let mut jobs_ran = 0_u64;
         loop {
             if let Some(sessions) = sessions.as_deref_mut() {
-                sessions.drain_active_movements(root, &mut driver.session_mut());
+                sessions.drain_active_movements(scope, &mut driver.session_mut());
             }
             if driver.wait_frames_canceled(world.types()) {
                 return Ok(producer_pokes);
@@ -820,7 +882,7 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
                     producer_pokes += world.demand_fact_producer(fact.fact(), WorkStartReason::BlockedWaiterExpansion);
                     let job = world.pop_runnable();
                     let Some(job) = job else {
-                        return Err(E::no_ready_producer(world, tel, root, fact));
+                        return Err(E::no_ready_producer(world, tel, scope, fact));
                     };
                     job
                 }
@@ -850,11 +912,11 @@ fn drive_product_fact_waits_with_sessions<'facts, T: crate::telemetry::RawSpanTe
                 }
                 Err(err) => {
                     job_span.exception();
-                    return Err(E::job_failed(world, tel, root, fact, &job, err));
+                    return Err(E::job_failed(world, tel, scope, fact, &job, err));
                 }
             }
             if jobs_ran > fact_wait_budget {
-                return Err(E::fact_wait_budget_exceeded(world, tel, root, fact));
+                return Err(E::fact_wait_budget_exceeded(world, tel, scope, fact));
             }
         }
     }

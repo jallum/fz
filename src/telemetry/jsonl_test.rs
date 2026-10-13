@@ -593,10 +593,10 @@ fn product_dependency_reads_identify_both_the_owner_and_the_product() {
     use crate::compiler2::{FactUse, ProductKey, RootId};
 
     for owner in [7, 8] {
-        let dependency = FactUse::settled(DependencyKey::Product(ProductAddress {
-            root: RootId::for_test(owner),
-            key: ProductKey::RootBackendProduct(RootId::for_test(9)),
-        }));
+        let dependency = FactUse::settled(DependencyKey::Product(ProductAddress::of(
+            ProductKey::RootBackendProduct(RootId::for_test(9)),
+            RootId::for_test(owner),
+        )));
         let mut body = String::new();
         write_dependency_use_identity(&mut body, &dependency);
         assert_eq!(
@@ -666,10 +666,10 @@ fn product_movements_are_public_causal_events() {
         wakes: vec![],
         blocked: vec![],
         movements: vec![FactMovement {
-            key: DependencyKey::Product(ProductAddress {
-                root: RootId::for_test(7),
-                key: ProductKey::RootBackendProduct(RootId::for_test(7)),
-            }),
+            key: DependencyKey::Product(ProductAddress::of(
+                ProductKey::RootBackendProduct(RootId::for_test(7)),
+                RootId::for_test(7),
+            )),
             state: FactState {
                 revision: Some(3),
                 settled: true,
@@ -696,10 +696,10 @@ fn failed_product_requests_report_the_dependency_that_failed() {
     use crate::compiler2::{DependencyKey, DriveOutcome, Job, ProductAddress, ProductKey, RootId};
 
     let outcome = DriveOutcome::<Job, DependencyKey>::DependencyFailed {
-        dependency: DependencyKey::Product(ProductAddress {
-            root: RootId::for_test(7),
-            key: ProductKey::NativeProgram(RootId::for_test(7)),
-        }),
+        dependency: DependencyKey::Product(ProductAddress::of(
+            ProductKey::NativeProgram(RootId::for_test(7)),
+            RootId::for_test(7),
+        )),
     };
     let measurements = Measurements::new();
     let metadata = crate::metadata! { outcome: crate::telemetry::opaque(&outcome) };
