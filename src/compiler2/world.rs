@@ -41,7 +41,7 @@ use super::identity::{
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
-use super::keying::{BodyKeying, BodyKeyingMap, CallGraphComponentMap, InputDemand, InputDemandMap, StaticCalleeMap};
+use super::keying::{BodyKeying, BodyKeyingMap, InputDemand, InputDemandMap, StaticCalleeMap};
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap,
@@ -144,7 +144,6 @@ pub struct World {
     body_keying: BodyKeyingMap,
     input_demands: InputDemandMap,
     static_callees: StaticCalleeMap,
-    call_graph_components: CallGraphComponentMap,
     protocol_callbacks: ProtocolCallbackMap,
     protocol_impls: ProtocolImplMap,
     protocol_dispatches: ProtocolDispatchMap,
@@ -312,7 +311,6 @@ impl World {
             body_keying: BodyKeyingMap::new(),
             input_demands: InputDemandMap::new(),
             static_callees: StaticCalleeMap::new(),
-            call_graph_components: CallGraphComponentMap::new(),
             protocol_callbacks: ProtocolCallbackMap::new(),
             protocol_impls: ProtocolImplMap::new(),
             protocol_dispatches: ProtocolDispatchMap::new(),
@@ -1430,8 +1428,18 @@ impl World {
                         .iter()
                         .any(|attr| matches!(attr, crate::ast::Attribute::Spec(_)))
             }
-            super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => false,
+            super::identity::FunctionState::Noted { source } => {
+                let heads = self.noted_source_heads(&source.source);
+                heads.is_extern || heads.declares_spec
+            }
+            super::identity::FunctionState::Placeholder => false,
         }
+    }
+
+    fn noted_source_heads(&self, root: &super::source::QuotedSourceRoot) -> super::quoted_function::SourceHeads {
+        let sources = self.source_map();
+        let sources = sources.borrow();
+        super::quoted_function::source_heads(root, &sources).expect("a noted source names its heads")
     }
 
     /// `function`'s body shape, correct by construction: `Unknown` before its
@@ -1446,10 +1454,18 @@ impl World {
     /// known yet" the same as it does for "not an extern".
     pub(crate) fn function_body_shape(&self, function: FunctionId) -> BodyShape {
         if self.function_defined_revision(function).is_none() {
-            return if self.protocol_callback(function).is_some() {
-                BodyShape::ProtocolCallback
-            } else {
-                BodyShape::Unknown
+            if self.protocol_callback(function).is_some() {
+                return BodyShape::ProtocolCallback;
+            }
+            return match self.functions.get(function) {
+                super::identity::FunctionState::Noted { source } => {
+                    if self.noted_source_heads(&source.source).is_extern {
+                        BodyShape::Extern
+                    } else {
+                        BodyShape::Clauses
+                    }
+                }
+                _ => BodyShape::Unknown,
             };
         }
         if self.function_surface(function).extern_abi.is_some() {
@@ -1516,32 +1532,15 @@ impl World {
 
     /// The call graph's out-edges for one function, behind
     /// `FactKey::StaticCallees`. One body, one edge list: every reader of the
-    /// graph -- component membership, and the recursion answer derived from
-    /// it -- walks these instead of re-extracting edges from the bodies it
-    /// can reach.
+    /// graph -- the recursion answer derived from it, and transport's
+    /// reachability question -- walks these instead of re-extracting edges
+    /// from the bodies it can reach.
     pub(crate) fn define_static_callees(&mut self, function: FunctionId, callees: Vec<FunctionId>) -> bool {
         self.static_callees.define(function, callees)
     }
 
-    /// One function's place in the static call graph, behind
-    /// `FactKey::CallGraphComponent`: the canonical (smallest) member of its
-    /// strong component. Equal ids mean mutually reachable.
-    pub(crate) fn define_call_graph_component(&mut self, function: FunctionId, component: FunctionId) -> bool {
-        self.call_graph_components.define(function, component)
-    }
-
     pub(crate) fn body_keying(&self, function: FunctionId) -> Option<BodyKeying> {
         self.body_keying.get(function).copied()
-    }
-
-    /// The canonical (smallest) member of this function's strong component in
-    /// the static call graph, behind `FactKey::CallGraphComponent`. Equal ids
-    /// mean mutually reachable, so membership is a comparison rather than a
-    /// traversal. Transport reads it to cut recursion out of a shape recipe
-    /// (`cut_recursive_edges`); the `Recursive(f)` answer is derived inside the
-    /// same job, from the same walk.
-    pub(crate) fn call_graph_component(&self, function: FunctionId) -> Option<FunctionId> {
-        self.call_graph_components.get(function).copied()
     }
 
     pub(crate) fn static_callees(&self, function: FunctionId) -> &[FunctionId] {
@@ -2009,7 +2008,16 @@ impl World {
     /// the brand erasure (`InputDemand`). Both are named in ONE ask so a caller
     /// spends one block on a callee's keying prerequisites, never a ladder
     /// (fz-kdt.86; waits are AND-satisfied).
-    pub(crate) fn require_activation_key_facts(&self, function: FunctionId, uses: &mut UseCollector) -> bool {
+    pub(crate) fn require_activation_key_facts(
+        &mut self,
+        root: RootId,
+        function: FunctionId,
+        inputs: &[Ty],
+        uses: &mut UseCollector,
+    ) -> bool {
+        if self.self_keyed_activation(root, function, inputs).is_some() {
+            return true;
+        }
         let recursive = FactKey::Recursive(function);
         let recursive_ready = self.has_fact(&recursive);
         if recursive_ready {
@@ -2274,7 +2282,33 @@ impl World {
         Some(self.reference_module(parent))
     }
 
+    pub(crate) fn self_keyed_activation(
+        &mut self,
+        root: RootId,
+        function: FunctionId,
+        inputs: &[Ty],
+    ) -> Option<super::identity::ActivationKey> {
+        let key = super::identity::ActivationKey::from_inputs(root, function, inputs, &mut self.types);
+        let row = key.inputs(&self.types);
+        row.iter()
+            .enumerate()
+            .all(|(slot, ty)| self.types.probe_keys_as_itself(ty, slot))
+            .then_some(key)
+    }
+
     pub(crate) fn canonical_activation_key(
+        &mut self,
+        root: RootId,
+        function: FunctionId,
+        inputs: &[Ty],
+    ) -> super::identity::ActivationKey {
+        if let Some(key) = self.self_keyed_activation(root, function, inputs) {
+            return key;
+        }
+        self.canonical_activation_key_inner(root, function, inputs)
+    }
+
+    fn canonical_activation_key_inner(
         &mut self,
         root: RootId,
         function: FunctionId,

@@ -170,7 +170,14 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // its `EntryDispatch` exists, so the two externs this fixture calls no
 // longer each start their activation once blocked (changing nothing) before
 // the real run.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 276;
+// fz-xxd.10: 276 -> 232. `Recursive`, `InputDemand` and `StaticCallees` are
+// no longer asked for every monomorphic activation this fixture's Enum
+// helpers key under (R1's self-keyed shortcut): DeriveRecursive -15,
+// DeriveInputDemand -14, DeriveStaticCallees -11. Fewer sources ever reach a
+// definition once their only callers are among those: DefineFunction -2,
+// ExpandFunctionSource -2. AnalyzeActivation -1 and DeriveTypeDef +1 are
+// small knock-ons of the same drop.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 232;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

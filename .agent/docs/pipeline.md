@@ -41,13 +41,12 @@ dispatch  ReifyGuardDispatch, PlanEntryDispatch
             never the owning ModuleDefined aggregate, whose value it never reads
 macro     source expansion reads RootBackendProduct(hidden macro root)
             exact product waits drive the retained RootBackendProduct
-keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveInputDemand
+keying    DeriveStaticCallees, DeriveRecursive, DeriveInputDemand
             one body -> StaticCallees, the call graph's out-edges for that function
             stable per-function facts used to canonicalize activation keys:
-            DeriveCallGraphComponent walks the StaticCallees facts ONCE and
-            publishes two: CallGraphComponent(f), the smallest FunctionId
-            mutually reachable with f, and Recursive(f), which that component
-            decides (more than one member, or f's own edges name f)
+            DeriveRecursive walks the StaticCallees facts reachable from f ONCE and
+            publishes Recursive(f): true exactly when f's strong component in
+            that subgraph has more than one member, or f's own edges name f
 semantic  SeedRoot, SeedActivation, AnalyzeActivation
             root entry facts, activation evidence, return types, callsite targets,
             callsite summaries, and executable demand
@@ -211,7 +210,9 @@ submit_root(main/0)
     publishes RootEntry, and once main is defined + key facts exist:
       Activation(root, main, []) , Executable(...)
   ProductDriver pulls RootBackendProduct(root)
-    waits on settled RootEntry(root), Recursive(main), InputDemand(main)
+    waits on settled RootEntry(root), and -- unless main's activation is
+    self-keyed (no type variables, already its own convergence class) --
+    Recursive(main), InputDemand(main)
     pulls BackendExecutable(entry E)
       pulls AbiExecutable(E)
         pulls MaterializedExecutable(E)
@@ -227,7 +228,7 @@ submit_root(main/0)
 ```
 
 Each fact wait names the exact prerequisite: `LowerFunction` /
-`PlanEntryDispatch` / `DeriveCallGraphComponent` / `DeriveInputDemand` run
+`PlanEntryDispatch` / `DeriveRecursive` / `DeriveInputDemand` run
 because a
 product asked for a fact that requires them. New artifact producers must not
 self-schedule or smuggle broad follow-up work into that path.
@@ -497,12 +498,13 @@ before it is evaluated, from call-graph facts alone: an edge naming the return
 of a callee in the position owner's own strong component whose function id does
 not rise is replaced by a cut, so what remains strictly climbs and is acyclic.
 A GROUNDED CLOSURE-CALL edge reaches its callee through a value, so the static
-graph carries no edge for it and component membership answers nothing about it
--- a closure built outside a recursion and threaded back through it leaves
-caller and lambda in different components while their products still cycle.
-That edge is cut exactly when its target reaches the owner in the static call
-graph, walked over `StaticCallees` the way `DeriveCallGraphComponent` walks it;
-when it does not, the edge adds no reachability the condensation did not
+call graph carries no edge for it and strong-component membership answers
+nothing about it -- a closure built outside a recursion and threaded back
+through it leaves caller and lambda in different components while their
+products still cycle. That edge is cut exactly when its target reaches the
+owner through settled `ExecutableFacts` call targets, walked directly
+(`executable_reaches`) rather than through any derived call-graph fact; when
+it does not, the edge adds no reachability the condensation did not
 already have, and keeping it is what preserves one authority for an
 exact-carrier closure call. A cut contributes no evidence about the position's form, and a
 form the readable arms agree on is believed only while it still carries the

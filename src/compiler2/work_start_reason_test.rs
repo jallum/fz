@@ -309,7 +309,17 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // would otherwise revise its own conclusion after reading a
         // callee's unsettled answer instead waits for the concluded one,
         // and never reruns to revise what it never got to conclude early.
-        (2466, 9, 19, 232),
+        // fz-xxd.10: 2466 -> 2338. `Recursive`, `InputDemand` and
+        // `StaticCallees` are no longer asked for every monomorphic
+        // activation this fixture's Enum helpers key under (R1's self-keyed
+        // shortcut): DeriveCallGraphComponent/DeriveRecursive net -15,
+        // DeriveInputDemand -51, DeriveStaticCallees -28. Fewer sources ever
+        // reach a definition once their only callers are among those:
+        // DefineFunction -18, ExpandFunctionSource -18. AnalyzeActivation +2,
+        // DeriveTypeDef +1 and PlanEntryDispatch -1 are small knock-ons of
+        // the same drop; same-pass keying keeps AnalyzeActivation from
+        // rising further for this fixture's genuinely polymorphic callers.
+        (2338, 9, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -383,7 +393,15 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // main/0 wakes on a `dbg` callee's concluded answer rather than on
         // each intermediate one landing, so it publishes one non-demand
         // changed revision per callee instead of one per callee wake.
-        857,
+        // fz-xxd.10: 857 -> 898. Measured (start reasons tallied per job
+        // kind): LowerFunction keeps 102 runs but now starts on
+        // changed-revision wakes instead of gate expansion (+67);
+        // DeriveFunctionContract keeps 78 runs, +26 moved off
+        // blocked-waiter expansion; DeriveRecursive +31 changed-wake starts
+        // on 15 fewer runs; AnalyzeActivation +32 changed-wake starts on 2
+        // more runs; DeriveStaticCallees -53, DeriveInputDemand -42,
+        // DefineFunction -18.
+        898,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -432,7 +450,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // mints, so the wait starts that activation's analysis before the
         // publish does: activation-published starts fall to 3 while these
         // blocked-waiter starts rise to 500.
-        500,
+        // fz-xxd.10: 500 -> 434. `Recursive`, `InputDemand` and
+        // `StaticCallees` are no longer asked for every monomorphic
+        // activation this fixture's Enum helpers key under, so fewer
+        // completions ever have one of those three as a blocked waiter to
+        // expand.
+        434,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -555,7 +578,13 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // loop reaches it; `has_run` is already true by then, so this
         // reason credits only the few activations no caller happened to
         // wait on in their publishing run.
-        (1, 3, 0),
+        // fz-xxd.10: activation_published 3 -> 0. `Recursive`, `InputDemand`
+        // and `StaticCallees` are no longer asked for every monomorphic
+        // activation this fixture's Enum helpers key under, which changes
+        // which code path first discovers the few activations this reason
+        // used to credit; they now land as a `BlockedWaiterExpansion` wake
+        // instead (see the blocked-waiter census above).
+        (1, 0, 0),
         "ordinary generic helper activations preserve the pull-only frontier",
     );
 
@@ -584,7 +613,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // way there.
     assert_eq!(
         analyzed_activations.len(),
-        617,
+        // fz-xxd.10: 617 -> 619. Same-pass keying's early ask -- asking a
+        // callee's keying facts in the same pass as its contract, rather
+        // than a run later -- settles two activations one run earlier,
+        // which this fixture's schedule-dependent convergence turns into
+        // two extra completions rather than two fewer.
+        619,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
@@ -603,8 +637,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
 
     let root_entry = world.root_entry(root);
     let (root_claims, root_reads) = world.standing_claims_and_reads(&Job::SeedRoot(root));
-    assert!(root_reads.contains(&FactUse::settled(FactKey::Recursive(root_entry.function))));
-    assert!(root_reads.contains(&FactUse::settled(FactKey::InputDemand(root_entry.function))));
+    // `main/0` takes no arguments, so it is self-keyed by construction
+    // (R1): `SeedRoot` never reads its `Recursive` or `InputDemand` at all,
+    // since nothing needs to key an activation that carries no type
+    // variables.
+    assert!(!root_reads.contains(&FactUse::settled(FactKey::Recursive(root_entry.function))));
+    assert!(!root_reads.contains(&FactUse::settled(FactKey::InputDemand(root_entry.function))));
     let mut root_activations = root_claims.into_iter().filter_map(|fact| match fact {
         FactKey::Activation(key) => Some(key),
         _ => None,

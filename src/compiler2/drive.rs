@@ -190,7 +190,7 @@ pub enum Job {
     ReifyGuardDispatch(FunctionId),
     PlanEntryDispatch(FunctionId),
     DeriveStaticCallees(FunctionId),
-    DeriveCallGraphComponent(FunctionId),
+    DeriveRecursive(FunctionId),
     DeriveInputDemand(FunctionId),
     SeedRoot(RootId),
     SeedActivation(ActivationKey),
@@ -218,7 +218,7 @@ impl SemanticOrd<Types> for Job {
                 (Job::ReifyGuardDispatch(left), Job::ReifyGuardDispatch(right)) => left.cmp(right),
                 (Job::PlanEntryDispatch(left), Job::PlanEntryDispatch(right)) => left.cmp(right),
                 (Job::DeriveStaticCallees(left), Job::DeriveStaticCallees(right)) => left.cmp(right),
-                (Job::DeriveCallGraphComponent(left), Job::DeriveCallGraphComponent(right)) => left.cmp(right),
+                (Job::DeriveRecursive(left), Job::DeriveRecursive(right)) => left.cmp(right),
                 (Job::SeedRoot(left), Job::SeedRoot(right)) => left.cmp(right),
                 (Job::SeedActivation(left), Job::SeedActivation(right))
                 | (Job::AnalyzeActivation(left), Job::AnalyzeActivation(right)) => left.semantic_cmp(right, types),
@@ -238,7 +238,7 @@ fn job_order_rank(job: &Job) -> u8 {
         Job::DefineFunction(_) => 3,
         Job::DefineModule(_) => 4,
         Job::DefineModuleInterface(_) => 5,
-        Job::DeriveCallGraphComponent(_) => 6,
+        Job::DeriveRecursive(_) => 6,
         Job::DeriveExecutableFacts(_) => 7,
         Job::DeriveFunctionContract(_) => 8,
         Job::DeriveInputDemand(_) => 9,
@@ -276,7 +276,6 @@ pub enum FactKey {
     GuardDispatch(FunctionId),
     EntryDispatch(FunctionId),
     StaticCallees(FunctionId),
-    CallGraphComponent(FunctionId),
     Recursive(FunctionId),
     InputDemand(FunctionId),
     RootEntry(RootId),
@@ -328,7 +327,6 @@ impl FactKey {
             FactKey::GuardDispatch(_) => "a function's guard dispatch",
             FactKey::EntryDispatch(_) => "a function's entry dispatch",
             FactKey::StaticCallees(_) => "a function's static callees",
-            FactKey::CallGraphComponent(_) => "a function's call-graph component",
             FactKey::Recursive(_) => "a function's recursion analysis",
             FactKey::InputDemand(_) => "a function's input demand",
             FactKey::RootEntry(_) => "a root's entry point",
@@ -366,7 +364,6 @@ impl FactKey {
             | (FactKey::GuardDispatch(left), FactKey::GuardDispatch(right))
             | (FactKey::EntryDispatch(left), FactKey::EntryDispatch(right))
             | (FactKey::StaticCallees(left), FactKey::StaticCallees(right))
-            | (FactKey::CallGraphComponent(left), FactKey::CallGraphComponent(right))
             | (FactKey::InputDemand(left), FactKey::InputDemand(right))
             | (FactKey::Recursive(left), FactKey::Recursive(right)) => left.cmp(right),
             (FactKey::TypeDefined(left), FactKey::TypeDefined(right)) => left.cmp(right),
@@ -398,7 +395,6 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::Activation(_) => 0,
         FactKey::ActivationAnalyzed(_) => 1,
         FactKey::ActivationInputs(_) => 2,
-        FactKey::CallGraphComponent(_) => 4,
         FactKey::CallSiteSummary(_) => 5,
         FactKey::CallSiteTargets(_) => 6,
         FactKey::CallableConstructionTarget(_) => 36,
@@ -990,12 +986,7 @@ impl World {
                 )
             }
             FactKey::StaticCallees(function) => Some(Job::DeriveStaticCallees(*function)),
-            // One walk over the edge facts answers both: `Job::
-            // DeriveCallGraphComponent` publishes the component id and the
-            // body keying that component decides.
-            FactKey::CallGraphComponent(function) | FactKey::Recursive(function) => {
-                Some(Job::DeriveCallGraphComponent(*function))
-            }
+            FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
             FactKey::InputDemand(function) => Some(Job::DeriveInputDemand(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
             FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),

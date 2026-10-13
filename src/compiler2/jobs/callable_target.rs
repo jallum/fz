@@ -26,11 +26,30 @@ pub(super) fn derive(world: &mut World, key: &CallableConstructionTargetKey) -> 
             ..JobEffects::default()
         });
     };
-    let prerequisites = [
-        owner_fact,
-        FactKey::Recursive(producer.function),
-        FactKey::InputDemand(producer.function),
-    ];
+    let facts = world
+        .executable_facts(&key.owner)
+        .expect("settled executable facts should have a value");
+    let Some(capture_types) = producer
+        .captures
+        .iter()
+        .map(|capture| facts.analysis().value_types.get(capture).copied())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(JobEffects {
+            reads: current_uses([owner_fact]),
+            ..JobEffects::default()
+        });
+    };
+    let mut inputs = capture_types;
+    inputs.extend(key.surface.inputs.iter().copied());
+    let mut prerequisites = vec![owner_fact];
+    if world
+        .self_keyed_activation(key.owner.activation.root, producer.function, &inputs)
+        .is_none()
+    {
+        prerequisites.push(FactKey::Recursive(producer.function));
+        prerequisites.push(FactKey::InputDemand(producer.function));
+    }
     let waits = prerequisites
         .iter()
         .filter(|fact| !world.fact_is_settled(fact))
@@ -43,23 +62,6 @@ pub(super) fn derive(world: &mut World, key: &CallableConstructionTargetKey) -> 
             ..JobEffects::default()
         });
     }
-
-    let facts = world
-        .executable_facts(&key.owner)
-        .expect("settled executable facts should have a value");
-    let Some(capture_types) = producer
-        .captures
-        .iter()
-        .map(|capture| facts.analysis().value_types.get(capture).copied())
-        .collect::<Option<Vec<_>>>()
-    else {
-        return Ok(JobEffects {
-            reads: current_uses(prerequisites),
-            ..JobEffects::default()
-        });
-    };
-    let mut inputs = capture_types;
-    inputs.extend(key.surface.inputs.iter().copied());
     let target = ExecutableKey {
         activation: world.activation_key(key.owner.activation.root, producer.function, &inputs),
         need: ExecutableNeed::Value,

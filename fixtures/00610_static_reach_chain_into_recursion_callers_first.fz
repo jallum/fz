@@ -1,0 +1,19 @@
+#---
+# purpose: four callers (p1-p4) share one call chain of depth eight (c1-c8); the chain's callers are defined before its callees; the chain ends by entering a two-function recursion (ping/pong).
+#---
+def main(), do: dbg(p1(1, [1]) + p2(1, [1]) + p3(1, [1]) + p4(1, [1]))
+def p1(x, junk), do: c1(x + 1, junk)
+def p2(x, junk), do: c1(x + 2, junk)
+def p3(x, junk), do: c1(x + 3, junk)
+def p4(x, junk), do: c1(x + 4, junk)
+def c1(x, junk), do: c2(x, junk)
+def c2(x, junk), do: c3(x, junk)
+def c3(x, junk), do: c4(x, junk)
+def c4(x, junk), do: c5(x, junk)
+def c5(x, junk), do: c6(x, junk)
+def c6(x, junk), do: c7(x, junk)
+def c7(x, junk), do: c8(x, junk)
+def c8(x, junk), do: ping(x, junk)
+def ping(n, junk), do: pong(n, junk)
+def pong(0, junk), do: 0
+def pong(n, junk), do: ping(n - 1, junk)

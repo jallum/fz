@@ -55,7 +55,7 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::ReifyGuardDispatch(function_id) => dispatch::reify_guard_dispatch(world, tel, *function_id),
         Job::PlanEntryDispatch(function_id) => dispatch::plan_entry_dispatch(world, tel, *function_id),
         Job::DeriveStaticCallees(function_id) => keying::derive_static_callees(world, *function_id),
-        Job::DeriveCallGraphComponent(function_id) => keying::derive_call_graph_component(world, *function_id),
+        Job::DeriveRecursive(function_id) => keying::derive_recursive(world, *function_id),
         Job::DeriveInputDemand(function_id) => keying::derive_input_demand(world, tel, *function_id),
         Job::SeedRoot(root_id) => root::seed_root(world, tel, *root_id),
         Job::SeedActivation(activation) => root::seed_activation(world, tel, activation),
@@ -94,13 +94,17 @@ impl Job {
             }
             Job::ScopeCode(source_owner) => current_uses(source::scope_code_gates(world, *source_owner)),
             Job::DeriveInputDemand(function_id) => current_uses(keying::derive_input_demand_gates(world, *function_id)),
-            Job::DeriveCallGraphComponent(function_id) => {
-                current_uses(keying::derive_call_graph_component_gates(world, *function_id))
-            }
+            Job::DeriveRecursive(function_id) => current_uses(keying::derive_recursive_gates(world, *function_id)),
             Job::DeriveRuntimeDemand(executable) => {
                 settled_uses(runtime_demand::derive_runtime_demand_gates(world, executable))
             }
             Job::LowerFunction(function_id) => current_uses(body::lower_function_gates(world, *function_id)),
+            Job::DeriveFunctionContract(function_id) => current_uses(
+                world
+                    .function_defined_revision(*function_id)
+                    .is_none()
+                    .then_some(FactKey::FunctionDefined(*function_id)),
+            ),
             Job::DeriveStaticCallees(function_id) => {
                 current_uses(keying::derive_static_callees_gates(world, *function_id))
             }
@@ -109,7 +113,6 @@ impl Job {
             | Job::DefineModule(_)
             | Job::DefineModuleInterface(_)
             | Job::DeriveTypeDef(_)
-            | Job::DeriveFunctionContract(_)
             | Job::ReifyGuardDispatch(_)
             | Job::PlanEntryDispatch(_)
             | Job::SeedActivation(_)

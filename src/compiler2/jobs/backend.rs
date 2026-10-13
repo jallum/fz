@@ -124,11 +124,14 @@ pub(crate) fn produce_root_backend_product(
     root: RootId,
 ) -> PullOutcome {
     let root_entry = world.root_entry(root);
-    let keying_facts = [
-        FactKey::RootEntry(root),
-        FactKey::InputDemand(root_entry.function),
-        FactKey::Recursive(root_entry.function),
-    ];
+    let mut keying_facts = vec![FactKey::RootEntry(root)];
+    if world
+        .self_keyed_activation(root, root_entry.function, &root_entry.input)
+        .is_none()
+    {
+        keying_facts.push(FactKey::InputDemand(root_entry.function));
+        keying_facts.push(FactKey::Recursive(root_entry.function));
+    }
     let keying_waits = keying_facts
         .into_iter()
         .filter(|fact| !context.read_fact(world, FactUse::settled(fact.clone())))

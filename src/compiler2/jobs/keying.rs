@@ -96,14 +96,11 @@ pub(super) fn derive_static_callees(world: &mut World, function: FunctionId) -> 
             ));
         }
         BodyShape::Extern => {
-            // An extern names no fz callees: its wire ABI lives on its
-            // contract, and it never gets a lowered body to derive edges from.
-            return Ok(publish_static_callees(
-                world,
-                function,
-                Vec::new(),
-                vec![FactKey::FunctionDefined(function)],
-            ));
+            // An extern names no fz callees, known from its source head
+            // alone: its wire ABI lives on its contract, and it never gets a
+            // lowered body to derive edges from. The conclusion reads
+            // nothing, so a later `FunctionDefined` does not re-run it.
+            return Ok(publish_static_callees(world, function, Vec::new(), Vec::new()));
         }
         BodyShape::Unknown | BodyShape::Clauses => {}
     }
@@ -151,6 +148,21 @@ fn body_static_callees(world: &World, function: FunctionId, reads: &mut Vec<Fact
     callees
 }
 
+/// The functions one lowered body calls DIRECTLY -- never a lambda it merely
+/// constructs. A constructed lambda is reached only once something calls it,
+/// which is a different edge at a different function; naming it here would
+/// have the module gate (`analyze_activation_gates`) wait on a module that
+/// deciding whether to analyze this body never needs.
+pub(super) fn direct_callees(world: &World, function: FunctionId) -> Vec<FunctionId> {
+    static_edges(&world.lowered_body(function))
+        .into_iter()
+        .filter_map(|edge| match edge {
+            StaticEdge::Direct(callee) => Some(callee),
+            StaticEdge::Lambda(_) => None,
+        })
+        .collect()
+}
+
 fn publish_static_callees(
     world: &mut World,
     function: FunctionId,
@@ -169,32 +181,27 @@ fn publish_static_callees(
     }
 }
 
-/// Derives where one function sits in the static call graph: the canonical
-/// member of its strong component, and the recursion answer that component
-/// decides.
+/// Derives whether one function is RECURSIVE: does it reach itself through
+/// the static call graph (`StaticCallees`), directly, mutually across a
+/// cycle, or through a generated lambda? Lambda creation is a static edge
+/// from the owner to the generated function, so recursion through a
+/// generated closure is handled the same way as direct or mutual recursion.
 ///
-/// One walk, two facts. `CallGraphComponent(f)` is the smallest `FunctionId`
-/// mutually reachable with `f`, so "are these two functions mutually
-/// reachable" becomes an equality between two fact reads instead of a
-/// traversal at every asking site (fz-kdt.13). Recursion is a projection of
-/// the same answer -- `f` reaches itself exactly when its component has more
-/// than one member or its own edge set names it -- so the pyramid that used
-/// to walk the graph for recursion alone no longer exists as separate work.
-/// Identity consumption is a body-local property with no call-graph content,
-/// but it has always ridden `FactKey::Recursive`'s one value and still does.
+/// One walk answers it: the strong component of `function` in the subgraph
+/// reachable from it (`strong_component`) has more than one member, or
+/// `function`'s own edge set names it, exactly when `function` reaches
+/// itself. Identity consumption is a body-local property with no call-graph
+/// content, but it has always ridden `FactKey::Recursive`'s one value and
+/// still does.
 ///
-/// Lambda creation is a static edge from the owner to the generated function,
-/// so recursion through generated closures is handled the same way as direct
-/// or mutual recursion.
-/// The facts `derive_call_graph_component` cannot conclude without, for
-/// `function` itself: its own static edges, and its own lowered body. Both
-/// are named from `function` alone, so the scheduler checks them before ever
-/// starting a never-run `DeriveCallGraphComponent` (`Job::missing_gates`). A
-/// callee's own `StaticCallees`, reached by the walk `collect_static_graph`
-/// runs below, is a wait the walk DISCOVERS -- it depends on which edges this
-/// body turns out to have, not on `function` alone -- so it is not named
-/// here.
-pub(super) fn derive_call_graph_component_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
+/// The facts `derive_recursive` cannot conclude without, for `function`
+/// itself: its own static edges, and its own lowered body. Both are named
+/// from `function` alone, so the scheduler checks them before ever starting
+/// a never-run `DeriveRecursive` (`Job::missing_gates`). A callee's own
+/// `StaticCallees`, reached by the walk `collect_static_graph` runs below, is
+/// a wait the walk DISCOVERS -- it depends on which edges this body turns
+/// out to have, not on `function` alone -- so it is not named here.
+pub(super) fn derive_recursive_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
     if world.function_is_provider_boundary(function) {
         return Vec::new();
     }
@@ -215,13 +222,12 @@ pub(super) fn derive_call_graph_component_gates(world: &World, function: Functio
     gates
 }
 
-pub(super) fn derive_call_graph_component(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
+pub(super) fn derive_recursive(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
     if world.function_is_provider_boundary(function) {
-        // No body in this program: no edges, so the component is the function
-        // alone and nothing it does can reach back to it.
-        return Ok(publish_call_graph_node(
+        // No body in this program: no edges, so nothing it does can reach
+        // back to it.
+        return Ok(publish_recursive(
             world,
-            function,
             function,
             BodyKeying {
                 recursive: false,
@@ -258,45 +264,24 @@ pub(super) fn derive_call_graph_component(world: &mut World, function: FunctionI
         });
     }
 
+    // The strong component decides recursion alone: `function` reaches
+    // itself exactly when it shares a component with another function, or
+    // its own edges name it directly.
     let component = strong_component(function, &graph);
     let keying = BodyKeying {
         recursive: component.len() > 1 || graph.get(&function).is_some_and(|edges| edges.contains(&function)),
         consumes_callable_identity: body_consumes_callable_identity(world, function),
     };
-    let canonical = component
-        .into_iter()
-        .min()
-        .expect("a function is always a member of its own strong component");
-    Ok(publish_call_graph_node(world, function, canonical, keying, reads))
+    Ok(publish_recursive(world, function, keying, reads))
 }
 
-/// Publishes both answers one walk produced. Two facts, not one value: a
-/// component id and a body's keying move for different reasons and wake
-/// different readers, so fusing them would wake activation keying every time
-/// the graph merged two components.
-fn publish_call_graph_node(
-    world: &mut World,
-    function: FunctionId,
-    component: FunctionId,
-    keying: BodyKeying,
-    reads: Vec<FactKey>,
-) -> JobEffects {
-    let component_fact = FactKey::CallGraphComponent(function);
+fn publish_recursive(world: &mut World, function: FunctionId, keying: BodyKeying, reads: Vec<FactKey>) -> JobEffects {
     let keying_fact = FactKey::Recursive(function);
-    let component_changed = world.define_call_graph_component(function, component);
-    // One fact, one value: a body edit can flip identity-consumption without
-    // touching recursion, and keying dependents re-derive off this fact --
-    // publishing both answers as one struct makes a half-defined or
-    // half-signalled state unrepresentable.
     let keying_changed = world.define_body_keying(function, keying);
     JobEffects {
         reads: current_uses(reads),
-        outputs: vec![component_fact.clone(), keying_fact.clone()],
-        changed: component_changed
-            .then_some(component_fact)
-            .into_iter()
-            .chain(keying_changed.then_some(keying_fact))
-            .collect(),
+        outputs: vec![keying_fact.clone()],
+        changed: keying_changed.then_some(keying_fact).into_iter().collect(),
         ..JobEffects::default()
     }
 }
@@ -536,6 +521,13 @@ impl<'w> ForwardingWalk<'w> {
             self.visit_protocol_callback(function);
             return;
         }
+        if matches!(self.world.function_body_shape(function), BodyShape::Extern) {
+            // An extern is a leaf, known from its source head: it has no fz
+            // body to forward through, and that answer never changes, so
+            // nothing here is read beyond the `StaticCallees` fact above.
+            self.graph.insert(function, DemandNode::default());
+            return;
+        }
         let lowered = FactKey::LoweredBody(function);
         if self.world.function_is_provider_boundary(function) || !self.world.has_fact(&lowered) {
             // No body in this program: it asks nothing and forwards nothing. Every
@@ -760,10 +752,10 @@ fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> 
 /// 91 do not, the 91 dominated by `List.reduce_cont/3` (21),
 /// `List.reduce_while_cont/3` (18), `Range.reduce_while_cont/6` (9) and
 /// `List.reduce_while_step/3` (6) minting `empty_list()`/`list(tau)`
-/// ascent rungs across the cont<->step cycle. Closing it wants the strong
-/// component (`FactKey::CallGraphComponent`, which `DeriveInputDemand` does
-/// not read today) and the reverse call edge, because the rebuild belongs to
-/// the CALLEE's position: fz-kdt.213 owns that removal.
+/// ascent rungs across the cont<->step cycle. Closing it wants the call
+/// graph's strong components, which `DeriveInputDemand` does not read today,
+/// and the reverse call edge, because the rebuild belongs to the CALLEE's
+/// position.
 fn recursion_supplied_positions(
     function: FunctionId,
     entries: &[super::super::body::LoweredEntry],

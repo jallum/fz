@@ -27,7 +27,7 @@ fn construction_target_is_exact_memoized_and_read_without_formula_minting() {
     let mut world = World::new();
     world.submit_code(
         Some("construction_target_exact.fz".to_string()),
-        "def main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
+        "def main() do\n  tag = [1]\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let mut sessions = crate::compiler2::pull::ProductSessions::default();
@@ -245,7 +245,7 @@ fn late_independent_surface_waits_for_only_its_exact_construction_prerequisites(
     let mut world = World::new();
     world.submit_code(
         Some("construction_target_late_surface.fz".to_string()),
-        "def main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
+        "def main() do\n  tag = [1]\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let mut sessions = crate::compiler2::pull::ProductSessions::default();
@@ -278,7 +278,7 @@ fn late_independent_surface_waits_for_only_its_exact_construction_prerequisites(
     let recursive_fact = FactKey::Recursive(function);
     let input_fact = FactKey::InputDemand(function);
 
-    world.complete_job(Job::DeriveCallGraphComponent(function), JobEffects::default());
+    world.complete_job(Job::DeriveRecursive(function), JobEffects::default());
     if !world.fact_is_settled(&input_fact) {
         world.complete_job(
             Job::DeriveInputDemand(function),
@@ -305,9 +305,9 @@ fn late_independent_surface_waits_for_only_its_exact_construction_prerequisites(
     assert!(missing_recursive.outputs.is_empty());
 
     world.complete_job(
-        Job::DeriveCallGraphComponent(function),
+        Job::DeriveRecursive(function),
         JobEffects {
-            outputs: vec![FactKey::CallGraphComponent(function), recursive_fact.clone()],
+            outputs: vec![recursive_fact.clone()],
             ..JobEffects::default()
         },
     );

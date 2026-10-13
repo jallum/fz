@@ -378,9 +378,10 @@ transport positions required by the local body. The shared fact already carries
 the analysis, lowered body, entry dispatch, and exact callsite summaries, so
 materialization neither rereads nor reconstructs that projection.
 
-The root product waits on `RootEntry(root)`, `Recursive(entry)`, and
-`InputDemand(entry)` only so it can key the entry executable, then asks for
-`BackendExecutable(entry)`. Each backend producer records typed membership
+The root product waits on `RootEntry(root)` and, unless the entry activation
+is self-keyed (no type variables, already its own convergence class),
+`Recursive(entry)` and `InputDemand(entry)` as well, only so it can key the
+entry executable; it then asks for `BackendExecutable(entry)`. Each backend producer records typed membership
 edges for its local calls, positioned callable targets, and reachable schemas.
 The retained memo updates rooted membership from those committed edges, including
 withdrawal when a recursive component loses its last root path. Value reads

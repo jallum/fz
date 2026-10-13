@@ -29,6 +29,7 @@ use super::super::semantic::{
 };
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::{BodyShape, World};
+use super::keying;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct TupleFieldProjection {
@@ -187,6 +188,23 @@ pub(super) fn analyze_activation_gates(world: &World, activation: &ActivationKey
     }
     if !world.has_fact(&FactKey::EntryDispatch(function)) {
         gates.push(FactKey::EntryDispatch(function));
+    }
+    // A callee in a module not yet defined costs its caller nothing to
+    // discover: this reads the direct callees straight from the lowered
+    // body this analysis is already about to walk, rather than deriving
+    // `StaticCallees` just to learn which modules to wait on.
+    if matches!(shape, BodyShape::Clauses) && world.has_fact(&FactKey::LoweredBody(function)) {
+        for callee in keying::direct_callees(world, function) {
+            let module = world.function_module(callee);
+            if world.function_defined_revision(callee).is_none()
+                && !module.is_global()
+                && world.module_defined_revision(module).is_none()
+                && (world.module_has_source_state(module) || world.is_runtime_module(module))
+                && !gates.contains(&FactKey::ModuleDefined(module))
+            {
+                gates.push(FactKey::ModuleDefined(module));
+            }
+        }
     }
     gates
 }
@@ -1478,6 +1496,16 @@ fn resolve_function_call(
         return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
     }
     let Some(shape) = require_direct_call_prerequisites(world, function, uses) else {
+        // The callee's contract or body is not ready yet, but its keying
+        // facts (Recursive, InputDemand) may already be settled for the row
+        // this call holds -- asked here, in the same pass, rather than
+        // waiting for a second run to learn them. A provider boundary never
+        // consumes keying facts, so it is excluded. The ask after contract
+        // refinement below is the correctness gate; this one only shortens
+        // the wait when the refined row turns out to need nothing more.
+        if !world.function_is_provider_boundary(function) {
+            let _ = world.require_activation_key_facts(caller.root, function, &input_types, uses);
+        }
         return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
     };
     let caller_owner = world.function_definition(caller.function).0.owner;
@@ -1503,6 +1531,9 @@ fn resolve_function_call(
             Vec::new(),
             CallReturn::Known(return_ty),
         ));
+    }
+    if !world.require_activation_key_facts(caller.root, function, &input_types, uses) {
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
     }
     let (activation, observed_return) = prepare_function_call(world, uses, caller, function, &input_types);
     let call_return = refine_call_return(world, observed_return, contract_return_ty);
@@ -1637,6 +1668,28 @@ fn resolve_protocol_call(
     let matches = merge_protocol_matches_by_function(world, matches);
 
     if !every_target_ready(world, &matches, uses) {
+        // Mirrors the same-pass ask in `resolve_function_call`: a target not
+        // yet ready may still have its keying facts settled for the row this
+        // call holds, asked here rather than waited for a second run.
+        for (selected, overlap) in &matches {
+            let held = refine_protocol_target_inputs(world, &input_types, receiver_ty, *overlap);
+            let _ = world.require_activation_key_facts(caller.root, selected.function, &held, uses);
+        }
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
+    }
+
+    // Every target's keying facts are checked BEFORE any target is resolved:
+    // resolving one target here seeds its activation and demands its body,
+    // side effects a later target's missing keying facts cannot strand.
+    let mut keyed = true;
+    for (selected, overlap) in &matches {
+        let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, *overlap);
+        let caller_owner = world.function_definition(caller.function).0.owner;
+        let (refined_inputs, _) =
+            refine_function_call_surface(world, tel, selected.function, refined_inputs, caller_owner, call_span)?;
+        keyed &= world.require_activation_key_facts(caller.root, selected.function, &refined_inputs, uses);
+    }
+    if !keyed {
         return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
     }
 
@@ -1651,6 +1704,9 @@ fn resolve_protocol_call(
         let (refined_inputs, applied_contract) =
             refine_function_call_surface(world, tel, selected.function, refined_inputs, caller_owner, call_span)?;
         let contract_return_ty = applied_contract_return(applied_contract);
+        if !world.require_activation_key_facts(caller.root, selected.function, &refined_inputs, uses) {
+            return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
+        }
         let (activation, observed_return) =
             prepare_function_call(world, uses, caller, selected.function, &refined_inputs);
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
@@ -1903,7 +1959,6 @@ fn require_function_contract(world: &mut World, function: FunctionId, uses: &mut
 /// one lands.
 fn require_callee_prerequisites(world: &mut World, function: FunctionId, uses: &mut UseCollector) -> bool {
     let contract_ready = require_function_contract(world, function, uses);
-    let keying_ready = world.require_activation_key_facts(function, uses);
     let shape = world.function_body_shape(function);
     if let Some(gate) = shape.undefined_gate(function) {
         // The caller here is never a provider boundary or a protocol
@@ -1921,7 +1976,7 @@ fn require_callee_prerequisites(world: &mut World, function: FunctionId, uses: &
         // An extern never gets a `LowerFunction` job: its wire ABI is the
         // contract this caller already waited on above, so there is no
         // further body to wait for.
-        return contract_ready && keying_ready;
+        return contract_ready;
     }
     let lowered = FactKey::LoweredBody(function);
     let lowered_ready = world.has_fact(&lowered);
@@ -1930,7 +1985,7 @@ fn require_callee_prerequisites(world: &mut World, function: FunctionId, uses: &
     } else {
         uses.wait(lowered);
     }
-    contract_ready && keying_ready && lowered_ready
+    contract_ready && lowered_ready
 }
 
 /// Which call a named callee becomes once its prerequisites are in.

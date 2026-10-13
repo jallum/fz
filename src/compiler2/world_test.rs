@@ -3,7 +3,8 @@ use crate::dispatch_matrix::demand::DispatchDemand;
 use super::facts::FactUse;
 use super::keying::{BodyKeying, InputDemand};
 use super::{
-    DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, TypeName, Types, World,
+    DriveOutcome, FactKey, FunctionSource, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, TypeName, Types,
+    World, parse_quoted_program,
 };
 use crate::ast::Attribute;
 use crate::compiler2::drive::{DependencyKey, JobEffects};
@@ -1336,7 +1337,7 @@ fn completion_outputs_movements_and_wakes_use_semantic_order_across_seeds() {
             outputs.reverse();
         }
         let completion = world.complete_job(
-            Job::DeriveCallGraphComponent(function),
+            Job::DeriveRecursive(function),
             JobEffects {
                 changed: outputs.clone(),
                 outputs,
@@ -1414,7 +1415,7 @@ fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
         world.demand(Job::DefineFunction(function));
         world.demand(Job::LowerFunction(function));
         world.demand(Job::PlanEntryDispatch(function));
-        world.demand(Job::DeriveCallGraphComponent(function));
+        world.demand(Job::DeriveRecursive(function));
         world.demand(Job::DeriveInputDemand(function));
     }
     assert_eq!(
@@ -1526,7 +1527,7 @@ fn compiler2_drive_reports_unmapped_blocked_facts_as_unresolved() {
     let mut world = World::new();
     let function = world.reference_function(ModuleId::GLOBAL, "main", 0);
     world.complete_job(
-        Job::DeriveCallGraphComponent(function),
+        Job::DeriveRecursive(function),
         JobEffects {
             waits: vec![FactUse::current(FactKey::GuardDispatch(function))],
             ..JobEffects::default()
@@ -1736,6 +1737,18 @@ fn compiler2_function_source_consumer_wakes_when_a_pending_global_home_indexes()
     );
 }
 
+/// A real parse of `text`, standing in for a second source submission
+/// without driving a whole second `IndexCode`/`ScopeCode` pass: two separate
+/// top-level submissions that each declare `paused/1` are two homes
+/// competing for one name, not an edit, so resubmission cannot stand in for
+/// a body changing under a function that already has one.
+fn quoted_source(source_name: &str, text: &str) -> super::source::QuotedSourceRoot {
+    let tel = ConfiguredTelemetry::new();
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some(source_name), text);
+    parse_quoted_program(&sources, version, &tel).expect("quoted parse should succeed")
+}
+
 /// fz-kdt.62: a producer that is BLOCKED is wake-reachable through its own
 /// standing waits, and the drain's fact->producer expansion must leave it
 /// alone -- even when it is also REBASED.
@@ -1758,8 +1771,22 @@ fn compiler2_function_source_consumer_wakes_when_a_pending_global_home_indexes()
 /// ordinary sole-producer arm of `World::demand_fact_producer`.
 #[test]
 fn compiler2_demand_leaves_a_blocked_producer_alone_even_when_it_is_rebased() {
+    let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
+
+    // `FunctionDefined` is driven through the real `DefineFunction` job
+    // rather than a hand-built fact, so the function's state genuinely
+    // transitions to `Defined` -- the transition `DeriveFunctionContract`'s
+    // own gate reads, not merely the fact map `complete_job` keeps.
+    let owner = world.submit_code(Some("paused_v1.fz".to_string()), "def paused(x), do: x\n".to_string());
+    world.demand(Job::ScopeCode(owner));
     let function = world.reference_function(ModuleId::GLOBAL, "paused", 1);
+    world.demand(Job::DefineFunction(function));
+    assert_eq!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved,
+        "defining paused/1 should settle",
+    );
     let lowered = FactKey::LoweredBody(function);
     let producer = Job::LowerFunction(function);
 
@@ -1771,10 +1798,6 @@ fn compiler2_demand_leaves_a_blocked_producer_alone_even_when_it_is_rebased() {
         waits: vec![FactUse::current(FactKey::FunctionContract(function))],
         ..JobEffects::default()
     };
-    world.complete_job(
-        Job::DefineFunction(function),
-        publish(FactKey::FunctionDefined(function)),
-    );
     world.complete_job(producer.clone(), pause());
 
     // Recording that wait already demanded its producer, the instant it was
@@ -1786,13 +1809,45 @@ fn compiler2_demand_leaves_a_blocked_producer_alone_even_when_it_is_rebased() {
         "the paused producer's own standing wait must demand its producer immediately",
     );
 
-    // Ground shifts under it: `FunctionDefined` is a replacing fact, so a
-    // second publication is a shift, which rebases the producer and enqueues
-    // it in the same step.
-    world.complete_job(
-        Job::DefineFunction(function),
-        publish(FactKey::FunctionDefined(function)),
+    // Ground shifts under it: a second real body for `paused`, noted through
+    // the same `ExecutionContext::note_function_source` call the scope walk
+    // itself uses, then defined by running `DefineFunction` again -- the same
+    // job the first definition ran. `FunctionDefined` is a replacing fact, so
+    // this second, genuinely different, surface rebases the producer and
+    // enqueues it in the same step: popping once is this test's own proof
+    // that the shift alone was what made it ready.
+    let raw_source = world
+        .function_source(function)
+        .expect("paused/1 should have a published raw source after its first definition");
+    let expanded_source = world
+        .expanded_function_source(function)
+        .expect("paused/1 should have a staged expanded source after its first definition");
+    let second_body = quoted_source("paused_v2.fz", "def paused(x), do: x + 1\n");
+    let mut ectx = super::drive::ExecutionContext::new(&mut world, &tel);
+    ectx.note_function_source(
+        function,
+        FunctionSource {
+            source: second_body.clone(),
+            ..raw_source
+        },
     );
+    ectx.note_expanded_function_source(
+        function,
+        FunctionSource {
+            source: second_body,
+            ..expanded_source
+        },
+    );
+    let effects = super::jobs::run(
+        &mut super::drive::ExecutionContext::new(&mut world, &tel),
+        &Job::DefineFunction(function),
+    )
+    .expect("redefining paused/1 from its second body should reproduce cleanly");
+    assert!(
+        effects.changed.contains(&FactKey::FunctionDefined(function)),
+        "a genuinely different body must shift FunctionDefined, not just restate it",
+    );
+    world.complete_job(Job::DefineFunction(function), effects);
     assert_eq!(
         world.work_graph.pop(),
         Some(producer.clone()),
@@ -1841,15 +1896,6 @@ fn compiler2_demand_leaves_a_blocked_producer_alone_even_when_it_is_rebased() {
         "a blocked producer's standing waits ARE its wake source; recording a new demand must \
          never re-run it into the wait it just failed. Started: {started:?}",
     );
-}
-
-/// One job's conclusion publishing `fact` with real content movement.
-fn publish(fact: FactKey) -> JobEffects {
-    JobEffects {
-        outputs: vec![fact.clone()],
-        changed: vec![fact],
-        ..JobEffects::default()
-    }
 }
 
 /// fz-kdt.63 / fz-kdt.69.2: what an `AnalyzeActivation` conclusion's SILENCE

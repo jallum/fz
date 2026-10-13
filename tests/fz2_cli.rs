@@ -2175,15 +2175,21 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // `analyze_activation_gates` (`Job::missing_gates`) holds a
             // called extern's own activation back until its `EntryDispatch`
             // exists, for the two externs this fixture calls.
-            evaluations: 276,
+            // fz-xxd.10: 276 -> 232 evaluations, initial 202 -> 165,
+            // content-caused 74 -> 67, changed outputs 244 -> 207, unchanged
+            // outputs 32 -> 25 -- the same `EXPECTED_00181_NO_DUMP_JOB_STARTS`
+            // drop (`Recursive`, `InputDemand` and `StaticCallees` no longer
+            // asked for this fixture's self-keyed monomorphic activations),
+            // carried through every formula that reads one of those facts.
+            evaluations: 232,
             runtime_demand_evaluations: 31,
-            initial: 202,
-            content_caused: 74,
+            initial: 165,
+            content_caused: 67,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 244,
-            unchanged_outputs: 32,
+            changed_outputs: 207,
+            unchanged_outputs: 25,
             // fz-afu.13: 73 -> 180. `wakes` sums every completion's raw
             // subscriber-wake log, counted once per wake regardless of
             // whether it enqueues a job or coalesces into one already
@@ -2199,8 +2205,11 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // of reading its current one, and each of those waits logs its
             // own wake and its own blocked completion without changing
             // which run concludes what.
-            wakes: 182,
-            blocked_completions: 72,
+            // fz-xxd.10: 182 -> 155 wakes, 72 -> 65 blocked completions --
+            // the same drop: fewer formulas means fewer of their wakes and
+            // blocked runs too.
+            wakes: 155,
+            blocked_completions: 65,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2301,19 +2310,16 @@ fn fz2_stall_diagnostic_is_byte_identical_across_runs() {
     }
 }
 
-/// An entry-dispatch plan is defined per function this fixture *calls*, not
-/// per function it merely compiles. `Kernel`'s `+`, `-` and `==` macro-expand
-/// every typed clause regardless of what the fixture calls: this fixture's
-/// own two integers only ever reach `fz_op_add_ii`, `fz_op_sub_ii` and
-/// `fz_op_eq_ii`, so the other nine typed clauses -- `fz_op_add_if`,
-/// `fz_op_add_ff`, `fz_op_sub_if`, `fz_op_sub_fi`, `fz_op_sub_ff`,
-/// `fz_op_eq_ff`, `fz_op_eq_if`, `fz_op_eq_fi`, and the `any`/`any` catch-all
-/// `fz_op_eq` -- are defined (declared externs) but never called, so nothing
-/// ever demands their `EntryDispatch` and `PlanEntryDispatch` never runs for
-/// them: an extern's wire ABI comes from its `FunctionContract`, not a
-/// compiled dispatch plan. The plan still carries what it reads of its
-/// inputs, so the two counts moving apart by anything other than this named
-/// nine would mean a *called* function stopped planning its own dispatch.
+/// Nothing unused creates work: `Kernel`'s `+`, `-` and `==` macro-expand a
+/// typed clause per operand-type combination, but a clause no caller reaches
+/// is never even `DefineFunction`'d. This fixture's own two integers only
+/// ever reach `fz_op_add_ii`, `fz_op_sub_ii` and `fz_op_eq_ii`, so the other
+/// nine typed clauses -- `fz_op_add_if`, `fz_op_add_ff`, `fz_op_sub_if`,
+/// `fz_op_sub_fi`, `fz_op_sub_ff`, `fz_op_eq_ff`, `fz_op_eq_if`, `fz_op_eq_fi`,
+/// and the `any`/`any` catch-all `fz_op_eq` -- are never defined, so nothing
+/// ever demands their `EntryDispatch` either: the two counts collapse to the
+/// one population of functions this fixture actually calls. An extern's wire
+/// ABI comes from its `FunctionContract`, not a compiled dispatch plan.
 #[test]
 fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
     let output = run_fz2(&[
@@ -2335,7 +2341,10 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
             .unwrap_or_else(|| panic!("the stats summary must count {name}; got:\n{stats}"))
     };
     let functions = counter("fz.compiler2.function.defined");
-    assert_eq!(functions, 24, "the fixture compiles its known function population");
+    // fz-xxd.10: 24 -> 15. The nine uncalled typed-clause externs named above
+    // never get a `DefineFunction` job either now: nothing calls them, so
+    // nothing demands their definition at all.
+    assert_eq!(functions, 15, "the fixture compiles its known function population");
     assert_eq!(
         counter("fz.compiler2.entry_dispatch.defined"),
         // fz-xxd.11: 24 -> 15. The nine uncalled typed-clause externs named

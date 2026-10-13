@@ -1466,6 +1466,14 @@ impl Types {
         })
     }
 
+    pub(crate) fn probe_keys_as_itself(&mut self, a: &Ty, slot: usize) -> bool {
+        let path = [AddrStep::Param(slot as u16)];
+        !self.has_vars(a)
+            && self.convergence_class_at(a, &path, false) == *a
+            && self.convergence_class_at(a, &path, true) == *a
+            && self.erase_closure_identity(a) == *a
+    }
+
     pub fn convergence_class(&mut self, a: &Ty) -> Ty {
         let descr = self.descr(a).clone();
         let any = self.any();
