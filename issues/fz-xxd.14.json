@@ -6,14 +6,15 @@
   "blocks": [
     "fz-xxd.13"
   ],
+  "closed_at": "2026-10-13T20:14:36Z",
   "created": "2026-10-10T19:40:31Z",
   "description": "North star: compile work proportional to input. A product whose value depends on facts only is computed once per compile and shared by every root and job; it never borrows a root.\n\nFact (reader xxd14/reader.md on e4c33bceb): every product lives in one root's PullSession (ProductSessions.sessions: HashMap\u003cRootId, PullSession\u003e, pull.rs:1572); invalidation (reconcile_fact_movements, mutate_product_wave) and recursive groups (PendingStrongComponent::find, pull.rs:474) are per session. Spike B had to borrow a root for ProductKey::Reach and both choices broke (first root: \"no ready producer\" on every program; last root: macro roots minted mid-compile by World::macro_root make 00593 miscompile). StructSchema(ModuleId) has the same latent problem: no root in its key, but each root's session computes its own copy (jobs/backend.rs:170, 317).\n\nDesign (proposal ../fz-xxd.14.html, approved 2026-10-12):\n- ProductScope = Root(RootId) | Program, chosen by the key: ProductKey::scope(asking_root). StructSchema (and Reach, in fz-xxd.13) -\u003e Program; every other key -\u003e Root(asking).\n- ProductAddress { scope, key }, built only by ProductAddress::of(key, asking_root); the literals at pull.rs:1680, 1886, 1911 and quoted_expander.rs:450 go.\n- ProductSessions holds the root sessions plus one program session (same PullSession/ProductMemo machinery); fact routing maps become scope maps; a program-session product change emits DependencyKey::Product for its address, so readers in root sessions and jobs wake through the existing bridge (pull.rs:1657-1701); a rooted product may depend on a program product.\n- Driving a waited product activates its address's scope; the program session's fact waits demand producers as root sessions do.\n- Not chosen: recursive-group settlement in the fact layer (a second mechanism beside the product layer's).\n- Open, not folded: transport products have root-free keys but read root-scoped executable facts; whether they could be program-scoped needs its own paper.\n\nAcceptance:\n- a program with two roots sharing a struct module evaluates StructSchema once (test, observed through product telemetry);\n- census outputs identical against fz-xxd.10; jobs equal or lower; no pin rises;\n- probe (not landed): spike B's Reach ported onto the program scope passes fixtures/00593 (run, interp, build) and recursive_callable_input_sources_settle_in_either_root_order, and 00607-00610 measure 16/4, 16/4, 18/4, 18/4;\n- timing within noise of fz-xxd.10.",
   "id": "fz-xxd.14",
   "labels": [],
   "parent": "fz-xxd",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A product derived from facts alone needs no root",
   "type": "task",
-  "updated_at": "2026-10-12T17:08:14Z"
+  "updated_at": "2026-10-13T20:14:36Z"
 }
