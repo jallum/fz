@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-17T22:24:56Z",
+  "description": "Today `defimpl P, for: Tuple` classifies as a bare nominal target and silently never matches a tuple receiver. BuiltinValueFamily (src/compiler2/world.rs:3011-3046) has List, Integer, Float, Atom, Binary and Map, but no Tuple. The same silence is documented for `for: BitString` at lib/string_chars.fz:15-17: fz names that family Binary, and Elixir names it BitString.\n\nShape: a Tuple family whose type is Types::tuple_top() (fz-sc8.28, which blocks this ticket). An oracle fixture covers a user protocol with a Tuple impl over {}, {1} and {1, 2, 3}, on all three paths.\n\nTo settle on the page: whether an impl target that names no type should be loud rather than silently never matching. That is the root of both the Tuple and the BitString cases. Not needed by the distiller; it sits at the end of the epic.",
+  "id": "fz-sc8.29",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "defimpl P, for: Tuple dispatches on every tuple",
+  "type": "feature",
+  "updated_at": "2026-10-17T22:24:56Z"
+}
