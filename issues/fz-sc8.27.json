@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-17T22:17:13Z",
+  "description": "An unresolvable parameter annotation reports its location as `\u003cgenerated\u003e` instead of the annotation's line and column. This is the same on the base and on 0da8a7a8d (scratch sc821/direct.fz):\n\n    def ist(_v :: tuple), do: true\n    def ist(_), do: false\n    def main() do\n      dbg(ist({1}))\n    end\n\ngives `error[resolve/type-alias]: compiler2 could not resolve parameter annotation 1 for `ist/1`: unknown type name `tuple`` at `--\u003e \u003cgenerated\u003e`.\n\nThe same error now also comes from guard-helper reification (SourcePatternError::ParamAnnotation, emit_guard_dispatch_error), which shares the row builder surface_pattern_rows (src/compiler2/dispatch.rs).\n\nTo establish first: which span reaches the diagnostic. The annotation's own span is the target; find where it is lost (param_annotations in FunctionSurface, or resolve_type_expr_body's error span).\n\nFixture: a diagnostic fixture whose expected output names the annotation's line and column, for both a direct call and a guard helper.",
+  "id": "fz-sc8.27",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "An annotation error points at the annotation",
+  "type": "bug",
+  "updated_at": "2026-10-17T22:17:13Z"
+}
