@@ -4,14 +4,16 @@
   "blocks": [
     "fz-sc8.19"
   ],
+  "closed_at": "2026-10-17T20:47:47Z",
+  "close_reason": "Landed as c8f2864a8 on fz-sc8/distill-fz: \u0026 takes one operand at bp 5; only \u0026N and \u0026op/N stay token cases; parse_capture_target and the \u0026( branch deleted. Remote targets accept operator names after '.' (Kernel.+/2), as in Elixir. A/B: fixture 00614 fails on old, matches Elixir on new; gate green, no pin moved.",
   "created": "2026-10-17T19:00:42Z",
   "description": "`Enum.map(xs, \u0026 \u00261.inclusive)` -\u003e error[parse/expected-token]: compiler2 front door only supports local, remote, and operator capture refs so far, got Amp. `\u0026(\u00261.inclusive)` works. Elixir accepts both. Used at tools/distill-telemetry.exs lines 123, 268, 349-350. Parser: parse_capture_expr, src/compiler2/frontdoor.rs:1093.",
   "id": "fz-sc8.2",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Unparenthesized capture `\u0026 \u00261.field` parses",
   "type": "bug",
-  "updated_at": "2026-10-17T19:00:44Z"
+  "updated_at": "2026-10-17T20:47:47Z"
 }
