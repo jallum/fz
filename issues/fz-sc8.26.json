@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-17T21:40:20Z",
+  "description": "Elixir: a variable that occurs twice in one pattern matches only equal values. fz ignores the repeat, and the last binding wins (planner bind, src/dispatch_matrix/pattern.rs:937; bind_outcome_arguments, src/compiler2/jobs/body.rs:2150; apply_pattern and bind_pattern Var arms rebind).\n\nProbe (scratch as/rep.fz versus rep.exs):\n- `def same({x, x}), do: :same` plus a fallback clause, called as same({1, 2}): Elixir gives :diff, fz gives :same.\n- `case {1, 2} do {y, y} -\u003e :same; _ -\u003e :diff end`: Elixir gives :diff, fz gives :same.\nThis is a silent wrong answer on every path.\n\nfz-sc8.20's Both(p1, p2) makes it reachable across `=` (`{x, _} = {_, x}`).\n\nShape: the planner needs a subject-to-subject equality question. RegionQuestion::equality compares only against a Const or Pinned ComparisonValue today. The first occurrence binds; each later occurrence equates its subject with the first one's. The body-match apply_pattern does the same with an assert.\n\nNot needed by the distiller; it sits at the end of the epic.",
+  "id": "fz-sc8.26",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A variable repeated in one pattern requires equal values",
+  "type": "bug",
+  "updated_at": "2026-10-17T21:40:20Z"
+}
