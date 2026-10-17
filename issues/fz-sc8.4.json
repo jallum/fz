@@ -5,7 +5,7 @@
     "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:42Z",
-  "description": "Elixir 1.18 names it `JSON`. fz's is `Json` (lib/json.fz, alias in lib/runtime.fz, registry src/modules/runtime_library.rs). Rename and update every user (fixtures, tests, docs, guides).",
+  "description": "Elixir 1.18 names it `JSON`. fz's is `Json` (lib/json.fz, alias in lib/runtime.fz, registry src/modules/runtime_library.rs). Rename and update every user (fixtures, tests, docs, guides).\n\n## Design review (2026-10-17)\nFold: delete the 15 single-segment prelude aliases (identity: source_publish.rs:910-918 binds X to the id reference_named already gives it); keep alias String.Chars. The registry name stays (lazy load needs it before parsing, world.rs:3491-3506) and frontdoor_test.rs:1536 asserts it equals each source's first defmodule/defprotocol name.",
   "id": "fz-sc8.4",
   "labels": [],
   "parent": "fz-sc8",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Rename the Json module to JSON",
   "type": "task",
-  "updated_at": "2026-10-17T19:00:44Z"
+  "updated_at": "2026-10-17T19:21:10Z"
 }
