@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.19"
+  ],
   "created": "2026-10-17T19:00:43Z",
   "description": "Only Enum.max/1, min/1 exist (lib/enum.fz:1036,1050) and panic on empty. Used at distill lines 268, 278, 279, 286, 298, 358.",
   "id": "fz-sc8.13",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Enum.max/2, Enum.min/2 (empty_fallback), Enum.zip_with/2",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:43Z"
+  "updated_at": "2026-10-17T19:00:45Z"
 }
