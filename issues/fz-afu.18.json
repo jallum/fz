@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.19"
+  ],
   "created": "2026-10-04T03:35:13Z",
   "description": "On fz-uyt/pin-toolchain (6c99b476f), tools/distill-telemetry.exs aborts in work_start_tally/1 with ArithmeticError 0 + nil on a fresh json_roundtrip trace. It reads work_starts_activation_frontier; src/telemetry/jsonl.rs emits work_starts_activation_published. Align the census with the emitted schema and prove its wake cross-check against a current trace. Partial timing tables are produced, but causal validation does not finish.",
   "id": "fz-afu.18",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Distiller must consume the current work-start telemetry schema",
   "type": "bug",
-  "updated_at": "2026-10-04T03:35:13Z"
+  "updated_at": "2026-10-17T19:00:46Z"
 }
