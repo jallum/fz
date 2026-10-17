@@ -3,7 +3,8 @@
   "blocked_by": [],
   "blocks": [
     "fz-sc8.15",
-    "fz-sc8.17"
+    "fz-sc8.17",
+    "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:43Z",
   "description": "No Collectable, no Enum.into. Needed by `for ... into:` and MapSet. Impls for List and Map, Elixir semantics.",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "Collectable protocol and Enum.into/2",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:44Z"
+  "updated_at": "2026-10-17T19:00:45Z"
 }
