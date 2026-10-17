@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-sc8.19",
     "fz-sc8.6",
     "fz-sc8.7"
   ],
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "Script mode: a file's top-level expressions run in order",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:44Z"
+  "updated_at": "2026-10-17T19:00:45Z"
 }
