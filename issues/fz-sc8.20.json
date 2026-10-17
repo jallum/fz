@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.19"
+  ],
   "created": "2026-10-17T19:10:40Z",
   "description": "defp f(%{} = m) fails: internal/post-resolution-leftover: quoted function decode failed: pattern as-bind lhs must be a variable (src/compiler2/quoted_function.rs:540). Elixir accepts the match in either order (m = %{} and %{} = m mean the same in a pattern). tools/distill-telemetry.exs:76 writes defp label(%{} = meta, _names) when map_size(meta) == 0. Probe in scratch kernel/.",
   "id": "fz-sc8.20",
