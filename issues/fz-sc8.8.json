@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.10"
+  ],
   "blocks": [
     "fz-sc8.19"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "IO.puts/1 writes a string to stdout",
   "type": "feature",
-  "updated_at": "2026-10-17T19:19:57Z"
+  "updated_at": "2026-10-17T19:19:58Z"
 }
