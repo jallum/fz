@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-17T21:40:20Z",
+  "description": "fz has two answers to \"which module does this name mean\":\n- resolve_module_name (src/compiler2/world.rs:2410) falls back to reference_module, so a name means the module of that name, as in Elixir. Types and other references use it.\n- lookup_module_path (world.rs:2449) has no fallback. callable_name_qualifier (world.rs:2073) uses it for a qualified callee, so `Enum.count(x)` resolves only because the prelude binds `alias Enum` (lib/runtime.fz:4-17). Deleting those aliases turned 153 lib tests red with \"unresolved direct runtime callee Enum.count/1\" (probe recorded in the fz-sc8.4 run).\n\nFold: one resolution. Qualified callees resolve through the same authority as every other module name, and the 15 single-segment identity aliases in the prelude are deleted in the same change (keep `alias String.Chars`, which binds the short name Chars).\n\nBefore building, confirm that a call to a module that exists nowhere still fails loudly (an unknown module/function diagnostic), rather than resolving quietly to an empty id. callable_name_qualifier has no owning module today, while resolve_module_name takes current_module; the page settles how the owner is threaded.\n\nBlocks fz-sc8.3, which touches the same callee qualifier for atom modules (:erlang.f).",
+  "id": "fz-sc8.25",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A qualified call finds its module the way every other name does",
+  "type": "task",
+  "updated_at": "2026-10-17T21:40:20Z"
+}
