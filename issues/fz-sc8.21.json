@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-sc8.19"
-  ],
+  "blocks": [],
   "created": "2026-10-17T19:10:40Z",
   "description": "Silent wrong answer. def isint(_v :: integer), do: true; def isint(_), do: false. Called directly, isint(\"x\") is false. Used in a guard (defp cell(v) when isint(v), do: \"int\"), cell(\"x\") and cell(:a) return \"int\". The typed-head discrimination is dropped when the helper is reified for guard use (src/compiler2/jobs/dispatch.rs guard helper reification ~:150, :622; guard grammar src/dispatch_matrix/pattern.rs:404-505). Probes j1, j2, j4, i1 in scratch kernel/.",
   "id": "fz-sc8.21",
@@ -13,5 +11,5 @@
   "status": "open",
   "title": "A guard helper's typed head is ignored when the helper is called from a guard",
   "type": "bug",
-  "updated_at": "2026-10-17T19:10:41Z"
+  "updated_at": "2026-10-17T19:10:54Z"
 }
