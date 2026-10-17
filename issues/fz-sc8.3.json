@@ -5,7 +5,7 @@
     "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:42Z",
-  "description": "`:erlang.abs(-3)` compiles as field access on the atom and fails at runtime: StructField: subject is not a map or Struct. A call on an atom-named module must be a remote call (compile error if the module is unknown). Add an `:erlang` module providing `float_to_binary/2` with `decimals: N` (used by tools/distill-telemetry.exs:378 fmt_ms). Elixir semantics: fixed-decimal rendering, round-half-even per Erlang's float_to_binary.",
+  "description": "`:erlang.abs(-3)` compiles as field access and fails at runtime (fz_struct_get_named_field_ref: ExpectedTag). Cause: decode makes (\".\",2) an Expr::Index; direct_callee (jobs/body.rs:4435) and CallableName::from_expr (src/ast/mod.rs:62) accept only Var/Module/Index chains, so an Expr::Atom base falls through to FieldAccess (body.rs:1345).\n\nDecision (2026-10-17): atom module names, as in Elixir where a module's identity is an atom. Module paths may be a single atom; `defmodule :erlang` parses (parse_module/parse_upper_path, frontdoor.rs:292,1647, accept Tok::Atom); an atom-based remote call resolves through the same module lookup; an unknown `:foo.bar()` gets a diagnostic naming :foo. lib/erlang.fz defines :erlang with float_to_binary/2 and decimals: N (fixed notation, correctly rounded, as Rust format!(\"{:.*}\", n, x)); runtime extern via alloc_text (runtime/src/ir_runtime.rs:1142).",
   "id": "fz-sc8.3",
   "labels": [],
   "parent": "fz-sc8",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "`:atom.fun(args)` is a remote call; :erlang.float_to_binary/2",
   "type": "bug",
-  "updated_at": "2026-10-17T19:00:44Z"
+  "updated_at": "2026-10-17T19:10:54Z"
 }
