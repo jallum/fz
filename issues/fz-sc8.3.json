@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.19"
+  ],
   "created": "2026-10-17T19:00:42Z",
   "description": "`:erlang.abs(-3)` compiles as field access on the atom and fails at runtime: StructField: subject is not a map or Struct. A call on an atom-named module must be a remote call (compile error if the module is unknown). Add an `:erlang` module providing `float_to_binary/2` with `decimals: N` (used by tools/distill-telemetry.exs:378 fmt_ms). Elixir semantics: fixed-decimal rendering, round-half-even per Erlang's float_to_binary.",
   "id": "fz-sc8.3",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "`:atom.fun(args)` is a remote call; :erlang.float_to_binary/2",
   "type": "bug",
-  "updated_at": "2026-10-17T19:00:42Z"
+  "updated_at": "2026-10-17T19:00:44Z"
 }
