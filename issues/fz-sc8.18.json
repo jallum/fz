@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.1"
+  ],
   "blocks": [],
   "created": "2026-10-17T19:00:43Z",
   "description": "No Stream. Enumerable.reduce already carries :cont/:halt/:suspend (lib/enumerable.fz). lib/file.fz excludes handle IO: repeated reads from an open handle need guarded reusable resource access while close stays exactly-once (claim_resource). Design question for the proposal page. Distill line 16.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Stream.map and File.stream!/1 read lines lazily",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:43Z"
+  "updated_at": "2026-10-17T19:00:44Z"
 }
