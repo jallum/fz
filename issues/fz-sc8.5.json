@@ -7,7 +7,7 @@
     "fz-sc8.7"
   ],
   "created": "2026-10-17T19:00:42Z",
-  "description": "`Distill.main(System.argv())` after a defmodule -\u003e parse error: does not yet parse Upper(\"Distill\") at item position. Elixir .exs files run top-level expressions in order after defining modules. Today every path submits root main/0 (src/compiler2/cli.rs:668,700); AOT build requires main/0. Design question for the proposal page: how script mode sits with the main/0 convention all fixtures use. Three-path parity.",
+  "description": "`Distill.main(System.argv())` after a defmodule -\u003e parse error at item position (frontdoor.rs:153-156; parse_item :124-149 accepts only items and Ident-headed macro calls). Every path submits root main/0 (cli.rs:668,700).\n\nDecision (2026-10-17): a file's top-level expressions become the program's main/0, in order, after all definitions are published (a superset of Elixir, which also rejects use-before-defmodule). A file with both top-level expressions and its own main/0 is a compile error naming both. Files with only def main() are unchanged. Reader: parse_program (frontdoor.rs:96) collects expression items and synthesizes one def main() item through the same builder path as parse_item_macro_call, so interp/JIT/AOT and fz2 build need no change.",
   "id": "fz-sc8.5",
   "labels": [],
   "parent": "fz-sc8",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Script mode: a file's top-level expressions run in order",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:45Z"
+  "updated_at": "2026-10-17T19:10:54Z"
 }
