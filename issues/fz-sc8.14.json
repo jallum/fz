@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-17T19:00:43Z",
+  "description": "Missing. Grapheme-based like Elixir. No Tuple module exists. Used at distill lines 352, 355, 364, 375.",
+  "id": "fz-sc8.14",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "String.slice/3, String.pad_leading/2, String.pad_trailing/2, Tuple.to_list/1",
+  "type": "feature",
+  "updated_at": "2026-10-17T19:00:43Z"
+}
