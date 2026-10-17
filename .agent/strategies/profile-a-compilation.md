@@ -50,29 +50,27 @@ Read the sections in order, each narrower than the last:
 - **return-type revisions per activation**: how many rounds each activation's
   return type took and whether the widening budget ended the climb; an
   activation at the ceiling widened its answer instead of finding it.
-- **cause of every re-run**: every re-run in the stream (not just the hottest
+- **cause of every wake**: every wake in the stream (not just the hottest
   subjects), grouped by (job kind, changed fact + use, completing job kind,
   disposition) so the same shape of cause across many subjects is one row
   instead of one per subject. A wake rides on whichever of three events the
   scheduler emitted its `AppliedStep` on — `work_graph.applied` (an ordinary
   job completing), `work_graph.dependencies_moved` (a product settling), or
   `work_graph.quiesced` (a drain step) — and the census reads all three;
-  reading only `applied` undercounts every re-run a product settlement or a
-  drain step woke. The "completing job" column is the completion's job kind
+  reading only `applied` undercounts every wake a product settlement or a
+  drain step carried. The "completing job" column is the completion's job kind
   for `applied` rows and the bare event name (`dependencies_moved` /
-  `quiesced`) for the other two. Only `enqueued` wakes count toward a re-run —
-  an `enqueued` wake is what started it; a `coalesced` wake landed on a
-  re-run some other wake had already enqueued, so those are reported in their
-  own table underneath rather than double-counted. The census then
-  cross-checks itself against the trace's session-summed `WorkStartTally`:
-  matched `enqueued` wakes must equal `work_starts_changed_revision_wake`,
-  and `ignition + activation_published + gate_expansion +
-  blocked_waiter_expansion` must equal the distinct subject count (a subject
-  demanded while its job still has a missing gate is tallied under
-  `gate_expansion`, not folded into `activation_published`). Either mismatch
-  prints both numbers and halts
-  the distiller nonzero rather than rendering an unexplained row — a re-run
-  the census cannot name is a defect in the census, not a fact to shrug at.
+  `quiesced`) for the other two. Every
+  `enqueued` wake is counted, first runs included — an `enqueued` wake is
+  what started the job; a `coalesced` wake landed on a job some other wake had
+  already enqueued, so those are reported in their own table underneath
+  rather than double-counted. The census then prints the session-summed
+  `work_starts` object from `pull.session.finished` (one count per
+  `WorkStartReason`, whatever keys the trace carries) and checks that the
+  counts sum to the number of `fz.compiler2.job` spans: the scheduler charges
+  exactly one reason per run. A mismatch prints both numbers and halts the
+  distiller nonzero rather than rendering an unexplained row — a run the
+  census cannot name is a defect in the census, not a fact to shrug at.
   This is where a ladder shows itself: one fact revised many times, each
   revision waking the same callers.
 

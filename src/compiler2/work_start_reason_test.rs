@@ -37,7 +37,7 @@
 use std::collections::HashSet;
 
 use super::drive::Job;
-use super::{CodeSubmission, Compiler2, ExecutableNeed, FactKey, FactUse, RootSubmission};
+use super::{CodeSubmission, Compiler2, ExecutableNeed, FactKey, FactUse, RootSubmission, WorkStartReason};
 use crate::telemetry::ConfiguredTelemetry;
 
 /// `submit_code`'s own `IndexCode` is the only external ignition for a
@@ -76,11 +76,12 @@ fn assert_pull_only(name: &str, source: &str) {
         tally.unsanctioned_work_starts(),
     );
     assert_eq!(
-        tally.ignition, EXTERNAL_IGNITIONS,
+        tally[WorkStartReason::Ignition],
+        EXTERNAL_IGNITIONS,
         "{name}: Ignition fired {} times but only {EXTERNAL_IGNITIONS} external front-door \
          ignitions exist (one submit_code, one submit_root) -- any excess is an internal \
          (mid-job) caller mislabeling its work-start as the external front door",
-        tally.ignition,
+        tally[WorkStartReason::Ignition],
     );
 }
 
@@ -336,7 +337,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // Two consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
-        starts.changed_revision_wake - demand_wake_starts,
+        starts[WorkStartReason::ChangedRevisionWake] - demand_wake_starts,
         // fz-5xp.30: 1430 -> 1447. The generic result/status helper facts
         // publish sixteen additional non-demand changed revisions.
         // The typed `==` clauses and their externs publish non-demand changed
@@ -408,7 +409,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
-        starts.blocked_waiter_expansion,
+        starts[WorkStartReason::BlockedWaiterExpansion],
         // fz-5xp.30: 1162 -> 1184 (as the count beyond the 304-key demand
         // frontier, below). The ordinary generic result/status contracts
         // retain twenty-two more blocked prerequisite waits.
@@ -516,7 +517,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
-        (starts.ignition, starts.activation_published, starts.unclassified),
+        (
+            starts[WorkStartReason::Ignition],
+            starts[WorkStartReason::ActivationPublished],
+            starts[WorkStartReason::Unclassified],
+        ),
         // fz-5xp.30: 261 -> 265. Four ordinary generic result/status helper
         // activations enter through the same attributed frontier.
         // fz-afu.10: 265 -> 266. `Enum.drop_positive/2` is now analyzed once

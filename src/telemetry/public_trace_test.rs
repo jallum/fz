@@ -1,5 +1,5 @@
 use super::*;
-use crate::compiler2::DriveOutcome;
+use crate::compiler2::{DriveOutcome, WorkStartReason, WorkStartTally};
 use crate::telemetry::causal::{
     CausalReport, FactLifecycle, FormulaWork, ProductEvaluationCause, ProductEvaluationTriggerKind,
     ProductPublicationKind, PublicEvent, ShiftWork,
@@ -1179,6 +1179,33 @@ fn public_settled_and_retained_cache_hit_events_keep_their_typed_payloads() {
 }
 
 #[test]
+fn session_finish_reports_one_work_start_count_per_reason() {
+    let trace = PublicTrace::compile_requests("def main(), do: 1\n", &[None]);
+    let finished: Vec<_> = trace
+        .events()
+        .iter()
+        .filter(|event| named(event, &["fz", "compiler2", "pull", "session", "finished"]))
+        .collect();
+    assert!(
+        !finished.is_empty(),
+        "a compile publishes at least one finished session"
+    );
+    let expected: Vec<&str> = {
+        let mut names: Vec<&str> = WorkStartReason::ALL.iter().map(|reason| reason.name()).collect();
+        names.sort_unstable();
+        names
+    };
+    for event in finished {
+        let starts = event.metadata["session"]["work_starts"]
+            .as_object()
+            .expect("the session carries its work starts as one object");
+        let mut keys: Vec<&str> = starts.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, expected, "every reason appears, none is left out");
+    }
+}
+
+#[test]
 fn product_sessions_publish_balanced_identity_lifecycles() {
     let trace = PublicTrace::compile_requests(TWO_FORMULA_SOURCE, &[None]);
     let mut stack = Vec::new();
@@ -1210,19 +1237,11 @@ fn retained_session_work_is_reported_per_request_instead_of_replaying_the_cold_s
     let unchanged = &requests[1].sessions;
     assert_eq!(unchanged.sessions, 1);
     assert_eq!(unchanged.producer_pokes, 0);
-    assert_eq!(unchanged.ignition, 0);
-    assert_eq!(unchanged.changed_revision_wake, 0);
-    assert_eq!(unchanged.activation_published, 0);
-    assert_eq!(unchanged.blocked_waiter_expansion, 0);
-    assert_eq!(unchanged.unsanctioned_work_starts, 0);
+    assert_eq!(unchanged.work_starts, WorkStartTally::default());
 
     let run = CausalReport::derive(trace.events());
     assert_eq!(run.sessions.producer_pokes, cold.producer_pokes);
-    assert_eq!(run.sessions.ignition, cold.ignition);
-    assert_eq!(run.sessions.changed_revision_wake, cold.changed_revision_wake);
-    assert_eq!(run.sessions.activation_published, cold.activation_published);
-    assert_eq!(run.sessions.blocked_waiter_expansion, cold.blocked_waiter_expansion);
-    assert_eq!(run.sessions.unsanctioned_work_starts, cold.unsanctioned_work_starts);
+    assert_eq!(run.sessions.work_starts, cold.work_starts);
 }
 
 /// fz-kdt.34's three target fixtures. Chosen by the epic: a convergence-heavy
@@ -1510,7 +1529,11 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 "{fixture} {name}"
             );
             assert!(report.sessions.sessions > 0, "{fixture} {name}");
-            assert_eq!(report.sessions.unsanctioned_work_starts, 0, "{fixture} {name}");
+            assert_eq!(
+                report.sessions.work_starts.unsanctioned_work_starts(),
+                0,
+                "{fixture} {name}"
+            );
             assert_eq!(
                 report.recursive_searches.len() as u64,
                 report.recursive_search.searches,

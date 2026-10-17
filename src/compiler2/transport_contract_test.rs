@@ -6279,11 +6279,12 @@ fn assert_materialized_executable_fact_authority(world: &World, session: &PullSe
     let producer_pokes = session.producer_pokes();
     let starts = world.work_start_tally();
     assert!(
-        starts.blocked_waiter_expansion >= producer_pokes,
+        starts[crate::compiler2::WorkStartReason::BlockedWaiterExpansion] >= producer_pokes,
         "each product-triggered fact producer poke must be attributed to BlockedWaiterExpansion: {starts:?}",
     );
     assert_eq!(
-        starts.unclassified, 0,
+        starts.unsanctioned_work_starts(),
+        0,
         "direct fact production must not start unsanctioned work"
     );
     for (executable, _) in session.memo().materialized_executables() {

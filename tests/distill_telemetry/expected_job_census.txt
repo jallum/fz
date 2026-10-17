@@ -1,17 +1,13 @@
 job runs vs subjects
-  kind                      runs  subjects  excess  max runs/subject
-  DeriveInputDemand            6         2       4                 3
-  ScopeCode                    6         2       4                 4
-  SeedRoot                     5         2       3                 3
-  DefineFunction               4         2       2                 2
-  DeriveCallGraphComponent     4         2       2                 2
-  DeriveRuntimeDemand          4         2       2                 2
-  ExpandFunctionSource         3         2       1                 2
-  AnalyzeActivation            2         2       0                 1
-  DeriveExecutableFacts        2         2       0                 1
-  DeriveStaticCallees          2         2       0                 1
-  IndexCode                    2         2       0                 1
-  LowerFunction                2         2       0                 1
-  PlanEntryDispatch            2         2       0                 1
-  TOTAL                       44        26      18                 -
-
+  kind                   runs  subjects  excess  max runs/subject
+  ScopeCode                 4         2       2                 3
+  AnalyzeActivation         2         2       0                 1
+  DefineFunction            2         2       0                 1
+  DeriveExecutableFacts     2         2       0                 1
+  DeriveRuntimeDemand       2         2       0                 1
+  ExpandFunctionSource      2         2       0                 1
+  IndexCode                 2         2       0                 1
+  LowerFunction             2         2       0                 1
+  PlanEntryDispatch         2         2       0                 1
+  SeedRoot                  2         2       0                 1
+  TOTAL                    22        20       2                 -
