@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.12"
+  ],
   "blocks": [],
   "created": "2026-10-17T19:00:43Z",
   "description": "No MapSet. defstruct exists (lib/range.fz:26); Enumerable impls in lib/enumerable.fz. Used at distill lines 104, 115 (`in` desugars to Enum.member?).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "MapSet: new/0,1, member?, Enumerable and Collectable",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:43Z"
+  "updated_at": "2026-10-17T19:00:44Z"
 }
