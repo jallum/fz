@@ -789,6 +789,9 @@ ProductKey =
   TransportShape(position)
   CallableConstruction(position)
   StructSchema(module)
+  Reach(ReachKey)
+
+ReachKey = Static(function) | Direct(E) | All(E)
 
 PullWait = Product(ProductKey) | Fact(FactUse<FactKey>)
 ```
@@ -890,13 +893,22 @@ back-edge lets the generic group query identify the members; idempotent effect
 union gives every member the join of the group's local and settled external
 inputs without another traversal or fixpoint. `RuntimeDemand(E)` is not a
 product and never enters this graph; its exact World-fact dependencies converge
-through ordinary content-changing wakes. Recursive
+through ordinary content-changing wakes. `Reach(key)` follows the same shape:
+its value is, for each successor, the successor itself together with the
+successor's `Reach`, where successors come from `StaticCallees(f)` (`Static`)
+or from the settled `ExecutableFacts(E)` call targets (`Direct` skips call
+sites whose return arrives through a closure call; `All` follows every one).
+Mutually reachable nodes settle as one group holding one set: each member
+contributes its own successors, read from its settled edge fact, and the
+group adds the reaches of whatever it points at beyond itself. A function is
+recursive exactly when its own `Static` reach holds it. Recursive
 `CallableConstruction(position)` products settle their position groups from
 external anchors. `TransportShape(position)` has no
 group: it cuts its own recursion at recipe construction by asking settled
-`ExecutableFacts` call targets directly (`executable_reaches`, a DFS from the
-candidate return to the position's own owner), so its evaluation is a
-function of settled facts and of products that can settle without it. An
+`ExecutableFacts` call targets through `Reach` products (the candidate
+return's reach, asked whether it holds the position's own owner), so its
+evaluation is a function of settled facts and of products that can settle
+without it. An
 edge whose callee reaches the owner this way, and whose function id does not
 rise, is cut; a grounded closure-call edge has no static edge of its own, so
 it asks the same reachability question with every callsite included rather
@@ -1124,8 +1136,8 @@ active inbox. Repeated movements of one fact coalesce to the final
 `FactState` before the next pull. This path scans neither roots, facts,
 products, nor dependencies, and equal final state leaves readers settled.
 
-A fact-only key such as `StructSchema(module)` is program-scoped
-(`ProductKey::is_program_scoped`): every root asking for it resolves to the
+A fact-only key such as `StructSchema(module)` or `Reach(Static(function))` is
+program-scoped (`ProductKey::is_program_scoped`): every root asking for it resolves to the
 same `ProductScope::Program` address (`ProductKey::scope`,
 `ProductAddress::of`), so the program session evaluates it once no matter
 how many roots read it. Publishing a change to a program-scoped product

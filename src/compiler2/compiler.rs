@@ -395,6 +395,26 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
             .generation(key)
     }
 
+    /// Every settled reach product a scope's session holds.
+    #[cfg(test)]
+    pub(crate) fn retained_reach_products(
+        &self,
+        scope: super::pull::ProductScope,
+    ) -> Vec<(super::ReachKey, Rc<super::reach::ReachSet>)> {
+        let Some(session) = self.product_sessions.get(scope) else {
+            return Vec::new();
+        };
+        let memo = session.memo();
+        memo.produced_keys()
+            .filter_map(|key| match (key, memo.get(key)) {
+                (ProductKey::Reach(reach), Some(super::pull::ProductValue::Reach(set))) => {
+                    Some((reach.clone(), Rc::clone(set)))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn reproduce_job_for_test(&mut self, job: Job, changed: Vec<FactKey>) -> super::JobCompletion {
         let mut context =

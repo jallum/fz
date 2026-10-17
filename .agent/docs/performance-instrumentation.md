@@ -195,7 +195,7 @@ Root backend and native artifacts live in retained product memos. Their
 its value changed. Scheduler consumers read the product through
 `DependencyKey::Product(ProductAddress { scope, key })`; the address names
 the owning session (a specific root, or the one shared program session for a
-fact-only key such as `StructSchema`) and its product. Fact dependencies
+fact-only key such as `StructSchema` or a static `Reach`) and its product. Fact dependencies
 retain their flat typed JSON identity; product dependencies carry a
 `root_id` and a nested `product` identity. A program-scoped address writes
 `root_id: null` rather than omitting the field, so every `Product`

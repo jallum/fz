@@ -55,7 +55,7 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::ReifyGuardDispatch(function_id) => dispatch::reify_guard_dispatch(world, tel, *function_id),
         Job::PlanEntryDispatch(function_id) => dispatch::plan_entry_dispatch(world, tel, *function_id),
         Job::DeriveStaticCallees(function_id) => keying::derive_static_callees(world, *function_id),
-        Job::DeriveRecursive(function_id) => keying::derive_recursive(world, *function_id),
+        Job::DeriveRecursive(function_id) => keying::derive_recursive(world, product_sessions.as_deref(), *function_id),
         Job::DeriveInputDemand(function_id) => keying::derive_input_demand(world, tel, *function_id),
         Job::SeedRoot(root_id) => root::seed_root(world, tel, *root_id),
         Job::SeedActivation(activation) => root::seed_activation(world, tel, activation),

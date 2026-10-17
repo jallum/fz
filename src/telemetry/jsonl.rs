@@ -2454,6 +2454,25 @@ fn write_product_key_identity(out: &mut String, key: &crate::compiler2::ProductK
             out.push_str(",\"module_id\":");
             push_u64(out, module.as_u32() as u64);
         }
+        ProductKey::Reach(reach) => write_reach_key_identity(out, reach),
+    }
+}
+
+fn write_reach_key_identity(out: &mut String, key: &crate::compiler2::ReachKey) {
+    use crate::compiler2::ReachKey;
+    match key {
+        ReachKey::Static(function) => {
+            out.push_str(",\"arm\":\"static\"");
+            write_function_id(out, *function);
+        }
+        ReachKey::Direct(executable) => {
+            out.push_str(",\"arm\":\"direct\"");
+            write_executable_key(out, executable);
+        }
+        ReachKey::All(executable) => {
+            out.push_str(",\"arm\":\"all\"");
+            write_executable_key(out, executable);
+        }
     }
 }
 

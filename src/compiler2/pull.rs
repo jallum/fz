@@ -11,6 +11,7 @@ use indexmap::IndexMap;
 
 #[cfg(test)]
 use super::body::{CallSiteId, ValueId};
+use super::reach::{ReachKey, ReachSet};
 use super::world::World;
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
@@ -110,6 +111,7 @@ pub enum ProductKey {
     TransportShape(TransportPosition),
     CallableConstruction(TransportPosition),
     StructSchema(ModuleId),
+    Reach(ReachKey),
 }
 
 impl SemanticOrd<super::types::Types> for ProductKey {
@@ -124,6 +126,7 @@ impl SemanticOrd<super::types::Types> for ProductKey {
                 (Self::RootBackendProduct(left), Self::RootBackendProduct(right))
                 | (Self::NativeProgram(left), Self::NativeProgram(right)) => left.cmp(right),
                 (Self::StructSchema(left), Self::StructSchema(right)) => left.cmp(right),
+                (Self::Reach(left), Self::Reach(right)) => left.semantic_cmp(right, types),
                 (Self::TransportShape(left), Self::TransportShape(right))
                 | (Self::CallableConstruction(left), Self::CallableConstruction(right)) => {
                     left.semantic_cmp(right, types)
@@ -144,6 +147,7 @@ fn product_rank(product: &ProductKey) -> u8 {
         ProductKey::NativeProgram(_) => 11,
         ProductKey::TransportShape(_) => 12,
         ProductKey::StructSchema(_) => 13,
+        ProductKey::Reach(_) => 4,
     }
 }
 
@@ -174,7 +178,11 @@ impl ProductKey {
     /// asked. Its one answer is computed in the program session and shared
     /// by every root and job that reads it.
     pub(crate) fn is_program_scoped(&self) -> bool {
-        matches!(self, Self::StructSchema(_))
+        match self {
+            Self::StructSchema(_) => true,
+            Self::Reach(reach) => reach.is_program_scoped(),
+            _ => false,
+        }
     }
 
     /// The session this key's one answer lives in. `asking` only matters
@@ -201,6 +209,7 @@ impl ProductKey {
             Self::TransportShape(_) => "transport_shape",
             Self::CallableConstruction(_) => "callable_construction",
             Self::StructSchema(_) => "struct_schema",
+            Self::Reach(_) => "reach",
         }
     }
 
@@ -214,7 +223,7 @@ impl ProductKey {
             | Self::NativeProgram(_)
             | Self::TransportShape(_)
             | Self::CallableConstruction(_) => None,
-            Self::StructSchema(_) => None,
+            Self::StructSchema(_) | Self::Reach(_) => None,
         }
     }
 }
@@ -237,6 +246,7 @@ pub enum ProductValue {
     TransportShape(TransportShapeFact),
     CallableConstruction(Rc<CallableConstructionOwner>),
     StructSchema(Rc<super::backend_program::BackendSchema>),
+    Reach(Rc<ReachSet>),
 }
 
 fn same_product_value(left: &ProductValue, right: &ProductValue) -> bool {
@@ -2377,6 +2387,7 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
             ProductKey::StructSchema(module) => {
                 super::jobs::backend::produce_struct_schema(self.world, context, *module)
             }
+            ProductKey::Reach(from) => super::reach::produce_reach_product(self.telemetry, context, self.world, from),
             ProductKey::NativeProgram(root) => {
                 super::jobs::produce_native_program(self.world, self.telemetry, context, *root)
             }

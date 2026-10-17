@@ -319,7 +319,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // DeriveTypeDef +1 and PlanEntryDispatch -1 are small knock-ons of
         // the same drop; same-pass keying keeps AnalyzeActivation from
         // rising further for this fixture's genuinely polymorphic callers.
-        (2338, 9, 19, 232),
+        // 2338 -> 2303: recursion is read from one shared reach product per
+        // function instead of a walk per caller; DeriveRecursive 113 -> 78.
+        (2303, 9, 19, 232),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -401,7 +403,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // on 15 fewer runs; AnalyzeActivation +32 changed-wake starts on 2
         // more runs; DeriveStaticCallees -53, DeriveInputDemand -42,
         // DefineFunction -18.
-        898,
+        // 898 -> 869: the same DeriveRecursive drop (shared reach products).
+        869,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -455,7 +458,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // activation this fixture's Enum helpers key under, so fewer
         // completions ever have one of those three as a blocked waiter to
         // expand.
-        434,
+        // 434 -> 416: DeriveRecursive no longer blocks once per level of a
+        // static walk; it waits once on its reach product.
+        416,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(

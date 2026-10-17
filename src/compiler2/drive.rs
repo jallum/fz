@@ -459,6 +459,11 @@ impl ProductAddress {
         Self { scope, key }
     }
 
+    /// The address of a program-scoped key, which needs no asking root.
+    pub(crate) fn program(key: ProductKey) -> Self {
+        Self::in_session(ProductScope::Program, key)
+    }
+
     /// The address of an entry a session already holds. The session's scope
     /// must be the one the key's own scope names.
     pub(crate) fn in_session(scope: ProductScope, key: ProductKey) -> Self {

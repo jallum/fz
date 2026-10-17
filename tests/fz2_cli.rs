@@ -2181,15 +2181,18 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // drop (`Recursive`, `InputDemand` and `StaticCallees` no longer
             // asked for this fixture's self-keyed monomorphic activations),
             // carried through every formula that reads one of those facts.
-            evaluations: 232,
+            // 232 -> 229 evaluations, content-caused 67 -> 64, unchanged
+            // outputs 25 -> 22: DeriveRecursive reads a shared reach product
+            // instead of walking the static graph.
+            evaluations: 229,
             runtime_demand_evaluations: 31,
             initial: 165,
-            content_caused: 67,
+            content_caused: 64,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
             changed_outputs: 207,
-            unchanged_outputs: 25,
+            unchanged_outputs: 22,
             // fz-afu.13: 73 -> 180. `wakes` sums every completion's raw
             // subscriber-wake log, counted once per wake regardless of
             // whether it enqueues a job or coalesces into one already
@@ -2208,8 +2211,10 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // fz-xxd.10: 182 -> 155 wakes, 72 -> 65 blocked completions --
             // the same drop: fewer formulas means fewer of their wakes and
             // blocked runs too.
-            wakes: 155,
-            blocked_completions: 65,
+            // 155 -> 150 wakes, 65 -> 62 blocked completions: the same
+            // DeriveRecursive drop.
+            wakes: 150,
+            blocked_completions: 62,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2254,10 +2259,10 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             products.cache_hits,
             products.displacements,
         ),
-        // fz-5xp.30: the ordinary generic result/status boundary contributes
-        // forty-one settled, changed product generations; cache behavior is
-        // otherwise unchanged.
-        (280, 280, 280, 0, 7, 0),
+        // Every settled product here is a fresh, changed generation. The
+        // generic result/status boundary and each node's reach (one product per
+        // function or executable a reach question touches) are among them.
+        (308, 308, 308, 0, 12, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(
