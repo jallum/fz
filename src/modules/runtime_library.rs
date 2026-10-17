@@ -73,7 +73,7 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/string_chars.fz"),
     },
     RuntimeModuleSource {
-        name: "Json",
+        name: "JSON",
         source: include_str!("../../lib/json.fz"),
     },
     RuntimeModuleSource {

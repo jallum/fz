@@ -293,7 +293,7 @@ second UTF-8 table or validate a whole document before its syntax is parsed.
 reached by an fz `<<codepoint :: utf8>>` segment. `Utf8.from_codepoint/1` is
 the checked public constructor: it excludes negatives, the UTF-16 surrogate
 hole, and values above U+10FFFF before invoking that segment, then brands the
-result. A format parser such as `Json` owns its format-specific scalar syntax
+result. A format parser such as `JSON` owns its format-specific scalar syntax
 (including joining a UTF-16 surrogate pair) and hands the resulting integer to
 this constructor; it does not carry another UTF-8 encoder.
 

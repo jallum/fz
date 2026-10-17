@@ -1,5 +1,5 @@
 #---
-# purpose: "Json.encode!/1 escapes every C0 control byte in string values and object keys"
+# purpose: "JSON.encode!/1 escapes every C0 control byte in string values and object keys"
 # oracle: oracle.exs
 #---
 def main() do
@@ -9,6 +9,6 @@ def main() do
             16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
             32, 34, 92, 65>>
 
-  dbg(Json.encode!(value))
-  dbg(Json.encode!(%{value => value}))
+  dbg(JSON.encode!(value))
+  dbg(JSON.encode!(%{value => value}))
 end

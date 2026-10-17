@@ -7,7 +7,7 @@ alias Enumerable
 alias File
 alias Float
 alias Integer
-alias Json
+alias JSON
 alias Kernel
 alias Keyword
 alias List

@@ -3,7 +3,7 @@
 # oracle: oracle.exs
 #---
 #
-# `Json.decode!` answers a value the compiler knows nothing about. Every
+# `JSON.decode!` answers a value the compiler knows nothing about. Every
 # function below declares its parameter as `Protocol.t(a)`; a call whose
 # argument is only known at runtime must dispatch on the protocol at runtime,
 # exactly as the concrete-list call does.
@@ -25,7 +25,7 @@ defmodule Measure do
 end
 
 def main() do
-  decoded = Json.decode!("[\"fz\",\"x\"]")
+  decoded = JSON.decode!("[\"fz\",\"x\"]")
 
   dbg(Enum.count(decoded))
   dbg(Enum.map(decoded, fn (word) -> word <> "!" end))

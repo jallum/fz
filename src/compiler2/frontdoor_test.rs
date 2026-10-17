@@ -1545,6 +1545,21 @@ fn compiler2_frontdoor_parses_runtime_bootstrap_sources_directly() {
             head == "defmodule" || head == "defprotocol",
             "runtime module `{name}` should still be ordinary module/protocol source"
         );
+        let declared = module.tail.list_items().expect("module head args")[0]
+            .trusted_ast_node()
+            .expect("module name cursor")
+            .expect("module name node")
+            .tail
+            .list_items()
+            .expect("module name segments")
+            .iter()
+            .map(|segment| segment.atom_name().expect("module name segment atom"))
+            .collect::<Vec<_>>()
+            .join(".");
+        assert_eq!(
+            name, declared,
+            "registry name must equal the name its source declares, or the module never loads"
+        );
     }
 
     parse_quoted_program(

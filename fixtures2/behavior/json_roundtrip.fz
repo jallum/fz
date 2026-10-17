@@ -1,5 +1,5 @@
 #---
-# purpose: "the goal program: Json.decode/1 and Json.encode!/1 agree with Elixir's own JSON module, and round-trip"
+# purpose: "the goal program: JSON.decode/1 and JSON.encode!/1 agree with Elixir's own JSON module, and round-trip"
 # oracle: oracle.exs
 #---
 #
@@ -58,59 +58,59 @@
 # maps: multi-key atom ordering is not portable between fz's name order and
 # Elixir's internal atom order.
 def main() do
-  dbg(Json.decode("true"))
-  dbg(Json.decode("false"))
-  dbg(Json.decode("null"))
-  dbg(Json.decode("0"))
-  dbg(Json.decode("42"))
-  dbg(Json.decode("-45"))
-  dbg(Json.decode("3.5"))
-  dbg(Json.decode("-0.25"))
-  dbg(Json.decode("  \"hi\"  "))
-  dbg(Json.decode("[]"))
-  dbg(Json.decode("[1, 2.5, true, null]"))
-  dbg(Json.decode("[[1], [2, [3]]]"))
-  dbg(Json.decode("{}"))
-  dbg(Json.decode("{\"a\": 1}"))
-  dbg(Json.decode("{\"b\": 2, \"a\": [1, null]}"))
-  dbg(Json.decode("{\"n\": {\"m\": {\"deep\": true}}}"))
+  dbg(JSON.decode("true"))
+  dbg(JSON.decode("false"))
+  dbg(JSON.decode("null"))
+  dbg(JSON.decode("0"))
+  dbg(JSON.decode("42"))
+  dbg(JSON.decode("-45"))
+  dbg(JSON.decode("3.5"))
+  dbg(JSON.decode("-0.25"))
+  dbg(JSON.decode("  \"hi\"  "))
+  dbg(JSON.decode("[]"))
+  dbg(JSON.decode("[1, 2.5, true, null]"))
+  dbg(JSON.decode("[[1], [2, [3]]]"))
+  dbg(JSON.decode("{}"))
+  dbg(JSON.decode("{\"a\": 1}"))
+  dbg(JSON.decode("{\"b\": 2, \"a\": [1, null]}"))
+  dbg(JSON.decode("{\"n\": {\"m\": {\"deep\": true}}}"))
 
   # exponents, on integers and fractions, both signs and both spellings
-  dbg(Json.decode("1e3"))
-  dbg(Json.decode("1.5e2"))
-  dbg(Json.decode("2E+3"))
-  dbg(Json.decode("1.0e-7"))
-  dbg(Json.decode("-1.5e2"))
+  dbg(JSON.decode("1e3"))
+  dbg(JSON.decode("1.5e2"))
+  dbg(JSON.decode("2E+3"))
+  dbg(JSON.decode("1.0e-7"))
+  dbg(JSON.decode("-1.5e2"))
 
   # the full escape set, including \u for one, two and three byte UTF-8
-  dbg(Json.decode("\"a\\nb\""))
-  dbg(Json.decode("\"q\\\"q\""))
-  dbg(Json.decode("\"s\\\\s\""))
-  dbg(Json.decode("\"sl\\/sl\""))
-  dbg(Json.decode("\"\\u0041\""))
-  dbg(Json.decode("\"\\u00e9\""))
-  dbg(Json.decode("\"\\u65e5\""))
+  dbg(JSON.decode("\"a\\nb\""))
+  dbg(JSON.decode("\"q\\\"q\""))
+  dbg(JSON.decode("\"s\\\\s\""))
+  dbg(JSON.decode("\"sl\\/sl\""))
+  dbg(JSON.decode("\"\\u0041\""))
+  dbg(JSON.decode("\"\\u00e9\""))
+  dbg(JSON.decode("\"\\u65e5\""))
 
-  dbg(Json.encode!(true))
-  dbg(Json.encode!(nil))
-  dbg(Json.encode!(42))
-  dbg(Json.encode!(-45))
-  dbg(Json.encode!(2.5))
-  dbg(Json.encode!("hi"))
-  dbg(Json.encode!([]))
-  dbg(Json.encode!([1, 2.5, nil]))
-  dbg(Json.encode!(%{}))
-  dbg(Json.encode!(%{"a" => [1, nil], "b" => 2}))
+  dbg(JSON.encode!(true))
+  dbg(JSON.encode!(nil))
+  dbg(JSON.encode!(42))
+  dbg(JSON.encode!(-45))
+  dbg(JSON.encode!(2.5))
+  dbg(JSON.encode!("hi"))
+  dbg(JSON.encode!([]))
+  dbg(JSON.encode!([1, 2.5, nil]))
+  dbg(JSON.encode!(%{}))
+  dbg(JSON.encode!(%{"a" => [1, nil], "b" => 2}))
 
   # malformed input is refused, including the trailing commas a permissive
   # decoder accepts
-  dbg(Json.decode("[1] junk"))
-  dbg(Json.decode("[1,]"))
-  dbg(Json.decode("{\"a\": 1,}"))
-  dbg(Json.decode("{\"a\" 1}"))
-  dbg(Json.decode(""))
-  dbg(Json.decode("tru"))
-  dbg(Json.decode("[1 2]"))
+  dbg(JSON.decode("[1] junk"))
+  dbg(JSON.decode("[1,]"))
+  dbg(JSON.decode("{\"a\": 1,}"))
+  dbg(JSON.decode("{\"a\" 1}"))
+  dbg(JSON.decode(""))
+  dbg(JSON.decode("tru"))
+  dbg(JSON.decode("[1 2]"))
 
   # round-trip: decode(encode(x)) == x
   dbg(roundtrip(true))
@@ -125,6 +125,6 @@ def main() do
   dbg(roundtrip(%{"a" => [1, nil], "b" => 2}))
 end
 
-defp roundtrip(v), do: same(Json.decode(Json.encode!(v)), v)
+defp roundtrip(v), do: same(JSON.decode(JSON.encode!(v)), v)
 defp same({:ok, decoded}, original), do: decoded == original
 defp same(_other, _original), do: false

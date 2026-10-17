@@ -19603,7 +19603,7 @@ fn submit_main_root(
 }
 
 /// One activation's return ascent: the label the canon events name its function
-/// by — which carries the arity, so `build/1` and `Json.array_item/2` are whole
+/// by — which carries the arity, so `build/1` and `JSON.array_item/2` are whole
 /// identities — how many times that activation's `ReturnType` was revised, and
 /// whether the widening budget engaged on that same activation. The three
 /// describe one activation, so "something widened" can never be read as "this
@@ -19640,13 +19640,13 @@ type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 /// How deep json's recursive value type climbs before widening depends on
 /// when its readers first observe the intermediate rungs: asking a contract
 /// callee's keying facts early lets one more nesting rung be observed, so
-/// `Json.array/2` and `Json.array_next/2` each take one extra revision to
+/// `JSON.array/2` and `JSON.array_next/2` each take one extra revision to
 /// settle.
 const RETURN_LADDERS: &[PinnedLadder] = &[
     ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
     (
         "fixtures2/behavior/json_roundtrip.fz",
-        &[("Json.array/2", 6, false), ("Json.array_next/2", 6, false)],
+        &[("JSON.array/2", 6, false), ("JSON.array_next/2", 6, false)],
     ),
 ];
 

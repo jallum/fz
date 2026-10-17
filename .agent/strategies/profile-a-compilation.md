@@ -95,7 +95,7 @@ numbers are the aggravating case that ticket wants.
 
 `fixtures2/behavior/json_roundtrip.fz` on `run`: 4527 jobs, 54% of them
 re-runs; three activations analyzed 32, 55 and 77 times, every re-run woken by
-`Json.value/1`'s `ReturnType` changing, which it does 18 times and never
+`JSON.value/1`'s `ReturnType` changing, which it does 18 times and never
 converges: it tops out at `any` when the widening budget runs out. The sample
 of the plain binary puts about two thirds of the lane in the fixpoint drive and
 a third in Cranelift, with the program's own execution under a fifth of a
