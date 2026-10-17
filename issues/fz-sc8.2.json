@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.19"
+  ],
   "created": "2026-10-17T19:00:42Z",
   "description": "`Enum.map(xs, \u0026 \u00261.inclusive)` -\u003e error[parse/expected-token]: compiler2 front door only supports local, remote, and operator capture refs so far, got Amp. `\u0026(\u00261.inclusive)` works. Elixir accepts both. Used at tools/distill-telemetry.exs lines 123, 268, 349-350. Parser: parse_capture_expr, src/compiler2/frontdoor.rs:1093.",
   "id": "fz-sc8.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Unparenthesized capture `\u0026 \u00261.field` parses",
   "type": "bug",
-  "updated_at": "2026-10-17T19:00:42Z"
+  "updated_at": "2026-10-17T19:00:44Z"
 }
