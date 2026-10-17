@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-17T17:55:20Z",
+  "description": "object 0.39 cannot take ruzstd \u003e= 0.9.1 (the RUSTSEC-2026-0344 fix); object 0.40 can, and cranelift-object accepts object 0.40 from 0.136. fz shares object types with cranelift-object (ir_codegen/backend.rs MachOBuildVersion), so both move together.\n\nMeasured trial (cranelift 0.131 -\u003e 0.136, object 0.39 -\u003e 0.40, reverted): 59 errors and 60 deprecation warnings, mostly in compiler2/native_codegen (fn_ctx, prim, receive, terminator, runtime_test):\n- MemFlags::new() / MemFlags::trusted() removed (47 errors)\n- methods whose arity changed (10 errors), 2 type mismatches\n- iadd_imm / bxor_imm / bor_imm deprecated in favour of _s (sign-extending) / _u (zero-extending) variants: each call site must choose by the immediate's meaning.\n\nNeeds a paper first: which memflags each removed constructor maps to, and the sign choice per imm call site. Acceptance: builds with no warnings; three-path parity (interp, JIT, AOT); full gate; census outputs identical against develop.",
+  "id": "fz-2v9",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Move cranelift to 0.136 and object to 0.40",
+  "type": "task",
+  "updated_at": "2026-10-17T17:55:20Z"
+}
