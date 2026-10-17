@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.19"
+  ],
   "created": "2026-10-17T19:00:42Z",
   "description": "Missing from lib/map.fz. Used at distill lines 60, 68, 125, 349.",
   "id": "fz-sc8.11",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Map.fetch/2, Map.fetch!/2, Map.update!/3, Map.new/2",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:42Z"
+  "updated_at": "2026-10-17T19:00:45Z"
 }
