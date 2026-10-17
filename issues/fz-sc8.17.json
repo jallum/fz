@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-17T19:00:43Z",
+  "description": "No support. `\u003c-` is already an infix operator (frontdoor.rs:2007) used by `with`; special forms decode in src/compiler2/quoted_function.rs:470-486. Generators whose pattern does not match skip the element (Elixir). into: uses Collectable; reduce: threads an accumulator with `acc -\u003e ...` clauses. Used at distill lines 24, 35, 44, 84, 103, 108, 161, 180, 248, 277.",
+  "id": "fz-sc8.17",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "for comprehensions: pattern generators, filters, into:, reduce:",
+  "type": "feature",
+  "updated_at": "2026-10-17T19:00:43Z"
+}
