@@ -11,8 +11,12 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::ast::{Callee, ModuleTarget};
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternResolver, SourcePatternError};
+use crate::ast::{Callee, ModuleTarget, Pattern, Spanned};
+use crate::dispatch_matrix::pattern::{
+    PatternBodyId, PatternDispatchPlan, PatternGuardDispatch, PatternResolver, PatternRow, PatternSubjectRef,
+    SourcePatternError,
+};
+use crate::function_surface::FunctionSurface;
 use crate::source::Span;
 
 use super::identity::{FunctionId, ModuleId};
@@ -83,6 +87,45 @@ impl<T: PartialEq> DispatchState<T> {
             _ => false,
         }
     }
+}
+
+/// Turns each clause of a function into the dispatch row that selects it: the
+/// clause's patterns after `leading` inputs, one type precondition per
+/// annotated parameter, and the guard. An entry and a reified guard helper both
+/// take their rows from here, so a call and a guard ask the same type question.
+pub(crate) fn surface_pattern_rows(
+    world: &mut World,
+    namespace: Namespace,
+    surface: &FunctionSurface,
+    leading: &[Spanned<Pattern>],
+) -> Result<Vec<PatternRow<Ty>>, SourcePatternError> {
+    let mut rows = Vec::with_capacity(surface.clauses.len());
+    for (body_id, clause) in surface.clauses.iter().enumerate() {
+        let mut preconditions = Vec::new();
+        for (index, tokens) in clause.param_annotations.iter().enumerate() {
+            let Some(tokens) = tokens else {
+                continue;
+            };
+            let ty = world.resolve_type_expr_body(namespace, tokens).map_err(|error| {
+                SourcePatternError::ParamAnnotation {
+                    index,
+                    message: error.msg,
+                    span: error.span,
+                }
+            })?;
+            let ty = world.types_mut().runtime_type_test_envelope(ty);
+            preconditions.push((PatternSubjectRef::Input((leading.len() + index) as u32), ty));
+        }
+        let mut patterns = leading.to_vec();
+        patterns.extend(clause.params.clone());
+        rows.push(PatternRow {
+            patterns,
+            preconditions,
+            guard: clause.guard.clone(),
+            body_id: body_id as PatternBodyId,
+        });
+    }
+    Ok(rows)
 }
 
 pub(crate) struct SourcePatternResolver<'a, F> {

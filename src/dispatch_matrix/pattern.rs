@@ -331,8 +331,12 @@ pub(crate) enum PatternDispatchError {
     Compile(DispatchCompileError),
 }
 
-pub(crate) fn guard_dispatch_from_surface<F, TypeHandle>(
+/// Reifies a helper from its clause rows. The caller builds the rows with the
+/// same clause-to-row function an entry uses, so a helper's typed heads ask
+/// the questions a direct call asks.
+pub(crate) fn guard_dispatch_from_rows<F, TypeHandle>(
     surface: &impl CallableSurface,
+    rows: Vec<PatternRow<TypeHandle>>,
     resolver: &mut F,
 ) -> Result<PatternGuardDispatch<TypeHandle>, SourcePatternError>
 where
@@ -347,21 +351,7 @@ where
     // A helper is an ordinary function, entered with nothing bound before its
     // patterns, so a pin in one of its heads names a binding that never
     // existed and its own plan is where that is found.
-    let source_patterns = SourcePatternRows::entry(
-        arity,
-        surface
-            .clauses()
-            .iter()
-            .enumerate()
-            .map(|(i, clause)| PatternRow {
-                patterns: clause.params.clone(),
-                preconditions: Vec::new(),
-                guard: clause.guard.clone(),
-                body_id: i as PatternBodyId,
-            })
-            .collect(),
-        Vec::new(),
-    );
+    let source_patterns = SourcePatternRows::entry(arity, rows, Vec::new());
     let mut plan = pattern_dispatch_from_source_with_resolver(source_patterns, resolver).map_err(|err| match err {
         PatternDispatchError::SourcePattern(err) => err,
         other => SourcePatternError::DispatchMatrix(format!("{other:?}")),

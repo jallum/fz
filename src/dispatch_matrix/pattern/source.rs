@@ -92,6 +92,12 @@ pub(crate) enum SourcePatternError {
     UnresolvedStruct(crate::ast::ModuleTarget),
     UnsupportedGuardExpr,
     UnsupportedMapKey,
+    /// A parameter annotation that does not resolve to a type.
+    ParamAnnotation {
+        index: usize,
+        message: String,
+        span: crate::source::Span,
+    },
     UnknownSubject(PatternSubjectRef),
     UnknownPinned(String),
     UnknownGuardVar(String),

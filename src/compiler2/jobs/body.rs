@@ -4356,7 +4356,8 @@ fn emit_local_dispatch_error(
             | SourcePatternError::UnresolvedStruct(_)
             | SourcePatternError::RowPatternArity { .. }
             | SourcePatternError::NonMonotonicBodyId { .. }
-            | SourcePatternError::UndefinedPins(_),
+            | SourcePatternError::UndefinedPins(_)
+            | SourcePatternError::ParamAnnotation { .. },
         ) => {
             panic!("compiler2 built an invalid local dispatch row set: {error:?}")
         }

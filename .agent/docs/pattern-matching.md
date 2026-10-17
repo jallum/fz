@@ -132,8 +132,18 @@ Elixir's wording: `undefined variable ^NAME. No variable "NAME" has been
 defined before the current pattern` for a pin, `undefined variable "NAME"` for
 a guard name or a bitstring size.
 
-A reified guard helper is an ordinary function, so `guard_dispatch_from_surface`
-builds its rows with an empty `Inputs` list and a pin in the helper's head is
+A clause becomes a dispatch row in one place, `compiler2::dispatch::surface_pattern_rows`:
+its patterns after the leading inputs, one type precondition per annotated
+parameter (the annotation resolved by `resolve_type_expr_body` and wrapped in
+`runtime_type_test_envelope`), and its guard. `entry_source_patterns` and the
+reification of a guard helper both take their rows from it, so a helper's
+typed head asks in a guard the same type question a direct call asks. Both
+wait on the same facts through `collect_annotation_requirements`: the
+`TypeDefined` facts the annotations name and the `StructDefined` facts behind
+any `%Mod{}` they spell.
+
+A reified guard helper is an ordinary function, so `guard_dispatch_from_rows`
+builds its plan with an empty `Inputs` list and a pin in the helper's head is
 refused while the helper's own plan is built. The diagnostic therefore lands on
 the helper, which is the locus Elixir names too, not on the guard that calls it.
 

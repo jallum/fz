@@ -1,0 +1,54 @@
+#---
+# purpose: "A helper's typed head asks the same type question in a guard as in a direct call"
+# oracle: oracle.exs
+#---
+#
+# `isint(_ :: integer)` answers false for a binary when called directly, and the
+# guard `when isint(v)` must agree. Helpers written with patterns agree already.
+def isint(_v :: integer), do: true
+def isint(_), do: false
+
+def isb(_v :: binary), do: true
+def isb(_), do: false
+
+def isf(_v :: float), do: true
+def isf(_), do: false
+
+def pair_of_ints(_a :: integer, _b :: integer), do: true
+def pair_of_ints(_, _), do: false
+
+def islist([]), do: true
+def islist([_ | _]), do: true
+def islist(_), do: false
+
+defp int_cell(v) when isint(v), do: "int"
+defp int_cell(_), do: "other"
+
+defp bin_cell(v) when isb(v), do: "binary"
+defp bin_cell(_), do: "other"
+
+defp float_cell(v) when isf(v), do: "float"
+defp float_cell(_), do: "other"
+
+defp pair_cell(a, b) when pair_of_ints(a, b), do: "ints"
+defp pair_cell(_, _), do: "other"
+
+defp list_cell(v) when islist(v), do: "list"
+defp list_cell(_), do: "other"
+
+def main() do
+  dbg([isint(1), isint("x"), isint(1.5), isint(nil)])
+  dbg([int_cell(1), int_cell("x"), int_cell(:a), int_cell(1.5)])
+
+  dbg([isb("x"), isb(1), isb([1]), isb(nil)])
+  dbg([bin_cell("x"), bin_cell(1), bin_cell([1]), bin_cell(nil)])
+
+  dbg([isf(1.5), isf(1), isf("x")])
+  dbg([float_cell(1.5), float_cell(1), float_cell("x")])
+
+  dbg([pair_of_ints(1, 2), pair_of_ints(1, "x"), pair_of_ints("x", 2)])
+  dbg([pair_cell(1, 2), pair_cell(1, "x"), pair_cell("x", 2), pair_cell("x", "y")])
+
+  dbg([islist([]), islist([1]), islist(1)])
+  dbg([list_cell([]), list_cell([1]), list_cell(1)])
+end

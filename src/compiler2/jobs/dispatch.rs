@@ -20,8 +20,8 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    PatternBodyId, PatternDispatchError, PatternGuardDispatch, PatternPinnedInput, PatternRow, PatternSubjectRef,
-    SourcePatternError, SourcePatternRows, guard_dispatch_from_surface, pattern_dispatch_from_source_with_resolver,
+    PatternDispatchError, PatternGuardDispatch, PatternPinnedInput, PatternRow, SourcePatternError, SourcePatternRows,
+    guard_dispatch_from_rows, pattern_dispatch_from_source_with_resolver,
 };
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
@@ -113,14 +113,7 @@ pub(super) fn plan_entry_dispatch(
     let (source, surface) = world.function_definition(function);
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let mut waits = HashSet::new();
-    for referenced in world.function_type_refs(function).iter().cloned() {
-        let fact = FactKey::TypeDefined(referenced);
-        if world.has_fact(&fact) {
-            reads.push(fact);
-        } else {
-            waits.insert(fact);
-        }
-    }
+    collect_annotation_requirements(world, function, &mut reads, &mut waits);
     for clause in &surface.clauses {
         for pattern in &clause.params {
             super::body::collect_local_pattern_requirements(
@@ -133,17 +126,6 @@ pub(super) fn plan_entry_dispatch(
                 &mut reads,
                 &mut waits,
             )?;
-        }
-    }
-    // Same wait, `StructDefined` side: a `%Mod{...}` in a param annotation
-    // needs `Mod`'s precise field order before `resolve_type_expr_body`
-    // classifies it in `entry_source_patterns` (fz-rh2.17.5.6.10).
-    for module in world.function_type_struct_refs(function).iter().copied() {
-        let fact = FactKey::StructDefined(module);
-        if world.has_fact(&fact) {
-            reads.push(fact);
-        } else {
-            waits.insert(fact);
         }
     }
     for call in collect_guard_calls_in_guards(&surface)
@@ -210,6 +192,34 @@ pub(super) fn plan_entry_dispatch(
     })
 }
 
+/// The facts a function's parameter annotations are resolved against: the type
+/// aliases they name and the structs behind any `%Mod{}` they spell. An entry
+/// and a reified helper resolve annotations the same way, so both wait here.
+fn collect_annotation_requirements(
+    world: &World,
+    function: FunctionId,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+) {
+    let type_facts = world
+        .function_type_refs(function)
+        .iter()
+        .cloned()
+        .map(FactKey::TypeDefined);
+    let struct_facts = world
+        .function_type_struct_refs(function)
+        .iter()
+        .copied()
+        .map(FactKey::StructDefined);
+    for fact in type_facts.chain(struct_facts) {
+        if world.has_fact(&fact) {
+            reads.push(fact);
+        } else {
+            waits.insert(fact);
+        }
+    }
+}
+
 fn collect_requirements(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -231,6 +241,7 @@ fn collect_requirements(
     };
     reads.push(FactKey::FunctionDefined(function));
     let (source, surface) = world.function_definition(function);
+    collect_annotation_requirements(world, function, reads, waits);
     stack.push(function);
     for clause in &surface.clauses {
         for pattern in &clause.params {
@@ -286,7 +297,8 @@ fn build_guard_dispatch(
             Ok(Some(dispatch))
         },
     };
-    let dispatch = Arc::new(guard_dispatch_from_surface(&surface, &mut resolver)?);
+    let rows = super::super::dispatch::surface_pattern_rows(resolver.world, namespace, &surface, &[])?;
+    let dispatch = Arc::new(guard_dispatch_from_rows(&surface, rows, &mut resolver)?);
     stack.pop();
     cache.insert(function, Arc::clone(&dispatch));
     Ok(dispatch)
@@ -295,7 +307,7 @@ fn build_guard_dispatch(
 fn entry_source_patterns(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
-    _function: FunctionId,
+    function: FunctionId,
     source: &FunctionSource,
     surface: &FunctionSurface,
 ) -> Result<SourcePatternRows<Ty>, FatalError> {
@@ -335,46 +347,9 @@ fn entry_source_patterns(
         ));
     }
 
-    let mut rows = Vec::with_capacity(surface.clauses.len());
-    for (body_id, clause) in surface.clauses.iter().enumerate() {
-        let mut preconditions = Vec::new();
-        for (index, tokens) in clause.param_annotations.iter().enumerate() {
-            let Some(tokens) = tokens else {
-                continue;
-            };
-            let ty = world
-                .resolve_type_expr_body(source.namespace, tokens)
-                .map_err(|error| {
-                    emit_job_diagnostic(
-                        tel,
-                        Diagnostic::error(
-                            codes::RESOLVE_TYPE_ALIAS,
-                            format!(
-                                "compiler2 could not resolve parameter annotation {} for `{}`: {}",
-                                index + 1,
-                                function_label(surface),
-                                error.msg
-                            ),
-                            error.span,
-                        ),
-                    )
-                })?;
-            let ty = world.types_mut().runtime_type_test_envelope(ty);
-            preconditions.push((
-                PatternSubjectRef::Input((macro_offset + capture_patterns.len() + index) as u32),
-                ty,
-            ));
-        }
-        let mut patterns = macro_caller_patterns.clone();
-        patterns.extend(capture_patterns.clone());
-        patterns.extend(clause.params.clone());
-        rows.push(PatternRow {
-            patterns,
-            preconditions,
-            guard: clause.guard.clone(),
-            body_id: body_id as PatternBodyId,
-        });
-    }
+    let leading = [macro_caller_patterns, capture_patterns].concat();
+    let rows = super::super::dispatch::surface_pattern_rows(world, source.namespace, surface, &leading)
+        .map_err(|error| emit_guard_dispatch_error(tel, world, function, surface.span, error))?;
 
     Ok(SourcePatternRows::entry(input_count, rows, captures))
 }
@@ -572,6 +547,17 @@ fn emit_guard_dispatch_error(
                 span,
             ),
         ),
+        SourcePatternError::ParamAnnotation { index, message, span } => emit_job_diagnostic(
+            tel,
+            Diagnostic::error(
+                codes::RESOLVE_TYPE_ALIAS,
+                format!(
+                    "compiler2 could not resolve parameter annotation {} for `{label}`: {message}",
+                    index + 1
+                ),
+                span,
+            ),
+        ),
         SourcePatternError::UnknownSubject(_)
         | SourcePatternError::UnresolvedStruct(_)
         | SourcePatternError::RowPatternArity { .. }
@@ -647,6 +633,7 @@ fn emit_entry_dispatch_error(
             | SourcePatternError::RowPatternArity { .. }
             | SourcePatternError::NonMonotonicBodyId { .. }
             | SourcePatternError::GuardCallCycle(_, _)
+            | SourcePatternError::ParamAnnotation { .. }
             | SourcePatternError::DispatchMatrix(_),
         ) => panic!("compiler2 built an invalid entry-dispatch row set: {error:?}"),
         PatternDispatchError::MatrixBuild(error) => emit_job_diagnostic(
