@@ -4,14 +4,16 @@
   "blocks": [
     "fz-sc8.9"
   ],
+  "closed_at": "2026-10-17T22:12:23Z",
+  "close_reason": "Landed as 0da8a7a8d: surface_pattern_rows builds every clause's row (entry + guard helper); collect_annotation_requirements is the one wait list. A/B: fixture 00615 wrong on old, matches Elixir on new; probe p1 fixed; p3 now loud about the unknown `tuple` type (same as a direct call). Gate green, no pin moved.",
   "created": "2026-10-17T19:10:40Z",
   "description": "Silent wrong answer. def isint(_v :: integer), do: true; def isint(_), do: false. Called directly, isint(\"x\") is false. Used in a guard (defp cell(v) when isint(v), do: \"int\"), cell(\"x\") and cell(:a) return \"int\". The typed-head discrimination is dropped when the helper is reified for guard use (src/compiler2/jobs/dispatch.rs guard helper reification ~:150, :622; guard grammar src/dispatch_matrix/pattern.rs:404-505). Probes j1, j2, j4, i1 in scratch kernel/.\n\n## Root cause (reader 2026-10-17)\nTwo builders turn clauses into dispatch rows. entry_source_patterns (jobs/dispatch.rs:295-375) records a type precondition per param annotation; guard_dispatch_from_surface (dispatch_matrix/pattern.rs:334) writes preconditions: Vec::new() (:358). Fix: one clause-to-row builder used by both; helper annotation waits collected by it. Blocks fz-sc8.9 (type-test guards are typed-head Kernel helpers).",
   "id": "fz-sc8.21",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A guard helper's typed head is ignored when the helper is called from a guard",
   "type": "bug",
-  "updated_at": "2026-10-17T19:23:44Z"
+  "updated_at": "2026-10-17T22:12:23Z"
 }
