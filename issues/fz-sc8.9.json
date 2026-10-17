@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.21"
+  ],
   "blocks": [
     "fz-sc8.14",
     "fz-sc8.16",
@@ -15,5 +17,5 @@
   "status": "open",
   "title": "Kernel elem/2, length/1, map_size/1, is_integer/1, is_binary/1",
   "type": "feature",
-  "updated_at": "2026-10-17T19:19:58Z"
+  "updated_at": "2026-10-17T19:23:44Z"
 }
