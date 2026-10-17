@@ -6,7 +6,7 @@
     "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:41Z",
-  "description": "`m = Json.decode!(\"[\\\"fz\\\",\\\"x\\\"]\"); Enum.count(m)` fails on interp and run with artifact/incomplete-semantic-plan: `Enumerable.count/1` has no implementation for the value it is called with. Same for a list extracted from a decoded map by pattern. The distiller is Enum over decoded JSON throughout. Prior analysis: fz-f98 memory notes real `any` is protocol ELEMENT erasure; fix at protocol dispatch. A dynamically typed receiver must dispatch at runtime on its actual type, on all three paths. Design question for the proposal page: where runtime dispatch lives and how it composes with typed specialization.",
+  "description": "Enum over a JSON-decoded value fails: Enum.count(Json.decode!(\"[1]\")) -\u003e artifact/incomplete-semantic-plan, Enumerable.count/1 has no implementation.\n\nRoot cause (reader 2026-10-17): protocol dispatch on an any receiver already works (resolve_protocol_call, src/compiler2/jobs/semantic.rs:~1560-1710, keeps every overlapping impl; call_destinations builds a runtime PatternDispatchPlan). Enumerable.count(d) called directly works. The failure is contract refinement: Enum.count's @spec count(Enumerable.t(a)) (lib/enum.fz:109). refine_contract_inputs (semantic.rs:2162-2190) narrows each input to intersect(input, spec param); for any that yields the ProtocolDomain opaque marker (Types::protocol_domain_of, types/mod.rs:1360), which overlaps no impl target. Concrete receivers survive only because their intersection is empty and the fallback keeps the original.\n\nProbes: a no-@spec wrapper works; the same wrapper with @spec c(Enumerable.t(a)) fails; a user protocol with @spec c(Sz.t(a)) fails on any and works on [1].",
   "id": "fz-sc8.1",
   "labels": [],
   "parent": "fz-sc8",
@@ -14,5 +14,5 @@
   "status": "open",
   "title": "Enum and protocol dispatch work on runtime-typed values",
   "type": "bug",
-  "updated_at": "2026-10-17T19:00:44Z"
+  "updated_at": "2026-10-17T19:06:20Z"
 }
