@@ -2,13 +2,14 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-10-17T19:22:36Z",
   "created": "2026-10-17T17:55:20Z",
   "description": "cargo audit fails every CI run on RUSTSEC-2026-0344 (ruzstd 0.8.3 decompression bomb, high, filed 2026-10-11). ruzstd, with flate2, miniz_oxide, adler2, simd-adler32 and twox-hash, reaches fz only through object 0.39's default 'compression' feature. fz never decompresses object data: its only object read is object::File::parse in a drive_test (compiler2_typed_kernel_arithmetic_helpers_call_real_pair_exports_in_the_native_path). cranelift-object already depends on object with default-features = false.\n\nChange: object = { version = \"0.39\", default-features = false, features = [\"read\", \"std\", \"write\"] }.\n\nAcceptance: cargo tree -i ruzstd finds nothing; cargo audit passes in CI; the full gate passes.",
   "id": "fz-3iv",
   "labels": [],
   "priority": 0,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Nothing we ship carries a decompressor we never use",
   "type": "bug",
-  "updated_at": "2026-10-17T17:55:26Z"
+  "updated_at": "2026-10-17T19:22:36Z"
 }
