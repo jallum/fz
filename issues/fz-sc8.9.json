@@ -6,7 +6,8 @@
   "blocks": [
     "fz-sc8.14",
     "fz-sc8.16",
-    "fz-sc8.19"
+    "fz-sc8.19",
+    "fz-sc8.24"
   ],
   "created": "2026-10-17T19:00:42Z",
   "description": "Design (page /Users/j5n/Workspace/fz-sc8.9.html, revision 2; awaiting approval):\n- Guard-safe externs are declared `extern \"C\" defguardp ...`. Unmarked externs stay refused in guards, worded as \"not guard-safe\". The extern quoted map's unread `private` key becomes a read `guard` key.\n- One node, `PatternGuardExpr::Extern { extern, args }`. guard_call resolves to a helper plan or a guard-safe extern. Evaluators: interp eval_guard via call_lowered_extern, native lower_guard_expr via Prim::Extern, and receive.rs with a two-class shim (ref word and integer; any other class is a declaration error).\n- In a guard, a call to a `:: never` function is the guard's Fail. This is Elixir's \"raising in a guard fails the guard\".\n- Domain checks are written once in Kernel heads, with a fallback clause that panics. Externs are total inside their domain. The same clauses serve bodies and guards: map_size, elem, length (fz_list_length is -1 on an improper list), tuple_size, byte_size.\n- Type tests are typed-head or pattern helpers (needs fz-sc8.21). is_tuple is a guard-safe extern.\n- New primitives: fz_tuple_size, fz_tuple_elem, fz_is_tuple, fz_list_length.\n- Fold: Map.size/1, Map.count/1, List.count/1 and its loop are deleted. Callers (enumerable.fz:66, :74; 10 calls in fixtures2; doc examples) move to map_size and length.\n- Fixture: oracle-checked on all three paths, covering entry, case and receive guards plus bodies, including failing-domain cases.",
@@ -17,5 +18,5 @@
   "status": "open",
   "title": "A guard may call a pure extern; Elixir's guard functions",
   "type": "feature",
-  "updated_at": "2026-10-17T20:27:04Z"
+  "updated_at": "2026-10-17T20:56:01Z"
 }
