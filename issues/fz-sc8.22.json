@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-17T19:10:40Z",
+  "description": "fz2 run on a program building [1 | 2] panics: fz_list_cons_int ExpectedTag (runtime/src/ir_runtime.rs:1874). Elixir builds the improper list and inspect renders [1 | 2]. Check interp and AOT too.",
+  "id": "fz-sc8.22",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "An improper list [1 | 2] panics at runtime",
+  "type": "bug",
+  "updated_at": "2026-10-17T19:10:40Z"
+}
