@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-sc8.18"
+    "fz-sc8.18",
+    "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:41Z",
   "description": "`m = Json.decode!(\"[\\\"fz\\\",\\\"x\\\"]\"); Enum.count(m)` fails on interp and run with artifact/incomplete-semantic-plan: `Enumerable.count/1` has no implementation for the value it is called with. Same for a list extracted from a decoded map by pattern. The distiller is Enum over decoded JSON throughout. Prior analysis: fz-f98 memory notes real `any` is protocol ELEMENT erasure; fix at protocol dispatch. A dynamically typed receiver must dispatch at runtime on its actual type, on all three paths. Design question for the proposal page: where runtime dispatch lives and how it composes with typed specialization.",

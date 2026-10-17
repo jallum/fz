@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.1"
+  ],
   "blocks": [],
   "created": "2026-10-17T19:00:43Z",
   "description": "tests/distill_telemetry_test.rs runs tools/distill-telemetry.exs under fz2 run, interp, and the built executable, comparing the whole output against elixir's over tests/distill_telemetry/main_returns_one.jsonl. Docs: .agent/docs and guides note the script runs under both.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The distiller runs under fz2 and matches elixir on all three paths",
   "type": "task",
-  "updated_at": "2026-10-17T19:00:43Z"
+  "updated_at": "2026-10-17T19:00:44Z"
 }
