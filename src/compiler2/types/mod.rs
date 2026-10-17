@@ -86,6 +86,9 @@ pub struct Types {
     /// Memoized `value_lane_repr`: the transport-lane representative of a type.
     /// A derived fact about each type, computed once rather than on every lane.
     value_lane_reprs: HashMap<Ty, Ty>,
+    /// Memoized `structural_surface`: each type read with its protocol-domain
+    /// markers as `any`.
+    structural_surfaces: HashMap<Ty, Ty>,
     /// Interned structural addresses (`a0`, `a1_0`, `r0`, ...). Keyed by the
     /// address path so the same address always yields the same `TypeVarId`,
     /// making the addressed arrow canonical by construction. See `addressed`.
@@ -522,6 +525,7 @@ impl Types {
             comparisons: RefCell::default(),
             binary_type_operations: BinaryTypeOperationResults::default(),
             value_lane_reprs: HashMap::new(),
+            structural_surfaces: HashMap::new(),
             address_vars: HashMap::new(),
             address_paths: Vec::new(),
             callable_origins: order::CallableOrigins::new(),
@@ -1030,6 +1034,21 @@ impl Types {
         };
         self.value_lane_reprs.insert(ty, repr);
         repr
+    }
+
+    /// The type read for the values it admits: every protocol-domain marker
+    /// (`Protocol.t(...)`) stands for any value, the same reading the runtime
+    /// type predicate gives it. The marker's obligation (the receiver must
+    /// implement the protocol) is a separate fact, `protocol_domain_obligations`;
+    /// the surface is what a call may be refined against. Memoized.
+    pub(crate) fn structural_surface(&mut self, ty: Ty) -> Ty {
+        if let Some(&cached) = self.structural_surfaces.get(&ty) {
+            return cached;
+        }
+        let descr = structural_surface(self, ty);
+        let surface = self.intern(descr);
+        self.structural_surfaces.insert(ty, surface);
+        surface
     }
 
     /// Every type the arena holds, in mint order.
@@ -3447,13 +3466,32 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
     )
 }
 
+/// A protocol-domain marker is a positive member of the opaque axis.
+fn carries_protocol_domain(descr: &Descr) -> bool {
+    !descr.opaques.cofinite
+        && descr
+            .opaques
+            .values
+            .iter()
+            .any(|tag| matches!(tag, OpaqueTag::ProtocolDomain(_)))
+}
+
+fn structural_surface(t: &mut Types, a: Ty) -> Descr {
+    let base = t.descr(&a).clone();
+    if carries_protocol_domain(&base) {
+        return Descr::any();
+    }
+    map_recursive_inputs_with(t, base, &mut |t, nested| t.structural_surface(nested))
+}
+
 fn runtime_type_predicate_widens_non_structs(descr: &Descr) -> bool {
     descr.opaques.cofinite
         || descr
             .opaques
             .values
             .iter()
-            .any(|tag| matches!(tag, OpaqueTag::Builtin(_) | OpaqueTag::ProtocolDomain(_)))
+            .any(|tag| matches!(tag, OpaqueTag::Builtin(_)))
+        || carries_protocol_domain(descr)
         || descr.vars.cofinite
         || !descr.vars.values.is_empty()
 }

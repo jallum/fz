@@ -178,6 +178,10 @@ the marker's protocol `ModuleName`, wrapped as `ProtocolDomainObligation`.
 `collect_spec_refs` remains a source-publication dependency/wait tool; contract
 enforcement must not rewalk source refs or enumerate protocol implementations.
 
+The marker is the obligation, not a set of values: refining a call reads each
+contract arrow's structural surface, where the marker is `any`
+(`Types::structural_surface`; see `specs.md`).
+
 ## Callback surface vs domain
 
 The two are checked in different places. The **callback surface** is checked at
