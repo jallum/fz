@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-17T19:00:42Z",
+  "description": "Elixir 1.18 names it `JSON`. fz's is `Json` (lib/json.fz, alias in lib/runtime.fz, registry src/modules/runtime_library.rs). Rename and update every user (fixtures, tests, docs, guides).",
+  "id": "fz-sc8.4",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Rename the Json module to JSON",
+  "type": "task",
+  "updated_at": "2026-10-17T19:00:42Z"
+}
