@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-sc8.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.19"
+  ],
   "created": "2026-10-17T19:00:42Z",
   "description": "fz2 run/interp/build reject any arg after the source path (parse_source_options, src/compiler2/cli.rs:581-599). Add `fz2 run|interp \u003cfile\u003e -- args...`; the AOT executable's C main(argc, argv) (src/ir_codegen/backend.rs:323-331, src/ir_codegen/aot_main.rs) passes its own argv. No process-global argv exists; per-driver ExecCtx (runtime/src/exec_ctx.rs) is the shared seam. Returns a list of binaries, as Elixir.",
   "id": "fz-sc8.6",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "System.argv/0 on all three paths",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:43Z"
+  "updated_at": "2026-10-17T19:00:45Z"
 }
