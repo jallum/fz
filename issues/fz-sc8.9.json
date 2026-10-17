@@ -6,7 +6,7 @@
     "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:42Z",
-  "description": "None exist (lib/kernel.fz; import list lib/runtime.fz:19-50). Must be guard-safe: the distiller uses `when map_size(meta) == 0` and `when is_integer(v)` / `is_binary(v)` (lines 76, 373, 375).",
+  "description": "None exist (lib/kernel.fz; import list lib/runtime.fz:19-50). Guards cannot call extern-backed functions: byte_size/Map.size in a guard -\u003e 'helper byte_size/1 is not dispatch-pure'. Guard grammar: guard_expr_from_ast, src/dispatch_matrix/pattern.rs:404-505; helpers via guard_call, src/compiler2/dispatch.rs:107.\n\nDecision (2026-10-17): built-in guard ops, as Elixir's fixed guard BIF list. The guard lowering knows is_integer/is_binary (type tests), map_size/length/elem (primitive ops); the same names are ordinary Kernel functions outside guards, with one runtime implementation each. Distiller uses map_size (line 76), is_integer/is_binary (373, 375), elem, length.",
   "id": "fz-sc8.9",
   "labels": [],
   "parent": "fz-sc8",
@@ -14,5 +14,5 @@
   "status": "open",
   "title": "Kernel elem/2, length/1, map_size/1, is_integer/1, is_binary/1",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:45Z"
+  "updated_at": "2026-10-17T19:10:54Z"
 }
