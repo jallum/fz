@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.9"
+  ],
   "blocks": [],
   "created": "2026-10-17T19:00:43Z",
   "description": "No OptionParser. Distill line 13: OptionParser.parse(args, strict: [top: :integer]) -\u003e {opts, argv, invalid}. Elixir semantics for --flag value and --flag=value.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "OptionParser.parse/2 with strict:",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:43Z"
+  "updated_at": "2026-10-17T19:00:44Z"
 }

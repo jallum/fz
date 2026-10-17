@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.16"
+  ],
   "created": "2026-10-17T19:00:42Z",
   "description": "None exist (lib/kernel.fz; import list lib/runtime.fz:19-50). Must be guard-safe: the distiller uses `when map_size(meta) == 0` and `when is_integer(v)` / `is_binary(v)` (lines 76, 373, 375).",
   "id": "fz-sc8.9",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Kernel elem/2, length/1, map_size/1, is_integer/1, is_binary/1",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:42Z"
+  "updated_at": "2026-10-17T19:00:44Z"
 }
