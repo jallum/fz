@@ -9,13 +9,13 @@
     "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:42Z",
-  "description": "None exist (lib/kernel.fz; import list lib/runtime.fz:19-50). Guards cannot call extern-backed functions: byte_size/Map.size in a guard -\u003e 'helper byte_size/1 is not dispatch-pure'. Guard grammar: guard_expr_from_ast, src/dispatch_matrix/pattern.rs:404-505; helpers via guard_call, src/compiler2/dispatch.rs:107.\n\nDecision (2026-10-17): built-in guard ops, as Elixir's fixed guard BIF list. The guard lowering knows is_integer/is_binary (type tests), map_size/length/elem (primitive ops); the same names are ordinary Kernel functions outside guards, with one runtime implementation each. Distiller uses map_size (line 76), is_integer/is_binary (373, 375), elem, length.\n\n## Design review (2026-10-17)\nFold: Map.size/1 and List.count/1 are not Elixir (13 uses). map_size/1 and length/1 become the single implementation; the Enumerable impls and other users call them, and Map.size/List.count are deleted. elem/2 and tuple_size/1 share one tuple primitive that Tuple.to_list (fz-sc8.14) is written on.",
+  "description": "Design (page /Users/j5n/Workspace/fz-sc8.9.html, revision 2; awaiting approval):\n- Guard-safe externs are declared `extern \"C\" defguardp ...`. Unmarked externs stay refused in guards, worded as \"not guard-safe\". The extern quoted map's unread `private` key becomes a read `guard` key.\n- One node, `PatternGuardExpr::Extern { extern, args }`. guard_call resolves to a helper plan or a guard-safe extern. Evaluators: interp eval_guard via call_lowered_extern, native lower_guard_expr via Prim::Extern, and receive.rs with a two-class shim (ref word and integer; any other class is a declaration error).\n- In a guard, a call to a `:: never` function is the guard's Fail. This is Elixir's \"raising in a guard fails the guard\".\n- Domain checks are written once in Kernel heads, with a fallback clause that panics. Externs are total inside their domain. The same clauses serve bodies and guards: map_size, elem, length (fz_list_length is -1 on an improper list), tuple_size, byte_size.\n- Type tests are typed-head or pattern helpers (needs fz-sc8.21). is_tuple is a guard-safe extern.\n- New primitives: fz_tuple_size, fz_tuple_elem, fz_is_tuple, fz_list_length.\n- Fold: Map.size/1, Map.count/1, List.count/1 and its loop are deleted. Callers (enumerable.fz:66, :74; 10 calls in fixtures2; doc examples) move to map_size and length.\n- Fixture: oracle-checked on all three paths, covering entry, case and receive guards plus bodies, including failing-domain cases.",
   "id": "fz-sc8.9",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
   "status": "open",
-  "title": "Kernel elem/2, length/1, map_size/1, is_integer/1, is_binary/1",
+  "title": "A guard may call a pure extern; Elixir's guard functions",
   "type": "feature",
-  "updated_at": "2026-10-17T19:23:44Z"
+  "updated_at": "2026-10-17T20:27:04Z"
 }
