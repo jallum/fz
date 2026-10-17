@@ -12,6 +12,11 @@ use super::token_payload;
 use super::{QuotedSourceBuilder, QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata, QuotedSourceRoot};
 use crate::ast::Var;
 
+/// Elixir ranks `&` below every binary operator except `when`, `<-` and
+/// `\\`, so its operand takes everything tighter than `when` (4): `=` (5)
+/// and up. `/` is among them, which keeps `&Mod.f/1` whole.
+const CAPTURE_OPERAND_BP: u8 = 5;
+
 #[derive(Debug)]
 pub struct FrontDoorError {
     pub msg: String,
@@ -808,7 +813,10 @@ impl FrontDoorParser {
         self.skip_newlines();
         let field = match self.bump() {
             Tok::Ident(name) | Tok::Upper(name) => name,
-            other => return Err(self.error(format!("expected name after `.`, got {:?}", other))),
+            other => match self.operator_name(&other) {
+                Some(operator) => operator.to_string(),
+                None => return Err(self.error(format!("expected name after `.`, got {:?}", other))),
+            },
         };
         let span = lhs.span.merge(self.prev_span());
         let meta = self.meta(span)?;
@@ -1112,69 +1120,32 @@ impl FrontDoorParser {
             ));
         }
 
-        if self.eat(&Tok::LParen) {
-            let body = self.with_matched_do_boundary(|parser| {
-                parser.with_comma_unbound(|parser| parser.parse_expr(module_path, scope))
-            })?;
-            self.expect(&Tok::RParen, "`)` to close `&(...)` capture")?;
-            let span = start.merge(self.prev_span());
-            let meta = self.meta(span)?;
-            return Ok(ParsedExpr::plain(self.builder.call("&", &meta, &[body.root])?, span));
+        if self.operator_name(self.peek()).is_some() && self.peek_is_at(1, &Tok::Slash) {
+            return self.parse_operator_capture(start);
         }
 
-        let target = self.parse_capture_target(start)?;
+        let operand = self.parse_bp(CAPTURE_OPERAND_BP, module_path, scope)?;
+        let span = start.merge(operand.span);
+        let meta = self.meta(span)?;
+        Ok(ParsedExpr::plain(self.builder.call("&", &meta, &[operand.root])?, span))
+    }
+
+    /// `&+/2`: the operator is a name, not an expression, so it is the one
+    /// capture target the expression parser cannot read.
+    fn parse_operator_capture(&mut self, start: Span) -> Result<ParsedExpr, FrontDoorError> {
+        let op = self.bump();
+        let name = self.operator_name(&op).expect("checked operator token").to_string();
+        let meta = self.meta(start)?;
+        let target = self.builder.variable(&Var::user(name.as_str()), &meta)?;
         self.expect(&Tok::Slash, "`/` in capture")?;
         let arity = match self.bump() {
             Tok::Int(arity) if arity >= 0 => arity,
-            other => return Err(self.error(format!("expected capture arity after `&.../`, got {:?}", other))),
+            other => return Err(self.error(format!("expected capture arity after `&{name}/`, got {:?}", other))),
         };
-        let span = target.span.merge(self.prev_span());
+        let span = start.merge(self.prev_span());
         let meta = self.meta(span)?;
-        let slash = self.builder.call("/", &meta, &[target.root, self.builder.int(arity)])?;
+        let slash = self.builder.call("/", &meta, &[target, self.builder.int(arity)])?;
         Ok(ParsedExpr::plain(self.builder.call("&", &meta, &[slash])?, span))
-    }
-
-    fn parse_capture_target(&mut self, start: Span) -> Result<ParsedExpr, FrontDoorError> {
-        let mut target = match self.bump() {
-            Tok::Ident(name) => {
-                let meta = self.meta(start)?;
-                ParsedExpr::direct_name(self.builder.variable(&Var::user(name.as_str()), &meta)?, start, name)
-            }
-            Tok::Upper(name) => self.parse_alias_expr(name, start)?,
-            other if self.operator_name(&other).is_some() => {
-                let name = self.operator_name(&other).expect("checked operator token").to_string();
-                let meta = self.meta(start)?;
-                ParsedExpr::direct_name(self.builder.variable(&Var::user(name.as_str()), &meta)?, start, name)
-            }
-            other => {
-                return Err(self.error(format!(
-                    "compiler2 front door only supports local, remote, and operator capture refs so far, got {:?}",
-                    other
-                )));
-            }
-        };
-
-        while self.peek_is(&Tok::Dot) {
-            self.expect(&Tok::Dot, "`.`")?;
-            self.skip_newlines();
-            let field = match self.bump() {
-                Tok::Ident(name) | Tok::Upper(name) => name,
-                other if self.operator_name(&other).is_some() => {
-                    self.operator_name(&other).expect("checked operator token").to_string()
-                }
-                other => return Err(self.error(format!("expected capture target name after `.`, got {:?}", other))),
-            };
-            let span = target.span.merge(self.prev_span());
-            let meta = self.meta(span)?;
-            let callee = self.builder.ast_node(
-                self.builder.atom("."),
-                &meta,
-                self.builder.list(&[target.root, self.builder.atom(&field)])?,
-            )?;
-            target = ParsedExpr::plain(callee, span);
-        }
-
-        Ok(target)
     }
 
     fn parse_pin_expr(

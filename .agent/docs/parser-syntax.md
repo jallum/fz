@@ -30,9 +30,8 @@ newline to guess intent.
   after consuming its operator, before parsing the right-hand side. Every
   `Tok::Dot`-consuming production does the same right after consuming the
   dot: `finish_remote_target` and `finish_closure_call` (value/call access),
-  `parse_alias_expr` (alias-path chains, e.g. `Foo.\n  Bar`), the
-  capture-target dot chain in `parse_capture_target` (e.g. `&Foo.\n  bar/1`),
-  and `parse_upper_path` (the shared path parser behind
+  `parse_alias_expr` (alias-path chains, e.g. `Foo.\n  Bar`), and
+  `parse_upper_path` (the shared path parser behind
   `alias`/`import`/`require`/`defmodule`/protocol module paths). Dot
   consumes trailing eol by construction regardless of what it's chaining —
   this is ordinary trailing-position grammar, unconditional, no
@@ -179,7 +178,7 @@ when it holds one bare clause, e.g. `case(1, do: (1 -> 1))`.
 belongs to `f`'s own argument list. This flag is inherited through ordinary
 expression parsing, so an argument, list/tuple/map element, or keyword-entry
 value is comma-bound by the outer construct that contains it. Anything with
-its *own* unambiguous close token — a grouping `(...)`, a captured `&(...)`,
+its *own* unambiguous close token — a grouping `(...)`,
 an anonymous-function clause body, or a `do ... end` block — resets it with
 `with_comma_unbound` on entry: nothing inside can be mistaken for a sibling
 of whatever comma-separated list happens to contain it, so a bare `if cond,
@@ -208,3 +207,17 @@ same string token. Documentation that quotes fz syntax is therefore executable
 text: a doc explaining interpolation contains `#{...}` and will interpolate it,
 and an unbound name there currently changes what the module compiles to without
 reporting anything (fz-5xp.96). Escape the sigil in prose that describes it.
+
+## Captures
+
+`parse_capture_expr` reads `&` as a prefix operator with one operand. Only
+two spellings are not expressions and are read from tokens: `&N` with no
+space before the integer (the capture argument), and `&op/N` for an operator
+such as `&+/2` (`parse_operator_capture`). Every other operand is parsed by
+`parse_bp(CAPTURE_OPERAND_BP)`, bp 5: tighter than `when` (4) and `<-` (2),
+and including `=` and every binary operator, `/` among them. So
+`&Mod.f/1` and `&name/1` come out as `(& [(/ [target, arity])])`, while
+`& &1.f`, `&{&1, &2}`, `&[&1]`, `&"#{&1}"` and `&(&1 + 1)` come out as `&`
+around the body. The parser does not decide between function reference and
+body; `rewrite_capture` in `source_sugar.rs` does, via
+`is_function_ref_payload`.
