@@ -5,7 +5,7 @@
     "fz-sc8.19"
   ],
   "created": "2026-10-04T03:35:13Z",
-  "description": "On fz-uyt/pin-toolchain (6c99b476f), tools/distill-telemetry.exs aborts in work_start_tally/1 with ArithmeticError 0 + nil on a fresh json_roundtrip trace. It reads work_starts_activation_frontier; src/telemetry/jsonl.rs emits work_starts_activation_published. Align the census with the emitted schema and prove its wake cross-check against a current trace. Partial timing tables are produced, but causal validation does not finish.",
+  "description": "The distiller's work-start census no longer describes the scheduler, and its checked-in trace hides that.\n\nFacts (measured 2026-10-17 at 6ac603ac5 on a fresh trace of tests/distill_telemetry/main_returns_one.fz):\n- tools/distill-telemetry.exs reads work_starts_activation_frontier and work_starts_root_frontier. src/telemetry/jsonl.rs:1636-1648 emits work_starts_activation_published, and no root_frontier exists (WorkStartReason, src/compiler2/scheduler.rs:~75-98: Ignition, ChangedRevisionWake, ActivationPublished, GateExpansion, BlockedWaiterExpansion, Unclassified).\n- jsonl.rs omits work_starts.gate_expansion. With it emitted (reverted probe), the tallies sum to 6 + 16 = 22 = the 22 fz.compiler2.job runs. Without it they sum to 13.\n- Reasons are charged once per run in record_run_start (scheduler.rs:578), so sum(tally) == job runs holds by construction.\n- wakes/4 filters wakes to re-run subjects (Map.has_key?(reruns, target)), but most changed_revision_wake starts are first runs. Its check (matched enqueued wakes == changed_revision_wake) cannot hold by construction: a popped job whose gate is missing parks without charging a run (scheduler.rs:572-577). Fresh trace: 3 matched vs 11.\n- tests/distill_telemetry/main_returns_one.jsonl was captured from an older compiler (44 runs / 26 subjects; today 22 / 20), which is why tests/distill_telemetry_test.rs still passes.\n\nChange: emit gate_expansion; the script reads the emitted fields; the census cross-check becomes sum(tally) == job span count; the cause table covers every enqueued wake; regenerate the trace and its expected sections.",
   "id": "fz-afu.18",
   "labels": [],
   "parent": "fz-afu",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Distiller must consume the current work-start telemetry schema",
   "type": "bug",
-  "updated_at": "2026-10-17T19:00:46Z"
+  "updated_at": "2026-10-17T19:06:20Z"
 }
