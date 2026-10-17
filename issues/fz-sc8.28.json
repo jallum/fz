@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.9"
+  ],
   "blocks": [],
   "created": "2026-10-17T22:17:13Z",
   "description": "Elixir's typespecs name any tuple `tuple()`. fz has only the structural `{T, U}` form. `tuple` is deliberately absent from the constructor registry (src/compiler2/resolve.rs:93-107, 'an open question for a future ticket'), and resolve_test.rs pins 'unknown type name `tuple`' (bare_tuple_is_not_a_registered_constructor_name, applied_tuple_is_not_a_registered_constructor_name). The user decided on 2026-10-17 to improve it.\n\nConsequences today:\n- `x :: tuple` cannot be a typed head;\n- is_tuple cannot be a typed-head helper like the other type tests, so fz-sc8.9 adds an extern, fz_is_tuple;\n- elem/tuple_size cannot state their domain as a type.\n\nDesign pending a reader and a proposal page. Questions:\n- Can Types represent the top of the tuple axis (src/compiler2/types/mod.rs `tuples` DNF; widen_non_structs at ~2327)?\n- Does a runtime type test exist for it on all three paths (runtime_type_test_envelope; RuntimeTypePredicate::tuple_arity is fixed-arity)?\n- Should `tuple(T, U)` alias `{T, U}`?\n\nRemoval ledger candidates: fz_is_tuple and its extern (is_tuple becomes a typed-head helper); the two pins, restated.",
