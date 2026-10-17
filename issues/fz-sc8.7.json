@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.5"
+  ],
   "blocks": [],
   "created": "2026-10-17T19:00:42Z",
   "description": "No exit primitive exists in runtime/src. Drivers return to the CLI which calls exit (cli.rs:48-63); AOT fz_aot_run_main returns 0/1 (runtime/src/aot_shim.rs:617-623). System.halt(n) must stop the scheduler, flush stdout (Rust LineWriter is not flushed by process::exit), and exit with n. Used by the distiller's check! on a census mismatch.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "System.halt/1 sets the exit status on all three paths",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:42Z"
+  "updated_at": "2026-10-17T19:00:44Z"
 }
