@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.25"
+  ],
   "blocks": [
     "fz-sc8.19"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "`:atom.fun(args)` is a remote call; :erlang.float_to_binary/2",
   "type": "bug",
-  "updated_at": "2026-10-17T19:10:54Z"
+  "updated_at": "2026-10-17T21:40:20Z"
 }
