@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.19"
+  ],
   "created": "2026-10-17T19:00:42Z",
   "description": "No Inspect facility returns a binary. runtime render_value (runtime/src/any_value.rs:1440) backs dbg but prints. Elixir format must match: atom-keyed maps as `%{a: 1}`, quoted strings, charlists, `limit:` truncation (`...`). Used at distill lines 77, 90, 376.",
   "id": "fz-sc8.10",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "inspect/1,2 returns Elixir's rendering, with limit:",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:42Z"
+  "updated_at": "2026-10-17T19:00:45Z"
 }
