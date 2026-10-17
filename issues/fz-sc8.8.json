@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.19"
+  ],
   "created": "2026-10-17T19:00:42Z",
   "description": "No IO module. The only output primitive is Kernel.dbg's fz_dbg_value, which renders a value (runtime/src/ir_runtime.rs:314-322) through ctx.output (runtime/src/output.rs:17-24, always appends newline). Add a primitive that writes a binary (String.Chars) to the same sink on all three paths, and lib/io.fz.",
   "id": "fz-sc8.8",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "IO.puts/1 writes a string to stdout",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:42Z"
+  "updated_at": "2026-10-17T19:00:45Z"
 }
