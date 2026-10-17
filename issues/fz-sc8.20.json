@@ -6,13 +6,13 @@
     "fz-sc8.26"
   ],
   "created": "2026-10-17T19:10:40Z",
-  "description": "defp f(%{} = m) fails: internal/post-resolution-leftover: quoted function decode failed: pattern as-bind lhs must be a variable (src/compiler2/quoted_function.rs:540). Elixir accepts the match in either order (m = %{} and %{} = m mean the same in a pattern). tools/distill-telemetry.exs:76 writes defp label(%{} = meta, _names) when map_size(meta) == 0. Probe in scratch kernel/.",
+  "description": "Design (page /Users/j5n/Workspace/fz-sc8.20.html, revision 2; APPROVED 2026-10-17; match Elixir):\n- Pattern::As(Var, Box\u003cPattern\u003e) becomes Pattern::Both(Box\u003cPattern\u003e, Box\u003cPattern\u003e).\n- The decoder (quoted_function.rs:538) decodes both sides with decode_pattern.\n- All 13 sites handle both sides on the same subject:\n  - the planner append_pattern (pattern.rs:720);\n  - bind_pattern (body.rs:3019) and apply_pattern (:2946);\n  - the collectors at body.rs:685, 4057 and 4258, and source.rs:148, 237 and 257;\n  - literal_from_pattern and pattern_name.\n- Reachability and the interp, native and receive paths are unchanged, because they see only the compiled plan.\n- Removes: As and its asymmetry; the internal \"as-bind lhs must be a variable\" error; the Var|As re-match in collect_bound_names_in_pattern; pattern_var_name's use in = (^ keeps it).\n- Oracle fixture for %{} = m, m = %{}, {a, _} = {_, b} and [h | _] = [_, x | _] = l, in heads, case, fn and body match, on all three paths. The builder confirms that a duplicate identical question on one subject compiles.\n- Repeated-variable equality is fz-sc8.26, which this ticket blocks.",
   "id": "fz-sc8.20",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
   "status": "open",
-  "title": "A pattern on the left of = in a head binds: %{} = m",
+  "title": "p1 = p2 in a pattern matches both",
   "type": "bug",
-  "updated_at": "2026-10-17T21:40:20Z"
+  "updated_at": "2026-10-17T21:40:30Z"
 }
