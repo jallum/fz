@@ -32,6 +32,7 @@ pub(crate) mod pull;
 mod quoted_expander;
 mod quoted_function;
 mod quoted_surface;
+mod reach;
 mod resolve;
 mod runtime;
 mod scheduler;
@@ -93,6 +94,7 @@ pub use module_interface::{
 };
 pub use namespace::{BindingId, CallableQualifier, Namespace, NamespaceStore, NamespaceSymbol};
 pub(crate) use pull::{ProductKey, ProductScope, PullSession};
+pub(crate) use reach::ReachKey;
 pub use scheduler::{
     AppliedStep, DriveOutcome, FatalError, Scheduler, Wake, WakeDisposition, WorkStartReason, WorkStartTally,
 };

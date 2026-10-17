@@ -1,0 +1,12 @@
+#---
+# purpose: the same chain as fixture 00611 with b redefined to call a back, so a and b reach each other
+#---
+def b(x, junk) do
+  if x <= 0 do
+    0
+  else
+    a(x - 1, junk)
+  end
+end
+def a(x, junk), do: b(x, junk)
+def main(), do: dbg(a(3, [1]))

@@ -1,0 +1,6 @@
+#---
+# purpose: a two-function chain (a calls b) that reaches no cycle; fixture 00612 redefines b to call a back
+#---
+def b(x, junk), do: x
+def a(x, junk), do: b(x, junk)
+def main(), do: dbg(a(3, [1]))

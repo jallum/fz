@@ -8,6 +8,7 @@ use super::drive_harness::{
     module_indexed_ids, module_name, named_module_id, presence, try_module_function_id,
 };
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
+use crate::compiler2::ReachKey;
 use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::DependencyKey;
@@ -1240,6 +1241,9 @@ fn retained_closure_source_replacement_does_not_request_obsolete_products() {
             | ProductKey::BackendExecutable(executable) => executable.activation.function == generated,
             ProductKey::TransportShape(position) | ProductKey::CallableConstruction(position) =>
                 position.executable().activation.function == generated,
+            ProductKey::Reach(ReachKey::Static(function)) => *function == generated,
+            ProductKey::Reach(ReachKey::Direct(executable) | ReachKey::All(executable)) =>
+                executable.activation.function == generated,
             ProductKey::RootBackendProduct(_) | ProductKey::NativeProgram(_) | ProductKey::StructSchema(_) => false,
         }),
         "the replaced owner's membership must not request its obsolete generated child"

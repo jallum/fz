@@ -177,7 +177,9 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // definition once their only callers are among those: DefineFunction -2,
 // ExpandFunctionSource -2. AnalyzeActivation -1 and DeriveTypeDef +1 are
 // small knock-ons of the same drop.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 232;
+// 232 -> 229: a function's recursion is read from its shared reach product
+// instead of a walk of the static graph, so DeriveRecursive reruns less.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 229;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

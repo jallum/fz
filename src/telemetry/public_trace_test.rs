@@ -1615,7 +1615,9 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // 63 -> 58 DeriveStaticCallees evaluations. `Recursive` and
     // `StaticCallees` are no longer asked for every monomorphic activation
     // this fixture's Range/Map helpers key under (R1's self-keyed shortcut).
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 40, 20, 58, 0),
+    // 40/20 -> 27/7: each function's recursion is now read from one shared reach
+    // product, so no caller walks the static graph.
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 27, 7, 58, 0),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -1635,7 +1637,9 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // changes nothing: each remaining first-level caller now walks the
     // shared static graph itself and blocks once per level, where before
     // main/0 walked it first.
-    ("fixtures/00571_enum_predicate_search.fz", 48, 28, 37, 0),
+    // 48/28 -> 31/11: each function's recursion is now read from one shared reach
+    // product, so no caller walks the static graph.
+    ("fixtures/00571_enum_predicate_search.fz", 31, 11, 37, 0),
     // fz-5xp.6: `Range.count` uses `div/2`, so fewer bodies are extracted.
     // fz-5xp.30: 126 -> 128 component evaluations. The reached arithmetic
     // result/status helpers are ordinary generic calls.
@@ -1666,38 +1670,38 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // each remaining first-level caller now walks the shared static graph
     // itself and blocks once per level, where before main/0 walked it
     // first.
-    ("fixtures/00420_enum_take_drop_split.fz", 113, 50, 105, 0),
-    // fz-xxd.10: 00607-00610 pin the shared-walk shape directly. Four
-    // callers (p1-p4) share one call chain of depth eight; each first-level
-    // caller walks the shared static graph itself and blocks once per
-    // level, so a run that changes nothing grows with callers times depth.
-    // Source order (callees defined before callers, or callers before
-    // callees) does not change the counts.
+    // 113/50 -> 78/15: each function's recursion is now read from one shared reach
+    // product, so no caller walks the static graph.
+    ("fixtures/00420_enum_take_drop_split.fz", 78, 15, 105, 0),
+    // 00607-00610 pin the shared-reach shape directly. Four callers (p1-p4)
+    // share one call chain of depth eight. The chain's reach is one program
+    // product that every caller waits on, so a run that changes nothing is one
+    // wait per first-level caller, whatever the depth or the source order.
     (
         "fixtures/00607_static_reach_shared_chain_callees_first.fz",
-        44,
-        32,
+        16,
+        4,
         20,
         0,
     ),
     (
         "fixtures/00608_static_reach_shared_chain_callers_first.fz",
-        44,
-        32,
+        16,
+        4,
         20,
         0,
     ),
     (
         "fixtures/00609_static_reach_chain_into_recursion_callees_first.fz",
-        62,
-        48,
+        18,
+        4,
         27,
         0,
     ),
     (
         "fixtures/00610_static_reach_chain_into_recursion_callers_first.fz",
-        62,
-        48,
+        18,
+        4,
         27,
         0,
     ),
@@ -2219,7 +2223,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // their only callers are among those: DefineFunction -12,
         // ExpandFunctionSource -12, PlanEntryDispatch -2. AnalyzeActivation
         // +1 and DeriveTypeDef +1 are small knock-ons of the same drop.
-        total_evaluations: 591,
+        // 591 -> 578: exactly the DeriveRecursive drop pinned in
+        // DERIVE_RECURSIVE_RATCHET (one shared reach product per function).
+        total_evaluations: 578,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2395,7 +2401,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // -1 are the same externs-no-caller-reaches drop as above.
         // AnalyzeActivation -5 (pinned above) and DeriveTypeDef +1 are small
         // knock-ons of the same drop.
-        total_evaluations: 911,
+        // 911 -> 894: exactly the DeriveRecursive drop pinned in
+        // DERIVE_RECURSIVE_RATCHET (one shared reach product per function).
+        total_evaluations: 894,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2743,7 +2751,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // externs-no-caller-reaches drop as above. AnalyzeActivation +2
         // (pinned above) and DeriveTypeDef +1 are small knock-ons of the
         // same drop.
-        total_evaluations: 1476,
+        // 1476 -> 1441: exactly the DeriveRecursive drop pinned in
+        // DERIVE_RECURSIVE_RATCHET (one shared reach product per function).
+        total_evaluations: 1441,
     },
 ];
 

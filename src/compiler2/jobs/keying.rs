@@ -5,9 +5,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path};
 
 use super::super::body::{CallInputMode, LoweredBody, LoweredStep, LoweredTail, ValueId};
-use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses};
+use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, ProductAddress, UseCollector, current_uses};
 use super::super::identity::FunctionId;
 use super::super::keying::{BodyKeying, InputDemand};
+use super::super::pull::{ProductKey, ProductSessions, ProductValue};
+use super::super::reach::ReachKey;
 use super::super::scheduler::FatalError;
 use super::super::world::{BodyShape, World};
 use crate::telemetry::TelemetryExt as _;
@@ -187,20 +189,17 @@ fn publish_static_callees(
 /// from the owner to the generated function, so recursion through a
 /// generated closure is handled the same way as direct or mutual recursion.
 ///
-/// One walk answers it: the strong component of `function` in the subgraph
-/// reachable from it (`strong_component`) has more than one member, or
-/// `function`'s own edge set names it, exactly when `function` reaches
-/// itself. Identity consumption is a body-local property with no call-graph
-/// content, but it has always ridden `FactKey::Recursive`'s one value and
-/// still does.
+/// The graph is not walked here: `function` is recursive exactly when it is
+/// in its own static reach, a program-scoped product shared by every
+/// function that asks (`ReachKey::Static`). Identity consumption is a
+/// body-local property with no call-graph content, but it has always ridden
+/// `FactKey::Recursive`'s one value and still does.
 ///
 /// The facts `derive_recursive` cannot conclude without, for `function`
 /// itself: its own static edges, and its own lowered body. Both are named
 /// from `function` alone, so the scheduler checks them before ever starting
-/// a never-run `DeriveRecursive` (`Job::missing_gates`). A callee's own
-/// `StaticCallees`, reached by the walk `collect_static_graph` runs below, is
-/// a wait the walk DISCOVERS -- it depends on which edges this body turns
-/// out to have, not on `function` alone -- so it is not named here.
+/// a never-run `DeriveRecursive` (`Job::missing_gates`). The reach of its
+/// callees is a wait the job discovers on the product.
 pub(super) fn derive_recursive_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
     if world.function_is_provider_boundary(function) {
         return Vec::new();
@@ -222,7 +221,11 @@ pub(super) fn derive_recursive_gates(world: &World, function: FunctionId) -> Vec
     gates
 }
 
-pub(super) fn derive_recursive(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
+pub(super) fn derive_recursive(
+    world: &mut World,
+    products: Option<&ProductSessions>,
+    function: FunctionId,
+) -> Result<JobEffects, FatalError> {
     if world.function_is_provider_boundary(function) {
         // No body in this program: no edges, so nothing it does can reach
         // back to it.
@@ -237,42 +240,36 @@ pub(super) fn derive_recursive(world: &mut World, function: FunctionId) -> Resul
         ));
     }
 
-    let mut reads = Vec::new();
-    let mut waits = HashSet::new();
-    let mut graph = HashMap::new();
-    let mut seen = HashSet::new();
-    collect_static_graph(world, function, &mut reads, &mut waits, &mut graph, &mut seen);
     // Identity consumption is a property of this body alone, so it rides the
-    // same conclusion rather than the graph walk -- but it needs the body,
-    // which a `StaticCallees` fact published for an undefined protocol
-    // callback does not imply. A protocol callback and an extern both have
-    // no body to wait for: their identity consumption is false by
-    // construction (checked below without reading one).
+    // same conclusion -- but it needs the body, which a `StaticCallees` fact
+    // published for an undefined protocol callback does not imply. A protocol
+    // callback and an extern both have no body to wait for: their identity
+    // consumption is false by construction (checked below without reading
+    // one).
+    let mut reads = Vec::new();
     if matches!(world.function_body_shape(function), BodyShape::Clauses) {
         let lowered = FactKey::LoweredBody(function);
         if !world.has_fact(&lowered) {
-            waits.insert(lowered);
-        } else {
-            reads.push(lowered);
+            return Ok(JobEffects::wait_on_current(lowered));
         }
-    }
-    if !waits.is_empty() {
-        return Ok(JobEffects {
-            reads: current_uses(reads),
-            waits: current_uses(waits),
-            ..JobEffects::default()
-        });
+        reads.push(lowered);
     }
 
-    // The strong component decides recursion alone: `function` reaches
-    // itself exactly when it shares a component with another function, or
-    // its own edges name it directly.
-    let component = strong_component(function, &graph);
+    let address = ProductAddress::program(ProductKey::Reach(ReachKey::Static(function)));
+    let Some(ProductValue::Reach(reach)) = products.and_then(|sessions| sessions.product(&address)) else {
+        return Ok(JobEffects {
+            reads: current_uses(reads),
+            product_waits: vec![address],
+            ..JobEffects::default()
+        });
+    };
     let keying = BodyKeying {
-        recursive: component.len() > 1 || graph.get(&function).is_some_and(|edges| edges.contains(&function)),
+        recursive: reach.contains(&ReachKey::Static(function)),
         consumes_callable_identity: body_consumes_callable_identity(world, function),
     };
-    Ok(publish_recursive(world, function, keying, reads))
+    let mut effects = publish_recursive(world, function, keying, reads);
+    effects.product_reads.push(address);
+    Ok(effects)
 }
 
 fn publish_recursive(world: &mut World, function: FunctionId, keying: BodyKeying, reads: Vec<FactKey>) -> JobEffects {
@@ -1045,63 +1042,6 @@ fn solve_forwarded_demand(
 
 fn emit_input_demand_derived(tel: &impl crate::telemetry::Telemetry, function: &FunctionId, demand: &InputDemand) {
     tel.raw_event2(&["fz", "compiler2", "input_demand", "derived"], function, demand);
-}
-
-/// Walks the reachable static call graph over the `StaticCallees` edge facts.
-///
-/// One fact read per reachable node, and a node already known costs the read
-/// and nothing else -- no body is re-scanned when a later layer of the graph
-/// arrives. Missing edge facts are recorded as waits, so the layers the walk
-/// discovers are demand, not repeated work (fz-kdt.56).
-fn collect_static_graph(
-    world: &World,
-    function: FunctionId,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    graph: &mut HashMap<FunctionId, Vec<FunctionId>>,
-    seen: &mut HashSet<FunctionId>,
-) {
-    if !seen.insert(function) {
-        return;
-    }
-    let callees = FactKey::StaticCallees(function);
-    if !world.has_fact(&callees) {
-        // `StaticCallees`'s sole producer arm is `Job::DeriveStaticCallees`.
-        waits.insert(callees);
-        return;
-    }
-    reads.push(callees);
-    let edges = world.static_callees(function).to_vec();
-    for target in &edges {
-        collect_static_graph(world, *target, reads, waits, graph, seen);
-    }
-    graph.insert(function, edges);
-}
-
-/// The functions mutually reachable with `function`, `function` included.
-///
-/// `graph` is the subgraph reachable FROM `function`, which is all the walk needs:
-/// a function mutually reachable with `function` is reachable from it by
-/// definition, and so is every node on its path back. So membership reduces to
-/// "which nodes of the subgraph reach `function`" -- a walk of its reversed
-/// edges from `function`.
-fn strong_component(function: FunctionId, graph: &HashMap<FunctionId, Vec<FunctionId>>) -> HashSet<FunctionId> {
-    let mut reversed: HashMap<FunctionId, Vec<FunctionId>> = HashMap::new();
-    for (caller, callees) in graph {
-        for callee in callees {
-            reversed.entry(*callee).or_default().push(*caller);
-        }
-    }
-    let mut members = HashSet::from([function]);
-    let mut frontier = vec![function];
-    while let Some(next) = frontier.pop() {
-        for caller in reversed.get(&next).into_iter().flatten() {
-            if graph.contains_key(caller) && members.insert(*caller) {
-                frontier.push(*caller);
-            }
-        }
-    }
-    members
 }
 
 fn static_edges(body: &LoweredBody) -> Vec<StaticEdge> {

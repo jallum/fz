@@ -44,9 +44,9 @@ macro     source expansion reads RootBackendProduct(hidden macro root)
 keying    DeriveStaticCallees, DeriveRecursive, DeriveInputDemand
             one body -> StaticCallees, the call graph's out-edges for that function
             stable per-function facts used to canonicalize activation keys:
-            DeriveRecursive walks the StaticCallees facts reachable from f ONCE and
-            publishes Recursive(f): true exactly when f's strong component in
-            that subgraph has more than one member, or f's own edges name f
+            DeriveRecursive waits on the program-scoped Reach product of f over
+            StaticCallees and publishes Recursive(f): true exactly when f is in
+            its own reach
 semantic  SeedRoot, SeedActivation, AnalyzeActivation
             root entry facts, activation evidence, return types, callsite targets,
             callsite summaries, and executable demand
@@ -63,6 +63,11 @@ product   RootBackendProduct(root)
             one immutable interpreter-ready backend executable
           StructSchema(module)
             one reachable module's name and fields from StructDefined(module)
+          Reach(node, edges)
+            every node reachable from `node` by one or more edges, built from
+            its successors' reaches; functions over StaticCallees are
+            program-scoped, executables over ExecutableFacts call targets
+            live in their own root
           AbiExecutable(E)
             ABI lanes, return delivery, entry captures, resumes, and callable entries
             for one executable
@@ -494,18 +499,18 @@ upstream position products named by the normalized origin. `ExecutableFacts`
 distinguishes direct call returns from public callable returns before transport:
 direct returns refine from the selected target position, while public returns
 project every nonempty result to `ValueRef`. Recursion is cut out of the recipe
-before it is evaluated, from call-graph facts alone: an edge naming the return
-of a callee in the position owner's own strong component whose function id does
-not rise is replaced by a cut, so what remains strictly climbs and is acyclic.
-A GROUNDED CLOSURE-CALL edge reaches its callee through a value, so the static
-call graph carries no edge for it and strong-component membership answers
-nothing about it -- a closure built outside a recursion and threaded back
-through it leaves caller and lambda in different components while their
-products still cycle. That edge is cut exactly when its target reaches the
-owner through settled `ExecutableFacts` call targets, walked directly
-(`executable_reaches`) rather than through any derived call-graph fact; when
-it does not, the edge adds no reachability the condensation did not
-already have, and keeping it is what preserves one authority for an
+before it is evaluated, from settled facts alone: an edge naming the return of
+a direct callee that reaches the position's owner (the callee's
+`Reach(Direct)` product, which skips call sites whose return arrives through
+a closure call) and whose function id does not rise is replaced by a cut, so
+what remains strictly climbs and is acyclic. A GROUNDED CLOSURE-CALL edge
+reaches its callee through a value, so a closure built outside a recursion
+and threaded back through it leaves caller and lambda statically unrelated
+while their products still cycle. That edge is cut exactly when its target
+reaches the owner in the `Reach(All)` product, which follows every settled
+`ExecutableFacts` call target; when it does not, the edge adds no
+reachability the graph did not already have, and keeping it is what preserves
+one authority for an
 exact-carrier closure call. A cut contributes no evidence about the position's form, and a
 form the readable arms agree on is believed only while it still carries the
 position's whole analyzed type; otherwise the position falls back to the
