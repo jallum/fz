@@ -50,7 +50,9 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // `DeriveRuntimeDemand` walks that would otherwise run again on an
         // intermediate, soon-to-be-revised answer run once, on the
         // concluded one.
-        runtime_demand_walks: 614,
+        // fz-sc8.9: 614 -> 619. The list `count` reads Kernel's `length`,
+        // whose proper-list check and abort path are bodies of their own.
+        runtime_demand_walks: 619,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -65,7 +67,9 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures/00567_fz_f98_range_map_converges.fz",
         golden: "fixtures/00567_fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 145,
+        // fz-sc8.9: 145 -> 147. The map `count` reads Kernel's `map_size`, a
+        // typed wrapper over `fz_map_count`.
+        runtime_demand_walks: 147,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },

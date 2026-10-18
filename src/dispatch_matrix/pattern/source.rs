@@ -105,6 +105,12 @@ pub(crate) enum SourcePatternError {
     /// reported, the way Elixir reports every undefined variable in a head.
     UndefinedPins(Vec<PatternPinnedInput>),
     GuardCallCycle(String, usize),
+    /// An extern a guard calls whose parameters or return are not an integer
+    /// or a reference word, the two classes every guard evaluator carries.
+    GuardExternClass {
+        symbol: String,
+        why: String,
+    },
     DispatchMatrix(String),
     RowPatternArity {
         expected: usize,

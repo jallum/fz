@@ -4,9 +4,9 @@ defmodule List do
 
   `List` is narrow by design: it supplies `concat/2` and `subtract/2`,
   the functions the `++` and `--` operators desugar to, along with the
-  `Enumerable` callbacks (`reduce/3`, `reduce_while/3`, `count/1`,
-  `member?/2`) that let `Enum` walk a list. `reverse/2` is the one
-  general-purpose helper beyond that. For everything else — mapping,
+  `Enumerable` callbacks (`reduce/3`, `reduce_while/3`, `member?/2`) that
+  let `Enum` walk a list. `reverse/2` is the one general-purpose helper
+  beyond that. For everything else — mapping,
   filtering, folding, searching — use `Enum`.
   """
 
@@ -72,21 +72,6 @@ defmodule List do
   def reduce_while(list, acc, reducer), do: reduce_while_cont(list, acc, reducer)
 
   @doc """
-  Implements the `Enumerable.count/1` callback for lists.
-
-  This is protocol plumbing, not a function to call directly: it is
-  reached through `Enum.count/1`.
-
-  ## Examples
-
-      List.count([1, 2, 3])
-      #=> 3
-
-  """
-  @spec count(any) :: integer
-  def count(list), do: count(list, 0)
-
-  @doc """
   Implements the `Enumerable.member?/2` callback for lists.
 
   This is protocol plumbing, not a function to call directly: it is
@@ -142,8 +127,4 @@ defmodule List do
   @spec reduce_while_step([a], {:cont, b} | {:halt, c}, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
   defp reduce_while_step(list, {:cont, acc}, reducer), do: reduce_while_cont(list, acc, reducer)
   defp reduce_while_step(_list, {:halt, acc}, _reducer), do: acc
-
-  @spec count([a], integer) :: integer
-  defp count([], acc), do: acc
-  defp count([_head | tail], acc), do: count(tail, acc + 1)
 end

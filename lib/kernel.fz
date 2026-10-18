@@ -11,7 +11,11 @@ defmodule Kernel do
       `make_ref/0` and `make_resource/2`
     * `panic/1`, `assert/1`, `assert/2`, `refute/1` and `refute/2`, for
       aborting the current process
-    * `dbg/1`, `to_string/1`, `byte_size/1`, `div/2`, `rem/2` and `range/3`
+    * `dbg/1`, `to_string/1`, `div/2`, `rem/2` and `range/3`
+    * the sizes and accessors `byte_size/1`, `map_size/1`, `tuple_size/1`,
+      `length/1` and `elem/2`, and the type tests `is_integer/1`,
+      `is_float/1`, `is_binary/1`, `is_list/1`, `is_map/1`, `is_tuple/1`,
+      `is_atom/1`, `is_boolean/1` and `is_nil/1`, all of which a guard may call
 
   Every arithmetic and comparison operator is a typed clause family: one
   clause per pair of operand types it supports. Arithmetic has no catch-all,
@@ -625,10 +629,244 @@ defmodule Kernel do
       #=> 6
 
   """
-  @spec byte_size(binary) :: integer
-  def byte_size(bytes), do: fz_bitstring_byte_size(bytes)
+  @spec byte_size(any) :: integer
+  def byte_size(bytes :: binary), do: fz_bitstring_byte_size(bytes)
+  def byte_size(_), do: panic(:badarg)
 
   extern "C" defp fz_bitstring_byte_size(any) :: integer
+
+  @doc """
+  Returns the number of entries in `map`.
+
+  Aborts with `:badmap` when `map` is not a map. In a guard, a non-map makes
+  the guard false.
+
+  ## Examples
+
+      Kernel.map_size(%{a: 1, b: 2})
+      #=> 2
+
+      Kernel.map_size(%{})
+      #=> 0
+
+  """
+  @spec map_size(any) :: integer
+  def map_size(map :: map), do: fz_map_count(map)
+  def map_size(_), do: panic(:badmap)
+
+  extern "C" defp fz_map_count(any) :: integer
+
+  @doc """
+  Returns the number of elements in `tuple`.
+
+  Aborts with `:badarg` when `tuple` is not a tuple. In a guard, a non-tuple
+  makes the guard false.
+
+  ## Examples
+
+      Kernel.tuple_size({:a, :b, :c})
+      #=> 3
+
+      Kernel.tuple_size({})
+      #=> 0
+
+  """
+  @spec tuple_size(any) :: integer
+  def tuple_size(tuple) when is_tuple(tuple), do: fz_tuple_size(tuple)
+  def tuple_size(_), do: panic(:badarg)
+
+  extern "fz" defp fz_tuple_size(any) :: integer
+
+  @doc """
+  Returns the element of `tuple` at the zero-based `index`.
+
+  Aborts with `:badarg` when `tuple` is not a tuple or `index` is outside it.
+  In a guard, either makes the guard false.
+
+  ## Examples
+
+      Kernel.elem({:a, :b, :c}, 1)
+      #=> :b
+
+  """
+  @spec elem(any, any) :: any
+  def elem(tuple, index) when is_tuple(tuple) and is_integer(index) and index >= 0 and index < tuple_size(tuple),
+    do: fz_tuple_elem(tuple, index)
+
+  def elem(_, _), do: panic(:badarg)
+
+  extern "fz" defp fz_tuple_elem(any, integer) :: any
+
+  @doc """
+  Returns the number of elements in `list`.
+
+  Aborts with `:badarg` when `list` is not a proper list. In a guard, an
+  improper list or a non-list makes the guard false.
+
+  ## Examples
+
+      Kernel.length([1, 2, 3])
+      #=> 3
+
+      Kernel.length([])
+      #=> 0
+
+  """
+  @spec length(any) :: integer
+  def length(list :: list), do: proper_length(fz_list_length(list))
+  def length(_), do: panic(:badarg)
+
+  @spec proper_length(integer) :: integer
+  defp proper_length(count) when count >= 0, do: count
+  defp proper_length(_), do: panic(:badarg)
+
+  extern "C" defp fz_list_length(any) :: integer
+
+  @doc """
+  Returns `true` when `term` is a tuple of any arity.
+
+  ## Examples
+
+      Kernel.is_tuple({1, 2})
+      #=> true
+
+      Kernel.is_tuple([1, 2])
+      #=> false
+
+  """
+  @spec is_tuple(any) :: boolean
+  def is_tuple(term), do: fz_is_tuple(term) == 1
+
+  extern "fz" defp fz_is_tuple(any) :: integer
+
+  @doc """
+  Returns `true` when `term` is an integer.
+
+  ## Examples
+
+      Kernel.is_integer(1)
+      #=> true
+
+      Kernel.is_integer(1.0)
+      #=> false
+
+  """
+  @spec is_integer(any) :: boolean
+  def is_integer(_ :: integer), do: true
+  def is_integer(_), do: false
+
+  @doc """
+  Returns `true` when `term` is a float.
+
+  ## Examples
+
+      Kernel.is_float(1.0)
+      #=> true
+
+      Kernel.is_float(1)
+      #=> false
+
+  """
+  @spec is_float(any) :: boolean
+  def is_float(_ :: float), do: true
+  def is_float(_), do: false
+
+  @doc """
+  Returns `true` when `term` is a binary.
+
+  ## Examples
+
+      Kernel.is_binary("hello")
+      #=> true
+
+      Kernel.is_binary(:hello)
+      #=> false
+
+  """
+  @spec is_binary(any) :: boolean
+  def is_binary(_ :: binary), do: true
+  def is_binary(_), do: false
+
+  @doc """
+  Returns `true` when `term` is a list, proper or not.
+
+  ## Examples
+
+      Kernel.is_list([1, 2])
+      #=> true
+
+      Kernel.is_list({1, 2})
+      #=> false
+
+  """
+  @spec is_list(any) :: boolean
+  def is_list(_ :: list), do: true
+  def is_list(_), do: false
+
+  @doc """
+  Returns `true` when `term` is a map.
+
+  ## Examples
+
+      Kernel.is_map(%{a: 1})
+      #=> true
+
+      Kernel.is_map([a: 1])
+      #=> false
+
+  """
+  @spec is_map(any) :: boolean
+  def is_map(_ :: map), do: true
+  def is_map(_), do: false
+
+  @doc """
+  Returns `true` when `term` is an atom, including `true`, `false` and `nil`.
+
+  ## Examples
+
+      Kernel.is_atom(:ok)
+      #=> true
+
+      Kernel.is_atom("ok")
+      #=> false
+
+  """
+  @spec is_atom(any) :: boolean
+  def is_atom(_ :: atom), do: true
+  def is_atom(_), do: false
+
+  @doc """
+  Returns `true` when `term` is `true` or `false`.
+
+  ## Examples
+
+      Kernel.is_boolean(false)
+      #=> true
+
+      Kernel.is_boolean(nil)
+      #=> false
+
+  """
+  @spec is_boolean(any) :: boolean
+  def is_boolean(true), do: true
+  def is_boolean(false), do: true
+  def is_boolean(_), do: false
+
+  @doc """
+  Returns `true` when `term` is `nil`.
+
+  ## Examples
+
+      Kernel.is_nil(nil)
+      #=> true
+
+      Kernel.is_nil(false)
+      #=> false
+
+  """
+  @spec is_nil(any) :: boolean
+  def is_nil(nil), do: true
+  def is_nil(_), do: false
 
   # `</2` and its siblings carry this order through `compare/2`.
   @doc """

@@ -1,0 +1,6 @@
+#---
+# purpose: "elem/2 with an index outside the tuple aborts with :badarg in a body, as Elixir raises ArgumentError"
+# expect: abort
+# oracle: 00619_elem_outside_a_tuple_aborts.oracle.exs
+#---
+def main(), do: elem({1}, 9)

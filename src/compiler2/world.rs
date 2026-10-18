@@ -12,14 +12,13 @@ use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
-use std::sync::Arc;
 
 use crate::FunctionSurface;
 use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::demand::DispatchDemand;
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
+use crate::dispatch_matrix::pattern::{GuardCallee, PatternDispatchPlan};
 use crate::modules::identity::{Mfa, ModuleDenotation, ModuleName};
 use crate::modules::runtime_library;
 use crate::source::{SourceMap, Span};
@@ -2201,9 +2200,10 @@ impl World {
             .min()
     }
 
-    /// The reified guard helper. Callers embed the handle in their own plans,
-    /// so one helper is one artifact however many guards name it.
-    pub(crate) fn guard_dispatch(&self, function: FunctionId) -> Arc<PatternGuardDispatch<Ty>> {
+    /// What a guard that calls `function` reaches: the reified helper, or the
+    /// extern as it is. Callers embed the handle in their own plans, so one
+    /// callee is one artifact however many guards name it.
+    pub(crate) fn guard_callee(&self, function: FunctionId) -> GuardCallee<Ty> {
         #[cfg(test)]
         self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
         self.guard_dispatches
@@ -3471,11 +3471,7 @@ impl World {
         self.bodies.define(function, body)
     }
 
-    pub(crate) fn define_guard_dispatch(
-        &mut self,
-        function: FunctionId,
-        dispatch: Arc<PatternGuardDispatch<Ty>>,
-    ) -> bool {
+    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: GuardCallee<Ty>) -> bool {
         self.guard_dispatches.define(function, dispatch)
     }
 
@@ -3923,11 +3919,7 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         changed
     }
 
-    pub(crate) fn define_guard_dispatch(
-        &mut self,
-        function: FunctionId,
-        dispatch: Arc<PatternGuardDispatch<Ty>>,
-    ) -> bool {
+    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: GuardCallee<Ty>) -> bool {
         let changed = self.world.define_guard_dispatch(function, dispatch);
         if changed {
             self.emit_world_key(&["fz", "compiler2", "guard_dispatch", "defined"], &function);

@@ -6,18 +6,19 @@ use super::backend::{
     backend_callable_identity, decode_field, env_get, field_spans_for, materialize_transport_value,
     transport_field_view,
 };
+use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::*;
 use crate::compiler2::transport::TransportStore;
-use crate::compiler2::{BackendProgram, DispatchBindings, Ty, Types, ValueId};
+use crate::compiler2::{BackendProgram, DispatchBindings, LoweredExtern, Ty, Types, ValueId};
 use crate::dispatch_matrix::pattern::{
-    PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, PatternPinnedInput,
+    GuardExtern, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, PatternPinnedInput,
 };
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
     EdgeEvidence, GraphNodeId, GroundValue, ListRegion, OutcomeId, PinnedValueId, PreparedKeyId, ProjectionKind,
     Region, SubjectId, SubjectSource,
 };
-use crate::fz_ir::Module;
+use crate::fz_ir::{ExternReturn, Module};
 use crate::runtime_type_predicate::{
     RuntimeTypePredicate, RuntimeValueReader, TuplePositions, matches_runtime_type_predicate, surface_membership,
 };
@@ -737,6 +738,28 @@ impl<'a> Dispatch<'a> {
                 let body = required(dispatch.bodies.get(dispatch.plan.body_id(decided.outcome()) as usize))?;
                 decided.run.eval_guard(body)?
             }
+            PatternGuardExpr::Extern { extern_fn, args } => {
+                // A call that aborts the process is not made: in a guard it is
+                // the guard that fails.
+                if extern_fn.fails_the_guard() {
+                    return Err(DispatchStop::NoMatch);
+                }
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    values.push(self.eval_guard(arg)?);
+                }
+                match call_lowered_extern(self.runtime, &guard_extern_wire(extern_fn), None, &values)
+                    .map_err(DispatchStop::Broken)?
+                {
+                    ExternCallValue::Scalar(value) => value,
+                    ExternCallValue::Pair(_) => {
+                        return Err(DispatchStop::broken(format!(
+                            "guard extern `{}` returned a pair, which no guard evaluator carries",
+                            extern_fn.symbol
+                        )));
+                    }
+                }
+            }
         })
     }
 
@@ -882,6 +905,17 @@ impl<'a> Dispatch<'a> {
 
     fn proc(&self) -> *mut Process {
         self.runtime.cur_proc()
+    }
+}
+
+/// The wire a guard's extern call is made through.
+fn guard_extern_wire(extern_fn: &GuardExtern) -> LoweredExtern {
+    LoweredExtern {
+        abi: extern_fn.abi,
+        symbol: extern_fn.symbol.clone(),
+        params: extern_fn.params.clone(),
+        variadic: false,
+        ret: ExternReturn::Scalar(extern_fn.ret),
     }
 }
 

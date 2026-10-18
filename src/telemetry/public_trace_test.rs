@@ -1267,7 +1267,13 @@ const SCENARIOS: [&str; 5] = [
 // construction-wrapper column is unchanged.
 // fz-5xp.30: each fixture reaches four ordinary generic arithmetic
 // result/status executable bodies; wrapper populations stay flat.
-const POPULATION_BASELINES: [(u64, u64); 3] = [(66, 0), (176, 32), (232, 38)];
+// fz-sc8.9: the range/map row rises 66 -> 67 reachable executables.
+// `Enumerable`'s map `count` reads Kernel's `map_size`, a typed wrapper
+// over `fz_map_count`, where it used to call the extern directly.
+// The take/drop/split row rises 232 -> 235: its list `count` reads Kernel's
+// `length`, whose proper-list check and abort path are executables of their
+// own.
+const POPULATION_BASELINES: [(u64, u64); 3] = [(67, 0), (176, 32), (235, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1488,7 +1494,13 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // cold walk that would otherwise revise a body after
                 // reading a callee's unsettled answer waits instead and
                 // never re-walks it.
-                [[148, 0, 0, 9, 4], [475, 0, 0, 64, 4], [617, 0, 0, 69, 4]][fixture_index][scenario],
+                // fz-sc8.9: 00567's cold scenario walks two more bodies
+                // (148 -> 150): `Enumerable`'s map `count` reads Kernel's
+                // `map_size`, a typed wrapper over `fz_map_count`.
+                // 00420's cold scenario walks five more (617 -> 622): its
+                // list `count` reads Kernel's `length`, whose proper-list
+                // check and abort path are bodies of their own.
+                [[150, 0, 0, 9, 4], [475, 0, 0, 64, 4], [622, 0, 0, 69, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1640,7 +1652,10 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // this fixture's Range/Map helpers key under (R1's self-keyed shortcut).
     // 40/20 -> 27/7: each function's recursion is now read from one shared reach
     // product, so no caller walks the static graph.
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 27, 7, 58, 0),
+    // fz-sc8.9: 58 -> 59 DeriveStaticCallees evaluations. `Enumerable`'s map
+    // `count` reads Kernel's `map_size`, a typed wrapper over `fz_map_count`,
+    // where it used to call the extern directly.
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 27, 7, 59, 0),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -1695,7 +1710,12 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // first.
     // 113/50 -> 78/15: each function's recursion is now read from one shared reach
     // product, so no caller walks the static graph.
-    ("fixtures/00420_enum_take_drop_split.fz", 78, 15, 105, 0),
+    // fz-sc8.9: 105 -> 106 DeriveStaticCallees evaluations.
+    // `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
+    // proper-list check: `proper_length` aborts with `:badarg` on an improper
+    // list, so the check and its abort path are analyzed as functions of
+    // their own.
+    ("fixtures/00420_enum_take_drop_split.fz", 78, 15, 106, 0),
     // 00607-00610 pin the shared-reach shape directly. Four callers (p1-p4)
     // share one call chain of depth eight. The chain's reach is one program
     // product that every caller waits on, so a run that changes nothing is one
@@ -2080,7 +2100,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // A caller reads only a callee's concluded answer, so a call this
         // leaves awaited mints no activation claim until its callee
         // concludes, and eight fewer claims appear across the compile.
-        activations: lifecycle(66, 66, 0),
+        // fz-sc8.9: 66 -> 67. `Enumerable`'s map `count` reads Kernel's `map_size`, a typed wrapper over
+        // `fz_map_count`, where it used to call the extern directly.
+        activations: lifecycle(67, 67, 0),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
         //
@@ -2093,7 +2115,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // lifecycle, so the exact callsite row rises 79 -> 83 without churn.
         // The same eight fewer activations (`ANALYSIS_CLAIM_RATCHET`
         // above) each publish one fewer callsite lifecycle of their own.
-        callsites: lifecycle(77, 77, 0),
+        // fz-sc8.9: 77 -> 78, the call edge into Kernel's `map_size`.
+        callsites: lifecycle(78, 78, 0),
         // fz-kdt.183: 17 -> 30 shift wakes and 19 -> 127 rebased completions.
         // The RISING row of this landing, and the cause is that `InputDemand`
         // is now a fact that MOVES: the forwarded demand of a function whose
@@ -2181,7 +2204,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `Enum.to_list/1` gains a run that changes something -- a caller
         // woken once more because the early keying ask subscribed it to a
         // callee's `Recursive` and `InputDemand`; zero-change stays 3.
-        analyze_evaluations: 168,
+        // fz-sc8.9: 168 -> 171. Kernel's `map_size` is one more subject
+        // (initial 66 -> 67), and the runs that read its answer add two
+        // content-caused runs; zero-change stays 3.
+        analyze_evaluations: 171,
         analyze_zero_change: 3,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
@@ -2248,7 +2274,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // +1 and DeriveTypeDef +1 are small knock-ons of the same drop.
         // 591 -> 578: exactly the DeriveRecursive drop pinned in
         // DERIVE_RECURSIVE_RATCHET (one shared reach product per function).
-        total_evaluations: 578,
+        // fz-sc8.9: 578 -> 589. Kernel's `map_size` is one more function on
+        // the path to `fz_map_count`. Measured job deltas: AnalyzeActivation
+        // +3, DeriveInputDemand +2, DeriveRuntimeDemand +2, and +1 each for
+        // DefineFunction, ExpandFunctionSource, DeriveFunctionContract,
+        // PlanEntryDispatch, LowerFunction, DeriveExecutableFacts and
+        // DeriveStaticCallees.
+        total_evaluations: 589,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2504,7 +2536,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // propagate a callee's unconcluded, soon-to-be-revised answer into
         // a further call that would otherwise analyze under the guessed
         // shape and then again under the real one.
-        activations: lifecycle(232, 232, 0),
+        // fz-sc8.9: 232 -> 235.
+        // Kernel's `length`, `fz_list_length`, `proper_length`, `panic` and
+        // `fz_panic` replace `List.count/1` and `List.count/2`: the list
+        // `count` keeps Elixir's proper-list check and its abort path.
+        activations: lifecycle(235, 235, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -2553,7 +2589,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // minted against a guessed arrow, so first appearances fall to
         // meet distinct and retractions reach zero, the same collapse
         // already pinned above on `enum_predicate_search`.
-        callsites: lifecycle(420, 420, 0),
+        // fz-sc8.9: 420 -> 421, the call edges of Kernel's `length` path in
+        // place of `List.count`'s.
+        callsites: lifecycle(421, 421, 0),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -2708,6 +2746,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // nothing; `Enum.drop_positive/2`'s lambda loses one. Each added run
         // is a caller woken once more because the early keying ask
         // subscribed it to a callee's `Recursive` and `InputDemand`.
+        // fz-sc8.9: 619 holds while initial runs rise 232 -> 235 with the
+        // three added activations above; zero-change stays 8.
         analyze_evaluations: 619,
         analyze_zero_change: 8,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
@@ -2776,7 +2816,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // same drop.
         // 1476 -> 1441: exactly the DeriveRecursive drop pinned in
         // DERIVE_RECURSIVE_RATCHET (one shared reach product per function).
-        total_evaluations: 1441,
+        // fz-sc8.9: 1441 -> 1446: three with the added activations above and
+        // two with the `@spec` that declares `proper_length`'s domains.
+        total_evaluations: 1446,
     },
 ];
 

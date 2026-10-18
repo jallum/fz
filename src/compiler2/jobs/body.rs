@@ -2184,7 +2184,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             owner: self.source.owner_module,
             guard: |world: &mut World, callee: &Callee, arity: usize| {
                 let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
-                Ok(Some(world.guard_dispatch(callee)))
+                Ok(Some(world.guard_callee(callee)))
             },
         };
         let plan = pattern_dispatch_from_source_with_resolver(source, &mut resolver)
@@ -4357,6 +4357,7 @@ fn emit_local_dispatch_error(
             | SourcePatternError::RowPatternArity { .. }
             | SourcePatternError::NonMonotonicBodyId { .. }
             | SourcePatternError::UndefinedPins(_)
+            | SourcePatternError::GuardExternClass { .. }
             | SourcePatternError::ParamAnnotation { .. },
         ) => {
             panic!("compiler2 built an invalid local dispatch row set: {error:?}")

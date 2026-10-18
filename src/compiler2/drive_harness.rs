@@ -1029,11 +1029,9 @@ impl GuardDispatchCapture {
         telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
             &["fz", "compiler2", "guard_dispatch", "defined"],
             move |_, _, _, world, function| {
-                dispatches
-                    .borrow_mut()
-                    .entry(*function)
-                    .or_default()
-                    .push(world.guard_dispatch(*function));
+                if let crate::dispatch_matrix::pattern::GuardCallee::Helper(helper) = world.guard_callee(*function) {
+                    dispatches.borrow_mut().entry(*function).or_default().push(helper);
+                }
             },
         );
     }

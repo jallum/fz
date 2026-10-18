@@ -668,3 +668,76 @@ fn list_reuse_or_cons_parts_updates_process_counters() {
         assert_eq!(process.list_retention_hits, 1);
     });
 }
+
+fn tuple_ref(process: &mut Process, schema_id: u32, fields: &[AnyValue]) -> AnyValueRef {
+    let tuple = process.heap.alloc_struct(schema_id);
+    for (index, field) in fields.iter().enumerate() {
+        let field = process.heap.box_any_value_ref(*field);
+        let object = AnyValueRef::from_heap_object(ValueKind::STRUCT, tuple as *const u8).expect("tuple object");
+        unsafe {
+            process
+                .heap
+                .write_struct_field_ref(object, (index * 8) as u32, field)
+                .expect("tuple field");
+        }
+    }
+    AnyValueRef::from_heap_object(ValueKind::STRUCT, tuple as *const u8).expect("tuple object")
+}
+
+#[test]
+fn tuple_primitives_answer_for_every_value_they_are_handed() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let pair = schemas.borrow_mut().register(Schema::tuple_of_arity(2));
+    let named = schemas.borrow_mut().register(Schema::named_struct(
+        crate::module_name::ModuleName::from_segments(vec!["Point".to_string()]),
+        ["x".to_string(), "y".to_string()],
+    ));
+    let mut process = Box::new(Process::new(schemas));
+    let process_ptr: *mut Process = &mut *process;
+    let tuple = tuple_ref(&mut process, pair, &[AnyValue::int(7), AnyValue::int(8)]);
+    let record = tuple_ref(&mut process, named, &[AnyValue::int(1), AnyValue::int(2)]);
+    let integer = process.heap.box_any_value_ref(AnyValue::int(5));
+
+    assert_eq!(fz_is_tuple(process_ptr, tuple.raw_word()), 1);
+    assert_eq!(
+        fz_is_tuple(process_ptr, record.raw_word()),
+        0,
+        "a struct is not a tuple"
+    );
+    assert_eq!(fz_is_tuple(process_ptr, integer.raw_word()), 0);
+
+    assert_eq!(fz_tuple_size(process_ptr, tuple.raw_word()), 2);
+    assert_eq!(fz_tuple_size(process_ptr, record.raw_word()), -1);
+    assert_eq!(fz_tuple_size(process_ptr, integer.raw_word()), -1);
+
+    let second = AnyValueRef::from_raw_word(fz_tuple_elem(process_ptr, tuple.raw_word(), 1)).expect("element ref");
+    assert_eq!(second.load_int(), Ok(8));
+    for outside in [
+        (tuple.raw_word(), 2),
+        (tuple.raw_word(), -1),
+        (record.raw_word(), 0),
+        (integer.raw_word(), 0),
+    ] {
+        let answer = AnyValueRef::from_raw_word(fz_tuple_elem(process_ptr, outside.0, outside.1)).expect("nil ref");
+        assert_eq!(
+            answer.raw_word(),
+            nil_atom_ref().raw_word(),
+            "outside the tuple the answer is nil"
+        );
+    }
+}
+
+#[test]
+fn list_length_counts_a_proper_list_and_refuses_every_other_value() {
+    with_process(|process| {
+        let mut list = AnyValueRef::empty_list();
+        assert_eq!(fz_list_length(list.raw_word()), 0);
+        for head in [3, 2, 1] {
+            list = process.heap.alloc_list_cons_int(head, list).expect("cons");
+        }
+        assert_eq!(fz_list_length(list.raw_word()), 3);
+
+        let integer = process.heap.box_any_value_ref(AnyValue::int(5));
+        assert_eq!(fz_list_length(integer.raw_word()), -1);
+    });
+}

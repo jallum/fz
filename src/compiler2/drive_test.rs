@@ -19005,6 +19005,7 @@ fn expr_has_nested_dispatch(expr: &PatternGuardExpr<Ty>) -> bool {
         PatternGuardExpr::Dispatch { .. } => true,
         PatternGuardExpr::Unary { expr, .. } => expr_has_nested_dispatch(expr),
         PatternGuardExpr::Binary { lhs, rhs, .. } => expr_has_nested_dispatch(lhs) || expr_has_nested_dispatch(rhs),
+        PatternGuardExpr::Extern { args, .. } => args.iter().any(expr_has_nested_dispatch),
         PatternGuardExpr::Const(_) | PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => false,
     }
 }
@@ -19026,6 +19027,7 @@ fn expr_has_binary_nested_input(expr: &PatternGuardExpr<Ty>) -> bool {
         PatternGuardExpr::Binary { lhs, rhs, .. } => {
             expr_has_binary_nested_input(lhs) || expr_has_binary_nested_input(rhs)
         }
+        PatternGuardExpr::Extern { args, .. } => args.iter().any(expr_has_binary_nested_input),
         PatternGuardExpr::Const(_) | PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => false,
     }
 }

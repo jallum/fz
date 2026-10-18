@@ -12,11 +12,11 @@ defprotocol Sz do
 end
 
 defimpl Sz, for: List do
-  def sz(list), do: List.count(list)
+  def sz(list), do: length(list)
 end
 
 defimpl Sz, for: Map do
-  def sz(map), do: Map.count(map)
+  def sz(map), do: map_size(map)
 end
 
 defmodule Measure do

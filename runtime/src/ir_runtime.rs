@@ -1683,6 +1683,63 @@ pub extern "C" fn fz_map_count(map_ref_word: u64) -> i64 {
     unsafe { map_count(addr as *const u8) as i64 }
 }
 
+/// The arity of a tuple, or `None` for any other value. Structs share the
+/// STRUCT tag with tuples, and only a tuple schema carries an arity.
+fn tuple_arity_of(process: *mut Process, value: AnyValueRef) -> Option<usize> {
+    let addr = value.struct_addr().ok()?;
+    let schema_id = unsafe { struct_schema_id(addr as *const u8) };
+    let registry = (unsafe { &*process }).heap.schemas_registry();
+    match registry.borrow().get(schema_id).identity {
+        crate::heap::SchemaIdentity::Tuple(arity) => Some(arity),
+        _ => None,
+    }
+}
+
+/// The number of fields of a tuple; -1 for any other value, so a caller asks
+/// `fz_is_tuple` or checks the answer instead of aborting.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_tuple_size(process: *mut Process, tuple_ref_word: u64) -> i64 {
+    let value = any_value_ref_from_word(tuple_ref_word, "fz_tuple_size tuple");
+    tuple_arity_of(process, value).map_or(-1, |arity| arity as i64)
+}
+
+/// 1 for a tuple of any arity, 0 for every other value.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_is_tuple(process: *mut Process, value_ref_word: u64) -> i64 {
+    let value = any_value_ref_from_word(value_ref_word, "fz_is_tuple value");
+    tuple_arity_of(process, value).is_some() as i64
+}
+
+/// The field of a tuple at a zero-based index; `nil` where the value is no
+/// tuple or the index is outside it, so the call is total over what it is
+/// handed. Callers inside the domain never see the `nil`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_tuple_elem(process: *mut Process, tuple_ref_word: u64, index: i64) -> u64 {
+    let value = any_value_ref_from_word(tuple_ref_word, "fz_tuple_elem tuple");
+    let in_domain = tuple_arity_of(process, value).is_some_and(|arity| usize::try_from(index).is_ok_and(|i| i < arity));
+    if !in_domain {
+        return nil_atom_ref().raw_word();
+    }
+    (unsafe { &*process })
+        .heap
+        .read_struct_field_ref(value, (index as u32) * 8)
+        .expect("fz_tuple_elem field")
+        .raw_word()
+}
+
+/// The length of a proper list; -1 where the chain ends in anything but the
+/// empty list, so an improper list or a non-list is told apart from `[]`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_length(list_ref_word: u64) -> i64 {
+    let mut cursor = any_value_ref_from_word(list_ref_word, "fz_list_length list");
+    let mut length = 0i64;
+    while cursor.tag() == ValueKind::LIST && !cursor.is_empty_list() {
+        length += 1;
+        cursor = list_tail_ref(cursor).expect("fz_list_length tail");
+    }
+    if cursor.is_empty_list() { length } else { -1 }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_entry_key(map_ref_word: u64, index: i64) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_entry_key map");

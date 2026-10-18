@@ -25,7 +25,7 @@
 def main() do
   m = %{"b" => 2, "a" => 1, "c" => 3}
 
-  dbg(Map.size(m))
+  dbg(map_size(m))
   dbg(Map.keys(m))
   dbg(Map.values(m))
   dbg(Map.to_list(m))
@@ -35,7 +35,7 @@ def main() do
 
   dbg(Map.to_list(Map.delete(m, "b")))
   dbg(Map.to_list(Map.delete(m, "zz")))
-  dbg(Map.size(Map.delete(m, "a")))
+  dbg(map_size(Map.delete(m, "a")))
 
   # a key built at runtime is the same key
   built = "a"

@@ -156,7 +156,10 @@ fn static_reach_work_on_enum_take_drop_split_is_proportional_to_edges() {
         .map(|(key, _)| key.successors(settled.world()).len())
         .sum();
     let evaluations = evaluations.borrow().len();
-    assert_eq!((functions, edges, evaluations), (105, 148, 206));
+    // fz-sc8.9: (105, 148, 206) -> (106, 149, 208). `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
+    // proper-list check: `proper_length` aborts with `:badarg` on an improper
+    // list, so the check and its abort path become executables of their own.
+    assert_eq!((functions, edges, evaluations), (106, 149, 208));
     assert!(
         evaluations <= functions + edges,
         "each function evaluates once to discover its callees and once more for each callee it waits on"

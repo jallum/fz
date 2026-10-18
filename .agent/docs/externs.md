@@ -562,6 +562,19 @@ cleanup itself. The claim and payload read are one non-yielding runtime-library
 operation today; resource users must not expose a raw payload to application
 code before they own it.
 
+## Externs called from guards
+
+Every extern is callable from a guard; the guard-expression node is
+`PatternGuardExpr::Extern`. `GuardExtern::new` (dispatch_matrix/pattern.rs)
+admits only parameters of class `I64` or `Any` and returns of `I64`, `Any` or
+`never`; any other class is `SourcePatternError::GuardExternClass`, a compile
+error on every path. The receive matcher's shim (`emit_guard_extern`) therefore
+marshals two classes: an integer (`receive_value_int`) and a reference word
+(`emit_receive_value_ref`). An extern returning `never` fails the guard without
+being called. The interpreter calls the extern through `call_lowered_extern`;
+native lowering emits `Prim::Extern`. Domain checks live in the Kernel heads
+that wrap the primitive (see [`pattern-matching`](pattern-matching.md)).
+
 ## Proof gates
 
 ```text

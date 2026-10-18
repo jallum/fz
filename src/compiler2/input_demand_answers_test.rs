@@ -260,7 +260,9 @@ fn enum_take_derives_input_demand_proportionally() {
     let work = input_demand_work("def main(), do: Enum.take([1, 2, 3], 2)\n");
     assert_eq!(
         (work.runs.len(), total_reads(&work), most_reads_in_one_run(&work)),
-        (45, 149, 6)
+        // fz-sc8.9: 149 -> 146. `Enumerable` counts through Kernel's `length`
+        // and `map_size`, whose answers are read in place of `List.count`'s.
+        (45, 146, 6)
     );
 }
 

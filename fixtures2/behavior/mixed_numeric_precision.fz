@@ -18,6 +18,6 @@ def main() do
   check(0, -0.5)
   assert(0.0 == -0.0, "widening comparison equates signed zeros")
   assert(0.0 !== -0.0, "strict identity distinguishes signed zeros")
-  assert(Map.size(%{0.0 => 1, -0.0 => 2}) == 2, "signed zeros remain distinct strict map keys")
+  assert(map_size(%{0.0 => 1, -0.0 => 2}) == 2, "signed zeros remain distinct strict map keys")
   0
 end

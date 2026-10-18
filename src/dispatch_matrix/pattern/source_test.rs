@@ -172,3 +172,55 @@ fn source_pattern_rows_reject_unknown_input_precondition() {
         PatternDispatchError::SourcePattern(SourcePatternError::UnknownSubject(PatternSubjectRef::Input(1)))
     ));
 }
+
+fn guard_extern(
+    params: &[crate::fz_ir::ExternTy],
+    ret: crate::fz_ir::ExternReturn,
+    variadic: bool,
+) -> Result<crate::dispatch_matrix::pattern::GuardExtern, SourcePatternError> {
+    crate::dispatch_matrix::pattern::GuardExtern::new(crate::fz_ir::ExternAbi::C, "probe", params, ret, variadic)
+}
+
+#[test]
+fn a_guard_extern_of_integers_and_reference_words_is_admitted() {
+    use crate::fz_ir::{ExternReturn, ExternTy};
+    let admitted = guard_extern(
+        &[ExternTy::Any, ExternTy::I64],
+        ExternReturn::Scalar(ExternTy::Any),
+        false,
+    )
+    .expect("integer and reference-word classes are the two every guard evaluator carries");
+    assert!(!admitted.fails_the_guard());
+}
+
+#[test]
+fn a_guard_extern_returning_never_fails_the_guard() {
+    use crate::fz_ir::{ExternReturn, ExternTy};
+    let aborting = guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::Never), false)
+        .expect("a call that aborts is how a guard function says its argument is outside its domain");
+    assert!(aborting.fails_the_guard());
+}
+
+#[test]
+fn a_guard_extern_of_any_other_class_is_refused_where_the_node_is_made() {
+    use crate::fz_ir::{ExternReturn, ExternTy};
+    let refused = [
+        guard_extern(&[ExternTy::F64], ExternReturn::Scalar(ExternTy::I64), false),
+        guard_extern(&[ExternTy::Binary], ExternReturn::Scalar(ExternTy::I64), false),
+        guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::F64), false),
+        guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::Bool), false),
+        guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::Unit), false),
+        guard_extern(
+            &[ExternTy::Any],
+            ExternReturn::Pair([ExternTy::I64, ExternTy::I64]),
+            false,
+        ),
+        guard_extern(&[ExternTy::Any], ExternReturn::Scalar(ExternTy::I64), true),
+    ];
+    for result in refused {
+        assert!(
+            matches!(result, Err(SourcePatternError::GuardExternClass { .. })),
+            "expected a class refusal, got {result:?}"
+        );
+    }
+}

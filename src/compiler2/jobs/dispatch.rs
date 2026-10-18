@@ -20,8 +20,8 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    PatternDispatchError, PatternGuardDispatch, PatternPinnedInput, PatternRow, SourcePatternError, SourcePatternRows,
-    guard_dispatch_from_rows, pattern_dispatch_from_source_with_resolver,
+    GuardCallee, GuardExtern, PatternDispatchError, PatternPinnedInput, PatternRow, SourcePatternError,
+    SourcePatternRows, guard_dispatch_from_rows, pattern_dispatch_from_source_with_resolver,
 };
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
@@ -78,9 +78,9 @@ pub(super) fn reify_guard_dispatch(
 
     let mut cache = HashMap::new();
     let mut build_stack = Vec::new();
-    let dispatch = build_guard_dispatch(world, function, &mut cache, &mut build_stack)
+    let callee = build_guard_dispatch(world, function, &mut cache, &mut build_stack)
         .map_err(|err| emit_guard_dispatch_error(tel, world, function, fn_span, err))?;
-    let changed = super::super::drive::ExecutionContext::new(world, tel).define_guard_dispatch(function, dispatch);
+    let changed = super::super::drive::ExecutionContext::new(world, tel).define_guard_dispatch(function, callee);
     Ok(JobEffects {
         reads: current_uses(reads),
         outputs: vec![FactKey::GuardDispatch(function)],
@@ -157,7 +157,7 @@ pub(super) fn plan_entry_dispatch(
         owner: source.owner_module,
         guard: |world: &mut World, callee: &Callee, arity: usize| {
             let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
-            Ok(Some(world.guard_dispatch(callee)))
+            Ok(Some(world.guard_callee(callee)))
         },
     };
     let plan = match pattern_dispatch_from_source_with_resolver(source_patterns, &mut resolver) {
@@ -241,6 +241,17 @@ fn collect_requirements(
     };
     reads.push(FactKey::FunctionDefined(function));
     let (source, surface) = world.function_definition(function);
+    // An extern has no clauses to reify: a guard calls it as it is, and what
+    // it needs to know is the wire its contract settles.
+    if surface.extern_abi.is_some() {
+        let contract = FactKey::FunctionContract(function);
+        if world.has_fact(&contract) {
+            reads.push(contract);
+        } else {
+            waits.insert(contract);
+        }
+        return Ok(());
+    }
     collect_annotation_requirements(world, function, reads, waits);
     stack.push(function);
     for clause in &surface.clauses {
@@ -270,11 +281,11 @@ fn collect_requirements(
 fn build_guard_dispatch(
     world: &mut World,
     function: FunctionId,
-    cache: &mut HashMap<FunctionId, Arc<PatternGuardDispatch<Ty>>>,
+    cache: &mut HashMap<FunctionId, GuardCallee<Ty>>,
     stack: &mut Vec<FunctionId>,
-) -> Result<Arc<PatternGuardDispatch<Ty>>, SourcePatternError> {
-    if let Some(dispatch) = cache.get(&function) {
-        return Ok(dispatch.clone());
+) -> Result<GuardCallee<Ty>, SourcePatternError> {
+    if let Some(callee) = cache.get(&function) {
+        return Ok(callee.clone());
     }
     if stack.contains(&function) {
         let (_, surface) = world.function_definition(function);
@@ -285,6 +296,20 @@ fn build_guard_dispatch(
     }
 
     let (source, surface) = world.function_definition(function);
+    if surface.extern_abi.is_some() {
+        let wire = world
+            .extern_wire(function)
+            .expect("an extern's wire is settled before its guard callee is built");
+        let callee = GuardCallee::Extern(Arc::new(GuardExtern::new(
+            wire.abi,
+            &wire.symbol,
+            &wire.params,
+            wire.ret,
+            wire.variadic,
+        )?));
+        cache.insert(function, callee.clone());
+        return Ok(callee);
+    }
     let namespace = source.namespace;
     stack.push(function);
     let mut resolver = super::super::dispatch::SourcePatternResolver {
@@ -293,15 +318,14 @@ fn build_guard_dispatch(
         owner: source.owner_module,
         guard: |world: &mut World, callee: &Callee, arity: usize| {
             let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
-            let dispatch = build_guard_dispatch(world, callee, cache, stack)?;
-            Ok(Some(dispatch))
+            Ok(Some(build_guard_dispatch(world, callee, cache, stack)?))
         },
     };
     let rows = super::super::dispatch::surface_pattern_rows(resolver.world, namespace, &surface, &[])?;
-    let dispatch = Arc::new(guard_dispatch_from_rows(&surface, rows, &mut resolver)?);
+    let callee = GuardCallee::Helper(Arc::new(guard_dispatch_from_rows(&surface, rows, &mut resolver)?));
     stack.pop();
-    cache.insert(function, Arc::clone(&dispatch));
-    Ok(dispatch)
+    cache.insert(function, callee.clone());
+    Ok(callee)
 }
 
 fn entry_source_patterns(
@@ -558,6 +582,14 @@ fn emit_guard_dispatch_error(
                 span,
             ),
         ),
+        SourcePatternError::GuardExternClass { symbol, why } => emit_job_diagnostic(
+            tel,
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("compiler2 guards cannot call extern `{symbol}`: {why}"),
+                span,
+            ),
+        ),
         SourcePatternError::UnknownSubject(_)
         | SourcePatternError::UnresolvedStruct(_)
         | SourcePatternError::RowPatternArity { .. }
@@ -633,6 +665,7 @@ fn emit_entry_dispatch_error(
             | SourcePatternError::RowPatternArity { .. }
             | SourcePatternError::NonMonotonicBodyId { .. }
             | SourcePatternError::GuardCallCycle(_, _)
+            | SourcePatternError::GuardExternClass { .. }
             | SourcePatternError::ParamAnnotation { .. }
             | SourcePatternError::DispatchMatrix(_),
         ) => panic!("compiler2 built an invalid entry-dispatch row set: {error:?}"),

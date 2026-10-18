@@ -9,12 +9,10 @@
 //! identity and the caller's guard-helper resolution.
 
 use std::rc::Rc;
-use std::sync::Arc;
 
 use crate::ast::{Callee, ModuleTarget, Pattern, Spanned};
 use crate::dispatch_matrix::pattern::{
-    PatternBodyId, PatternDispatchPlan, PatternGuardDispatch, PatternResolver, PatternRow, PatternSubjectRef,
-    SourcePatternError,
+    GuardCallee, PatternBodyId, PatternDispatchPlan, PatternResolver, PatternRow, PatternSubjectRef, SourcePatternError,
 };
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
@@ -35,10 +33,10 @@ pub(crate) struct FunctionDispatchMap<T> {
     slots: Vec<DispatchState<T>>,
 }
 
-/// A reified helper is shared atomically because callers embed it in their own
-/// plans, and a plan travels between scheduler threads inside
+/// A reified helper (or the extern a guard calls as it is) is shared atomically
+/// because callers embed it in their own plans, and a plan travels between scheduler threads inside
 /// `fz_ir::Term::ReceiveMatched`. An entry plan stays inside the compiler.
-pub(crate) type GuardDispatchMap = FunctionDispatchMap<Arc<PatternGuardDispatch<Ty>>>;
+pub(crate) type GuardDispatchMap = FunctionDispatchMap<GuardCallee<Ty>>;
 pub(crate) type EntryDispatchMap = FunctionDispatchMap<Rc<PatternDispatchPlan<Ty>>>;
 
 impl<T> FunctionDispatchMap<T>
@@ -137,7 +135,7 @@ pub(crate) struct SourcePatternResolver<'a, F> {
 
 impl<F> PatternResolver<Ty> for SourcePatternResolver<'_, F>
 where
-    F: FnMut(&mut World, &Callee, usize) -> Result<Option<Arc<PatternGuardDispatch<Ty>>>, SourcePatternError>,
+    F: FnMut(&mut World, &Callee, usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError>,
 {
     fn struct_type(&mut self, module: &ModuleTarget, _span: Span) -> Result<Ty, SourcePatternError> {
         let module_id = self
@@ -147,11 +145,7 @@ where
         Ok(self.world.struct_value_ty(module_id, &[], &[]))
     }
 
-    fn guard_call(
-        &mut self,
-        callee: &Callee,
-        arity: usize,
-    ) -> Result<Option<Arc<PatternGuardDispatch<Ty>>>, SourcePatternError> {
+    fn guard_call(&mut self, callee: &Callee, arity: usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
         (self.guard)(self.world, callee, arity)
     }
 }

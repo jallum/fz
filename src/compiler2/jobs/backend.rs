@@ -1286,6 +1286,11 @@ fn collect_guard_atoms(
             }
             collect_guard_dispatch_atoms(world, dispatch, seen, atoms);
         }
+        PatternGuardExpr::Extern { args, .. } => {
+            for arg in args {
+                collect_guard_atoms(world, arg, seen, atoms);
+            }
+        }
         PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => {}
     }
 }
