@@ -111,7 +111,7 @@ A name in type position first checks a single table before anything else runs:
 `resolve.rs`'s `CONSTRUCTORS`, a `&[ConstructorEntry]` mapping a builtin name to
 its arity and its `Types`-minting function. This is the one authoritative
 source for every builtin type-constructor name — scalars (`integer`, `boolean`,
-`atom`, `map`, …) and the two parametric constructors (`list`, `resource`)
+`atom`, `map`, `tuple`, …) and the two parametric constructors (`list`, `resource`)
 alike — and `classify_name` (`resolve.rs`) tries it before checking bound type
 variables or the `TypeDefined` namespace. There is no separate nullary-only
 table and no inline special-casing for parametric names: `list`/`list(T)` and
@@ -126,8 +126,9 @@ vs `[T]`, `map` vs `%{k => v}`), they mint the identical `Ty`; the registry
 entry and the structural arm are proven concordant by
 `resolve_test::list_bracket_and_named_forms_resolve_to_the_same_ty` and
 `a_structural_map_type_resolves_to_the_same_ty_as_a_hand_built_exact_map`.
-`tuple` has no named form — `{T, U}` is its sole syntax by deliberate
-choice, not an oversight (see the `CONSTRUCTORS` doc comment).
+`tuple` is the nullary name for the tuple top, every tuple of every arity
+(`Types::tuple_top`); `tuple(T)` is an arity error, so `{T, U}` is the only
+fixed-arity spelling.
 
 ## Where it lives
 

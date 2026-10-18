@@ -1695,19 +1695,12 @@ fn tuple_arity_of(process: *mut Process, value: AnyValueRef) -> Option<usize> {
     }
 }
 
-/// The number of fields of a tuple; -1 for any other value, so a caller asks
-/// `fz_is_tuple` or checks the answer instead of aborting.
+/// The number of fields of a tuple; -1 for any other value, so a caller checks
+/// the answer instead of aborting.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_tuple_size(process: *mut Process, tuple_ref_word: u64) -> i64 {
     let value = any_value_ref_from_word(tuple_ref_word, "fz_tuple_size tuple");
     tuple_arity_of(process, value).map_or(-1, |arity| arity as i64)
-}
-
-/// 1 for a tuple of any arity, 0 for every other value.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_is_tuple(process: *mut Process, value_ref_word: u64) -> i64 {
-    let value = any_value_ref_from_word(value_ref_word, "fz_is_tuple value");
-    tuple_arity_of(process, value).is_some() as i64
 }
 
 /// The field of a tuple at a zero-based index; `nil` where the value is no

@@ -698,14 +698,6 @@ fn tuple_primitives_answer_for_every_value_they_are_handed() {
     let record = tuple_ref(&mut process, named, &[AnyValue::int(1), AnyValue::int(2)]);
     let integer = process.heap.box_any_value_ref(AnyValue::int(5));
 
-    assert_eq!(fz_is_tuple(process_ptr, tuple.raw_word()), 1);
-    assert_eq!(
-        fz_is_tuple(process_ptr, record.raw_word()),
-        0,
-        "a struct is not a tuple"
-    );
-    assert_eq!(fz_is_tuple(process_ptr, integer.raw_word()), 0);
-
     assert_eq!(fz_tuple_size(process_ptr, tuple.raw_word()), 2);
     assert_eq!(fz_tuple_size(process_ptr, record.raw_word()), -1);
     assert_eq!(fz_tuple_size(process_ptr, integer.raw_word()), -1);

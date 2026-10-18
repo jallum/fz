@@ -1,0 +1,24 @@
+#---
+# purpose: "`tuple` names the type of every tuple: a typed head accepts a tuple of any arity and rejects anything else, and is_tuple/1 agrees"
+# oracle: oracle.exs
+#---
+#
+# `t :: tuple` is the type of {}, {1}, {1, 2, 3} and so on. A list, a map, a
+# number and a named struct are not tuples.
+defmodule Point do
+  defstruct [:x]
+end
+
+def typed(t :: tuple), do: :tuple
+def typed(_), do: :other
+
+def guarded(t) when is_tuple(t), do: :tuple
+def guarded(_), do: :other
+
+def main() do
+  dbg([typed({}), typed({1}), typed({1, 2, 3})])
+  dbg([typed(5), typed([1, 2]), typed(%{a: 1}), typed(%Point{x: 1})])
+  dbg([guarded({}), guarded({1}), guarded({1, 2, 3})])
+  dbg([guarded(5), guarded([1, 2]), guarded(%{a: 1}), guarded(%Point{x: 1})])
+  dbg([is_tuple({}), is_tuple({:a, :b}), is_tuple(5), is_tuple(%Point{x: 1})])
+end

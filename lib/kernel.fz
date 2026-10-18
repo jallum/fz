@@ -672,7 +672,7 @@ defmodule Kernel do
 
   """
   @spec tuple_size(any) :: integer
-  def tuple_size(tuple) when is_tuple(tuple), do: fz_tuple_size(tuple)
+  def tuple_size(tuple :: tuple), do: fz_tuple_size(tuple)
   def tuple_size(_), do: panic(:badarg)
 
   extern "fz" defp fz_tuple_size(any) :: integer
@@ -690,7 +690,7 @@ defmodule Kernel do
 
   """
   @spec elem(any, any) :: any
-  def elem(tuple, index) when is_tuple(tuple) and is_integer(index) and index >= 0 and index < tuple_size(tuple),
+  def elem(tuple :: tuple, index) when is_integer(index) and index >= 0 and index < tuple_size(tuple),
     do: fz_tuple_elem(tuple, index)
 
   def elem(_, _), do: panic(:badarg)
@@ -735,9 +735,8 @@ defmodule Kernel do
 
   """
   @spec is_tuple(any) :: boolean
-  def is_tuple(term), do: fz_is_tuple(term) == 1
-
-  extern "fz" defp fz_is_tuple(any) :: integer
+  def is_tuple(_ :: tuple), do: true
+  def is_tuple(_), do: false
 
   @doc """
   Returns `true` when `term` is an integer.

@@ -129,6 +129,8 @@ pub trait Types {
     fn map(&mut self, fields: &[(MapKey, Self::Ty)]) -> Self::Ty;
     fn str_t(&mut self) -> Self::Ty;
     fn map_top(&mut self) -> Self::Ty;
+    fn tuple_top(&mut self) -> Self::Ty;
+    fn is_tuple_type(&self, a: &Self::Ty) -> bool;
     /// fz-axu (K3) — brand-mint. Overlay brand tag `name` on inner's
     /// structural type. Result carries both the brand label (for nominal
     /// identity / visibility) and the underlying axes.

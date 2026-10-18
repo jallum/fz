@@ -355,7 +355,7 @@ was called, so `not (map_size(x) == 0)` is false for a non-map. `and` and `or`
 evaluate their right side only when the left leaves it open, in all three
 evaluators. The Kernel functions a guard may call this way are `map_size/1`,
 `tuple_size/1`, `elem/2`, `length/1`, `byte_size/1` and the `is_*` type tests;
-`is_tuple/1` is the extern `fz_is_tuple`, because no any-arity tuple type exists.
+`is_tuple/1` is a typed-head helper over `tuple`, like the other type tests.
 Unsupported guard expressions (a list or tuple literal, say) are still refused as
 not dispatch-pure.
 

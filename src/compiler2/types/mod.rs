@@ -138,6 +138,7 @@ struct CoreTypes {
     empty_list: Ty,
     str_t: Ty,
     map_top: Ty,
+    tuple_top: Ty,
     pid: Ty,
     reference: Ty,
     c_pointer: Ty,
@@ -515,6 +516,7 @@ impl Types {
             empty_list: interner.intern(Descr::empty_list()),
             str_t: interner.intern(Descr::str_t()),
             map_top: interner.intern(Descr::map_top()),
+            tuple_top: interner.intern(Descr::tuple_top()),
             pid: interner.intern(Descr::builtin_opaque(BuiltinOpaque::Pid)),
             reference: interner.intern(Descr::builtin_opaque(BuiltinOpaque::Ref)),
             c_pointer: interner.intern(Descr::builtin_opaque(BuiltinOpaque::CPointer)),
@@ -1355,6 +1357,16 @@ impl Types {
 
     pub fn map_top(&mut self) -> Ty {
         self.core.map_top
+    }
+
+    pub fn tuple_top(&mut self) -> Ty {
+        self.core.tuple_top
+    }
+
+    /// Whether every value of `a` is a tuple, of any arity (including `{}`). A
+    /// type that merely contains tuples, such as `any`, is not one.
+    pub fn is_tuple_type(&self, a: &Ty) -> bool {
+        self.is_subtype(a, &self.core.tuple_top) && !self.is_empty(a)
     }
 
     pub fn mint_brand(&mut self, inner: Ty, name: &str) -> Ty {
@@ -2994,6 +3006,14 @@ impl SharedTypes for Types {
 
     fn map_top(&mut self) -> Self::Ty {
         Types::map_top(self)
+    }
+
+    fn tuple_top(&mut self) -> Self::Ty {
+        Types::tuple_top(self)
+    }
+
+    fn is_tuple_type(&self, a: &Self::Ty) -> bool {
+        Types::is_tuple_type(self, a)
     }
 
     fn mint_brand(&mut self, inner: Self::Ty, name: &str) -> Self::Ty {
