@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-18T10:34:08Z",
+  "description": "Fact, from fixtures/00622_guard_extern_of_another_class_is_refused.fz at 864b7dbd1: the error \"compiler2 guards cannot call extern `sqrt`: parameter class F64 is neither an integer nor a reference word\" is reported at 6:1, the `extern \"C\" defp sqrt(float) :: float` line. The offending code is the guard `when sqrt(x) \u003e 1.0` on line 8. The declaration is fine; the call site is what the reader must change, so the primary span is the guard call, with the declaration as a secondary note.\n\nAcceptance: 00622 asserts the reported line is the guard call. fz-sc8.24 (purity refusal, \"not guard-safe\") reports through the same path and inherits the fix.",
+  "id": "fz-sc8.32",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A guard-extern refusal points at the extern declaration, not the guard that calls it",
+  "type": "bug",
+  "updated_at": "2026-10-18T10:34:08Z"
+}
