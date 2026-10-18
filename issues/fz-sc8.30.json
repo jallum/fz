@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-18T10:34:08Z",
+  "description": "Facts, measured on fz-sc8/distill-fz at 864b7dbd1 (interp and run agree):\n\n- `byte_size(\u003c\u003c1::3\u003e\u003e)` panics in the runtime: \"byte_size expects a byte-aligned binary\" (runtime/src/ir_runtime.rs:1104, fz_bitstring_byte_size). Elixir returns 1, and `byte_size(\u003c\u003c1, 2::4\u003e\u003e)` returns 2: the byte count rounded up.\n- `def g(b :: binary)` selects that clause for `\u003c\u003c1::3\u003e\u003e`. Elixir: `is_binary(\u003c\u003c1::3\u003e\u003e)` is false and `is_bitstring` is true, so a binary head must refuse a bitstring whose bit count is not a multiple of 8.\n- Kernel.byte_size (lib/kernel.fz:633) has a `bytes :: binary` head and a `:badarg` fallback, so once the head refuses partial bytes, a bitstring would abort with `:badarg`, which Elixir does not do either. The domain of byte_size is bitstring.\n\nProbe: `def main(), do: dbg(byte_size(\u003c\u003c1::3\u003e\u003e))` and the two-clause `g/1` above.",
+  "id": "fz-sc8.30",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "byte_size of a bitstring rounds up, and a binary head refuses a bitstring, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-10-18T10:34:08Z"
+}
