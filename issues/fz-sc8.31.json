@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-10-18T10:34:08Z",
-  "description": "Fact, measured on fz-sc8/distill-fz at 864b7dbd1:\n\n    def f(t) when tuple_size(t) == 0, do: :empty\n    def f(_), do: :other\n    def main(), do: dbg(f({}))\n\n- interp: \"fz2 interp: backend clause dispatch required omitted semantic input 0\"\n- run: error[artifact/incomplete-semantic-plan] \"native clause dispatch required omitted semantic input 0 for executable 50\"\n- Elixir prints :empty.\n\nThe argument `{}` is zero-width, so its semantic input is omitted from the executable, but the guard still reads it. The dispatch plan and the omitted-input decision disagree about whether the guard is a reader. Found by the fz-sc8.9 builder; it predates fz-sc8.9 for any guard over a zero-width input.",
+  "description": "Fact, measured on fz-sc8/distill-fz at 864b7dbd1:\n\n    def f(t) when tuple_size(t) == 0, do: :empty\n    def f(_), do: :other\n    def main(), do: dbg(f({}))\n\n- interp: \"fz2 interp: backend clause dispatch required omitted semantic input 0\"\n- run: error[artifact/incomplete-semantic-plan] \"native clause dispatch required omitted semantic input 0 for executable 50\"\n- Elixir prints :empty.\n\nThe argument `{}` is zero-width, so its semantic input is omitted from the executable, but the guard still reads it. The dispatch plan and the omitted-input decision disagree about whether the guard is a reader. Found by the fz-sc8.9 builder; it predates fz-sc8.9 for any guard over a zero-width input.\n\nDesign (page /Users/j5n/Workspace/fz-sc8.31.html; APPROVED 2026-10-18):\n- Root cause: prepare_runtime_demand_for_type (executable_facts.rs:505-535) projects a tuple type as tuple_fields(field demands); for {} (and any type whose every leaf is an empty tuple) normalized (semantic.rs:395-410) turns it into Ignore, so the input is dropped (artifact.rs:538-562) while the dispatch plan still reads it (pattern.rs:58, joined at runtime_demand.rs:1281-1292).\n- Fix: one rule at the projection, for both dispatch and boundary: a value that is read is present; when the tuple's field demands all come out Ignore, the projection is Whole (always zero lanes there).\n- normalized and the two loud refusals (native.rs:856-875, ir_interp/backend.rs:724-737) are unchanged.\n- Tests: unit test in executable_facts' sibling _test.rs ({} and {{}} not Ignore, {1} unchanged); oracle fixture on all three paths ({}, {{}}, via a typed-head helper and tuple_size(t) == 0; {1} and 5 take the other clause).\n- Predicted: no other fixture, pin or golden moves.",
   "id": "fz-sc8.31",
   "labels": [],
   "parent": "fz-sc8",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "An entry guard that reads only an empty tuple fails to compile",
   "type": "bug",
-  "updated_at": "2026-10-18T10:34:08Z"
+  "updated_at": "2026-10-18T10:58:47Z"
 }
