@@ -39,6 +39,19 @@ defmodule Map do
   def new(pairs), do: build(pairs, [], [])
 
   @doc """
+  Builds a map from the `{key, value}` pairs that `fun` returns for each
+  element of `enumerable`. When a key repeats, the last pair wins.
+
+  ## Examples
+
+      Map.new([1, 2, 3], fn (n) -> {n, n * n} end)
+      #=> %{1 => 1, 2 => 4, 3 => 9}
+
+  """
+  @spec new(any, (any) -> {any, any}) :: any
+  def new(enumerable, fun), do: new(Enum.map(enumerable, fun))
+
+  @doc """
   Merges `a` and `b` into one map. Where both have a key, `b`'s value wins.
 
   One pass, one allocation.
@@ -211,11 +224,67 @@ defmodule Map do
 
   """
   @spec get(any, any, any) :: any
-  def get(map, key, default), do: get_or(map, key, default, has_key?(map, key))
+  def get(map, key, default), do: value_or(fetch(map, key), default)
 
-  @spec get_or(any, any, any, boolean) :: any
-  defp get_or(map, key, _default, true), do: map[key]
-  defp get_or(_map, _key, default, false), do: default
+  @spec value_or({:ok, any} | :error, any) :: any
+  defp value_or({:ok, value}, _default), do: value
+  defp value_or(:error, default), do: default
+
+  @doc """
+  Returns `{:ok, value}` for `key`, or `:error` when the key is absent.
+
+  Unlike `get/2`, a stored `nil` is told apart from a missing key.
+
+  ## Examples
+
+      Map.fetch(%{a: 1}, :a)
+      #=> {:ok, 1}
+
+      Map.fetch(%{a: nil}, :a)
+      #=> {:ok, nil}
+
+      Map.fetch(%{a: 1}, :b)
+      #=> :error
+
+  """
+  @spec fetch(any, any) :: {:ok, any} | :error
+  def fetch(map, key), do: fetched(map, key, has_key?(map, key))
+
+  @spec fetched(any, any, boolean) :: {:ok, any} | :error
+  defp fetched(map, key, true), do: {:ok, map[key]}
+  defp fetched(_map, _key, false), do: :error
+
+  @doc """
+  Returns the value for `key`, and aborts with `KeyError` when the key is
+  absent.
+
+  ## Examples
+
+      Map.fetch!(%{a: 1}, :a)
+      #=> 1
+
+  """
+  @spec fetch!(any, any) :: any
+  def fetch!(map, key), do: fetch_value(fetch(map, key))
+
+  @spec fetch_value({:ok, any} | :error) :: any
+  defp fetch_value({:ok, value}), do: value
+  defp fetch_value(:error), do: panic("KeyError")
+
+  @doc """
+  Returns the map with `fun` applied to the value at `key`, and aborts with
+  `KeyError` when the key is absent.
+
+  Copies the whole array, like `put/3`.
+
+  ## Examples
+
+      Map.update!(%{a: 1}, :a, fn (v) -> v + 1 end)
+      #=> %{:a => 2}
+
+  """
+  @spec update!(any, any, (any) -> any) :: any
+  def update!(map, key, fun), do: put(map, key, fun.(fetch!(map, key)))
 
   @doc """
   Returns the map without `key`, or `map` unchanged if `key` is absent.

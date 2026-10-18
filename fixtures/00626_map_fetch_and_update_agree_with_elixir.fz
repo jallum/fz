@@ -1,0 +1,26 @@
+#---
+# purpose: "Map.fetch/2, Map.fetch!/2, Map.update!/3 and Map.new/2 return what Elixir returns, and Map.get/3 agrees with Map.fetch/2"
+# oracle: 00626_map_fetch_and_update_agree_with_elixir.oracle.exs
+#---
+#
+# Integer and binary keys, because atom-key order differs from Elixir.
+def main() do
+  m = %{1 => "one", 2 => "two", 3 => nil}
+  b = %{"x" => 10, "y" => 20}
+
+  dbg([Map.fetch(m, 1), Map.fetch(m, 3), Map.fetch(m, 4), Map.fetch(%{}, 1)])
+  dbg([Map.fetch(b, "y"), Map.fetch(b, "z")])
+  dbg([Map.fetch!(m, 2), Map.fetch!(m, 3), Map.fetch!(b, "x")])
+
+  dbg(Map.update!(b, "x", fn (v) -> v + 1 end))
+  dbg(Map.update!(m, 3, fn (v) -> {v, :seen} end))
+  dbg(Map.update!(%{1 => 1.5}, 1, fn (v) -> v * 2.0 end))
+
+  dbg(Map.new([1, 2, 3], fn (n) -> {n, n * n} end))
+  dbg(Map.new(["a", "b", "a"], fn (s) -> {s, byte_size(s)} end))
+  dbg(Map.new([], fn (n) -> {n, n} end))
+  dbg(Map.new(b, fn ({k, v}) -> {v, k} end))
+  dbg(Map.new(1..3, fn (n) -> {n, n + 1} end))
+
+  dbg([Map.get(m, 1, :d), Map.get(m, 3, :d), Map.get(m, 4, :d), Map.get(m, 4), Map.get(m, 3)])
+end
