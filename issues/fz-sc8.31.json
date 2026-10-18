@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-18T10:34:08Z",
+  "description": "Fact, measured on fz-sc8/distill-fz at 864b7dbd1:\n\n    def f(t) when tuple_size(t) == 0, do: :empty\n    def f(_), do: :other\n    def main(), do: dbg(f({}))\n\n- interp: \"fz2 interp: backend clause dispatch required omitted semantic input 0\"\n- run: error[artifact/incomplete-semantic-plan] \"native clause dispatch required omitted semantic input 0 for executable 50\"\n- Elixir prints :empty.\n\nThe argument `{}` is zero-width, so its semantic input is omitted from the executable, but the guard still reads it. The dispatch plan and the omitted-input decision disagree about whether the guard is a reader. Found by the fz-sc8.9 builder; it predates fz-sc8.9 for any guard over a zero-width input.",
+  "id": "fz-sc8.31",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "An entry guard that reads only an empty tuple fails to compile",
+  "type": "bug",
+  "updated_at": "2026-10-18T10:34:08Z"
+}
