@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-10-17T20:56:01Z",
-  "description": "Removes the temporary assumption made in fz-sc8.9, where every extern is treated as pure and any extern may be called from a guard.\n\nFact: many externs have effects:\n- fz_dbg_value prints;\n- fz_send and fz_spawn are process operations;\n- fz_self reads the current process;\n- fz_panic aborts;\n- fz_make_ref, fz_make_resource and fz_resource_claim create or claim resources;\n- fz_process_heap_alloc_stats reads ambient heap state;\n- fz_binary_to_atom interns into the atom table;\n- every libc::* call in lib/file.fz does file I/O.\nThe epic adds more: halt, IO.puts, and the line reads behind File.stream!.\n\nShape (from the fz-sc8.9 review): the extern declaration carries the mark. The candidate is `extern \"C\" defguardp ...` (Elixir's word for usable in guards); an `@pure` attribute would need a parser head (frontdoor.rs:187), a decode arm and function-attr routing (quoted_surface.rs:211). The extern quoted map's unread `private` key becomes the read mark. Guard resolution accepts only marked externs, and the refusal names the extern: \"not guard-safe\".",
+  "description": "Removes the temporary assumption made in fz-sc8.9, where every extern is treated as pure and any extern may be called from a guard.\n\nFact: many externs have effects:\n- fz_dbg_value prints;\n- fz_send and fz_spawn are process operations;\n- fz_self reads the current process;\n- fz_panic aborts;\n- fz_make_ref, fz_make_resource and fz_resource_claim create or claim resources;\n- fz_process_heap_alloc_stats reads ambient heap state;\n- fz_binary_to_atom interns into the atom table;\n- every libc::* call in lib/file.fz does file I/O.\nThe epic adds more: halt, IO.puts, and the line reads behind File.stream!.\n\nShape (from the fz-sc8.9 review): the extern declaration carries the mark. The candidate is `extern \"C\" defguardp ...` (Elixir's word for usable in guards); an `@pure` attribute would need a parser head (frontdoor.rs:187), a decode arm and function-attr routing (quoted_surface.rs:211). The extern quoted map's unread `private` key becomes the read mark. Guard resolution accepts only marked externs, and the refusal names the extern: \"not guard-safe\".\n\nAcceptance: restores the fixture fz-sc8.9 retired, `00488_receive_impure_guard` (purpose: a receive guard calling an impure helper is a compile-time error; expect: diagnostic). Its program, verbatim:\n\n    def helper(), do: make_ref()\n    def rx() do\n      receive do\n        {:foo, _} when helper() -\u003e 0\n      end\n    end\n    def main() do rx() end\n\nIt returns with the diagnostic code this ticket's refusal produces (it was `lower/unsupported` before guards could call externs), and fails on all three paths until `fz_make_ref` is refused as not guard-safe.",
   "id": "fz-sc8.24",
   "labels": [],
   "parent": "fz-sc8",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Externs declare purity; a guard calls only a pure extern",
   "type": "task",
-  "updated_at": "2026-10-17T20:56:01Z"
+  "updated_at": "2026-10-18T03:25:43Z"
 }
