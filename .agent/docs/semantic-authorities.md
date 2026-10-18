@@ -179,6 +179,12 @@ before interpreting graph proofs; it does not scan the graph to invent a
 second tested-input fact. A slot that stays `Ignore` is an input the plan never
 reads, and a backend is free to pass it as nil.
 
+A slot the plan reads is present in the executable. The runtime-demand projection
+of a tuple type whose fields are all ignored, such as `{}`, is a `Whole` demand
+rather than an ignored one (`read_tuple_demand`, `compiler2/executable_facts.rs`).
+Such a tuple has no lanes, so keeping it costs nothing, and a tuple of them, such
+as `{{}}`, keeps it as a field and so stays present too.
+
 Three rules decide what a question charges. A test charges its own subject at
 the demand its region asks for, plus the input that delivers any pin it names --
 a pinned equality, or a bitstring field whose size was bound before the pattern

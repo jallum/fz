@@ -531,7 +531,7 @@ fn prepare_runtime_demand_for_type(
                     }
                 })
                 .collect();
-            return RuntimeDemand::tuple_fields(demands);
+            return read_tuple_demand(demands);
         }
         return RuntimeDemand::whole();
     };
@@ -545,6 +545,17 @@ fn prepare_runtime_demand_for_type(
         opaque: false,
         escape,
     })
+}
+
+/// A tuple whose fields are all ignored is still a value that was read, so it
+/// stays present as a whole value; it has no lanes, so presence costs nothing.
+fn read_tuple_demand(field_demands: Vec<RuntimeDemand>) -> RuntimeDemand {
+    let fields = RuntimeDemand::tuple_fields(field_demands);
+    if fields.is_ignore() {
+        RuntimeDemand::whole()
+    } else {
+        fields
+    }
 }
 
 fn executable_dispatch(
@@ -1057,3 +1068,7 @@ fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
     }
     origins.into_boxed_slice()
 }
+
+#[cfg(test)]
+#[path = "executable_facts_test.rs"]
+mod executable_facts_test;

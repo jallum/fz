@@ -1,0 +1,27 @@
+#---
+# purpose: "A guard that reads only an empty tuple still receives it, so the clause is chosen as in Elixir"
+# oracle: oracle.exs
+#---
+#
+# `{}` and `{{}}` carry no data, yet a guard that tests them reads them, so
+# the argument reaches the guard instead of being dropped from the function.
+def mine(_ :: {}), do: true
+def mine(_), do: false
+
+def mine_nested(_ :: {{}}), do: true
+def mine_nested(_), do: false
+
+def typed(t) when mine(t), do: :yes
+def typed(_), do: :other
+
+def typed_nested(t) when mine_nested(t), do: :yes
+def typed_nested(_), do: :other
+
+def sized(t) when tuple_size(t) == 0, do: :empty
+def sized(_), do: :other
+
+def main() do
+  dbg([typed({}), typed({{}}), typed({1}), typed(5)])
+  dbg([typed_nested({}), typed_nested({{}}), typed_nested({1}), typed_nested(5)])
+  dbg([sized({}), sized({{}}), sized({1}), sized(5)])
+end

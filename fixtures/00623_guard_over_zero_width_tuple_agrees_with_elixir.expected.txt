@@ -1,0 +1,3 @@
+[:yes, :other, :other, :other]
+[:other, :yes, :other, :other]
+[:empty, :other, :other, :other]
