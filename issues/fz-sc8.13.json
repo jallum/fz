@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.33"
+  ],
   "blocks": [
     "fz-sc8.19"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Enum.max/2, Enum.min/2 (empty_fallback), Enum.zip_with/2",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:45Z"
+  "updated_at": "2026-10-21T11:25:52Z"
 }
