@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.34"
+  ],
   "blocks": [],
   "created": "2026-10-22T21:46:10Z",
   "description": "fz's Enum extremes (lib/enum.fz) cover what the distiller needs: max/1,2 and min/1,2 with a zero-arity empty_fallback, max_by/2, min_by/2, min_max/1, min_max_by/2, over lists only. Elixir 1.20.4 (../elixir lib/elixir/lib/enum.ex:1865-2370) offers more:\n\n- any enumerable (`@spec max(t, ...)`); fz's specs say `[a]`, so `Enum.max(1..4)` is rejected at compile time;\n- max/2, min/2 whose second argument is a 2-arity sorter (`\u0026\u003e=/2`) or a module compared via `module.compare/2`, told apart from a fallback with `is_function(f, 0)` / `is_function(f, 2)`;\n- max/3, min/3 (sorter and fallback); max_by/3,4, min_by/3,4; min_max/2,3; min_max_by/3,4.\n\nElixir keeps the first of equal elements (default sorter \u003e= / \u003c=); fz already does.\n\nEach form gets checked against an Elixir oracle on interp, run and build. Blocked by is_function/1,2 and by module names as values. Not needed by the distiller.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Enum's extremes take Elixir's whole surface",
   "type": "feature",
-  "updated_at": "2026-10-22T21:46:10Z"
+  "updated_at": "2026-10-22T21:46:11Z"
 }

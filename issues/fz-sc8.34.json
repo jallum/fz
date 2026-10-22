@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.36"
+  ],
   "created": "2026-10-22T21:46:10Z",
   "description": "Elixir's `is_function/1` and `is_function/2` (Kernel guards) are unresolved in fz, in bodies and in guards:\n\n    def main(), do: dbg([is_function(fn -\u003e 0 end), is_function(fn (a, b) -\u003e a + b end, 2), is_function(5)])\n\nfz: \"compiler2 lowering found unresolved direct runtime callee `is_function/1`\"; in a guard: \"compiler2 guard call `is_function/2` is unresolved in this namespace\". Elixir prints [true, true, false].\n\nShape: the same Kernel guard-function pattern the guard-function ticket (fz-sc8.9) used for map_size/tuple_size/is_tuple: one definition serving bodies and guards, checked against Elixir on interp/run/build. The arity test must read a closure's arity at runtime; the type side should name \"a function of arity n\" through the type calculator, as `tuple` names every tuple (fz-sc8.28).\n\nNeeded by the Enum extremes ticket, whose max/2 tells a fallback (arity 0) from a sorter (arity 2) with these guards, as Elixir does. Not needed by the distiller.",
   "id": "fz-sc8.34",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "is_function/1 and is_function/2, in bodies and guards",
   "type": "feature",
-  "updated_at": "2026-10-22T21:46:10Z"
+  "updated_at": "2026-10-22T21:46:11Z"
 }
