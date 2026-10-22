@@ -1,0 +1,19 @@
+#---
+# purpose: "Enum.max/2, Enum.min/2 and Enum.zip_with/2 return what Elixir returns, an empty input takes the fallback, and max/min/max_by/min_by agree on non-empty input"
+# oracle: 00629_enum_max_min_zip_with_agree_with_elixir.oracle.exs
+#---
+def main() do
+  dbg([Enum.max([3, 1, 2]), Enum.min([3, 1, 2])])
+  dbg([Enum.max([3, 1, 2], fn -> 0 end), Enum.min([3, 1, 2], fn -> 0 end)])
+  dbg([Enum.max([], fn -> 0 end), Enum.min([], fn -> 99 end), Enum.max([], fn -> :none end)])
+  dbg([Enum.max_by(["a", "abc", "ab"], fn (s) -> byte_size(s) end), Enum.min_by(["abc", "a", "ab"], fn (s) -> byte_size(s) end)])
+
+  dbg(Enum.zip_with([[1, 2, 3], [4, 5, 6]], fn ([a, b]) -> a + b end))
+  dbg(Enum.zip_with([[1, 2, 3], [1000, 2000]], fn ([a, b]) -> a * b end))
+  dbg(Enum.zip_with([[1, 2], [3, 4], [5, 6]], fn (col) -> Enum.max(col) end))
+  dbg(Enum.zip_with([["a", "bcd"], ["ef", "g"]], fn (col) -> Enum.max(Enum.map(col, fn (s) -> byte_size(s) end)) end))
+  dbg(Enum.zip_with([[1, 2, 3], []], fn ([a, b]) -> a + b end))
+  dbg(Enum.zip_with([1..3, [10, 20, 30]], fn ([a, b]) -> a + b end))
+  dbg(Enum.zip_with([[1, 2, 3]], fn (col) -> col end))
+  dbg(Enum.zip([1, 2, 3], [:a, :b]))
+end
