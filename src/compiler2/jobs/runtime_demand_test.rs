@@ -117,6 +117,7 @@ fn propagate_tuple_step_demand(
         body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
         extern_wire: None,
         entry_dispatch: None,
+        callsite_dispatch_demand: HashMap::new(),
         callsites: HashMap::new(),
         callsite_needs: HashMap::new(),
         delivered_value_joins: HashMap::new(),
@@ -152,11 +153,118 @@ fn propagate_tuple_step_demand(
     out.value_demands
 }
 
+/// A call that chooses between two destinations by looking at its second
+/// argument alone must hold that argument, wherever it sits, and has no
+/// reason to hold the first: what the choice reads comes from the call's own
+/// dispatch plan, not from the position of the argument.
+#[test]
+fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads() {
+    use crate::compiler2::body::{CallArg, CallInputMode, CallSiteId};
+    use crate::compiler2::executable_facts::callsite_dispatch_demands;
+    use crate::compiler2::semantic::{CallSiteSummary, CallTargetSummary, RuntimeDemandTypeProjection, SelectedCallee};
+    use std::rc::Rc;
+
+    let mut types = Types::new();
+    let (any, int, atom, float) = (types.any(), types.int(), types.atom(), types.float());
+    let target = |function: u32, second: crate::compiler2::types::Ty| CallTargetSummary {
+        callee: SelectedCallee::Function(FunctionId::from_coordinate(function)),
+        surface_inputs: vec![int, second],
+        activation: None,
+        activation_inputs: None,
+        extern_params: None,
+        return_ty: None,
+    };
+    let callsite = CallSiteId::from_u32(0);
+    let summaries = HashMap::from([(
+        callsite,
+        CallSiteSummary {
+            targets: vec![target(1, int), target(2, atom)],
+            return_ty: None,
+        },
+    )]);
+    let dispatch_demand = callsite_dispatch_demands(&mut types, &summaries);
+
+    let (first, second) = (ValueId::from_u32(0), ValueId::from_u32(1));
+    let args = [first, second].map(|value| CallArg {
+        value,
+        ascription: None,
+        ownership: crate::fz_ir::OwnershipMode::Share,
+    });
+    let value_types = HashMap::from([(first, int), (second, float)]);
+    let projection = |ty, dispatch| {
+        (
+            ty,
+            Rc::new(RuntimeDemandTypeProjection {
+                boundary: RuntimeDemand::ignore(),
+                dispatch,
+                callable_value_demand: None,
+            }),
+        )
+    };
+    let projections = HashMap::from([
+        projection(int, RuntimeDemand::ignore()),
+        projection(atom, RuntimeDemand::ignore()),
+        projection(float, RuntimeDemand::whole()),
+        projection(any, RuntimeDemand::ignore()),
+    ]);
+    let executable = ExecutableKey {
+        activation: ActivationKey::from_inputs(RootId::for_test(0), FunctionId::from_coordinate(0), &[], &mut types),
+        need: ExecutableNeed::Value,
+    };
+    let facts = ExecutableFacts {
+        analysis: ActivationAnalysis {
+            input_rows: Vec::new(),
+            entry_reachability: EntryReachability::new(Vec::new(), false),
+            reachable_entries: Vec::new(),
+            callsites: Vec::new(),
+            value_types,
+        },
+        body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
+        extern_wire: None,
+        entry_dispatch: None,
+        callsite_dispatch_demand: dispatch_demand,
+        callsites: summaries,
+        callsite_needs: HashMap::new(),
+        delivered_value_joins: HashMap::new(),
+        callsite_return_origins: HashMap::new(),
+        value_origins: HashMap::new(),
+        callable_origins: HashMap::new(),
+        return_origins: Box::new([]),
+        demand_types: RuntimeDemandTypeInputs::new(any),
+        callable_activation_inputs: Vec::new(),
+    };
+    let facts = facts.runtime_demand_facts(&projections);
+    let snapshot = RuntimeDemandFormulaSnapshot::new(
+        executable.clone(),
+        RuntimeDemandOwnInput {
+            return_demand: RuntimeDemand::ignore(),
+            input_demands: Vec::new(),
+        },
+        HashMap::new(),
+    );
+
+    let demands = super::arg_demands_for_summary(
+        &types,
+        &executable,
+        callsite,
+        &args,
+        CallInputMode::Direct,
+        &facts,
+        &snapshot,
+        &mut CallableFlowBuilder::default(),
+    );
+
+    assert_eq!(
+        demands,
+        vec![RuntimeDemand::ignore(), RuntimeDemand::whole()],
+        "the choice reads the second argument only"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::*;
     use crate::compiler2::body::ControlEntryOrigin;
-    use crate::compiler2::semantic::{CallTargetSummary, SelectedCallee};
     use crate::compiler2::types::Types;
     use crate::source::Span;
 
@@ -188,6 +296,7 @@ mod tests {
             body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
             extern_wire: None,
             entry_dispatch: None,
+            callsite_dispatch_demand: HashMap::new(),
             callsites: HashMap::new(),
             callsite_needs: HashMap::new(),
             delivered_value_joins: HashMap::new(),
@@ -311,44 +420,6 @@ mod tests {
                 callsite: closure_callsite,
                 callee: ValueId::from_u32(2),
             })
-        );
-    }
-
-    #[test]
-    fn multi_target_receiver_fallback_joins_exact_surfaces_independent_of_target_order() {
-        let mut types = Types::new();
-        let (any, int, atom) = (types.any(), types.int(), types.atom());
-        let target = |ty: Option<Ty>| CallTargetSummary {
-            callee: SelectedCallee::Function(FunctionId::from_coordinate(0)),
-            surface_inputs: ty.into_iter().collect(),
-            activation: None,
-            activation_inputs: None,
-            extern_params: None,
-            return_ty: None,
-        };
-        let summary = |targets| CallSiteSummary {
-            targets,
-            return_ty: None,
-        };
-        let expected = BTreeSet::from([int, atom]);
-
-        assert_eq!(
-            multi_target_receiver_fallbacks(&summary(vec![target(Some(int)), target(Some(atom))]), any),
-            expected
-        );
-        assert_eq!(
-            multi_target_receiver_fallbacks(&summary(vec![target(Some(atom)), target(Some(int))]), any),
-            expected
-        );
-        assert_eq!(
-            multi_target_receiver_fallbacks(&summary(vec![target(None), target(Some(atom))]), any),
-            BTreeSet::from([atom]),
-            "an absent surface must not widen a receiver when another target supplies its exact surface"
-        );
-        assert_eq!(
-            multi_target_receiver_fallbacks(&summary(vec![target(None), target(None)]), any),
-            BTreeSet::from([any]),
-            "only an entirely unknown target set needs the any fallback"
         );
     }
 }

@@ -185,6 +185,16 @@ rather than an ignored one (`read_tuple_demand`, `compiler2/executable_facts.rs`
 Such a tuple has no lanes, so keeping it costs nothing, and a tuple of them, such
 as `{{}}`, keeps it as a field and so stays present too.
 
+A type has two runtime-demand readings (`RuntimeDemandTypeProjection`): `boundary`,
+what a value needs when it crosses a boundary, and `dispatch`, what it needs when
+a choice inspects it. They agree on every type but a callable. A boundary reads
+a callable with the surfaces it can be called at and marks it escaping; a choice
+reads it as the whole value with no calling surfaces, because it inspects the
+closure and never calls it. A function's entry fold and a call's choice between
+its destinations both read arguments through `dispatch`. For a call, the
+arguments read come from the plan of `call_destinations`, the plan lowering
+dispatches by, kept as `ExecutableFacts::callsite_dispatch_demand`.
+
 Three rules decide what a question charges. A test charges its own subject at
 the demand its region asks for, plus the input that delivers any pin it names --
 a pinned equality, or a bitstring field whose size was bound before the pattern

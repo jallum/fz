@@ -12,14 +12,16 @@ use crate::dispatch_matrix::demand::DispatchDemand;
 use super::artifact::ExecutableDispatch;
 use super::body::{
     CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource, LoweredBody,
-    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
+    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId, callsite_call_args,
+    delivered_value_joins,
 };
+use super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableActivationInput, CallableDemand, CallableSurface,
     EntryReachability, RuntimeDemand, RuntimeDemandTypeInputs, RuntimeDemandTypeProjection,
 };
-use super::types::Ty;
+use super::types::{Ty, Types};
 use super::world::World;
 
 #[cfg_attr(test, derive(Clone))]
@@ -32,6 +34,9 @@ pub(crate) struct ExecutableFacts {
     /// `body` above carries its clauses instead.
     pub(super) extern_wire: Option<LoweredExtern>,
     pub(super) entry_dispatch: Option<ExecutableDispatch>,
+    /// What each multi-destination callsite's own choice between its
+    /// destinations reads of its arguments.
+    pub(super) callsite_dispatch_demand: HashMap<CallSiteId, Box<[DispatchDemand]>>,
     pub(super) callsites: HashMap<CallSiteId, CallSiteSummary>,
     pub(super) callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     pub(super) delivered_value_joins: HashMap<ControlEntryId, DeliveredValueJoin>,
@@ -51,6 +56,9 @@ pub(crate) struct RuntimeDemandFacts<'a> {
     pub(crate) value_types: &'a HashMap<ValueId, Ty>,
     /// What this executable's own entry dispatch reads of each input.
     pub(crate) entry_dispatch_demand: &'a [DispatchDemand],
+    /// What each multi-destination callsite's own choice between its
+    /// destinations reads of its arguments.
+    pub(crate) callsite_dispatch_demand: &'a HashMap<CallSiteId, Box<[DispatchDemand]>>,
     pub(crate) callsites: &'a HashMap<CallSiteId, CallSiteSummary>,
     pub(crate) callsite_needs: &'a HashMap<CallSiteId, ExecutableNeed>,
     pub(crate) delivered_value_joins: &'a HashMap<ControlEntryId, DeliveredValueJoin>,
@@ -150,6 +158,7 @@ impl ExecutableFacts {
             reachable_clauses: self.analysis.entry_reachability.clauses(),
             value_types: &self.analysis.value_types,
             entry_dispatch_demand: self.entry_dispatch_demand(),
+            callsite_dispatch_demand: &self.callsite_dispatch_demand,
             callsites: &self.callsites,
             callsite_needs: &self.callsite_needs,
             delivered_value_joins: &self.delivered_value_joins,
@@ -184,6 +193,20 @@ impl RuntimeDemandFacts<'_> {
 
     pub(crate) fn boundary_demand(&self, ty: Ty) -> RuntimeDemand {
         self.projection(ty).boundary.clone()
+    }
+
+    /// What this callsite's choice between its destinations reads of each
+    /// argument. A callsite with one destination chooses nothing.
+    pub(crate) fn callsite_dispatch_demand_of(&self, callsite: CallSiteId) -> &[DispatchDemand] {
+        self.callsite_dispatch_demand
+            .get(&callsite)
+            .map(AsRef::as_ref)
+            .unwrap_or_default()
+    }
+
+    /// The type a callsite argument carries, as the analysis settled it.
+    pub(crate) fn argument_type(&self, value: ValueId) -> Ty {
+        argument_type(self.value_types, self.demand_types.any, value)
     }
 
     pub(crate) fn dispatch_demand(&self, ty: Ty) -> RuntimeDemand {
@@ -313,6 +336,7 @@ pub(crate) fn project_executable_facts(
         .as_ref()
         .map(|dispatch| dispatch.plan().input_demand())
         .unwrap_or_default();
+    let callsite_dispatch_demand = callsite_dispatch_demands(world.types_mut(), &callsites);
     let mut demand_builder = prepare_runtime_demand_type_inputs(
         world,
         executable,
@@ -320,6 +344,7 @@ pub(crate) fn project_executable_facts(
         &body,
         extern_wire.as_ref(),
         entry_dispatch_demand,
+        &callsite_dispatch_demand,
         &callsites,
     );
     let capture_count = world.activation_capture_count(&executable.activation);
@@ -344,6 +369,7 @@ pub(crate) fn project_executable_facts(
         body,
         extern_wire,
         entry_dispatch,
+        callsite_dispatch_demand,
         callsites,
         callsite_needs,
         delivered_value_joins,
@@ -391,6 +417,28 @@ fn complete_settled_call_result_types(
     }
 }
 
+/// What each callsite with several destinations reads of its arguments to
+/// choose among them: the demand of the same plan lowering dispatches by.
+/// A callsite whose plan cannot be built reads nothing here; lowering builds
+/// the same plan and reports that failure as the program's diagnostic.
+pub(crate) fn callsite_dispatch_demands(
+    types: &mut Types,
+    callsites: &HashMap<CallSiteId, CallSiteSummary>,
+) -> HashMap<CallSiteId, Box<[DispatchDemand]>> {
+    callsites
+        .iter()
+        .filter(|(_, summary)| summary.targets.len() > 1)
+        .filter_map(|(&callsite, summary)| match call_destinations(types, summary) {
+            Ok(CallDestinations::Dispatch(dispatch)) => Some((callsite, dispatch.plan.input_demand().into())),
+            Ok(CallDestinations::Direct(_) | CallDestinations::None) | Err(_) => None,
+        })
+        .collect()
+}
+
+fn argument_type(value_types: &HashMap<ValueId, Ty>, any: Ty, value: ValueId) -> Ty {
+    value_types.get(&value).copied().unwrap_or(any)
+}
+
 fn prepare_runtime_demand_type_inputs(
     world: &mut World,
     executable: &ExecutableKey,
@@ -398,6 +446,7 @@ fn prepare_runtime_demand_type_inputs(
     body: &LoweredBody,
     extern_wire: Option<&LoweredExtern>,
     entry_dispatch_demand: &[DispatchDemand],
+    callsite_dispatch_demand: &HashMap<CallSiteId, Box<[DispatchDemand]>>,
     callsites: &HashMap<CallSiteId, CallSiteSummary>,
 ) -> RuntimeDemandTypeBuilder {
     let any = world.types_mut().any();
@@ -411,6 +460,16 @@ fn prepare_runtime_demand_type_inputs(
             .filter(|(_, demand)| demand.asks_anything())
             .filter_map(|(index, _)| activation_inputs.get(index).copied()),
     );
+    let call_args = callsite_call_args(body);
+    for (callsite, demands) in callsite_dispatch_demand {
+        let args = call_args.get(callsite).map(Vec::as_slice).unwrap_or_default();
+        tys.extend(
+            args.iter()
+                .zip(demands.iter())
+                .filter(|(_, demand)| demand.asks_anything())
+                .map(|(arg, _)| argument_type(&analysis.value_types, any, arg.value)),
+        );
+    }
     if let Some(signature) = extern_wire {
         tys.extend(activation_inputs.iter().skip(signature.params.len()).copied());
     }
@@ -500,6 +559,8 @@ fn prepare_type_projection(world: &mut World, builder: &mut RuntimeDemandTypeBui
     builder.projections.insert(ty, projection);
 }
 
+/// What a value of this type needs when it crosses a boundary (`escape`) or is
+/// inspected by a choice, which holds a callable whole and never calls it.
 fn prepare_runtime_demand_for_type(
     world: &mut World,
     builder: &mut RuntimeDemandTypeBuilder,
@@ -535,6 +596,9 @@ fn prepare_runtime_demand_for_type(
         }
         return RuntimeDemand::whole();
     };
+    if !escape {
+        return RuntimeDemand::whole();
+    }
     let resolved = clauses
         .into_iter()
         .map(|clause| prepare_surface(world, builder, &clause.args))
@@ -543,7 +607,7 @@ fn prepare_runtime_demand_for_type(
         resolved,
         targets: BTreeSet::new(),
         opaque: false,
-        escape,
+        escape: true,
     })
 }
 

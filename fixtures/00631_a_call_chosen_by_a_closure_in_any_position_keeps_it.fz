@@ -1,0 +1,17 @@
+#---
+# purpose: "a call that picks its destination by a closure keeps that closure, wherever the closure sits among the arguments"
+# oracle: 00631_a_call_chosen_by_a_closure_in_any_position_keeps_it.oracle.exs
+#---
+#
+# Each helper is called with two different closures, so its call to the
+# private function has two destinations and must look at the closure to choose.
+defp second(_x, f), do: f.()
+defp third(_x, _y, f), do: f.()
+
+def pick_second(f), do: second(0, f)
+def pick_third(f), do: third(0, 1, f)
+
+def main() do
+  dbg([pick_second(fn -> 0 end), pick_second(fn -> 1 end)])
+  dbg([pick_third(fn -> 2 end), pick_third(fn -> 3 end)])
+end
