@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-23T15:37:37Z",
+  "description": "A top-level `require` (or `import`) of a module defined earlier in the same file gives a misleading error:\n\n    defmodule M do\n      def f(), do: 7\n    end\n    require M\n    dbg(M.f())\n\nfz: \"resolve/unknown-function: function `main/0` is not defined\" (also with an explicit def main instead of statements; pre-dates script mode). Elixir refuses the program too, clearly: \"module M is not loaded but was defined. This happens when you depend on a module in the same context in which it is defined.\"\n\nDecide (paper first): support it, as fz publishes all definitions before main runs, or refuse it with a clear diagnostic naming the require and the module. Either way the error must not be about main/0. A fixture of a remote expression macro at the top level (the script-mode decision of 2026-10-23) arrives with this. Not needed by the distiller.",
+  "id": "fz-sc8.41",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A top-level require of a same-file module is not reported as a missing main/0",
+  "type": "bug",
+  "updated_at": "2026-10-23T15:37:37Z"
+}
