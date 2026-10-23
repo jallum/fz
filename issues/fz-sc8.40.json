@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-23T15:37:37Z",
+  "description": "An empty tuple joined with a value of another type and passed to a function crashes the JIT and the native build; the interpreter is right:\n\n    def show(x), do: x\n    def main() do\n      n = Process.heap_alloc_stats()[:allocs]\n      dbg(show(if n \u003c n + 1, do: {}, else: 5))\n    end\n\ninterp prints {}. run and build panic at src/compiler2/native_codegen/terminator.rs:87: \"continuation callee 35 expected at least 1 logical arg(s), got 0\".\n\nWorks: `{1}` instead of `{}`; both branches `{}`; no call around the `if`. Suspected (unverified): the zero-width tuple gets no lane when it travels joined with another type into a call; the same family as fz-sc8.31. Before fz-sc8.31 the symptom was \"StructField: subject is not a map or Struct\". Not needed by the distiller.",
+  "id": "fz-sc8.40",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "An empty tuple joined with another type survives a call on the JIT and the native build",
+  "type": "bug",
+  "updated_at": "2026-10-23T15:37:37Z"
+}
