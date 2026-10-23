@@ -6,14 +6,15 @@
     "fz-sc8.6",
     "fz-sc8.7"
   ],
+  "closed_at": "2026-10-23T15:20:16Z",
   "created": "2026-10-17T19:00:42Z",
   "description": "`Distill.main(System.argv())` after a defmodule -\u003e parse error at item position (frontdoor.rs:152; parse_item accepts only items and Ident-headed macro calls). Every path submits root main/0 (cli.rs:663, :699).\n\nDecision (2026-10-17): a file's top-level expressions become the program's main/0, in order, after all definitions are published (a superset of Elixir). A file with both top-level expressions and its own main/0 is a compile error naming both. Files with only def main() are unchanged.\n\nDesign (page /Users/j5n/Workspace/fz-sc8.5.html; APPROVED 2026-10-18). The parser cannot tell a statement from a macro item (def/test/user macros are plain identifiers; `test` is a macro only under fz2 test); expansion already decides \"not a macro\" and today turns it into item_macro_not_defmacro. So:\n1. Parser: at file top level only (empty module path, Eof terminator) parse_item accepts any expression start; defmodule bodies keep the refusal.\n2. Surface: a top-level item that is not a call node becomes ScopeForm::Statement; call-shaped items stay MacroCall (incl. remote calls).\n3. Expansion: in a submitted file's top-level scope (current_module.is_global() \u0026\u0026 !world.is_prelude(owner)), a form that is not a macro is recorded in the ScopeSession as a statement, in walk order; elsewhere item_macro_not_defmacro fires as today.\n4. End of ScopeSession::publish (that scope only), when statements exist: if main/0 is also reserved -\u003e new diagnostic resolve/script-and-main (primary: first statement; secondary: the def main), code in src/diag/codes.rs + codes_test.rs; else synthesize def main() with the statements as one __block__ (single statement bare), span first..last, published via define_source_function.\nTests: frontdoor_test (top level accepts expressions, defmodule still refuses, test(:name) do..end stays one item); oracle fixture (script run by elixir) with kind: run covering defmodule then statements, binding flow, remote call, forward call to a later def, literal statement; diagnostic fixture for script + def main; fz2 test discovery unchanged.\nPredicted: no existing fixture, pin or golden moves; no new job.\nRemoval: top-level \"does not yet parse … at item position\" refusal; item_macro_not_defmacro in a submitted file's top-level scope.\nDocs: pipeline.md, parser-syntax.md, fixtures.md, guides/modules.html, README if it describes program shape.\nDecision (2026-10-23): a top-level macro call whose expansion is not a definition form is a statement too, in walk order, wherever the macro comes from (`require Integer; Integer.is_even(4)` runs as in Elixir; a same-file macro used at the top level, an Elixir compile error, also works: one rule, a superset of Elixir). Fixture covers a remote expression macro at the top level.",
   "id": "fz-sc8.5",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Script mode: a file's top-level expressions run in order",
   "type": "feature",
-  "updated_at": "2026-10-23T14:49:20Z"
+  "updated_at": "2026-10-23T15:20:16Z"
 }
