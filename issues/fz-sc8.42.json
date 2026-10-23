@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-23T15:37:37Z",
+  "description": "When a script's first top-level statement is a bare literal (`:ignored`, `42`), `resolve/script-and-main` has no primary source location: the front door records no span for literals, so the statement's span is Span::DUMMY (quoted_surface.rs, StatementForm). Call-shaped statements keep their spans.\n\nExpected: every top-level statement, literal or not, carries its source span, so the diagnostic points at it. Fix where the span is lost (the front door's literal nodes), not by skipping to the next statement. Not needed by the distiller.",
+  "id": "fz-sc8.42",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A top-level literal statement keeps its source span",
+  "type": "bug",
+  "updated_at": "2026-10-23T15:37:37Z"
+}
