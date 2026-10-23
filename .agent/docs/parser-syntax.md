@@ -18,6 +18,22 @@ Keep this boundary crisp:
 - Do not revive `Parser::new`, `parse_program`, `parse_prelude`, or
   `parse_expr_eof`; old callers should move to compiler2 quoted source.
 
+## A file's top level takes any expression
+
+`parse_program` reads a file with `parse_file_item`; a `defmodule` body, a
+protocol body and every other item list read with `parse_item`. Both accept the
+same definition items (`def`-family macro calls, `defmodule`, `alias`,
+`import`, `require`, `@`-attributes, ...). Only the file's top level also
+accepts any other expression as an item, so `Distill.main(argv)`, `x = 1`, `42`
+and `if ... do ... end` parse there, and the same line inside a `defmodule`
+fails with `does not yet parse ... at item position`.
+
+The parser cannot tell a statement from a macro call (`def`, `test` and user
+macros all lex as plain identifiers), so it does not try: a call-shaped item is
+a `ScopeForm::MacroCall` and a non-call item (a literal) is a
+`ScopeForm::Statement`. Expansion decides, per `pipeline.md` "A file's
+top-level expressions are its `main/0`".
+
 ## Newline continuation is grammar-owned, not a parser lookahead
 
 Physical newlines are first-class `Tok::Newline` tokens. Whether a newline

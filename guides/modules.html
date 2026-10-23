@@ -77,6 +77,21 @@ qualified as <code>Math.double(21)</code>.</p>
 
 <p>The full name of that function is <code>App.Clock.tick/0</code>.</p>
 
+<p>A file can also be a script. Expressions written at the top level run in
+order as the program's <code>main/0</code>, after every definition in the file
+is available, so a statement can call a function or module defined further
+down:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">Math</span> <span class="kw">do</span>
+  <span class="kw">def</span> <span class="fn">double</span>(x), <span class="kw">do:</span> x * <span class="num">2</span>
+<span class="kw">end</span>
+
+n = <span class="num">21</span>
+<span class="fn">dbg</span>(<span class="ty">Math</span>.<span class="fn">double</span>(n))</pre>
+
+<p>A file that has top-level expressions and its own <code>def main()</code>
+is an error that names both.</p>
+
 <!-- ─────────────────────────────── 3. CALL ─────────────────────────────── -->
 <h2 id="call">3. Calling across modules</h2>
 

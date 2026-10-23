@@ -12,7 +12,7 @@ use crate::ast::{Attribute, SpecDecl, TypeExprBody, Var};
 use crate::diag::{Diagnostic, codes};
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
-use crate::source::Span;
+use crate::source::{SourceMap, Span};
 use crate::telemetry::TelemetryExt as _;
 
 use super::code::SourceOwner;
@@ -25,16 +25,17 @@ use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
 use super::quoted_expander::{
     ExpandedScopeFragment, QuotedExpansionCtx, emit_internal_surface_error, emit_job_diagnostic,
-    emit_surface_read_error, expand_item_macro_fragment, read_compiler_fragment_root,
+    emit_surface_read_error, expand_item_macro_fragment, item_macro_expanded_to_a_non_definition,
+    item_macro_not_defmacro, read_compiler_fragment_root,
 };
 use super::quoted_surface::{
     CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, ProtocolImplForm, ReservedSourceDefinition,
-    ScopeForm, ScopeSurface, StructForm, read_module_body_surface, read_protocol_body_surface,
+    ScopeForm, ScopeSurface, StatementForm, StructForm, read_module_body_surface, read_protocol_body_surface,
     read_protocol_impl_body_surface, reserved_source_definition,
 };
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
-use super::source::{QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata};
+use super::source::{QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata, QuotedSourceRoot};
 use super::structdef::StructDef;
 use super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::world::{ProtocolCallbackSurface, World};
@@ -126,6 +127,9 @@ struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     callables: Vec<ModuleInterfaceCallable>,
     revision_floor: u64,
     struct_form_seen: bool,
+    /// The expressions a submitted file's top level holds, in walk order. They
+    /// become the file's `main/0` once every definition is published.
+    statements: Vec<StatementForm>,
     /// One ordinal per macro invocation this session visits, drawn whether
     /// or not the expansion hits the memoization cache (`next_hygiene_ordinal`
     /// on `QuotedExpansionCtx`). Local to this job attempt, reset with it.
@@ -547,6 +551,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             callables: Vec::new(),
             revision_floor: 0,
             struct_form_seen: false,
+            statements: Vec::new(),
             next_hygiene_counter: 0,
         }
     }
@@ -558,10 +563,66 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         if let Some(blocked) = self.apply_surface_fragment(surface, &context)? {
             return Ok(ScopePublication::Blocked(blocked));
         }
+        self.publish_script_main()?;
         if let Some(blocked) = self.publish_module_info()? {
             return Ok(ScopePublication::Blocked(self.blocked_effects(blocked)));
         }
         Ok(self.complete())
+    }
+
+    /// A submitted file's top level is a script when it holds expressions:
+    /// they are the body of the program's `main/0`.
+    fn is_script_scope(&self) -> bool {
+        self.current_module.is_global() && !self.world.is_prelude(self.source_owner)
+    }
+
+    fn publish_script_main(&mut self) -> Result<(), FatalError> {
+        let (Some(first), Some(last)) = (self.statements.first(), self.statements.last()) else {
+            return Ok(());
+        };
+        let span = first.span.merge(last.span);
+        if let Some(main) = self.local_callables.get(&("main".to_string(), 0)) {
+            return Err(self.script_and_main_diagnostic(first.span, main.clone()));
+        }
+        let function = build_script_main(&self.statements, span).map_err(|error| {
+            emit_internal_surface_error(self.telemetry, format!("script main synthesis failed: {error}"))
+        })?;
+        let context = FragmentPublicationContext::module_surface(self.current_module);
+        let publication = self.define_source_function(
+            self.current_module,
+            self.current_module,
+            self.namespace,
+            &function,
+            &context,
+        )?;
+        if let Some(callable) = publication.callable {
+            self.callables.push(callable);
+        }
+        Ok(())
+    }
+
+    fn script_and_main_diagnostic(&self, first_statement: Span, main: NamespaceSymbol) -> FatalError {
+        let mut diagnostic = Diagnostic::error(
+            codes::RESOLVE_SCRIPT_AND_MAIN,
+            "a file with top-level expressions cannot also define `main/0`",
+            first_statement,
+        );
+        if let Some(span) = self.definition_span(&main) {
+            diagnostic = diagnostic.with_secondary(span, "the file's own `main/0` is defined here");
+        }
+        emit_job_diagnostic(self.telemetry, diagnostic)
+    }
+
+    fn definition_span(&self, symbol: &NamespaceSymbol) -> Option<Span> {
+        let (NamespaceSymbol::Function(function)
+        | NamespaceSymbol::Macro(function)
+        | NamespaceSymbol::Callable(function)) = symbol
+        else {
+            return None;
+        };
+        let source = self.world.function_source(*function)?;
+        let source_map = self.world.source_map();
+        first_clause_span(&source.source, &source_map.borrow())
     }
 
     fn publish_module_info(&mut self) -> Result<Option<JobEffects>, FatalError> {
@@ -680,6 +741,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 | ScopeForm::Require(_)
                 | ScopeForm::CompilerService(_)
                 | ScopeForm::Struct(_)
+                | ScopeForm::Statement(_)
                 | ScopeForm::ProtocolImpl(_) => {}
                 ScopeForm::MacroCall(macro_call) => {
                     let source_map = self.world.source_map();
@@ -874,10 +936,31 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         let scope = ScopeSnapshot::module(self.current_module, self.namespace);
         let surface = match expand_item_macro_fragment(self, macro_call, scope)? {
             ExpandedScopeFragment::Complete(surface) => surface,
+            ExpandedScopeFragment::NotAMacro { display_name } => {
+                if !self.is_script_scope() {
+                    return Err(item_macro_not_defmacro(self.telemetry, &display_name, macro_call.span));
+                }
+                self.statements.push(StatementForm {
+                    source: macro_call.source.clone(),
+                    span: macro_call.span,
+                });
+                return Ok(None);
+            }
             ExpandedScopeFragment::Blocked(effects) => return Ok(Some(*effects)),
         };
+        if !self.is_script_scope() && surface.forms.iter().any(is_expression_form) {
+            return Err(item_macro_expanded_to_a_non_definition(self.telemetry, macro_call.span));
+        }
         let context = FragmentPublicationContext::expanded_fragment(self.current_module);
         self.apply_surface_fragment(&surface, &context)
+    }
+
+    fn apply_statement(&mut self, statement: &StatementForm) -> Result<Option<JobEffects>, FatalError> {
+        if !self.is_script_scope() {
+            return Err(item_macro_expanded_to_a_non_definition(self.telemetry, statement.span));
+        }
+        self.statements.push(statement.clone());
+        Ok(None)
     }
 
     fn apply_surface_fragment(
@@ -950,6 +1033,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             }
             ScopeForm::ProtocolImpl(protocol_impl) => self.register_protocol_impl(self.current_module, protocol_impl),
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
+            ScopeForm::Statement(statement) => self.apply_statement(statement),
             ScopeForm::Struct(def) => {
                 self.publish_struct_def(def)?;
                 Ok(None)
@@ -1744,6 +1828,42 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             interface: ModuleInterface::new(self.callables),
         }
     }
+}
+
+fn is_expression_form(form: &ScopeForm) -> bool {
+    matches!(form, ScopeForm::MacroCall(_) | ScopeForm::Statement(_))
+}
+
+fn first_clause_span(source: &QuotedSourceRoot, sources: &SourceMap) -> Option<Span> {
+    let clause = source.cursor().list_items().ok()?.into_iter().next()?;
+    clause.ast_node(sources).ok()??.span
+}
+
+/// `def main() do <statements> end`: one statement is the body as written,
+/// several are one `__block__` in walk order.
+fn build_script_main(statements: &[StatementForm], span: Span) -> Result<FunctionForm, QuotedSourceError> {
+    let builder = statements[0].source.builder();
+    let meta = QuotedSourceMetadata {
+        span: Some(span),
+        ..QuotedSourceMetadata::default()
+    };
+    let roots: Vec<AnyValueRef> = statements.iter().map(|statement| statement.source.root()).collect();
+    let body = match roots.as_slice() {
+        [only] => *only,
+        _ => builder.call("__block__", &meta, &roots)?,
+    };
+    let head = builder.call("main", &meta, &[])?;
+    let do_kw = builder.list(&[builder.keyword("do", body)?])?;
+    let clause = builder.call("def", &meta, &[head, do_kw])?;
+    Ok(FunctionForm {
+        source: statements[0].source.subroot(builder.list(&[clause])?),
+        name: "main".to_string(),
+        arity: 0,
+        is_macro: false,
+        is_private: false,
+        variadic: false,
+        span,
+    })
 }
 
 fn build_module_info_function(

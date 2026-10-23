@@ -898,6 +898,36 @@ fn compiler2_frontdoor_parses_item_macro_calls_with_trailing_do() {
 }
 
 #[test]
+fn compiler2_frontdoor_accepts_any_expression_at_the_top_level_of_a_file() {
+    let tel = ConfiguredTelemetry::new();
+    let source = "defmodule Greeter do\nend\n\nGreeter.main(1)\n42\n[:a]\nx\n";
+    let root = parse_quoted_program("script.fz", source, &tel).expect("a script file parses");
+
+    let items = root.cursor().list_items().expect("top-level items");
+    assert_eq!(
+        items.len(),
+        5,
+        "the module and four expressions are five items in source order"
+    );
+    assert!(
+        items[1].trusted_ast_node().expect("remote call cursor").is_some(),
+        "a remote call is a call node"
+    );
+    assert_eq!(items[2].int_value().expect("literal item"), 42);
+}
+
+#[test]
+fn compiler2_frontdoor_refuses_an_expression_at_item_position_inside_a_module() {
+    let tel = ConfiguredTelemetry::new();
+    let (error, _) = parse_quoted_error("module_expr.fz", "defmodule M do\n  Foo.bar(1)\nend\n", &tel);
+    assert!(
+        error.msg.contains("at item position"),
+        "a module body still accepts only items; got `{}`",
+        error.msg
+    );
+}
+
+#[test]
 fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtures() {
     let tel = ConfiguredTelemetry::new();
 

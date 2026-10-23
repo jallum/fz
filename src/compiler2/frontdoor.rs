@@ -123,7 +123,7 @@ impl FrontDoorParser {
     }
 
     fn parse_program(mut self) -> Result<QuotedSourceRoot, FrontDoorError> {
-        let items = self.parse_items_until(&[Tok::Eof], &[])?;
+        let items = self.parse_items_until(&[Tok::Eof], &[], Self::parse_file_item)?;
         self.builder
             .root(self.builder.list(&items)?)
             .map_err(FrontDoorError::from)
@@ -133,14 +133,40 @@ impl FrontDoorParser {
         &mut self,
         terminators: &[Tok],
         module_path: &[String],
+        parse_one: fn(&mut Self, &[String]) -> Result<AnyValueRef, FrontDoorError>,
     ) -> Result<Vec<AnyValueRef>, FrontDoorError> {
         let mut items = Vec::new();
         self.skip_newlines();
         while !terminators.iter().any(|terminator| self.peek_is(terminator)) {
-            items.push(self.parse_item(module_path)?);
+            items.push(parse_one(self, module_path)?);
             self.require_newline_or_terminator(terminators, "unexpected item without a newline")?;
         }
         Ok(items)
+    }
+
+    /// A file's top level holds the same items a module body does, and any
+    /// other expression too: those become the program's `main/0`.
+    fn parse_file_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
+        if self.peek_starts_item_keyword() {
+            return self.parse_item(module_path);
+        }
+        Ok(self.parse_expr(module_path, &[])?.root)
+    }
+
+    fn peek_starts_item_keyword(&self) -> bool {
+        matches!(
+            self.peek(),
+            Tok::At
+                | Tok::Alias
+                | Tok::Import
+                | Tok::Require
+                | Tok::Defmodule
+                | Tok::Defstruct
+                | Tok::Defprotocol
+                | Tok::Defimpl
+                | Tok::Extern
+                | Tok::Defmacro
+        )
     }
 
     fn parse_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
@@ -304,7 +330,7 @@ impl FrontDoorParser {
         self.skip_newlines();
         let mut nested_path = module_path.to_vec();
         nested_path.extend(name_path.iter().cloned());
-        let items = self.parse_items_until(&[Tok::End], &nested_path)?;
+        let items = self.parse_items_until(&[Tok::End], &nested_path, Self::parse_item)?;
         self.expect(&Tok::End, "`end`")?;
         let body = self.builder.list(&items)?;
         let kw = self.builder.list(&[self.builder.keyword("do", body)?])?;
@@ -380,7 +406,7 @@ impl FrontDoorParser {
         let target_alias = self.builder.alias(&meta, &segments_ref(&target_path))?;
         self.expect(&Tok::Do, "`do`")?;
         self.skip_newlines();
-        let items = self.parse_items_until(&[Tok::End], module_path)?;
+        let items = self.parse_items_until(&[Tok::End], module_path, Self::parse_item)?;
         self.expect(&Tok::End, "`end`")?;
         let span = start.merge(self.prev_span());
         let body_meta = self.meta(span)?;
@@ -757,9 +783,9 @@ impl FrontDoorParser {
             Tok::Fn => self.with_matched_do_boundary(|parser| parser.parse_lambda_expr(module_path, scope, start)),
             Tok::Amp => self.parse_capture_expr(module_path, scope, start),
             Tok::Caret => self.parse_pin_expr(module_path, scope, start),
-            other => self.err(format!(
-                "unsupported expression prefix in compiler2 front door: {:?}",
-                other
+            other => Err(FrontDoorError::syntax(
+                format!("unsupported expression prefix in compiler2 front door: {:?}", other),
+                start,
             )),
         }
     }

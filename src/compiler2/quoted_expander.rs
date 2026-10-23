@@ -12,9 +12,7 @@ use super::drive::{FactKey, JobEffects, ProductAddress};
 use super::identity::{FunctionId, ModuleId};
 use super::namespace::NamespaceSymbol;
 use super::pull::{ProductKey, ProductSessions, ProductValue};
-use super::quoted_surface::{
-    MacroCallForm, ScopeForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface,
-};
+use super::quoted_surface::{MacroCallForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface};
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::source_sugar::rewrite_source_sugar;
@@ -34,6 +32,11 @@ pub(crate) enum ExpandedValue {
 
 pub(crate) enum ExpandedScopeFragment {
     Complete(ScopeSurface),
+    /// The item's head is bound to no macro, so there is nothing to expand:
+    /// the scope decides whether the item is an expression or an error.
+    NotAMacro {
+        display_name: String,
+    },
     Blocked(Box<JobEffects>),
 }
 
@@ -892,11 +895,9 @@ pub(crate) fn expand_item_macro_fragment<C: QuotedExpansionCtx>(
         .map(Some)?
     };
     let Some(result) = result else {
-        return Err(item_macro_not_defmacro(
-            ctx.telemetry(),
-            &invocation.display_name,
-            macro_call.span,
-        ));
+        return Ok(ExpandedScopeFragment::NotAMacro {
+            display_name: invocation.display_name,
+        });
     };
     let expanded = match result {
         ExpandedValue::Complete(root) => item_macro_fragment_root(ctx.telemetry(), &owner.subroot(root))?,
@@ -909,16 +910,6 @@ pub(crate) fn expand_item_macro_fragment<C: QuotedExpansionCtx>(
         "item macro expanded source",
         &source_map.borrow(),
     )?;
-    if surface.forms.iter().any(|form| matches!(form, ScopeForm::MacroCall(_))) {
-        return Err(emit_job_diagnostic(
-            ctx.telemetry(),
-            Diagnostic::error(
-                codes::MACRO_NOT_A_DEFMACRO,
-                "item macro expansion returned a non-definition call",
-                macro_call.span,
-            ),
-        ));
-    }
     Ok(ExpandedScopeFragment::Complete(surface))
 }
 
@@ -1217,7 +1208,23 @@ fn item_macro_of_the_module_being_defined(
     )
 }
 
-fn item_macro_not_defmacro(
+/// An item macro expanded into something that is not a definition, in a scope
+/// that has no program to run it.
+pub(crate) fn item_macro_expanded_to_a_non_definition(
+    tel: &impl crate::telemetry::Telemetry,
+    span: Span,
+) -> super::scheduler::FatalError {
+    emit_job_diagnostic(
+        tel,
+        Diagnostic::error(
+            codes::MACRO_NOT_A_DEFMACRO,
+            "item macro expansion returned a non-definition call",
+            span,
+        ),
+    )
+}
+
+pub(crate) fn item_macro_not_defmacro(
     tel: &impl crate::telemetry::Telemetry,
     name: &str,
     span: Span,

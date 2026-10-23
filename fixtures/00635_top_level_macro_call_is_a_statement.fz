@@ -1,0 +1,11 @@
+#---
+# purpose: "A top-level call to a macro whose expansion is not a definition is a statement of the file's main/0, like any other top-level expression"
+# kind: run
+#---
+defmacro show_doubled(x) do
+  quote do: dbg(unquote(x) * 2)
+end
+
+n = 21
+show_doubled(n)
+dbg(:after)

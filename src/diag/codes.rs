@@ -28,6 +28,7 @@ pub const RESOLVE_NOT_A_STRUCT: DiagCode = DiagCode("resolve/not-a-struct");
 pub const RESOLVE_NOT_A_PROTOCOL: DiagCode = DiagCode("resolve/not-a-protocol");
 pub const RESOLVE_DUPLICATE_STRUCT: DiagCode = DiagCode("resolve/duplicate-struct");
 pub const RESOLVE_DUPLICATE_FUNCTION: DiagCode = DiagCode("resolve/duplicate-function");
+pub const RESOLVE_SCRIPT_AND_MAIN: DiagCode = DiagCode("resolve/script-and-main");
 
 // ----- protocol -----
 

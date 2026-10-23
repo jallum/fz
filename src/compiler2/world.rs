@@ -2888,7 +2888,13 @@ fn code_surface_function_match(
                 }
             }
             ScopeForm::MacroCall(macro_call) => item_macro_call_match(&macro_call.source, function_ref, sources)?,
-            ScopeForm::Alias(_)
+            // Top-level expressions become the file's `main/0`, which only
+            // scoping the code can publish.
+            ScopeForm::Statement(_) if function_ref.is_named("main") && function_ref.arity == 0 => {
+                FunctionSurfaceMatch::Opaque
+            }
+            ScopeForm::Statement(_)
+            | ScopeForm::Alias(_)
             | ScopeForm::Import(_)
             | ScopeForm::Require(_)
             | ScopeForm::Module(_)
