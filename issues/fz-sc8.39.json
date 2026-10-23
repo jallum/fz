@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-23T15:37:36Z",
+  "description": "A guard comparing against a list, tuple or map literal is refused; Elixir allows it:\n\n    def empty?(t) when t == [], do: true\n    def empty?(_t), do: false\n    def main(), do: dbg([empty?([]), empty?([1])])\n\nfz (interp and run): \"compiler2 entry guards for `empty?/1` are not dispatch-pure and cannot be planned\". Elixir prints [true, false].\n\nWorks: `t == 0`, `t == :a`, `t == \"s\"`. Fails: `t == []`, `t == [1]`, `t == {}`, `t == %{}`, `[] == t`, `t === []`. Not needed by the distiller.",
+  "id": "fz-sc8.39",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A guard compares against a list, tuple or map literal, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-10-23T15:37:36Z"
+}
