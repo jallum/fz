@@ -1,0 +1,105 @@
+#---
+# purpose: "a clause body of several lines runs each line in order and answers its last line, in fn, case, receive, cond and with-else, and a line that is not `head ->` never starts a clause"
+# oracle: 00642_clause_bodies_run_every_line_in_order.oracle.exs
+#---
+def main() do
+  f =
+    fn ss ->
+      dbg(:fn_first)
+      counts = ss
+      dbg(:fn_second)
+      counts
+    end
+
+  dbg(f.([1]))
+
+  g =
+    fn
+      0 ->
+        dbg(:fn_zero)
+        :zero
+      n ->
+        dbg(:fn_other)
+        m = n + 1
+        dbg(m)
+        m
+    end
+
+  dbg({g.(0), g.(4)})
+
+  h =
+    fn x, y ->
+      dbg(:fn_pair)
+      x + y
+    end
+
+  dbg(h.(1, 2))
+
+  dbg(
+    case 2 do
+      1 ->
+        dbg(:case_one)
+        :one
+      n ->
+        dbg(:case_first)
+        k = n * 10
+        dbg(:case_second)
+        k
+    end
+  )
+
+  send(self(), 5)
+
+  dbg(
+    receive do
+      m ->
+        dbg(:receive_first)
+        r = m + 1
+        dbg(:receive_second)
+        r
+    end
+  )
+
+  limit = 3
+
+  dbg(
+    cond do
+      limit > 5 ->
+        dbg(:cond_skipped)
+        :skipped
+      limit > 1 ->
+        dbg(:cond_first)
+        c = 3
+        dbg(:cond_second)
+        c
+    end
+  )
+
+  dbg(
+    with {:ok, a} <- {:error, 9} do
+      a
+    else
+      {:error, e} ->
+        dbg(:else_first)
+        w = e + 1
+        dbg(:else_second)
+        w
+    end
+  )
+
+  dbg(
+    case 3 do
+      n ->
+        inner = fn z ->
+          dbg(:nested_fn)
+          z + 1
+        end
+
+        case inner.(n) do
+          4 ->
+            dbg(:nested_case)
+            :four
+        end
+    end
+  )
+end

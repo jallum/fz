@@ -213,7 +213,8 @@ optional `after` section, each ending at the next section keyword or `end`.
 Each section is decided independently by `parse_do_section`, using the same
 rule Elixir uses: parse the section's first statement, then look for a
 following `->`. Finding one turns the whole section into a list of
-`pattern -> body` clauses (`finish_clause_list`); anything else makes it an
+`pattern -> body` clauses (`finish_clause_list`, which hands them to the
+one clause-list reader below); anything else makes it an
 ordinary block, wrapping more than one statement in `__block__`. This one
 rule is what lets `if`, `case`, `cond`, `with`, and `receive` share a single
 do-block reader despite each wanting a different section shape — `case`'s
@@ -221,6 +222,28 @@ do-block reader despite each wanting a different section shape — `case`'s
 pattern followed by `->`, while `if`'s `do` is always block-shaped because
 it never is. A parenthesized grouping `(...)` gets the same clause check
 when it holds one bare clause, e.g. `case(1, do: (1 -> 1))`.
+
+## One clause-list reader
+
+`fn`, the clause-shaped do-sections (`case`, `cond`, `receive`,
+`with ... else`) and the parenthesized `(a -> b)` form all read their clauses
+through `parse_clause_list`. Only the head differs: `fn` heads are parameter
+lists (`parse_param_head`), the others are one pattern expression.
+
+A clause body may span several lines, and Elixir's rule decides which lines
+belong to which clause: a line starts a new clause only when it is itself
+`head ->`; every other line joins the body of the clause above it. A body of
+one line stays a bare expression, and a body of several is a `__block__`,
+built by `parse_block_lines`, the same reader that builds every other block.
+
+Each line is read once and classified by the token that follows it
+(`parse_clause_line`). A pattern line is a head exactly when `->` follows it.
+A parameter line is a head when `,`, `when` or `->` follows its first
+expression, or when it opens with a parenthesis group followed by `when` or
+`->`; no body line can continue that way. The first clause of a list is
+always a head, so a plain line before it keeps the head's own error. A line
+that is neither a body line nor a head is reported where it ends, and two
+clauses on one line are reported as a missing newline.
 
 ## A no-parens call's own comma is not always its own
 

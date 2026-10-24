@@ -69,6 +69,47 @@ struct FrontDoorParser {
     saw_no_parens_call: bool,
 }
 
+/// What a clause head looks like and how its lines are told apart from body
+/// lines.
+#[derive(Clone, Copy)]
+enum ClauseKind {
+    /// `fn` heads: a parameter list with an optional `when`.
+    Params,
+    /// `case`, `receive`, `cond`, `with ... else` and `(a -> b)` heads: one
+    /// pattern expression.
+    Pattern,
+}
+
+impl ClauseKind {
+    fn missing_separator(self) -> &'static str {
+        match self {
+            ClauseKind::Params => "unexpected anonymous-function clause without a newline",
+            ClauseKind::Pattern => "unexpected clause without a newline",
+        }
+    }
+}
+
+/// Binding power at which a `fn` parameter is read: above `when`, below
+/// every expression form a parameter can take.
+const PARAM_BP: u8 = 5;
+
+struct ClauseHead {
+    patterns: AnyValueRef,
+    span: Span,
+}
+
+enum ClauseLine {
+    Head(ClauseHead),
+    Body(ParsedExpr),
+}
+
+struct BlockEnd {
+    body: AnyValueRef,
+    /// Where the last body line ends.
+    span: Span,
+    next_head: Option<ClauseHead>,
+}
+
 #[derive(Clone)]
 struct ParsedExpr {
     root: AnyValueRef,
@@ -1067,60 +1108,77 @@ impl FrontDoorParser {
         start: Span,
     ) -> Result<ParsedExpr, FrontDoorError> {
         self.skip_newlines();
-        let mut clauses = Vec::new();
-        while !matches!(self.peek(), Tok::End | Tok::Eof) {
-            let clause_start = self.cur_span();
-            let params = if self.eat(&Tok::LParen) {
-                let params = self.parse_exprs_until(&Tok::RParen, module_path, scope)?;
-                self.expect(&Tok::RParen, "`)`")?;
-                params
-            } else {
-                self.parse_bare_lambda_params(module_path, scope)?
-            };
-            let patterns = if self.eat(&Tok::When) {
-                let guard = self.parse_expr(module_path, scope)?;
-                let when_span = clause_start.merge(guard.span);
-                let when_meta = self.meta(when_span)?;
-                let mut when_args = params.clone();
-                when_args.push(guard.root);
-                self.builder
-                    .list(&[self.builder.call("when", &when_meta, &when_args)?])?
-            } else {
-                self.builder.list(&params)?
-            };
-            self.expect(&Tok::Arrow, "`->`")?;
-            self.skip_newlines();
-            let body = self.with_comma_unbound(|parser| parser.parse_expr(module_path, scope))?;
-            let clause_span = clause_start.merge(body.span);
-            let clause_meta = self.meta(clause_span)?;
-            clauses.push(self.builder.call("->", &clause_meta, &[patterns, body.root])?);
-            self.require_newline_or_terminator(
-                &[Tok::End, Tok::Eof],
-                "unexpected anonymous-function clause without a newline",
-            )?;
-        }
+        let clauses = if matches!(self.peek(), Tok::End | Tok::Eof) {
+            Vec::new()
+        } else {
+            let head = self.parse_param_head(None, module_path, scope)?;
+            self.parse_clause_list(ClauseKind::Params, head, &[Tok::End, Tok::Eof], module_path, scope)?
+        };
         self.expect(&Tok::End, "`end`")?;
         let span = start.merge(self.prev_span());
         let meta = self.meta(span)?;
         Ok(ParsedExpr::plain(self.builder.call("fn", &meta, &clauses)?, span))
     }
 
+    /// The parameters of one `fn` clause, up to but not including its `->`:
+    /// `(a, b)`, bare `a, b`, `()` or nothing, each with an optional `when`
+    /// guard around the whole list. `first` is a parameter the caller has
+    /// already read.
+    fn parse_param_head(
+        &mut self,
+        first: Option<ParsedExpr>,
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<ClauseHead, FrontDoorError> {
+        let clause_start = first.as_ref().map_or_else(|| self.cur_span(), |first| first.span);
+        let params = if first.is_none() && self.eat(&Tok::LParen) {
+            let params = self.parse_exprs_until(&Tok::RParen, module_path, scope)?;
+            self.expect(&Tok::RParen, "`)`")?;
+            params
+        } else {
+            self.parse_bare_lambda_params(first, module_path, scope)?
+        };
+        if self.eat(&Tok::When) {
+            let guard = self.parse_expr(module_path, scope)?;
+            let span = clause_start.merge(guard.span);
+            let when_meta = self.meta(span)?;
+            let mut when_args = params;
+            when_args.push(guard.root);
+            let patterns = self
+                .builder
+                .list(&[self.builder.call("when", &when_meta, &when_args)?])?;
+            Ok(ClauseHead { patterns, span })
+        } else {
+            let patterns = self.builder.list(&params)?;
+            Ok(ClauseHead {
+                patterns,
+                span: clause_start,
+            })
+        }
+    }
+
     fn parse_bare_lambda_params(
         &mut self,
+        first: Option<ParsedExpr>,
         module_path: &[String],
         scope: &[String],
     ) -> Result<Vec<AnyValueRef>, FrontDoorError> {
-        if self.peek_is(&Tok::Arrow) {
+        if first.is_none() && self.peek_is(&Tok::Arrow) {
             return Ok(Vec::new());
         }
 
         let mut params = Vec::new();
+        let mut next = first;
         loop {
             // `when` belongs to the clause, not its final parameter. Its
             // binding power is lower than every parameter expression form,
-            // so parsing at 5 leaves it for `parse_lambda_expr` to package
-            // around the complete parameter list.
-            params.push(self.parse_bp(5, module_path, scope)?.root);
+            // so parsing at `PARAM_BP` leaves it for `parse_param_head` to
+            // package around the complete parameter list.
+            let param = match next.take() {
+                Some(param) => param,
+                None => self.parse_bp(PARAM_BP, module_path, scope)?,
+            };
+            params.push(param.root);
             if !self.eat(&Tok::Comma) {
                 break;
             }
@@ -1297,21 +1355,76 @@ impl FrontDoorParser {
         module_path: &[String],
         scope: &[String],
     ) -> Result<AnyValueRef, FrontDoorError> {
-        let mut exprs = Vec::new();
         self.skip_newlines();
-        while !terminators.iter().any(|terminator| self.peek_is(terminator)) {
-            exprs.push(self.parse_expr(module_path, scope)?.root);
-            self.require_newline_or_terminator(terminators, "unexpected second expression without a newline")?;
+        let first = if terminators.iter().any(|terminator| self.peek_is(terminator)) {
+            None
+        } else {
+            Some(self.parse_expr(module_path, scope)?)
+        };
+        let end = self.parse_block_lines(
+            first,
+            terminators,
+            "unexpected second expression without a newline",
+            None,
+            module_path,
+            scope,
+        )?;
+        Ok(end.body)
+    }
+
+    /// Newline-separated expressions up to a terminator, as one expression
+    /// or a `__block__` of several. `first` is the line the caller has
+    /// already read. With `clause_kind`, the block is a clause body: a line
+    /// that turns out to be the head of the next clause ends it and is handed
+    /// back in `next_head`.
+    fn parse_block_lines(
+        &mut self,
+        first: Option<ParsedExpr>,
+        terminators: &[Tok],
+        missing_separator: &str,
+        clause_kind: Option<ClauseKind>,
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<BlockEnd, FrontDoorError> {
+        let mut exprs = Vec::new();
+        let mut block_end = self.cur_span();
+        let mut last_span = block_end;
+        let mut next = first;
+        let mut next_head = None;
+        loop {
+            if let Some(line) = next.take() {
+                last_span = line.span;
+                exprs.push(line.root);
+                self.require_newline_or_terminator(terminators, missing_separator)?;
+                block_end = self.prev_span();
+            }
+            if terminators.iter().any(|terminator| self.peek_is(terminator)) {
+                break;
+            }
+            match clause_kind {
+                None => next = Some(self.parse_expr(module_path, scope)?),
+                Some(kind) => match self.parse_clause_line(kind, module_path, scope)? {
+                    ClauseLine::Head(head) => {
+                        next_head = Some(head);
+                        break;
+                    }
+                    ClauseLine::Body(line) => next = Some(line),
+                },
+            }
         }
+        let body = self.block_body(exprs, block_end)?;
+        Ok(BlockEnd {
+            body,
+            span: last_span,
+            next_head,
+        })
+    }
+
+    fn block_body(&mut self, mut exprs: Vec<AnyValueRef>, block_end: Span) -> Result<AnyValueRef, FrontDoorError> {
         if exprs.len() == 1 {
             return Ok(exprs.pop().expect("single block expr"));
         }
-        let span = if exprs.is_empty() {
-            self.cur_span()
-        } else {
-            self.prev_span()
-        };
-        let meta = self.meta(span)?;
+        let meta = self.meta(block_end)?;
         self.builder
             .call("__block__", &meta, &exprs)
             .map_err(FrontDoorError::from)
@@ -1379,20 +1492,15 @@ impl FrontDoorParser {
         if self.peek_is(&Tok::Arrow) {
             return self.finish_clause_list(first, terminators, module_path, scope);
         }
-        let mut exprs = vec![first.root];
-        self.require_newline_or_terminator(terminators, "unexpected second expression without a newline")?;
-        while !terminators.iter().any(|terminator| self.peek_is(terminator)) {
-            exprs.push(self.parse_expr(module_path, scope)?.root);
-            self.require_newline_or_terminator(terminators, "unexpected second expression without a newline")?;
-        }
-        if exprs.len() == 1 {
-            return Ok(exprs.pop().expect("single section expr"));
-        }
-        let span = self.prev_span();
-        let meta = self.meta(span)?;
-        self.builder
-            .call("__block__", &meta, &exprs)
-            .map_err(FrontDoorError::from)
+        let end = self.parse_block_lines(
+            Some(first),
+            terminators,
+            "unexpected second expression without a newline",
+            None,
+            module_path,
+            scope,
+        )?;
+        Ok(end.body)
     }
 
     /// A list of `pattern -> body` clauses, given the first pattern already
@@ -1408,23 +1516,117 @@ impl FrontDoorParser {
         module_path: &[String],
         scope: &[String],
     ) -> Result<AnyValueRef, FrontDoorError> {
+        let head = self.pattern_head(first_pattern)?;
+        let clauses = self.parse_clause_list(ClauseKind::Pattern, head, terminators, module_path, scope)?;
+        self.builder.list(&clauses).map_err(FrontDoorError::from)
+    }
+
+    fn pattern_head(&mut self, pattern: ParsedExpr) -> Result<ClauseHead, FrontDoorError> {
+        Ok(ClauseHead {
+            patterns: self.builder.list(&[pattern.root])?,
+            span: pattern.span,
+        })
+    }
+
+    /// The one clause-list reader, for `fn`, the do-block sections and the
+    /// parenthesised `(a -> b)` form. A clause is a head, `->`, and a body of
+    /// newline-separated lines. After the first, a line starts a new clause
+    /// only when it is itself a head (`->` follows it); every other line
+    /// joins the body of the clause above it. Each line is read once and
+    /// classified by the token that follows it. `first` is the head of the
+    /// first clause, already read.
+    fn parse_clause_list(
+        &mut self,
+        kind: ClauseKind,
+        first: ClauseHead,
+        terminators: &[Tok],
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<Vec<AnyValueRef>, FrontDoorError> {
         let mut clauses = Vec::new();
-        let mut pattern = first_pattern;
+        let mut head = first;
         loop {
             self.expect(&Tok::Arrow, "`->`")?;
-            self.skip_newlines();
-            let body = self.parse_expr(module_path, scope)?;
-            let span = pattern.span.merge(body.span);
-            let meta = self.meta(span)?;
-            let patterns = self.builder.list(&[pattern.root])?;
-            clauses.push(self.builder.call("->", &meta, &[patterns, body.root])?);
-            self.require_newline_or_terminator(terminators, "unexpected clause without a newline")?;
-            if terminators.iter().any(|terminator| self.peek_is(terminator)) {
-                break;
+            let end = self.with_comma_unbound(|parser| {
+                let first_line = parser.parse_expr(module_path, scope)?;
+                parser.parse_block_lines(
+                    Some(first_line),
+                    terminators,
+                    kind.missing_separator(),
+                    Some(kind),
+                    module_path,
+                    scope,
+                )
+            })?;
+            let meta = self.meta(head.span.merge(end.span))?;
+            clauses.push(self.builder.call("->", &meta, &[head.patterns, end.body])?);
+            match end.next_head {
+                Some(next) => head = next,
+                None => return Ok(clauses),
             }
-            pattern = self.parse_expr(module_path, scope)?;
         }
-        self.builder.list(&clauses).map_err(FrontDoorError::from)
+    }
+
+    /// Reads one line of a clause body and says whether it is a body line or
+    /// the head of the next clause. A pattern line is a head exactly when
+    /// `->` follows it. A parameter line is a head when `,`, `when` or `->`
+    /// follows its first expression, since no body line can continue that
+    /// way; a line opening with a parenthesis group is a head when the group
+    /// is followed by `when` or `->`.
+    fn parse_clause_line(
+        &mut self,
+        kind: ClauseKind,
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<ClauseLine, FrontDoorError> {
+        self.with_comma_unbound(|parser| match kind {
+            ClauseKind::Pattern => {
+                let line = parser.parse_expr(module_path, scope)?;
+                if parser.peek_is(&Tok::Arrow) {
+                    Ok(ClauseLine::Head(parser.pattern_head(line)?))
+                } else {
+                    Ok(ClauseLine::Body(line))
+                }
+            }
+            ClauseKind::Params => {
+                if parser.peek_is(&Tok::Arrow) || parser.paren_group_heads_clause() {
+                    return Ok(ClauseLine::Head(parser.parse_param_head(None, module_path, scope)?));
+                }
+                let first = parser.parse_bp(PARAM_BP, module_path, scope)?;
+                if parser.peek_is(&Tok::Comma) || parser.peek_is(&Tok::When) || parser.peek_is(&Tok::Arrow) {
+                    return Ok(ClauseLine::Head(parser.parse_param_head(
+                        Some(first),
+                        module_path,
+                        scope,
+                    )?));
+                }
+                Ok(ClauseLine::Body(parser.parse_bp_tail(first, 0, module_path, scope)?))
+            }
+        })
+    }
+
+    /// Whether the parenthesis group at the cursor is followed by `when` or
+    /// `->`, which makes it the parameter list of a clause rather than the
+    /// start of an expression.
+    fn paren_group_heads_clause(&self) -> bool {
+        if !self.peek_is(&Tok::LParen) {
+            return false;
+        }
+        let mut depth = 0_u32;
+        for offset in 0.. {
+            match self.peek_at(offset) {
+                Tok::LParen => depth += 1,
+                Tok::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(self.peek_at(offset + 1), Tok::When | Tok::Arrow);
+                    }
+                }
+                Tok::Eof => return false,
+                _ => {}
+            }
+        }
+        unreachable!("the scan ends at Eof")
     }
 
     fn parse_arity_kw_list(&mut self) -> Result<AnyValueRef, FrontDoorError> {
