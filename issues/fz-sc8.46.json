@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-24T20:27:37Z",
+  "description": "Repro (base binary):\n    def both(x, y) when x and y, do: x\n    def both(_, _), do: :no\n    def main() do\n      n = Process.heap_alloc_stats()[:allocs]\n      t = n \u003c n + 1\n      f = n \u003e n + 1\n      dbg({both(t, t), both(t, f), both(f, t)})\n    end\ninterp prints {true, :no, :no}. run fails: `JIT compile failed: codegen: verify both__e8: inst14 (v14 = call fn3(v10)): uses value v10 from non-dominating inst8`. Done when: an oracle fixture agrees on all three paths.",
+  "id": "fz-sc8.46",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A guard `when x and y` compiles in the JIT",
+  "type": "bug",
+  "updated_at": "2026-10-24T20:27:37Z"
+}
