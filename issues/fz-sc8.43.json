@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-24T13:44:00Z",
+  "description": "A clause body in `fn` with more than one expression, each on its own line, does not parse. Elixir runs the expressions in order and returns the last one's value.\n\nRepro (fails on 81c747daf and on the fz-sc8.37 build):\n\n    def main() do\n      f = fn ss -\u003e\n        counts = ss\n        counts\n      end\n      dbg(f.([1]))\n    end\n\n    error[parse/expected-token]: expected `-\u003e`, got Newline\n      --\u003e 4:11   (the second line, `counts`)\n\nThe parser reads each new line as the head of a new clause (`pattern -\u003e body`). In Elixir, a line starts a new clause only if it contains a `-\u003e` at the clause level; any other line continues the current clause's body.\n\nThe distiller stops here first: tools/distill-telemetry.exs:131, inside `Enum.map(fn {kind, ss} -\u003e ... end)`.\n\nDone when:\n- Multi-line clause bodies parse in `fn`.\n- Multi-clause `fn` (each clause on its own lines) still parses.\n- `case`, `receive` and `with ... else` clause bodies use the same rule, and get an Elixir-oracle fixture on all three paths.\n- The proposal page names the parser site and the existing clause-body rule it reuses.",
+  "id": "fz-sc8.43",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A multi-line fn clause body runs each line in order, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-10-24T13:44:00Z"
+}
