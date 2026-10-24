@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-24T20:27:37Z",
+  "description": "Repro (base binary): `with n when n \u003e 0 \u003c- 5 do n end` gives an internal error: \"unsupported quoted pattern head `when`\". Elixir allows a guard on a with clause's pattern. Done when: an oracle fixture with a guard that passes and one that falls through to else agrees on interp, run and build, and the guard follows the same macro-in-guard rule as other guards.",
+  "id": "fz-sc8.48",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A guarded with clause `with n when n \u003e 0 \u003c- x` works, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-10-24T20:27:37Z"
+}
