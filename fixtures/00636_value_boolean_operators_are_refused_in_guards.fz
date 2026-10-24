@@ -1,0 +1,8 @@
+#---
+# purpose: "a guard that calls || is refused, naming the operator, as Elixir refuses a macro in a guard"
+# expect: diagnostic
+#---
+def pick(a, b) when a || b, do: :truthy
+def pick(_, _), do: :falsy
+
+def main(), do: dbg(pick(nil, 1))

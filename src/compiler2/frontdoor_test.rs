@@ -416,6 +416,77 @@ fn compiler2_frontdoor_parses_when_once_at_elixir_precedence() {
 }
 
 #[test]
+fn compiler2_frontdoor_binds_value_boolean_operators_at_elixir_precedence() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "value_boolean_precedence.fz",
+        "probe a || b and c && d\nprobe !a == b\nprobe x = a || b\nprobe(not a && b)\nprobe a || b |> f\nprobe a && b or c\nprobe !!a\nprobe a || b || c\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        [
+            "probe(||($a, &&(and($b, $c), $d)))",
+            "probe(==(!($a), $b))",
+            "probe(=($x, ||($a, $b)))",
+            "probe(&&(not($a), $b))",
+            "probe(||($a, |>($b, $f)))",
+            "probe(or(&&($a, $b), $c))",
+            "probe(!(!($a)))",
+            "probe(||(||($a, $b), $c))",
+        ]
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_takes_a_bang_argument_without_parentheses() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program("bang_argument.fz", "probe !a\n", &tel).expect("quoted parse");
+
+    assert_eq!(quoted_shapes(&root), ["probe(!($a))"]);
+}
+
+#[test]
+fn compiler2_frontdoor_reads_a_defmacro_head_the_way_def_reads_one() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "defmacro_heads.fz",
+        "defmacro left || right, do: left\ndefmacro !value, do: value\ndefmacro plain(x), do: x\ndefmacro defmodule(name, kw), do: name\ndefmacro head(x) when is_atom(x), do: x\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        [
+            "defmacro(||($left, $right), [{:do, $left}])",
+            "defmacro(!($value), [{:do, $value}])",
+            "defmacro(plain($x), [{:do, $x}])",
+            "defmacro(defmodule($name, $kw), [{:do, $name}])",
+            "defmacro(when(head($x), is_atom($x)), [{:do, $x}])",
+        ]
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_names_the_value_boolean_operators_in_import_filters() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "operator_import.fz",
+        "import Kernel, only: [||: 2, &&: 2, !: 1]\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        ["import(__aliases__(:Kernel), [{:only, [{:||, 2}, {:&&, 2}, {:!, 1}]}])"]
+    );
+}
+
+#[test]
 fn compiler2_frontdoor_quotes_def_and_defp_as_ordinary_calls() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(

@@ -399,6 +399,11 @@ fn collect_guard_calls_in_fn(def: &FunctionSurface) -> Result<Vec<GuardCall>, Sp
     Ok(calls)
 }
 
+/// Whether dispatch can evaluate `expr` as a guard.
+pub(in crate::compiler2) fn is_guard_expr(expr: &Spanned<Expr>) -> bool {
+    collect_guard_calls_in_expr(expr, &mut Vec::new()).is_ok()
+}
+
 pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<GuardCall>) -> Result<(), Span> {
     match &expr.node {
         Expr::Int(_) | Expr::Float(_) | Expr::Binary(_) | Expr::Atom(_) | Expr::Bool(_) | Expr::Nil | Expr::Var(_) => {

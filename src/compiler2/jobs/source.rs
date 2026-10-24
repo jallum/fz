@@ -445,6 +445,9 @@ struct FunctionSourceExpander<'world, 'tel, T: crate::telemetry::Telemetry> {
     /// See `ScopeSession::next_hygiene_counter` (source_publish.rs): one
     /// ordinal per macro invocation this expander visits.
     next_hygiene_counter: u32,
+    /// How many guards enclose the expansion in progress; see
+    /// `QuotedExpansionCtx::expand_guard`.
+    guard_depth: u32,
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for FunctionSourceExpander<'world, 'tel, T> {
@@ -493,6 +496,10 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
         }
     }
 
+    fn guard_depth(&mut self) -> &mut u32 {
+        &mut self.guard_depth
+    }
+
     fn next_hygiene_ordinal(&mut self) -> u32 {
         let ordinal = self.next_hygiene_counter;
         self.next_hygiene_counter = self
@@ -523,6 +530,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             required_remote_macros: source.required_remote_macros.iter().copied().collect(),
             reads: Vec::new(),
             next_hygiene_counter: 0,
+            guard_depth: 0,
         }
     }
 
@@ -668,7 +676,11 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             )
         })?;
 
-        let mut changed = false;
+        let expanded_head = match self.expand_head_guard(owner, &args[0], scope, depth)? {
+            ExpandedValue::Complete(head) => head,
+            ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+        };
+        let mut changed = expanded_head != args[0].root();
         let mut expanded_kw = Vec::with_capacity(kw_items.len());
         for kw in kw_items {
             let tuple = kw.tuple_items().map_err(|error| {
@@ -720,6 +732,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             )
         })?;
         let mut expanded_args = args.iter().map(QuotedSourceCursor::root).collect::<Vec<_>>();
+        expanded_args[0] = expanded_head;
         expanded_args[1] = kw_root;
         let tail = owner.builder().list(&expanded_args).map_err(|error| {
             emit_internal_surface_error(
@@ -732,6 +745,47 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             .tuple(&[node.head.root(), node.meta.root(), tail])
             .map_err(|error| {
                 emit_internal_surface_error(self.telemetry, format!("function clause rebuild failed: {error}"))
+            })?;
+        Ok(ExpandedValue::Complete(rebuilt))
+    }
+
+    /// A clause head's guard expands like any other guard; its parameters are
+    /// patterns and stay as written.
+    fn expand_head_guard(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        head: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, FatalError> {
+        let source_map = self.world.source_map();
+        let node = head.ast_node(&source_map.borrow()).map_err(|error| {
+            emit_internal_surface_error(self.telemetry, format!("function clause head read failed: {error}"))
+        })?;
+        let Some(node) = node.filter(|node| node.head.atom_name().is_ok_and(|name| name == "when")) else {
+            return Ok(ExpandedValue::Complete(head.root()));
+        };
+        let parts = node.tail.list_items().map_err(|error| {
+            emit_internal_surface_error(self.telemetry, format!("function clause guard read failed: {error}"))
+        })?;
+        let [signature, guard] = parts.as_slice() else {
+            return Ok(ExpandedValue::Complete(head.root()));
+        };
+        let expanded = match self.expand_guard(owner, guard, scope, depth)? {
+            ExpandedValue::Complete(expanded) => expanded,
+            ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+        };
+        if expanded == guard.root() {
+            return Ok(ExpandedValue::Complete(head.root()));
+        }
+        let builder = owner.builder();
+        let tail = builder.list(&[signature.root(), expanded]).map_err(|error| {
+            emit_internal_surface_error(self.telemetry, format!("function clause guard rebuild failed: {error}"))
+        })?;
+        let rebuilt = builder
+            .tuple(&[node.head.root(), node.meta.root(), tail])
+            .map_err(|error| {
+                emit_internal_surface_error(self.telemetry, format!("function clause head rebuild failed: {error}"))
             })?;
         Ok(ExpandedValue::Complete(rebuilt))
     }

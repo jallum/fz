@@ -5,6 +5,9 @@ defmodule Kernel do
   `Kernel` supplies:
 
     * the arithmetic operators `+`, `-`, `*`, `/`, `%` and unary minus
+    * the boolean operators `and`, `or` and `not`, which take booleans, and
+      `&&`, `||` and `!`, which take any value and count `nil` and `false` as
+      false; the three are macros, so a guard refuses them
     * the comparison operators `<`, `<=`, `>`, `>=`, plus `==`, `!=`, `===`,
       `!==` and the total term order `compare/2`
     * process primitives: `self/0`, `send/2`, `spawn/1`,
@@ -33,6 +36,78 @@ defmodule Kernel do
   def panic(msg), do: fz_panic(msg)
 
   extern "fz" defp fz_panic(any) :: never
+
+  @doc """
+  Answers `left` when it is truthy, and `right` otherwise.
+
+  `nil` and `false` are false; every other value is true. `right` is
+  evaluated only when `left` is false. A macro, so a guard refuses it.
+
+  ## Examples
+
+      nil || []
+      #=> []
+
+      "x" || []
+      #=> "x"
+
+  """
+  defmacro left || right do
+    quote do
+      case unquote(left) do
+        nil -> unquote(right)
+        false -> unquote(right)
+        value -> value
+      end
+    end
+  end
+
+  @doc """
+  Answers `left` when it is false, and `right` otherwise.
+
+  `nil` and `false` are false; every other value is true. `right` is
+  evaluated only when `left` is true. A macro, so a guard refuses it.
+
+  ## Examples
+
+      nil && 1
+      #=> nil
+
+      1 && 2
+      #=> 2
+
+  """
+  defmacro left && right do
+    quote do
+      case unquote(left) do
+        nil -> nil
+        false -> false
+        _ -> unquote(right)
+      end
+    end
+  end
+
+  @doc """
+  Answers `true` when `value` is `nil` or `false`, and `false` otherwise.
+
+  ## Examples
+
+      !nil
+      #=> true
+
+      !0
+      #=> false
+
+  """
+  defmacro !value do
+    quote do
+      case unquote(value) do
+        nil -> true
+        false -> true
+        _ -> false
+      end
+    end
+  end
 
   # In Elixir, `to_string/1` is a macro expanding to `String.Chars.to_string/1`.
   # Here it is an ordinary function, since the macro's expansion has nothing

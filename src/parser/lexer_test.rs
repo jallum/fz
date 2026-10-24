@@ -221,6 +221,39 @@ fn lexes_new_binary_operators() {
     assert_eq!(toks_of("a <> b"), vec![id("a"), Tok::Concat, id("b")]);
 }
 
+#[test]
+fn lexes_the_value_boolean_operators() {
+    assert_eq!(toks_of("a || b"), vec![id("a"), Tok::OrOr, id("b")]);
+    assert_eq!(toks_of("a && b"), vec![id("a"), Tok::AndAnd, id("b")]);
+    assert_eq!(toks_of("!a"), vec![Tok::Bang, id("a")]);
+    assert_eq!(toks_of("!!a"), vec![Tok::Bang, Tok::Bang, id("a")]);
+}
+
+#[test]
+fn bang_does_not_steal_from_the_inequality_operators() {
+    assert_eq!(toks_of("a != b"), vec![id("a"), Tok::NotEq, id("b")]);
+    assert_eq!(toks_of("a !== b"), vec![id("a"), Tok::NotEqEq, id("b")]);
+    assert_eq!(toks_of("!a != b"), vec![Tok::Bang, id("a"), Tok::NotEq, id("b")]);
+}
+
+#[test]
+fn the_value_boolean_operators_stay_apart_from_pipe_bar_and_capture() {
+    assert_eq!(toks_of("a |> b"), vec![id("a"), Tok::Pipe, id("b")]);
+    assert_eq!(
+        toks_of("[h | t]"),
+        vec![Tok::LBrack, id("h"), Tok::Bar, id("t"), Tok::RBrack]
+    );
+    assert_eq!(toks_of("&foo/1"), vec![Tok::Amp, id("foo"), Tok::Slash, Tok::Int(1)]);
+}
+
+#[test]
+fn a_line_starting_with_a_value_boolean_infix_continues_the_previous_expression() {
+    assert_eq!(
+        toks_of("a\n  || b\n  && c\n"),
+        vec![id("a"), Tok::OrOr, id("b"), Tok::AndAnd, id("c"), Tok::Newline]
+    );
+}
+
 // DROP: range and step token shapes, pure lexer
 #[test]
 fn lexes_range_and_step() {

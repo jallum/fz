@@ -238,15 +238,8 @@ impl FrontDoorParser {
     fn parse_defmacro_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         let start = self.cur_span();
         self.expect(&Tok::Defmacro, "`defmacro`")?;
-        let (macro_name, head) = self.parse_defmacro_head(module_path)?;
-        let scope = vec![macro_name];
-        let head_span = start.merge(self.prev_span());
-        let head = self
-            .with_trailing_do_suppressed(|parser| {
-                parser.parse_bp_tail(ParsedExpr::plain(head, head_span), 0, module_path, &scope)
-            })?
-            .root;
-        let body = self.parse_function_body(module_path, &scope)?;
+        let head = self.with_trailing_do_suppressed(|parser| parser.parse_defmacro_head(module_path))?;
+        let body = self.parse_function_body(module_path, &[])?;
         let meta = self.meta(start.merge(self.prev_span()))?;
         let kw = self.builder.list(&[self.builder.keyword("do", body)?])?;
         self.builder
@@ -526,34 +519,37 @@ impl FrontDoorParser {
             .map_err(FrontDoorError::from)
     }
 
-    fn parse_defmacro_head(&mut self, module_path: &[String]) -> Result<(String, AnyValueRef), FrontDoorError> {
+    /// A macro head is an ordinary expression, so `defmacro left || right`
+    /// reads exactly as `def left + right` does. The one exception is a
+    /// macro that shares its name with a keyword (`defmacro defmodule(...)`),
+    /// which starts as a plain name.
+    fn parse_defmacro_head(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         let start = self.cur_span();
-        let name = self.bump_macro_name()?;
-        let scope = vec![name.clone()];
-        self.expect(&Tok::LParen, "`(`")?;
-        let params = self.parse_paren_call_args(&Tok::RParen, module_path, &scope)?;
-        self.expect(&Tok::RParen, "`)`")?;
-        let meta = self.meta(start.merge(self.prev_span()))?;
-        let head = self.builder.call(&name, &meta, &params)?;
-        Ok((name, head))
+        let first = match self.keyword_macro_name() {
+            Some(name) => {
+                self.bump();
+                let meta = self.meta(start)?;
+                let root = self.builder.variable(&Var::user(name), &meta)?;
+                ParsedExpr::direct_name(root, start, name.to_string())
+            }
+            None => self.parse_prefix(module_path, &[])?,
+        };
+        Ok(self.parse_bp_tail(first, 0, module_path, &[])?.root)
     }
 
-    fn bump_macro_name(&mut self) -> Result<String, FrontDoorError> {
-        let name = match self.peek() {
-            Tok::Ident(name) => name.clone(),
-            Tok::Defmacro => "defmacro".to_string(),
-            Tok::Defmodule => "defmodule".to_string(),
-            Tok::Defprotocol => "defprotocol".to_string(),
-            Tok::Defimpl => "defimpl".to_string(),
-            Tok::Defstruct => "defstruct".to_string(),
-            Tok::Alias => "alias".to_string(),
-            Tok::Import => "import".to_string(),
-            Tok::Require => "require".to_string(),
-            Tok::Extern => "extern".to_string(),
-            other => return Err(self.error(format!("expected macro name, got {other:?}"))),
-        };
-        self.bump();
-        Ok(name)
+    fn keyword_macro_name(&self) -> Option<&'static str> {
+        Some(match self.peek() {
+            Tok::Defmacro => "defmacro",
+            Tok::Defmodule => "defmodule",
+            Tok::Defprotocol => "defprotocol",
+            Tok::Defimpl => "defimpl",
+            Tok::Defstruct => "defstruct",
+            Tok::Alias => "alias",
+            Tok::Import => "import",
+            Tok::Require => "require",
+            Tok::Extern => "extern",
+            _ => return None,
+        })
     }
 
     fn parse_function_body(&mut self, module_path: &[String], scope: &[String]) -> Result<AnyValueRef, FrontDoorError> {
@@ -774,12 +770,8 @@ impl FrontDoorParser {
                 let meta = self.meta(span)?;
                 Ok(ParsedExpr::plain(self.builder.call("-", &meta, &[inner.root])?, span))
             }
-            Tok::Not => {
-                let inner = self.parse_bp(120, module_path, scope)?;
-                let span = start.merge(inner.span);
-                let meta = self.meta(span)?;
-                Ok(ParsedExpr::plain(self.builder.call("not", &meta, &[inner.root])?, span))
-            }
+            Tok::Not => self.parse_prefix_operator("not", start, module_path, scope),
+            Tok::Bang => self.parse_prefix_operator("!", start, module_path, scope),
             Tok::Fn => self.with_matched_do_boundary(|parser| parser.parse_lambda_expr(module_path, scope, start)),
             Tok::Amp => self.parse_capture_expr(module_path, scope, start),
             Tok::Caret => self.parse_pin_expr(module_path, scope, start),
@@ -788,6 +780,19 @@ impl FrontDoorParser {
                 start,
             )),
         }
+    }
+
+    fn parse_prefix_operator(
+        &mut self,
+        name: &str,
+        start: Span,
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<ParsedExpr, FrontDoorError> {
+        let inner = self.parse_bp(120, module_path, scope)?;
+        let span = start.merge(inner.span);
+        let meta = self.meta(span)?;
+        Ok(ParsedExpr::plain(self.builder.call(name, &meta, &[inner.root])?, span))
     }
 
     fn finish_call(
@@ -1992,6 +1997,7 @@ impl FrontDoorParser {
             | Tok::LBitstr
             | Tok::Fn
             | Tok::KwKey(_)
+            | Tok::Bang
             | Tok::Amp => true,
             Tok::Minus | Tok::Plus => !self.space_before_at(1),
             _ => false,
@@ -2003,7 +2009,9 @@ impl FrontDoorParser {
             Tok::When => (4, 4, "when"),
             Tok::LArrow => (2, 3, "<-"),
             Tok::Or => (20, 21, "or"),
+            Tok::OrOr => (20, 21, "||"),
             Tok::And => (30, 31, "and"),
+            Tok::AndAnd => (30, 31, "&&"),
             Tok::EqEq => (40, 41, "=="),
             Tok::NotEq => (40, 41, "!="),
             Tok::EqEqEq => (40, 41, "==="),
@@ -2046,6 +2054,9 @@ impl FrontDoorParser {
             Tok::Gt => ">",
             Tok::GtEq => ">=",
             Tok::Pipe => "|>",
+            Tok::OrOr => "||",
+            Tok::AndAnd => "&&",
+            Tok::Bang => "!",
             _ => return None,
         })
     }

@@ -1,0 +1,11 @@
+#---
+# purpose: "a receive guard that calls ! is refused at the operator, naming it, as Elixir refuses a macro that expands to a non-guard expression"
+# expect: diagnostic
+#---
+def main() do
+  send(self(), nil)
+
+  receive do
+    v when !v -> dbg(v)
+  end
+end

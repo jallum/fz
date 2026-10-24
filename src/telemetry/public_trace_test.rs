@@ -1497,10 +1497,12 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // fz-sc8.9: 00567's cold scenario walks two more bodies
                 // (148 -> 150): `Enumerable`'s map `count` reads Kernel's
                 // `map_size`, a typed wrapper over `fz_map_count`.
+                // fz-sc8.37: cold scenarios walk one more body each: 00567 150 -> 151,
+                // 00571 475 -> 476, 00420 622 -> 623. Kernel defines `&&`, `||` and `!` as macros.
                 // 00420's cold scenario walks five more (617 -> 622): its
                 // list `count` reads Kernel's `length`, whose proper-list
                 // check and abort path are bodies of their own.
-                [[150, 0, 0, 9, 4], [475, 0, 0, 64, 4], [622, 0, 0, 69, 4]][fixture_index][scenario],
+                [[151, 0, 0, 9, 4], [476, 0, 0, 64, 4], [623, 0, 0, 69, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -2102,7 +2104,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // concludes, and eight fewer claims appear across the compile.
         // fz-sc8.9: 66 -> 67. `Enumerable`'s map `count` reads Kernel's `map_size`, a typed wrapper over
         // `fz_map_count`, where it used to call the extern directly.
-        activations: lifecycle(67, 67, 0),
+        // fz-sc8.37: 67 -> 68. Kernel defines `&&`, `||` and `!` as macros.
+        activations: lifecycle(68, 68, 0),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
         //
@@ -2207,7 +2210,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-sc8.9: 168 -> 171. Kernel's `map_size` is one more subject
         // (initial 66 -> 67), and the runs that read its answer add two
         // content-caused runs; zero-change stays 3.
-        analyze_evaluations: 171,
+        // fz-sc8.37: 171 -> 172. Kernel defines `&&`, `||` and `!` as macros.
+        analyze_evaluations: 172,
         analyze_zero_change: 3,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
@@ -2280,7 +2284,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // DefineFunction, ExpandFunctionSource, DeriveFunctionContract,
         // PlanEntryDispatch, LowerFunction, DeriveExecutableFacts and
         // DeriveStaticCallees.
-        total_evaluations: 589,
+        // fz-sc8.37: 589 -> 598. Kernel defines `&&`, `||` and `!` as macros.
+        total_evaluations: 598,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2300,7 +2305,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // leaves awaited mints no activation claim until its callee
         // concludes; the same cause, and the same count, as
         // `range_map_converges` above.
-        activations: lifecycle(176, 176, 0),
+        // fz-sc8.37: 176 -> 177. Kernel defines `&&`, `||` and `!` as macros.
+        activations: lifecycle(177, 177, 0),
         // fz-kdt.106: 215 -> 212 distinct (248 -> 245 first appearances,
         // retractions unchanged): the one vanished activation was named from
         // three callsites.
@@ -2372,7 +2378,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-xxd.10: 503 -> 498. Asking a contract callee's keying facts on
         // the same pass removes five reruns that used to wait for a later
         // pass to see them.
-        analyze_evaluations: 498,
+        // fz-sc8.37: 498 -> 499. Kernel defines `&&`, `||` and `!` as macros.
+        analyze_evaluations: 499,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -2458,7 +2465,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // knock-ons of the same drop.
         // 911 -> 894: exactly the DeriveRecursive drop pinned in
         // DERIVE_RECURSIVE_RATCHET (one shared reach product per function).
-        total_evaluations: 894,
+        // fz-sc8.37: 894 -> 903. Kernel defines `&&`, `||` and `!` as macros.
+        total_evaluations: 903,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2540,7 +2548,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // Kernel's `length`, `fz_list_length`, `proper_length`, `panic` and
         // `fz_panic` replace `List.count/1` and `List.count/2`: the list
         // `count` keeps Elixir's proper-list check and its abort path.
-        activations: lifecycle(235, 235, 0),
+        // fz-sc8.37: 235 -> 236. Kernel defines `&&`, `||` and `!` as macros.
+        activations: lifecycle(236, 236, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -2748,7 +2757,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // subscribed it to a callee's `Recursive` and `InputDemand`.
         // fz-sc8.9: 619 holds while initial runs rise 232 -> 235 with the
         // three added activations above; zero-change stays 8.
-        analyze_evaluations: 619,
+        // fz-sc8.37: 619 -> 620. Kernel defines `&&`, `||` and `!` as macros.
+        analyze_evaluations: 620,
         analyze_zero_change: 8,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
@@ -2818,7 +2828,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // DERIVE_RECURSIVE_RATCHET (one shared reach product per function).
         // fz-sc8.9: 1441 -> 1446: three with the added activations above and
         // two with the `@spec` that declares `proper_length`'s domains.
-        total_evaluations: 1446,
+        // fz-sc8.37: 1446 -> 1455. Kernel defines `&&`, `||` and `!` as macros.
+        total_evaluations: 1455,
     },
 ];
 
@@ -2864,8 +2875,9 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
                 executable_fact_work.evaluations,
                 executable_fact_work.changed_outputs
             ),
-            (2, 2, 2),
-            "{fixture}: the +2 total is exactly the two World fact producers that replaced the product formula: \
+            // fz-sc8.37: (2, 2, 2) -> (3, 3, 3). Kernel defines `&&`, `||` and `!` as macros.
+            (3, 3, 3),
+            "{fixture}: the total is the World fact producers that replaced the product formula: \
              {executable_fact_work:?}",
         );
         let lifecycle_of = |kind: &str| report.lifecycles.get(kind).cloned().unwrap_or_default();

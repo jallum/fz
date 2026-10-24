@@ -935,10 +935,11 @@ fn parse_function_head_key_inner(
         return parse_function_head_key_inner(inner, allow_reserved_macro_name, false, sources);
     }
     let arity = function_head_args(&node.tail)?.len();
-    if is_definable_operator(&name) {
-        if arity != 2 {
+    if let Some(operator_arity) = definable_operator_arity(&name) {
+        if arity != operator_arity {
             return Err(QuotedSourceError::new(format!(
-                "operator function `{name}` must have two parameters"
+                "operator function `{name}` must have {} parameters",
+                if operator_arity == 1 { "one" } else { "two" }
             )));
         }
         return Ok(FunctionGroupKey { name, arity });
@@ -951,11 +952,13 @@ fn parse_function_head_key_inner(
     )))
 }
 
-fn is_definable_operator(name: &str) -> bool {
-    matches!(
-        name,
-        "+" | "-" | "*" | "/" | "%" | "<>" | "==" | "!=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "|>"
-    )
+fn definable_operator_arity(name: &str) -> Option<usize> {
+    match name {
+        "+" | "-" | "*" | "/" | "%" | "<>" | "==" | "!=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "|>" | "&&"
+        | "||" => Some(2),
+        "!" => Some(1),
+        _ => None,
+    }
 }
 
 fn is_local_function_name(name: &str, allow_reserved_macro_name: bool) -> bool {

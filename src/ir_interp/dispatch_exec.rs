@@ -157,6 +157,18 @@ fn or_miss<T>(result: Result<T, DispatchStop>) -> Result<Option<T>, DispatchStop
     }
 }
 
+/// An operand of `and`, `or` or `not` in a guard. An error fails the guard,
+/// and a non-boolean operand is an error.
+fn guard_boolean(value: AnyValue) -> Result<bool, DispatchStop> {
+    if value.is_atom_id(TRUE_ATOM_ID) {
+        Ok(true)
+    } else if value.is_false() {
+        Ok(false)
+    } else {
+        Err(DispatchStop::NoMatch)
+    }
+}
+
 fn required<T>(value: Option<T>) -> Result<T, DispatchStop> {
     value.ok_or(DispatchStop::NoMatch)
 }
@@ -659,7 +671,7 @@ impl<'a> Dispatch<'a> {
             PatternGuardExpr::Unary { op, expr } => {
                 let v = self.eval_guard(expr)?;
                 match op {
-                    PatternGuardUnaryOp::Not => interp_bool_value(v.is_false() || v.is_nil()),
+                    PatternGuardUnaryOp::Not => interp_bool_value(!guard_boolean(v)?),
                     // The same negation an EXPRESSION gets. Forcing the operand
                     // to an integer here made `when -x > 0.0` silently fail its
                     // guard for a float and fall to the next clause, so `interp`
@@ -670,8 +682,8 @@ impl<'a> Dispatch<'a> {
             PatternGuardExpr::Binary { op, lhs, rhs } => {
                 let l = self.eval_guard(lhs)?;
                 let short = match op {
-                    PatternGuardBinOp::And if l.is_false() || l.is_nil() => Some(interp_bool_value(false)),
-                    PatternGuardBinOp::Or if !(l.is_false() || l.is_nil()) => Some(interp_bool_value(true)),
+                    PatternGuardBinOp::And if !guard_boolean(l)? => Some(interp_bool_value(false)),
+                    PatternGuardBinOp::Or if guard_boolean(l)? => Some(interp_bool_value(true)),
                     _ => None,
                 };
                 if let Some(v) = short {
@@ -700,7 +712,7 @@ impl<'a> Dispatch<'a> {
                     PatternGuardBinOp::LtEq => interp_bool_value(required(guard_cmp(proc, l, r))? <= 0),
                     PatternGuardBinOp::Gt => interp_bool_value(required(guard_cmp(proc, l, r))? > 0),
                     PatternGuardBinOp::GtEq => interp_bool_value(required(guard_cmp(proc, l, r))? >= 0),
-                    PatternGuardBinOp::And | PatternGuardBinOp::Or => interp_bool_value(!(r.is_false() || r.is_nil())),
+                    PatternGuardBinOp::And | PatternGuardBinOp::Or => interp_bool_value(guard_boolean(r)?),
                 }
             }
             PatternGuardExpr::Dispatch {

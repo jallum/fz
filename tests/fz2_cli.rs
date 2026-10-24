@@ -52,7 +52,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // concluded one.
         // fz-sc8.9: 614 -> 619. The list `count` reads Kernel's `length`,
         // whose proper-list check and abort path are bodies of their own.
-        runtime_demand_walks: 619,
+        // fz-sc8.37: 619 -> 620. Kernel defines `&&`, `||` and `!` as macros.
+        runtime_demand_walks: 620,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -60,7 +61,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         source: "fixtures/00571_enum_predicate_search.fz",
         golden: "fixtures/00571_enum_predicate_search.fz",
         // The same cause as `00420_enum_take_drop_split` above.
-        runtime_demand_walks: 472,
+        // fz-sc8.37: 472 -> 473. Kernel defines `&&`, `||` and `!` as macros.
+        runtime_demand_walks: 473,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -69,7 +71,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         golden: "fixtures/00567_fz_f98_range_map_converges.fz",
         // fz-sc8.9: 145 -> 147. The map `count` reads Kernel's `map_size`, a
         // typed wrapper over `fz_map_count`.
-        runtime_demand_walks: 147,
+        // fz-sc8.37: 147 -> 148. Kernel defines `&&`, `||` and `!` as macros.
+        runtime_demand_walks: 148,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -2188,15 +2191,20 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // 232 -> 229 evaluations, content-caused 67 -> 64, unchanged
             // outputs 25 -> 22: DeriveRecursive reads a shared reach product
             // instead of walking the static graph.
-            evaluations: 229,
-            runtime_demand_evaluations: 31,
-            initial: 165,
-            content_caused: 64,
+            // fz-sc8.37: 229 -> 239 evaluations, runtime demand 31 -> 32,
+            // initial 165 -> 173, content-caused 64 -> 66, changed outputs
+            // 207 -> 216, unchanged outputs 22 -> 23, wakes 150 -> 154,
+            // blocked completions 62 -> 64. Kernel defines `&&`, `||` and `!`
+            // as macros.
+            evaluations: 239,
+            runtime_demand_evaluations: 32,
+            initial: 173,
+            content_caused: 66,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 207,
-            unchanged_outputs: 22,
+            changed_outputs: 216,
+            unchanged_outputs: 23,
             // fz-afu.13: 73 -> 180. `wakes` sums every completion's raw
             // subscriber-wake log, counted once per wake regardless of
             // whether it enqueues a job or coalesces into one already
@@ -2217,8 +2225,8 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // blocked runs too.
             // 155 -> 150 wakes, 65 -> 62 blocked completions: the same
             // DeriveRecursive drop.
-            wakes: 150,
-            blocked_completions: 62,
+            wakes: 154,
+            blocked_completions: 64,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2266,7 +2274,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // Every settled product here is a fresh, changed generation. The
         // generic result/status boundary and each node's reach (one product per
         // function or executable a reach question touches) are among them.
-        (308, 308, 308, 0, 12, 0),
+        // fz-sc8.37: 308 -> 330 settled products, all changed. Kernel defines `&&`, `||` and `!`
+        // as macros.
+        (330, 330, 330, 0, 12, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(
@@ -2353,13 +2363,15 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
     // fz-xxd.10: 24 -> 15. The nine uncalled typed-clause externs named above
     // never get a `DefineFunction` job either now: nothing calls them, so
     // nothing demands their definition at all.
-    assert_eq!(functions, 15, "the fixture compiles its known function population");
+    // fz-sc8.37: 15 -> 16. Kernel defines `&&`, `||` and `!` as macros.
+    assert_eq!(functions, 16, "the fixture compiles its known function population");
     assert_eq!(
         counter("fz.compiler2.entry_dispatch.defined"),
         // fz-xxd.11: 24 -> 15. The nine uncalled typed-clause externs named
         // above never get a `PlanEntryDispatch` job: nothing demands their
         // `EntryDispatch` once nothing calls them.
-        15,
+        // fz-sc8.37: 15 -> 16. Kernel defines `&&`, `||` and `!` as macros.
+        16,
         "every called function plans its own entry dispatch",
     );
 }

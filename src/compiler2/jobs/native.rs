@@ -3288,7 +3288,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             PatternGuardExpr::Const(value) => lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), value)?,
             PatternGuardExpr::Subject(subject) => self.dispatch_subject_var(ctx, plan, state, *subject)?,
             PatternGuardExpr::Unary { op, expr } => {
-                let input = self.lower_guard_expr(ctx, plan, state, expr, fail)?;
+                let input = match op {
+                    crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Not => {
+                        self.lower_guard_boolean(ctx, plan, state, expr, fail)?
+                    }
+                    crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Neg => {
+                        self.lower_guard_expr(ctx, plan, state, expr, fail)?
+                    }
+                };
                 let (var, _) = ctx.emit_let(Prim::UnOp(
                     match op {
                         crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Not => IrUnOp::Not,
@@ -3321,6 +3328,42 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         })
     }
 
+    /// An operand of `and`, `or` or `not`. In a guard an error fails the
+    /// guard, and a non-boolean operand is an error, so one the type does not
+    /// already prove a boolean is tested and leaves through the failure block.
+    fn lower_guard_boolean(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        expr: &PatternGuardExpr<Ty>,
+        fail: &mut Option<BlockId>,
+    ) -> Result<Var, FatalError> {
+        let value = self.lower_guard_expr(ctx, plan, state, expr, fail)?;
+        let proven = ctx.value_types.get(&value).copied().is_some_and(|ty| {
+            let boolean = self.world.types_mut().bool();
+            self.world.types().is_subtype(&ty, &boolean)
+        });
+        if proven {
+            return Ok(value);
+        }
+        let (true_v, _) = ctx.emit_let(Prim::Const(Const::True));
+        let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
+        let (is_true, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, value, true_v));
+        let (is_false, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, value, false_v));
+        let (is_boolean, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Or, is_true, is_false));
+        let boolean_b = ctx.builder.block(vec![]);
+        let fail_b = *fail.get_or_insert_with(|| ctx.builder.block(vec![]));
+        ctx.set_term(Term::If {
+            cond: is_boolean,
+            then_b: boolean_b,
+            else_b: fail_b,
+            origin: BranchOrigin::ClauseDispatch,
+        });
+        ctx.current_block = boolean_b;
+        Ok(value)
+    }
+
     /// `and` / `or` evaluate their right side only when the left leaves it
     /// open, so a right side that fails the guard is never reached when the
     /// left has already decided.
@@ -3335,7 +3378,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         rhs: &PatternGuardExpr<Ty>,
         fail: &mut Option<BlockId>,
     ) -> Result<Var, FatalError> {
-        let lhs = self.lower_guard_expr(ctx, plan, state, lhs, fail)?;
+        let lhs = self.lower_guard_boolean(ctx, plan, state, lhs, fail)?;
         let answer = ctx.builder.fresh_var();
         let done_b = ctx.builder.block(vec![answer]);
         let rhs_b = ctx.builder.block(vec![]);
@@ -3364,7 +3407,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }));
         ctx.set_term(Term::Goto(done_b, vec![decided]));
         ctx.current_block = rhs_b;
-        let rhs = self.lower_guard_expr(ctx, plan, state, rhs, fail)?;
+        let rhs = self.lower_guard_boolean(ctx, plan, state, rhs, fail)?;
         ctx.set_term(Term::Goto(done_b, vec![rhs]));
         ctx.current_block = done_b;
         Ok(answer)
@@ -5167,8 +5210,6 @@ fn lower_binop(op: crate::ast::BinOp) -> IrBinOp {
         crate::ast::BinOp::LtEq => IrBinOp::Le,
         crate::ast::BinOp::Gt => IrBinOp::Gt,
         crate::ast::BinOp::GtEq => IrBinOp::Ge,
-        crate::ast::BinOp::And => IrBinOp::And,
-        crate::ast::BinOp::Or => IrBinOp::Or,
         other => panic!("unsupported backend binop in native lowering: {other:?}"),
     }
 }
@@ -5194,7 +5235,7 @@ fn lower_guard_binop(op: crate::dispatch_matrix::pattern::PatternGuardBinOp) -> 
 fn lower_unop(op: crate::ast::UnOp) -> IrUnOp {
     match op {
         crate::ast::UnOp::Neg => IrUnOp::Neg,
-        crate::ast::UnOp::Not => IrUnOp::Not,
+        crate::ast::UnOp::Not => panic!("lowering should route `not` through a case"),
     }
 }
 

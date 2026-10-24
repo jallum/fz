@@ -1,0 +1,21 @@
+#---
+# purpose: A macro whose expansion is guard code works in a function head and a case clause
+#---
+defmacro positive(x) do
+  quote do: unquote(x) > 0
+end
+
+def sign(n) when positive(n), do: :positive
+def sign(_), do: :not_positive
+
+def main() do
+  dbg(sign(3))
+  dbg(sign(-3))
+
+  dbg(
+    case 5 do
+      n when positive(n) -> :case_positive
+      _ -> :case_not_positive
+    end
+  )
+end

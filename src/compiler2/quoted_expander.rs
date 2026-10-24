@@ -10,8 +10,10 @@ use crate::telemetry::TelemetryExt as _;
 
 use super::drive::{FactKey, JobEffects, ProductAddress};
 use super::identity::{FunctionId, ModuleId};
+use super::jobs::is_guard_expr;
 use super::namespace::NamespaceSymbol;
 use super::pull::{ProductKey, ProductSessions, ProductValue};
+use super::quoted_function::decode_guard_expr;
 use super::quoted_surface::{MacroCallForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface};
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
@@ -58,6 +60,27 @@ pub(crate) trait QuotedExpansionCtx {
     /// reset with it: the sequence this hands out is a pure function of how
     /// many invocations were visited, never of scheduling or caching.
     fn next_hygiene_ordinal(&mut self) -> u32;
+
+    /// How many guards enclose the expansion in progress. A guard expands
+    /// macros but applies no source sugar: dispatch evaluates its operators
+    /// itself, so `-x` stays a negation rather than becoming a `Kernel` call.
+    fn guard_depth(&mut self) -> &mut u32;
+
+    /// Expands a guard. A guard holds only what dispatch can evaluate, so a
+    /// macro that expands there must expand to such code; `expand_macro_invocation`
+    /// refuses the ones that do not.
+    fn expand_guard(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        guard: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+        *self.guard_depth() += 1;
+        let expanded = self.expand_cursor(owner, guard, scope, depth);
+        *self.guard_depth() -= 1;
+        expanded
+    }
 
     /// The source-visible caller scope for macro execution and memoization.
     /// Expansion may layer transient compiler bindings onto `scope`; those
@@ -145,6 +168,7 @@ pub(crate) trait QuotedExpansionCtx {
                 return Ok(ExpandedValue::Complete(snippet.root()));
             }
             if allow_root_sugar
+                && *self.guard_depth() == 0
                 && let Some(rewritten) = rewrite_source_sugar(owner, cursor.root(), &node, &source_map.borrow())
                     .map_err(|error| {
                         emit_internal_surface_error(self.telemetry(), format!("source sugar rewrite failed: {error}"))
@@ -235,6 +259,11 @@ pub(crate) trait QuotedExpansionCtx {
         if head == "quote" {
             return Ok(Some(ExpandedValue::Complete(cursor.root())));
         }
+        if head == "when" && args.len() >= 2 {
+            return self
+                .expand_when_call(owner, cursor, node, &args, scope, depth)
+                .map(Some);
+        }
         if is_scope_definition_head(&head) {
             let mut expanded = Vec::with_capacity(args.len());
             for (index, arg) in args.iter().enumerate() {
@@ -285,6 +314,44 @@ pub(crate) trait QuotedExpansionCtx {
         };
         self.expand_macro_invocation(owner, invocation, function, scope, depth, &args)
             .map(Some)
+    }
+
+    /// `left when guard`: everything before the last argument is a pattern or
+    /// head, the last is the guard.
+    fn expand_when_call(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &QuotedAstNode,
+        args: &[QuotedSourceCursor],
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+        let (guard, patterns) = args.split_last().expect("a `when` call has a guard");
+        let mut expanded = Vec::with_capacity(args.len());
+        for pattern in patterns {
+            match self.expand_cursor(owner, pattern, scope, depth)? {
+                ExpandedValue::Complete(value) => expanded.push(value),
+                ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            }
+        }
+        match self.expand_guard(owner, guard, scope, depth)? {
+            ExpandedValue::Complete(value) => expanded.push(value),
+            ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+        }
+        if expanded.iter().copied().eq(args.iter().map(QuotedSourceCursor::root)) {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        }
+        let builder = owner.builder();
+        let tail = builder.list(&expanded).map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted `when` rebuild failed: {error}"))
+        })?;
+        let rebuilt = builder
+            .tuple(&[node.head.root(), node.meta.root(), tail])
+            .map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("quoted `when` rebuild failed: {error}"))
+            })?;
+        Ok(ExpandedValue::Complete(rebuilt))
     }
 
     fn expand_remote_ast_call(
@@ -442,6 +509,65 @@ pub(crate) trait QuotedExpansionCtx {
         depth: usize,
         args: &[QuotedSourceCursor],
     ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+        let call_span = self.invocation_span(&invocation)?;
+        let expanded = self.run_macro_invocation(owner, invocation, function, scope, depth, args)?;
+        if *self.guard_depth() > 0
+            && let ExpandedValue::Complete(root) = &expanded
+        {
+            self.refuse_unguardable_expansion(owner.subroot(*root), function, call_span)?;
+        }
+        Ok(expanded)
+    }
+
+    /// The span of the call a macro was invoked by: the user's own source, or
+    /// an earlier expansion's already-stamped result.
+    fn invocation_span(&mut self, invocation: &QuotedSourceRoot) -> Result<Option<Span>, super::scheduler::FatalError> {
+        let source_map = self.world().source_map();
+        let node = invocation.cursor().ast_node(&source_map.borrow()).map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("macro call span read failed: {error}"))
+        })?;
+        Ok(node.and_then(|node| node.span))
+    }
+
+    /// A macro expanded inside a guard answers for what it became: dispatch
+    /// evaluates operators, literals, variables and function calls, so any
+    /// other expansion is refused at the call, naming the macro.
+    fn refuse_unguardable_expansion(
+        &mut self,
+        expansion: QuotedSourceRoot,
+        function: FunctionId,
+        call_span: Option<Span>,
+    ) -> Result<(), super::scheduler::FatalError> {
+        let source_map = self.world().source_map();
+        let guardable = decode_guard_expr(&expansion.cursor(), call_span, &source_map.borrow())
+            .map(|expr| is_guard_expr(&expr))
+            .unwrap_or(false);
+        if guardable {
+            return Ok(());
+        }
+        let name = self.world().try_function_ref(function).map_or_else(
+            || "<unknown macro>".to_string(),
+            |reference| reference.name().to_string(),
+        );
+        Err(emit_job_diagnostic(
+            self.telemetry(),
+            Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("invalid expression in guard, `{name}` is not allowed in guards"),
+                call_span.unwrap_or(Span::DUMMY),
+            ),
+        ))
+    }
+
+    fn run_macro_invocation(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        invocation: QuotedSourceRoot,
+        function: FunctionId,
+        scope: ScopeSnapshot,
+        depth: usize,
+        args: &[QuotedSourceCursor],
+    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
         let definition = FactKey::FunctionDefined(function);
         if self.world().fact_revision(&definition).is_none() {
             return Ok(ExpandedValue::Blocked(Box::new(JobEffects::wait_on_current(
@@ -467,16 +593,7 @@ pub(crate) trait QuotedExpansionCtx {
         // which is always either the user's own source (real span from the
         // parser) or an earlier macro's already-stamped result (real span
         // from that expansion, by the same rule, one level up).
-        let macro_call_span = {
-            let source_map = self.world().source_map();
-            invocation
-                .cursor()
-                .ast_node(&source_map.borrow())
-                .map_err(|error| {
-                    emit_internal_surface_error(self.telemetry(), format!("macro call span read failed: {error}"))
-                })?
-                .and_then(|node| node.span)
-        };
+        let macro_call_span = self.invocation_span(&invocation)?;
         // Drawn once this invocation is committed to (past both blocking
         // checks above), whether it turns out to hit the memoization cache
         // or not -- see `next_hygiene_ordinal`.

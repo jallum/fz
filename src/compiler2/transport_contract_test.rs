@@ -179,7 +179,8 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // small knock-ons of the same drop.
 // 232 -> 229: a function's recursion is read from its shared reach product
 // instead of a walk of the static graph, so DeriveRecursive reruns less.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 229;
+// fz-sc8.37: 229 -> 239. Kernel defines `&&`, `||` and `!` as macros.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 239;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

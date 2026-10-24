@@ -1150,8 +1150,8 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
             let v = emit_dispatch_guard_expr(body, ctx, expr, fail, state)?;
             match op {
                 PatternGuardUnaryOp::Not => {
-                    let truthy = emit_truthy_cmp(body, v)?;
-                    emit_bool_value_from_truthy(body.b, truthy, true)
+                    let is_true = emit_guard_boolean(body, ctx, v, fail)?;
+                    emit_bool_value_from_truthy(body.b, is_true, true)
                 }
                 PatternGuardUnaryOp::Neg => {
                     let z = body.b.ins().iconst(types::I64, 0);
@@ -1424,7 +1424,7 @@ fn emit_short_circuit_guard<M: cranelift_module::Module>(
     state: &mut DispatchEmitState,
 ) -> Result<ReceiveValue, CodegenError> {
     let lhs_value = emit_dispatch_guard_expr(body, ctx, lhs, fail, state)?;
-    let lhs_truthy = emit_truthy_cmp(body, lhs_value)?;
+    let lhs_truthy = emit_guard_boolean(body, ctx, lhs_value, fail)?;
     let rhs_b = body.b.create_block();
     let done_b = body.b.create_block();
     body.b.append_block_param(done_b, types::I64);
@@ -1449,8 +1449,8 @@ fn emit_short_circuit_guard<M: cranelift_module::Module>(
     body.b.seal_block(rhs_b);
     let mut rhs_state = state.clone();
     let rhs_value = emit_dispatch_guard_expr(body, ctx, rhs, fail, &mut rhs_state)?;
-    let rhs_truthy = emit_truthy_cmp(body, rhs_value)?;
-    let rhs_bool = emit_bool_value_from_truthy(body.b, rhs_truthy, false);
+    let rhs_true = emit_guard_boolean(body, ctx, rhs_value, fail)?;
+    let rhs_bool = emit_bool_value_from_truthy(body.b, rhs_true, false);
     let rhs_ref = emit_receive_value_ref(body, ctx, rhs_bool)?;
     body.b.ins().jump(done_b, &[ir::BlockArg::Value(rhs_ref)]);
 
@@ -1493,6 +1493,27 @@ fn emit_bool_value_from_truthy(b: &mut FunctionBuilder<'_>, truthy: ir::Value, i
         b.ins().select(truthy, t, f)
     };
     ReceiveValue::Atom(raw)
+}
+
+/// An operand of `and`, `or` or `not` in a guard: whether it is `true`. An
+/// error fails the guard, and a non-boolean operand is an error, so anything
+/// but `true` and `false` leaves through the failure block.
+fn emit_guard_boolean<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    ctx: &DispatchCtx<'_>,
+    v: ReceiveValue,
+    fail: ir::Block,
+) -> Result<ir::Value, CodegenError> {
+    let true_value = bool_const_value(body.b, true);
+    let false_value = bool_const_value(body.b, false);
+    let is_true = emit_typed_eq_cmp(body, ctx, v, true_value)?;
+    let is_false = emit_typed_eq_cmp(body, ctx, v, false_value)?;
+    let is_boolean = body.b.ins().bor(is_true, is_false);
+    let boolean_b = body.b.create_block();
+    body.b.ins().brif(is_boolean, boolean_b, &[], fail, &[]);
+    body.b.switch_to_block(boolean_b);
+    body.b.seal_block(boolean_b);
+    Ok(is_true)
 }
 
 fn emit_truthy_cmp<M: cranelift_module::Module>(

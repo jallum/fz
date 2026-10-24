@@ -134,6 +134,9 @@ struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     /// or not the expansion hits the memoization cache (`next_hygiene_ordinal`
     /// on `QuotedExpansionCtx`). Local to this job attempt, reset with it.
     next_hygiene_counter: u32,
+    /// How many guards enclose the expansion in progress; see
+    /// `QuotedExpansionCtx::expand_guard`.
+    guard_depth: u32,
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeSession<'world, 'tel, T> {
@@ -176,6 +179,10 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeS
             }
             _ => None,
         }
+    }
+
+    fn guard_depth(&mut self) -> &mut u32 {
+        &mut self.guard_depth
     }
 
     fn next_hygiene_ordinal(&mut self) -> u32 {
@@ -553,6 +560,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             struct_form_seen: false,
             statements: Vec::new(),
             next_hygiene_counter: 0,
+            guard_depth: 0,
         }
     }
 

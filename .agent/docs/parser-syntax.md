@@ -91,6 +91,41 @@ per-token fact resolved once at tokenize time (leading position) or an
 ordinary grammar rule (trailing position) — never a runtime guess about
 what a future token "looks like".
 
+## Boolean operators
+
+`||`, `&&` and `!` lex as `Tok::OrOr`, `Tok::AndAnd` and `Tok::Bang`. The Pratt
+table gives `||` the binding power of `or` and `&&` that of `and`; `!` and `not`
+share one prefix reader (`parse_prefix_operator`) that binds tighter than every
+binary operator. All six read as ordinary `{:op, meta, args}` calls.
+
+`and`, `or` and `not` are language operators: the body lowering rewrites each
+into a `case` whose miss arm halts with `BadBooleanError` (non-boolean left
+operand of `and`/`or`) or `ArgumentError` (`not` of a non-boolean). The miss arm
+stays in the lowered body even where the operand's type is a boolean, as it does
+for any exhaustive `case`. `||`, `&&` and `!` are
+`Kernel` macros (`lib/kernel.fz`) over `nil`/`false` patterns, so they answer
+the deciding value. `and`, `or` and `not` stay legal in guards, where a
+non-boolean operand fails the guard as any guard error does; the three guard
+evaluators (`ir_interp/dispatch_exec.rs`, `jobs/native.rs`,
+`native_codegen/receive.rs`) apply the same strictness.
+
+## Macros in guards
+
+Every guard is expanded with `QuotedExpansionCtx::expand_guard`: the guard of a
+function head (`jobs/source.rs`), and the guard of every `when` call the
+expander reaches (`case`, `receive` and `fn` clauses). A macro that
+expands inside a guard keeps working when its expansion is something dispatch
+evaluates (operators, literals, variables, function calls, as decided by
+`jobs::is_guard_expr`). Any other expansion is refused at the macro call, in
+Elixir's words: ``invalid expression in guard, `||` is not allowed in guards``.
+This is the one check; `||`, `&&` and `!` are refused by it because they expand
+to a `case`.
+
+A `defmacro` head is an ordinary expression, so an operator head such as
+`defmacro left || right` parses the same way as a named head
+(`parse_defmacro_head`); `quoted_surface::definable_operator_arity` lists the
+operators a module may define.
+
 ## `when` and trailing `do` belong to expression grammar
 
 `when` is a reserved operator token, but it is not definition grammar. The

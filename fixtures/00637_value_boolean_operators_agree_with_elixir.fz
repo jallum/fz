@@ -1,0 +1,45 @@
+#---
+# purpose: "&&, || and ! answer the value that decided, and, or and not take booleans and answer what Elixir answers; each right side runs only when the left does not decide; precedence and the distiller's m[\"k\"] || [] agree"
+# oracle: 00637_value_boolean_operators_agree_with_elixir.oracle.exs
+#---
+def effect(tag), do: dbg(tag)
+
+def double(x), do: x * 2
+
+def main() do
+  values = [nil, false, true, 0, [], ""]
+  booleans = [true, false]
+
+  dbg(Enum.map(values, fn v -> v || :right end))
+  dbg(Enum.map(values, fn v -> v && :right end))
+  dbg(Enum.map(values, fn v -> !v end))
+  dbg(Enum.map(values, fn v -> !!v end))
+
+  dbg(Enum.map(booleans, fn b -> b and :right end))
+  dbg(Enum.map(booleans, fn b -> b or :right end))
+  dbg(Enum.map(booleans, fn b -> not b end))
+  dbg({true and 0, false or [], true and "", false or nil, true or 0, false and 0})
+
+  dbg(Enum.map([-1, 5, 11], fn x -> x > 0 and x < 10 end))
+  dbg(Enum.map([-1, 5, 11], fn x -> x < 0 or x > 10 end))
+  dbg(Enum.map([-1, 5, 11], fn x -> not (x > 0) end))
+
+  Enum.each([nil, false], fn v -> dbg(v || effect(:or_right)) end)
+  Enum.each([0, 1], fn v -> dbg(v || effect(:or_right)) end)
+  Enum.each([nil, false], fn v -> dbg(v && effect(:and_right)) end)
+  Enum.each([0, 1], fn v -> dbg(v && effect(:and_right)) end)
+  Enum.each(booleans, fn b -> dbg(b or effect(:or_right)) end)
+  Enum.each(booleans, fn b -> dbg(b and effect(:and_right)) end)
+  dbg({true || panic("unreached"), nil && panic("unreached"), false and panic("unreached"), true or panic("unreached")})
+
+  a = 1
+  dbg(nil || (true and 3) && 4)
+  dbg(!a == true)
+  x = nil || 5
+  dbg(x)
+  dbg(not false && 7)
+  dbg(a || 3 |> double())
+
+  m = %{"k" => [1, 2]}
+  dbg({m["k"] || [], m["missing"] || []})
+end

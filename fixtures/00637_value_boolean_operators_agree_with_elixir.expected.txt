@@ -1,0 +1,36 @@
+[:right, :right, true, 0, [], ""]
+[nil, false, :right, :right, :right, :right]
+[true, true, false, false, false, false]
+[false, false, true, true, true, true]
+[:right, false]
+[true, :right]
+[false, true]
+{0, [], "", nil, true, false}
+[false, true, false]
+[true, false, true]
+[true, false, false]
+:or_right
+:or_right
+:or_right
+:or_right
+0
+1
+nil
+false
+:and_right
+:and_right
+:and_right
+:and_right
+true
+:or_right
+:or_right
+:and_right
+:and_right
+false
+{true, nil, false, true}
+4
+false
+5
+7
+1
+{[1, 2], []}
