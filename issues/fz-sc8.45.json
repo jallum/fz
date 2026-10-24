@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-24T20:27:37Z",
+  "description": "Repro (base binary):\n    def tag(x), do: x\n    def main(), do: Enum.each([false, 0], fn v -\u003e dbg(if(v, do: v, else: tag(:a))) end)\ninterp prints :a then 0. run prints :a, then panics at runtime/src/ir_runtime.rs:286:10: fz_ref_load_atom ExpectedTag{expected: ValueKind(15), found: ValueKind(13)}. A literal :a in the else works, and so does a list of one type. With four mixed values a second panic appeared: \"cannot coerce atom and numeric raw ABI reprs\". Done when: an Elixir-oracle fixture of this shape agrees on interp, run and build.",
+  "id": "fz-sc8.45",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "The JIT reads an if's value correctly when its else calls a function over a list of false and 0",
+  "type": "bug",
+  "updated_at": "2026-10-24T20:27:37Z"
+}
