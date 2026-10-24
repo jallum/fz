@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-24T20:27:36Z",
+  "description": "When a case's subject type already decides a test, the native lowering still emits the test, and still emits a miss arm that cannot be reached.\n\nRepro (base 81c747daf): `case a == 1 do true -\u003e false; false -\u003e true end`. The subject is typed :false|:true, so after `equal(true)` fails the remainder is :false, the `equal(false)` test is settled, and the miss is impossible. The lowered code still has both compares and a `halt :case_clause` block. After fz-sc8.37, every `and`/`or`/`not` (which lower to a case with a BadBooleanError/ArgumentError miss) pays two compares and a halt block the same way: `a == 1 or a == 2` under --dump backend= shows `test equal(true)`, `test equal(false)`, then fail with `halt :BadBooleanError`.\n\nMechanism (builder's reading, to be re-verified by the reader): jobs/native.rs lower_dispatch_test settles a question statically only through settled_lane_form_type_test (tuples held as lanes). An atom `equal(..)` region is never settled by the subject's type, and the DoesNotHold proofs on a miss edge are not used to narrow. executable_facts.rs treats miss_entry as always reachable.\n\nDone when: a test that observes the dispatch plan or telemetry, not text output, shows that a boolean-typed `or`/`and`/`not` and the hand-written exhaustive case lower with no reachable halt and no settled test. Interp, run and build agree. The pins fz-sc8.37 raised for this cause (blind-escape census case row 3-\u003e11, join walk 29-\u003e38, membership `main/0`) come back down; any other movement is explained. Proposal page first. Worked right after fz-sc8.37 lands (decided 2026-10-24).",
+  "id": "fz-sc8.44",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A case skips a test its subject's type already answers, and builds no miss it cannot reach",
+  "type": "task",
+  "updated_at": "2026-10-24T20:27:36Z"
+}
