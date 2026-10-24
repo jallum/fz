@@ -4,14 +4,15 @@
   "blocks": [
     "fz-sc8.19"
   ],
+  "closed_at": "2026-10-24T21:11:40Z",
   "created": "2026-10-23T15:31:57Z",
   "description": "fz removed `\u0026\u0026`, `||` and `!` (0f9f0a057, fz-b7n) as C-style duplicates of `and`/`or`/`not`. In Elixir they are different operators, and fz follows Elixir for operators:\n\n- `and`/`or`/`not` are strict: the left operand (the operand, for `not`) must be a boolean.\n- `\u0026\u0026`, `||` and `!` take any value. `nil` and `false` count as false, everything else as true, and the result is the deciding value: `nil || []` is `[]`, `\"x\" || []` is `\"x\"`, `nil \u0026\u0026 1` is `nil`, `!nil` is `true`. They are Kernel macros in Elixir and are not allowed in guards.\n\nThe distiller uses `||` for a default when a key is missing (tools/distill-telemetry.exs:155-156), and today stops there: \"`||` is not an operator; use `or`\".\n\nAcceptance: all three parse at Elixir precedence and give Elixir's results on interp, run and build, checked against an Elixir oracle (truthiness table, returned values, short-circuit: the right side is not evaluated when the left decides, precedence against `and`/`or`/`|\u003e`/comparisons); a guard using one is refused with a clear error, as Elixir refuses it. The \"use `or`\" lexer message is removed. Proposal page before building.\n\nDesign: page /Users/j5n/Workspace/fz-sc8.37.html, APPROVED 2026-10-23. Kernel defines the three as defmacro operator heads expanding to a case over the patterns nil/false/x; defmacro accepts operator heads as def does; the implicit Kernel import lists them; a guard call naming a macro is refused as Elixir words it. Folded in (decided 2026-10-23): `and`, `or` and `not` become Elixir-strict on all three paths (BadBooleanError for a non-boolean left operand, ArgumentError for `not`), checked only where the type does not prove a boolean; the interpreter's truthy `or` (is_truthy, ir_interp/binop.rs:45) is deleted. `in` in a guard is fz-sc8.38.\n\nDecided 2026-10-24:\n- One guard refusal, at the place where a macro expands inside any guard (def, case, with, receive, fn). It is reported at the call site in Elixir's words (\"invalid expression in guard, `||` is not allowed in guards\"; Elixir 1.19.4 refuses the same way in case and def guards). It replaces the refusal that only covered def heads. Macros that expand to guard-safe code still work.\n- Pins are approved only after measurement: a test proves that a boolean-proven `a == 1 or a == 2` and `not (a == 1)` carry no halt path; each fz2_cli pin's cause is probed separately; the census, join-walk and membership pins are compared item by item.\n\nCorrection 2026-10-24: the proof that a boolean-proven operand carries no halt path FAILED. The native lowering never settles atom tests by type (also true on base for a hand-written exhaustive case). Decided: land with the 13 measured pin raises; pruning is fz-sc8.44, worked next. Also folded in: guards expand macros but apply no source sugar (fixes `-x` in case/fn guards, broken on base).",
   "id": "fz-sc8.37",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "\u0026\u0026, || and ! with Elixir's meaning",
   "type": "feature",
-  "updated_at": "2026-10-24T20:27:52Z"
+  "updated_at": "2026-10-24T21:11:40Z"
 }
