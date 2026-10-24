@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-10-24T20:27:37Z",
+  "description": "Repro (base binary):\n    def effect(tag), do: (send(self(), tag); tag)\n    def flush(seen) do\n      receive do\n        tag -\u003e flush([tag | seen])\n      after\n        0 -\u003e Enum.reverse(seen)\n      end\n    end\n    def main(), do: dbg({effect(:sent), flush([])})\ninterp prints {:sent, [:sent]} (Elixir's answer); run prints {:sent, []}, so flush ran before effect. The same order difference shows through `if` plus flush. Done when: an oracle fixture with effects in each tuple element (and, to check the rule holds, list elements and call arguments) agrees on all three paths.",
+  "id": "fz-sc8.47",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "The JIT evaluates a tuple's elements left to right",
+  "type": "bug",
+  "updated_at": "2026-10-24T20:27:37Z"
+}
