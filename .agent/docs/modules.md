@@ -41,6 +41,12 @@ Scoped { source, base, interface? }    a base namespace head has been chosen
 Defined { source, base, interface }    the module body is published
 ```
 
+A module's stage only moves forward for the same source: indexing a Scoped or
+Defined module again from the source it already has (`ModuleState::reconcile`)
+keeps the stage and reports no change, so a file's top-level walk that re-runs
+after `ModuleDefined` does not un-define the module it was waiting on. A
+different source starts the module over at Indexed.
+
 `ModuleSource { code, parent, source, kind }` carries the source facts and
 parent ownership edge. `ModuleMap` supplies the full module denotation directly;
 consumers do not reconstruct it from parent and local display spellings.
@@ -66,6 +72,13 @@ parent's `ModuleDefined` (or `CodeScoped` when the parent is global); a
 not-yet-pulled runtime module waits on its `CodeIndexed` after
 `ensure_runtime_module` submits its source. `define_module` also derives and
 publishes `FactKey::ModuleInterface(module)` for source-defined modules.
+
+`require` and `import` refuse a module defined inside the requiring scope's own
+body (`World::module_defined_within`, checked in `apply_require` and
+`apply_import`), as Elixir does: that module is not loaded until the scope that
+defines it has finished. The diagnostic is `resolve/module-not-loaded` at the
+`require`/`import` span. A module defined earlier outside the requiring
+`defmodule` is required normally.
 
 The important split is:
 

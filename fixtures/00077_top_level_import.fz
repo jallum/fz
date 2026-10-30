@@ -1,8 +1,8 @@
 #---
-# purpose: a top-level import brings a module's export into scope for top-level function calls.
+# purpose: "A top-level import brings a library module's export into scope for top-level code"
+# kind: run
+# oracle: 00077_top_level_import.oracle.exs
 #---
-defmodule Math do
-  def add(x, y), do: x + y
-end
-import Math, only: [add: 2]
-def main(), do: add(20, 22)
+import Enum, only: [sum: 1]
+
+dbg(sum([20, 22]))

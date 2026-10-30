@@ -665,6 +665,11 @@ the terminal `Unresolved` result therefore inherit one structural order across
 opposite type-mint histories. This inventory is only materialized at the
 existing stall and terminal boundaries.
 
+`World::unresolved_issue` matches every `FactKey`: waits a user's source can
+cause (a module, struct, function, type) become the diagnostic that names it,
+and every other kind becomes `internal/unresolved-wait`, so a stalled wait is
+never dropped.
+
 **Errors are not facts.** A job returning `FatalError` aborts the whole drive;
 the diagnostic goes out through telemetry. Closure never masks an error, and
 there is no diagnostics fact family to reconcile.

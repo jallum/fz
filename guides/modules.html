@@ -165,6 +165,15 @@ dotted module path such as <code>Foo.Bar</code>, <code>require Foo.Bar</code>
 supports <code>Foo.Bar.some_macro(...)</code>; it does not create the short
 alias <code>Bar</code>.</p>
 
+<p>A module is not loaded until the scope that defines it has finished, so
+that scope cannot <code>require</code> or <code>import</code> it. A file that
+defines <code>M</code> and then says <code>require M</code> or
+<code>import M</code> at the top level, or a <code>defmodule</code> that
+requires a module nested inside itself, is refused with
+<code>module M is not loaded but was defined</code>, as in Elixir. Calling
+<code>M.f()</code> or aliasing <code>M</code> needs neither, and a separate
+<code>defmodule</code> may require a module defined before it.</p>
+
 <!-- ─────────────────────────────── 5. INTERFACE ─────────────────────────────── -->
 <h2 id="interface">5. Interfaces - the public contract</h2>
 

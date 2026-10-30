@@ -16,6 +16,7 @@ fn all_codes_follow_stage_slash_kind_format() {
         RESOLVE_UNKNOWN_MODULE,
         RESOLVE_UNKNOWN_FUNCTION,
         RESOLVE_UNKNOWN_IMPORT,
+        RESOLVE_MODULE_NOT_LOADED,
         RESOLVE_TYPE_ALIAS,
         RESOLVE_DUPLICATE_STRUCT,
         RESOLVE_DUPLICATE_FUNCTION,
@@ -32,6 +33,7 @@ fn all_codes_follow_stage_slash_kind_format() {
         SPEC_VIOLATION,
         ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,
         INTERNAL_POST_RESOLUTION_LEFTOVER,
+        INTERNAL_UNRESOLVED_WAIT,
     ];
     for c in codes {
         let parts: Vec<_> = c.0.split('/').collect();

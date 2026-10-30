@@ -83,6 +83,7 @@ enum UnresolvedIssueKey {
     Function(FunctionId),
     Export(FunctionId),
     Type(TypeName),
+    Internal(&'static str),
 }
 
 struct UnresolvedIssue {
@@ -1676,6 +1677,28 @@ impl World {
         self.modules.get(module).source().is_some()
     }
 
+    /// Whether `module` is defined, in `owner`'s source, inside `scope`'s
+    /// own body at any depth. The global scope contains every module its
+    /// source defines.
+    pub(crate) fn module_defined_within(&self, module: ModuleId, scope: ModuleId, owner: SourceOwner) -> bool {
+        let Some(source) = self.modules.get(module).source() else {
+            return false;
+        };
+        if source.owner != owner {
+            return false;
+        }
+        let mut parent = source.parent;
+        loop {
+            if parent == scope {
+                return true;
+            }
+            match self.modules.get(parent).source() {
+                Some(source) => parent = source.parent,
+                None => return false,
+            }
+        }
+    }
+
     pub fn note_module_interface_expectation(&mut self, module: ModuleId, expectation: InterfaceExpectation) {
         let mut interface = self.module_interface_if_present(module).unwrap_or_default();
         interface.record_expectation(expectation);
@@ -2552,6 +2575,14 @@ impl World {
         // tuple gave the first four kinds.
         issues.sort_by(|left, right| left.key.cmp(&right.key));
         issues.dedup_by_key(|issue| issue.key.clone());
+        // A stall the source explains is the whole story: the compiler's own
+        // waits downstream of it are its consequence, not a second fault.
+        if issues
+            .iter()
+            .any(|issue| !matches!(issue.key, UnresolvedIssueKey::Internal(_)))
+        {
+            issues.retain(|issue| !matches!(issue.key, UnresolvedIssueKey::Internal(_)));
+        }
         issues
     }
 
@@ -2563,7 +2594,49 @@ impl World {
             FactKey::ExpandedFunctionSource(function) => self.unresolved_function_issue(frontier, *function),
             FactKey::FunctionDefined(function) => self.unresolved_function_issue(frontier, *function),
             FactKey::TypeDefined(name) => self.unresolved_type_issue(name),
-            _ => None,
+            FactKey::ModuleDefined(module) | FactKey::ModuleInterface(module) => {
+                Some(self.unresolved_module_issue(*module))
+            }
+            FactKey::CodeIndexed(_)
+            | FactKey::CodeScoped(_)
+            | FactKey::ProtocolDispatch(_)
+            | FactKey::ProtocolImplProviders(_)
+            | FactKey::FunctionContract(_)
+            | FactKey::LoweredBody(_)
+            | FactKey::GuardDispatch(_)
+            | FactKey::EntryDispatch(_)
+            | FactKey::StaticCallees(_)
+            | FactKey::Recursive(_)
+            | FactKey::InputDemand(_)
+            | FactKey::RootEntry(_)
+            | FactKey::Activation(_)
+            | FactKey::ActivationInputs(_)
+            | FactKey::ActivationAnalyzed(_)
+            | FactKey::ReturnType(_)
+            | FactKey::CallSiteTargets(_)
+            | FactKey::CallSiteSummary(_)
+            | FactKey::Executable(_)
+            | FactKey::ExecutableFacts(_)
+            | FactKey::CallableConstructionTarget(_)
+            | FactKey::RuntimeDemandInput(_)
+            | FactKey::RuntimeDemand(_)
+            | FactKey::RuntimeDemandInputs(_)
+            | FactKey::IncomingInputSlot(_) => Some(Self::unresolved_internal_issue(fact)),
+        }
+    }
+
+    /// A wait no source line can leave unmet: the compiler's own derivation
+    /// stalled, so the stall is reported as the compiler's fault. It speaks
+    /// only when no wait the source can explain is in the frontier.
+    fn unresolved_internal_issue(fact: &FactKey) -> UnresolvedIssue {
+        let kind = fact.kind_label();
+        UnresolvedIssue {
+            key: UnresolvedIssueKey::Internal(kind),
+            diagnostic: Diagnostic::error(
+                codes::INTERNAL_UNRESOLVED_WAIT,
+                format!("the compiler stopped while waiting on {kind}, which no source line can leave unmet"),
+                Span::DUMMY,
+            ),
         }
     }
 

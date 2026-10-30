@@ -1322,6 +1322,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
 
     fn apply_require(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
         let required_module = self.resolve_import_module(import);
+        self.refuse_module_defined_in_this_scope(import, required_module)?;
         self.world
             .note_module_reference_expectation(required_module, self.interface_requester(import.span));
         self.bind_required_module_path(import, required_module);
@@ -1463,6 +1464,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
 
     fn apply_import(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
         let imported_module = self.resolve_import_module(import);
+        self.refuse_module_defined_in_this_scope(import, imported_module)?;
         self.world
             .note_module_reference_expectation(imported_module, self.interface_requester(import.span));
         let selected = if self.world.module_interface_revision(imported_module).is_none() {
@@ -1547,6 +1549,34 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             self.namespace = bind_callable(self.world, self.namespace, export);
         }
         Ok(None)
+    }
+
+    /// A module is not loaded until the scope that defines it has finished,
+    /// so that scope cannot require or import it.
+    fn refuse_module_defined_in_this_scope(
+        &self,
+        import: &super::quoted_surface::ImportForm,
+        module: ModuleId,
+    ) -> Result<(), FatalError> {
+        if !self
+            .world
+            .module_defined_within(module, self.current_module, self.source_owner)
+        {
+            return Ok(());
+        }
+        Err(emit_job_diagnostic(
+            self.telemetry,
+            Diagnostic::error(
+                codes::RESOLVE_MODULE_NOT_LOADED,
+                format!(
+                    "module {} is not loaded but was defined. This happens when you depend on a module in the same context in which it is defined. Try defining the module outside the context that uses it.",
+                    self.world
+                        .module_denotation(module)
+                        .expect("a module with a recorded source has a name")
+                ),
+                import.span,
+            ),
+        ))
     }
 
     fn resolve_import_module(&mut self, import: &super::quoted_surface::ImportForm) -> ModuleId {
