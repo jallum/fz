@@ -4,14 +4,15 @@
   "blocks": [
     "fz-sc8.19"
   ],
+  "closed_at": "2026-10-30T23:21:41Z",
   "created": "2026-10-23T15:37:37Z",
   "description": "A file whose top-level code calls a module defined above it never builds main/0 and fails with \"resolve/unknown-function: function `main/0` is not defined --\u003e \u003cgenerated\u003e\". This is the distiller's next stop: its last line is `Distill.main(System.argv())`.\n\n    defmodule M do\n      def go(a), do: dbg(a)\n    end\n    M.go(1)\n\nElixir 1.19.4 runs it. Elixir refuses `require M` and `import M` of a module defined in the same context (\"module M is not loaded but was defined ...\"). fz today gives the main/0 error for require and \"waited on an executable's runtime demand with no ready producer\" for import. `alias M` and a require inside a separate defmodule already work in both.\n\nCause (read from code and telemetry, confirmed by the first red test): the top-level ScopeCode job waits on ModuleDefined(M) to learn whether M.go is a macro. When woken it re-walks the file, and discover_modules -\u003e index_body (identity.rs:431) stores ModuleState::Indexed unconditionally (update_if_changed, identity.rs:885). This demotes M from Defined, so module_defined_revision (world.rs:1738) is None again and the job waits forever. At drain, unresolved_issue (world.rs:2558) drops ModuleDefined/ModuleInterface waits through a catch-all `_ =\u003e None`, leaving only the root's main/0 wait to report.\n\nDesign: page /Users/j5n/Workspace/fz-sc8.41.html, APPROVED 2026-10-30. Three decisions, each made once:\n1. ModuleState reconcile keeps a Scoped/Defined module when re-indexed from the same source (no revision change); a different source still resets it.\n2. apply_require/apply_import refuse a module defined by the requiring scope, with Elixir's message at the require/import span.\n3. unresolved_issue matches FactKey exhaustively; ModuleDefined/ModuleInterface go to unresolved_module_issue; kinds that are never a user cause become an explicit internal-error issue.\n\nDone when: identity unit test (same source keeps Defined, different source resets); oracle fixture for a top-level call to a module defined above (interp/run/build match elixir); diagnostic fixtures for same-context require, require of a macro, import, and nested defmodule require; a drive test that a stalled ModuleDefined of a never-defined module reports \"module `X` is not defined\" with its span; telemetry shows the predicted succession (ScopeCode twice, DefineModule once, no ModuleIndexed change on the second walk); full unmasked pin census, no rise; docs updated; the distiller re-run and its next error reported.",
   "id": "fz-sc8.41",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Once a module is defined it stays defined; same-context require/import is refused as in Elixir",
   "type": "bug",
-  "updated_at": "2026-10-30T19:20:44Z"
+  "updated_at": "2026-10-30T23:21:41Z"
 }
