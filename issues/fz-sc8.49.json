@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.44"
+  ],
   "created": "2026-11-01T00:05:30Z",
   "description": "f(n) when is_integer(n) and f(n :: integer) describe the same clause, but build different dispatch rows. The typed form becomes a row precondition (a type question the analysis reads, narrows the body by, and settles per activation: called with an int, the call is direct). The guarded form becomes an opaque Region::Guard: the analysis cannot read it (predicate_target returns None for guards), the body is not narrowed (probe: int|binary input, typed returns int|:other, guarded returns int|binary|:other), and the entry dispatch stays.\n\nDesign: page /Users/j5n/Workspace/fz-sc8.49.html (to be approved). Recognise, once, in guard_dispatch_from_rows (dispatch_matrix/pattern.rs:420): a helper whose two clauses are \"annotated params -\u003e true\" and \"plain params -\u003e false\" is a type predicate. Fold, once, in PatternDispatchProducer::add_row (pattern.rs ~680), which every row source passes through (entry, case, receive, lambda): top-level `and` conjuncts that call a type predicate with pattern-bound variables become type questions on those subjects; the rest stays the guard. Worked before fz-sc8.44, so trimming measures corrected plans.",
   "id": "fz-sc8.49",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A type-test guard is the same row as a typed parameter",
   "type": "task",
-  "updated_at": "2026-11-01T00:05:30Z"
+  "updated_at": "2026-11-01T00:05:34Z"
 }
