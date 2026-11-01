@@ -169,6 +169,17 @@ questions in section 2. On <code>true</code>, the matcher proceeds to the
 leaf; on <code>false</code>, it falls through to the next row of the
 SourcePatternRows.</p>
 
+<p>A type test in a guard is not opaque. <code>when is_integer(n)</code> and
+a typed parameter <code>n :: integer</code> are the same clause: they build
+the same row, the body sees <code>n</code> as an integer, and a call with an
+integer settles the clause without a test. This holds for any helper written
+as <code>def h(_ :: T), do: true</code> followed by <code>def h(_), do:
+false</code>, and for each such call in a top-level <code>and</code> chain whose
+arguments are names the clause binds, wherever they bind: a whole argument, a
+tuple field, a list head or a struct field. Under <code>or</code> or
+<code>not</code>, or with an expression as the argument, the call stays an
+ordinary guard.</p>
+
 <h3>Pins: match against a value already in scope</h3>
 
 <p>By default, writing a bare name in a pattern <em>binds</em> that

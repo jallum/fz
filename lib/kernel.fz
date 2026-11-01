@@ -922,8 +922,7 @@ defmodule Kernel do
 
   """
   @spec is_boolean(any) :: boolean
-  def is_boolean(true), do: true
-  def is_boolean(false), do: true
+  def is_boolean(_ :: boolean), do: true
   def is_boolean(_), do: false
 
   @doc """
@@ -939,7 +938,7 @@ defmodule Kernel do
 
   """
   @spec is_nil(any) :: boolean
-  def is_nil(nil), do: true
+  def is_nil(_ :: nil), do: true
   def is_nil(_), do: false
 
   # `</2` and its siblings carry this order through `compare/2`.

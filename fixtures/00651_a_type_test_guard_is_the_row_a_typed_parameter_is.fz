@@ -1,0 +1,86 @@
+#---
+# purpose: "A type-test guard builds the same dispatch row as a typed parameter, so the body narrows by it"
+# root: main/0
+#---
+#
+# `when is_integer(n)` and `n :: integer` are the same clause. A helper that
+# answers `true` for annotated parameters and `false` for anything else is a
+# type test, whoever wrote it. A conjunct of an `and` chain that calls one on
+# names the row binds is a type question; `or`, `not` and expression arguments
+# stay guards.
+def isint(_ :: integer), do: true
+def isint(_), do: false
+
+def pair_of_ints(_ :: integer, _ :: integer), do: true
+def pair_of_ints(_, _), do: false
+
+def typed(n :: integer), do: n
+def typed(_), do: :other
+
+def guarded(n) when is_integer(n), do: n
+def guarded(_), do: :other
+
+def user_guarded(n) when isint(n), do: n
+def user_guarded(_), do: :other
+
+def qualified(n) when Kernel.is_integer(n), do: n
+def qualified(_), do: :other
+
+def doubled(n :: integer) when is_integer(n), do: n
+def doubled(_), do: :other
+
+def pair_typed(a :: integer, b :: integer), do: a + b
+def pair_typed(_, _), do: :other
+
+def pair_guarded(a, b) when pair_of_ints(a, b), do: a + b
+def pair_guarded(_, _), do: :other
+
+def pair_anded(a, b) when is_integer(a) and is_integer(b), do: a + b
+def pair_anded(_, _), do: :other
+
+def boolean_typed(b :: boolean), do: b
+def boolean_typed(_), do: :other
+
+def boolean_guarded(b) when is_boolean(b), do: b
+def boolean_guarded(_), do: :other
+
+def nil_typed(x :: nil), do: x
+def nil_typed(_), do: :other
+
+def nil_guarded(x) when is_nil(x), do: x
+def nil_guarded(_), do: :other
+
+def partial(m) when is_map(m) and map_size(m) == 0, do: :empty
+def partial(_), do: :other
+
+def either(x) when is_integer(x) or is_binary(x), do: :either
+def either(_), do: :neither
+
+def negated(x) when not is_integer(x), do: :not_int
+def negated(_), do: :int
+
+def projected(t) when is_integer(elem(t, 0)), do: :int_first
+def projected(_), do: :other
+
+def int_or_binary(0), do: 1
+def int_or_binary(_), do: "x"
+
+def narrow_typed(v :: integer), do: v
+def narrow_typed(_), do: :other
+
+def narrow_guarded(v) when is_integer(v), do: v
+def narrow_guarded(_), do: :other
+
+def main() do
+  dbg([typed(1), guarded(1), user_guarded(1), qualified(1), doubled(1)])
+  dbg([typed("x"), guarded("x"), user_guarded("x"), qualified("x"), doubled("x")])
+  dbg([pair_typed(1, 2), pair_guarded(1, 2), pair_anded(1, 2)])
+  dbg([pair_typed(1, "x"), pair_guarded(1, "x"), pair_anded("x", 2)])
+  dbg([boolean_typed(true), boolean_guarded(false), boolean_typed(nil), boolean_guarded(nil)])
+  dbg([nil_typed(nil), nil_guarded(nil), nil_typed(false), nil_guarded(false)])
+  dbg([partial(%{}), partial(%{a: 1}), partial(1)])
+  dbg([either(1), either("x"), either(:a)])
+  dbg([negated(1), negated("x")])
+  dbg([projected({1}), projected({:a}), projected(1)])
+  dbg([narrow_typed(int_or_binary(0)), narrow_guarded(int_or_binary(1))])
+end
