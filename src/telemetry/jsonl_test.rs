@@ -941,3 +941,45 @@ fn jsonl_emits_the_claims_behind_a_return_ascent() {
         "an edge names the callsite inside its activation and renders its resolution"
     );
 }
+
+/// An analysis reports how much of the dispatch plans it runs its types
+/// answered, so a trace shows the saving without reading the lowered code: a
+/// `case` over a boolean has one test left to ask and cannot fail.
+#[test]
+fn jsonl_counts_the_tests_and_fails_an_analysis_trimmed() {
+    let trace = crate::telemetry::public_trace::PublicTrace::compile(
+        "def main() do\n  case Enum.at([1, 2], 0) == 1 do\n    true -> :one\n    false -> :other\n  end\nend\n",
+    );
+
+    let analyses = trace.events_named(&["fz", "compiler2", "activation_analysis", "defined"]);
+    assert!(
+        analyses
+            .iter()
+            .all(|event| event.semantic["trimmed_tests"].is_u64() && event.semantic["removed_fails"].is_u64()),
+        "every analysis reports both counts"
+    );
+    assert!(
+        analyses.iter().any(|event| {
+            event.semantic["trimmed_tests"].as_u64() == Some(1) && event.semantic["removed_fails"].as_u64() == Some(1)
+        }),
+        "the boolean `case` loses its second test and its miss"
+    );
+}
+
+/// A function whose clauses are told apart by a field of a tuple loses the
+/// questions its caller's argument already answers, in the plan that selects
+/// its clause.
+#[test]
+fn jsonl_counts_the_function_clause_tests_an_analysis_trimmed() {
+    let trace = crate::telemetry::public_trace::PublicTrace::compile(
+        "def unwrap({v, false}), do: v\ndef unwrap({v, true}), do: v + 1\ndef main(), do: unwrap({length([1, 2]), Enum.at([1, 2], 0) == 1})\n",
+    );
+
+    let analyses = trace.events_named(&["fz", "compiler2", "activation_analysis", "defined"]);
+    assert!(
+        analyses.iter().any(|event| {
+            event.semantic["trimmed_tests"].as_u64() == Some(2) && event.semantic["removed_fails"].as_u64() == Some(1)
+        }),
+        "unwrap/1 loses its pair test and its `true` test, and its miss"
+    );
+}

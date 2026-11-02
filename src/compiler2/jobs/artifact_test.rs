@@ -225,8 +225,9 @@ fn try_materialize_closure_edge(
     let call_returns = evidence.call_returns();
     let result_value = ValueId::from_u32(2);
     let analysis = ActivationAnalysis {
+        trimmed: Default::default(),
         input_rows: Vec::new(),
-        entry_reachability: EntryReachability::new(Vec::new(), false),
+        entry_reachability: EntryReachability::new(Vec::new()),
         reachable_entries: Vec::new(),
         callsites: Vec::new(),
         value_types: call_returns.then_some((result_value, int)).into_iter().collect(),

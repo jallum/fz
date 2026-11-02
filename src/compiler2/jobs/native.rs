@@ -2937,7 +2937,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         env: &ValueEnv,
         plan: &PatternDispatchPlan<Ty>,
         outcomes: &[super::super::body::OutcomeEdge],
-        miss_entry: ControlEntryId,
+        miss_entry: Option<ControlEntryId>,
         node_id: GraphNodeId,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
@@ -2950,6 +2950,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         };
         match node {
             DispatchNode::Fail => {
+                let Some(miss_entry) = miss_entry else {
+                    return Err(incomplete_native_program(
+                        self.telemetry,
+                        self.root_id,
+                        format!("a dispatch with no miss entry reached its fail in {:?}", ctx.origin),
+                    ));
+                };
                 let args = self.entry_capture_args(ctx, executable, entries, miss_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
@@ -3047,44 +3054,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }
     }
 
-    /// What a type test answers from transport shapes alone.
-    ///
-    /// A tuple delivered as lanes carries its arity in its shape, so a question
-    /// about it can be settled before any code is emitted. `None` where the
-    /// answer needs a value to read -- the emitting pass then asks it.
-    fn settled_lane_form_type_test(&self, value: &NativeBoundValue, predicate: &RuntimeTypePredicate) -> Option<bool> {
-        let NativeBoundValue::Transport { shape, lanes } = value else {
-            return None;
-        };
-        let arity = self.world.tuple_arity(*shape)?;
-        let positions = match predicate.tuple_positions(arity) {
-            TuplePositions::Never => return Some(false),
-            TuplePositions::Always => return Some(true),
-            TuplePositions::AnyOf(shapes) => shapes,
-        };
-        let views = self.transport_field_views(*shape, lanes).ok()?;
-        let mut admitted = Some(false);
-        for shape in positions {
-            let mut matched = Some(true);
-            for (position, view) in shape.iter().zip(&views) {
-                matched = match self.settled_lane_form_type_test(view, position) {
-                    Some(false) => Some(false),
-                    Some(true) => matched,
-                    None => matched.and(None),
-                };
-                if matched == Some(false) {
-                    break;
-                }
-            }
-            admitted = match matched {
-                Some(true) => return Some(true),
-                Some(false) => admitted,
-                None => admitted.and(None),
-            };
-        }
-        admitted
-    }
-
     /// Ask a type test of a value in whatever form it is held.
     ///
     /// A whole value answers with one `RuntimeTypeTest`. A tuple held as lanes
@@ -3092,9 +3061,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     /// wants of a tuple of that arity and puts one question to each position
     /// instead -- the same decomposition the boxed matcher and the boxed
     /// emitter make, one level in, against lanes already in hand.
-    ///
-    /// Whatever the shapes settle is decided first, so a shape this value
-    /// cannot match emits nothing at all.
     ///
     /// A position carries runtime demand and so keeps a lane, which is why the
     /// absent arm below is unreachable rather than a case to answer.
@@ -3104,9 +3070,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         value: &NativeBoundValue,
         predicate: &RuntimeTypePredicate,
     ) -> Result<DispatchAnswer, FatalError> {
-        if let Some(settled) = self.settled_lane_form_type_test(value, predicate) {
-            return Ok(DispatchAnswer::Static(settled));
-        }
         let (shape, lanes) = match value {
             NativeBoundValue::Runtime(var) => {
                 let (flag, _) = ctx.emit_let(Prim::RuntimeTypeTest(*var, Box::new(predicate.clone())));
@@ -3136,19 +3099,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let views = self.transport_field_views(shape, &lanes)?;
         let mut admitted = DispatchAnswer::Static(false);
         for shape in positions {
-            let settled = shape
-                .iter()
-                .zip(&views)
-                .map(|(position, view)| self.settled_lane_form_type_test(view, position))
-                .collect::<Vec<_>>();
-            if settled.contains(&Some(false)) {
-                continue;
-            }
             let mut matched = DispatchAnswer::Static(true);
-            for ((position, view), settled) in shape.iter().zip(&views).zip(settled) {
-                if settled.is_some() {
-                    continue;
-                }
+            for (position, view) in shape.iter().zip(&views) {
                 let answer = self.lane_form_type_test(ctx, view, position)?;
                 matched = matched.and(ctx, answer);
             }
@@ -3158,9 +3110,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     }
 
     /// Answer one region question about one subject.
-    ///
-    /// A lane-form subject already knows its own arity, so that question is
-    /// settled here rather than left to a runtime test.
     fn lower_dispatch_region(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -3170,12 +3119,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         evidence: &crate::dispatch_matrix::EdgeEvidence<Ty>,
         state: &mut DispatchState,
     ) -> Result<DispatchAnswer, FatalError> {
-        if let Region::TupleArity(arity) = region {
-            let value = self.dispatch_subject_value(ctx, plan, state, subject)?;
-            if let Some(known) = value.transport_shape().and_then(|shape| self.world.tuple_arity(shape)) {
-                return Ok(DispatchAnswer::Static(known == *arity as usize));
-            }
-        }
         Ok(DispatchAnswer::Runtime(match region {
             Region::Type(ty) => {
                 // The value is asked in the form it is held: a tuple delivered

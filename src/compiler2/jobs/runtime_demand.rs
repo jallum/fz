@@ -1599,14 +1599,14 @@ fn collect_entry_live_demands(
             for value in bindings.pinned.iter().chain(bindings.prepared.iter()) {
                 note_live_demand(out, &mut live, *value, RuntimeDemand::whole());
             }
-            for edge in &dispatch.outcomes {
+            for target in dispatch.successors() {
                 merge_live_demands(
                     &mut live,
                     collect_entry_external_demands(
                         types,
                         executable,
                         entries,
-                        edge.target,
+                        target,
                         outgoing_demand.clone(),
                         facts,
                         demands,
@@ -1617,22 +1617,6 @@ fn collect_entry_live_demands(
                     ),
                 );
             }
-            merge_live_demands(
-                &mut live,
-                collect_entry_external_demands(
-                    types,
-                    executable,
-                    entries,
-                    dispatch.miss_entry,
-                    outgoing_demand,
-                    facts,
-                    demands,
-                    out,
-                    call_return_demands,
-                    callable_flows,
-                    walks,
-                ),
-            );
         }
         LoweredTail::Receive(receive) => {
             for value in receive.bindings.pinned.iter().chain(receive.bindings.prepared.iter()) {

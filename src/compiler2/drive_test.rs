@@ -620,10 +620,13 @@ fn compiler2_join_walk_visits_each_entry_and_scope_once() {
     // miss arm; the 5 doubled entries became 10 (the two `or`s after a
     // multi-valued join each split in two, and each of the three `or` result
     // joins is reached with `true` and with a boolean).
+    // fz-sc8.44: 48 -> 40. Each activation's `case` plans are trimmed to what
+    // its types leave, so a miss arm or an arm the types rule out is no longer
+    // an entry the walk reaches.
     assert_eq!(
         entries_walked(&["fz", "compiler2", "semantic", "walk"]).last().copied(),
-        Some(48),
-        "type analysis walks 38 entries, twice each at 10 of them"
+        Some(40),
+        "type analysis walks only the entries its trimmed plans reach"
     );
     // Runtime demand and executable facts walk backwards from a constant
     // outgoing demand/need, so every entry answers from one scope: one walk
@@ -631,19 +634,20 @@ fn compiler2_join_walk_visits_each_entry_and_scope_once() {
     // dispatch never selects at this call's fixed input, one fewer than the
     // 38 lowering keeps for type analysis's broader reachability.
     // fz-sc8.37: 28 -> 37 and 29 -> 38, the nine added resume entries.
+    // fz-sc8.44: 37 -> 30 and 38 -> 31, for the same trimmed plans.
     assert_eq!(
         entries_walked(&["fz", "compiler2", "runtime_demand", "walk"])
             .last()
             .copied(),
-        Some(37),
-        "runtime demand walks 37 reachable entries exactly once each"
+        Some(30),
+        "runtime demand walks 30 reachable entries exactly once each"
     );
     assert_eq!(
         entries_walked(&["fz", "compiler2", "executable_facts", "walk"])
             .last()
             .copied(),
-        Some(38),
-        "executable facts walks all 38 entries exactly once each"
+        Some(31),
+        "executable facts walks the 31 entries the trimmed plans reach, once each"
     );
 }
 
@@ -1137,7 +1141,7 @@ fn executable_entry_of(name: &str) -> Option<&str> {
 }
 
 #[test]
-fn compiler2_inline_map_binding_reuses_the_key_present_read() {
+fn compiler2_inline_map_binding_reads_a_proven_key_once() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
     native.install(&tel);
@@ -1201,8 +1205,8 @@ fn compiler2_inline_map_binding_reuses_the_key_present_read() {
     }
     assert_eq!(
         (presence_reads, repeated_reads),
-        (1, 0),
-        "key presence produces the value: the winning arm reuses that exact read"
+        (0, 1),
+        "the key's type proves it present, so nothing asks; the arm reads the value once"
     );
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(compiled.run(compiler.telemetry(), program.entry), 42);
@@ -12885,7 +12889,9 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 12] = [
     // says why (the fold hands the TAIL to the recursive dispatch, so the
     // mixed list never reaches the `[:false | :true]` arm), and this row is
     // what holds that sentence to the tree.
-    ("fixtures2/behavior/dispatch_list_head_separates.fz", "", 4, 0),
+    // fz-sc8.44: 4 -> 2 observations. The trimmed plans no longer ask the
+    // type questions the activation's input types already answer.
+    ("fixtures2/behavior/dispatch_list_head_separates.fz", "", 2, 0),
 ];
 
 /// fz-kdt.141 / fz-kdt.136: the wrapper half of the stress has teeth.
@@ -13844,6 +13850,53 @@ fn compiler2_jit_halts_a_reduce_under_every_arm_order() {
              and the reducer the value carried is the one that must run",
         );
     }
+}
+
+/// The interpreter evaluates every test and trusts no proof: a program whose
+/// `case` is told it cannot fail, but which fails, stops loudly and names the
+/// `case` rather than falling through to a miss that was never built.
+#[test]
+fn compiler2_interp_reports_a_fail_that_analysis_proved_unreachable() {
+    let (mut compiler, program) = driven_backend_program("fixtures/00638_or_of_a_non_boolean_aborts.fz");
+    let mut forged = (*program).clone();
+    let mut forged_cases = 0;
+    for executable in program.executables().iter() {
+        let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        let mut forged_executable = (**executable).clone();
+        let crate::compiler2::BackendBody::Clauses {
+            entries: forged_entries,
+            ..
+        } = &mut forged_executable.body
+        else {
+            unreachable!("a clause body stays a clause body");
+        };
+        for (entry, forged_entry) in entries.iter().zip(forged_entries.iter_mut()) {
+            if let BackendTail::Dispatch { dispatch, .. } = &entry.tail
+                && dispatch.miss_entry.is_some()
+                && let BackendTail::Dispatch {
+                    dispatch: forged_dispatch,
+                    ..
+                } = &mut forged_entry.tail
+            {
+                forged_dispatch.miss_entry = None;
+                forged_cases += 1;
+            }
+        }
+        forged.add_executable(Rc::new(forged_executable), compiler.world().types());
+    }
+    assert!(forged_cases > 0, "00638 carries a `case` that can fail");
+
+    let dbg = DbgCapture::new();
+    let tel = ConfiguredTelemetry::new();
+    let (types, transport) = compiler.world_mut().types_mut_and_transport();
+    let error = crate::ir_interp::run_backend_main(types, transport, &tel, &dbg, &forged)
+        .expect_err("a fail with no miss entry is an internal error");
+    assert!(
+        error.contains("internal error: the case at entry") && error.contains("proved unreachable"),
+        "the interpreter names the dispatch it could not leave: {error}"
+    );
 }
 
 #[test]

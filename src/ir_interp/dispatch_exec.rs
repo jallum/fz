@@ -560,14 +560,6 @@ impl<'a> Dispatch<'a> {
                 if !self.resolved(subject)? {
                     return Ok(false);
                 }
-                // A lane-form subject knows its own arity: the transport shape
-                // its caller delivered settles the question, with no value to
-                // inspect.
-                if let Some(shape) = self.state.get(subject).and_then(BackendBoundValue::transport_shape)
-                    && let Some(known) = self.operands.transport.interners().tuple_arity(shape)
-                {
-                    return Ok(known == *arity as usize);
-                }
                 let Some(word) = self.subject_value(subject)? else {
                     return Ok(false);
                 };

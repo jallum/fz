@@ -1,9 +1,10 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::rc::Rc;
 
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::dispatch_matrix::{
-    BitstringFieldKind, ComparisonValue, DispatchNode, GraphNodeId, ListRegion, OutcomeId, ProjectionKind, ProofSense,
-    Region, RegionPredicate, SubjectId, SubjectSource,
+    BitstringFieldKind, ComparisonValue, DispatchNode, GraphNodeId, ListRegion, LiveEdges, OutcomeId, ProjectionKind,
+    ProofSense, Region, RegionPredicate, SubjectId, SubjectSource,
 };
 use crate::ground_value::{DispatchShape, GroundValue};
 
@@ -14,6 +15,7 @@ pub(crate) struct DispatchReachability {
     pub(crate) outcomes: Vec<OutcomeId>,
     pub(crate) outcome_inputs: Vec<(OutcomeId, Vec<Ty>)>,
     pub(crate) fail_reachable: bool,
+    pub(crate) tests: BTreeMap<GraphNodeId, TestEdges>,
     #[cfg(test)]
     pub(crate) visited_states: usize,
     #[cfg(test)]
@@ -51,6 +53,7 @@ pub(crate) fn calculate_dispatch_reachability(
         outcomes: BTreeSet::new(),
         outcome_inputs: BTreeSet::new(),
         fail_reachable: false,
+        tests: BTreeMap::new(),
         #[cfg(test)]
         max_root_slots: 0,
     };
@@ -60,10 +63,73 @@ pub(crate) fn calculate_dispatch_reachability(
         outcomes: calculator.outcomes.into_iter().collect(),
         outcome_inputs: calculator.outcome_inputs.into_iter().collect(),
         fail_reachable: calculator.fail_reachable,
+        tests: calculator.tests,
         #[cfg(test)]
         visited_states: calculator.visited.len(),
         #[cfg(test)]
         max_root_slots: calculator.max_root_slots,
+    }
+}
+
+/// Which edges of one test some visit could take.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TestEdges {
+    pub(crate) on_match: bool,
+    pub(crate) on_miss: bool,
+}
+
+impl TestEdges {
+    /// A test no visit decided, or whose subject no visit could carry, says
+    /// nothing about its edges, so both stay.
+    fn live(self) -> LiveEdges {
+        match (self.on_match, self.on_miss) {
+            (true, false) => LiveEdges::Match,
+            (false, true) => LiveEdges::Miss,
+            _ => LiveEdges::Both,
+        }
+    }
+}
+
+/// The edges every visit of one dispatch plan could take in one activation.
+///
+/// An activation reaches a plan once per scope and per input row, each with
+/// its own types, so what the activation can do is the union of what its
+/// visits can. The plan this leaves is [`ReachedEdges::trimmed`].
+#[derive(Debug, Clone)]
+pub(crate) struct ReachedEdges {
+    plan: Rc<PatternDispatchPlan<Ty>>,
+    tests: BTreeMap<GraphNodeId, TestEdges>,
+}
+
+impl ReachedEdges {
+    pub(crate) fn of(plan: Rc<PatternDispatchPlan<Ty>>) -> Self {
+        Self {
+            plan,
+            tests: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn shared(&self) -> &Rc<PatternDispatchPlan<Ty>> {
+        &self.plan
+    }
+
+    pub(crate) fn absorb(&mut self, reachability: &DispatchReachability) {
+        for (node, edges) in &reachability.tests {
+            let known = self.tests.entry(*node).or_default();
+            known.on_match |= edges.on_match;
+            known.on_miss |= edges.on_miss;
+        }
+    }
+
+    /// The plan this activation's types leave: a test only one of whose edges
+    /// is ever taken is its live child, and an arm or a fail nothing reaches is
+    /// gone. A plan nothing narrows is the very `Rc` it started as.
+    pub(crate) fn trimmed(&self) -> Rc<PatternDispatchPlan<Ty>> {
+        let live = |node| self.tests.get(&node).copied().unwrap_or_default().live();
+        match self.plan.trimmed(&live) {
+            Some(trimmed) => Rc::new(trimmed),
+            None => self.plan.clone(),
+        }
     }
 }
 
@@ -80,6 +146,7 @@ struct ReachabilityCalculator<'a> {
     outcomes: BTreeSet<OutcomeId>,
     outcome_inputs: BTreeSet<(OutcomeId, Vec<Ty>)>,
     fail_reachable: bool,
+    tests: BTreeMap<GraphNodeId, TestEdges>,
     #[cfg(test)]
     max_root_slots: usize,
 }
@@ -103,10 +170,15 @@ impl ReachabilityCalculator<'_> {
                 self.outcome_inputs.insert((*outcome, state.roots));
             }
             DispatchNode::Test { on_match, on_miss, .. } => {
-                if let Some(next) = self.apply_proofs(&state, &on_match.evidence.proofs) {
+                let matched = self.apply_proofs(&state, &on_match.evidence.proofs);
+                let missed = self.apply_proofs(&state, &on_miss.evidence.proofs);
+                let edges = self.tests.entry(node_id).or_default();
+                edges.on_match |= matched.is_some();
+                edges.on_miss |= missed.is_some();
+                if let Some(next) = matched {
                     self.visit(on_match.target, next);
                 }
-                if let Some(next) = self.apply_proofs(&state, &on_miss.evidence.proofs) {
+                if let Some(next) = missed {
                     self.visit(on_miss.target, next);
                 }
             }

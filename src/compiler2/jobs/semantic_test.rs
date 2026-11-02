@@ -2,6 +2,7 @@ use super::*;
 use crate::compiler2::drive::ExecutionContext;
 use crate::compiler2::dump::DumpStage;
 use crate::compiler2::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::telemetry::ConfiguredTelemetry;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -558,4 +559,172 @@ end
              while arr/2's call back into it is still pending",
         );
     }
+}
+
+/// The plan each `case` an activation reached is left with, beside the plan it
+/// started as: how many questions it still asks, whether it can still miss,
+/// and whether it is the shared plan itself.
+fn case_plans(world: &mut World, starts: &JobStarts, name: &str, arity: usize) -> Vec<(usize, bool, bool)> {
+    let function = world.reference_function(ModuleId::GLOBAL, name, arity);
+    let lowered = world.lowered_body(function);
+    let LoweredBody::Clauses { entries, .. } = &*lowered;
+    let mut plans = Vec::new();
+    for activation in starts.activations(function) {
+        let analysis = world
+            .activation_analysis(&activation)
+            .unwrap_or_else(|| panic!("{name}/{arity} should have a settled analysis"));
+        for (entry, trimmed) in &analysis.trimmed.cases {
+            let LoweredTail::Dispatch { dispatch, .. } = &entries[entry.as_u32() as usize].tail else {
+                panic!("a trimmed case plan names a dispatch entry");
+            };
+            plans.push((
+                trimmed.graph.test_count(),
+                trimmed.can_fail(),
+                Rc::ptr_eq(trimmed, &dispatch.plan),
+            ));
+        }
+    }
+    plans
+}
+
+fn driven_cases(source: &str) -> (World, JobStarts) {
+    let tel = ConfiguredTelemetry::new();
+    let starts = JobStarts::install(&tel);
+    let mut world = World::new();
+    world.submit_code(Some("trimmed_plans.fz".to_string()), source.to_string());
+    world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert!(matches!(
+        ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+    (world, starts)
+}
+
+/// `and`, `or` and `not` lower to a `case` on a boolean, and the hand-written
+/// exhaustive `case` is the same shape. A boolean-typed subject leaves one
+/// question for runtime -- is it `true` -- and answers the other, so the plan
+/// it runs asks one question and cannot fail. A subject that might be anything
+/// keeps the plan it was given.
+#[test]
+fn a_boolean_subject_leaves_one_question_and_no_miss() {
+    let (mut world, starts) = driven_cases(
+        r#"
+def either(a), do: a == 1 or a == 2
+def both(a), do: a == 1 and a == 2
+def negated(a), do: not (a == 1)
+def exhaustive(a) do
+  case a == 1 do
+    true -> false
+    false -> true
+  end
+end
+def undecided(a) do
+  case a do
+    true -> 1
+    false -> 2
+  end
+end
+def main() do
+  {either(Enum.at([1, 2], 0)), both(Enum.at([1, 2], 0)), negated(Enum.at([1, 2], 0)),
+   exhaustive(Enum.at([1, 2], 0)), undecided(receive do m -> m end)}
+end
+"#,
+    );
+    for name in ["either", "both", "negated", "exhaustive"] {
+        assert_eq!(
+            case_plans(&mut world, &starts, name, 1),
+            [(1, false, false)],
+            "{name}/1: of a boolean's two tests `equal(true)` is still asked and `equal(false)` is answered, \
+             so the plan it runs cannot miss"
+        );
+    }
+    assert_eq!(
+        case_plans(&mut world, &starts, "undecided", 1),
+        [(2, true, true)],
+        "a subject that might be anything keeps both tests and its miss, as the very plan it was lowered to"
+    );
+}
+
+/// The entry plan an activation runs, with the questions it still asks
+/// listed root first, and whether it can still end with no clause.
+fn entry_plan_of(world: &mut World, starts: &JobStarts, name: &str, arity: usize) -> Rc<PatternDispatchPlan<Ty>> {
+    let function = world.reference_function(ModuleId::GLOBAL, name, arity);
+    let activations = starts.activations(function);
+    assert_eq!(activations.len(), 1, "{name}/{arity} is analysed at one activation");
+    let activation = activations.into_iter().next().expect("one activation");
+    world
+        .activation_analysis(&activation)
+        .unwrap_or_else(|| panic!("{name}/{arity} should have a settled analysis"))
+        .trimmed
+        .entry
+        .clone()
+        .expect("a function with a body has an entry plan")
+}
+
+/// A tuple parameter whose second field is told apart by `false` and `true`
+/// is three questions: is it a pair, is the field `false`, is it `true`. A
+/// caller that passes a pair whose second field is a boolean answers the first
+/// and last, and the clause selection is left asking `false` alone, with
+/// nothing to fall to.
+#[test]
+fn a_function_clause_plan_keeps_only_the_questions_its_inputs_leave() {
+    use crate::dispatch_matrix::{ComparisonValue, DispatchNode, Region};
+
+    let (mut world, starts) = driven_cases(
+        r#"
+def unwrap({v, false}), do: v
+def unwrap({v, true}), do: v + 1
+def main(), do: unwrap({length([1, 2]), Enum.at([1, 2], 0) == 1})
+"#,
+    );
+    let plan = entry_plan_of(&mut world, &starts, "unwrap", 1);
+
+    assert_eq!(plan.graph.test_count(), 1, "only the field's `false` remains to ask");
+    assert!(
+        !plan.can_fail(),
+        "a boolean field is `false` or `true`: no clause is missed"
+    );
+    let Some(DispatchNode::Test {
+        predicate,
+        on_match,
+        on_miss,
+    }) = plan.graph.node(plan.graph.root)
+    else {
+        panic!("the root is the one question left");
+    };
+    assert!(
+        matches!(&predicate.region, Region::Equal(ComparisonValue::Const(value)) if *value == crate::ground_value::GroundValue::Bool(false)),
+        "the question left is whether the field is `false`: {:?}",
+        predicate.region
+    );
+    let outcome = |node| match plan.graph.node(node) {
+        Some(DispatchNode::Outcome { outcome, .. }) => outcome.0,
+        other => panic!("a kept child is a clause: {other:?}"),
+    };
+    assert_eq!(
+        (outcome(on_match.target), outcome(on_miss.target)),
+        (0, 1),
+        "`false` selects the first clause and anything else the second"
+    );
+}
+
+/// `[]` and `[h | t]` are two questions about one list. A list known to have
+/// an element answers both, so no question is left and the clause is chosen
+/// by the call alone.
+#[test]
+fn a_list_known_to_have_a_head_selects_its_clause_without_asking() {
+    let (mut world, starts) = driven_cases(
+        r#"
+def first([]), do: 0
+def first([h | _]), do: h
+def main(), do: first([Enum.at([1, 2], 0)])
+"#,
+    );
+    let plan = entry_plan_of(&mut world, &starts, "first", 1);
+
+    assert!(
+        plan.is_direct_outcome(),
+        "a non-empty list needs no question to find its clause"
+    );
+    assert!(!plan.can_fail());
 }
