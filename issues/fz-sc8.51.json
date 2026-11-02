@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.44"
+  ],
   "blocks": [],
   "created": "2026-11-02T21:30:40Z",
   "description": "Once a case is trimmed to a single outcome (fz-sc8.44), it no longer branches, but its arms are still separate pieces. Native turns each piece into its own function, so a case that decides nothing still costs a resume entry or two (the join walk's resume-entry pin stays 38). Expected: lowering merges a piece with its only successor, and the resume-entry count falls. This belongs to lowering, not type analysis.",
