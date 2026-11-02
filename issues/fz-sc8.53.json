@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-02T21:30:40Z",
+  "description": "Unprobed. In a guard, div(x, 0) and rem(x, 0) make the clause fail in Elixir. The interpreter's guard evaluation may panic on a zero divisor instead. Probe on interp, run and build against elixir with `def f(x) when div(x, 0) \u003e 0, do: :a; def f(_), do: :b`. Expected: :b on every path.",
+  "id": "fz-sc8.53",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "The interpreter's guard div and rem refuse a zero divisor without panicking",
+  "type": "bug",
+  "updated_at": "2026-11-02T21:30:40Z"
+}
