@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-02T21:30:40Z",
+  "description": "Elixir defines `if` as a macro over `case`. fz lowers `if` with no dispatch plan, so it is the one branch form the per-activation trim (fz-sc8.44) never reaches: `if true do a else b end` keeps both branches. Expected: `if` builds the same plan a two-arm boolean case builds, and its dead branch is trimmed like any other arm. Probe first: native has a fast path for plain conditions, so measure whether lowering an if as a case changes native code or the census, and state what the fast path is for before keeping or deleting it.",
+  "id": "fz-sc8.50",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "if is a case, as in Elixir",
+  "type": "task",
+  "updated_at": "2026-11-02T21:30:40Z"
+}
