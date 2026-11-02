@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-sc8.44"
+    "fz-sc8.44",
+    "fz-sc8.54"
   ],
   "closed_at": "2026-11-01T00:40:02Z",
   "created": "2026-11-01T00:05:30Z",
@@ -14,5 +15,5 @@
   "status": "closed",
   "title": "A type-test guard is the same row as a typed parameter",
   "type": "task",
-  "updated_at": "2026-11-01T00:40:02Z"
+  "updated_at": "2026-11-02T21:30:41Z"
 }

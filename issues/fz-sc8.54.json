@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.49"
+  ],
   "blocks": [],
   "created": "2026-11-02T21:30:40Z",
   "description": "Since fz-sc8.49, a type-test helper such as is_integer/1 is folded into the row as a type question. Its own executable is still reified, even when every use of it is folded. Expected: the helper is built only when something calls it at runtime; a job trace of a program that only uses folded type tests shows no reify job for the helper.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A guard helper that is only ever folded builds no plan of its own",
   "type": "task",
-  "updated_at": "2026-11-02T21:30:40Z"
+  "updated_at": "2026-11-02T21:30:41Z"
 }
