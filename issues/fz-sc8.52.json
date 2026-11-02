@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.44"
+  ],
   "blocks": [],
   "created": "2026-11-02T21:30:40Z",
   "description": "A trimmed dispatch plan (fz-sc8.44) keeps the shared plan's outcome ids, so ExecutableDispatch.clause_index_by_outcome and EntryReachability.clauses() map outcomes to clauses. Renumbering outcomes densely in the trim would let both go. Four places depend on dense outcome ids: outcome bindings, receive's return code, ControlDispatch's outcome table, and the clause map. Expected: one renumbering, made in the trim, read by all four; the two maps are deleted.",
