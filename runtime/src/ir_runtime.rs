@@ -1106,6 +1106,26 @@ pub extern "C" fn fz_bitstring_byte_size(ref_word: u64) -> i64 {
     (bit_len / 8) as i64
 }
 
+/// The size of a `binary` segment whose value is a pinned binary: that binary's
+/// byte count, which is what `<<^p::binary, rest::binary>>` reads.
+///
+/// A pin that is not a binary of whole bytes cannot be a prefix of anything, so
+/// it gets a size no subject can hold and the read misses.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_pinned_binary_segment_size(ref_word: u64) -> u32 {
+    let Some(p) = bitstring_like_ptr_from_ref(ref_word).or_else(|| bitstring_like_ptr(ref_word)) else {
+        return u32::MAX;
+    };
+    if !unsafe { is_bitstring_like(p) } {
+        return u32::MAX;
+    }
+    let bit_len = unsafe { bitstring_bit_len(p) } as usize;
+    if !bit_len.is_multiple_of(8) {
+        return u32::MAX;
+    }
+    u32::try_from(bit_len / 8).unwrap_or(u32::MAX)
+}
+
 /// Is this bitstring byte-aligned -- a `binary` rather than a partial
 /// `bitstring`?
 ///
@@ -1414,8 +1434,8 @@ fn fz_bs_read_field_bits(
                 (BitType::Binary, None, true) | (BitType::Bits, None, true) => bit_len - pos,
                 (BitType::Binary, None, false) => return fail(), // size required
                 (BitType::Bits, None, false) => return fail(),
-                (BitType::Binary, Some(n), _) => (n * unit) as usize,
-                (BitType::Bits, Some(n), _) => (n * unit) as usize,
+                (BitType::Binary, Some(n), _) => n as usize * unit as usize,
+                (BitType::Bits, Some(n), _) => n as usize * unit as usize,
                 _ => unreachable!(),
             };
             if pos + needed_bits > bit_len {

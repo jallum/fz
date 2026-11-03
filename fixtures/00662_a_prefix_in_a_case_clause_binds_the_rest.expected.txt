@@ -1,0 +1,23 @@
+{:long, "verbose"}
+{:short, "v"}
+:operand
+:operand
+{:long, "x"}
+:bare_dashes
+:operand
+{:id, "42"}
+{:other, "name"}
+{:error, "boom"}
+:unknown
+:unknown
+:ab
+:abc
+:no
+:no
+:no
+"z"
+:no
+"!"
+:no
+"anything"
+""

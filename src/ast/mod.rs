@@ -502,6 +502,10 @@ pub enum BitSize {
     Literal(u32),
     /// `::size(n)` where n is an in-scope variable name (or, in patterns, a previously-bound variable)
     Var(Var),
+    /// A pinned `binary` segment with no size of its own: it is exactly as long
+    /// as the binary the pinned variable holds, so `<<^p::binary, rest::binary>>`
+    /// is `p` followed by the remainder.
+    ByteSizeOf(Var),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

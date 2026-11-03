@@ -1,0 +1,21 @@
+{:long, "verbose"}
+{:short, "v"}
+:operand
+{:long, ""}
+:operand
+:operand
+:operand
+"anything"
+""
+"c"
+""
+:no
+:ab
+:no
+:no
+:exactly_dashes
+:no
+"ok"
+:no
+{120, "yz"}
+:no

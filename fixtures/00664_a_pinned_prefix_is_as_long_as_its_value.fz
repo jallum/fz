@@ -1,0 +1,75 @@
+#---
+# purpose: "a pinned variable before <> matches a binary that starts with its value and binds the remainder; the same holds for a pinned unsized binary segment, as in Elixir"
+# oracle: 00664_a_pinned_prefix_is_as_long_as_its_value.oracle.exs
+#---
+def after_prefix(prefix, s) do
+  case s do
+    ^prefix <> rest -> {:ok, rest}
+    _ -> :no
+  end
+end
+
+def as_segment(prefix, s) do
+  case s do
+    <<^prefix::binary, rest::binary>> -> {:ok, rest}
+    _ -> :no
+  end
+end
+
+def between(first, last, s) do
+  case s do
+    ^first <> "-" <> ^last <> rest -> {:ok, rest}
+    _ -> :no
+  end
+end
+
+def closing(prefix, s) do
+  case s do
+    "x" <> ^prefix -> :closed
+    _ -> :open
+  end
+end
+
+def captured(prefix, s) do
+  f = fn
+    ^prefix <> rest -> {:ok, rest}
+    _ -> :no
+  end
+
+  f.(s)
+end
+
+def matched(prefix, s) do
+  ^prefix <> rest = s
+  rest
+end
+
+def through_with(prefix, s) do
+  with {:ok, ^prefix <> rest} <- {:ok, s} do
+    {:ok, rest}
+  else
+    _ -> :no
+  end
+end
+
+def main() do
+  dbg(after_prefix("ab", "abc"))
+  dbg(after_prefix("ab", "ab"))
+  dbg(after_prefix("ab", "a"))
+  dbg(after_prefix("ab", "xbc"))
+  dbg(after_prefix("", "abc"))
+  dbg(after_prefix("ab", :abc))
+  dbg(after_prefix("é✓", "é✓z"))
+  dbg(as_segment("ab", "abc"))
+  dbg(as_segment("ab", "a"))
+  dbg(as_segment("ab", "xbc"))
+  dbg(between("a", "b", "a-bz"))
+  dbg(between("a", "b", "a-cz"))
+  dbg(closing("yz", "xyz"))
+  dbg(closing("yz", "xyw"))
+  dbg(captured("ab", "abc"))
+  dbg(captured("ab", "xbc"))
+  dbg(matched("ab", "abc"))
+  dbg(through_with("ab", "abc"))
+  dbg(through_with("ab", "xbc"))
+end

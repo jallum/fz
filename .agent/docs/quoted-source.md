@@ -113,6 +113,13 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   user-defined `get/2` into a map index. Elixir draws the same line, with a
   resolved module atom plus `from_brackets: true` in meta. The marker is not
   writable from source.
+- The expander rewrites `<>` and `++` to `Kernel.<>` and `List.concat` calls and
+  stamps each with `__fz_from_operator__`, whose value is the operator's atom.
+  Pattern decoding reads concatenation by that stamp, or by the bare operator
+  head a `def` head still carries (heads are not sugared), and by nothing
+  else: a user-written `Kernel.<>(a, b)` or `List.concat(a, b)` in a pattern is
+  refused. The stamp is the second use of the rule above and is not writable
+  from source.
 - `cond do` quotes through ordinary
   `{:cond, meta, [[do: [{:->, ...}, ...]]]}` structure.
 - Capture refs cover local names, remote names, and bare/operator refs such as

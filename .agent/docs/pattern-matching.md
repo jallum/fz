@@ -101,6 +101,28 @@ The graph carries one payload of its own: `input_demand`, a slot per declared
 input saying what the plan's questions read of it. `input_demand` and
 `required_input` on the plan are how every door asks.
 
+## Concatenation Patterns
+
+`src/compiler2/quoted_concat_pattern.rs` decodes `<>` and `++` in a pattern
+into patterns the matrix already knows; no new row kind exists.
+
+- `l <> r` flattens, through chains and nested `<<>>`, into one bitstring
+  pattern. A literal operand is a binary segment sized by its byte length. A
+  pinned variable is a binary segment sized `BitSize::ByteSizeOf(name)`: the
+  byte size of the pinned value. The final name takes the rest as an unsized
+  binary.
+- `ByteSizeOf` reaches the matrix as `BitstringFieldSize::PinnedByteSize`, whose
+  pin is delivered like any pin (lexical, or as a dispatch input when a lambda
+  captures it). Each backend converts the pin to a size at match time through
+  `fz_pinned_binary_segment_size`, which answers `u32::MAX` for a value that is
+  not a byte-aligned bitstring, so the segment fails to match. The step path
+  carries it as `LoweredBitSize::ByteSizeOf` and `BitSizeIr::ByteSizeOf`.
+- `[a, b] ++ r` is `[a, b | r]`; the left side must be a literal proper list,
+  `[] ++ r` is `r`, and a chain merges.
+- A left operand of `<>` that is a bare variable or `_`, a non-binary operand
+  of `<>`, or a left operand of `++` that is not a literal proper list is
+  refused with `parse/concat-pattern-operand`, in Elixir's wording.
+
 ## Pins Resolve Against The Prematch
 
 A pin names a binding that existed BEFORE the pattern began. Three spellings

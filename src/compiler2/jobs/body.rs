@@ -1870,16 +1870,21 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         Ok(match size {
             None => None,
             Some(BitSize::Literal(value)) => Some(LoweredBitSize::Literal(*value)),
-            Some(BitSize::Var(name)) => Some(LoweredBitSize::Value(*env.get(name).ok_or_else(|| {
-                emit_job_diagnostic(
-                    self.telemetry,
-                    Diagnostic::error(
-                        codes::LOWER_UNBOUND,
-                        format!("compiler2 lowering found unbound bit size name `{name}`"),
-                        span,
-                    ),
-                )
-            })?)),
+            Some(BitSize::Var(name)) => Some(LoweredBitSize::Value(self.bit_size_value(name, span, env)?)),
+            Some(BitSize::ByteSizeOf(name)) => Some(LoweredBitSize::ByteSizeOf(self.bit_size_value(name, span, env)?)),
+        })
+    }
+
+    fn bit_size_value(&mut self, name: &Var, span: Span, env: &HashMap<Var, ValueId>) -> Result<ValueId, FatalError> {
+        env.get(name).copied().ok_or_else(|| {
+            emit_job_diagnostic(
+                self.telemetry,
+                Diagnostic::error(
+                    codes::LOWER_UNBOUND,
+                    format!("compiler2 lowering found unbound bit size name `{name}`"),
+                    span,
+                ),
+            )
         })
     }
 

@@ -3671,6 +3671,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             // A size bound before the pattern began arrives as a PIN, the same
             // way a pinned value does.
             Some(BitstringFieldSize::Pinned(pinned)) => Some(BitSizeIr::Var(self.dispatch_pinned_var(state, *pinned)?)),
+            Some(BitstringFieldSize::PinnedByteSize(pinned)) => {
+                Some(BitSizeIr::ByteSizeOf(self.dispatch_pinned_var(state, *pinned)?))
+            }
         })
     }
 
@@ -5200,6 +5203,9 @@ fn lower_bit_size_ir(
         Some(super::super::body::LoweredBitSize::Literal(value)) => Some(BitSizeIr::Literal(*value)),
         Some(super::super::body::LoweredBitSize::Value(value)) => {
             Some(BitSizeIr::Var(env.runtime_var(*value).ok_or(FatalError)?))
+        }
+        Some(super::super::body::LoweredBitSize::ByteSizeOf(value)) => {
+            Some(BitSizeIr::ByteSizeOf(env.runtime_var(*value).ok_or(FatalError)?))
         }
     })
 }

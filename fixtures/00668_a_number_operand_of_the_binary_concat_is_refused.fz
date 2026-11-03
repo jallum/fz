@@ -1,0 +1,10 @@
+#---
+# purpose: a number operand of <> in a pattern is not a binary and is refused.
+# expect: diagnostic
+# diagnostic.code: parse/concat-pattern-operand
+#---
+def main() do
+  case "abc" do
+    1 <> rest -> dbg(rest)
+  end
+end

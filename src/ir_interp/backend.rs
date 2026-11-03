@@ -3172,6 +3172,10 @@ fn backend_bit_size_value(
                 .ok_or_else(|| "bit size value must be an integer".to_string())?;
             (1, size as u32)
         }
+        Some(crate::compiler2::LoweredBitSize::ByteSizeOf(value)) => {
+            let pinned = env_get(transport, proc, env, *value)?.as_ref_word(proc)?;
+            (1, fz_runtime::ir_runtime::fz_pinned_binary_segment_size(pinned))
+        }
     })
 }
 

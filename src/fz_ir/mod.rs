@@ -90,6 +90,17 @@ impl CallsiteIdent {
 pub enum BitSizeIr {
     Literal(u32),
     Var(Var),
+    /// As long as the binary the var holds.
+    ByteSizeOf(Var),
+}
+
+impl BitSizeIr {
+    pub fn var(&self) -> Option<Var> {
+        match self {
+            BitSizeIr::Literal(_) => None,
+            BitSizeIr::Var(var) | BitSizeIr::ByteSizeOf(var) => Some(*var),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -613,9 +624,7 @@ impl Prim {
             Prim::MakeBitstring(fields) => {
                 for f in fields {
                     used.insert(f.value);
-                    if let Some(BitSizeIr::Var(sv)) = &f.size {
-                        used.insert(*sv);
-                    }
+                    used.extend(f.size.as_ref().and_then(BitSizeIr::var));
                 }
             }
             Prim::BitReaderInit(a) | Prim::BitReaderDone(a) => {
@@ -623,9 +632,7 @@ impl Prim {
             }
             Prim::BitReadField { reader, size, .. } => {
                 used.insert(*reader);
-                if let Some(BitSizeIr::Var(sv)) = size {
-                    used.insert(*sv);
-                }
+                used.extend(size.as_ref().and_then(BitSizeIr::var));
             }
             Prim::RuntimeTypeTest(v, _) => {
                 used.insert(*v);

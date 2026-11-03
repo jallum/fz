@@ -29,6 +29,7 @@ mod ordered_worklist;
 mod product_drive;
 mod protocol;
 pub(crate) mod pull;
+mod quoted_concat_pattern;
 mod quoted_expander;
 mod quoted_function;
 mod quoted_surface;

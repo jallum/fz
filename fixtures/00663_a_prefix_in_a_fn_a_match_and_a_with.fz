@@ -1,0 +1,44 @@
+#---
+# purpose: "a literal prefix before <> binds the remainder in a fn clause, on the left of =, and in a with binding, as in Elixir"
+# oracle: 00663_a_prefix_in_a_fn_a_match_and_a_with.oracle.exs
+#---
+def strip(s) do
+  f = fn
+    "--" <> rest -> {:long, rest}
+    "-" <> rest -> {:short, rest}
+    _ -> :operand
+  end
+
+  f.(s)
+end
+
+def matched(s) do
+  "--" <> rest = s
+  rest
+end
+
+def matched_chain(s) do
+  "a" <> "b" <> rest = s
+  rest
+end
+
+def through_with(s) do
+  with "--" <> name <- s do
+    {:option, name}
+  else
+    _ -> :operand
+  end
+end
+
+def main() do
+  dbg(strip("--verbose"))
+  dbg(strip("-v"))
+  dbg(strip("file"))
+  dbg(strip(7))
+  dbg(matched("--verbose"))
+  dbg(matched("--"))
+  dbg(matched_chain("abc"))
+  dbg(through_with("--name"))
+  dbg(through_with("name"))
+  dbg(through_with(:name))
+end

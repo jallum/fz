@@ -6,7 +6,8 @@
 use fz_runtime::any_value::{AnyValueRef, ValueKind};
 
 use super::source::{
-    QuotedAstNode, QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError, QuotedSourceMetadata, QuotedSourceRoot,
+    META_FROM_OPERATOR_KEY, QuotedAstNode, QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError,
+    QuotedSourceMetadata, QuotedSourceRoot,
 };
 use crate::ast::{Var, VarContext};
 use crate::source::{SourceMap, Span};
@@ -124,9 +125,19 @@ fn rewrite_operator(
     let right = args[1].root();
     let meta = node.meta.root();
     let rewritten = match op {
-        "++" => remote_call(&builder, "List.concat", meta, &[left, right])?,
+        "++" => remote_call(
+            &builder,
+            "List.concat",
+            operator_meta(&builder, node, op)?,
+            &[left, right],
+        )?,
         "--" => remote_call(&builder, "List.subtract", meta, &[left, right])?,
-        "<>" => remote_call(&builder, "Kernel.<>", meta, &[left, right])?,
+        "<>" => remote_call(
+            &builder,
+            "Kernel.<>",
+            operator_meta(&builder, node, op)?,
+            &[left, right],
+        )?,
         ".." => remote_call(&builder, "Range.new", meta, &[left, right, builder.int(1)])?,
         "//" => {
             let Some((first, last)) = range_parts(&args[0], sources)? else {
@@ -142,6 +153,23 @@ fn rewrite_operator(
         _ => return Ok(None),
     };
     Ok(Some(rewritten))
+}
+
+/// The operator call's metadata with the operator stamped on it, so a pattern
+/// can tell this call from one the user spelled out.
+fn operator_meta(
+    builder: &QuotedSourceBuilder,
+    node: &QuotedAstNode,
+    op: &str,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    let mut entries = node
+        .meta
+        .map_entries()?
+        .into_iter()
+        .map(|(key, value)| (key.root(), value.root()))
+        .collect::<Vec<_>>();
+    entries.push((builder.atom(META_FROM_OPERATOR_KEY), builder.atom(op)));
+    builder.map(&entries)
 }
 
 fn range_parts(

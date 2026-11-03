@@ -1179,6 +1179,7 @@ impl ProgramCanon<'_> {
             None => "-".to_string(),
             Some(LoweredBitSize::Literal(bits)) => bits.to_string(),
             Some(LoweredBitSize::Value(value)) => self.names.value(*value),
+            Some(LoweredBitSize::ByteSizeOf(value)) => format!("bytes({})", self.names.value(*value)),
         };
         format!(
             "::{:?}/size={size}/{:?}/signed={}/unit={:?}",
@@ -1713,6 +1714,7 @@ fn bitstring_field(field: &BitstringFieldShape) -> String {
         Some(BitstringFieldSize::Literal(bits)) => bits.to_string(),
         Some(BitstringFieldSize::Binding(subject)) => format!("s{}", subject.0),
         Some(BitstringFieldSize::Pinned(pinned)) => format!("p{}", pinned.0),
+        Some(BitstringFieldSize::PinnedByteSize(pinned)) => format!("bytes(p{})", pinned.0),
     };
     format!(
         "{:?}/size={size}/{:?}/signed={}/unit={:?}",

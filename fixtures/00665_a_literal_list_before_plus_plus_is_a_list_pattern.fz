@@ -1,0 +1,79 @@
+#---
+# purpose: "a literal list before ++ in a pattern is the list pattern it stands for, in a head, a case, a fn, a match and a with, as in Elixir"
+# oracle: 00665_a_literal_list_before_plus_plus_is_a_list_pattern.oracle.exs
+#---
+def after_header([1, 2] ++ rest), do: {:body, rest}
+def after_header(_), do: :no
+
+def in_case(list) do
+  case list do
+    [:a] ++ [:b] ++ rest -> {:ab, rest}
+    [:a] ++ rest -> {:a, rest}
+    [] ++ rest -> {:any, rest}
+  end
+end
+
+def with_variable(list) do
+  case list do
+    [x, y] ++ rest -> {x, y, rest}
+    _ -> :short
+  end
+end
+
+def exact(list) do
+  case list do
+    [1] ++ [2] -> :one_two
+    _ -> :no
+  end
+end
+
+def in_fn(list) do
+  f = fn
+    [0] ++ rest -> {:zero, rest}
+    _ -> :no
+  end
+
+  f.(list)
+end
+
+def matched(list) do
+  [1, 2] ++ rest = list
+  rest
+end
+
+def through_with(list) do
+  with [1] ++ rest <- list do
+    {:one, rest}
+  else
+    _ -> :no
+  end
+end
+
+def improper(list) do
+  case list do
+    [1] ++ rest -> rest
+    _ -> :no
+  end
+end
+
+def main() do
+  dbg(after_header([1, 2, 3, 4]))
+  dbg(after_header([1, 2]))
+  dbg(after_header([1]))
+  dbg(after_header([2, 1]))
+  dbg(after_header("12"))
+  dbg(in_case([:a, :b, :c]))
+  dbg(in_case([:a, :c]))
+  dbg(in_case([:z]))
+  dbg(in_case([]))
+  dbg(with_variable([1, 2, 3]))
+  dbg(with_variable([1]))
+  dbg(exact([1, 2]))
+  dbg(exact([1, 2, 3]))
+  dbg(in_fn([0, :x]))
+  dbg(in_fn([1]))
+  dbg(matched([1, 2, 3]))
+  dbg(through_with([1, 5, 6]))
+  dbg(through_with([2]))
+  dbg(improper([1, 2]))
+end

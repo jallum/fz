@@ -49,6 +49,14 @@ pub(crate) fn quoted_span_entries(span: Span) -> [(&'static str, i64); 3] {
 /// `from_brackets: true` in meta. Source text cannot produce this key.
 pub(crate) const META_FROM_BRACKETS_KEY: &str = "__fz_from_brackets__";
 
+/// Stamped, with the operator's spelling as its value, on a `<>` or `++` call
+/// the expander made from the operator. Patterns read it the way `lhs[key]` is
+/// read from [`META_FROM_BRACKETS_KEY`]: decoding runs before alias resolution,
+/// so a user's `Kernel.<>(a, b)` or `alias Foo, as: Kernel` is indistinguishable
+/// from the expander's own call by spelling, and only the stamp, which no source
+/// text can produce, says the operator was written.
+pub(crate) const META_FROM_OPERATOR_KEY: &str = "__fz_from_operator__";
+
 /// The exact callable a quoted call was resolved to, stamped by the compiler
 /// when the call was quoted. The head beside it is display spelling: once this
 /// is present nothing re-reads that spelling to choose a target.

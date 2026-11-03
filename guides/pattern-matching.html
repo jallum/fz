@@ -220,6 +220,31 @@ everything it closes over &mdash; so a lambda can pin a capture:</p>
 same = <span class="kw">fn</span> ^x -&gt; <span class="atm">:same</span> <span class="kw">end</span>
 same.(<span class="num">1</span>)                    <span class="com"># :same</span></pre>
 
+<h3>Prefixes: <code>&lt;&gt;</code> and <code>++</code> in a pattern</h3>
+
+<p>A pattern may peel a known prefix off a binary or a list. Both forms work
+in function heads, <code>case</code>, <code>fn</code>, <code>=</code>,
+<code>with</code> and nested positions:</p>
+
+<pre><span class="kw">def</span> <span class="fn">route</span>(<span class="str">"GET "</span> &lt;&gt; path), <span class="kw">do</span>: {<span class="atm">:get</span>, path}
+
+<span class="kw">case</span> list <span class="kw">do</span>
+  [<span class="num">1</span>, <span class="num">2</span>] ++ rest -&gt; rest        <span class="com"># the same as [1, 2 | rest]</span>
+<span class="kw">end</span>
+
+prefix = <span class="str">"ab"</span>
+<span class="kw">case</span> <span class="str">"abcd"</span> <span class="kw">do</span>
+  ^prefix &lt;&gt; rest -&gt; rest          <span class="com"># "cd": ^prefix is as long as its value</span>
+<span class="kw">end</span></pre>
+
+<p>The left side of <code>&lt;&gt;</code> must have a size the matcher can
+know: a literal binary, or a pinned variable. A bare variable or <code>_</code>
+there is a compile error, as is a number, atom, list or tuple operand. The left
+side of <code>++</code> must be a literal list; <code>a ++ rest</code> is a
+compile error. All of these report <code>parse/concat-pattern-operand</code>.
+Writing the call out, <code>Kernel.&lt;&gt;("a", rest)</code>, is not a
+pattern either.</p>
+
 <!-- ─────────────────────────────── 4 ─────────────────────────────── -->
 <h2 id="share">4. We destructure once</h2>
 

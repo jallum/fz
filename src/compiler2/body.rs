@@ -86,6 +86,18 @@ pub struct LoweredExtern {
 pub enum LoweredBitSize {
     Literal(u32),
     Value(ValueId),
+    /// As long as the binary this value holds.
+    ByteSizeOf(ValueId),
+}
+
+impl LoweredBitSize {
+    /// The value this size reads, when it reads one.
+    pub fn read_value(&self) -> Option<ValueId> {
+        match self {
+            LoweredBitSize::Literal(_) => None,
+            LoweredBitSize::Value(value) | LoweredBitSize::ByteSizeOf(value) => Some(*value),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,9 +174,7 @@ pub(crate) fn step_used_values(step: &LoweredStep, out: &mut Vec<ValueId>) {
         LoweredStep::Bitstring { fields, .. } => {
             for field in fields {
                 out.push(field.value);
-                if let Some(LoweredBitSize::Value(size)) = field.spec.size {
-                    out.push(size);
-                }
+                out.extend(field.spec.size.as_ref().and_then(LoweredBitSize::read_value));
             }
         }
         LoweredStep::Lambda { captures, .. } => out.extend(captures.iter().copied()),
@@ -205,9 +215,7 @@ pub(crate) fn step_used_values(step: &LoweredStep, out: &mut Vec<ValueId>) {
         }
         LoweredStep::BitstringRead { reader, spec, .. } => {
             out.push(*reader);
-            if let Some(LoweredBitSize::Value(size)) = spec.size {
-                out.push(size);
-            }
+            out.extend(spec.size.as_ref().and_then(LoweredBitSize::read_value));
         }
     }
 }
