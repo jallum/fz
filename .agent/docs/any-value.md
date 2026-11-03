@@ -267,6 +267,17 @@ one immutable environment owns runtime identity. GC and transport preserve
 both. Scheduler-only closures use `INTERNAL`, which user rendering and
 comparison reject.
 
+### The schema registry starts with the bitstring reader's tuples
+
+`SchemaRegistry::new()` registers the arity-1 tuple (the reader's miss result)
+and the arity-3 tuple (the reader state) first, at the fixed ids
+`BITSTRING_RESULT_SCHEMA` (0) and `BITSTRING_READER_SCHEMA` (1). The runtime's
+reader primitives allocate them by those ids, and codegen, the interpreter and
+the native build's process all construct their registry with that one
+constructor, so no program has to be scanned for bitstring use. Registration is
+by identity, so a program's own 1- or 3-tuple resolves to the same ids. Every
+other schema id follows these two.
+
 ### A map is a flat sorted array
 
 Every map has one entry per strict structural key, stored in comparator order.

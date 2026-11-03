@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Barrier, atomic};
 use std::thread;
 
-fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
+fn fresh_registry() -> Rc<RefCell<SchemaRegistry>> {
     Rc::new(RefCell::new(SchemaRegistry::new()))
 }
 
@@ -199,7 +199,7 @@ fn noop_dtor_is_safe() {
 #[test]
 fn alloc_resource_pushes_into_mso_chain() {
     let (handle, drops) = observed_resource();
-    let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let rs = alloc_resource(&mut heap, handle, AnyValue::nil_atom());
     let tagged = heap_object_word(rs.as_raw() as *const u8, ValueKind::RESOURCE);
     assert_eq!(tagged & TAG_MASK, TAG_RESOURCE);
@@ -216,7 +216,7 @@ fn alloc_resource_pushes_into_mso_chain() {
 #[test]
 fn unrooted_resource_dies_in_gc_and_sweep_fires_dtor() {
     let (handle, drops) = observed_resource();
-    let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     alloc_resource(&mut heap, handle, AnyValue::nil_atom());
     heap.gc(&mut null_mut());
     assert_eq!(heap.mso_head, 0, "dead Resource swept from MSO");
@@ -232,7 +232,7 @@ fn unrooted_resource_dies_in_gc_and_sweep_fires_dtor() {
 #[test]
 fn resource_forwarding_marker_through_gc() {
     let (handle, drops) = observed_resource();
-    let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let rs = alloc_resource(&mut heap, handle, AnyValue::nil_atom());
     let from = rs.as_raw();
     let shared = rs.shared_raw();
@@ -255,7 +255,7 @@ fn mixed_mso_chain_with_procbin_and_resource() {
     let first_bin = SharedBinHandle::from_bytes(&[1, 2, 3], 24);
     let second_bin = SharedBinHandle::from_bytes(&[4, 5], 16);
     {
-        let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+        let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
         let pb1 = alloc_procbin(&mut heap, first_bin.clone(), 0);
         let rs1 = alloc_resource(&mut heap, first, AnyValue::nil_atom());
         let pb2 = alloc_procbin(&mut heap, second_bin.clone(), 0);

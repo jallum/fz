@@ -14,33 +14,25 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 /// Walk every fn body collecting tuple arities used by MakeTuple /
-/// RuntimeTypePredicate facts, detecting any bitstring prim, then registering a
-/// deterministic-id Schema per arity in `user_schemas`.
+/// RuntimeTypeTest facts, then registering a deterministic-id Schema per arity
+/// in `user_schemas`.
 ///
-/// Returns `(tuple_arities, tuple_schema_ids, bs_tuple_arity1_schema,
-/// bs_tuple_arity3_schema)`. Arity-1 / arity-3 schemas used by the
-/// bitstring reader / result tuples are pre-registered when any bs prim
-/// is present even if no MakeTuple uses those arities directly. BTreeSet
-/// iteration keeps assignment order deterministic so the AOT runtime's
-/// ids match what codegen baked in.
+/// Returns `(tuple_arities, tuple_schema_ids)`. BTreeSet iteration keeps
+/// assignment order deterministic so the AOT runtime's ids match what codegen
+/// baked in. The bitstring reader's arity-1 and arity-3 tuples are already the
+/// registry's first two schemas, so they are listed here only when a program
+/// uses those arities itself.
 fn collect_tuple_arities_and_register_schemas(
     module: &Module,
     user_schemas: &RefCell<SchemaRegistry>,
-) -> (BTreeSet<usize>, HashMap<usize, u32>, Option<u32>, Option<u32>) {
+) -> (BTreeSet<usize>, HashMap<usize, u32>) {
     let mut tuple_arities: BTreeSet<usize> = BTreeSet::new();
-    let mut has_bs_prim = false;
     for f in &module.fns {
         for blk in &f.blocks {
             for stmt in &blk.stmts {
                 match stmt.prim() {
                     Prim::MakeTuple(args) => {
                         tuple_arities.insert(args.len());
-                    }
-                    Prim::MakeBitstring(_)
-                    | Prim::BitReaderInit(_)
-                    | Prim::BitReadField { .. }
-                    | Prim::BitReaderDone(_) => {
-                        has_bs_prim = true;
                     }
                     Prim::RuntimeTypeTest(_, descr) => {
                         tuple_arities.extend(descr.tuple_arities_at_every_depth());
@@ -50,10 +42,6 @@ fn collect_tuple_arities_and_register_schemas(
             }
         }
     }
-    if has_bs_prim {
-        tuple_arities.insert(1);
-        tuple_arities.insert(3);
-    }
     let mut tuple_schema_ids: HashMap<usize, u32> = HashMap::new();
     {
         let mut reg = user_schemas.borrow_mut();
@@ -62,20 +50,7 @@ fn collect_tuple_arities_and_register_schemas(
             tuple_schema_ids.insert(arity, id);
         }
     }
-    let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = if has_bs_prim {
-        (
-            Some(*tuple_schema_ids.get(&1).expect("arity-1 schema registered")),
-            Some(*tuple_schema_ids.get(&3).expect("arity-3 schema registered")),
-        )
-    } else {
-        (None, None)
-    };
-    (
-        tuple_arities,
-        tuple_schema_ids,
-        bs_tuple_arity1_schema,
-        bs_tuple_arity3_schema,
-    )
+    (tuple_arities, tuple_schema_ids)
 }
 
 /// Build per-body frame schemas, refining entry-param kinds from each body's
@@ -940,8 +915,7 @@ pub(crate) fn compile_with_backend_surface<
     emit_halt_cont_bodies(backend.module_mut(), &mut fbctx, &locals)?;
 
     let user_schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-    let (tuple_arities, tuple_schema_ids, bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
-        collect_tuple_arities_and_register_schemas(surface.module, &user_schemas);
+    let (tuple_arities, tuple_schema_ids) = collect_tuple_arities_and_register_schemas(surface.module, &user_schemas);
     let named_schema_ids = {
         let mut ids = HashMap::new();
         let mut reg = user_schemas.borrow_mut();
@@ -1079,8 +1053,6 @@ pub(crate) fn compile_with_backend_surface<
         user_schemas,
         frame_sizes,
         atom_names: module.atom_names.clone(),
-        bs_tuple_arity1_schema,
-        bs_tuple_arity3_schema,
         tuple_arities: tuple_arities.iter().map(|&a| a as u32).collect(),
         named_schemas: module
             .struct_schemas

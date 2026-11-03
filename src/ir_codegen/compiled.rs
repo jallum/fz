@@ -25,10 +25,6 @@ pub struct CompiledModule {
     /// User-data SchemaRegistry. Shared with every Process built by
     /// `make_process()` through its Heap.
     pub(crate) user_schemas: Rc<RefCell<SchemaRegistry>>,
-    /// Heap-registered schema ids for the bitstring reader/result tuples.
-    /// None means no bitstring prim is present in this module.
-    pub(crate) bs_tuple_arity1_schema: Option<u32>,
-    pub(crate) bs_tuple_arity3_schema: Option<u32>,
     /// Node-global state shared by every Process `make_process` builds.
     pub(crate) node: Rc<Node>,
     pub(crate) diagnostics: Diagnostics,
@@ -66,8 +62,6 @@ impl CompiledModule {
     /// Construct a fresh Process bound to this module's compile-time data.
     pub fn make_process(&self) -> Process {
         let consts = CompiledModuleConsts {
-            bs_tuple_arity1_schema: self.bs_tuple_arity1_schema,
-            bs_tuple_arity3_schema: self.bs_tuple_arity3_schema,
             static_closure_targets: self.static_closure_targets.clone(),
             halt_cont_body_addrs: self.halt_cont_body_addrs,
         };
@@ -215,8 +209,6 @@ pub struct CompiledMetadata {
     pub user_schemas: Rc<RefCell<SchemaRegistry>>,
     pub frame_sizes: Vec<u32>,
     pub atom_names: Vec<String>,
-    pub bs_tuple_arity1_schema: Option<u32>,
-    pub bs_tuple_arity3_schema: Option<u32>,
     pub tuple_arities: Vec<u32>,
     pub named_schemas: Vec<(fz_runtime::module_name::ModuleName, Vec<String>)>,
     pub diagnostics: Diagnostics,
