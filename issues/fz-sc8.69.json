@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.66"
+  ],
   "blocks": [],
   "created": "2026-11-03T13:55:21Z",
   "description": "Approved on the fz-sc8.66 page. Today a root waiting in a receive with no after, with nothing runnable and no timer pending, exits 0 with no message on interp, run and build. Elixir hangs forever. fz knows for certain the program can make no progress. Done when: on all three paths this reports a runtime error naming the waiting receive, with a non-zero exit, using the shared idle definition from fz-sc8.66; a fixture pins the message and exit code.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "[BUG] A program whose main process can never wake is a loud runtime error",
   "type": "bug",
-  "updated_at": "2026-11-03T13:55:21Z"
+  "updated_at": "2026-11-03T13:55:28Z"
 }

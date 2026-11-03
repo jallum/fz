@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.69"
+  ],
   "created": "2026-11-03T13:40:18Z",
   "description": "Probes at d0c490721: send(self(), :hello); receive do :other -\u003e :x after 10 -\u003e dbg(:timeout) end; dbg(:end) prints neither :timeout nor :end and exits 0 on run and interp, with or without a message sent. Build prints :timeout then :end, as Elixir does. The process never resumes after the timer: a silent halt in the exec runtime's timer/wake path, with no panic. Not related to fz-sc8.60's schema registration (the interpreter registers those schemas and still fails). Find the cause.",
   "id": "fz-sc8.66",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A process resumes after its receive's after timer fires, on the JIT and the interpreter",
   "type": "bug",
-  "updated_at": "2026-11-03T13:45:09Z"
+  "updated_at": "2026-11-03T13:55:28Z"
 }
