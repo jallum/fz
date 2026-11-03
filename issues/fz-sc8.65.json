@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-03T13:40:18Z",
+  "description": "Probe at d0c490721: x = Enum.fetch!([%{a: 1}], 0); dbg(x.b) prints nil on run, interp and build. Elixir raises ** (KeyError) key :b not found in: %{a: 1}.",
+  "id": "fz-sc8.65",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A missing map field raises KeyError",
+  "type": "bug",
+  "updated_at": "2026-11-03T13:40:18Z"
+}
