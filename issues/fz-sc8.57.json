@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.62"
+  ],
   "blocks": [
     "fz-sc8.16"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A call whose argument may lie outside its spec is not refused when Elixir runs it",
   "type": "bug",
-  "updated_at": "2026-11-03T12:49:38Z"
+  "updated_at": "2026-11-03T13:28:52Z"
 }
