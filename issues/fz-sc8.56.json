@@ -4,14 +4,15 @@
   "blocks": [
     "fz-sc8.16"
   ],
+  "closed_at": "2026-11-03T13:54:56Z",
   "created": "2026-11-03T12:49:38Z",
   "description": "Elixir: `def f(\"--\" \u003c\u003e rest)` and `case s do \"--\" \u003c\u003e rest -\u003e ... end` match a binary starting with the literal prefix and bind the remainder. fz at d0c490721: in a function head it fails with `error[internal/post-resolution-leftover]: quoted function decode failed: unsupported quoted pattern head `\u003c\u003e`` (src/compiler2/quoted_function.rs:575, at \u003cgenerated\u003e); in a case it fails with `quoted function decode failed: invalid any value ref: ExpectedTag`. Both are internal errors, not refusals. The byte spelling `\u003c\u003c45, 45, rest::binary\u003e\u003e` works. Expected: `\u003c\u003e` with a literal binary left side is a pattern on every path (head, case, receive, fn, `=`), meaning what the equivalent bitstring pattern means; a non-literal left side is refused as Elixir refuses it. Blocks fz-sc8.16, whose OptionParser is written the way Elixir writes it.\n\n## UNBLOCKS\n\n- ○ fz-sc8.16 P2 OptionParser.parse/2 with strict:\n\nApproved page /Users/j5n/Workspace/fz-sc8.56.html. Folded in, by agreement: a pinned unsized binary segment \u003c\u003c^p::binary, r::binary\u003e\u003e is sized by its value (it silently never matches today), so ^p \u003c\u003e rest works; and a literal list ++ rest in a pattern is the list pattern it stands for. The decoder recognises the expander's sugared call by a stamped meta key (as __fz_from_brackets__), never by the Kernel alias. The receive form is covered by fz-sc8.60.",
   "id": "fz-sc8.56",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A \"prefix\" \u003c\u003e rest pattern matches a binary that starts with prefix",
   "type": "bug",
-  "updated_at": "2026-11-03T13:02:41Z"
+  "updated_at": "2026-11-03T13:54:56Z"
 }
