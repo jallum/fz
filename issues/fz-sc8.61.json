@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-sc8.62"
+    "fz-sc8.62",
+    "fz-sc8.63"
   ],
   "created": "2026-11-03T13:28:52Z",
   "description": "Plan: /Users/j5n/Workspace/fz-sc8.57.html, ticket 1. panic stays the one runtime route (one extern, fz_panic); its payload becomes structured: exception name, message, and raise site. raise is a Kernel macro, as in Elixir (raise \"msg\" -\u003e RuntimeError; raise Name, \"msg\"), expanding at the call site to panic with the caller's module, function/arity, file and line. Output: '** (Name) message' on stderr, then one location line in Elixir's frame style ('    file:line: M.f/1'); the process ends through the normal exit path, never a signal (today panic dies with exit 132 on run and build); an uncaught failure in the main process exits 1. The interpreter and native share one hook signature; drivers stop reframing (compiler.rs:472-483, aot_shim.rs:624-645, cli.rs frames); Process.exit_fault and fz_exit_fault go. panic(value) remains as RuntimeError. A failing spawned process prints its exception and the others continue (today: silent on a clause miss, whole-program death on panic). Settle first: what fz macros can read about their caller.",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "raise is a Kernel macro over one panic route, and a failure never dies by signal",
   "type": "feature",
-  "updated_at": "2026-11-03T13:40:17Z"
+  "updated_at": "2026-11-03T13:40:18Z"
 }
