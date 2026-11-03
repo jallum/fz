@@ -5,13 +5,13 @@
     "fz-sc8.62"
   ],
   "created": "2026-11-03T13:28:52Z",
-  "description": "Plan: /Users/j5n/Workspace/fz-sc8.57.html (revision 2), ticket 1. Every dispatch plan's shared Fail node is the arm of last resort and records the exception it stands for, set by the construct that built the plan: function heads/guards -\u003e FunctionClauseError naming M.f/arity; = -\u003e MatchError with the value; case -\u003e CaseClauseError with the value; cond -\u003e CondClauseError; with/else -\u003e WithClauseError with the value; receive has no Fail. Interp, run and build lower every Fail through one named panic route that prints '** (Name) message' as Elixir prints an uncaught exception, with one exit status; it is what becomes raise. Kernel's panic(:badarith) and other library failures use the same route. Today: native halt_with_atom(:function_clause|:match_error) (jobs/native.rs ~104/420/461/2894), the interpreter's own 'function_clause: no backend entry clause matched' (ir_interp/backend.rs:663), Kernel panic(:badarith). The value renders with the dbg rendering until fz-sc8.10 inspect lands. Tests compare exception name, message and exit status with elixir's stderr on all three paths. The page's ticket-1 section is completed from the failure-route inventory before building.",
+  "description": "Plan: /Users/j5n/Workspace/fz-sc8.57.html, ticket 1. panic stays the one runtime route (one extern, fz_panic); its payload becomes structured: exception name, message, and raise site. raise is a Kernel macro, as in Elixir (raise \"msg\" -\u003e RuntimeError; raise Name, \"msg\"), expanding at the call site to panic with the caller's module, function/arity, file and line. Output: '** (Name) message' on stderr, then one location line in Elixir's frame style ('    file:line: M.f/1'); the process ends through the normal exit path, never a signal (today panic dies with exit 132 on run and build); an uncaught failure in the main process exits 1. The interpreter and native share one hook signature; drivers stop reframing (compiler.rs:472-483, aot_shim.rs:624-645, cli.rs frames); Process.exit_fault and fz_exit_fault go. panic(value) remains as RuntimeError. A failing spawned process prints its exception and the others continue (today: silent on a clause miss, whole-program death on panic). Settle first: what fz macros can read about their caller.",
   "id": "fz-sc8.61",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
   "status": "open",
-  "title": "Every decision ends in an arm of last resort that names its exception",
+  "title": "raise is a Kernel macro over one panic route, and a failure never dies by signal",
   "type": "feature",
-  "updated_at": "2026-11-03T13:28:52Z"
+  "updated_at": "2026-11-03T13:40:17Z"
 }
