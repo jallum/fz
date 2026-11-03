@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-03T13:28:52Z",
+  "description": "Plan: /Users/j5n/Workspace/fz-sc8.57.html (revision 2), ticket 2. Silent wrong answer at d0c490721: '@spec f(integer) :: integer; @spec f(float) :: integer; def f(x :: integer), do: x + 1; def f(x :: float), do: 0' called as f(JSON.decode!(\"\\\"s\\\"\")) prints 0 on interp, run and build; Elixir's equivalent raises FunctionClauseError. Cause: the any argument is narrowed to the spec domain (narrow_any_witnesses), and refine_contract_inputs (jobs/semantic.rs ~2182) writes that into the callee activation key, so fz-sc8.44's trim removes the callee's arm of last resort. Fix: the contract answers the return from the part that can return; the callee is keyed on the observed argument. Kernel arithmetic gains default clauses (def _ + _, do: arithmetic_error(), and so on) routing to ArithmeticError through the named panic route. Pins may rise where tests were wrongly removed; each rise is measured, explained and brought to the user.",
+  "id": "fz-sc8.62",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A spec never narrows its callee's input",
+  "type": "bug",
+  "updated_at": "2026-11-03T13:28:52Z"
+}
