@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-03T13:40:18Z",
+  "description": "Probe at d0c490721: send(self(), :hello); receive do :other -\u003e :x after 10 -\u003e dbg(:timeout) end prints nothing and exits 0 on run and interp; build prints :timeout, as Elixir does. Reproduced by hand.",
+  "id": "fz-sc8.66",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A receive whose after fires runs its after body on the JIT and the interpreter",
+  "type": "bug",
+  "updated_at": "2026-11-03T13:40:18Z"
+}
