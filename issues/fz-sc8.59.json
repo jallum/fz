@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-03T12:49:38Z",
+  "description": "lib/string.fz's String.to_float splits on '.' and computes whole + fraction / pow10: no exponent (\"1e3\"), and the result is not correctly rounded. Elixir's String.to_float(\"1.0e3\") is 1000.0 and every result is the nearest float. Expected: it reads through the same runtime helper Float.parse uses (fz-sc8.16), raising ArgumentError where Elixir does.",
+  "id": "fz-sc8.59",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "String.to_float parses exponents and rounds correctly, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-11-03T12:49:38Z"
+}
