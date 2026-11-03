@@ -7,13 +7,13 @@
     "fz-sc8.16"
   ],
   "created": "2026-11-03T12:49:38Z",
-  "description": "Probe at d0c490721: `opts = [a: 1, s: \"x\"]; Keyword.update(opts, :a, 1, fn v -\u003e v + 1 end)` fails with `error[spec/violation]: call to +/2 violates its @spec for arguments (int | binary, int)`. Elixir runs it and returns `[a: 2, s: \"x\"]`: the function is only ever called on :a's integer. OptionParser's :count needs exactly this. Investigate first, before proposing a fix: where the spec check refuses a call whose argument type overlaps the domain but is not contained in it, what Elixir 1.19's type checker does in the same place (it warns only on disjoint types), what fz should do instead (refuse only when disjoint, and check at runtime otherwise?), and what that changes across the fixture matrix and diagnostics. May be larger than one ticket. Blocks fz-sc8.16.",
+  "description": "Plan: /Users/j5n/Workspace/fz-sc8.57.html (revision 2), ticket 3. Per specialisation, a call is refused when its argument cannot fit any arrow of the spec (disjoint): refused today, stays refused. An argument that genuinely may fit is accepted; fz-sc8.62 guarantees a miss meets the callee's arm of last resort (fz-sc8.61). Externs (no clause tests; fz-xxd.6) and brands (invisible at runtime; brand_rejects_a_bare_inner) keep refusing overlap. Replaces fz-xxd.5's 'overlap is refused' for plain functions and its any-only narrowing. Motivating probe: Keyword.update([a: 1, s: \"x\"], :a, 1, fn v -\u003e v + 1 end) is refused with spec/violation (int | binary, int); Elixir returns [a: 2, s: \"x\"]. OptionParser's :count needs it. Removes the subset gate in match_arrow (types/arrow_match.rs ~354), arrow_set_covers' special case if it only serves that gate, two overlap-refusal unit pins (restated), and specs.md 70-83.",
   "id": "fz-sc8.57",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
   "status": "open",
-  "title": "A call whose argument may lie outside its spec is not refused when Elixir runs it",
+  "title": "A spec refuses a call only when it is proven to fail",
   "type": "bug",
-  "updated_at": "2026-11-03T13:28:52Z"
+  "updated_at": "2026-11-03T13:28:53Z"
 }
