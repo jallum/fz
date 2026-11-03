@@ -66,7 +66,7 @@ impl<M: ClModule> AotMain<'_, '_, M> {
     }
 }
 
-/// Emit the AOT C-callable main entry. Drives the cps-in-clif startup:
+/// Emit the AOT C-callable main entry `main(argc, argv)`. Drives the cps-in-clif startup:
 /// `fz_aot_setup` -> per-closure `fz_aot_register_static_closure` ->
 /// `fz_aot_run_main`. Entry-body addresses (fz_entry_thunk,
 /// fz_main_trampoline, fz_halt_cont_body) are taken via Cranelift `func_addr`
@@ -107,6 +107,9 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
+        let [argc, argv] = b.block_params(entry)[..] else {
+            unreachable!("the C main signature is (i32 argc, ptr argv)");
+        };
         let mut main = AotMain {
             jmod,
             b: &mut b,
@@ -137,6 +140,8 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
                 hcb_f64_addr,
                 hcb_atom_addr,
                 et_addr,
+                argc,
+                argv,
             ]
         );
         let proc_v = main.sole_result(setup);

@@ -1,0 +1,9 @@
+#---
+# purpose: "a non-ASCII argument arrives byte for byte, spaces inside a single argument preserved, as in Elixir"
+# oracle: 00659_a_non_ascii_argument_keeps_its_bytes.oracle.exs
+# args: "é ü" ü
+#---
+def main() do
+  dbg(System.argv())
+  dbg(Enum.map(System.argv(), fn arg -> byte_size(arg) end))
+end

@@ -1040,6 +1040,105 @@ fn help_lists_compiler2_commands_on_stdout() {
     }
 }
 
+/// A program that prints its own command line, written to a temp file.
+fn argv_program() -> PathBuf {
+    let path = unique_temp_path("fz2_cli_argv", ".fz");
+    write(&path, "def main(), do: dbg(System.argv())\n").expect("write argv program");
+    path
+}
+
+/// Everything after the source path is the program's, so a token spelled like
+/// one of fz2's own options reaches `System.argv()` and fz2 acts on none of it.
+#[test]
+fn run_and_interp_hand_every_token_after_the_path_to_the_program() {
+    let program = argv_program();
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[
+            OsStr::new(command),
+            program.as_os_str(),
+            OsStr::new("--emit=stats"),
+            OsStr::new("--log-telemetry"),
+            OsStr::new("--dump"),
+            OsStr::new("--"),
+            OsStr::new("-o"),
+        ]);
+        assert!(out.status.success(), "{command}: {}", output_text(&out));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "[\"--emit=stats\", \"--log-telemetry\", \"--dump\", \"--\", \"-o\"]\n",
+            "{command}: the program reads its arguments verbatim"
+        );
+        assert!(
+            !String::from_utf8_lossy(&out.stderr).contains("telemetry stats"),
+            "{command}: `--emit=stats` after the path is the program's, so fz2 prints no stats table: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let _ = remove_file(&program);
+}
+
+/// Before the source path the same spelling is fz2's own option.
+#[test]
+fn global_options_before_the_path_still_mean_what_they_say() {
+    let program = argv_program();
+    for args in [
+        vec![OsStr::new("--emit=stats"), OsStr::new("run"), program.as_os_str()],
+        vec![OsStr::new("run"), OsStr::new("--emit=stats"), program.as_os_str()],
+    ] {
+        let out = run_fz2(&args);
+        assert!(out.status.success(), "{}", output_text(&out));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "[]\n",
+            "no arguments were given to the program"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("telemetry stats"),
+            "`--emit=stats` before the path prints the stats table: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let _ = remove_file(&program);
+}
+
+#[test]
+fn an_unknown_option_before_the_path_is_still_refused() {
+    let program = argv_program();
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[OsStr::new(command), OsStr::new("--bogus"), program.as_os_str()]);
+        assert_eq!(out.status.code(), Some(2), "{command}: {}", output_text(&out));
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("unknown arg `--bogus`"),
+            "{command}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let _ = remove_file(&program);
+}
+
+/// Arguments are bytes, not Rust strings: one that is not UTF-8 reaches the
+/// program intact instead of crashing fz2.
+#[test]
+fn a_non_utf8_program_argument_reaches_the_program_as_bytes() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let path = unique_temp_path("fz2_cli_bytes", ".fz");
+    write(
+        &path,
+        "def main(), do: dbg(Enum.map(System.argv(), fn arg -> byte_size(arg) end))\n",
+    )
+    .expect("write");
+    for command in ["run", "interp"] {
+        let out = run_fz2(&[
+            OsStr::new(command),
+            path.as_os_str(),
+            OsStr::from_bytes(&[0xff, 0xfe, b'a']),
+        ]);
+        assert!(out.status.success(), "{command}: {}", output_text(&out));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "[3]\n", "{command}");
+    }
+    let _ = remove_file(&path);
+}
+
 /// `fz.runtime.execution_ready` is the boundary between compiling a program and
 /// running it. The fixture matrix pins where the readiness BYTE falls against a
 /// real compile; what only the stream can show is where the EVENT falls against

@@ -1,0 +1,18 @@
+#---
+# purpose: "a program selects on the shape of System.argv() with a case, taking its one path argument or falling through, as in Elixir"
+# oracle: 00660_a_program_matches_its_arguments_with_a_case.oracle.exs
+# args: trace.jsonl
+#---
+def describe(argv) do
+  case argv do
+    [path] -> {:path, path}
+    [] -> :none
+    _ -> :too_many
+  end
+end
+
+def main() do
+  dbg(describe(System.argv()))
+  dbg(describe([]))
+  dbg(describe(["a", "b"]))
+end

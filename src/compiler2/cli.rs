@@ -3,7 +3,9 @@
 //! `fz2` stays narrow on purpose: it submits source text, seeds `main/0`,
 //! then drives Compiler2's run/build/interp artifact entry points directly.
 
+use std::ffi::OsString;
 use std::fs::read_to_string;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 use std::time::Duration;
@@ -14,6 +16,7 @@ use crate::diag::driver::emit_through;
 use crate::diag::style::ColorMode;
 use crate::telemetry::diag_render::{DiagRenderer, DiagnosticStatus};
 use crate::telemetry::{ConfiguredTelemetry, JsonlBackend, StatsHandler};
+use fz_runtime::exec_ctx::Argv;
 
 use super::dump::{DumpKind, DumpSpec, FileRequestedOutput, max_requested_stage, parse_dump_spec};
 use super::quoted_surface::{MacroCallForm, ScopeForm, ScopeSurface, read_module_body_surface, read_scope_surface};
@@ -25,8 +28,12 @@ use super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission, p
 const FZ2_COMPILER_DRIVE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn run() {
-    let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
-    let (log_telemetry, emit_stats, args) = parse_global_args(raw_args);
+    let CommandLine {
+        log_telemetry,
+        emit_stats,
+        args,
+        program_args,
+    } = parse_command_line(std::env::args_os().skip(1).collect());
 
     let tel = ConfiguredTelemetry::new();
     if let Some(path) = log_telemetry.as_deref() {
@@ -45,7 +52,7 @@ pub fn run() {
     };
     let diagnostic_status = DiagnosticStatus::new();
 
-    let exit_code = match dispatch(tel, args, &diagnostic_status) {
+    let exit_code = match dispatch(tel, args, program_args, &diagnostic_status) {
         Ok(()) => 0,
         Err(error) => {
             if !diagnostic_status.saw_error() {
@@ -91,29 +98,77 @@ impl CliError {
     }
 }
 
-fn parse_global_args(raw_args: Vec<String>) -> (Option<String>, bool, Vec<String>) {
-    let mut log_telemetry = None;
-    let mut emit_stats = false;
-    let mut args = Vec::new();
-    let mut index = 0;
-    while index < raw_args.len() {
-        match raw_args[index].as_str() {
+/// The command line, split once: fz2's own options and command words on one
+/// side, the program's arguments on the other.
+struct CommandLine {
+    log_telemetry: Option<String>,
+    emit_stats: bool,
+    /// The command, its options and its source path.
+    args: Vec<String>,
+    /// Every token after the source path of `run` or `interp`, verbatim.
+    program_args: Argv,
+}
+
+/// The option of a program-running command that consumes the token after it,
+/// so that value is never mistaken for the source path.
+const DUMP_OPTION: &str = "--dump";
+
+/// fz fixes where the program's arguments begin: the first token of `run` or
+/// `interp` that is neither an option nor an option's value is the source
+/// path, and every token after it belongs to the program, `--` included.
+/// fz2's global options are read before that point, wherever they sit among
+/// the command's own options.
+fn parse_command_line(raw_args: Vec<OsString>) -> CommandLine {
+    let mut line = CommandLine {
+        log_telemetry: None,
+        emit_stats: false,
+        args: Vec::new(),
+        program_args: Argv::default(),
+    };
+    let mut tokens = raw_args.into_iter();
+    while let Some(token) = tokens.next() {
+        let text = utf8_option(token);
+        match text.as_str() {
             "--log-telemetry" => {
-                index += 1;
-                log_telemetry = Some(raw_args.get(index).cloned().unwrap_or_else(|| {
+                line.log_telemetry = Some(tokens.next().map(utf8_option).unwrap_or_else(|| {
                     eprintln!("fz2 --log-telemetry expects a path");
                     exit(2);
                 }));
             }
-            "--emit=stats" => emit_stats = true,
-            _ => args.push(raw_args[index].clone()),
+            "--emit=stats" => line.emit_stats = true,
+            DUMP_OPTION => {
+                line.args.push(text);
+                line.args.extend(tokens.next().map(utf8_option));
+            }
+            _ => {
+                let runs_program = matches!(line.args.first().map(String::as_str), Some("run" | "interp"));
+                let is_source_path = runs_program && !text.starts_with('-');
+                line.args.push(text);
+                if is_source_path {
+                    line.program_args = Argv::new(tokens.map(OsStringExt::into_vec).collect());
+                    break;
+                }
+            }
         }
-        index += 1;
     }
-    (log_telemetry, emit_stats, args)
+    line
 }
 
-fn dispatch(tel: ConfiguredTelemetry, args: Vec<String>, diagnostic_status: &DiagnosticStatus) -> Result<(), CliError> {
+/// fz2's own options and source paths are text; only the program's arguments
+/// are raw bytes.
+fn utf8_option(token: OsString) -> String {
+    token.into_string().unwrap_or_else(|token| {
+        eprintln!("fz2: argument {token:?} is not valid UTF-8");
+        exit(2);
+    })
+}
+
+fn dispatch(
+    tel: ConfiguredTelemetry,
+    args: Vec<String>,
+    program_args: Argv,
+    diagnostic_status: &DiagnosticStatus,
+) -> Result<(), CliError> {
     // Stress settings fail eagerly, on every run: the lazy thread-local
     // parse fires only when a perturbation site is reached, and a typo'd
     // sweep reading green on the fixtures that never get there is exactly
@@ -125,8 +180,8 @@ fn dispatch(tel: ConfiguredTelemetry, args: Vec<String>, diagnostic_status: &Dia
             print_help();
             Ok(())
         }
-        Some("run") => run_command(tel, &args[1..], diagnostic_status),
-        Some("interp") => interp_command(tel, &args[1..], diagnostic_status),
+        Some("run") => run_command(tel, &args[1..], program_args, diagnostic_status),
+        Some("interp") => interp_command(tel, &args[1..], program_args, diagnostic_status),
         Some("build") => build_command(tel, &args[1..], diagnostic_status),
         Some("test") => test_command(tel, &args[1..], diagnostic_status),
         // Not advertised in `help`: the private per-test entry point `test_command`
@@ -146,6 +201,7 @@ fz2 — incremental compiler
 
 Usage:
   fz2 <command> [options] <src.fz>
+  fz2 run|interp [options] <src.fz> [args...]
 
 Commands:
   run     <src.fz>   JIT-compile and run through Compiler2
@@ -156,6 +212,11 @@ Commands:
                      subprocess per test; add --interp to run each test
                      through the backend interpreter instead of the JIT
   help               show this help (also --help, -h)
+
+Program arguments (run, interp):
+  Options go before <src.fz>. Every token after it is the program's, verbatim,
+  and System.argv() returns them as binaries. `--` is an ordinary argument. A
+  built executable reads its own command line the same way.
 
 Global options (placed before the command):
   --log-telemetry <path>   append JSONL telemetry events to <path>
@@ -174,11 +235,13 @@ build options:
 fn run_command(
     tel: ConfiguredTelemetry,
     args: &[String],
+    program_args: Argv,
     diagnostic_status: &DiagnosticStatus,
 ) -> Result<(), CliError> {
-    let options = parse_source_options("fz2 run [--dump <spec>] <src.fz>", args)?;
+    let options = parse_source_options("fz2 run [--dump <spec>] <src.fz> [args...]", args)?;
     let path = options.path;
     let (mut compiler, root) = load_main_root(tel, &path, diagnostic_status)?;
+    compiler.set_program_args(program_args);
     compiler.set_requested_output(Box::new(FileRequestedOutput::new(root, &options.dumps)));
     emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
     compiler
@@ -190,11 +253,13 @@ fn run_command(
 fn interp_command(
     tel: ConfiguredTelemetry,
     args: &[String],
+    program_args: Argv,
     diagnostic_status: &DiagnosticStatus,
 ) -> Result<(), CliError> {
-    let options = parse_source_options("fz2 interp [--dump <spec>] <src.fz>", args)?;
+    let options = parse_source_options("fz2 interp [--dump <spec>] <src.fz> [args...]", args)?;
     let path = options.path;
     let (mut compiler, root) = load_main_root(tel, &path, diagnostic_status)?;
+    compiler.set_program_args(program_args);
     compiler.set_requested_output(Box::new(FileRequestedOutput::new(root, &options.dumps)));
     emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
     let result = compiler.run_root_interp(root).map_err(|error| {
@@ -578,8 +643,9 @@ struct BuildOptions {
     dumps: Vec<DumpSpec>,
 }
 
+/// Options up to the source path, which ends them: whatever follows the path
+/// is the program's and never reaches here (see `parse_command_line`).
 fn parse_source_options(usage: &'static str, args: &[String]) -> Result<SourceOptions, CliError> {
-    let mut path = None;
     let mut dumps = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -591,13 +657,19 @@ fn parse_source_options(usage: &'static str, args: &[String]) -> Result<SourceOp
                     .ok_or_else(|| CliError::usage(format!("{usage}\n--dump expects a spec")))?;
                 dumps.push(parse_dump_spec(spec).map_err(CliError::usage)?);
             }
-            other if !other.starts_with('-') && path.is_none() => path = Some(PathBuf::from(other)),
-            other => return Err(CliError::usage(format!("{usage}\nunknown arg `{other}`"))),
+            other if other.starts_with('-') => {
+                return Err(CliError::usage(format!("{usage}\nunknown arg `{other}`")));
+            }
+            path => {
+                return Ok(SourceOptions {
+                    path: PathBuf::from(path),
+                    dumps,
+                });
+            }
         }
         index += 1;
     }
-    let path = path.ok_or_else(|| CliError::usage(usage))?;
-    Ok(SourceOptions { path, dumps })
+    Err(CliError::usage(usage))
 }
 
 fn parse_build_options(args: &[String]) -> Result<BuildOptions, CliError> {

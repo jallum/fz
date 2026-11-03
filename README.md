@@ -528,6 +528,21 @@ Run a file with the JIT:
 fz2 run fixtures2/behavior/quicksort.fz
 ```
 
+fz2's options go before the source path. Every token after the path belongs to
+the program, verbatim, and `System.argv()` returns them as a list of binaries
+(`--` is an ordinary argument):
+
+```sh
+fz2 run script.fz input.txt --verbose    # System.argv() == ["input.txt", "--verbose"]
+```
+
+A built executable reads its own command line the same way:
+
+```sh
+fz2 build script.fz -o /tmp/script
+/tmp/script input.txt --verbose
+```
+
 Build a native executable:
 
 ```sh

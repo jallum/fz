@@ -1887,6 +1887,22 @@ pub extern "C" fn fz_map_is_map(map_ref_word: u64) -> u8 {
 
 // ===== Alloc cluster (fz-ul4.23.4.7) =====
 
+/// `System.argv/0`: the program's command line, as a list of binaries holding
+/// each argument's exact bytes, read from the driver's execution context.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_system_argv(process: *mut Process) -> u64 {
+    let ctx = unsafe { process_ctx(process) };
+    let heap = &mut unsafe { &mut *process }.heap;
+    let mut list = AnyValueRef::empty_list();
+    for arg in ctx.argv().iter().rev() {
+        let binary = heap.alloc_bitstring(arg, (arg.len() * 8) as u64);
+        list = heap
+            .alloc_list_cons_ref(binary.ref_word(), list)
+            .expect("fz_system_argv");
+    }
+    list.raw_word()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_list_is_cons(list_ref_word: u64) -> u8 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_is_cons");

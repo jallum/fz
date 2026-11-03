@@ -26,3 +26,19 @@ fn populated_ctx_reads_its_fields_back() {
     assert_eq!(ctx.output_context, (&tel) as *const u64 as *const ());
     assert!(ctx.send.is_some());
 }
+
+#[test]
+fn a_context_without_argv_reads_as_the_empty_command_line() {
+    let ctx = ExecCtx::empty();
+    assert!(ctx.argv().is_empty());
+}
+
+#[test]
+fn a_context_reads_back_the_program_arguments_its_driver_owns() {
+    let argv = Argv::new(vec![b"a".to_vec(), Vec::new(), vec![0xff, 0xfe]]);
+    let ctx = ExecCtx {
+        argv: &argv,
+        ..ExecCtx::empty()
+    };
+    assert_eq!(ctx.argv(), [b"a".to_vec(), Vec::new(), vec![0xff, 0xfe]]);
+}

@@ -67,6 +67,12 @@ only the keys below:
   `interp`, or `build`.
 - `oracle:` — relative path to a sibling Elixir twin whose stdout owns
   `expected.txt`.
+- `args:` — the program's command line. The tokens are split on whitespace
+  outside double quotes; a quoted token keeps its spaces and may be empty
+  (`args: -- "" "a b"` is three arguments). The matrix passes them after the
+  source path to `fz2 run|interp`, to the built binary, and to the `elixir`
+  oracle, so `System.argv()` is checked against Elixir on every path. A
+  `kind: test` fixture takes none.
 - `timeout.<path>_secs:` — per-path wall-clock hang-guard override.
 
 Every `fixtures/*.fz` file's stem matches `NNNNN_name` and its number is
@@ -349,7 +355,7 @@ two independent kinds of intent:
 The shared grammar is intentionally small:
 
 - `purpose:` — one-line reason the contract exists.
-- `kind:` / `expect:` / `diagnostic.code:` / `defer:` / `oracle:` —
+- `kind:` / `expect:` / `diagnostic.code:` / `defer:` / `oracle:` / `args:` —
   behavioural matrix policy knobs, using the same meanings as the old
   directory-shaped fixtures.
 - `timeout.<path>_secs:` — behavioural matrix hang-guard overrides.

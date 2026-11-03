@@ -13891,7 +13891,7 @@ fn compiler2_interp_reports_a_fail_that_analysis_proved_unreachable() {
     let dbg = DbgCapture::new();
     let tel = ConfiguredTelemetry::new();
     let (types, transport) = compiler.world_mut().types_mut_and_transport();
-    let error = crate::ir_interp::run_backend_main(types, transport, &tel, &dbg, &forged)
+    let error = crate::ir_interp::run_backend_main(types, transport, &tel, &dbg, &Default::default(), &forged)
         .expect_err("a fail with no miss entry is an internal error");
     assert!(
         error.contains("internal error: the case at entry") && error.contains("proved unreachable"),

@@ -14,6 +14,7 @@ fn test_scheduler() -> AotScheduler {
         drain_dtor_entry: null(),
         resume_addr: null(),
         timers: TimerWheel::new(),
+        argv: Argv::default(),
         ctx: ExecCtx::empty(),
     }
 }
@@ -260,4 +261,36 @@ fn set_resume_addr_records_on_scheduler() {
     let fake = 0xDEAD_BEEFusize as *const u8;
     unsafe { fz_aot_set_resume_addr(p.as_mut(), fake) };
     assert_eq!(sched.resume_addr, fake);
+}
+
+/// The built binary's C `main(argc, argv)` hands the program its command line:
+/// everything after the program name, as the exact bytes the OS passed.
+#[test]
+fn aot_setup_gives_the_program_every_argument_after_the_program_name() {
+    use std::ffi::CString;
+    let words = ["./prog", "--", "", "-x"].map(|w| CString::new(w).unwrap());
+    let pointers: Vec<*const std::ffi::c_char> = words.iter().map(|w| w.as_ptr()).collect();
+    let process = fz_aot_setup(
+        null(),
+        0,
+        null(),
+        null(),
+        null(),
+        null(),
+        null(),
+        pointers.len() as i32,
+        pointers.as_ptr(),
+    );
+    let ctx = unsafe { &*(*process).ctx };
+    assert_eq!(ctx.argv(), [b"--".to_vec(), Vec::new(), b"-x".to_vec()]);
+}
+
+#[test]
+fn aot_setup_with_only_the_program_name_gives_the_empty_command_line() {
+    use std::ffi::CString;
+    let name = CString::new("./prog").unwrap();
+    let pointers = [name.as_ptr()];
+    let process = fz_aot_setup(null(), 0, null(), null(), null(), null(), null(), 1, pointers.as_ptr());
+    let ctx = unsafe { &*(*process).ctx };
+    assert!(ctx.argv().is_empty());
 }

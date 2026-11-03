@@ -25,7 +25,7 @@ use crate::types::ClosureTarget;
 use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged, struct_schema_id,
 };
-use fz_runtime::exec_ctx::ExecCtx;
+use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
 use fz_runtime::heap::Schema;
 use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
 use fz_runtime::ir_runtime::{
@@ -69,6 +69,7 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
     transport: &TransportStore,
     tel: &T,
     output: &dyn OutputSink,
+    argv: &Argv,
     program: &BackendProgram,
 ) -> Result<i64, String> {
     let atom_names = program
@@ -87,7 +88,17 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
         ..Module::default()
     };
     runtime.enqueue_backend_entry(1, backend_executable_ref(program, types, program.entry())?, Vec::new())?;
-    let completions = drive_backend_until_idle(&mut runtime, types, transport, tel, output, program, &module, None)?;
+    let completions = drive_backend_until_idle(
+        &mut runtime,
+        types,
+        transport,
+        tel,
+        output,
+        argv,
+        program,
+        &module,
+        None,
+    )?;
     let halt_val = completions
         .iter()
         .rev()
@@ -134,8 +145,17 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
     };
     let result = (|| {
         runtime.enqueue_backend_entry(1, backend_executable_ref(program, types, program.entry())?, args)?;
-        let completions =
-            drive_backend_until_idle(&mut runtime, types, transport, tel, output, program, &module, Some(1))?;
+        let completions = drive_backend_until_idle(
+            &mut runtime,
+            types,
+            transport,
+            tel,
+            output,
+            &NO_ARGV,
+            program,
+            &module,
+            Some(1),
+        )?;
         completions
             .into_iter()
             .rev()
@@ -418,6 +438,7 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
     transport: &TransportStore,
     tel: &T,
     output: &dyn OutputSink,
+    argv: &Argv,
     program: &BackendProgram,
     module: &Module,
     keepalive_pid: Option<u32>,
@@ -439,6 +460,7 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
         send: Some(interp_send_hook::<T>),
         fault: Some(interp_fault_hook::<T>),
         output: Some(OUTPUT_HOOK),
+        argv,
         ..ExecCtx::empty()
     };
 

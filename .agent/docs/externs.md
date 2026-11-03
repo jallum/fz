@@ -471,6 +471,18 @@ is the only witness it has for what it returns (see
 return"). `dbg(1)` therefore defines its return as `int` once, and every
 caller sees that value rather than the unconstrained `t`.
 
+## Helpers that read the driver's context
+
+A helper may read what its driver put on the process's `ExecCtx` instead of
+taking it as an argument. `System.argv/0` wraps a private
+`extern "fz" defp fz_system_argv() :: any` under `@spec argv() :: [binary]`:
+the extern returns a boxed `any`, and the wrapper's spec narrows it to a list of
+binaries. `fz_system_argv(process)` takes only the process the `fz` ABI
+adds, reads `process_ctx(process).argv()`, and allocates one binary per argument
+from its raw bytes. The JIT, the interpreter and the AOT scheduler each fill
+`ExecCtx.argv`; see [`runtime-telemetry`](runtime-telemetry.md), "Program
+Arguments".
+
 ## Variadic calls
 
 A C variadic function has two argument lists at the machine level: the fixed
