@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-03T13:55:21Z",
+  "description": "Approved on the fz-sc8.66 page. When main returns while a child still waits on a timer, Elixir ends the program, and run and interp agree. The native build keeps running the child and prints its output. Done when: the native build ends when main returns, and an oracle fixture with a child still waiting agrees on interp, run and build.",
+  "id": "fz-sc8.70",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] The program ends when the main process returns, on the native build too",
+  "type": "bug",
+  "updated_at": "2026-11-03T13:55:21Z"
+}
