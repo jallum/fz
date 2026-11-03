@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-03T13:02:41Z",
+  "description": "Probe at d0c490721: a receive whose pattern contains a bitstring (`\u003c\u003c45, 45, r::binary\u003e\u003e`, or one nested in a tuple) panics on run and build: `panicked at runtime/src/ir_runtime.rs:1304: bs_tuple_arity3_schema not set`. interp is correct; receive without a bitstring pattern is fine. Inferred cause, unconfirmed: native_codegen/driver.rs has_bs_prim (:31-43) does not see the receive path's bitstring primitive, so the schemas are not registered. Expected: the receive matches as on interp and as in Elixir on all three paths; covers both spellings, `\u003c\u003c\"--\", r::binary\u003e\u003e` and `\"--\" \u003c\u003e r` (fz-sc8.56).",
+  "id": "fz-sc8.60",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A receive with a bitstring pattern runs on the JIT and the native build",
+  "type": "bug",
+  "updated_at": "2026-11-03T13:02:41Z"
+}
