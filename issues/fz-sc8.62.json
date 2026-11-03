@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-sc8.61"
+    "fz-sc8.61",
+    "fz-sc8.63"
   ],
   "blocks": [
     "fz-sc8.57"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "A spec never narrows its callee's input",
   "type": "bug",
-  "updated_at": "2026-11-03T13:28:52Z"
+  "updated_at": "2026-11-03T13:40:18Z"
 }
