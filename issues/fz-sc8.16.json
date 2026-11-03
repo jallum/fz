@@ -7,7 +7,8 @@
   ],
   "blocks": [
     "fz-sc8.19",
-    "fz-sc8.58"
+    "fz-sc8.58",
+    "fz-sc8.59"
   ],
   "created": "2026-10-17T19:00:43Z",
   "description": "No OptionParser. Distill line 13: OptionParser.parse(args, strict: [top: :integer]) -\u003e {opts, argv, invalid}. Elixir semantics for --flag value and --flag=value.",
