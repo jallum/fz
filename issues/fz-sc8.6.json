@@ -6,14 +6,15 @@
   "blocks": [
     "fz-sc8.19"
   ],
+  "closed_at": "2026-11-03T00:04:06Z",
   "created": "2026-10-17T19:00:42Z",
   "description": "A program reads its command line with System.argv(), as in Elixir: a list of binaries holding every token after the source path, verbatim, without the program name. `--` is not special. fz2's own options come before the path. Applies to `fz2 run|interp \u003cfile\u003e args...` and to the built executable's C main(argc, argv).\n\nDesign (approved page /Users/j5n/Workspace/fz-sc8.6.html): ExecCtx.argv, filled by each driver (JIT Runtime::with_argv, interpreter run_backend_main, AOT fz_aot_setup from C main). The runtime helper fz_system_argv reads it, behind lib/system.fz's System.argv/0. One leading-options scan replaces parse_global_args' whole-line scan and parse_source_options' unknown-arg refusal; arguments are read with args_os. Fixtures gain an args: header key, passed to run, interp, the built binary and the elixir oracle.",
   "id": "fz-sc8.6",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "System.argv/0 on all three paths",
   "type": "feature",
-  "updated_at": "2026-11-02T23:32:22Z"
+  "updated_at": "2026-11-03T00:04:06Z"
 }
