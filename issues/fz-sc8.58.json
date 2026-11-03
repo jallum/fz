@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-03T12:49:38Z",
+  "description": "fz-sc8.16 builds OptionParser.parse/2 with strict: and aliases:. Not built, by agreement: switches: (non-strict, creates atoms), :regex, return_separator:, allow_nonexistent_atoms:, parse!/2, parse_head/2, parse_head!/2, next/2, to_argv/2, split/1 and error formatting. Each as in Elixir 1.19.4, checked with oracle fixtures.",
+  "id": "fz-sc8.58",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "OptionParser's remaining surface",
+  "type": "feature",
+  "updated_at": "2026-11-03T12:49:38Z"
+}
