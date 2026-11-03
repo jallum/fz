@@ -11,7 +11,7 @@
     "fz-sc8.59"
   ],
   "created": "2026-10-17T19:00:43Z",
-  "description": "No OptionParser. Distill line 13: OptionParser.parse(args, strict: [top: :integer]) -\u003e {opts, argv, invalid}. Elixir semantics for --flag value and --flag=value.",
+  "description": "OptionParser.parse/2 in fz, as in Elixir 1.19.4 (approved page /Users/j5n/Workspace/fz-sc8.16.html). Distill line 13: OptionParser.parse(args, strict: [top: :integer]) -\u003e {opts, argv, invalid}.\n\nSurface: strict: and aliases:; :boolean, :integer, :float, :string, :count, each with :keep; --name value, --name=value, --no-name, kebab-case, alias clusters, --, lone -. Strict lookup compares text, creating no atoms; an unknown name never consumes the next token. Adds Integer.parse/1 (fz; past 64 bits it fails loudly, documented) and Float.parse/1 (one runtime helper). The rest of the surface is fz-sc8.58.",
   "id": "fz-sc8.16",
   "labels": [],
   "parent": "fz-sc8",
@@ -19,5 +19,5 @@
   "status": "open",
   "title": "OptionParser.parse/2 with strict:",
   "type": "feature",
-  "updated_at": "2026-11-03T12:49:38Z"
+  "updated_at": "2026-11-03T12:49:39Z"
 }
