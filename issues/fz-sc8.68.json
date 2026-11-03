@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-03T13:55:20Z",
+  "description": "At 62c02cb1a, `with ^p \u003c\u003e r \u003c- \"ab\" do dbg(r) end` fails: error[parse/expected-token]: unexpected item without a newline: Caret (at the `^`). Elixir prints \"b\". Fixture 00664 works around it with `with {:ok, ^p \u003c\u003e r} \u003c- {:ok, s}`. Done when: a with clause whose pattern starts with `^` parses, an oracle fixture agrees on interp, run and build, and 00664 uses the direct form.",
+  "id": "fz-sc8.68",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] A pinned pattern on the left of a with clause parses, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-11-03T13:55:20Z"
+}
