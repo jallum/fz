@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-10-17T19:10:40Z",
-  "description": "fz2 run on a program building [1 | 2] panics: fz_list_cons_int ExpectedTag (runtime/src/ir_runtime.rs:1874). Elixir builds the improper list and inspect renders [1 | 2]. Check interp and AOT too.",
+  "description": "fz2 run on a program building [1 | 2] panics: fz_list_cons_int ExpectedTag (runtime/src/ir_runtime.rs:1874). At 62c02cb1a, `dbg([1 | 2])` also fails on interp: \"backend list: cannot allocate list cons: ExpectedTag { expected: ValueKind(1), found: ValueKind(13) }\". Elixir builds the improper list and inspect renders [1 | 2]. Done when: an oracle fixture building, matching and inspecting improper lists agrees on interp, run and build, and fixture 00665 gains the improper `[1] ++ 2` case it had to leave out.",
   "id": "fz-sc8.22",
   "labels": [],
   "parent": "fz-sc8",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "An improper list [1 | 2] panics at runtime",
   "type": "bug",
-  "updated_at": "2026-10-17T19:10:54Z"
+  "updated_at": "2026-11-03T13:55:20Z"
 }
