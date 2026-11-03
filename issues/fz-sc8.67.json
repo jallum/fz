@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-03T13:55:20Z",
+  "description": "Elixir accepts `Kernel.\u003c\u003e(\"--\", r)` in a pattern and matches it like `\"--\" \u003c\u003e r` (checked with elixir 1.19.4: prints {:long, \"hi\"}). fz refuses it with parse/concat-pattern-operand (fixture 00674), because pattern decoding runs before alias resolution and only trusts the expander-stamped call (`__fz_from_operator__`) or the bare operator. Done when: a spelled-out Kernel.\u003c\u003e / List.concat in a pattern, resolved through aliases, decodes to the same pattern as the operator on interp, run and build; 00674 becomes an oracle fixture; a user alias that shadows Kernel is not fooled.",
+  "id": "fz-sc8.67",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] A spelled-out Kernel.\u003c\u003e or List.concat call in a pattern means the operator, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-11-03T13:55:20Z"
+}
