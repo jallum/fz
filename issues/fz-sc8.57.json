@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-03T12:49:38Z",
+  "description": "Probe at d0c490721: `opts = [a: 1, s: \"x\"]; Keyword.update(opts, :a, 1, fn v -\u003e v + 1 end)` fails with `error[spec/violation]: call to +/2 violates its @spec for arguments (int | binary, int)`. Elixir runs it and returns `[a: 2, s: \"x\"]`: the function is only ever called on :a's integer. OptionParser's :count needs exactly this. Investigate first, before proposing a fix: where the spec check refuses a call whose argument type overlaps the domain but is not contained in it, what Elixir 1.19's type checker does in the same place (it warns only on disjoint types), what fz should do instead (refuse only when disjoint, and check at runtime otherwise?), and what that changes across the fixture matrix and diagnostics. May be larger than one ticket. Blocks fz-sc8.16.",
+  "id": "fz-sc8.57",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A call whose argument may lie outside its spec is not refused when Elixir runs it",
+  "type": "bug",
+  "updated_at": "2026-11-03T12:49:38Z"
+}
