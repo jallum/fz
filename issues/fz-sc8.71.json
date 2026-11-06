@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.66"
+  ],
   "created": "2026-11-06T21:55:16Z",
   "description": "On run and build, a receive records its wait and gives up its turn before scanning the mailbox (fz_receive_park_matched marks the task Ready, runtime/src/ir_runtime.rs ~564-575; the scan runs at the next dispatch via initial_scan). A process that runs in that gap and sends a matching message is matched by probe_sender, which tests only the new message, so it is taken ahead of older messages already in the mailbox. Repro: spawn a child that sends :child to the parent; parent does send(self(), :parent) then receive :parent -\u003e :got_parent; :child -\u003e :got_child. Elixir and interp: :got_parent. run: :got_child. Done when: a receive scans its mailbox at the moment it is reached, on all compiled paths, and an oracle fixture agrees on interp, run and build. The same gap is why `after 0` yields on run and build; fixture 00688 (after 0 does not yield, message-order form with an elixir oracle) is part of this ticket. Proposal: /Users/j5n/Workspace/\u003cid\u003e.html.",
   "id": "fz-sc8.71",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "[BUG] A receive takes the oldest matching message on the JIT and the native build",
   "type": "bug",
-  "updated_at": "2026-11-06T21:55:16Z"
+  "updated_at": "2026-11-06T21:55:17Z"
 }

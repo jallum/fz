@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.71"
+  ],
   "blocks": [
     "fz-sc8.69",
     "fz-sc8.70"
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "A process resumes after its receive's after timer fires, on the JIT and the interpreter",
   "type": "bug",
-  "updated_at": "2026-11-03T13:55:28Z"
+  "updated_at": "2026-11-06T21:55:17Z"
 }
