@@ -1,10 +1,10 @@
 //! fz-qw6 — selective-receive scheduler primitives.
 //!
 //! The same three operations — receive-reach, sender-probe, after-timer
-//! fire — drive `Term::ReceiveMatched` on every execution path. JIT
-//! state lives in `Runtime` (src/runtime.rs); AOT state lives in the
-//! thread-locals on `aot_shim`. Both call into the same pure helpers
-//! here so the logic exists once.
+//! fire — drive `Term::ReceiveMatched` on every execution path. The JIT
+//! `Runtime` (src/exec/runtime.rs) and `aot_shim`'s `AotScheduler` both
+//! call into the same pure helpers here so the logic exists once; their
+//! run queue and timers live in `sched_core`.
 //!
 //! Each helper takes `&mut Process` and mutates the task's
 //! selective-receive state directly; timer cancellation goes through

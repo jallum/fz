@@ -983,3 +983,19 @@ fn jsonl_counts_the_function_clause_tests_an_analysis_trimmed() {
         "unwrap/1 loses its pair test and its `true` test, and its miss"
     );
 }
+
+#[test]
+fn a_scheduler_sleep_renders_its_wait_in_nanoseconds() {
+    let telemetry = ConfiguredTelemetry::new();
+    let (buf, writer) = vec_writer();
+    JsonlBackend::new_writer(writer).install(&telemetry);
+    telemetry.raw_event1(&crate::exec::runtime::SCHEDULER_SLEPT, &Duration::from_millis(10));
+    drop(telemetry);
+    let log = String::from_utf8(buf.borrow().clone()).unwrap();
+    let events = log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 1, "one sleep is one record: {log}");
+    assert_eq!(events[0]["metadata"]["wait_ns"], 10_000_000);
+}

@@ -10,10 +10,9 @@ fn test_scheduler() -> AotScheduler {
         tasks: HashMap::new(),
         entry_thunk: null(),
         halt_cont_bodies: [null(); 4],
-        run_queue: VecDeque::new(),
+        core: SchedulingCore::new(),
         drain_dtor_entry: null(),
         resume_addr: null(),
-        timers: TimerWheel::new(),
         argv: Argv::default(),
         ctx: ExecCtx::empty(),
     }
@@ -151,7 +150,7 @@ fn aot_send_to_exited_or_unknown_pid_does_not_copy_or_schedule() {
         .expect("sender task");
     let before_heap = sched.tasks[&2].heap.alloc_stats_snapshot();
     let before_mailbox = sched.tasks[&2].mailbox.clone();
-    let before_queue = sched.run_queue.clone();
+    let before_queue = sched.core.queued().clone();
 
     aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, msg.raw_word());
     aot_send_hook(sender_ptr, sched_handle(&mut sched), u32::MAX, msg.raw_word());
@@ -159,15 +158,14 @@ fn aot_send_to_exited_or_unknown_pid_does_not_copy_or_schedule() {
     assert_eq!(sched.tasks[&2].heap.alloc_stats_snapshot(), before_heap);
     assert_eq!(sched.tasks[&2].mailbox, before_mailbox);
     assert_eq!(sched.tasks[&2].state, ProcessState::Exited);
-    assert_eq!(sched.run_queue, before_queue);
+    assert_eq!(sched.core.queued(), &before_queue);
 }
 
-/// fz-xx8.3 — schedule→drain→wake flow on the AOT timer wheel.
-/// Mirrors `src/runtime.rs::drain_expired_timers_wakes_after_cont`. We
-/// can't drive aot_run_queue_loop directly (it would call into
-/// codegen'd shim pointers we don't have), but we exercise every
-/// pre-dispatch ingredient: schedule → expiry → mutate the task's
-/// wait into a runnable_closure → run-queue enqueue. The
+/// fz-xx8.3 — schedule→expire→wake flow on the AOT scheduler. We can't
+/// drive aot_run_queue_loop directly (it would call into codegen'd shim
+/// pointers we don't have), but `next_runnable` is the loop's whole
+/// pre-dispatch step: schedule → expiry → the task's wait becomes a
+/// runnable_closure → its pid comes back runnable. The
 /// dispatch-via-resume-shim step is covered by the end-to-end fixture
 /// run on a built binary.
 #[test]
@@ -189,7 +187,7 @@ fn timer_drain_wakes_after_cont() {
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     let mut p = Box::new(Process::new(schemas));
     p.pid = 7;
-    let timer_id = aot_timer_schedule_hook(sched_handle(&mut sched), p.pid, 1);
+    let timer_id = timer_schedule_hook::<AotScheduler>()(sched_handle(&mut sched), p.pid, 1);
     let after_cont_addr: usize = 0xCAFE_BABE;
     p.wait = Some(Box::new(ParkRecord {
         matcher_fn: never_match,
@@ -204,42 +202,28 @@ fn timer_drain_wakes_after_cont() {
     p.state = ProcessState::Blocked;
     sched.tasks.insert(7, p);
 
-    // Wait past the deadline, then run the same drain logic
-    // aot_run_queue_loop runs at the top of each iteration.
-    sleep(Duration::from_millis(5));
-    let expired = sched.timers.drain_expired(Instant::now());
-    assert_eq!(expired.len(), 1);
-    for entry in expired {
-        {
-            let task = sched.tasks.get_mut(&entry.pid).unwrap();
-            let park = task.wait.as_ref().unwrap();
-            assert_eq!(park.after_timer_id, Some(entry.id));
-            let after_cont = park.after_cont;
-            task.wait = None;
-            task.set_runnable_closure(after_cont);
-            task.state = ProcessState::Ready;
-        }
-        sched.run_queue.push_back(entry.pid);
-    }
+    // The scheduling core waits out the deadline, wakes the task through
+    // `fire_after_timer`, and hands its pid back as runnable.
+    assert_eq!(next_runnable(&mut sched), Some(7));
 
     let task = sched.tasks.get(&7).unwrap();
     assert_eq!(task.state, ProcessState::Ready);
     assert!(task.wait.is_none());
     assert_eq!(task.runnable_ptr() as usize, after_cont_addr);
-    assert!(sched.run_queue.iter().any(|p| *p == 7));
+    assert_eq!(next_runnable(&mut sched), None, "nothing else runs or waits");
 }
 
-/// fz-xx8.3 — `aot_timer_cancel_hook` retires a previously scheduled
+/// fz-xx8.3 — the AOT timer cancel hook retires a previously scheduled
 /// timer so a sender-probe hit can prevent the after
 /// from firing.
 #[test]
 fn timer_cancel_removes_pending_entry() {
     let mut sched = test_scheduler();
 
-    let id = aot_timer_schedule_hook(sched_handle(&mut sched), 99, 10_000);
-    assert!(sched.timers.next_deadline().is_some());
-    aot_timer_cancel_hook(sched_handle(&mut sched), id);
-    assert!(sched.timers.next_deadline().is_none());
+    let id = timer_schedule_hook::<AotScheduler>()(sched_handle(&mut sched), 99, 10_000);
+    assert!(sched.core.next_deadline().is_some());
+    timer_cancel_hook::<AotScheduler>()(sched_handle(&mut sched), id);
+    assert!(sched.core.next_deadline().is_none());
 }
 
 /// fz-xx8.1 — `fz_aot_set_resume_addr` records the shim address on the

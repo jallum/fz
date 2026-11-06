@@ -20,7 +20,7 @@
 //!
 //! For v1 we ship pool size 1 (no OS-thread pool yet). The worker loop
 //! runs on the calling thread. When pool size > 1 lands:
-//!   - run_queue becomes contended (currently a plain VecDeque; will
+//!   - the core's run queue becomes contended (currently a plain VecDeque; will
 //!     wrap in Mutex when threads matter).
 //!   - tasks registry: HashMap becomes RwLock<HashMap> or per-worker
 //!     local + global registry.
@@ -37,14 +37,15 @@ use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
 use fz_runtime::pinned_abi::call2;
 use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::sched::{ProbeOutcome, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender};
-use fz_runtime::timer::TimerWheel;
+use fz_runtime::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
+use fz_runtime::timer::TimerId;
 #[cfg(test)]
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::ptr::null_mut;
 #[cfg(test)]
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
 /// single-threaded — `run_until_idle` drives all spawned tasks to
@@ -52,14 +53,10 @@ use std::time::{Duration, Instant};
 pub struct Runtime<'a, T: Telemetry + ?Sized> {
     compiled: &'a CompiledModule,
     tasks: HashMap<PidId, Box<Process>>,
-    run_queue: VecDeque<PidId>,
+    /// The run queue and timer wheel. `next_runnable` decides what runs next
+    /// and when the runtime is idle.
+    core: SchedulingCore,
     next_pid: u32,
-    /// fz-yxs/fz-st5 — sorted-vec timer wheel (F2). Stored inside the
-    /// Runtime so per-Process `wait.after_deadline_ms` can be
-    /// honoured via `dispatch_timer_schedule`; the run loop drains
-    /// expired entries each iteration and emits ResumeMatched for the
-    /// after-cont closure.
-    pub(crate) timers: TimerWheel,
 
     /// Observability sink. The run loop emits `fz.runtime.process_exited`
     /// at each task exit (see `ExitRecord`), which is the seam tests observe
@@ -85,6 +82,10 @@ impl ExitRecord {
     }
 }
 
+/// Emitted each time the scheduling core sleeps for a pending timer; carries
+/// the `Duration` it is about to wait.
+pub const SCHEDULER_SLEPT: [&str; 3] = ["fz", "runtime", "scheduler_slept"];
+
 /// fz-ul4.23.10 scheduler-hook thunks. These are the extern "C" fns the
 /// runtime crate dispatches through when fz_spawn / fz_send fire from
 /// JIT'd code. They translate the raw-u32 hook ABI back into the
@@ -105,23 +106,6 @@ extern "C" fn send_hook_thunk<T: Telemetry + ?Sized>(
 ) {
     let msg_ref = AnyValueRef::from_raw_word(msg_ref_word).expect("send hook message ref");
     send_via::<T>(sender, scheduler, receiver_pid, msg_ref);
-}
-
-/// fz-yxs/fz-st5 — installed via `install_timer_schedule_hook`. Called
-/// by `fz_receive_park_matched` when the after-clause carries a real
-/// timeout. Routes through the execution context's scheduler handle to its
-/// `TimerWheel`.
-extern "C" fn timer_schedule_hook_thunk<T: Telemetry + ?Sized>(scheduler: *mut (), pid: u32, after_ms: u64) -> u64 {
-    let rt = unsafe { &mut *(scheduler as *mut Runtime<'_, T>) };
-    rt.timers.schedule(pid, Duration::from_millis(after_ms))
-}
-
-extern "C" fn timer_cancel_hook_thunk<T: Telemetry + ?Sized>(scheduler: *mut (), timer_id: u64) {
-    if scheduler.is_null() {
-        return;
-    }
-    let rt = unsafe { &mut *(scheduler as *mut Runtime<'_, T>) };
-    rt.timers.cancel(timer_id);
 }
 
 /// fz-ul4.29.5: called from fz_spawn (runtime FFI) to enqueue a new task
@@ -199,7 +183,7 @@ pub fn send_via<T: Telemetry + ?Sized>(
     let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
     let copied = deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
     if probe_sender(receiver, copied) == ProbeOutcome::Hit {
-        rt.run_queue.push_back(receiver_pid);
+        rt.core.enqueue(receiver_pid);
     }
 }
 
@@ -215,9 +199,8 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         Self {
             compiled,
             tasks: HashMap::new(),
-            run_queue: VecDeque::new(),
+            core: SchedulingCore::new(),
             next_pid: 1,
-            timers: TimerWheel::new(),
             tel,
             output: &STDOUT_OUTPUT,
             argv: &NO_ARGV,
@@ -272,7 +255,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         // task's execution (and matches the raw-fp entry's zero-alloc start).
         process.heap.reset_alloc_stats();
         self.tasks.insert(pid, Box::new(process));
-        self.run_queue.push_back(pid);
+        self.core.enqueue(pid);
         pid
     }
 
@@ -312,7 +295,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         // measures only the child's own execution.
         process.heap.reset_alloc_stats();
         self.tasks.insert(pid, Box::new(process));
-        self.run_queue.push_back(pid);
+        self.core.enqueue(pid);
         pid
     }
 
@@ -331,20 +314,12 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             send: Some(send_hook_thunk::<T>),
             fault: Some(fz_runtime::STDERR_FAULT_HOOK),
             output: Some(OUTPUT_HOOK),
-            timer_schedule: Some(timer_schedule_hook_thunk::<T>),
-            timer_cancel: Some(timer_cancel_hook_thunk::<T>),
+            timer_schedule: Some(timer_schedule_hook::<Self>()),
+            timer_cancel: Some(timer_cancel_hook::<Self>()),
             argv: self.argv,
         };
         let ctx_ptr: *mut ExecCtx = &mut exec_ctx;
-        loop {
-            // fz-yxs/fz-st5 — service any expired after-timers before
-            // picking the next task. Cheaper to do here than on every
-            // step inside run_quantum: timers only matter at scheduler
-            // boundaries (a task can't park between expirations).
-            self.drain_expired_timers();
-            let Some(pid) = self.run_queue.pop_front() else {
-                break;
-            };
+        while let Some(pid) = next_runnable(self) {
             let mut task = self.tasks.remove(&pid).expect("task in run_queue not in registry");
             task.state = ProcessState::Running;
             task.reset_reduction_budget();
@@ -366,7 +341,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
                 .expect("compiled boundary maintenance is infallible");
                 task.state = ProcessState::Ready;
                 self.tasks.insert(pid, task);
-                self.run_queue.push_back(pid);
+                self.core.enqueue(pid);
                 continue;
             } else if task.state == ProcessState::Blocked {
                 // Parked on a receive: keep in registry, no re-enqueue. A
@@ -405,7 +380,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 task.state = ProcessState::Ready;
                 self.tasks.insert(pid, task);
-                self.run_queue.push_back(pid);
+                self.core.enqueue(pid);
                 continue;
             }
             // Keep Exited / Blocked tasks in the registry so callers can
@@ -414,24 +389,21 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             self.tasks.insert(pid, task);
         }
     }
+}
 
-    /// fz-yxs/fz-st5 — drain expired timers and wake the matching
-    /// parked tasks. Called by the run loop each iteration. For each
-    /// expired entry whose pid is still parked on a Term::ReceiveMatched
-    /// with that timer id, stash a runnable closure of the after-cont
-    /// (no bound args; captures are already baked into the closure)
-    /// and re-enqueue.
-    pub(crate) fn drain_expired_timers(&mut self) {
-        let now = Instant::now();
-        let expired = self.timers.drain_expired(now);
-        for entry in expired {
-            let Some(task) = self.tasks.get_mut(&entry.pid) else {
-                continue;
-            };
-            if fire_after_timer(task, entry.id) {
-                self.run_queue.push_back(entry.pid);
-            }
-        }
+impl<T: Telemetry + ?Sized> Scheduler for Runtime<'_, T> {
+    fn core(&mut self) -> &mut SchedulingCore {
+        &mut self.core
+    }
+
+    fn wake_expired(&mut self, pid: PidId, timer: TimerId) -> bool {
+        self.tasks
+            .get_mut(&pid)
+            .is_some_and(|task| fire_after_timer(task, timer))
+    }
+
+    fn about_to_sleep(&mut self, wait: Duration) {
+        self.tel.raw_event1(&SCHEDULER_SLEPT, &wait);
     }
 }
 
@@ -520,3 +492,7 @@ impl OutputSink for DbgSink {
             .push(std::str::from_utf8(bytes).unwrap_or("<non-utf8 dbg line>").to_string());
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_test.rs"]
+mod runtime_test;

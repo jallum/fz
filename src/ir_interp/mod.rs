@@ -1,13 +1,15 @@
 //! Backend interpreter for compiler2 programs.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::compiler2::transport::BoundValue;
 use crate::exec::runtime::ExitRecord;
 use fz_runtime::heap::{Schema, SchemaRegistry};
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
+use fz_runtime::sched_core::SchedulingCore;
+use fz_runtime::timer::TimerId;
 
 mod backend;
 mod binop;
@@ -56,6 +58,9 @@ struct BackendParkRecord {
     entry: crate::compiler2::ControlEntryId,
     env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
     continuations: Vec<BackendContinuation>,
+    /// The timer that wakes this receive's `after` entry; `None` when the
+    /// receive has no positive timeout.
+    after_timer: Option<TimerId>,
 }
 
 pub(crate) struct IrInterpRuntime {
@@ -63,7 +68,8 @@ pub(crate) struct IrInterpRuntime {
     next_pid: u32,
     schemas: Rc<RefCell<SchemaRegistry>>,
     tuple_schema_ids: HashMap<usize, u32>,
-    run_queue: VecDeque<u32>,
+    /// The run queue and timer wheel.
+    core: SchedulingCore,
     backend_resume: HashMap<u32, BackendResumeEntry>,
     backend_parked: HashMap<u32, BackendParkRecord>,
     node: Rc<Node>,
@@ -82,7 +88,7 @@ impl IrInterpRuntime {
             next_pid: 2,
             schemas: Rc::new(RefCell::new(SchemaRegistry::new())),
             tuple_schema_ids: HashMap::new(),
-            run_queue: VecDeque::new(),
+            core: SchedulingCore::new(),
             backend_resume: HashMap::new(),
             backend_parked: HashMap::new(),
             node: Rc::new(Node::empty()),
@@ -160,10 +166,6 @@ impl IrInterpRuntime {
 
     fn insert_task(&mut self, pid: u32, process: Box<Process>) {
         self.tasks.insert(pid, process);
-    }
-
-    fn pop_runnable(&mut self) -> Option<u32> {
-        self.run_queue.pop_front()
     }
 
     fn next_pid(&mut self) -> u32 {
