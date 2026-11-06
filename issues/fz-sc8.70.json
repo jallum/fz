@@ -11,7 +11,7 @@
   "parent": "fz-sc8",
   "priority": 3,
   "status": "open",
-  "title": "[BUG] The program ends when the main process returns, on the native build too",
+  "title": "The program ends when the main process returns, on the native build too",
   "type": "bug",
-  "updated_at": "2026-11-03T13:55:28Z"
+  "updated_at": "2026-11-06T23:41:31Z"
 }
