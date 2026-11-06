@@ -108,8 +108,9 @@ fn propagate_tuple_step_demand(
     };
     let facts = ExecutableFacts {
         analysis: ActivationAnalysis {
+            trimmed: Default::default(),
             input_rows: Vec::new(),
-            entry_reachability: EntryReachability::new(Vec::new(), false),
+            entry_reachability: EntryReachability::new(Vec::new()),
             reachable_entries: Vec::new(),
             callsites: Vec::new(),
             value_types: HashMap::new(),
@@ -213,8 +214,9 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
     };
     let facts = ExecutableFacts {
         analysis: ActivationAnalysis {
+            trimmed: Default::default(),
             input_rows: Vec::new(),
-            entry_reachability: EntryReachability::new(Vec::new(), false),
+            entry_reachability: EntryReachability::new(Vec::new()),
             reachable_entries: Vec::new(),
             callsites: Vec::new(),
             value_types,
@@ -287,8 +289,9 @@ mod tests {
         let atom_surface = CallableSurface::new(vec![atom], &mut types);
         let facts = ExecutableFacts {
             analysis: ActivationAnalysis {
+                trimmed: Default::default(),
                 input_rows: Vec::new(),
-                entry_reachability: EntryReachability::new(Vec::new(), false),
+                entry_reachability: EntryReachability::new(Vec::new()),
                 reachable_entries: Vec::new(),
                 callsites: Vec::new(),
                 value_types: HashMap::new(),

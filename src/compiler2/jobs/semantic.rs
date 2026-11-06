@@ -18,14 +18,14 @@ use super::super::body::{
     ValueId,
 };
 use super::super::contract::{AppliedFunctionContract, FunctionContract};
-use super::super::dispatch_reachability::calculate_dispatch_reachability;
+use super::super::dispatch_reachability::{ReachedEdges, calculate_dispatch_reachability};
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses};
 use super::super::identity::{ActivationKey, FunctionId, ModuleId, TypeName, function_id_of_closure_target};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallTargetSummary,
-    SelectedCallee,
+    SelectedCallee, TrimmedPlans,
 };
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::{BodyShape, World};
@@ -119,6 +119,8 @@ struct EntryWalkTable {
     /// How many entries this walk actually visited, as opposed to answered
     /// from the memo. [`emit_semantic_walk`] reports it.
     entries_walked: u64,
+    /// The edges of each `case` this walk reached that some scope could take.
+    cases: BTreeMap<super::super::body::ControlEntryId, ReachedEdges>,
 }
 
 impl EntryWalkTable {
@@ -283,11 +285,11 @@ pub(super) fn analyze_activation(
     // by source), failure by OR, return evidence by join, call emissions by
     // coalescing. No column of one row ever meets a column of another.
     let mut reachable_clauses = Vec::new();
-    let mut fail_reachable = false;
+    let mut entry_edges = ReachedEdges::of(entry_dispatch.clone());
     let mut row_clause_inputs = Vec::new();
     for row in alternatives.rows() {
         let dispatch_reachability = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, row.columns());
-        fail_reachable |= dispatch_reachability.fail_reachable;
+        entry_edges.absorb(&dispatch_reachability);
         let clause_inputs = dispatch_reachability
             .outcome_inputs
             .iter()
@@ -297,7 +299,7 @@ pub(super) fn analyze_activation(
         reachable_clauses.extend(clause_inputs.iter().map(|(clause, _)| *clause));
         row_clause_inputs.push(clause_inputs);
     }
-    let entry_reachability = super::super::semantic::EntryReachability::new(reachable_clauses, fail_reachable);
+    let entry_reachability = super::super::semantic::EntryReachability::new(reachable_clauses);
 
     let mut analysis_calls = Vec::new();
     let mut walks = EntryWalkTable::new();
@@ -437,6 +439,7 @@ pub(super) fn analyze_activation(
         ActivationAnalysis {
             input_rows: alternatives.rows().iter().map(|row| row.columns().to_vec()).collect(),
             entry_reachability,
+            trimmed: TrimmedPlans::of((!is_extern).then_some(entry_edges), std::mem::take(&mut walks.cases)),
             reachable_entries: {
                 let mut entries = walks
                     .answers
@@ -543,6 +546,7 @@ fn analyze_entry(
         world,
         tel,
         entries,
+        entry_id,
         &entry.tail,
         &local,
         walks,
@@ -953,6 +957,7 @@ fn analyze_tail(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     entries: &[LoweredEntry],
+    entry_id: super::super::body::ControlEntryId,
     tail: &LoweredTail,
     values: &SemanticValues,
     walks: &mut EntryWalkTable,
@@ -1102,6 +1107,12 @@ fn analyze_tail(
                 return Ok(None);
             }
             let reachability = calculate_dispatch_reachability(world.types_mut(), &dispatch.plan, &input_tys);
+            walks
+                .cases
+                .entry(entry_id)
+                .or_insert_with(|| ReachedEdges::of(dispatch.plan.clone()))
+                .absorb(&reachability);
+            let fail_reachable = reachability.fail_reachable;
             let mut merged = None;
             for (outcome, refined_inputs) in reachability.outcome_inputs {
                 let edge = dispatch.outcome(outcome);
@@ -1140,11 +1151,14 @@ fn analyze_tail(
                 )?;
                 merged = join_evidence(world, merged, arm_ty);
             }
+            let Some(miss_entry) = dispatch.miss_entry.filter(|_| fail_reachable) else {
+                return Ok(merged);
+            };
             let miss_ty = analyze_branch(
                 world,
                 tel,
                 entries,
-                dispatch.miss_entry,
+                miss_entry,
                 values,
                 &[],
                 walks,

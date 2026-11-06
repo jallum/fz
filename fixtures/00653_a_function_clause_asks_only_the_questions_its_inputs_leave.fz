@@ -1,0 +1,14 @@
+#---
+# purpose: "a function whose clauses split on a boolean field asks only the questions its input types leave, a clause over a list head selects without asking when the list is known to have one, and both agree with Elixir"
+# oracle: 00653_a_function_clause_asks_only_the_questions_its_inputs_leave.oracle.exs
+#---
+def unwrap({v, false}), do: v
+def unwrap({v, true}), do: v + 1
+
+def first([h | _]), do: h
+
+def main() do
+  dbg(Enum.map([1, 2, 3], fn n -> unwrap({n, n == 2}) end))
+  dbg(first(Enum.map([4, 5], fn n -> n * 2 end)))
+  dbg(Enum.map([[1], [2, 3]], fn l -> first(l) end))
+end

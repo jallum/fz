@@ -340,6 +340,41 @@ is a real, earned answer. `LoweredExtern` carries only the physical wire ABI;
 its wire derivation reads the same `FunctionContract` fact the return does, so
 the declaration is resolved once.
 
+**Which dispatch plan an activation runs** — owner
+`calculate_dispatch_reachability` (`compiler2/dispatch_reachability.rs`).
+Activation analysis calls it for every function-clause plan and every `case`
+plan it reaches, and folds the answer into the walk it already makes. A
+`TestEdges` records, per test node, which of its two edges some visit could
+take. `ReachedEdges` joins those records over every scope that reaches the same
+plan, and `trimmed()` rebuilds the plan from them through
+`DispatchGraphBuilder` (`PatternDispatchPlan::trimmed`): a test with one live
+edge becomes its child, an arm no live edge reaches goes, a fail nothing
+reaches goes, and node ids are compacted. Subject and outcome ids are kept. A
+plan nothing narrows is returned as the same `Rc`.
+
+The record is per activation, because a plan is type-blind and the same plan
+meets different subject types in different activations. `TrimmedPlans` holds
+the trimmed entry plan and one plan per `ControlEntryId`, plus the
+`trimmed_tests` and `removed_fails` counts the `activation_analysis` event
+reports. Type analysis does not walk an unreachable miss.
+
+`project_executable_facts` puts the trimmed plans into the executable:
+`LoweredBody::adopt_trimmed_plans` replaces each reached `ControlDispatch.plan`
+and sets its `miss_entry` to `None` exactly when the trimmed plan cannot fail,
+and `ExecutableDispatch` wraps the trimmed entry plan. Readers of a case's
+successors walk `ControlDispatch::successors()`. Native lowering and the
+interpreter lower the plan they are given and nothing else: native reports an
+internal error when a fail is reached with no miss entry, and the interpreter
+reports one naming the entry. A `case` the analysis never reached keeps its
+type-blind plan.
+
+The builder charges an input when a surviving test reads it or the plan pins
+it, so a trimmed plan asks its inputs only what its surviving questions ask.
+Edge evidence carries no tuple, struct, list or map projections other than the
+map value `MapKeyPresent` fetches; native, the interpreter and `receive` derive
+those subjects on demand. Receive, call-site and wrapper-selection plans, and
+the definition-level uses, are not trimmed.
+
 ## Reading this list
 
 Two properties make an entry safe. The rule is stated once, and the places that

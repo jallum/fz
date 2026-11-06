@@ -1,0 +1,23 @@
+#---
+# purpose: "a case over a boolean answers from its arms alone, a case whose subject's type leaves a value unnamed still takes its arms for the values that arrive, and both agree with Elixir"
+# oracle: 00644_a_case_answers_what_its_subjects_type_already_answers.oracle.exs
+#---
+def flip(a) do
+  case a == 1 do
+    true -> :was_one
+    false -> :was_other
+  end
+end
+
+def word(v) do
+  case v do
+    :a -> "first"
+    :b -> "second"
+  end
+end
+
+def main() do
+  dbg(Enum.map([1, 2, 1], fn a -> flip(a) end))
+  dbg(Enum.map([1, 2], fn a -> not (a == 1) end))
+  dbg(Enum.map(Enum.take([:a, :b, :c], 2), fn v -> word(v) end))
+end

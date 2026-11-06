@@ -1,0 +1,3 @@
+[:was_one, :was_other, :was_one]
+[false, true]
+["first", "second"]

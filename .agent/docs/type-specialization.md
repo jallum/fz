@@ -32,11 +32,11 @@ Refinement keeps the source module tag and lifts the field constraint through
 any enclosing exact tuple or struct path. Plain maps and other struct families
 fail the preceding typed discriminator before field evidence is considered.
 
-The reachable clauses and failure bit remain one `EntryReachability` value in
-the activation-analysis fact. Runtime demand and materialization consume that
-value directly: exactly one reachable clause with unreachable failure enters
-the clause body without rebuilding the function's runtime dispatch; multiple
-clauses or a reachable failure retain the source dispatch graph.
+The reachable clauses stay in the activation-analysis fact as an
+`EntryReachability` value, and the entry's dispatch plan is the plan trimmed to
+what the activation's types leave (`TrimmedPlans`). A trimmed entry plan that
+is a direct outcome enters the clause body without rebuilding the function's
+runtime dispatch; any other trimmed plan is the executable's dispatch graph.
 
 List head/tail observations are positional, while `ListSig` element types are
 homogeneous. The calculator may select an already-correlated list alternative

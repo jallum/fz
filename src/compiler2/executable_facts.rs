@@ -19,7 +19,7 @@ use super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableActivationInput, CallableDemand, CallableSurface,
-    EntryReachability, RuntimeDemand, RuntimeDemandTypeInputs, RuntimeDemandTypeProjection,
+    RuntimeDemand, RuntimeDemandTypeInputs, RuntimeDemandTypeProjection,
 };
 use super::types::{Ty, Types};
 use super::world::World;
@@ -264,7 +264,9 @@ pub(crate) fn project_executable_facts(
             world.extern_wire(activation.function),
         )
     } else {
-        ((*world.lowered_body(activation.function)).clone(), None)
+        let mut body = (*world.lowered_body(activation.function)).clone();
+        body.adopt_trimmed_plans(&analysis.trimmed.cases);
+        (body, None)
     };
     let callsites: HashMap<_, _> = analysis
         .callsites
@@ -331,7 +333,7 @@ pub(crate) fn project_executable_facts(
             callsite_needs,
         )
     };
-    let entry_dispatch = executable_dispatch(world, activation.function, &analysis.entry_reachability);
+    let entry_dispatch = executable_dispatch(&analysis);
     let entry_dispatch_demand = entry_dispatch
         .as_ref()
         .map(|dispatch| dispatch.plan().input_demand())
@@ -622,17 +624,17 @@ fn read_tuple_demand(field_demands: Vec<RuntimeDemand>) -> RuntimeDemand {
     }
 }
 
-fn executable_dispatch(
-    world: &World,
-    function: FunctionId,
-    reachability: &EntryReachability,
-) -> Option<ExecutableDispatch> {
-    if reachability.is_direct_clause() || world.function_body_shape(function).is_extern() {
+/// The dispatch an executable runs to pick its clause: the entry plan its
+/// activation's types leave. A plan that wins its one outcome without asking
+/// anything selects nothing, and an extern has no clauses to select among.
+fn executable_dispatch(analysis: &ActivationAnalysis) -> Option<ExecutableDispatch> {
+    let plan = analysis.trimmed.entry.as_ref()?;
+    if plan.is_direct_outcome() {
         return None;
     }
     Some(ExecutableDispatch::new(
-        world.entry_dispatch(function),
-        reachability.clauses().to_vec(),
+        plan.clone(),
+        analysis.entry_reachability.clauses().to_vec(),
     ))
 }
 
@@ -776,10 +778,9 @@ fn collect_entry_callsite_needs(
             let _ = collect_entry_callsite_needs(entries, *else_entry, outgoing_need, out, walks);
         }
         LoweredTail::Dispatch { dispatch, .. } => {
-            for edge in &dispatch.outcomes {
-                let _ = collect_entry_callsite_needs(entries, edge.target, outgoing_need, out, walks);
+            for target in dispatch.successors() {
+                let _ = collect_entry_callsite_needs(entries, target, outgoing_need, out, walks);
             }
-            let _ = collect_entry_callsite_needs(entries, dispatch.miss_entry, outgoing_need, out, walks);
         }
         LoweredTail::Receive(receive) => {
             for clause in &receive.outcomes {
@@ -1117,8 +1118,7 @@ fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
                 then_entry, else_entry, ..
             } => pending.extend([*then_entry, *else_entry]),
             LoweredTail::Dispatch { dispatch, .. } => {
-                pending.extend(dispatch.outcomes.iter().map(|edge| edge.target));
-                pending.push(dispatch.miss_entry);
+                pending.extend(dispatch.successors());
             }
             LoweredTail::Receive(receive) => {
                 pending.extend(receive.outcomes.iter().map(|edge| edge.target));

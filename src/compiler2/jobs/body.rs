@@ -4068,11 +4068,7 @@ fn child_entries(tail: &LoweredTail) -> Vec<ControlEntryId> {
         LoweredTail::If {
             then_entry, else_entry, ..
         } => vec![*then_entry, *else_entry],
-        LoweredTail::Dispatch { dispatch, .. } => {
-            let mut children = dispatch.outcomes.iter().map(|edge| edge.target).collect::<Vec<_>>();
-            children.push(dispatch.miss_entry);
-            children
-        }
+        LoweredTail::Dispatch { dispatch, .. } => dispatch.successors().collect(),
         LoweredTail::Receive(receive) => {
             let mut children = receive.outcomes.iter().map(|edge| edge.target).collect::<Vec<_>>();
             if let Some(after) = &receive.after {
