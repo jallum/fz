@@ -1,0 +1,27 @@
+#---
+# purpose: "two processes waiting on 80ms and 20ms timers wake in deadline order, not spawn order"
+# oracle: 00693_two_staggered_timeouts_fire_in_deadline_order.oracle.exs
+#---
+def main() do
+  parent = self()
+  spawn(fn () ->
+    receive do
+      :never -> :ok
+    after
+      80 -> send(parent, :slow)
+    end
+  end)
+  spawn(fn () ->
+    receive do
+      :never -> :ok
+    after
+      20 -> send(parent, :fast)
+    end
+  end)
+  receive do
+    first -> dbg(first)
+  end
+  receive do
+    second -> dbg(second)
+  end
+end

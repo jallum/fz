@@ -746,6 +746,19 @@ impl JsonlBackend {
             &["fz", "runtime", "send_to_unknown_pid"],
             "pid",
         );
+        let slept_backend = Rc::clone(backend);
+        telemetry.attach_raw_event1::<std::time::Duration, _>(
+            &crate::exec::runtime::SCHEDULER_SLEPT,
+            move |name, span_id, parent_span_id, wait| {
+                let wait_ns = wait.as_nanos().min(u64::MAX as u128) as u64;
+                slept_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    Metadata::from_pairs([("wait_ns", Value::U64(wait_ns))]),
+                );
+            },
+        );
         let ready_backend = Rc::clone(backend);
         telemetry.attach_raw_event0(
             &["fz", "runtime", "execution_ready"],

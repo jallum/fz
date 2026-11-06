@@ -25,7 +25,7 @@ use crate::types::ClosureTarget;
 use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged, struct_schema_id,
 };
-use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
+use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule};
 use fz_runtime::heap::Schema;
 use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
 use fz_runtime::ir_runtime::{
@@ -36,6 +36,9 @@ use fz_runtime::ir_runtime::{
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
 use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
+use fz_runtime::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
+use fz_runtime::timer::TimerId;
+use std::time::Duration;
 
 enum BackendRunStep {
     Done(AnyValue),
@@ -196,7 +199,7 @@ impl IrInterpRuntime {
                 continuations,
             },
         );
-        self.run_queue.push_back(pid);
+        self.core.enqueue(pid);
         self.set_process_state(pid, ProcessState::Ready);
         Ok(())
     }
@@ -209,8 +212,23 @@ impl IrInterpRuntime {
         env: HashMap<ValueId, BackendBoundValue>,
         continuations: Vec<BackendContinuation>,
     ) -> Result<(), String> {
+        self.stage_backend_local_entry(pid, executable, entry, env, continuations)?;
+        self.core.enqueue(pid);
+        Ok(())
+    }
+
+    /// Make `pid` ready to resume at `entry` without queueing it; the caller
+    /// queues it, or the scheduling core does when a timer woke it.
+    fn stage_backend_local_entry(
+        &mut self,
+        pid: u32,
+        executable: Rc<BackendExecutable>,
+        entry: crate::compiler2::ControlEntryId,
+        env: HashMap<ValueId, BackendBoundValue>,
+        continuations: Vec<BackendContinuation>,
+    ) -> Result<(), String> {
         if !self.tasks.contains_key(&pid) {
-            return Err(format!("enqueue_backend_local_entry: unknown pid {}", pid));
+            return Err(format!("stage_backend_local_entry: unknown pid {}", pid));
         }
         self.backend_resume.insert(
             pid,
@@ -221,7 +239,6 @@ impl IrInterpRuntime {
                 continuations,
             },
         );
-        self.run_queue.push_back(pid);
         self.set_process_state(pid, ProcessState::Ready);
         Ok(())
     }
@@ -270,6 +287,38 @@ impl IrInterpRuntime {
         self.insert_task(pid, child);
         self.enqueue_backend_entry(pid, executable, args)?;
         Ok(pid)
+    }
+
+    /// The `after` timer `timer` of the receive `pid` is parked on has
+    /// expired: stage the receive's `after` entry. Returns `false` for a stale
+    /// timer whose receiver a message already woke.
+    fn wake_receive_after(
+        &mut self,
+        transport: &TransportStore,
+        program: &BackendProgram,
+        pid: u32,
+        timer: TimerId,
+    ) -> Result<bool, String> {
+        if self.backend_parked.get(&pid).and_then(|park| park.after_timer) != Some(timer) {
+            return Ok(false);
+        }
+        let park = self.backend_parked.remove(&pid).expect("checked above");
+        let entries = entries_for_executable(&park.executable)?;
+        let entry = entries
+            .get(park.entry.as_u32() as usize)
+            .ok_or_else(|| format!("backend parked entry {} is out of bounds", park.entry.as_u32()))?;
+        let BackendTail::Receive(receive) = &entry.tail else {
+            return Err(format!("backend parked entry {} is not a receive", park.entry.as_u32()));
+        };
+        let after = receive
+            .after
+            .as_ref()
+            .ok_or_else(|| format!("backend receive entry {} has a timer but no after", park.entry.as_u32()))?;
+        let receiver = self.process_ptr(pid).ok_or_else(|| format!("unknown receiver {pid}"))?;
+        self.current_proc = receiver;
+        let env = delivered_env(self, transport, program, entries, &park.env, after.entry, None, &[])?;
+        self.stage_backend_local_entry(pid, park.executable.clone(), after.entry, env, park.continuations)?;
+        Ok(true)
     }
 
     pub(super) fn send_ref<T: Telemetry + ?Sized>(
@@ -333,6 +382,9 @@ impl IrInterpRuntime {
                 let env = delivered_env(self, transport, program, entries, &park.env, target, None, &params);
                 self.current_proc = sender;
                 let env = env?;
+                if let Some(timer) = park.after_timer {
+                    timer_cancel(unsafe { &*receiver }, timer);
+                }
                 self.enqueue_backend_local_entry(
                     *receiver_pid,
                     park.executable.clone(),
@@ -364,6 +416,38 @@ struct BackendSchedulerAdapter<T: Telemetry + ?Sized> {
     tel: *const T,
     program: *const BackendProgram,
     module: *const Module,
+}
+
+impl<T: Telemetry + ?Sized> Scheduler for BackendSchedulerAdapter<T> {
+    fn core(&mut self) -> &mut SchedulingCore {
+        &mut unsafe { &mut *self.runtime }.core
+    }
+
+    fn wake_expired(&mut self, pid: u32, timer: TimerId) -> bool {
+        let runtime = unsafe { &mut *self.runtime };
+        let woke = runtime.wake_receive_after(unsafe { &*self.transport }, unsafe { &*self.program }, pid, timer);
+        woke.unwrap_or_else(|error| {
+            runtime.record_callback_error(error);
+            false
+        })
+    }
+
+    fn about_to_sleep(&mut self, wait: Duration) {
+        unsafe { &*self.tel }.raw_event1(&crate::exec::runtime::SCHEDULER_SLEPT, &wait);
+    }
+}
+
+/// The next process to run, or `None` once the interpreter is idle. A wake
+/// that failed while the core serviced a timer surfaces here as the error.
+fn next_backend_runnable<T: Telemetry + ?Sized>(
+    adapter: *mut BackendSchedulerAdapter<T>,
+) -> Result<Option<u32>, String> {
+    let adapter = unsafe { &mut *adapter };
+    let next = next_runnable(adapter);
+    match unsafe { &mut *adapter.runtime }.take_callback_error() {
+        Some(error) => Err(error),
+        None => Ok(next),
+    }
 }
 
 extern "C" fn interp_fault_hook<T: Telemetry + ?Sized>(process: *mut Process, scheduler: *mut (), value_ref_word: u64) {
@@ -453,18 +537,20 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
         program,
         module,
     };
+    let adapter: *mut BackendSchedulerAdapter<T> = &mut scheduler_adapter;
     let mut exec_ctx = ExecCtx {
-        scheduler: &mut scheduler_adapter as *mut BackendSchedulerAdapter<T> as *mut (),
+        scheduler: adapter as *mut (),
         output_context: output.as_ptr(),
         spawn: Some(interp_spawn_hook::<T>),
         send: Some(interp_send_hook::<T>),
         fault: Some(interp_fault_hook::<T>),
         output: Some(OUTPUT_HOOK),
+        timer_schedule: Some(timer_schedule_hook::<BackendSchedulerAdapter<T>>()),
+        timer_cancel: Some(timer_cancel_hook::<BackendSchedulerAdapter<T>>()),
         argv,
-        ..ExecCtx::empty()
     };
 
-    while let Some(pid) = runtime.pop_runnable() {
+    while let Some(pid) = next_backend_runnable(adapter)? {
         let resume = runtime
             .take_backend_resume(pid)
             .expect("backend pid in run queue with no backend resume");
@@ -1174,8 +1260,12 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     continuations,
                 }));
             }
+            let timeout_ms = match after {
+                Some(after) => env_get(transport, runtime.cur_proc(), &env, after.timeout)?.as_i64(),
+                None => None,
+            };
             if let Some(after) = after
-                && env_get(transport, runtime.cur_proc(), &env, after.timeout)?.as_i64() == Some(0)
+                && timeout_ms == Some(0)
             {
                 return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable.clone(),
@@ -1184,6 +1274,10 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     continuations,
                 }));
             }
+            let after_timer = match timeout_ms {
+                Some(ms) if ms > 0 => Some(arm_receive_timer(runtime.cur_proc(), ms as u64)?),
+                _ => None,
+            };
             runtime.backend_parked.insert(
                 unsafe { &*runtime.cur_proc() }.pid,
                 BackendParkRecord {
@@ -1191,6 +1285,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     entry: entry_id,
                     env,
                     continuations,
+                    after_timer,
                 },
             );
             Ok(BackendEvalTransition::Blocked)
@@ -1989,6 +2084,14 @@ fn env_values(
         .iter()
         .map(|value| env_get(transport, proc, env, *value))
         .collect()
+}
+
+/// Schedule the timer that wakes the current process's parked receive after
+/// `after_ms`.
+fn arm_receive_timer(process: *mut Process, after_ms: u64) -> Result<TimerId, String> {
+    let process = unsafe { &*process };
+    timer_schedule(process, process.pid, after_ms)
+        .ok_or_else(|| "the execution context has no timer for a receive after".to_string())
 }
 
 pub(super) fn env_get(

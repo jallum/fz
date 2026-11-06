@@ -33,17 +33,16 @@ use crate::pinned_abi::{call1, call2};
 use crate::procbin::mso_drop_all_deferred;
 use crate::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
 use crate::sched::{ProbeOutcome, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender};
-use crate::timer::TimerWheel;
+use crate::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
+use crate::timer::TimerId;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::ffi::{CStr, c_char};
 use std::process::abort;
 use std::ptr::{null, read_unaligned};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
 use std::str::from_utf8;
-use std::thread::sleep;
-use std::time::{Duration, Instant};
 
 // ----- AOT scheduler state -----
 
@@ -51,7 +50,7 @@ use std::time::{Duration, Instant};
 ///
 /// AOT has no binary `Runtime` to hang an `ExecCtx` off (the staticlib does
 /// not link the codegen crate), so this struct *is* the AOT scheduler handle:
-/// it owns the task table, run-queue, timer wheel, pid counter, and the
+/// it owns the task table, scheduling core, pid counter, and the
 /// C-convention to Tail-CC shim addresses, and it carries the per-run `ExecCtx`
 /// dispatch table inline. Its `ctx.scheduler` points back at the struct, so
 /// the spawn/send/timer hooks re-narrow that erased handle to `&mut
@@ -63,7 +62,7 @@ use std::time::{Duration, Instant};
 /// task's `Process.ctx` points at the inline `ctx` field, reachable from the
 /// process pointer the AOT C-main threads through the entry sequence.
 /// `fz_aot_run_main` reclaims and drops the box at teardown — one drop frees
-/// the tasks, timers, and queue.
+/// the tasks and the scheduling core.
 struct AotScheduler {
     /// Next pid to hand out. pid 1 is main; children start at 2.
     next_pid: u32,
@@ -79,8 +78,9 @@ struct AotScheduler {
     /// fz-ul4.27.22.3 — four halt_cont_body addrs retained so spawned
     /// children can initialize their own halt_cont_singletons.
     halt_cont_bodies: [*const u8; 4],
-    /// fz-sched.1 — cooperative run-queue. PIDs of processes ready to run.
-    run_queue: VecDeque<u32>,
+    /// The run queue and timer wheel; `next_runnable` decides what runs next
+    /// and when the program is idle.
+    core: SchedulingCore,
     /// fz-4mk.3b — `fz_drain_dtor_entry(closure, payload)` shim
     /// address. Set by `fz_aot_set_drain_dtor_entry` after setup. The
     /// run-queue loop calls this once per pending dtor at task-exit; the
@@ -92,13 +92,6 @@ struct AotScheduler {
     /// continuation); the shim reads the closure code pointer through the
     /// runtime ABI and tail-calls it. Bound values already live in its env.
     resume_addr: *const u8,
-    /// fz-xx8.3 — AOT-side `TimerWheel` so `receive ... after N -> ...`
-    /// clauses fire under AOT. The JIT holds its own wheel inside `Runtime`
-    /// (src/runtime.rs); AOT has no Runtime, so the wheel lives here.
-    /// Scheduled by `aot_timer_schedule_hook`, cancelled by
-    /// `aot_timer_cancel_hook`, drained at the top of each
-    /// `aot_run_queue_loop` iteration.
-    timers: TimerWheel,
     /// The program's command line, copied from the C `main`'s `argv`. The
     /// dispatch table below points at it.
     argv: Argv,
@@ -297,18 +290,17 @@ pub extern "C" fn fz_aot_setup(
             halt_cont_body_f64,
             halt_cont_body_atom,
         ],
-        run_queue: VecDeque::new(),
+        core: SchedulingCore::new(),
         drain_dtor_entry: null(),
         resume_addr: null(),
-        timers: TimerWheel::new(),
         argv: unsafe { command_line(argc, argv) },
         ctx: ExecCtx {
             output: Some(crate::output::STDOUT_OUTPUT_HOOK),
             fault: Some(crate::STDERR_FAULT_HOOK),
             spawn: Some(aot_spawn_hook),
             send: Some(aot_send_hook),
-            timer_schedule: Some(aot_timer_schedule_hook),
-            timer_cancel: Some(aot_timer_cancel_hook),
+            timer_schedule: Some(timer_schedule_hook::<AotScheduler>()),
+            timer_cancel: Some(timer_cancel_hook::<AotScheduler>()),
             ..ExecCtx::empty()
         },
     }));
@@ -498,7 +490,7 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
 
     unsafe {
         (*sched).tasks.insert(pid, child);
-        (*sched).run_queue.push_back(pid);
+        (*sched).core.enqueue(pid);
     }
 
     pid
@@ -515,21 +507,6 @@ fn deep_copy_self_send_ref_for_aot(sender: &mut Process, msg: AnyValueRef) -> An
     let src_heap: &Heap = unsafe { &*heap_ptr };
     let dst_heap: &mut Heap = unsafe { &mut *heap_ptr };
     deep_copy_any_value_ref(msg, src_heap, dst_heap, &mut forwarding)
-}
-
-/// fz-xx8.3 — schedule an after-clause timer on the AOT wheel. Returns the
-/// fresh `TimerId` (a u64); `fz_receive_park_matched` stashes it on the
-/// park record so a matcher hit can cancel.
-extern "C" fn aot_timer_schedule_hook(scheduler: *mut (), pid: u32, after_ms: u64) -> u64 {
-    let sched = unsafe { &mut *(scheduler as *mut AotScheduler) };
-    sched.timers.schedule(pid, Duration::from_millis(after_ms))
-}
-
-/// fz-xx8.3 — cancel an after-clause timer (no-op when already fired or
-/// unknown, matching the JIT path's `TimerWheel::cancel`).
-extern "C" fn aot_timer_cancel_hook(scheduler: *mut (), timer_id: u64) {
-    let sched = unsafe { &mut *(scheduler as *mut AotScheduler) };
-    sched.timers.cancel(timer_id);
 }
 
 /// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.
@@ -556,7 +533,7 @@ extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiv
         matches!(probe_sender(task, msg), ProbeOutcome::Hit)
     };
     if wake {
-        unsafe { (*sched).run_queue.push_back(receiver_pid) };
+        unsafe { (*sched).core.enqueue(receiver_pid) };
     }
 }
 
@@ -599,7 +576,7 @@ pub extern "C" fn fz_aot_run_main(
     // measures only main's execution.
     process.heap.reset_alloc_stats();
     unsafe {
-        (*sched).run_queue.push_back(1);
+        (*sched).core.enqueue(1);
     }
 
     aot_run_queue_loop(sched);
@@ -669,24 +646,6 @@ fn closure_ref_word(closure: *mut u8) -> u64 {
         .raw_word()
 }
 
-/// Drain the AOT timer wheel and apply each expired entry to its task
-/// via `sched::fire_after_timer`. Tasks that fire get enqueued.
-fn drain_after_timers_aot(sched: *mut AotScheduler) {
-    let expired = unsafe { (*sched).timers.drain_expired(Instant::now()) };
-    for entry in expired {
-        let woke = unsafe {
-            (*sched)
-                .tasks
-                .get_mut(&entry.pid)
-                .map(|task| fire_after_timer(task, entry.id))
-                .unwrap_or(false)
-        };
-        if woke {
-            unsafe { (*sched).run_queue.push_back(entry.pid) };
-        }
-    }
-}
-
 /// Run one quantum for `pid`: pick dispatch branch by Process state,
 /// invoke the matching shim, then handle the post-quantum state
 /// transition (re-enqueue / halt / mid-flight yield). Returns nothing;
@@ -737,7 +696,7 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
         process.clear_yield_reasons();
         unsafe {
             (*proc_ptr).state = ProcessState::Ready;
-            (*sched).run_queue.push_back(pid);
+            (*sched).core.enqueue(pid);
         }
     } else if state == ProcessState::Running {
         // fz-4mk.3b — task halted; flush MSO resources through the dtor
@@ -754,10 +713,22 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     }
 }
 
+impl Scheduler for AotScheduler {
+    fn core(&mut self) -> &mut SchedulingCore {
+        &mut self.core
+    }
+
+    fn wake_expired(&mut self, pid: u32, timer: TimerId) -> bool {
+        self.tasks
+            .get_mut(&pid)
+            .is_some_and(|task| fire_after_timer(task, timer))
+    }
+}
+
 /// Cooperative run-queue loop. Drives all enqueued processes to
-/// completion or Blocked state. Each iteration: drain expired timers,
-/// pop a pid (idle-wait if the queue is empty but timers pend),
-/// dispatch one quantum.
+/// completion or Blocked state. Each iteration asks the scheduling core
+/// for the next runnable pid, which waits out pending after-timers and
+/// reports idle only when none remain, and dispatches one quantum.
 ///
 /// Dispatch inside `dispatch_quantum`:
 ///   resume `runnable` through `fz_resume` — the one re-entry verb,
@@ -769,25 +740,7 @@ fn aot_run_queue_loop(sched: *mut AotScheduler) {
         }
     };
 
-    loop {
-        drain_after_timers_aot(sched);
-
-        let Some(pid) = (unsafe { (*sched).run_queue.pop_front() }) else {
-            // Queue empty. Sleep until the next timer deadline if one
-            // exists; otherwise truly idle, break. (Multi-worker AOT
-            // will need a condvar here instead of a blocking sleep.)
-            let next = unsafe { (*sched).timers.next_deadline() };
-            match next {
-                Some(deadline) => {
-                    let now = Instant::now();
-                    if deadline > now {
-                        sleep(deadline - now);
-                    }
-                    continue;
-                }
-                None => break,
-            }
-        };
+    while let Some(pid) = next_runnable(unsafe { &mut *sched }) {
         dispatch_quantum(sched, pid, &addrs);
     }
 }

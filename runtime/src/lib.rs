@@ -24,6 +24,7 @@ pub mod process;
 pub mod process_abi;
 pub mod resource;
 pub mod sched;
+pub mod sched_core;
 pub mod scheduler_hooks;
 pub mod symbol_lookup;
 pub mod sync;

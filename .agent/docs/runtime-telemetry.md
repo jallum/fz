@@ -13,12 +13,14 @@ route through the same typed raw emit site, so `NullTelemetry` remains
 monomorphizable and configured handlers behave identically across interpreter,
 JIT, and AOT.
 
-Two events matter:
+Three events matter:
 
 - `fz.runtime.execution_ready` — the boundary between compiling a program and
   running it, emitted by `run_root_jit` and `run_root_interp`.
 - `fz.runtime.process_exited` — one per task exit, carrying the existing pid and
   live `Process` authority.
+- `fz.runtime.scheduler_slept` — one each time the scheduling core sleeps for a
+  pending receive-after timer because nothing is runnable.
 
 ## `fz.runtime.execution_ready`
 
@@ -30,7 +32,7 @@ child `fz2 test` starts, with parsing, the fixpoint drive, the backend product
 and Cranelift all behind it. An AOT binary never emits it: `fz2 build` stops at
 the object file, and the executable links `fz_runtime` and its own
 `aot_run_queue_loop`, which carries no telemetry bus and emits no
-`process_exited` either. The event has no payload; its content is its position
+`process_exited` or `scheduler_slept` either. The event has no payload; its content is its position
 in the stream. The same call writes one byte to the descriptor named by
 `FZ_EXEC_READY_FD` when the environment names one — the fixture matrix's
 execution deadline is a consumer of this boundary, not a second definition of it
@@ -64,6 +66,18 @@ boundary event instead of a per-attempt side channel.
 The raw `&Process` is valid only during dispatch. A handler that needs data
 after the callback must project and copy that data itself. `JsonlBackend`
 renders fields synchronously.
+
+## `fz.runtime.scheduler_slept`
+
+`Scheduler::about_to_sleep` is the hook `next_runnable`
+(`runtime/src/sched_core.rs`) calls just before it sleeps. The JIT `Runtime` and
+the interpreter's scheduler adapter implement it by emitting `SCHEDULER_SLEPT`
+(`exec/runtime.rs`) with a `Duration`, the wait until the next timer deadline.
+`JsonlBackend` renders it as `wait_ns`. The event fires only when the run queue
+is empty and a timer pends, so a program whose timers are all cancelled by
+arriving messages never emits it. The AOT scheduler carries no telemetry bus and
+keeps the default no-op hook. `exec/runtime_test.rs` observes the event on the
+`run` and `interp` paths.
 
 ## Program Output
 

@@ -32,6 +32,6 @@ Read:
 - [any value](docs/any-value.md) — the one-word runtime value model (`AnyValueRef`): tags, container storage (including the map's flat SORTED array and the order-agrees-with-equality invariant), codegen value lanes, and GC.
 - [charlists](docs/charlists.md) — fz has no charlist type; integer lists stay lists, text is a binary, and where rendering differs from Elixir.
 - [pinned process register](docs/pinned-process-register.md) — how compiled code carries the current `Process*` and spends its reduction budget.
-- [scheduler zero-arg closures](docs/scheduler-zero-arg-closures.md) — scheduler re-entry is one verb (run a closure): receive, timeout, spawn, and halt continuations.
+- [scheduler zero-arg closures](docs/scheduler-zero-arg-closures.md) — scheduler re-entry is one verb (run a closure): receive, timeout, spawn, and halt continuations, plus the shared scheduling core (run queue, timer wheel, the one idle definition).
 - [reduction yielding](docs/reduction-yielding.md) — the per-process reduction budget that drives scheduler fairness while GC pressure stays heap-local until a natural boundary.
 - [fixtures](docs/fixtures.md) — the compiler2 fixture matrix: frontmatter, goldens, the Elixir oracle, and compiler-shape signals.

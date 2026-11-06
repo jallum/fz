@@ -1,0 +1,14 @@
+#---
+# purpose: "a matching message that arrives before the timer cancels it, so :timeout never prints"
+# oracle: 00692_a_message_that_arrives_first_cancels_the_timeout.oracle.exs
+#---
+def main() do
+  parent = self()
+  spawn(fn () -> send(parent, :hello) end)
+  receive do
+    :hello -> dbg(:hello)
+  after
+    200 -> dbg(:timeout)
+  end
+  dbg(:end)
+end
