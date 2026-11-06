@@ -1,0 +1,14 @@
+#---
+# purpose: "one program holds a receive that reads a binary prefix and a receive that matches a plain tuple"
+# oracle: 00679_a_receive_with_a_binary_pattern_and_a_receive_without_run_together.oracle.exs
+#---
+def main() do
+  send(self(), {:plain, 7})
+  receive do
+    {:plain, n} -> dbg(n)
+  end
+  send(self(), "--hi")
+  receive do
+    "--" <> r -> dbg(r)
+  end
+end

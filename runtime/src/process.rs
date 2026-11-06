@@ -92,8 +92,6 @@ pub struct Process {
     /// shared and append-only across the context's processes — runtime atom
     /// interning is visible to every process, like the BEAM's node-global table.
     pub node: Rc<Node>,
-    pub bs_tuple_arity1_schema: Option<u32>,
-    pub bs_tuple_arity3_schema: Option<u32>,
     // fz-ul4.19.1 scheduler-level fields. Populated when a Process is
     // owned by a Runtime; the standalone `make_process()` path
     // leaves these at defaults.
@@ -390,8 +388,6 @@ impl Node {
 /// through one path instead of diverging across the JIT, interpreter, and AOT
 /// spawners.
 pub struct CompiledModuleConsts {
-    pub bs_tuple_arity1_schema: Option<u32>,
-    pub bs_tuple_arity3_schema: Option<u32>,
     pub static_closure_targets: Vec<(
         u32,       /* cl_sid */
         u32,       /* arity */
@@ -407,8 +403,6 @@ impl CompiledModuleConsts {
     /// minimal-setup interpreter/AOT spawners carry.
     pub fn empty() -> Self {
         Self {
-            bs_tuple_arity1_schema: None,
-            bs_tuple_arity3_schema: None,
             static_closure_targets: Vec::new(),
             halt_cont_body_addrs: [null(); 4],
         }
@@ -438,8 +432,6 @@ impl Process {
             exit_fault: None,
             bs_builder: None,
             node,
-            bs_tuple_arity1_schema: consts.bs_tuple_arity1_schema,
-            bs_tuple_arity3_schema: consts.bs_tuple_arity3_schema,
             pid,
             state: ProcessState::New,
             next_frame: null_mut(),

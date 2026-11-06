@@ -1,0 +1,11 @@
+#---
+# purpose: "a receive clause that reads a binary and carries a guard takes its body only when the guard holds"
+# oracle: 00678_a_receive_bitstring_clause_with_a_guard_runs.oracle.exs
+#---
+def main() do
+  send(self(), "ahi")
+  receive do
+    <<a, r::binary>> when a == 98 -> dbg({:b, r})
+    <<a, r::binary>> when a == 97 -> dbg({:a, r})
+  end
+end

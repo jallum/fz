@@ -213,7 +213,7 @@ fn range_constructor_reuses_schema_and_renders_like_elixir() {
 
         assert_eq!(
             process.heap.schemas_registry().borrow().len(),
-            1,
+            crate::heap::SchemaRegistry::new().len() + 1,
             "all ranges share the canonical Range schema"
         );
         assert_eq!(

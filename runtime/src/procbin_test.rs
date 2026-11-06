@@ -7,7 +7,7 @@ use std::slice::from_raw_parts;
 use std::sync::{Arc, Barrier, atomic};
 use std::thread;
 
-fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
+fn fresh_registry() -> Rc<RefCell<SchemaRegistry>> {
     Rc::new(RefCell::new(SchemaRegistry::new()))
 }
 
@@ -210,7 +210,7 @@ fn handle_clone_retains_then_balanced_drops_free() {
 fn alloc_procbin_pushes_into_mso_chain() {
     let (handle, drops) = observed_bin();
     {
-        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
         let pb = alloc_procbin(&mut h, handle, 0);
         let tagged = heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN);
         assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
@@ -225,7 +225,7 @@ fn alloc_procbin_pushes_into_mso_chain() {
 /// Three ProcBins on one heap: intrusive chain links latest → earlier.
 #[test]
 fn mso_chain_threads_through_procbins_and_frees_every_entry() {
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let (first, first_drops) = observed_bin();
     let (second, second_drops) = observed_bin();
     let (third, third_drops) = observed_bin();
@@ -251,7 +251,7 @@ fn mso_chain_threads_through_procbins_and_frees_every_entry() {
 #[test]
 fn unrooted_shared_bin_is_freed_once_by_gc_not_again_by_heap_drop() {
     let (handle, drops) = observed_bin();
-    let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     alloc_procbin(&mut heap, handle, 0);
     heap.gc(&mut std::ptr::null_mut());
     assert_eq!(drops.load(Ordering::Relaxed), 1);
@@ -263,8 +263,8 @@ fn unrooted_shared_bin_is_freed_once_by_gc_not_again_by_heap_drop() {
 #[test]
 fn copied_shared_bin_is_freed_only_when_the_last_heap_releases_it() {
     let (handle, drops) = observed_bin();
-    let mut source = Heap::new(SIZE_TABLE[0], empty_registry());
-    let mut destination = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut source = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
     let pb = alloc_procbin(&mut source, handle, 0);
     crate::heap::deep_copy_slot(
         AnyValue::heap_ptr(pb.as_raw(), ValueKind::PROCBIN),
@@ -292,7 +292,7 @@ fn copied_shared_bin_is_freed_only_when_the_last_heap_releases_it() {
 fn a_suffix_stub_views_the_parents_bytes_rather_than_copying_them() {
     let bytes: Vec<u8> = (0..200u8).collect();
     let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let whole = alloc_procbin(&mut h, handle.clone(), 0);
     let tail = alloc_procbin(&mut h, handle, 70);
 
@@ -315,7 +315,7 @@ fn a_suffix_stub_views_the_parents_bytes_rather_than_copying_them() {
 fn a_suffix_inherits_the_parents_trailing_nul() {
     let bytes: Vec<u8> = vec![b'x'; 200];
     let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let tail = alloc_procbin(&mut h, handle, 199);
     assert_eq!(tail.bytes_len(), 1);
     assert_eq!(unsafe { *tail.bytes_ptr().add(tail.bytes_len()) }, 0);
@@ -326,8 +326,8 @@ fn a_suffix_inherits_the_parents_trailing_nul() {
 #[test]
 fn a_suffix_keeps_the_shared_bytes_alive_after_the_whole_binary_is_gone() {
     let (handle, drops) = observed_bin();
-    let mut whole_heap = Heap::new(SIZE_TABLE[0], empty_registry());
-    let mut tail_heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut whole_heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut tail_heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     alloc_procbin(&mut whole_heap, handle.clone(), 0);
     let tail = alloc_procbin(&mut tail_heap, handle.clone(), 4);
     drop(handle);
@@ -348,7 +348,7 @@ fn a_suffix_keeps_the_shared_bytes_alive_after_the_whole_binary_is_gone() {
 fn gc_preserves_a_suffixs_offset() {
     let bytes: Vec<u8> = (0..200u8).collect();
     let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let tail = alloc_procbin(&mut h, handle, 70);
     let mut roots = [AnyValue::heap_ptr(tail.as_raw(), ValueKind::PROCBIN)];
     h.gc_with_extra_root_slots(&mut std::ptr::null_mut(), &mut roots);

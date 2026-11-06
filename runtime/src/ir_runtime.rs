@@ -37,7 +37,10 @@ use crate::bitstr::{
 };
 use crate::emit_print_line;
 use crate::exec_ctx::{ExecCtx, timer_schedule};
-use crate::heap::{AllocStat, HeapAllocKind, closure_capture_ref, list_head_ref, list_tail_ref, map_entry_refs};
+use crate::heap::{
+    AllocStat, BITSTRING_READER_SCHEMA, BITSTRING_RESULT_SCHEMA, HeapAllocKind, closure_capture_ref, list_head_ref,
+    list_tail_ref, map_entry_refs,
+};
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
     ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
@@ -1321,8 +1324,7 @@ fn fz_bs_reader_init_bits(process: *mut Process, bs_bits: u64) -> u64 {
     }
     let bit_len = unsafe { bitstring_bit_len(p) } as i64;
     let proc = unsafe { &mut *process };
-    let arity3 = proc.bs_tuple_arity3_schema.expect("bs_tuple_arity3_schema not set");
-    let tuple_p = proc.heap.alloc_struct(arity3);
+    let tuple_p = proc.heap.alloc_struct(BITSTRING_READER_SCHEMA);
     unsafe {
         proc.heap
             .write_field_slot(tuple_p, 0, any_value_from_heap_object_word(bs_bits))
@@ -1401,14 +1403,8 @@ fn fz_bs_read_field_bits(
     let bytes = unsafe { from_raw_parts(bytes_ptr, bit_len.div_ceil(8)) };
 
     // Failure path: alloc 1-tuple [false].
-    let arity1 = (unsafe { &mut *process })
-        .bs_tuple_arity1_schema
-        .expect("bs_tuple_arity1_schema not set");
-    let arity3 = (unsafe { &mut *process })
-        .bs_tuple_arity3_schema
-        .expect("bs_tuple_arity3_schema not set");
     let fail = || -> u64 {
-        let p = (unsafe { &mut *process }).heap.alloc_struct(arity1);
+        let p = (unsafe { &mut *process }).heap.alloc_struct(BITSTRING_RESULT_SCHEMA);
         unsafe { (&mut *process).heap.write_field_slot(p, 0, AnyValue::bool_atom(false)) };
         heap_ref_word(ValueKind::STRUCT, p)
     };
@@ -1503,7 +1499,7 @@ fn fz_bs_read_field_bits(
 
     // Allocate fresh reader tuple [bs_bits, bit_len_boxed, new_pos_boxed].
     let new_pos = (pos + consumed) as i64;
-    let new_reader_p = (unsafe { &mut *process }).heap.alloc_struct(arity3);
+    let new_reader_p = (unsafe { &mut *process }).heap.alloc_struct(BITSTRING_READER_SCHEMA);
     unsafe {
         (&mut *process)
             .heap
@@ -1521,7 +1517,7 @@ fn fz_bs_read_field_bits(
     };
 
     // Allocate result tuple [true, extracted, new_reader].
-    let result_p = (unsafe { &mut *process }).heap.alloc_struct(arity3);
+    let result_p = (unsafe { &mut *process }).heap.alloc_struct(BITSTRING_READER_SCHEMA);
     unsafe {
         (&mut *process)
             .heap

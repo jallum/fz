@@ -1,0 +1,18 @@
+#---
+# purpose: "a receive whose only bitstring is its own pattern, written as <<45, 45, r::binary>>, <<"--", r::binary>> or "--" <> r, binds the rest on every path"
+# oracle: 00675_a_receive_pattern_that_reads_a_binary_prefix_runs.oracle.exs
+#---
+def main() do
+  send(self(), "--hi")
+  receive do
+    <<45, 45, r::binary>> -> dbg(r)
+  end
+  send(self(), "--hi")
+  receive do
+    <<"--", r::binary>> -> dbg(r)
+  end
+  send(self(), "--hi")
+  receive do
+    "--" <> r -> dbg(r)
+  end
+end
