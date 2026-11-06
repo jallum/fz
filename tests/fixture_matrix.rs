@@ -29,6 +29,9 @@
 //!     defer: rationale     # optional whole-fixture deferral
 //!     defer.build: rationale  # optional per-path deferral
 //!     oracle: oracle.exs   # Elixir twin: its stdout owns expected.txt
+//!     args: -- "" "a b"    # program command line: after the source path for
+//!                          # run/interp, to the built binary and to `elixir`;
+//!                          # split on spaces, double quotes keep spaces
 //!     timeout.interp_secs: 30  # path-specific hang-guard override
 //!     #---
 //!
@@ -544,6 +547,9 @@ struct Header {
     /// Relative path (within the fixture dir) to an Elixir twin whose stdout
     /// owns `expected.txt`. See `oracle_goldens_match_elixir`.
     oracle: Option<String>,
+    /// The program's command line, passed after the source path to run and
+    /// interp, to the built binary, and to the Elixir oracle.
+    args: Vec<String>,
     path_timeouts: Vec<(FixtureMatrixPath, Duration)>,
 }
 
@@ -811,6 +817,7 @@ fn header_from_fixture_metadata(path: &Path, source: &str, metadata: &FixtureMet
             .map(|deferral| (deferral.path, deferral.rationale.clone()))
             .collect(),
         oracle: metadata.matrix.oracle.clone(),
+        args: metadata.matrix.args.clone(),
         path_timeouts,
     })
 }
@@ -1760,7 +1767,7 @@ fn run_path(fixture: &FixtureCase, header: &Header, path: FixtureMatrixPath) -> 
     };
     let input = fixture.source_path();
     let out = match fixture_command_output(
-        Command::new(FZ2_BIN).args(args).arg(&input),
+        Command::new(FZ2_BIN).args(args).arg(&input).args(program_args(header)),
         "fz2",
         header.execution_boundary(),
         header.timeout_for_path(path),
@@ -1774,6 +1781,15 @@ fn run_path(fixture: &FixtureCase, header: &Header, path: FixtureMatrixPath) -> 
         stdout: String::from_utf8_lossy(&out.stdout).to_string(),
         diagnostics: stderr,
     })
+}
+
+/// What follows the source path of `fz2 run|interp`: the fixture's `args:`.
+/// A `kind: test` fixture runs through `fz2 test`, which takes none.
+fn program_args(header: &Header) -> &[String] {
+    match header.kind {
+        Kind::Run => &header.args,
+        Kind::Test => &[],
+    }
 }
 
 fn run_fz2_build_path(fixture: &FixtureCase, header: &Header) -> RunOutcome {
@@ -1817,7 +1833,7 @@ fn run_fz2_build_path_owned(fixture: &FixtureCase, header: &Header, out_path: &P
         return RunOutcome::Failed(format!("fz2 build exit {}: {}", build.status, build_stderr.trim_end()));
     }
     let run = match fixture_command_output(
-        &mut Command::new(out_path),
+        Command::new(out_path).args(&header.args),
         "fz2-built binary",
         ExecutionBoundary::Spawn,
         header.timeout_for_path(FixtureMatrixPath::Build),
@@ -2209,7 +2225,7 @@ fn run_path_logged_to(
     cmd.args(["--log-telemetry"]).arg(telemetry_path);
     match (path, header.kind) {
         (FixtureMatrixPath::Run, Kind::Run) => {
-            cmd.arg("run").arg(input);
+            cmd.arg("run").arg(input).args(program_args(header));
         }
         (FixtureMatrixPath::Run, Kind::Test) => {
             cmd.arg("test").arg(input);
@@ -2218,7 +2234,7 @@ fn run_path_logged_to(
             cmd.args(["test", "--interp"]).arg(input);
         }
         (FixtureMatrixPath::Interp, Kind::Run) => {
-            cmd.arg("interp").arg(input);
+            cmd.arg("interp").arg(input).args(program_args(header));
         }
         (FixtureMatrixPath::Build, _) => unreachable!("build returns above"),
     }
@@ -2263,7 +2279,7 @@ fn oracle_goldens_match_elixir() {
         }
         let label = format!("elixir {}", oracle_path.display());
         let out = match fixture_command_output(
-            Command::new("elixir").arg(&oracle_path),
+            Command::new("elixir").arg(&oracle_path).args(&header.args),
             &label,
             ExecutionBoundary::Spawn,
             DEFAULT_FIXTURE_HANG_TIMEOUT,

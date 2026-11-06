@@ -1,0 +1,8 @@
+#---
+# purpose: "a `--` after the source path is not a separator: System.argv() carries it verbatim as the first argument, as in Elixir"
+# oracle: 00656_a_double_dash_is_an_ordinary_program_argument.oracle.exs
+# args: -- a
+#---
+def main() do
+  dbg(System.argv())
+end

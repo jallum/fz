@@ -31,7 +31,7 @@ use crate::fz_ir::FnId;
 use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use fz_runtime::any_value::AnyValueRef;
-use fz_runtime::exec_ctx::{ExecCtx, timer_cancel};
+use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel};
 use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
 use fz_runtime::park::materialize_outcome_closure;
@@ -67,6 +67,7 @@ pub struct Runtime<'a, T: Telemetry + ?Sized> {
     /// instead of poking task internals.
     tel: &'a T,
     output: &'a dyn OutputSink,
+    argv: &'a Argv,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,11 +258,18 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             timers: TimerWheel::new(),
             tel,
             output: &STDOUT_OUTPUT,
+            argv: &NO_ARGV,
         }
     }
 
     pub fn with_output(mut self, output: &'a dyn OutputSink) -> Self {
         self.output = output;
+        self
+    }
+
+    /// The command line `System.argv/0` reads for every task this runtime runs.
+    pub fn with_argv(mut self, argv: &'a Argv) -> Self {
+        self.argv = argv;
         self
     }
 
@@ -363,6 +371,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             output: Some(OUTPUT_HOOK),
             timer_schedule: Some(timer_schedule_hook_thunk::<T>),
             timer_cancel: Some(timer_cancel_hook_thunk::<T>),
+            argv: self.argv,
         };
         let ctx_ptr: *mut ExecCtx = &mut exec_ctx;
         loop {

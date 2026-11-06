@@ -1,0 +1,8 @@
+#---
+# purpose: "every token after the source path reaches System.argv() verbatim, including ones spelled like fz2's own options, as in Elixir"
+# oracle: 00657_tokens_that_look_like_options_belong_to_the_program.oracle.exs
+# args: -x --flag=1 --emit=stats --log-telemetry
+#---
+def main() do
+  dbg(System.argv())
+end

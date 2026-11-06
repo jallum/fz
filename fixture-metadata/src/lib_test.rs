@@ -25,6 +25,7 @@ fn fixture_metadata_parser_reads_matrix_and_compiler_keys_together() {
 # defer: waiting on compiler2
 # defer.build: native tail delivery still red
 # oracle: closure.oracle.exs
+# args: -- "" "é ü" --flag=1
 # timeout.interp_secs: 15
 # root: main/0
 # assert.metric.semantic.callsites: 2
@@ -50,6 +51,12 @@ def main(), do: 42
                     rationale: "native tail delivery still red".to_string(),
                 }],
                 oracle: Some("closure.oracle.exs".to_string()),
+                args: vec![
+                    "--".to_string(),
+                    String::new(),
+                    "é ü".to_string(),
+                    "--flag=1".to_string()
+                ],
                 path_timeouts: vec![PathTimeout {
                     path: FixtureMatrixPath::Interp,
                     seconds: 15,
@@ -223,4 +230,33 @@ fn fixture_metadata_filename_routes_reject_duplicate_or_unknown_codes() {
         err.to_string().contains("unknown route code"),
         "filename route grammar should stay explicit: {err}",
     );
+}
+
+#[test]
+fn fixture_metadata_args_are_the_program_command_line_with_quotes_for_spaces_and_emptiness() {
+    let parsed = parse_fixture_metadata("#---\n# args: a   \"b  c\" \"\"\n#---\n")
+        .expect("args should parse")
+        .expect("frontmatter present");
+    assert_eq!(
+        parsed.matrix.args,
+        ["a", "b  c", ""],
+        "tokens split on whitespace outside double quotes; quotes keep spaces and spell the empty argument",
+    );
+
+    let absent = parse_fixture_metadata("#---\n# purpose: x\n#---\n")
+        .expect("parses")
+        .expect("frontmatter present");
+    assert!(
+        absent.matrix.args.is_empty(),
+        "a fixture without `args:` runs with no arguments"
+    );
+}
+
+#[test]
+fn fixture_metadata_args_reject_an_unterminated_quote_and_a_repeated_key() {
+    let err = parse_fixture_metadata("#---\n# args: a \"b\n#---\n").expect_err("unterminated quote");
+    assert!(err.to_string().contains("unterminated"), "{err}");
+
+    let err = parse_fixture_metadata("#---\n# args: a\n# args: b\n#---\n").expect_err("repeated args");
+    assert!(err.to_string().contains("may only appear once"), "{err}");
 }

@@ -78,6 +78,27 @@ Interpreter, JIT, and AOT install the same raw callback boundary. An interpreter
 destructor-drain failure is propagated directly; it is not converted into a
 telemetry-only warning.
 
+## Program Arguments
+
+`System.argv/0` reads the command line from the running process's `ExecCtx`:
+`argv` points at an `Argv`, a list of raw byte strings the driver owns, and
+null reads as `[]`. `fz_system_argv` conses a binary per argument, back to
+front, and every execution door calls that one helper by symbol.
+
+- JIT: `Compiler2::set_program_args` holds the arguments; `run_root_jit` passes
+  them to `Runtime::with_argv`, which copies the pointer onto the context
+  `run_until_idle` builds.
+- Interpreter: `run_root_interp` passes them to `run_backend_main`, which hands
+  them to `drive_backend_until_idle`. Macro execution
+  (`run_backend_entry_on_process`) passes `NO_ARGV`, so a macro reads `[]`.
+- AOT: the emitted C `main(argc, argv)` passes both to `fz_aot_setup`, which
+  copies `argv[1..]` into the `AotScheduler` and points its context at the copy.
+  The program name is not an argument, as in Elixir.
+
+`fz2 run|interp <src.fz> args...` gives the program every token after the
+source path, verbatim and as bytes (`args_os`). fz2's own options are read only
+before the path.
+
 ## Observing In Tests
 
 There is one run path — the production scheduler — and tests watch its exit event
