@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-sc8.66"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "[BUG] A receive takes the oldest matching message on the JIT and the native build",
   "type": "bug",
-  "updated_at": "2026-11-06T21:55:17Z"
+  "updated_at": "2026-11-06T22:04:07Z"
 }
