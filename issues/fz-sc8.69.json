@@ -11,7 +11,7 @@
   "parent": "fz-sc8",
   "priority": 2,
   "status": "open",
-  "title": "[BUG] A program whose main process can never wake is a loud runtime error",
+  "title": "A program whose main process can never wake is a loud runtime error",
   "type": "bug",
-  "updated_at": "2026-11-03T13:55:28Z"
+  "updated_at": "2026-11-06T23:41:31Z"
 }
