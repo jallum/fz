@@ -207,6 +207,37 @@ durable source of truth for the pull artifact path as built.
   `__CALLER__ + captures + quoted args`, uses the same retained backend product path,
   and supplies the retained content handle directly to the macro expander.
 
+## A file's top-level expressions are its `main/0`
+
+A submitted file's top-level scope (`current_module.is_global()` and not a
+prelude owner; `ScopeSession::is_script_scope`) records every item that is not
+a definition as a statement, in walk order:
+
+- a `ScopeForm::Statement` (a top-level literal);
+- a call-shaped item whose head is bound to no macro
+  (`ExpandedScopeFragment::NotAMacro`), for example `Distill.main(argv)` or
+  `x = 1`;
+- the non-definition forms a macro's expansion returns, wherever the macro is
+  defined. Each is applied like any item, so a definition defines, a macro
+  call expands further and anything else is a statement.
+
+At the end of `ScopeSession::publish`, after every definition is published and
+before module info, `publish_script_main` turns the statements into
+`def main()`: one statement is the body as written, several are one `__block__`,
+and the function's span runs from the first statement to the last. It is
+published through `define_source_function` like any other function, so no new
+job exists and interp, run and build see an ordinary `main/0`. The body is
+expanded in the scope's final namespace, so a statement can call a function or
+module defined later in the file. Bindings flow from one statement to the next;
+a `def` body cannot see them.
+
+A file with statements and its own `main/0` is the error
+`resolve/script-and-main`: the primary span is the first statement and the
+secondary span is the `def main`. A file with only `def main()` records no
+statements and synthesizes nothing. In any other scope (a module body, a
+prelude, the library) a non-macro item or a macro expansion that is not a
+definition is still `macro/not-a-defmacro`.
+
 ## A root's journey
 
 ```text

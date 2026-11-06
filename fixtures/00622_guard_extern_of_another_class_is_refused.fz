@@ -1,0 +1,11 @@
+#---
+# purpose: a guard may call an extern only when its parameters and return are integers or reference words, and one that takes a float is refused at compile time
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+extern "C" defp sqrt(float) :: float
+
+def big(x) when sqrt(x) > 1.0, do: :big
+def big(_), do: :small
+
+def main(), do: dbg(big(4.0))

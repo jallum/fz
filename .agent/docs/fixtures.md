@@ -54,7 +54,8 @@ only the keys below:
 - `purpose:` — the one-line description (required). Single source of truth for
   the fixture's headline.
 - `kind:` — `run` or `test`. Defaults to `run` when the source defines a `main`,
-  otherwise `test`. Decides which compiler2 front-door subcommand runs (see the
+  otherwise `test`. A script fixture (top-level expressions, no `def main`)
+  declares `kind: run`, since the default is a text search for `def main(`. Decides which compiler2 front-door subcommand runs (see the
   matrix).
 - `expect:` — `success` (default), `abort`, or `diagnostic` (the pass/fail
   contract; see below).

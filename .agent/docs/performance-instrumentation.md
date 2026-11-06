@@ -214,8 +214,10 @@ The drive stop identifies that exact dependency; it attributes no scheduler
 job to a producer that never ran as a job.
 
 **Work starts** — `fz.compiler2.pull.session.finished` carries the
-`WorkStartTally`: `ignition`, `changed_revision_wake`, `activation_published`,
-`gate_expansion`, `blocked_waiter_expansion`, and `unclassified`. This is the
+`WorkStartTally` as a `work_starts` object with one count per reason, written
+by iterating `WorkStartReason::ALL` (`ignition`, `changed_revision_wake`,
+`activation_published`, `gate_expansion`, `blocked_waiter_expansion`,
+`unclassified`); the tally is read as `tally[reason]`. This is the
 pull-only guard's evidence — every job that enters the agenda must name a
 sanctioned reason, charged once per job per real run (`Scheduler::enqueue`
 records the reason an agenda entry carries without charging anything;

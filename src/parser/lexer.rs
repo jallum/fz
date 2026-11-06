@@ -79,6 +79,12 @@ pub enum Tok {
     /// membership, `--` and a map key mean.
     EqEqEq,
     NotEqEq,
+    /// `&&` — `and` for any value: `nil` and `false` are false, anything else true.
+    AndAnd,
+    /// `||` — `or` for any value, answering the value that decided.
+    OrOr,
+    /// `!` — `not` for any value.
+    Bang,
     Lt,
     LtEq,
     Gt,
@@ -126,6 +132,8 @@ fn is_infix_only_continuation(tok: &Tok) -> bool {
             | Tok::When
             | Tok::Or
             | Tok::And
+            | Tok::AndAnd
+            | Tok::OrOr
             | Tok::EqEq
             | Tok::NotEq
             | Tok::EqEqEq
@@ -883,7 +891,11 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     Tok::Pipe
                 }
-                Some(b'|') => return Err(self.err("`||` is not an operator; use `or`".to_string())),
+                Some(b'|') => {
+                    self.bump();
+                    self.bump();
+                    Tok::OrOr
+                }
                 _ => {
                     self.bump();
                     Tok::Bar
@@ -894,7 +906,11 @@ impl<'a> Lexer<'a> {
                 Tok::Caret
             }
             b'&' => match self.peek(1) {
-                Some(b'&') => return Err(self.err("`&&` is not an operator; use `and`".to_string())),
+                Some(b'&') => {
+                    self.bump();
+                    self.bump();
+                    Tok::AndAnd
+                }
                 // fz-swt.5: bare `&` introduces an explicit fn-ref (`&name/arity`).
                 _ => {
                     self.bump();
@@ -933,7 +949,10 @@ impl<'a> Lexer<'a> {
                         Tok::NotEq
                     }
                 }
-                _ => return Err(self.err("`!` is not an operator; use `not`".to_string())),
+                _ => {
+                    self.bump();
+                    Tok::Bang
+                }
             },
             b'+' => match self.peek(1) {
                 Some(b'+') => {

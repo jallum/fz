@@ -893,12 +893,48 @@ fn update_if_changed<T: Reconcile>(state: &mut T, next: T) -> bool {
 }
 
 impl Reconcile for ModuleState {
+    /// A module's stage only moves forward for the same source: indexing a
+    /// scoped or defined module again from the source it already has keeps
+    /// the stage and reports no change. A different source starts over.
     fn reconcile(current: Option<&Self>, incoming: Self) -> (Self, bool) {
+        if let Some(kept) = current.and_then(|current| current.kept_for(&incoming)) {
+            return (kept, false);
+        }
         monotonic(current, incoming, ModuleState::same)
     }
 }
 
 impl ModuleState {
+    /// This state refreshed with the source of an `Indexed` re-index, when
+    /// the re-index is of the source this later-stage state already has.
+    fn kept_for(&self, incoming: &Self) -> Option<Self> {
+        let ModuleState::Indexed { source: fresh, .. } = incoming else {
+            return None;
+        };
+        match self {
+            ModuleState::Scoped {
+                source,
+                base,
+                interface,
+                ..
+            } if source.same_source(fresh) => Some(ModuleState::Scoped {
+                source: fresh.clone(),
+                base: *base,
+                interface: interface.clone(),
+            }),
+            ModuleState::Defined {
+                source: Some(source),
+                base,
+                interface,
+            } if source.same_source(fresh) => Some(ModuleState::Defined {
+                source: Some(fresh.clone()),
+                base: *base,
+                interface: interface.clone(),
+            }),
+            _ => None,
+        }
+    }
+
     fn same(&self, other: &Self) -> bool {
         match (self, other) {
             (

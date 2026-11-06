@@ -1,6 +1,8 @@
 use super::*;
 use crate::fz_ir::{BinOp, FnId, UnOp};
-use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, closure_captured_count, closure_fn_ptr};
+use fz_runtime::any_value::{
+    AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, closure_captured_count, closure_fn_ptr,
+};
 use fz_runtime::ir_runtime::{fz_closure_get_capture_ref, fz_value_cmp_ref, fz_value_eq_ref, fz_value_eq_widening_ref};
 use fz_runtime::process::Process;
 use std::ptr::null_mut;
@@ -42,8 +44,12 @@ pub(super) fn eval_binop(proc: *mut Process, op: BinOp, a: AnyValue, b: AnyValue
         BinOp::Le => float_cmp!(<=),
         BinOp::Gt => float_cmp!(>),
         BinOp::Ge => float_cmp!(>=),
-        BinOp::And => Ok(if !a.is_truthy() { a } else { b }),
-        BinOp::Or => Ok(if a.is_truthy() { a } else { b }),
+        BinOp::And => Ok(interp_bool_value(
+            boolean_operand(a, "and")? && boolean_operand(b, "and")?,
+        )),
+        BinOp::Or => Ok(interp_bool_value(
+            boolean_operand(a, "or")? || boolean_operand(b, "or")?,
+        )),
     }
 }
 
@@ -54,7 +60,21 @@ pub(super) fn eval_unop(op: UnOp, a: AnyValue) -> Result<AnyValue, String> {
             AnyValue::Float(value) => Ok(AnyValue::Float(-value)),
             _ => Err(format!("`-` on {}", a.render(null_mut()))),
         },
-        UnOp::Not => Ok(interp_bool_value(!a.is_truthy())),
+        UnOp::Not => Ok(interp_bool_value(!boolean_operand(a, "not")?)),
+    }
+}
+
+/// The operands of `and`, `or` and `not` as they reach the IR are booleans:
+/// the language-level operators branch on their left operand and halt on a
+/// non-boolean before any of these are made. One that arrives anyway is a
+/// broken plan, so it is named rather than coerced.
+fn boolean_operand(value: AnyValue, operator: &str) -> Result<bool, String> {
+    if value.is_atom_id(TRUE_ATOM_ID) {
+        Ok(true)
+    } else if value.is_false() {
+        Ok(false)
+    } else {
+        Err(format!("`{operator}` on the non-boolean {}", value.render(null_mut())))
     }
 }
 

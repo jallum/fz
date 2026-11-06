@@ -1,0 +1,6 @@
+#---
+# purpose: "length/1 of a non-list aborts with :badarg in a body, as Elixir raises ArgumentError"
+# expect: abort
+# oracle: 00620_length_of_a_non_list_aborts.oracle.exs
+#---
+def main(), do: length(:x)

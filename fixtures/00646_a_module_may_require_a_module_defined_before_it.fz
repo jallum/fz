@@ -1,0 +1,16 @@
+#---
+# purpose: "A defmodule may require a module that an earlier top-level defmodule defined, and call its macros and functions"
+# kind: run
+# oracle: 00646_a_module_may_require_a_module_defined_before_it.oracle.exs
+#---
+defmodule M do
+  defmacro twice(x), do: quote(do: unquote(x) * 2)
+  def f(), do: 7
+end
+
+defmodule N do
+  require M
+  def g(), do: M.twice(M.f())
+end
+
+dbg(N.g())

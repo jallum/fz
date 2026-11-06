@@ -521,6 +521,12 @@ prototype in the C header.
       <code>&lt;&lt;1::1, 0::1&gt;&gt;</code> is a 2-bit bitstring; there's no
       <code>*const u8</code> that represents it cleanly. The runtime
       raises an arg exception if you try.</li>
+<li><strong>Guards can call externs, with two classes only.</strong> A guard
+      may call an extern whose parameters are integers or reference words and
+      whose return is an integer, a reference word or <code>never</code>. Any
+      other class is a compile error. Guard functions such as
+      <code>map_size/1</code> and <code>elem/2</code> are Kernel functions that
+      check their domain before calling such an extern.</li>
   <li><strong>Resource dtors should not raise.</strong> If a dtor closure
       panics or returns an error, the runtime currently aborts. Treat the
       dtor as a "cleanup, never fail" path.</li>

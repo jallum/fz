@@ -22,12 +22,14 @@ pub const PARSE_BITSTRING_BAD_SIZE: DiagCode = DiagCode("parse/bitstring-bad-siz
 pub const RESOLVE_UNKNOWN_MODULE: DiagCode = DiagCode("resolve/unknown-module");
 pub const RESOLVE_UNKNOWN_FUNCTION: DiagCode = DiagCode("resolve/unknown-function");
 pub const RESOLVE_UNKNOWN_IMPORT: DiagCode = DiagCode("resolve/unknown-import");
+pub const RESOLVE_MODULE_NOT_LOADED: DiagCode = DiagCode("resolve/module-not-loaded");
 pub const RESOLVE_TYPE_ALIAS: DiagCode = DiagCode("resolve/type-alias");
 pub const RESOLVE_UNKNOWN_STRUCT_FIELD: DiagCode = DiagCode("resolve/unknown-struct-field");
 pub const RESOLVE_NOT_A_STRUCT: DiagCode = DiagCode("resolve/not-a-struct");
 pub const RESOLVE_NOT_A_PROTOCOL: DiagCode = DiagCode("resolve/not-a-protocol");
 pub const RESOLVE_DUPLICATE_STRUCT: DiagCode = DiagCode("resolve/duplicate-struct");
 pub const RESOLVE_DUPLICATE_FUNCTION: DiagCode = DiagCode("resolve/duplicate-function");
+pub const RESOLVE_SCRIPT_AND_MAIN: DiagCode = DiagCode("resolve/script-and-main");
 
 // ----- protocol -----
 
@@ -57,6 +59,7 @@ pub const ARTIFACT_INCOMPLETE_SEMANTIC_PLAN: DiagCode = DiagCode("artifact/incom
 // ----- internal (compiler invariants) -----
 
 pub const INTERNAL_POST_RESOLUTION_LEFTOVER: DiagCode = DiagCode("internal/post-resolution-leftover");
+pub const INTERNAL_UNRESOLVED_WAIT: DiagCode = DiagCode("internal/unresolved-wait");
 
 #[cfg(test)]
 #[path = "codes_test.rs"]

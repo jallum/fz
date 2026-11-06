@@ -1,0 +1,8 @@
+#---
+# purpose: a C extern declared with a tuple parameter is refused at compile time, since a tuple has no C representation
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+extern "C" defp take(tuple) :: integer
+
+def main(), do: dbg(take({1, 2}))

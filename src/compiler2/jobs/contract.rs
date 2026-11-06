@@ -284,7 +284,7 @@ fn extern_param_wire(
     } else {
         types.instantiate(semantic_ty, constraints)
     };
-    if abi == crate::fz_ir::ExternAbi::C && types.max_tuple_arity(&resolved) != 0 {
+    if abi == crate::fz_ir::ExternAbi::C && types.is_tuple_type(&resolved) {
         return Err("C extern aggregate arguments are unsupported; pass an opaque value reference or define an exact scalar C signature".to_string());
     }
     Ok(extern_wire_ty(types, body, semantic_ty, constraints))
@@ -337,7 +337,7 @@ fn extern_return_wire(
         }
         return Ok(crate::fz_ir::ExternReturn::Pair(fields));
     }
-    if types.max_tuple_arity(&resolved) != 0 {
+    if types.is_tuple_type(&resolved) {
         return Err("C extern aggregate return must resolve to one exact two-field tuple".to_string());
     }
     Ok(crate::fz_ir::ExternReturn::Scalar(extern_wire_ty(

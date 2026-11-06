@@ -437,6 +437,55 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
 }
 
 #[test]
+fn re_indexing_a_module_from_the_same_source_keeps_its_stage() {
+    let mut code = CodeMap::new();
+    let namespaces = NamespaceStore::new();
+    let mut modules = ModuleMap::new();
+    let owner = code.define(Some("m.fz".to_string()), "defmodule M do\nend\n".to_string());
+    let namespace = namespaces.prelude_head();
+    let module = modules.reference_named(crate::modules::identity::ModuleName::from_segments(vec!["M".into()]));
+    let source = quoted_source("m.fz", "defmodule M do\nend\n");
+    modules.index_body(module, owner, ModuleId::GLOBAL, source, empty_scope_surface());
+    modules.scope(module, namespace);
+    modules.define(module, namespace, crate::compiler2::ModuleInterface::default());
+
+    let same_source_changed = modules.index_body(
+        module,
+        owner,
+        ModuleId::GLOBAL,
+        quoted_source("m.fz", "defmodule M do\nend\n"),
+        empty_scope_surface(),
+    );
+    assert!(
+        !same_source_changed,
+        "re-indexing a module from the same source is not a change"
+    );
+    assert!(
+        matches!(modules.get(module), ModuleState::Defined { .. }),
+        "a defined module stays defined when re-indexed from the same source, got {:?}",
+        modules.get(module)
+    );
+
+    let other_owner = code.define(Some("other.fz".to_string()), "defmodule M do\nend\n".to_string());
+    let other_source_changed = modules.index_body(
+        module,
+        other_owner,
+        ModuleId::GLOBAL,
+        quoted_source("other.fz", "defmodule M do\nend\n"),
+        empty_scope_surface(),
+    );
+    assert!(
+        other_source_changed,
+        "a module indexed from a different source is a change"
+    );
+    assert!(
+        matches!(modules.get(module), ModuleState::Indexed { .. }),
+        "a different source resets the module to indexed, got {:?}",
+        modules.get(module)
+    );
+}
+
+#[test]
 fn compiler2_re_noting_a_defined_function_preserves_the_defined_state() {
     let mut functions = FunctionMap::new();
     let mut code = CodeMap::new();

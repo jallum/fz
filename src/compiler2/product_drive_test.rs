@@ -50,7 +50,7 @@ use super::super::pull::{
     ProductKey, ProductProducers, ProductScope, ProductSettlement, ProductValue, PullOutcome, PullSession, PullWait,
     WorldProductProducers,
 };
-use super::super::scheduler::{DriveOutcome, FatalError};
+use super::super::scheduler::{DriveOutcome, FatalError, WorkStartReason};
 use super::super::{CodeSubmission, Compiler2, RootSubmission};
 use crate::diag::codes;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
@@ -294,7 +294,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let cold_work = compiler.world().work_start_tally().delta_since(before_cold_work);
     assert_eq!(
         cold_work,
-        super::super::WorkStartTally {
+        super::super::WorkStartTally::of(&[
             // A job's missing gates are demanded the moment it is recorded --
             // at `World::submit_root` (the root's own gate) and at each
             // completion that records a new wait or publishes an activation
@@ -321,13 +321,11 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             // also changes which code path first discovers the root's own
             // activation, so its completions land as a `blocked_waiter_expansion`
             // wake rather than an `activation_published` one.
-            ignition: 1,
-            changed_revision_wake: 11,
-            activation_published: 0,
-            gate_expansion: 9,
-            blocked_waiter_expansion: 1,
-            unclassified: 0,
-        },
+            (WorkStartReason::Ignition, 1),
+            (WorkStartReason::ChangedRevisionWake, 11),
+            (WorkStartReason::GateExpansion, 9),
+            (WorkStartReason::BlockedWaiterExpansion, 1),
+        ]),
         "cold native production must preserve its exact sanctioned work-start census without an artifact bridge job",
     );
     let native_key = ProductKey::NativeProgram(root);
@@ -400,10 +398,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let unreachable_work = compiler.world().work_start_tally().delta_since(before_unreachable_work);
     assert_eq!(
         unreachable_work,
-        super::super::WorkStartTally {
-            ignition: 2,
-            ..super::super::WorkStartTally::default()
-        },
+        super::super::WorkStartTally::of(&[(WorkStartReason::Ignition, 2)]),
         "an unreachable edit starts only its two source-ingestion jobs",
     );
     assert!(evaluations.borrow().is_empty());
@@ -422,8 +417,8 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         .delta_since(before_reached_backend_work);
     assert_eq!(
         reached_backend_work,
-        super::super::WorkStartTally {
-            ignition: 2,
+        super::super::WorkStartTally::of(&[
+            (WorkStartReason::Ignition, 2),
             // The re-scope publishes the replaced source itself, so the edit no
             // longer wakes a separate copy job on its way to the body.
             // `Scheduler::record_run_start` charges each reason once, at the
@@ -432,9 +427,8 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             // pays for the same eventual run twice. `main/0` is self-keyed
             // (R1), so this re-run never wakes its `StaticCallees`,
             // `Recursive` or `InputDemand` either.
-            changed_revision_wake: 11,
-            ..super::super::WorkStartTally::default()
-        },
+            (WorkStartReason::ChangedRevisionWake, 11),
+        ]),
         "a reached edit starts source ingestion and only exact changed-revision readers",
     );
     evaluations.borrow_mut().clear();
@@ -637,10 +631,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         // `Ignition` the moment they are popped to run -- the submission
         // that enqueued them is real, external work, it is only attributed
         // here, at the run, rather than at the earlier `submit_code` call.
-        super::super::WorkStartTally {
-            ignition: 2,
-            ..super::super::WorkStartTally::default()
-        },
+        super::super::WorkStartTally::of(&[(WorkStartReason::Ignition, 2)]),
         "re-running an unaffected retained request starts only the queued edit's own ingestion"
     );
 
@@ -1149,10 +1140,7 @@ fn reconciliation_failure_retries_pending_work_attributed_to_each_request_alone(
         (
             Some(root),
             0,
-            super::super::WorkStartTally {
-                gate_expansion: 1,
-                ..Default::default()
-            }
+            super::super::WorkStartTally::of(&[(WorkStartReason::GateExpansion, 1)])
         ),
         "the third request's only fresh demand is re-parking main's job on its still-missing gate"
     );
@@ -1208,7 +1196,8 @@ fn zero_timeout_is_a_balanced_retained_activation_and_does_not_leak_work() {
     let success = finished.borrow()[after_failure_events];
     assert_ne!(success.2, failed_delta);
     assert_eq!(
-        success.2.ignition, 2,
+        success.2[WorkStartReason::Ignition],
+        2,
         "the edit's ignition belongs to the retry: the failed drive popped nothing to charge it to",
     );
 }

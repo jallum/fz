@@ -1,0 +1,10 @@
+#---
+# purpose: "a case guard that calls || is refused at the operator, naming it, as Elixir refuses a macro that expands to a non-guard expression"
+# expect: diagnostic
+#---
+def main() do
+  case {1, nil} do
+    {a, b} when a || b -> dbg(:truthy)
+    _ -> dbg(:falsy)
+  end
+end

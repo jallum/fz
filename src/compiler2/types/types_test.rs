@@ -4652,3 +4652,45 @@ mod list_normal_form {
         }
     }
 }
+
+#[test]
+fn the_tuple_top_is_every_tuple_and_nothing_else() {
+    let mut t = Types::new();
+    let top = t.tuple_top();
+    let int = t.int();
+    let empty = t.tuple(&[]);
+    let pair = t.tuple(&[int, int]);
+    let list = t.list(int);
+    let map_top = t.map_top();
+
+    assert_eq!(top, t.tuple_top(), "the tuple top is interned once");
+    assert!(t.is_subtype(&empty, &top), "the empty tuple is a tuple");
+    assert!(t.is_subtype(&pair, &top), "a pair is a tuple");
+    assert!(t.is_disjoint(&int, &top));
+    assert!(t.is_disjoint(&list, &top));
+    assert!(t.is_disjoint(&map_top, &top));
+    let any = t.any();
+    assert!(t.is_subtype(&top, &any));
+}
+
+#[test]
+fn is_tuple_type_asks_whether_every_value_is_a_tuple() {
+    let mut t = Types::new();
+    let int = t.int();
+    let top = t.tuple_top();
+    let empty = t.tuple(&[]);
+    let pair = t.tuple(&[int, int]);
+    let any = t.any();
+    let none = t.none();
+    let list = t.list(int);
+    let int_or_pair = t.union(int, pair);
+
+    assert!(t.is_tuple_type(&top));
+    assert!(t.is_tuple_type(&empty), "the empty tuple is a tuple");
+    assert!(t.is_tuple_type(&pair));
+    assert!(!t.is_tuple_type(&any), "any merely contains tuples");
+    assert!(!t.is_tuple_type(&int_or_pair));
+    assert!(!t.is_tuple_type(&int));
+    assert!(!t.is_tuple_type(&list));
+    assert!(!t.is_tuple_type(&none), "the empty type has no values to be tuples");
+}

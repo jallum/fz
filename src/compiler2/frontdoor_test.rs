@@ -416,6 +416,77 @@ fn compiler2_frontdoor_parses_when_once_at_elixir_precedence() {
 }
 
 #[test]
+fn compiler2_frontdoor_binds_value_boolean_operators_at_elixir_precedence() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "value_boolean_precedence.fz",
+        "probe a || b and c && d\nprobe !a == b\nprobe x = a || b\nprobe(not a && b)\nprobe a || b |> f\nprobe a && b or c\nprobe !!a\nprobe a || b || c\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        [
+            "probe(||($a, &&(and($b, $c), $d)))",
+            "probe(==(!($a), $b))",
+            "probe(=($x, ||($a, $b)))",
+            "probe(&&(not($a), $b))",
+            "probe(||($a, |>($b, $f)))",
+            "probe(or(&&($a, $b), $c))",
+            "probe(!(!($a)))",
+            "probe(||(||($a, $b), $c))",
+        ]
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_takes_a_bang_argument_without_parentheses() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program("bang_argument.fz", "probe !a\n", &tel).expect("quoted parse");
+
+    assert_eq!(quoted_shapes(&root), ["probe(!($a))"]);
+}
+
+#[test]
+fn compiler2_frontdoor_reads_a_defmacro_head_the_way_def_reads_one() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "defmacro_heads.fz",
+        "defmacro left || right, do: left\ndefmacro !value, do: value\ndefmacro plain(x), do: x\ndefmacro defmodule(name, kw), do: name\ndefmacro head(x) when is_atom(x), do: x\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        [
+            "defmacro(||($left, $right), [{:do, $left}])",
+            "defmacro(!($value), [{:do, $value}])",
+            "defmacro(plain($x), [{:do, $x}])",
+            "defmacro(defmodule($name, $kw), [{:do, $name}])",
+            "defmacro(when(head($x), is_atom($x)), [{:do, $x}])",
+        ]
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_names_the_value_boolean_operators_in_import_filters() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "operator_import.fz",
+        "import Kernel, only: [||: 2, &&: 2, !: 1]\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        ["import(__aliases__(:Kernel), [{:only, [{:||, 2}, {:&&, 2}, {:!, 1}]}])"]
+    );
+}
+
+#[test]
 fn compiler2_frontdoor_quotes_def_and_defp_as_ordinary_calls() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
@@ -894,6 +965,36 @@ fn compiler2_frontdoor_parses_item_macro_calls_with_trailing_do() {
             .atom_name()
             .expect("test do key"),
         "do"
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_accepts_any_expression_at_the_top_level_of_a_file() {
+    let tel = ConfiguredTelemetry::new();
+    let source = "defmodule Greeter do\nend\n\nGreeter.main(1)\n42\n[:a]\nx\n";
+    let root = parse_quoted_program("script.fz", source, &tel).expect("a script file parses");
+
+    let items = root.cursor().list_items().expect("top-level items");
+    assert_eq!(
+        items.len(),
+        5,
+        "the module and four expressions are five items in source order"
+    );
+    assert!(
+        items[1].trusted_ast_node().expect("remote call cursor").is_some(),
+        "a remote call is a call node"
+    );
+    assert_eq!(items[2].int_value().expect("literal item"), 42);
+}
+
+#[test]
+fn compiler2_frontdoor_refuses_an_expression_at_item_position_inside_a_module() {
+    let tel = ConfiguredTelemetry::new();
+    let (error, _) = parse_quoted_error("module_expr.fz", "defmodule M do\n  Foo.bar(1)\nend\n", &tel);
+    assert!(
+        error.msg.contains("at item position"),
+        "a module body still accepts only items; got `{}`",
+        error.msg
     );
 }
 
@@ -1545,6 +1646,21 @@ fn compiler2_frontdoor_parses_runtime_bootstrap_sources_directly() {
             head == "defmodule" || head == "defprotocol",
             "runtime module `{name}` should still be ordinary module/protocol source"
         );
+        let declared = module.tail.list_items().expect("module head args")[0]
+            .trusted_ast_node()
+            .expect("module name cursor")
+            .expect("module name node")
+            .tail
+            .list_items()
+            .expect("module name segments")
+            .iter()
+            .map(|segment| segment.atom_name().expect("module name segment atom"))
+            .collect::<Vec<_>>()
+            .join(".");
+        assert_eq!(
+            name, declared,
+            "registry name must equal the name its source declares, or the module never loads"
+        );
     }
 
     parse_quoted_program(
@@ -1759,4 +1875,120 @@ fn compiler2_frontdoor_parses_complex_extern_signatures() {
         ],
         "extern constraints should be quoted as token payloads"
     );
+}
+
+fn only_shape(name: &str, source: &str) -> String {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(name, source, &tel).expect("multi-line clause bodies should parse");
+    let mut shapes = quoted_shapes(&root);
+    assert_eq!(shapes.len(), 1, "one top-level form expected");
+    shapes.remove(0)
+}
+
+#[test]
+fn compiler2_frontdoor_fn_clause_body_may_span_lines() {
+    assert_eq!(
+        only_shape("fn_lines.fz", "probe fn ss ->\n  counts = ss\n  counts\nend\n"),
+        "probe(fn(->([$ss], __block__(=($counts, $ss), $counts))))",
+        "a line that is not `head ->` joins the body of the clause above it",
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_case_clause_body_may_span_lines() {
+    assert_eq!(
+        only_shape("case_lines.fz", "probe(case v do\n  x ->\n    y = x\n    y\nend)\n"),
+        "probe(case($v, [{:do, [->([$x], __block__(=($y, $x), $y))]}]))",
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_receive_clause_body_may_span_lines() {
+    assert_eq!(
+        only_shape("receive_lines.fz", "probe(receive do\n  x ->\n    y = x\n    y\nend)\n"),
+        "probe(receive([{:do, [->([$x], __block__(=($y, $x), $y))]}]))",
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_cond_clause_body_may_span_lines() {
+    assert_eq!(
+        only_shape("cond_lines.fz", "probe(cond do\n  c ->\n    y = c\n    y\nend)\n"),
+        "probe(cond([{:do, [->([$c], __block__(=($y, $c), $y))]}]))",
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_with_else_clause_body_may_span_lines() {
+    assert_eq!(
+        only_shape(
+            "with_else_lines.fz",
+            "probe(with {:ok, a} <- v do\n  a\nelse\n  e ->\n    y = e\n    y\nend)\n"
+        ),
+        "probe(with(<-({:ok, $a}, $v), [{:do, $a}, {:else, [->([$e], __block__(=($y, $e), $y))]}]))",
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_parenthesised_clause_body_may_span_lines() {
+    assert_eq!(
+        only_shape("paren_lines.fz", "probe(case v, do: (x ->\n  y = x\n  y))\n"),
+        "probe(case($v, [{:do, [->([$x], __block__(=($y, $x), $y))]}]))",
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_clause_list_assigns_each_line_to_the_clause_above() {
+    assert_eq!(
+        only_shape(
+            "multi_clause_lines.fz",
+            "probe fn 0 ->\n  a = 1\n  a\n  1 ->\n  :one\n  n ->\n  b = n\n  c = b\n  c\nend\n"
+        ),
+        "probe(fn(->([0], __block__(=($a, 1), $a)), ->([1], :one), ->([$n], __block__(=($b, $n), =($c, $b), $c))))",
+        "each `head ->` line starts a clause; every other line extends the clause above",
+    );
+    assert_eq!(
+        only_shape(
+            "multi_case_lines.fz",
+            "probe(case v do\n  0 ->\n    a = 1\n    a\n  1 -> :one\n  n ->\n    b = n\n    b\nend)\n"
+        ),
+        "probe(case($v, [{:do, [->([0], __block__(=($a, 1), $a)), ->([1], :one), ->([$n], __block__(=($b, $n), $b))]}]))",
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_clause_body_line_may_itself_be_fn_or_case() {
+    assert_eq!(
+        only_shape(
+            "nested_body_lines.fz",
+            "probe fn x ->\n  f = fn y -> y end\n  fn z -> z end\n  case x do\n    1 -> :a\n  end\nend\n"
+        ),
+        "probe(fn(->([$x], __block__(=($f, fn(->([$y], $y))), fn(->([$z], $z)), case($x, [{:do, [->([1], :a)]}])))))",
+        "a nested clause list does not claim the enclosing clause's lines",
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_when_head_follows_a_multi_line_body() {
+    assert_eq!(
+        only_shape(
+            "when_after_lines.fz",
+            "probe fn x when x > 0 ->\n  y = x\n  y\n  x, z when z ->\n  z\n  (a) when a ->\n  a\n  (b) + 1\n  b\nend\n"
+        ),
+        "probe(fn(->([when($x, >($x, 0))], __block__(=($y, $x), $y)), ->([when($x, $z, $z)], $z), ->([when($a, $a)], __block__($a, +($b, 1), $b))))",
+        "`head when guard ->` lines, bare or parenthesised, start clauses; `(b) + 1` extends the clause above",
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_line_that_is_neither_head_nor_body_is_reported_at_that_line() {
+    let tel = ConfiguredTelemetry::new();
+    let (error, _) = parse_quoted_error("stray_line.fz", "probe fn x ->\n  y = x\n  a, b\nend\n", &tel);
+    assert_eq!(error.msg, "expected `->`, got Newline");
+    let (error, _) = parse_quoted_error(
+        "stray_case_line.fz",
+        "probe(case v do\n  x ->\n    y\n  1 2\nend)\n",
+        &tel,
+    );
+    assert!(error.msg.contains("without a newline"), "{}", error.msg);
 }

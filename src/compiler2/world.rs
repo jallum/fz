@@ -12,14 +12,13 @@ use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
-use std::sync::Arc;
 
 use crate::FunctionSurface;
 use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::demand::DispatchDemand;
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
+use crate::dispatch_matrix::pattern::{GuardCallee, PatternDispatchPlan};
 use crate::modules::identity::{Mfa, ModuleDenotation, ModuleName};
 use crate::modules::runtime_library;
 use crate::source::{SourceMap, Span};
@@ -84,6 +83,7 @@ enum UnresolvedIssueKey {
     Function(FunctionId),
     Export(FunctionId),
     Type(TypeName),
+    Internal(&'static str),
 }
 
 struct UnresolvedIssue {
@@ -1677,6 +1677,28 @@ impl World {
         self.modules.get(module).source().is_some()
     }
 
+    /// Whether `module` is defined, in `owner`'s source, inside `scope`'s
+    /// own body at any depth. The global scope contains every module its
+    /// source defines.
+    pub(crate) fn module_defined_within(&self, module: ModuleId, scope: ModuleId, owner: SourceOwner) -> bool {
+        let Some(source) = self.modules.get(module).source() else {
+            return false;
+        };
+        if source.owner != owner {
+            return false;
+        }
+        let mut parent = source.parent;
+        loop {
+            if parent == scope {
+                return true;
+            }
+            match self.modules.get(parent).source() {
+                Some(source) => parent = source.parent,
+                None => return false,
+            }
+        }
+    }
+
     pub fn note_module_interface_expectation(&mut self, module: ModuleId, expectation: InterfaceExpectation) {
         let mut interface = self.module_interface_if_present(module).unwrap_or_default();
         interface.record_expectation(expectation);
@@ -2201,9 +2223,10 @@ impl World {
             .min()
     }
 
-    /// The reified guard helper. Callers embed the handle in their own plans,
-    /// so one helper is one artifact however many guards name it.
-    pub(crate) fn guard_dispatch(&self, function: FunctionId) -> Arc<PatternGuardDispatch<Ty>> {
+    /// What a guard that calls `function` reaches: the reified helper, or the
+    /// extern as it is. Callers embed the handle in their own plans, so one
+    /// callee is one artifact however many guards name it.
+    pub(crate) fn guard_callee(&self, function: FunctionId) -> GuardCallee<Ty> {
         #[cfg(test)]
         self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
         self.guard_dispatches
@@ -2552,6 +2575,14 @@ impl World {
         // tuple gave the first four kinds.
         issues.sort_by(|left, right| left.key.cmp(&right.key));
         issues.dedup_by_key(|issue| issue.key.clone());
+        // A stall the source explains is the whole story: the compiler's own
+        // waits downstream of it are its consequence, not a second fault.
+        if issues
+            .iter()
+            .any(|issue| !matches!(issue.key, UnresolvedIssueKey::Internal(_)))
+        {
+            issues.retain(|issue| !matches!(issue.key, UnresolvedIssueKey::Internal(_)));
+        }
         issues
     }
 
@@ -2563,7 +2594,49 @@ impl World {
             FactKey::ExpandedFunctionSource(function) => self.unresolved_function_issue(frontier, *function),
             FactKey::FunctionDefined(function) => self.unresolved_function_issue(frontier, *function),
             FactKey::TypeDefined(name) => self.unresolved_type_issue(name),
-            _ => None,
+            FactKey::ModuleDefined(module) | FactKey::ModuleInterface(module) => {
+                Some(self.unresolved_module_issue(*module))
+            }
+            FactKey::CodeIndexed(_)
+            | FactKey::CodeScoped(_)
+            | FactKey::ProtocolDispatch(_)
+            | FactKey::ProtocolImplProviders(_)
+            | FactKey::FunctionContract(_)
+            | FactKey::LoweredBody(_)
+            | FactKey::GuardDispatch(_)
+            | FactKey::EntryDispatch(_)
+            | FactKey::StaticCallees(_)
+            | FactKey::Recursive(_)
+            | FactKey::InputDemand(_)
+            | FactKey::RootEntry(_)
+            | FactKey::Activation(_)
+            | FactKey::ActivationInputs(_)
+            | FactKey::ActivationAnalyzed(_)
+            | FactKey::ReturnType(_)
+            | FactKey::CallSiteTargets(_)
+            | FactKey::CallSiteSummary(_)
+            | FactKey::Executable(_)
+            | FactKey::ExecutableFacts(_)
+            | FactKey::CallableConstructionTarget(_)
+            | FactKey::RuntimeDemandInput(_)
+            | FactKey::RuntimeDemand(_)
+            | FactKey::RuntimeDemandInputs(_)
+            | FactKey::IncomingInputSlot(_) => Some(Self::unresolved_internal_issue(fact)),
+        }
+    }
+
+    /// A wait no source line can leave unmet: the compiler's own derivation
+    /// stalled, so the stall is reported as the compiler's fault. It speaks
+    /// only when no wait the source can explain is in the frontier.
+    fn unresolved_internal_issue(fact: &FactKey) -> UnresolvedIssue {
+        let kind = fact.kind_label();
+        UnresolvedIssue {
+            key: UnresolvedIssueKey::Internal(kind),
+            diagnostic: Diagnostic::error(
+                codes::INTERNAL_UNRESOLVED_WAIT,
+                format!("the compiler stopped while waiting on {kind}, which no source line can leave unmet"),
+                Span::DUMMY,
+            ),
         }
     }
 
@@ -2888,7 +2961,13 @@ fn code_surface_function_match(
                 }
             }
             ScopeForm::MacroCall(macro_call) => item_macro_call_match(&macro_call.source, function_ref, sources)?,
-            ScopeForm::Alias(_)
+            // Top-level expressions become the file's `main/0`, which only
+            // scoping the code can publish.
+            ScopeForm::Statement(_) if function_ref.is_named("main") && function_ref.arity == 0 => {
+                FunctionSurfaceMatch::Opaque
+            }
+            ScopeForm::Statement(_)
+            | ScopeForm::Alias(_)
             | ScopeForm::Import(_)
             | ScopeForm::Require(_)
             | ScopeForm::Module(_)
@@ -3471,11 +3550,7 @@ impl World {
         self.bodies.define(function, body)
     }
 
-    pub(crate) fn define_guard_dispatch(
-        &mut self,
-        function: FunctionId,
-        dispatch: Arc<PatternGuardDispatch<Ty>>,
-    ) -> bool {
+    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: GuardCallee<Ty>) -> bool {
         self.guard_dispatches.define(function, dispatch)
     }
 
@@ -3923,11 +3998,7 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         changed
     }
 
-    pub(crate) fn define_guard_dispatch(
-        &mut self,
-        function: FunctionId,
-        dispatch: Arc<PatternGuardDispatch<Ty>>,
-    ) -> bool {
+    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: GuardCallee<Ty>) -> bool {
         let changed = self.world.define_guard_dispatch(function, dispatch);
         if changed {
             self.emit_world_key(&["fz", "compiler2", "guard_dispatch", "defined"], &function);

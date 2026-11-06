@@ -540,8 +540,8 @@ repeating the same snapshot. Standalone `Compiler2::drive` owns the work across
 its balanced boundary, so a nested session excludes the drive's prefix and the
 next retained request cannot inherit it. The event carries the raw
 `PullSession`, from which handlers derive its root and demanded set cardinalities,
-`producer_pokes`, per-reason work-start breakdown, and
-`unsanctioned_work_starts` during the callback. The emitter does not
+`producer_pokes`, and per-reason work-start breakdown (the `work_starts` object; its
+`unclassified` entry is the unsanctioned count) during the callback. The emitter does not
 duplicate those values into measurements. The separate World-cumulative guard
 in `work_start_reason_test` asserts the whole production path: its
 `pull_only_guard_holds_for_*` cases assert `unsanctioned_work_starts == 0` AND

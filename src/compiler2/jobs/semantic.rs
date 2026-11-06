@@ -2562,7 +2562,7 @@ fn bitfield_value_ty(world: &mut World, spec: &super::super::body::LoweredBitFie
 
 fn lowered_binop_ty(world: &mut World, op: BinOp, _left: Ty, _right: Ty) -> Ty {
     match op {
-        BinOp::And | BinOp::Or | BinOp::In | BinOp::NotIn => world.types_mut().bool(),
+        BinOp::In | BinOp::NotIn => world.types_mut().bool(),
         BinOp::Pipe
         | BinOp::Cons
         | BinOp::ListConcat
@@ -2581,12 +2581,13 @@ fn lowered_binop_ty(world: &mut World, op: BinOp, _left: Ty, _right: Ty) -> Ty {
         | BinOp::LtEq
         | BinOp::Gt
         | BinOp::GtEq => panic!("lowering should route {op:?} through direct calls"),
+        BinOp::And | BinOp::Or => panic!("lowering should route {op:?} through a case"),
     }
 }
 
 fn lowered_unop_ty(world: &mut World, op: UnOp, input: Ty) -> Ty {
     match op {
-        UnOp::Not => world.types_mut().bool(),
+        UnOp::Not => panic!("lowering should route {op:?} through a case"),
         UnOp::Neg => {
             let int = world.types_mut().int();
             let float = world.types_mut().float();

@@ -2476,13 +2476,14 @@ fn arg_demands_for_summary(
         .get(&callsite)
         .copied()
         .unwrap_or(ExecutableNeed::Value);
-    if summary.targets.len() > 1
-        && let Some(arg) = args.first()
+    for (arg, (slot, read)) in args
+        .iter()
+        .zip(out.iter_mut().zip(facts.callsite_dispatch_demand_of(callsite)))
     {
-        for fallback_ty in multi_target_receiver_fallbacks(summary, facts.demand_types.any) {
-            let receiver_demand =
-                boundary_value_flow_demand_at(facts, callable_flows, arg.value, RuntimeDemand::whole(), fallback_ty);
-            out[0].join_assign(&receiver_demand);
+        if read.asks_anything() {
+            let ty = facts.argument_type(arg.value);
+            let asked = boundary_value_flow_demand_at(facts, callable_flows, arg.value, facts.dispatch_demand(ty), ty);
+            slot.join_assign(&asked);
         }
     }
     for target in &summary.targets {
@@ -2547,27 +2548,13 @@ fn arg_demands_for_summary(
     // parameter (an Enumerable slice continuation's unused `_map`) -- join
     // down to `Ignore`, starving that argument's materialization even
     // though the ABI still carries it once codegen picks the generic path.
-    // Floor every argument to `Whole` for every closure callsite,
-    // generalizing the index-0-only receiver floor above (which covers the
-    // direct/receiver protocol-dispatch case) to every argument position.
+    // Floor every argument to `Whole` for every closure callsite.
     if matches!(input_mode, CallInputMode::Closure) {
         for slot in out.iter_mut() {
             slot.join_assign(&RuntimeDemand::whole());
         }
     }
     out
-}
-
-fn multi_target_receiver_fallbacks(summary: &CallSiteSummary, any: Ty) -> BTreeSet<Ty> {
-    let mut fallbacks = summary
-        .targets
-        .iter()
-        .filter_map(|target| target.surface_inputs.first().copied())
-        .collect::<BTreeSet<_>>();
-    if fallbacks.is_empty() {
-        fallbacks.insert(any);
-    }
-    fallbacks
 }
 
 /// Seed an escaping callable argument's surface from the boundary it crosses.

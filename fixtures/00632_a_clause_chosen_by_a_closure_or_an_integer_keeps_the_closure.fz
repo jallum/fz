@@ -1,0 +1,26 @@
+#---
+# purpose: "a function whose own clauses split on closure versus integer keeps the closure it receives, when the value is chosen at run time"
+# oracle: 00632_a_clause_chosen_by_a_closure_or_an_integer_keeps_the_closure.oracle.exs
+#---
+#
+# `pick` returns a closure or an integer depending on a flag only known at run
+# time, so `kind` receives either and its own clause choice must look at the
+# value to tell them apart.
+def kind(n :: integer), do: {:int, n}
+def kind(f :: ((integer) -> integer)), do: {:fn, f.(10)}
+
+def pick(flag, a, b) do
+  case flag do
+    true -> a
+    _ -> b
+  end
+end
+
+def main() do
+  n = Process.heap_alloc_stats()[:allocs]
+  flag = n < n + 1
+  one = pick(flag, fn (x) -> x + 1 end, 5)
+  two = pick(flag, fn (x) -> x + 2 end, 6)
+  other = pick(not flag, fn (x) -> x + 3 end, 7)
+  dbg([kind(one), kind(two), kind(other)])
+end

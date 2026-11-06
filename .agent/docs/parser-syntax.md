@@ -18,6 +18,22 @@ Keep this boundary crisp:
 - Do not revive `Parser::new`, `parse_program`, `parse_prelude`, or
   `parse_expr_eof`; old callers should move to compiler2 quoted source.
 
+## A file's top level takes any expression
+
+`parse_program` reads a file with `parse_file_item`; a `defmodule` body, a
+protocol body and every other item list read with `parse_item`. Both accept the
+same definition items (`def`-family macro calls, `defmodule`, `alias`,
+`import`, `require`, `@`-attributes, ...). Only the file's top level also
+accepts any other expression as an item, so `Distill.main(argv)`, `x = 1`, `42`
+and `if ... do ... end` parse there, and the same line inside a `defmodule`
+fails with `does not yet parse ... at item position`.
+
+The parser cannot tell a statement from a macro call (`def`, `test` and user
+macros all lex as plain identifiers), so it does not try: a call-shaped item is
+a `ScopeForm::MacroCall` and a non-call item (a literal) is a
+`ScopeForm::Statement`. Expansion decides, per `pipeline.md` "A file's
+top-level expressions are its `main/0`".
+
 ## Newline continuation is grammar-owned, not a parser lookahead
 
 Physical newlines are first-class `Tok::Newline` tokens. Whether a newline
@@ -30,9 +46,8 @@ newline to guess intent.
   after consuming its operator, before parsing the right-hand side. Every
   `Tok::Dot`-consuming production does the same right after consuming the
   dot: `finish_remote_target` and `finish_closure_call` (value/call access),
-  `parse_alias_expr` (alias-path chains, e.g. `Foo.\n  Bar`), the
-  capture-target dot chain in `parse_capture_target` (e.g. `&Foo.\n  bar/1`),
-  and `parse_upper_path` (the shared path parser behind
+  `parse_alias_expr` (alias-path chains, e.g. `Foo.\n  Bar`), and
+  `parse_upper_path` (the shared path parser behind
   `alias`/`import`/`require`/`defmodule`/protocol module paths). Dot
   consumes trailing eol by construction regardless of what it's chaining —
   this is ordinary trailing-position grammar, unconditional, no
@@ -75,6 +90,41 @@ lookahead in the parser. Continuation vs. new-statement is a static,
 per-token fact resolved once at tokenize time (leading position) or an
 ordinary grammar rule (trailing position) — never a runtime guess about
 what a future token "looks like".
+
+## Boolean operators
+
+`||`, `&&` and `!` lex as `Tok::OrOr`, `Tok::AndAnd` and `Tok::Bang`. The Pratt
+table gives `||` the binding power of `or` and `&&` that of `and`; `!` and `not`
+share one prefix reader (`parse_prefix_operator`) that binds tighter than every
+binary operator. All six read as ordinary `{:op, meta, args}` calls.
+
+`and`, `or` and `not` are language operators: the body lowering rewrites each
+into a `case` whose miss arm halts with `BadBooleanError` (non-boolean left
+operand of `and`/`or`) or `ArgumentError` (`not` of a non-boolean). The miss arm
+stays in the lowered body even where the operand's type is a boolean, as it does
+for any exhaustive `case`. `||`, `&&` and `!` are
+`Kernel` macros (`lib/kernel.fz`) over `nil`/`false` patterns, so they answer
+the deciding value. `and`, `or` and `not` stay legal in guards, where a
+non-boolean operand fails the guard as any guard error does; the three guard
+evaluators (`ir_interp/dispatch_exec.rs`, `jobs/native.rs`,
+`native_codegen/receive.rs`) apply the same strictness.
+
+## Macros in guards
+
+Every guard is expanded with `QuotedExpansionCtx::expand_guard`: the guard of a
+function head (`jobs/source.rs`), and the guard of every `when` call the
+expander reaches (`case`, `receive` and `fn` clauses). A macro that
+expands inside a guard keeps working when its expansion is something dispatch
+evaluates (operators, literals, variables, function calls, as decided by
+`jobs::is_guard_expr`). Any other expansion is refused at the macro call, in
+Elixir's words: ``invalid expression in guard, `||` is not allowed in guards``.
+This is the one check; `||`, `&&` and `!` are refused by it because they expand
+to a `case`.
+
+A `defmacro` head is an ordinary expression, so an operator head such as
+`defmacro left || right` parses the same way as a named head
+(`parse_defmacro_head`); `quoted_surface::definable_operator_arity` lists the
+operators a module may define.
 
 ## `when` and trailing `do` belong to expression grammar
 
@@ -163,7 +213,8 @@ optional `after` section, each ending at the next section keyword or `end`.
 Each section is decided independently by `parse_do_section`, using the same
 rule Elixir uses: parse the section's first statement, then look for a
 following `->`. Finding one turns the whole section into a list of
-`pattern -> body` clauses (`finish_clause_list`); anything else makes it an
+`pattern -> body` clauses (`finish_clause_list`, which hands them to the
+one clause-list reader below); anything else makes it an
 ordinary block, wrapping more than one statement in `__block__`. This one
 rule is what lets `if`, `case`, `cond`, `with`, and `receive` share a single
 do-block reader despite each wanting a different section shape — `case`'s
@@ -172,6 +223,28 @@ pattern followed by `->`, while `if`'s `do` is always block-shaped because
 it never is. A parenthesized grouping `(...)` gets the same clause check
 when it holds one bare clause, e.g. `case(1, do: (1 -> 1))`.
 
+## One clause-list reader
+
+`fn`, the clause-shaped do-sections (`case`, `cond`, `receive`,
+`with ... else`) and the parenthesized `(a -> b)` form all read their clauses
+through `parse_clause_list`. Only the head differs: `fn` heads are parameter
+lists (`parse_param_head`), the others are one pattern expression.
+
+A clause body may span several lines, and Elixir's rule decides which lines
+belong to which clause: a line starts a new clause only when it is itself
+`head ->`; every other line joins the body of the clause above it. A body of
+one line stays a bare expression, and a body of several is a `__block__`,
+built by `parse_block_lines`, the same reader that builds every other block.
+
+Each line is read once and classified by the token that follows it
+(`parse_clause_line`). A pattern line is a head exactly when `->` follows it.
+A parameter line is a head when `,`, `when` or `->` follows its first
+expression, or when it opens with a parenthesis group followed by `when` or
+`->`; no body line can continue that way. The first clause of a list is
+always a head, so a plain line before it keeps the head's own error. A line
+that is neither a body line nor a head is reported where it ends, and two
+clauses on one line are reported as a missing newline.
+
 ## A no-parens call's own comma is not always its own
 
 `parse_no_parens_args` stops at a comma when `comma_bound` is set, so that
@@ -179,7 +252,7 @@ when it holds one bare clause, e.g. `case(1, do: (1 -> 1))`.
 belongs to `f`'s own argument list. This flag is inherited through ordinary
 expression parsing, so an argument, list/tuple/map element, or keyword-entry
 value is comma-bound by the outer construct that contains it. Anything with
-its *own* unambiguous close token — a grouping `(...)`, a captured `&(...)`,
+its *own* unambiguous close token — a grouping `(...)`,
 an anonymous-function clause body, or a `do ... end` block — resets it with
 `with_comma_unbound` on entry: nothing inside can be mistaken for a sibling
 of whatever comma-separated list happens to contain it, so a bare `if cond,
@@ -208,3 +281,17 @@ same string token. Documentation that quotes fz syntax is therefore executable
 text: a doc explaining interpolation contains `#{...}` and will interpolate it,
 and an unbound name there currently changes what the module compiles to without
 reporting anything (fz-5xp.96). Escape the sigil in prose that describes it.
+
+## Captures
+
+`parse_capture_expr` reads `&` as a prefix operator with one operand. Only
+two spellings are not expressions and are read from tokens: `&N` with no
+space before the integer (the capture argument), and `&op/N` for an operator
+such as `&+/2` (`parse_operator_capture`). Every other operand is parsed by
+`parse_bp(CAPTURE_OPERAND_BP)`, bp 5: tighter than `when` (4) and `<-` (2),
+and including `=` and every binary operator, `/` among them. So
+`&Mod.f/1` and `&name/1` come out as `(& [(/ [target, arity])])`, while
+`& &1.f`, `&{&1, &2}`, `&[&1]`, `&"#{&1}"` and `&(&1 + 1)` come out as `&`
+around the body. The parser does not decide between function reference and
+body; `rewrite_capture` in `source_sugar.rs` does, via
+`is_function_ref_payload`.

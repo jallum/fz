@@ -1,0 +1,10 @@
+#---
+# purpose: "A file with top-level expressions and its own main/0 is an error naming both"
+# expect: diagnostic
+# diagnostic.code: resolve/script-and-main
+#---
+dbg(1)
+
+def main() do
+  dbg(2)
+end

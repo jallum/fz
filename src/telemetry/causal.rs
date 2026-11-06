@@ -468,11 +468,7 @@ pub struct ShiftWork {
 pub struct SessionWork {
     pub sessions: u64,
     pub producer_pokes: u64,
-    pub ignition: u64,
-    pub changed_revision_wake: u64,
-    pub activation_published: u64,
-    pub blocked_waiter_expansion: u64,
-    pub unsanctioned_work_starts: u64,
+    pub work_starts: crate::compiler2::WorkStartTally,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -683,13 +679,15 @@ impl CausalReport {
         for (dimension, count) in [
             ("sessions", session.sessions),
             ("producer_pokes", session.producer_pokes),
-            ("ignition", session.ignition),
-            ("changed_revision_wake", session.changed_revision_wake),
-            ("activation_published", session.activation_published),
-            ("blocked_waiter_expansion", session.blocked_waiter_expansion),
-            ("unsanctioned_work_starts", session.unsanctioned_work_starts),
         ] {
             put_count(&mut multiset, format!("session\u{1}{dimension}"), count);
+        }
+        for reason in crate::compiler2::WorkStartReason::ALL {
+            put_count(
+                &mut multiset,
+                format!("session\u{1}{}", reason.name()),
+                session.work_starts[reason],
+            );
         }
         for (kind, lifecycle) in &self.lifecycles {
             for (dimension, count) in [
@@ -1650,11 +1648,13 @@ impl Replay {
         let tally = &mut self.report.sessions;
         tally.sessions += 1;
         tally.producer_pokes += count("producer_pokes");
-        tally.ignition += count("work_starts_ignition");
-        tally.changed_revision_wake += count("work_starts_changed_revision_wake");
-        tally.activation_published += count("work_starts_activation_published");
-        tally.blocked_waiter_expansion += count("work_starts_blocked_waiter_expansion");
-        tally.unsanctioned_work_starts += count("unsanctioned_work_starts");
+        let work_starts = session.get("work_starts");
+        for reason in crate::compiler2::WorkStartReason::ALL {
+            tally.work_starts[reason] += work_starts
+                .and_then(|starts| starts.get(reason.name()))
+                .and_then(Json::as_u64)
+                .unwrap_or(0);
+        }
     }
 }
 

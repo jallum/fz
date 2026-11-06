@@ -1,0 +1,34 @@
+#---
+# purpose: "Enum and a user protocol's spec'd function accept a value typed only at runtime (a decoded JSON list), the same as a concrete list"
+# oracle: oracle.exs
+#---
+#
+# `JSON.decode!` answers a value the compiler knows nothing about. Every
+# function below declares its parameter as `Protocol.t(a)`; a call whose
+# argument is only known at runtime must dispatch on the protocol at runtime,
+# exactly as the concrete-list call does.
+defprotocol Sz do
+  def sz(x)
+end
+
+defimpl Sz, for: List do
+  def sz(list), do: length(list)
+end
+
+defimpl Sz, for: Map do
+  def sz(map), do: map_size(map)
+end
+
+defmodule Measure do
+  @spec c(Sz.t(a)) :: integer
+  def c(x), do: Sz.sz(x)
+end
+
+def main() do
+  decoded = JSON.decode!("[\"fz\",\"x\"]")
+
+  dbg(Enum.count(decoded))
+  dbg(Enum.map(decoded, fn (word) -> word <> "!" end))
+  dbg(Measure.c(decoded))
+  dbg(Measure.c([1, 2, 3]))
+end

@@ -598,40 +598,52 @@ fn compiler2_join_walk_visits_each_entry_and_scope_once() {
     let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, main);
     assert_eq!(
         entries.len(),
-        29,
-        "if/case/cond/with chained once each, an assert after each, lower main/0 to 29 resume entries"
+        // fz-sc8.37: 29 -> 38. Each of the three `or`s lowers to a `case` with a
+        // halting `BadBooleanError` miss arm: a value branch, a dispatch resume,
+        // a direct_call branch and the halt, where the old native `or` op had one
+        // delivered resume.
+        38,
+        "if/case/cond/with chained once each, an assert after each, lower main/0 to 38 resume entries"
     );
 
     // Type analysis re-runs main/0's activation as callee facts settle (`assert`
     // and the comparisons it chains are ordinary calls, so early rounds see
     // absent evidence and stop short); each round's own walk still visits an
     // entry once per distinct scope, so the last round -- the settled one --
-    // is what this test pins. Five of the 29 entries are joins an arm reaches
-    // with two different delivered values, so the walk answers each of those
-    // twice; the other 24 answer once.
+    // is what this test pins. Ten of the 38 entries are reached with two
+    // different delivered values, so the walk answers each of those twice and
+    // the other 28 once: the `with`, `cond` and `case` joins, the `or` after
+    // the `cond` and the one after the `case` (each now two entries, the
+    // operand's dispatch resume and the second operand's direct_call branch),
+    // and the three `or` result joins.
+    // fz-sc8.37: 34 -> 48 walks. Each `or` lowers to a `case` with a halting
+    // miss arm; the 5 doubled entries became 10 (the two `or`s after a
+    // multi-valued join each split in two, and each of the three `or` result
+    // joins is reached with `true` and with a boolean).
     assert_eq!(
         entries_walked(&["fz", "compiler2", "semantic", "walk"]).last().copied(),
-        Some(34),
-        "type analysis walks 29 entries, twice each at 5 of them"
+        Some(48),
+        "type analysis walks 38 entries, twice each at 10 of them"
     );
     // Runtime demand and executable facts walk backwards from a constant
     // outgoing demand/need, so every entry answers from one scope: one walk
     // apiece. Runtime demand does not reach the entry the `case` clause
     // dispatch never selects at this call's fixed input, one fewer than the
-    // 29 lowering keeps for type analysis's broader reachability.
+    // 38 lowering keeps for type analysis's broader reachability.
+    // fz-sc8.37: 28 -> 37 and 29 -> 38, the nine added resume entries.
     assert_eq!(
         entries_walked(&["fz", "compiler2", "runtime_demand", "walk"])
             .last()
             .copied(),
-        Some(28),
-        "runtime demand walks 28 reachable entries exactly once each"
+        Some(37),
+        "runtime demand walks 37 reachable entries exactly once each"
     );
     assert_eq!(
         entries_walked(&["fz", "compiler2", "executable_facts", "walk"])
             .last()
             .copied(),
-        Some(29),
-        "executable facts walks all 29 entries exactly once each"
+        Some(38),
+        "executable facts walks all 38 entries exactly once each"
     );
 }
 
@@ -12253,8 +12265,14 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// `00566_enum_take_drop_split` was a second copy of `00420_enum_take_drop_split`
 /// -- same program, same plans -- and `ARM_ORDER_CENSUS` now walks the program
 /// once instead of twice: `entry` 184 -> 155 plans, 171 -> 142 unreadable.
+/// fz-sc8.37: `case` 3 -> 11 plans, 3 -> 11 unreadable. `and`/`or`/`not` lower
+/// to a `case` with a halting miss arm, and eight more `case` plans exist for
+/// them: `Map.member_pair?/5` in `00277_enum_tier0_fixture` and in
+/// `map_enumerable`, twice in the latter; `Range.contains?/4` twice in
+/// `00277_enum_tier0_fixture` and twice in `range_enumerable`;
+/// `Enum.reject/2#lambda@0/1` in `00569`.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 155, 142), ("receive", 2, 0)];
+    &[("case", 11, 11), ("entry", 155, 142), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -13898,9 +13916,13 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     dispatching.dedup();
     assert_eq!(
         dispatching,
-        ["Kernel.===/2"],
-        "each protocol receiver should settle to a direct impl rather than lower a dispatch edge; the one \
-         multi-target callsite left is inside `===`, whose `any`/`any` clause serves every non-numeric pair \
+        // fz-sc8.37: `["Kernel.===/2"]` -> `["Kernel.===/2", "main/0"]`. `not in`
+        // lowers to a `case` with a halting miss arm, so `dbg(not m)` receives a
+        // result typed as the literal union `false | true` and `dbg` dispatches
+        // per literal.
+        ["Kernel.===/2", "main/0"],
+        "each protocol receiver should settle to a direct impl rather than lower a dispatch edge; the two \
+         multi-target callsites left are `main/0`'s `dbg` over a `case` result, and one inside `===`, whose `any`/`any` clause serves every non-numeric pair \
          at once and calls an extern that is keyed per operand type",
     );
 }
@@ -19005,6 +19027,7 @@ fn expr_has_nested_dispatch(expr: &PatternGuardExpr<Ty>) -> bool {
         PatternGuardExpr::Dispatch { .. } => true,
         PatternGuardExpr::Unary { expr, .. } => expr_has_nested_dispatch(expr),
         PatternGuardExpr::Binary { lhs, rhs, .. } => expr_has_nested_dispatch(lhs) || expr_has_nested_dispatch(rhs),
+        PatternGuardExpr::Extern { args, .. } => args.iter().any(expr_has_nested_dispatch),
         PatternGuardExpr::Const(_) | PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => false,
     }
 }
@@ -19026,6 +19049,7 @@ fn expr_has_binary_nested_input(expr: &PatternGuardExpr<Ty>) -> bool {
         PatternGuardExpr::Binary { lhs, rhs, .. } => {
             expr_has_binary_nested_input(lhs) || expr_has_binary_nested_input(rhs)
         }
+        PatternGuardExpr::Extern { args, .. } => args.iter().any(expr_has_binary_nested_input),
         PatternGuardExpr::Const(_) | PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => false,
     }
 }
@@ -19603,7 +19627,7 @@ fn submit_main_root(
 }
 
 /// One activation's return ascent: the label the canon events name its function
-/// by — which carries the arity, so `build/1` and `Json.array_item/2` are whole
+/// by — which carries the arity, so `build/1` and `JSON.array_item/2` are whole
 /// identities — how many times that activation's `ReturnType` was revised, and
 /// whether the widening budget engaged on that same activation. The three
 /// describe one activation, so "something widened" can never be read as "this
@@ -19640,13 +19664,13 @@ type PinnedLadder = (&'static str, &'static [PinnedAscent]);
 /// How deep json's recursive value type climbs before widening depends on
 /// when its readers first observe the intermediate rungs: asking a contract
 /// callee's keying facts early lets one more nesting rung be observed, so
-/// `Json.array/2` and `Json.array_next/2` each take one extra revision to
+/// `JSON.array/2` and `JSON.array_next/2` each take one extra revision to
 /// settle.
 const RETURN_LADDERS: &[PinnedLadder] = &[
     ("fixtures2/behavior/return_tuple_ladder.fz", &[("build/1", 17, true)]),
     (
         "fixtures2/behavior/json_roundtrip.fz",
-        &[("Json.array/2", 6, false), ("Json.array_next/2", 6, false)],
+        &[("JSON.array/2", 6, false), ("JSON.array_next/2", 6, false)],
     ),
 ];
 

@@ -1,0 +1,3 @@
+:negative
+:negative_float
+:other

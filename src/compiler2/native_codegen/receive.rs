@@ -26,14 +26,14 @@
 //! attached to `Term::ReceiveMatched`; it does not rebuild source clauses.
 
 use crate::dispatch_matrix::pattern::{
-    PatternDispatchPlan, PatternGuardBinOp, PatternGuardDispatch, PatternGuardExpr, PatternGuardUnaryOp,
+    GuardExtern, PatternDispatchPlan, PatternGuardBinOp, PatternGuardDispatch, PatternGuardExpr, PatternGuardUnaryOp,
 };
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
     EdgeEvidence, GraphNodeId, GroundValue, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
     SubjectSource,
 };
-use crate::fz_ir::{Module, ReceiveClause, Var};
+use crate::fz_ir::{ExternTy, Module, ReceiveClause, Var};
 
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
@@ -576,7 +576,7 @@ fn emit_region_test<M: cranelift_module::Module>(
                 .guards
                 .get(guard.0 as usize)
                 .ok_or_else(|| CodegenError::new(format!("dispatch guard {:?} out of bounds", guard)))?;
-            let value = emit_dispatch_guard_expr(body, ctx, expr, state)?;
+            let value = emit_dispatch_guard_expr(body, ctx, expr, false_b, state)?;
             let truthy = emit_truthy_cmp(body, value)?;
             body.b.ins().brif(truthy, true_b, &[], false_b, &[]);
         }
@@ -1131,6 +1131,7 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
     expr: &ReceiveGuardExpr,
+    fail: ir::Block,
     state: &mut DispatchEmitState,
 ) -> Result<ReceiveValue, CodegenError> {
     Ok(match expr {
@@ -1146,11 +1147,11 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
         PatternGuardExpr::Subject(subject) => resolve_dispatch_subject(body, ctx, *subject, state)?,
         PatternGuardExpr::Pinned(pinned) => load_pinned_dispatch_value(ctx, *pinned)?,
         PatternGuardExpr::Unary { op, expr } => {
-            let v = emit_dispatch_guard_expr(body, ctx, expr, state)?;
+            let v = emit_dispatch_guard_expr(body, ctx, expr, fail, state)?;
             match op {
                 PatternGuardUnaryOp::Not => {
-                    let truthy = emit_truthy_cmp(body, v)?;
-                    emit_bool_value_from_truthy(body.b, truthy, true)
+                    let is_true = emit_guard_boolean(body, ctx, v, fail)?;
+                    emit_bool_value_from_truthy(body.b, is_true, true)
                 }
                 PatternGuardUnaryOp::Neg => {
                     let z = body.b.ins().iconst(types::I64, 0);
@@ -1162,10 +1163,10 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
         }
         PatternGuardExpr::Binary { op, lhs, rhs } => {
             if matches!(op, PatternGuardBinOp::And | PatternGuardBinOp::Or) {
-                return emit_short_circuit_guard(body, ctx, *op, lhs, rhs, state);
+                return emit_short_circuit_guard(body, ctx, *op, lhs, rhs, fail, state);
             }
-            let l = emit_dispatch_guard_expr(body, ctx, lhs, state)?;
-            let r = emit_dispatch_guard_expr(body, ctx, rhs, state)?;
+            let l = emit_dispatch_guard_expr(body, ctx, lhs, fail, state)?;
+            let r = emit_dispatch_guard_expr(body, ctx, rhs, fail, state)?;
             match op {
                 PatternGuardBinOp::Add => {
                     let l = receive_value_int(body, l)?;
@@ -1225,11 +1226,80 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
         } => {
             let values = inputs
                 .iter()
-                .map(|input| emit_dispatch_guard_expr(body, ctx, input, state))
+                .map(|input| emit_dispatch_guard_expr(body, ctx, input, fail, state))
                 .collect::<Result<Vec<_>, _>>()?;
-            emit_guard_dispatch(body, ctx, dispatch, prepared, values)?
+            emit_guard_dispatch(body, ctx, dispatch, prepared, values, fail)?
+        }
+        PatternGuardExpr::Extern { extern_fn, args } => {
+            if extern_fn.fails_the_guard() {
+                return Ok(fail_guard(body, fail));
+            }
+            let values = args
+                .iter()
+                .map(|arg| emit_dispatch_guard_expr(body, ctx, arg, fail, state))
+                .collect::<Result<Vec<_>, _>>()?;
+            emit_guard_extern(body, ctx, extern_fn, values)?
         }
     })
+}
+
+/// Leaves the guard through its failure block. What follows in the expression
+/// is unreachable, and goes on in a block nothing enters.
+fn fail_guard<M: cranelift_module::Module>(body: &mut DispatchBody<'_, '_, M>, fail: ir::Block) -> ReceiveValue {
+    body.b.ins().jump(fail, &[]);
+    let dead = body.b.create_block();
+    body.b.switch_to_block(dead);
+    body.b.seal_block(dead);
+    bool_const_value(body.b, false)
+}
+
+/// A call to an extern, made from the receive matcher.
+///
+/// The matcher holds its values as refs or raw words, so the call carries
+/// exactly two classes: an integer, and a reference word. The guard's extern
+/// was admitted on that rule where the node was made, so no other class
+/// reaches here.
+fn emit_guard_extern<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    ctx: &DispatchCtx<'_>,
+    extern_fn: &GuardExtern,
+    values: Vec<ReceiveValue>,
+) -> Result<ReceiveValue, CodegenError> {
+    let mut sig = body.module.make_signature();
+    let mut call_args = Vec::with_capacity(values.len() + 1);
+    if extern_fn.abi.takes_process() {
+        sig.params.push(ir::AbiParam::new(types::I64));
+        call_args.push(ctx.process);
+    }
+    for (value, ty) in values.into_iter().zip(&extern_fn.params) {
+        sig.params.push(ir::AbiParam::new(types::I64));
+        call_args.push(match ty {
+            ExternTy::I64 => receive_value_int(body, value)?,
+            ExternTy::Any => emit_receive_value_ref(body, ctx, value)?,
+            other => {
+                return Err(CodegenError::new(format!(
+                    "guard extern `{}` has a {other:?} parameter, which the receive matcher does not carry",
+                    extern_fn.symbol
+                )));
+            }
+        });
+    }
+    sig.returns.push(ir::AbiParam::new(types::I64));
+    let func_id = body
+        .module
+        .declare_function(&extern_fn.symbol, Linkage::Import, &sig)
+        .map_err(|e| CodegenError::new(format!("declare guard extern `{}`: {e}", extern_fn.symbol)))?;
+    let callee = body.module.declare_func_in_func(func_id, body.b.func);
+    let call = body.b.ins().call(callee, &call_args);
+    let raw = body.b.inst_results(call)[0];
+    match extern_fn.ret {
+        ExternTy::I64 => Ok(ReceiveValue::Int(raw)),
+        ExternTy::Any => Ok(ReceiveValue::AnyRef(raw)),
+        other => Err(CodegenError::new(format!(
+            "guard extern `{}` returns {other:?}, which the receive matcher does not carry",
+            extern_fn.symbol
+        ))),
+    }
 }
 
 fn emit_guard_dispatch<M: cranelift_module::Module>(
@@ -1238,6 +1308,7 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
     dispatch: &ReceiveGuardDispatch,
     prepared_keys: &[crate::dispatch_matrix::PreparedKeyId],
     inputs: Vec<ReceiveValue>,
+    fail: ir::Block,
 ) -> Result<ReceiveValue, CodegenError> {
     let done = body.b.create_block();
     body.b.append_block_param(done, types::I64);
@@ -1264,7 +1335,15 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
         binary_data_gvs: parent.binary_data_gvs,
     };
     let mut state = DispatchEmitState::default();
-    emit_guard_dispatch_node(body, &ctx, &dispatch.bodies, dispatch.plan.graph.root, done, &mut state)?;
+    emit_guard_dispatch_node(
+        body,
+        &ctx,
+        &dispatch.bodies,
+        dispatch.plan.graph.root,
+        done,
+        fail,
+        &mut state,
+    )?;
     body.b.switch_to_block(done);
     body.b.seal_block(done);
     Ok(ReceiveValue::AnyRef(body.b.block_params(done)[0]))
@@ -1276,6 +1355,7 @@ fn emit_guard_dispatch_node<M: cranelift_module::Module>(
     bodies: &[ReceiveGuardExpr],
     node_id: GraphNodeId,
     done: ir::Block,
+    fail: ir::Block,
     state: &mut DispatchEmitState,
 ) -> Result<(), CodegenError> {
     let node = ctx
@@ -1285,12 +1365,7 @@ fn emit_guard_dispatch_node<M: cranelift_module::Module>(
         .ok_or_else(|| CodegenError::new(format!("guard dispatch node {:?} out of bounds", node_id)))?;
     match node {
         DispatchNode::Fail => {
-            let false_value = bool_const_value(body.b, false);
-            let false_ref = emit_receive_value_ref(body, ctx, false_value)?;
-            body.b.ins().jump(done, &[ir::BlockArg::Value(false_ref)]);
-            let dead = body.b.create_block();
-            body.b.switch_to_block(dead);
-            body.b.seal_block(dead);
+            fail_guard(body, fail);
             Ok(())
         }
         DispatchNode::Outcome { outcome, .. } => {
@@ -1301,7 +1376,7 @@ fn emit_guard_dispatch_node<M: cranelift_module::Module>(
             let guard_body = bodies
                 .get(outcome.body_id as usize)
                 .ok_or_else(|| CodegenError::new(format!("guard dispatch body {} out of bounds", outcome.body_id)))?;
-            let value = emit_dispatch_guard_expr(body, ctx, guard_body, state)?;
+            let value = emit_dispatch_guard_expr(body, ctx, guard_body, fail, state)?;
             let value_ref = emit_receive_value_ref(body, ctx, value)?;
             body.b.ins().jump(done, &[ir::BlockArg::Value(value_ref)]);
             let dead = body.b.create_block();
@@ -1331,10 +1406,10 @@ fn emit_guard_dispatch_node<M: cranelift_module::Module>(
             let mut true_state = state.clone();
             true_state.values.extend(true_values);
             apply_edge_evidence_to_receive_state(body, ctx, &on_match.evidence, &mut true_state)?;
-            emit_guard_dispatch_node(body, ctx, bodies, on_match.target, done, &mut true_state)?;
+            emit_guard_dispatch_node(body, ctx, bodies, on_match.target, done, fail, &mut true_state)?;
             body.b.switch_to_block(false_b);
             body.b.seal_block(false_b);
-            emit_guard_dispatch_node(body, ctx, bodies, on_miss.target, done, state)
+            emit_guard_dispatch_node(body, ctx, bodies, on_miss.target, done, fail, state)
         }
     }
 }
@@ -1345,10 +1420,11 @@ fn emit_short_circuit_guard<M: cranelift_module::Module>(
     op: PatternGuardBinOp,
     lhs: &ReceiveGuardExpr,
     rhs: &ReceiveGuardExpr,
+    fail: ir::Block,
     state: &mut DispatchEmitState,
 ) -> Result<ReceiveValue, CodegenError> {
-    let lhs_value = emit_dispatch_guard_expr(body, ctx, lhs, state)?;
-    let lhs_truthy = emit_truthy_cmp(body, lhs_value)?;
+    let lhs_value = emit_dispatch_guard_expr(body, ctx, lhs, fail, state)?;
+    let lhs_truthy = emit_guard_boolean(body, ctx, lhs_value, fail)?;
     let rhs_b = body.b.create_block();
     let done_b = body.b.create_block();
     body.b.append_block_param(done_b, types::I64);
@@ -1372,9 +1448,9 @@ fn emit_short_circuit_guard<M: cranelift_module::Module>(
     body.b.switch_to_block(rhs_b);
     body.b.seal_block(rhs_b);
     let mut rhs_state = state.clone();
-    let rhs_value = emit_dispatch_guard_expr(body, ctx, rhs, &mut rhs_state)?;
-    let rhs_truthy = emit_truthy_cmp(body, rhs_value)?;
-    let rhs_bool = emit_bool_value_from_truthy(body.b, rhs_truthy, false);
+    let rhs_value = emit_dispatch_guard_expr(body, ctx, rhs, fail, &mut rhs_state)?;
+    let rhs_true = emit_guard_boolean(body, ctx, rhs_value, fail)?;
+    let rhs_bool = emit_bool_value_from_truthy(body.b, rhs_true, false);
     let rhs_ref = emit_receive_value_ref(body, ctx, rhs_bool)?;
     body.b.ins().jump(done_b, &[ir::BlockArg::Value(rhs_ref)]);
 
@@ -1417,6 +1493,27 @@ fn emit_bool_value_from_truthy(b: &mut FunctionBuilder<'_>, truthy: ir::Value, i
         b.ins().select(truthy, t, f)
     };
     ReceiveValue::Atom(raw)
+}
+
+/// An operand of `and`, `or` or `not` in a guard: whether it is `true`. An
+/// error fails the guard, and a non-boolean operand is an error, so anything
+/// but `true` and `false` leaves through the failure block.
+fn emit_guard_boolean<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    ctx: &DispatchCtx<'_>,
+    v: ReceiveValue,
+    fail: ir::Block,
+) -> Result<ir::Value, CodegenError> {
+    let true_value = bool_const_value(body.b, true);
+    let false_value = bool_const_value(body.b, false);
+    let is_true = emit_typed_eq_cmp(body, ctx, v, true_value)?;
+    let is_false = emit_typed_eq_cmp(body, ctx, v, false_value)?;
+    let is_boolean = body.b.ins().bor(is_true, is_false);
+    let boolean_b = body.b.create_block();
+    body.b.ins().brif(is_boolean, boolean_b, &[], fail, &[]);
+    body.b.switch_to_block(boolean_b);
+    body.b.seal_block(boolean_b);
+    Ok(is_true)
 }
 
 fn emit_truthy_cmp<M: cranelift_module::Module>(
@@ -1561,6 +1658,11 @@ fn collect_binary_literals_in_guard(expr: &ReceiveGuardExpr, out: &mut Vec<Vec<u
             collect_binary_literals_in_dispatch(&dispatch.plan, out);
             for body in &dispatch.bodies {
                 collect_binary_literals_in_guard(body, out);
+            }
+        }
+        PatternGuardExpr::Extern { args, .. } => {
+            for arg in args {
+                collect_binary_literals_in_guard(arg, out);
             }
         }
         PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) => {}

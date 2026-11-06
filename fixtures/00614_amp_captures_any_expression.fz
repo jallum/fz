@@ -1,0 +1,34 @@
+#---
+# purpose: "`&` captures any expression: the operand is an ordinary expression, and a name/arity operand is a function reference"
+# oracle: oracle.exs
+#---
+#
+# `&` takes one operand expression. When the operand is `name/arity` or
+# `Mod.name/arity` it names a function; otherwise the operand is the body of an
+# anonymous function over its highest `&N`.
+defmodule Twice do
+  def double(x), do: x * 2
+end
+
+defmodule Capture do
+  def inc(x), do: x + 1
+
+  def run() do
+    maps = [%{inclusive: 1}, %{inclusive: 2}]
+
+    dbg(Enum.map(maps, & &1.inclusive))
+    dbg(Enum.map([1, 2, 3], & &1 + 1))
+    dbg(Enum.map([1, 2], &{&1, 10}))
+    dbg(Enum.map([1, 2], &[&1]))
+    dbg(Enum.map([1, 2], &"n=#{&1}"))
+    dbg(Enum.map([1, 2], &Twice.double/1))
+    dbg(Enum.map([1, 2], &inc/1))
+    dbg(Enum.reduce([1, 2, 3], 0, &+/2))
+    dbg(Enum.map([1, 2, 3], &(&1 * 2)))
+    dbg((&{&1, &2}).(:a, :b))
+  end
+end
+
+def main() do
+  Capture.run()
+end

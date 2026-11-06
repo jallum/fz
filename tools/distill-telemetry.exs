@@ -27,7 +27,7 @@ defmodule Distill do
     by_subject(jobs, top)
     reruns(jobs, top)
     return_revisions(records, names, top)
-    wakes(records, jobs, names, top)
+    wakes(records, jobs, top)
   end
 
   # The compiler names each function once, in a canon event; jobs name it by id.
@@ -116,15 +116,6 @@ defmodule Distill do
     |> table(["activation", "revisions", "widened"])
   end
 
-  # A job start whose subject already ran is a re-run; the first start for a
-  # subject is not. `wakes/4` keys its wake matching off this.
-  defp reruns_by_label(jobs) do
-    jobs
-    |> Enum.group_by(& &1.label)
-    |> Enum.filter(fn {_, ss} -> length(ss) > 1 end)
-    |> Map.new(fn {label, ss} -> {label, length(ss) - 1} end)
-  end
-
   # Every job kind's work: how many times it ran, how many distinct subjects
   # it ran for, the excess this leaves (runs a subject's first run didn't
   # need), and the worst single subject. A kind with zero excess runs exactly
@@ -156,7 +147,7 @@ defmodule Distill do
   # `work_graph.dependencies_moved` (metadata.step, a product
   # settling), and `work_graph.quiesced` (metadata.step, a drain step). All three
   # share the same `wakes` shape; reading only `applied` undercounts every
-  # re-run a product settlement or a drain step woke.
+  # wake a product settlement or a drain step carried.
   defp wake_events(records) do
     for %{"name" => ["fz", "compiler2", "work_graph", event]} = r <- records,
         event in ["applied", "dependencies_moved", "quiesced"] do
@@ -167,39 +158,27 @@ defmodule Distill do
     end
   end
 
-  # Why every re-run ran again: every wake across the three events
+  # Why jobs were started: every wake across the three events
   # above, grouped by (job kind, changed fact + use, completing job kind,
   # disposition) rather than free text, so the same shape of cause across many
   # subjects collapses to one row instead of one row per subject.
-  defp wakes(records, jobs, names, top) do
-    IO.puts("cause of every re-run")
-
-    reruns = reruns_by_label(jobs)
+  defp wakes(records, jobs, top) do
+    IO.puts("cause of every wake")
 
     wake_rows =
       for {completing, wakes} <- wake_events(records),
           wake <- wakes,
-          target = {wake["job"]["kind"], subject(wake["job"], names)},
-          Map.has_key?(reruns, target),
           do: {wake["job"]["kind"], wake["cause"]["kind"], wake["cause"]["use"], completing, wake["disposition"]}
 
     {enqueued, coalesced} = Enum.split_with(wake_rows, fn {_, _, _, _, d} -> d == "enqueued" end)
 
     cause_table(enqueued, top)
-    IO.puts("  coalesced: an additional cause landing on a re-run already enqueued by the row above, not a separate start")
+    IO.puts("  coalesced: an additional cause landing on a job already enqueued by the row above, not a separate start")
     cause_table(coalesced, top)
 
-    tally = work_start_tally(records)
-    total_subjects = jobs |> Enum.map(& &1.label) |> Enum.uniq() |> length()
-
-    check!("matched enqueued wakes", length(enqueued), "work_starts_changed_revision_wake", tally.changed_revision_wake)
-
-    check!(
-      "ignition + root_frontier + activation_frontier + blocked_waiter_expansion",
-      tally.ignition + tally.root_frontier + tally.activation_frontier + tally.blocked_waiter_expansion,
-      "distinct subjects",
-      total_subjects
-    )
+    work_starts = work_start_tally(records)
+    work_start_table(work_starts)
+    check!("sum of work_starts", work_starts |> Map.values() |> Enum.sum(), "job runs", length(jobs))
 
     IO.puts("")
   end
@@ -217,11 +196,10 @@ defmodule Distill do
     |> table(["job kind", "changed fact (use)", "completing job", "disposition", "count"])
   end
 
-  # Two invariants a correct census must hold: every re-run is a
-  # changed_revision_wake work start and nothing else, and every subject's
-  # first run is one of the other three reasons and nothing else. A mismatch
-  # means the census missed or double-counted a wake somewhere above -- never
-  # a table row to eyeball, a loud failure that stops the distiller.
+  # The scheduler charges exactly one reason to each job run, so the reasons
+  # summed across every session must equal the job spans in the stream. A
+  # mismatch means the census missed or double-counted a run -- never a table
+  # row to eyeball, a loud failure that stops the distiller.
   defp check!(left_label, left, right_label, right) when left == right do
     IO.puts("  #{left_label} (#{left}) == #{right_label} (#{right})")
   end
@@ -231,36 +209,25 @@ defmodule Distill do
     System.halt(1)
   end
 
-  # `pull.session.finished` carries one session's cumulative WorkStartTally;
-  # summed across every session in the stream this is the whole run's
-  # breakdown of why a job entered the agenda. `wakes/4` cross-checks both
-  # halves of this tally against what it counted directly.
+  # `pull.session.finished` carries one session's cumulative work starts as
+  # one count per reason; summed across every session in the stream this is
+  # the whole run's breakdown of why a job entered the agenda. Whatever reasons
+  # the trace carries are the reasons reported.
   defp work_start_tally(records) do
-    zero = %{
-      ignition: 0,
-      changed_revision_wake: 0,
-      root_frontier: 0,
-      activation_frontier: 0,
-      blocked_waiter_expansion: 0,
-      unsanctioned: 0
-    }
-
-    for %{"name" => ["fz", "compiler2", "pull", "session", "finished"], "metadata" => %{"session" => s}} <- records,
-        reduce: zero do
-      acc ->
-        %{
-          ignition: acc.ignition + s["work_starts_ignition"],
-          changed_revision_wake: acc.changed_revision_wake + s["work_starts_changed_revision_wake"],
-          # `work_starts_root_frontier` postdates every other key here
-          # (fz-afu.2's gated `submit_root`): a trace captured before that
-          # landed has no such wake by construction, so a missing key reads
-          # as zero rather than exploding a fixed historical fixture.
-          root_frontier: acc.root_frontier + Map.get(s, "work_starts_root_frontier", 0),
-          activation_frontier: acc.activation_frontier + s["work_starts_activation_frontier"],
-          blocked_waiter_expansion: acc.blocked_waiter_expansion + s["work_starts_blocked_waiter_expansion"],
-          unsanctioned: acc.unsanctioned + s["unsanctioned_work_starts"]
-        }
+    for %{"name" => ["fz", "compiler2", "pull", "session", "finished"], "metadata" => %{"session" => %{"work_starts" => starts}}} <-
+          records,
+        {reason, n} <- starts,
+        reduce: %{} do
+      acc -> Map.update(acc, reason, n, &(&1 + n))
     end
+  end
+
+  defp work_start_table(work_starts) do
+    IO.puts("  work starts by reason")
+
+    work_starts
+    |> Enum.sort_by(fn {reason, n} -> {-n, reason} end)
+    |> table(["reason", "count"])
   end
 
   defp wall(records) do

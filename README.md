@@ -26,6 +26,10 @@ def main() do
 end
 ```
 
+A file can also be a script: its top-level expressions run in order as the
+program's `main/0` (a file with both top-level expressions and its own
+`def main()` is an error).
+
 Having full control of the stack buys some flexibility in interesting
 places: When you write `receive` in fz, the receiver's pattern is
 compiled into a matcher that can also run on the sender's heap, and only

@@ -1,24 +1,26 @@
 //! `tools/distill-telemetry.exs` reads a `--log-telemetry` JSONL stream and
 //! prints, among other sections, a per-kind runs-vs-subjects census and the
-//! cause of every re-run. Both are pure counts over the stream's own
+//! cause of every wake. Both are pure counts over the stream's own
 //! `time_ns`/`elapsed_ns` fields, so a fixed trace produces byte-identical
 //! output on every machine and every run; wall-clock-derived sections
 //! (`timeline`, `span names by inclusive time`, ...) are not asserted on
 //! here because their milliseconds vary run to run.
 //!
 //! `tests/distill_telemetry/main_returns_one.jsonl` (`def main(), do: 1`) is
-//! the smallest program there is: 44 job starts over 26 subjects, 18
-//! re-runs, every one of them matched to an `enqueued` wake -- one of those
-//! wakes (`ScopeCode(17)` woken by the nested `def/1` macro root's
+//! the smallest program there is: 22 job runs over 20 subjects, 2 re-runs
+//! (`ScopeCode`, 4 runs over 2 subjects). The cause table counts every
+//! `enqueued` wake -- 12 of them, none coalesced -- and one of those
+//! (`ScopeCode` woken by the nested `def/1` macro root's
 //! `Product(root_backend_product)` settling) arrives on
 //! `work_graph.dependencies_moved`, not `work_graph.applied`, which is why
-//! the distiller reads all three step-carrying events. It was captured with:
+//! the distiller reads all three step-carrying events. The per-reason
+//! `work_starts` counts sum to the 22 job runs. It was captured with:
 //!
 //!     cargo build
 //!     target/debug/fz2 --log-telemetry tests/distill_telemetry/main_returns_one.jsonl \
 //!         interp tests/distill_telemetry/main_returns_one.fz
 //!
-//! Regenerate `expected_job_census.txt` / `expected_rerun_causes.txt` by
+//! Regenerate `expected_job_census.txt` / `expected_wake_causes.txt` by
 //! running the distiller over that trace and copying the two sections named
 //! below out of its stdout.
 
@@ -66,20 +68,20 @@ fn distiller_reports_job_runs_vs_subjects() {
     );
 }
 
-/// Every re-run's cause, read from the wakes on `work_graph.applied`,
+/// Every wake's cause, read from the wakes on `work_graph.applied`,
 /// `work_graph.dependencies_moved` and `work_graph.quiesced` -- not inferred
 /// -- grouped by (job kind, changed fact + use, completing job kind,
-/// disposition). Only `enqueued` wakes count toward a re-run; `coalesced`
-/// wakes land on a re-run some other wake already enqueued and are reported
-/// separately. The distiller cross-checks its own count against the trace's
-/// session-summed `WorkStartTally` and halts loudly on a mismatch rather than
-/// printing an unexplained row.
+/// disposition). `coalesced` wakes land on a job some other wake already
+/// enqueued and are reported separately. The section ends with the
+/// per-reason `work_starts` breakdown and a check that its sum equals the
+/// job runs; the distiller halts loudly on a mismatch rather than printing an
+/// unexplained row.
 #[test]
-fn distiller_reports_the_cause_of_every_rerun() {
+fn distiller_reports_the_cause_of_every_wake() {
     let actual = distill_stdout();
-    let expected = expected("expected_rerun_causes.txt");
+    let expected = expected("expected_wake_causes.txt");
     assert!(
         actual.contains(&expected),
-        "\"cause of every re-run\" section did not match.\n--- expected ---\n{expected}\n--- actual (full stdout) ---\n{actual}"
+        "\"cause of every wake\" section did not match.\n--- expected ---\n{expected}\n--- actual (full stdout) ---\n{actual}"
     );
 }

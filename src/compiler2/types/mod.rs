@@ -86,6 +86,9 @@ pub struct Types {
     /// Memoized `value_lane_repr`: the transport-lane representative of a type.
     /// A derived fact about each type, computed once rather than on every lane.
     value_lane_reprs: HashMap<Ty, Ty>,
+    /// Memoized `structural_surface`: each type read with its protocol-domain
+    /// markers as `any`.
+    structural_surfaces: HashMap<Ty, Ty>,
     /// Interned structural addresses (`a0`, `a1_0`, `r0`, ...). Keyed by the
     /// address path so the same address always yields the same `TypeVarId`,
     /// making the addressed arrow canonical by construction. See `addressed`.
@@ -135,6 +138,7 @@ struct CoreTypes {
     empty_list: Ty,
     str_t: Ty,
     map_top: Ty,
+    tuple_top: Ty,
     pid: Ty,
     reference: Ty,
     c_pointer: Ty,
@@ -512,6 +516,7 @@ impl Types {
             empty_list: interner.intern(Descr::empty_list()),
             str_t: interner.intern(Descr::str_t()),
             map_top: interner.intern(Descr::map_top()),
+            tuple_top: interner.intern(Descr::tuple_top()),
             pid: interner.intern(Descr::builtin_opaque(BuiltinOpaque::Pid)),
             reference: interner.intern(Descr::builtin_opaque(BuiltinOpaque::Ref)),
             c_pointer: interner.intern(Descr::builtin_opaque(BuiltinOpaque::CPointer)),
@@ -522,6 +527,7 @@ impl Types {
             comparisons: RefCell::default(),
             binary_type_operations: BinaryTypeOperationResults::default(),
             value_lane_reprs: HashMap::new(),
+            structural_surfaces: HashMap::new(),
             address_vars: HashMap::new(),
             address_paths: Vec::new(),
             callable_origins: order::CallableOrigins::new(),
@@ -1032,6 +1038,21 @@ impl Types {
         repr
     }
 
+    /// The type read for the values it admits: every protocol-domain marker
+    /// (`Protocol.t(...)`) stands for any value, the same reading the runtime
+    /// type predicate gives it. The marker's obligation (the receiver must
+    /// implement the protocol) is a separate fact, `protocol_domain_obligations`;
+    /// the surface is what a call may be refined against. Memoized.
+    pub(crate) fn structural_surface(&mut self, ty: Ty) -> Ty {
+        if let Some(&cached) = self.structural_surfaces.get(&ty) {
+            return cached;
+        }
+        let descr = structural_surface(self, ty);
+        let surface = self.intern(descr);
+        self.structural_surfaces.insert(ty, surface);
+        surface
+    }
+
     /// Every type the arena holds, in mint order.
     ///
     /// Comparison-only: the canon faithfulness ratchet sweeps the whole
@@ -1336,6 +1357,16 @@ impl Types {
 
     pub fn map_top(&mut self) -> Ty {
         self.core.map_top
+    }
+
+    pub fn tuple_top(&mut self) -> Ty {
+        self.core.tuple_top
+    }
+
+    /// Whether every value of `a` is a tuple, of any arity (including `{}`). A
+    /// type that merely contains tuples, such as `any`, is not one.
+    pub fn is_tuple_type(&self, a: &Ty) -> bool {
+        self.is_subtype(a, &self.core.tuple_top) && !self.is_empty(a)
     }
 
     pub fn mint_brand(&mut self, inner: Ty, name: &str) -> Ty {
@@ -2977,6 +3008,14 @@ impl SharedTypes for Types {
         Types::map_top(self)
     }
 
+    fn tuple_top(&mut self) -> Self::Ty {
+        Types::tuple_top(self)
+    }
+
+    fn is_tuple_type(&self, a: &Self::Ty) -> bool {
+        Types::is_tuple_type(self, a)
+    }
+
     fn mint_brand(&mut self, inner: Self::Ty, name: &str) -> Self::Ty {
         Types::mint_brand(self, inner, name)
     }
@@ -3447,13 +3486,32 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
     )
 }
 
+/// A protocol-domain marker is a positive member of the opaque axis.
+fn carries_protocol_domain(descr: &Descr) -> bool {
+    !descr.opaques.cofinite
+        && descr
+            .opaques
+            .values
+            .iter()
+            .any(|tag| matches!(tag, OpaqueTag::ProtocolDomain(_)))
+}
+
+fn structural_surface(t: &mut Types, a: Ty) -> Descr {
+    let base = t.descr(&a).clone();
+    if carries_protocol_domain(&base) {
+        return Descr::any();
+    }
+    map_recursive_inputs_with(t, base, &mut |t, nested| t.structural_surface(nested))
+}
+
 fn runtime_type_predicate_widens_non_structs(descr: &Descr) -> bool {
     descr.opaques.cofinite
         || descr
             .opaques
             .values
             .iter()
-            .any(|tag| matches!(tag, OpaqueTag::Builtin(_) | OpaqueTag::ProtocolDomain(_)))
+            .any(|tag| matches!(tag, OpaqueTag::Builtin(_)))
+        || carries_protocol_domain(descr)
         || descr.vars.cofinite
         || !descr.vars.values.is_empty()
 }

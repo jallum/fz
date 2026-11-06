@@ -17,6 +17,7 @@ mod body_test;
 mod callable_target;
 mod contract;
 mod dispatch;
+pub(super) use dispatch::is_guard_expr;
 mod executable_facts;
 mod keying;
 mod native;

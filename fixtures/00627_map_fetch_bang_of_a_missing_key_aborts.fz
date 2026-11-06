@@ -1,0 +1,6 @@
+#---
+# purpose: "Map.fetch!/2 of a missing key aborts with KeyError, as Elixir raises KeyError"
+# expect: abort
+# oracle: 00627_map_fetch_bang_of_a_missing_key_aborts.oracle.exs
+#---
+def main(), do: Map.fetch!(%{1 => :a}, 2)

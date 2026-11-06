@@ -1,0 +1,19 @@
+#---
+# purpose: "negation inside a case guard and an fn guard is the guard's own negation, as it is in a function head"
+#---
+def main() do
+  dbg(
+    case 5 do
+      x when -x < 0 -> :negative
+      _ -> :other
+    end
+  )
+
+  classify = fn
+    x when -x > 0.0 -> :negative_float
+    _ -> :other
+  end
+
+  dbg(classify.(-2.5))
+  dbg(classify.(2.5))
+end

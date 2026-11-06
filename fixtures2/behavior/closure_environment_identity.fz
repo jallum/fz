@@ -12,7 +12,7 @@ def main() do
   dbg(a === b)
   dbg(a === c)
   keys = %{a => :first, b => :other, c => :last}
-  dbg({Map.size(keys), keys[make({:same, 11})], keys[make({:same, 22})]})
+  dbg({map_size(keys), keys[make({:same, 11})], keys[make({:same, 22})]})
   dbg(hold({}) === hold({}))
   dbg(hold(a) === hold(c))
   dbg(hold(a) === hold(b))
