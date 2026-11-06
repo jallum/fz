@@ -230,7 +230,7 @@ fn timer_drain_wakes_after_cont() {
 }
 
 /// fz-xx8.3 — `aot_timer_cancel_hook` retires a previously scheduled
-/// timer so a sender-probe / initial-scan hit can prevent the after
+/// timer so a sender-probe hit can prevent the after
 /// from firing.
 #[test]
 fn timer_cancel_removes_pending_entry() {

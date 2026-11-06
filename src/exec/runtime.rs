@@ -31,13 +31,12 @@ use crate::fz_ir::FnId;
 use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use fz_runtime::any_value::AnyValueRef;
-use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel};
+use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
 use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
-use fz_runtime::park::materialize_outcome_closure;
 use fz_runtime::pinned_abi::call2;
 use fz_runtime::procbin::mso_drop_all_deferred;
-use fz_runtime::sched::{fire_after_timer, mint_entry_thunk, mint_main_inner};
+use fz_runtime::sched::{ProbeOutcome, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender};
 use fz_runtime::timer::TimerWheel;
 #[cfg(test)]
 use std::cell::RefCell;
@@ -140,8 +139,9 @@ pub fn spawn_closure_via<T: Telemetry + ?Sized>(sender: *mut Process, scheduler:
 
 /// fz-ul4.19.3: called from fz_send (ir_codegen.rs FFI) to deliver a
 /// message. Deep-copies `msg` from the sender's heap (= current_process's
-/// heap) into the receiver's heap, pushes to the receiver's mailbox, and
-/// wakes the receiver if it was Blocked.
+/// heap) into the receiver's heap and hands it to `sched::probe_sender`, which
+/// mailboxes it and wakes the receiver when it completes the receive the
+/// receiver is waiting on.
 ///
 /// Sender and receiver are distinct Processes — the sender is currently
 /// running (its Box<Process> has been taken OUT of the registry by
@@ -196,47 +196,9 @@ pub fn send_via<T: Telemetry + ?Sized>(
     if receiver.state == ProcessState::Exited {
         return;
     }
-    if receiver.wait.is_some() {
-        let receiver_ptr: *mut Process = &mut **receiver;
-        let hit = receiver
-            .wait
-            .as_ref()
-            .and_then(|park| park.try_match(receiver_ptr, msg));
-        match hit {
-            Some((clause_idx, bound_vals)) => {
-                let (template, timer_id) = {
-                    let park = receiver.wait.as_ref().expect("checked above");
-                    (park.clause_bodies[clause_idx], park.after_timer_id)
-                };
-                let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
-                let copied_bound_vals: Vec<AnyValueRef> = bound_vals
-                    .into_iter()
-                    .map(|v| deep_copy_any_value_ref(v, &sender.heap, &mut receiver.heap, &mut forwarding))
-                    .collect();
-                let cont = materialize_outcome_closure(&mut receiver.heap, template, &copied_bound_vals);
-                receiver.wait = None;
-                if let Some(id) = timer_id {
-                    timer_cancel(receiver, id);
-                }
-                receiver.set_runnable_closure(cont);
-                receiver.state = ProcessState::Ready;
-                rt.run_queue.push_back(receiver_pid);
-            }
-            None => {
-                let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
-                let copied = deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
-                receiver.mailbox.push_back(copied);
-            }
-        }
-        return;
-    }
-
     let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
     let copied = deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
-
-    receiver.mailbox.push_back(copied);
-    if receiver.state == ProcessState::Blocked {
-        receiver.state = ProcessState::Ready;
+    if probe_sender(receiver, copied) == ProbeOutcome::Hit {
         rt.run_queue.push_back(receiver_pid);
     }
 }
@@ -389,22 +351,9 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             task.ctx = ctx_ptr;
             debug_assert!(!task.ctx.is_null(), "task.ctx installed before dispatch");
             self.compiled.run_quantum(&mut task);
-            // Possible post-quantum states (fz-ul4.19.3):
-            //
-            // 1. next_frame is null -> trampoline halted, task is done.
-            //    Mark Exited; keep in registry for inspection.
-            //
-            // 2. next_frame non-null and state is Blocked -> task yielded
-            //    on receive (fz_receive_attempt returned YIELD_PTR; the
-            //    trampoline parked at the receive frame and set state =
-            //    Blocked). Keep in registry; do NOT re-enqueue. A future
-            //    send to this pid will flip state back to Ready and
-            //    re-enqueue (via send_via_current_runtime).
-            //
-            // 3. next_frame non-null and state still Running -> yielded
-            //    without explicit block. Closure-shaped mid-flight yield
-            //    stores the continuation in `runnable`, which is the
-            //    scheduler-owned primary root.
+            // After a quantum the task is in one of three states: still
+            // Running with a continuation in `runnable` (a mid-flight
+            // yield), Blocked on a receive that found nothing, or halted.
             if task.state == ProcessState::Running && task.runnable.is_some() {
                 // Closure-shaped mid-flight yield: the continuation closure
                 // captures live loop state and is the primary GC root.
@@ -419,11 +368,11 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
                 continue;
-            } else if task.next_frame.is_null() && task.wait.is_none() {
-                // A pending `wait` means the task is suspended on receive,
-                // not finished. Without this check the run loop would
-                // mis-classify the receiver as Exited and never call its
-                // initial-scan branch.
+            } else if task.state == ProcessState::Blocked {
+                // Parked on a receive: keep in registry, no re-enqueue. A
+                // send or the after-timer wakes it.
+                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
+            } else if task.next_frame.is_null() {
                 task.state = ProcessState::Exited;
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 // fz-4mk.3a — task is exiting; before the Heap drops at
@@ -451,19 +400,6 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
                     let _ = unsafe { call2(drain_addr, ptr, closure, payload_ref) };
                 }
                 ExitRecord::emit(self.tel, &pid, &task);
-            } else if task.state == ProcessState::Blocked {
-                // Park: keep in registry, no re-enqueue. send() will
-                // wake.
-                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
-            } else if task.state == ProcessState::Ready {
-                // Selective-receive park detected a pending message in our
-                // own mailbox (self-send → receive); it set state=Ready so
-                // the scheduler immediately re-runs the task through the
-                // receive initial-scan path.
-                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
-                self.tasks.insert(pid, task);
-                self.run_queue.push_back(pid);
-                continue;
             } else if task.state == ProcessState::Running {
                 // Other cooperative yield (future builtin).
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);

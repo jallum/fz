@@ -1,0 +1,19 @@
+#---
+# purpose: "an empty-handed receive with after 0 runs its body at once, so the body's self-send arrives ahead of the child's message"
+# oracle: 00683_a_receive_after_zero_runs_its_body_without_letting_a_runnable_child_send_first.oracle.exs
+#---
+def main() do
+  me = self()
+  spawn(fn () -> send(me, :child) end)
+  receive do
+    :never -> :ok
+  after 0 -> send(me, :parent)
+  end
+  a = receive do
+    x -> x
+  end
+  b = receive do
+    x -> x
+  end
+  dbg({a, b})
+end

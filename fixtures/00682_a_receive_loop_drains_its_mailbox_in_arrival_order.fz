@@ -1,0 +1,21 @@
+#---
+# purpose: "a recursive loop of bare receives collects two self-sends and two children's messages in the order they arrived"
+# oracle: 00682_a_receive_loop_drains_its_mailbox_in_arrival_order.oracle.exs
+#---
+def drain(0, acc) do
+  acc
+end
+def drain(n, acc) do
+  m = receive do
+    x -> x
+  end
+  drain(n - 1, [m | acc])
+end
+def main() do
+  me = self()
+  spawn(fn () -> send(me, :c1) end)
+  spawn(fn () -> send(me, :c2) end)
+  send(me, :p1)
+  send(me, :p2)
+  dbg(drain(4, []))
+end

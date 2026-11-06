@@ -1,0 +1,14 @@
+#---
+# purpose: "a receive finds the message sent to itself before a runnable child gets to send, even when the child's clause is listed first"
+# oracle: 00680_a_receive_takes_the_message_already_waiting_ahead_of_a_later_arrival.oracle.exs
+#---
+def main() do
+  me = self()
+  spawn(fn () -> send(me, :child) end)
+  send(me, :parent)
+  v = receive do
+    :child -> :got_child
+    :parent -> :got_parent
+  end
+  dbg(v)
+end

@@ -495,7 +495,7 @@ parked matcher against the incoming message.</p>
   <tbody>
     <tr><td><span class="ok">hit</span> on parked matcher</td><td>materialize the outcome closure, cancel the after-timer, clear <code>parked_matched</code>, set <code>pending_resume_matched</code>, flip to <code>Ready</code></td></tr>
     <tr><td><span class="miss">miss</span> on parked matcher</td><td>deep-copy the whole message into the receiver's mailbox; do <em>not</em> wake</td></tr>
-    <tr><td>not parked</td><td>deep-copy into the receiver's mailbox; the normal non-selective wake rule applies</td></tr>
+    <tr><td>not parked</td><td>deep-copy into the receiver's mailbox; do <em>not</em> wake</td></tr>
   </tbody>
 </table>
 
@@ -505,11 +505,13 @@ remains in the mailbox for a later receive.</p>
 
 <h3>When messages were already waiting</h3>
 
-<p>If a process parks <em>and</em> already has mail, the scheduler walks
-the mailbox in arrival order with <code>initial_scan</code>. The first
-match is spliced out; the rejected prefix is restored in its original
-order (the Erlang save-queue rule). No match leaves the task
-<code>Blocked</code> with the mailbox untouched.</p>
+<p>A <code>receive</code> walks the mailbox in arrival order the moment it
+is reached (<code>reach_receive</code>). The first match is spliced out,
+the other messages keep their order (the Erlang save-queue rule), and the
+process carries on into the matching clause without yielding. With
+<code>after 0</code> and no match, it carries on into the <code>after</code>
+body. Any other miss parks the task <code>Blocked</code> with the mailbox
+untouched, so a sender only has to test its own message.</p>
 
 <!-- ─────────────────────────────── 10 ─────────────────────────────── -->
 <h2 id="fixture">10. Worked fixture: <code>receive_map_pattern</code></h2>

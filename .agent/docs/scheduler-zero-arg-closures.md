@@ -66,9 +66,9 @@ every task through this one shim.
 
 ## Receive
 
-When a process executes `receive`, it parks because there is no runnable work
-yet. The park snapshot is a `WaitState` (alias for `ParkRecord`) stored in
-`Process.wait`. It holds the compiled `matcher_fn`, the pinned `^name` values in
+A `receive` scans its mailbox when it is reached, oldest message first, and only
+a miss parks. The park snapshot is a `WaitState` (alias for `ParkRecord`) stored
+in `Process.wait` once a miss must wait. It holds the compiled `matcher_fn`, the pinned `^name` values in
 matcher order, one `clause_bodies` closure-template pointer per clause, the
 per-clause bound-var counts, and (if there is an `after`) the timeout state.
 
@@ -77,18 +77,28 @@ matrix and mints one continuation-template fn per clause body. A bare
 `receive do msg -> msg end` is just the degenerate case: its matcher always
 matches and binds `msg`.
 
+`fz_receive_park_matched` decides the receive in one step
+(`sched::reach_receive`); generated code tail-calls whatever closure it returns,
+exactly as `fz_resume` would, and returns the yield sentinel only when it parks.
+
 ```text
 receive:
   build WaitState (matcher + pinned + clause templates)
-  mailbox empty -> Blocked ; else Ready (scheduler runs an initial scan)
+  a message matches clause k -> splice it out, return the outcome closure (no yield)
+  no match, `after 0`        -> return the after body closure (no yield)
+  no match otherwise         -> wait = WaitState ; arm the after-timer ; Blocked ; yield
 ```
+
+A process with `wait` set has therefore already searched its whole mailbox, so
+a sender tests only its own message.
 
 When a message matches, `materialize_outcome_closure` turns the winning clause
 template into a runnable zero-arg closure. The template env is
 `[outer_cont, cap0, …]`; the outcome env splices the matcher's bound values in
 after the outer continuation: `[outer_cont, bound0, …, cap0, …]`. The matcher hit
 then clears `wait`, cancels any after-timer, and moves the outcome closure into
-`runnable`.
+`runnable` (a sender-side hit) or returns it to the receive that is running (a
+scan hit).
 
 This is outcome-closure delivery, not mailbox delivery. A sender-side hit does
 not enqueue the message and does not wake the receiver for a second mailbox
@@ -112,18 +122,20 @@ contract now: outcome code hands the joined value off explicitly instead of
 relying on an alternate `outer_cont` mode.
 
 ```text
-message matches clause k:
+message arrives for a waiting receive and matches clause k:
   outcome = materialize_outcome_closure(clause_bodies[k], bound_vals)
   wait = None ; runnable = outcome ; state = Ready
   enqueue process
 ```
 
 The scheduler never passes the message to the closure. The message is already
-consumed and its useful parts captured. Two entry points drive this: `probe_sender`
-runs the matcher on `send` arrival and bypasses the mailbox entirely on a hit,
-and `initial_scan` walks the mailbox in arrival order when a parked task wakes
-Ready with messages already queued (rejected messages stay in the mailbox —
-Erlang save-queue semantics).
+consumed and its useful parts captured. Two entry points drive this:
+`reach_receive` walks the mailbox in arrival order when the receive is reached
+(rejected messages stay in the mailbox — Erlang save-queue semantics), and
+`probe_sender` runs the matcher on `send` arrival for a process that is already
+waiting and bypasses the mailbox entirely on a hit. Both the JIT `Runtime` and
+the AOT scheduler deliver every send through `probe_sender` after copying the
+message into the receiver heap.
 
 ## Timeout
 
