@@ -36,7 +36,7 @@ use crate::bitstr::{
     encode_utf32, sign_extend,
 };
 use crate::emit_print_line;
-use crate::exec_ctx::{ExecCtx, timer_schedule};
+use crate::exec_ctx::ExecCtx;
 use crate::heap::{
     AllocStat, BITSTRING_READER_SCHEMA, BITSTRING_RESULT_SCHEMA, HeapAllocKind, closure_capture_ref, list_head_ref,
     list_tail_ref, map_entry_refs,
@@ -45,8 +45,9 @@ use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
     ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
 };
-use crate::process::{AlignedClosureStorage, Process, ProcessState};
+use crate::process::{AlignedClosureStorage, Process};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
+use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
 use crate::term::{NumericMode, TermComparator};
 use std::alloc::{Layout, alloc_zeroed, handle_alloc_error};
@@ -467,7 +468,7 @@ pub extern "C" fn fz_send(process: *mut Process, receiver_pid_bits: u64, msg_ref
     msg_ref_word
 }
 
-/// fz-yxs/fz-st5 — selective receive park entry. Called by JIT/AOT
+/// fz-yxs/fz-st5 — selective receive entry. Called by JIT/AOT
 /// codegen at the `Term::ReceiveMatched` seam after the matcher fn,
 /// pinned snapshot, clause-body table, and (optional) after-cont
 /// closure have been laid out by `build_park_record` (B3).
@@ -480,13 +481,16 @@ pub extern "C" fn fz_send(process: *mut Process, receiver_pid_bits: u64, msg_ref
 ///   pointers (one per source clause, in declaration order).
 /// - `clause_bound_counts_ptr`: array of per-clause bound-variable counts.
 /// - `bound_arity`: max bound-var count across clauses.
-/// - `after_deadline_or_neg1`: absolute deadline in millis, or `-1`
-///   when there is no after (no timer; matcher hit is the only way
-///   the receiver wakes).
+/// - `after_deadline_or_neg1`: the `after` timeout as a relative duration in
+///   millis, or `-1` when there is no after (no timer; matcher hit is the
+///   only way the receiver wakes).
 /// - `after_cont_bits`: after-body closure pointer, or `0` when no
 ///   after clause.
 ///
-/// Returns the YIELD sentinel so the trampoline parks the task.
+/// The receive is decided here (`sched::reach_receive`): a message that
+/// matches, or an `after 0` with nothing matching, returns the closure ref
+/// word to run next; a miss that must wait returns the YIELD sentinel so the
+/// trampoline parks the task.
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments, clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_receive_park_matched(
@@ -537,11 +541,6 @@ pub extern "C" fn fz_receive_park_matched(
         Some(after_deadline_or_neg1 as u64)
     };
 
-    let p = unsafe { &mut *process };
-    let after_timer_id = match after_deadline_ms {
-        Some(after_ms) => timer_schedule(p, p.pid, after_ms),
-        None => None,
-    };
     let after_cont = if after_cont_bits == 0 {
         null_mut()
     } else {
@@ -556,20 +555,14 @@ pub extern "C" fn fz_receive_park_matched(
         bound_arity: bound_arity as u16,
         after_deadline_ms,
         after_cont,
-        after_timer_id,
+        after_timer_id: None,
     };
 
-    p.wait = Some(Box::new(park));
-    // If any message is already in the mailbox we mark Ready so the
-    // scheduler runs an initial scan via the matcher path. The actual
-    // scan happens in the scheduler when it sees wait.is_some() on a
-    // Ready task.
-    p.state = if p.mailbox.is_empty() {
-        ProcessState::Blocked
-    } else {
-        ProcessState::Ready
-    };
-    YIELD_PTR as *mut u8
+    let p = unsafe { &mut *process };
+    match reach_receive(p, park) {
+        ReceiveStep::Continue(closure) => heap_ref_word(ValueKind::CLOSURE, closure) as *mut u8,
+        ReceiveStep::Parked => YIELD_PTR as *mut u8,
+    }
 }
 
 /// Boundary-reporting mid-flight yield entry.

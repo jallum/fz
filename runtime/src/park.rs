@@ -19,7 +19,7 @@ use std::ptr::{read, write};
 /// fz-yxs/fz-st5 — matcher ABI.
 ///
 /// Called from both fz-compiled code (sender's `fz_send`, receiver's
-/// initial scan) and runtime code. It is a leaf in the scheduling sense: it
+/// mailbox scan) and runtime code. It is a leaf in the scheduling sense: it
 /// never parks and runs no `receive` of its own, so it always returns to its
 /// caller. It is not allocation-free — testing a raw scalar against a value
 /// held as an `AnyValueRef` calls a runtime boxing extern on the process
