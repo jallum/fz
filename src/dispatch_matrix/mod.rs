@@ -269,6 +269,9 @@ pub(crate) enum BitstringFieldSize {
     /// head. It reaches dispatch the same way a pinned value does, because
     /// that is the same question: a name the pattern uses but does not bind.
     Pinned(PinnedValueId),
+    /// A segment exactly as long as the binary a pin holds: the pin is the
+    /// segment's value, and its byte size is the segment's size.
+    PinnedByteSize(PinnedValueId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1121,7 +1124,9 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
                 .and_then(|subject| match &subject.source {
                     SubjectSource::Projection(projection) => match &projection.kind {
                         ProjectionKind::BitstringField(extraction) => match &extraction.spec.size {
-                            Some(BitstringFieldSize::Pinned(pinned)) => Some(*pinned),
+                            Some(BitstringFieldSize::Pinned(pinned) | BitstringFieldSize::PinnedByteSize(pinned)) => {
+                                Some(*pinned)
+                            }
                             _ => None,
                         },
                         _ => None,

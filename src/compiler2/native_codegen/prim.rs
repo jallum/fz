@@ -24,9 +24,10 @@ use fz_runtime::ir_runtime::{
     fz_dynamic_float_arith_unsupported, fz_fmod, fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom,
     fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze,
     fz_map_dest_put_parts, fz_map_dest_put_ref, fz_map_get_atom_key_ref, fz_map_get_float_key_ref,
-    fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref, fz_ref_load_atom, fz_ref_load_float,
-    fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_schema_id_ref,
-    fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
+    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
+    fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref,
+    fz_value_eq_widening_ref,
 };
 use std::collections::HashMap;
 use target_lexicon::{Architecture, OperatingSystem, Triple};
@@ -410,6 +411,9 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                         let truncated = body.b.ins().ireduce(types::I32, unb);
                         (body.b.ins().iconst(types::I32, 1), truncated)
                     }
+                    Some(BitSizeIr::ByteSizeOf(_)) => {
+                        unreachable!("only a pattern sizes a segment by a pinned binary, never a construction")
+                    }
                 };
                 runtime_call!(
                     body,
@@ -524,6 +528,10 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                     let unb = body.as_raw_i64(var_env, v.0);
                     let truncated = body.b.ins().ireduce(types::I32, unb);
                     (1, truncated)
+                }
+                Some(BitSizeIr::ByteSizeOf(v)) => {
+                    let pinned = body.tagged_var(var_env, v.0);
+                    (1, runtime_call1!(body, fz_pinned_binary_segment_size, [pinned]))
                 }
             };
             let field_spec = fz_bs_field_spec(

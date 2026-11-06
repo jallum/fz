@@ -1814,9 +1814,8 @@ fn callsite_returns_feeding(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> H
 /// The values `step` reads to define `value`; empty when `step` does not
 /// define it.
 fn step_sources_of(step: &LoweredStep, value: ValueId) -> Vec<ValueId> {
-    let size_value = |size: &Option<super::super::body::LoweredBitSize>| match size {
-        Some(super::super::body::LoweredBitSize::Value(size)) => Some(*size),
-        _ => None,
+    let size_value = |size: &Option<super::super::body::LoweredBitSize>| {
+        size.as_ref().and_then(super::super::body::LoweredBitSize::read_value)
     };
     match step {
         LoweredStep::Tuple { value: defined, items } if *defined == value => {
@@ -2035,8 +2034,13 @@ pub(super) fn propagate_steps_reverse(
                 if !take_live_demand(live, *value).is_ignore() {
                     for field in fields {
                         note_live_demand(out, live, field.value, RuntimeDemand::whole());
-                        if let Some(super::super::body::LoweredBitSize::Value(size)) = &field.spec.size {
-                            note_live_demand(out, live, *size, RuntimeDemand::whole());
+                        if let Some(size) = field
+                            .spec
+                            .size
+                            .as_ref()
+                            .and_then(super::super::body::LoweredBitSize::read_value)
+                        {
+                            note_live_demand(out, live, size, RuntimeDemand::whole());
                         }
                     }
                 }
@@ -2147,8 +2151,12 @@ pub(super) fn propagate_steps_reverse(
                 let next_reader_demand = take_live_demand(live, *next_reader);
                 if !ok_demand.is_ignore() || !value_demand.is_ignore() || !next_reader_demand.is_ignore() {
                     note_live_demand(out, live, *reader, RuntimeDemand::whole());
-                    if let Some(super::super::body::LoweredBitSize::Value(size)) = &spec.size {
-                        note_live_demand(out, live, *size, RuntimeDemand::whole());
+                    if let Some(size) = spec
+                        .size
+                        .as_ref()
+                        .and_then(super::super::body::LoweredBitSize::read_value)
+                    {
+                        note_live_demand(out, live, size, RuntimeDemand::whole());
                     }
                 }
             }
@@ -2254,8 +2262,12 @@ fn note_clause_matcher_demands(
             LoweredStep::BitstringRead { reader, spec, .. } => {
                 let demand = boundary_value_demand(facts, *reader, RuntimeDemand::whole());
                 note_live_demand(out, live, *reader, demand);
-                if let Some(super::super::body::LoweredBitSize::Value(size)) = &spec.size {
-                    note_live_demand(out, live, *size, RuntimeDemand::whole());
+                if let Some(size) = spec
+                    .size
+                    .as_ref()
+                    .and_then(super::super::body::LoweredBitSize::read_value)
+                {
+                    note_live_demand(out, live, size, RuntimeDemand::whole());
                 }
             }
             LoweredStep::AssertBitstringDone { reader } => {

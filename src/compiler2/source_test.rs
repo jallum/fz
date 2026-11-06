@@ -2,7 +2,9 @@ use std::rc::Rc;
 
 use fz_runtime::any_value::ValueKind;
 
-use super::source::{META_SPAN_KEY, META_SPAN_LENGTH_KEY, META_SPAN_START_KEY, META_SPAN_VERSION_KEY};
+use super::source::{
+    META_FROM_OPERATOR_KEY, META_SPAN_KEY, META_SPAN_LENGTH_KEY, META_SPAN_START_KEY, META_SPAN_VERSION_KEY,
+};
 use super::{
     Horizon, QuotedSourceCursor, QuotedSourceHeap, QuotedSourceMetadata, QuotedSourceRoot, parse_quoted_program,
 };
@@ -13,7 +15,8 @@ use crate::telemetry::ConfiguredTelemetry;
 
 /// Every atom name and UTF-8 binary payload reachable in a quoted graph, in
 /// traversal order. Tests use this to assert a parse carried specific forms
-/// without re-inventing a canonical rendering of the graph.
+/// without re-inventing a canonical rendering of the graph. The operator stamp's
+/// value is metadata about a call, not a form in the program, so it is not a token.
 pub(super) fn quoted_tokens(root: &QuotedSourceRoot) -> Vec<String> {
     let mut tokens = Vec::new();
     collect_tokens(&root.cursor(), &mut tokens);
@@ -36,7 +39,9 @@ fn collect_tokens(cursor: &QuotedSourceCursor, tokens: &mut Vec<String>) {
         ValueKind::MAP => {
             for (key, value) in cursor.map_entries().expect("map entries") {
                 collect_tokens(&key, tokens);
-                collect_tokens(&value, tokens);
+                if key.atom_name().as_deref() != Ok(META_FROM_OPERATOR_KEY) {
+                    collect_tokens(&value, tokens);
+                }
             }
         }
         ValueKind::BITSTRING | ValueKind::PROCBIN => {

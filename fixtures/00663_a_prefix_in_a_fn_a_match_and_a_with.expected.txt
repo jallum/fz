@@ -1,0 +1,10 @@
+{:long, "verbose"}
+{:short, "v"}
+:operand
+:operand
+"verbose"
+""
+"c"
+{:option, "name"}
+:operand
+:operand

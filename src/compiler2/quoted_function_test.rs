@@ -399,3 +399,330 @@ fn compiler2_quoted_function_surface_carries_a_heredoc_doc_whole() {
         "the doc should arrive with its blank lines and its example's indentation intact"
     );
 }
+
+// ----- `<>` and `++` in patterns -----------------------------------------
+
+fn surface_of(text: &str) -> crate::function_surface::FunctionSurface {
+    let (root, sources) = grouped_function_root("concat_pattern.fz", text);
+    derive_function_surface(&root, &sources).expect("derive function surface")
+}
+
+fn refusal_of(text: &str) -> (crate::compiler2::QuotedSourceError, String) {
+    let (root, sources) = grouped_function_root("concat_pattern.fz", text);
+    let error = derive_function_surface(&root, &sources).expect_err("the pattern is refused");
+    let covered = error
+        .span()
+        .map(|span| sources.code(span.source_version).bytes[span.start as usize..span.end as usize].to_string())
+        .unwrap_or_default();
+    (error, covered)
+}
+
+/// A pattern rendered as text, spans left out, so two spellings can be
+/// compared for being the same pattern.
+fn shape(pattern: &Pattern) -> String {
+    match pattern {
+        Pattern::Wildcard => "_".to_string(),
+        Pattern::Var(var) => var.name.clone(),
+        Pattern::Pinned(var) => format!("^{}", var.name),
+        Pattern::Int(value) => value.to_string(),
+        Pattern::Binary(bytes) => format!("{:?}", String::from_utf8_lossy(bytes)),
+        Pattern::List(items, tail) => {
+            let items = items
+                .iter()
+                .map(|item| shape(&item.node))
+                .collect::<Vec<_>>()
+                .join(", ");
+            match tail {
+                Some(tail) => format!("[{items} | {}]", shape(&tail.node)),
+                None => format!("[{items}]"),
+            }
+        }
+        Pattern::Bitstring(fields) => {
+            let fields = fields
+                .iter()
+                .map(|field| {
+                    format!(
+                        "{}::{:?}/{:?}",
+                        shape(&field.value.node),
+                        field.spec.ty,
+                        field.spec.size
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("<<{fields}>>")
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+fn head_shape(text: &str) -> String {
+    shape(&surface_of(text).clauses[0].params[0].node)
+}
+
+fn case_shape(clause_pattern: &str) -> String {
+    let surface = surface_of(&format!(
+        "def f(s) do\n  case s do\n    {clause_pattern} -> 1\n  end\nend\n"
+    ));
+    let Expr::Case(_, clauses) = &surface.clauses[0].body.node else {
+        panic!("expected a case body");
+    };
+    shape(&clauses[0].pattern.node)
+}
+
+#[test]
+fn a_prefix_in_a_function_head_is_the_bitstring_it_stands_for() {
+    assert_eq!(
+        head_shape("def f(\"--\" <> r), do: r\n"),
+        head_shape("def f(<<\"--\", r::binary>>), do: r\n"),
+    );
+}
+
+#[test]
+fn a_prefix_in_a_case_clause_is_the_bitstring_it_stands_for() {
+    assert_eq!(case_shape("\"--\" <> r"), case_shape("<<\"--\", r::binary>>"));
+}
+
+#[test]
+fn a_prefix_in_a_match_is_the_bitstring_it_stands_for() {
+    let surface = surface_of("def f(s) do\n  \"--\" <> r = s\n  r\nend\n");
+    let Expr::Block(exprs) = &surface.clauses[0].body.node else {
+        panic!("expected a block body");
+    };
+    let Expr::Match(pattern, _) = &exprs[0].node else {
+        panic!("expected a match");
+    };
+    assert_eq!(
+        shape(&pattern.node),
+        head_shape("def f(<<\"--\", r::binary>>), do: r\n")
+    );
+}
+
+#[test]
+fn a_chain_of_prefixes_flattens_into_one_bitstring() {
+    let flat = "<<\"a\", \"b\", r::binary>>";
+    assert_eq!(case_shape("\"a\" <> \"b\" <> r"), case_shape(flat));
+    assert_eq!(case_shape("\"a\" <> (\"b\" <> r)"), case_shape(flat));
+    assert_eq!(
+        head_shape("def f(\"a\" <> \"b\" <> r), do: r\n"),
+        head_shape(&format!("def f({flat}), do: r\n"))
+    );
+}
+
+#[test]
+fn an_empty_prefix_binds_the_whole_subject() {
+    assert_eq!(case_shape("\"\" <> r"), case_shape("<<\"\", r::binary>>"));
+}
+
+#[test]
+fn a_literal_alone_after_the_operator_matches_only_that_literal() {
+    assert_eq!(case_shape("\"--\" <> \"\""), case_shape("<<\"--\", \"\">>"));
+}
+
+#[test]
+fn a_bitstring_after_the_operator_continues_the_same_bitstring() {
+    assert_eq!(
+        case_shape("\"--\" <> <<c, r::binary>>"),
+        case_shape("<<\"--\", c, r::binary>>")
+    );
+}
+
+#[test]
+fn a_pinned_prefix_is_sized_by_its_pinned_value() {
+    let pinned = case_shape("^p <> r");
+    assert_eq!(pinned, case_shape("<<^p::binary, r::binary>>"));
+    assert!(
+        pinned.contains("ByteSizeOf"),
+        "the pinned segment names the value whose byte size it takes: {pinned}"
+    );
+}
+
+#[test]
+fn a_literal_list_before_plus_plus_is_the_list_pattern_it_stands_for() {
+    assert_eq!(case_shape("[1, 2] ++ r"), case_shape("[1, 2 | r]"));
+    assert_eq!(case_shape("[1] ++ [2] ++ r"), case_shape("[1, 2 | r]"));
+    assert_eq!(case_shape("[a] ++ r"), case_shape("[a | r]"));
+    assert_eq!(case_shape("[1] ++ [2]"), case_shape("[1, 2]"));
+    assert_eq!(case_shape("[] ++ r"), case_shape("r"));
+    assert_eq!(
+        head_shape("def f([1, 2] ++ r), do: r\n"),
+        head_shape("def f([1, 2 | r]), do: r\n")
+    );
+}
+
+#[test]
+fn a_user_written_kernel_concat_call_is_not_the_operator() {
+    let (error, covered) = refusal_of("def f(s) do\n  case s do\n    Kernel.<>(\"a\", r) -> r\n  end\nend\n");
+    assert_eq!(
+        error.user_code(),
+        Some(crate::diag::codes::PARSE_CONCAT_PATTERN_OPERAND),
+        "{error}"
+    );
+    assert!(covered.contains("Kernel.<>"), "span covers the call: {covered:?}");
+}
+
+#[test]
+fn a_user_written_list_concat_call_is_not_the_operator() {
+    let (error, _) = refusal_of("def f(s) do\n  case s do\n    List.concat([1], r) -> r\n  end\nend\n");
+    assert_eq!(
+        error.user_code(),
+        Some(crate::diag::codes::PARSE_CONCAT_PATTERN_OPERAND),
+        "{error}"
+    );
+}
+
+fn assert_refused(pattern: &str, message: &str, covered: &str) {
+    let (error, text) = refusal_of(&format!("def f(s) do\n  case s do\n    {pattern} -> 1\n  end\nend\n"));
+    assert_eq!(
+        error.user_code(),
+        Some(crate::diag::codes::PARSE_CONCAT_PATTERN_OPERAND),
+        "{pattern}: {error}"
+    );
+    assert_eq!(error.to_string(), message, "{pattern}");
+    assert_eq!(text, covered, "{pattern}: span");
+}
+
+#[test]
+fn a_variable_before_the_binary_operator_is_refused_where_it_stands() {
+    assert_refused(
+        "a <> r",
+        "cannot perform prefix match because the left operand of <> has unknown size. The left operand of <> inside a match should either be a literal binary or an existing variable with the pin operator (such as ^some_var). Got: a",
+        "a",
+    );
+}
+
+#[test]
+fn an_underscore_before_the_binary_operator_is_refused_where_it_stands() {
+    assert_refused(
+        "_ <> r",
+        "cannot perform prefix match because the left operand of <> has unknown size. The left operand of <> inside a match should either be a literal binary or an existing variable with the pin operator (such as ^some_var). Got: _",
+        "_",
+    );
+}
+
+#[test]
+fn a_variable_inside_a_chain_is_refused_where_it_stands() {
+    assert_refused(
+        "\"a\" <> b <> r",
+        "cannot perform prefix match because the left operand of <> has unknown size. The left operand of <> inside a match should either be a literal binary or an existing variable with the pin operator (such as ^some_var). Got: b",
+        "b",
+    );
+}
+
+#[test]
+fn a_number_operand_of_the_binary_operator_is_refused() {
+    assert_refused("1 <> r", "expected binary argument in <> operator but got: 1", "1 <> r");
+}
+
+#[test]
+fn an_atom_operand_of_the_binary_operator_is_refused() {
+    assert_refused(
+        "\"a\" <> :b",
+        "expected binary argument in <> operator but got: :b",
+        "\"a\" <> :b",
+    );
+}
+
+#[test]
+fn a_list_operand_of_the_binary_operator_is_refused() {
+    assert_refused(
+        "[1] <> r",
+        "expected binary argument in <> operator but got: [1]",
+        "[1] <> r",
+    );
+}
+
+#[test]
+fn a_tuple_operand_of_the_binary_operator_is_refused_where_it_stands() {
+    assert_refused(
+        "{1} <> r",
+        "a bitstring only accepts binaries, numbers, and variables inside a match, got: {1}",
+        "{1}",
+    );
+}
+
+#[test]
+fn a_variable_before_plus_plus_is_refused_where_it_stands() {
+    assert_refused(
+        "a ++ r",
+        "invalid argument for ++ operator inside a match, expected a literal proper list, got: a",
+        "a",
+    );
+}
+
+#[test]
+fn a_binary_before_plus_plus_is_refused() {
+    assert_refused(
+        "\"a\" ++ r",
+        "invalid argument for ++ operator inside a match, expected a literal proper list, got: \"a\"",
+        "\"a\" ++ r",
+    );
+}
+
+#[test]
+fn an_improper_list_before_plus_plus_is_refused() {
+    assert_refused(
+        "[1 | t] ++ r",
+        "invalid argument for ++ operator inside a match, expected a literal proper list, got: [1 | t]",
+        "[1 | t] ++ r",
+    );
+}
+
+#[test]
+fn a_variable_inside_a_plus_plus_chain_is_refused_where_it_stands() {
+    assert_refused(
+        "[1] ++ a ++ r",
+        "invalid argument for ++ operator inside a match, expected a literal proper list, got: a",
+        "a",
+    );
+}
+
+/// A function head the way the expander leaves it after rewriting the one
+/// operator in its first parameter: the stamped call instead of the bare
+/// operator.
+fn stamped_head_shape(text: &str) -> String {
+    use super::source_sugar::rewrite_source_sugar;
+    let (root, sources) = grouped_function_root("stamped_concat.fz", text);
+    let def = root.cursor().list_items().expect("items").remove(0);
+    let def_node = def.ast_node(&sources).expect("def").expect("def node");
+    let def_args = def_node.tail.list_items().expect("def args");
+    let head_node = def_args[0].ast_node(&sources).expect("head").expect("head node");
+    let operator = head_node.tail.list_items().expect("head args").remove(0);
+    let operator_node = operator.ast_node(&sources).expect("operator").expect("operator node");
+    let rewritten = rewrite_source_sugar(&root, operator.root(), &operator_node, &sources)
+        .expect("rewrite")
+        .expect("the operator is source sugar");
+    let builder = root.builder();
+    let head = builder
+        .tuple(&[
+            head_node.head.root(),
+            head_node.meta.root(),
+            builder.list(&[rewritten]).expect("args"),
+        ])
+        .expect("head");
+    let def = builder
+        .tuple(&[
+            def_node.head.root(),
+            def_node.meta.root(),
+            builder.list(&[head, def_args[1].root()]).expect("def args"),
+        ])
+        .expect("def");
+    let grouped = root.interned_list_subroot(&[def]).expect("grouped");
+    shape(&derive_function_surface(&grouped, &sources).expect("derive").clauses[0].params[0].node)
+}
+
+#[test]
+fn the_expanders_stamped_call_is_the_operator_it_was_made_from() {
+    for (stamped, bare) in [
+        ("def f(\"--\" <> r), do: r\n", "def f(<<\"--\", r::binary>>), do: r\n"),
+        (
+            "def f(\"a\" <> \"b\" <> r), do: r\n",
+            "def f(<<\"a\", \"b\", r::binary>>), do: r\n",
+        ),
+        ("def f(^p <> r), do: r\n", "def f(<<^p::binary, r::binary>>), do: r\n"),
+        ("def f([1, 2] ++ r), do: r\n", "def f([1, 2 | r]), do: r\n"),
+        ("def f([1] ++ [2] ++ r), do: r\n", "def f([1, 2 | r]), do: r\n"),
+    ] {
+        assert_eq!(stamped_head_shape(stamped), head_shape(bare), "{stamped}");
+    }
+}
