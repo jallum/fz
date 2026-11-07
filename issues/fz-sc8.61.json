@@ -8,14 +8,15 @@
     "fz-sc8.63",
     "fz-sc8.64"
   ],
+  "closed_at": "2026-11-07T23:47:16Z",
   "created": "2026-11-03T13:28:52Z",
   "description": "Plan: /Users/j5n/Workspace/fz-sc8.57.html, ticket 1. panic stays the one runtime primitive (fz_panic); it takes an exception, which carries a name and a message. Kernel.raise(Name, message) is ordinary fz code that builds the exception and panics with it; raise(\"text\") means RuntimeError, as in Elixir. When fz gets real exceptions, only raise and panic change. The panic prints '** (Name) message' once on stderr and ends the process through the normal exit path, never a signal (today panic dies with exit 132 on run and build); an uncaught failure in the main process exits 1. The interpreter and native share one hook signature; drivers stop reframing (compiler.rs:472-483, aot_shim.rs:624-645, cli.rs frames); Process.exit_fault and fz_exit_fault go. A failing spawned process prints its exception and the others continue (today: silent on a clause miss, whole-program death on panic). Compiler-emitted failures (fz-sc8.63) carry their source location; a raise call's own site is not reported unless raise becomes a macro.",
   "id": "fz-sc8.61",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "raise is a Kernel function over one panic route, and a failure never dies by signal",
   "type": "feature",
-  "updated_at": "2026-11-07T21:43:14Z"
+  "updated_at": "2026-11-07T23:47:16Z"
 }
