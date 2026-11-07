@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-07T22:33:57Z",
+  "description": "Found while building fz-sc8.72. `%{m | :a =\u003e 3}` does not parse: \"expected keyword entry\". Elixir accepts any key expression with =\u003e in a map update, and keyword syntax (a: 3) is sugar for atom keys. The update parser (src/parser) accepts only the keyword form; map literals already accept both. Fold the two so the update reads the same entry grammar as the literal. Oracle fixture with an atom key via =\u003e, a string key, and a mixed update. Deviation from Elixir; not needed by the distiller.",
+  "id": "fz-sc8.78",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Map update accepts =\u003e keys: %{m | :a =\u003e 3}",
+  "type": "bug",
+  "updated_at": "2026-11-07T22:33:57Z"
+}
