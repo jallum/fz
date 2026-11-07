@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-07T21:43:14Z",
+  "description": "Split from fz-sc8.35, which keeps the other half (a call through a module value reaches that module).\n\nIn Elixir a module name is an atom: RuntimeError == :\"Elixir.RuntimeError\", Atom.to_string(Foo.Bar) is \"Elixir.Foo.Bar\", and inspect prints the alias form, Foo.Bar, for any atom whose name is Elixir. followed by capitalised segments. An alias (alias Foo.Bar, as: B) stands for the full name. A name no module defines (Nope.Never) is still the atom.\n\nIn fz a module name in value position fails to compile: compiler2 lowering found unresolved value `RuntimeError` (src/compiler2/jobs/body.rs, the Module(_)/None arms of the Var lowering). This blocks fz-sc8.61: raise(ArgumentError, msg) and panic(Name, msg) need the name to be a value.\n\nThe decision, made where the name is lowered: a module alias in value position is the atom Elixir.\u003cfull path\u003e, resolved through the same module-name authority every other reference uses (resolve_module_name), so alias-as and dotted paths come out right with no second table. Its type is the singleton atom type, so is_atom and atom specs accept it. The renderers (dbg/inspect; render_atom in runtime/src/any_value.rs) print an alias-shaped atom as Elixir does. Calls through a module value stay in fz-sc8.35. Oracle fixtures against elixir on interp, run and build.",
+  "id": "fz-sc8.72",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A module name in value position is the atom Elixir.\u003cName\u003e",
+  "type": "feature",
+  "updated_at": "2026-11-07T21:43:14Z"
+}
