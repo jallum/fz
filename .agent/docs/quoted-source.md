@@ -92,7 +92,9 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   a local function literally named `Foo.bar` and is never split into a module
   and a name. Elixir reads the same shape the same way.
 - Variables use `tail = lexical_context_map`.
-- Module aliases use `{:__aliases__, meta, [:Foo, :Bar]}`.
+- Module aliases use `{:__aliases__, meta, [:Foo, :Bar]}`. Decoding reads one
+  as `Expr::Alias` carrying its segments as a `ModuleName`; in value position
+  it is the module's atom (see [modules](modules.md)).
 - Keyword items are ordinary 2-tuples inside lists.
 - FZ `extern` items are quoted as `{:extern, meta, [abi_binary, options_map]}`.
   `options_map` carries the symbol `name`, `variadic`, and token payloads for

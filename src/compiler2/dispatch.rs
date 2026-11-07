@@ -145,6 +145,15 @@ where
         Ok(self.world.struct_value_ty(module_id, &[], &[]))
     }
 
+    fn module_alias_atom(
+        &mut self,
+        alias: &crate::modules::identity::ModuleName,
+    ) -> Result<String, SourcePatternError> {
+        self.world
+            .module_alias_atom(self.owner, self.namespace, alias)
+            .ok_or(SourcePatternError::UnsupportedGuardExpr)
+    }
+
     fn guard_call(&mut self, callee: &Callee, arity: usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
         (self.guard)(self.world, callee, arity)
     }

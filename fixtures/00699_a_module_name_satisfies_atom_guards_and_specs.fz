@@ -1,0 +1,22 @@
+#---
+# purpose: "a module name's type is its singleton atom, so an is_atom guard and an @spec taking atom accept it, and a guard can compare against one"
+# oracle: 00699_a_module_name_satisfies_atom_guards_and_specs.oracle.exs
+#---
+defmodule Names do
+  @spec name(atom) :: binary
+  def name(module), do: Atom.to_string(module)
+
+  def kind(value) when is_atom(value), do: :atom
+  def kind(_value), do: :other
+
+  def is_bar(value) when value == Foo.Bar, do: true
+  def is_bar(_value), do: false
+end
+
+def main() do
+  dbg(Names.name(Foo.Bar))
+  dbg(Names.kind(RuntimeError))
+  dbg(Names.kind(1))
+  dbg(Names.is_bar(Foo.Bar))
+  dbg(Names.is_bar(Foo))
+end

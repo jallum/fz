@@ -406,9 +406,14 @@ pub(in crate::compiler2) fn is_guard_expr(expr: &Spanned<Expr>) -> bool {
 
 pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<GuardCall>) -> Result<(), Span> {
     match &expr.node {
-        Expr::Int(_) | Expr::Float(_) | Expr::Binary(_) | Expr::Atom(_) | Expr::Bool(_) | Expr::Nil | Expr::Var(_) => {
-            Ok(())
-        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Binary(_)
+        | Expr::Atom(_)
+        | Expr::Alias(_)
+        | Expr::Bool(_)
+        | Expr::Nil
+        | Expr::Var(_) => Ok(()),
         Expr::Ascribe(inner, _) => collect_guard_calls_in_expr(inner, out),
         Expr::UnOp(_, inner) => collect_guard_calls_in_expr(inner, out),
         Expr::BinOp(_, left, right) => {

@@ -23,7 +23,7 @@ use fz_runtime::any_value::ValueKind;
 
 use crate::function_surface::FunctionSurface;
 use crate::ground_value::GroundValue;
-use crate::modules::identity::ModuleDenotation;
+use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::source::{SourceMap, Span};
 
 use super::super::body::{
@@ -604,6 +604,7 @@ fn collect_local_dispatch_requirements(
         }
         Expr::Lambda { .. } => {}
         Expr::CaptureArg(_)
+        | Expr::Alias(_)
         | Expr::Module(_)
         | Expr::BoundFunction(_)
         | Expr::FnRef { .. }
@@ -1179,6 +1180,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             Expr::Atom(value) => Ok(self.push_const(steps, GroundValue::Atom(value.clone()))),
             Expr::Bool(value) => Ok(self.push_const(steps, GroundValue::Bool(*value))),
             Expr::Nil => Ok(self.push_const(steps, GroundValue::Nil)),
+            Expr::Alias(alias) => self.lower_alias(alias, expr.span, steps),
             Expr::Module(module) => Ok(QuoteLowerer::new(self, env, steps, &[]).lower_module(module, expr.span)),
             Expr::Var(name) => {
                 if let Some(value) = env.get(name) {
@@ -1886,6 +1888,28 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 ),
             )
         })
+    }
+
+    fn lower_alias(
+        &mut self,
+        alias: &ModuleName,
+        span: Span,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let atom = self
+            .world
+            .module_alias_atom(self.source.owner_module, self.namespace, alias)
+            .ok_or_else(|| {
+                emit_job_diagnostic(
+                    self.telemetry,
+                    Diagnostic::error(
+                        codes::LOWER_UNBOUND,
+                        format!("compiler2 could not resolve module `{alias}`"),
+                        span,
+                    ),
+                )
+            })?;
+        Ok(self.push_const(steps, GroundValue::Atom(atom)))
     }
 
     fn resolve_struct_module(
@@ -4163,6 +4187,7 @@ fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<Var>, free: &mut Has
         | Expr::Atom(_)
         | Expr::Bool(_)
         | Expr::Nil
+        | Expr::Alias(_)
         | Expr::Module(_)
         | Expr::BoundFunction(_)
         | Expr::FnRef { .. }
@@ -4470,6 +4495,7 @@ fn expr_name(expr: &Expr) -> &'static str {
         Expr::Nil => "Nil",
         Expr::Var(_) => "Var",
         Expr::FnRef { .. } => "FnRef",
+        Expr::Alias(_) => "Alias",
         Expr::Module(_) => "Module",
         Expr::BoundFunction(_) => "BoundFunction",
         Expr::Capture(_) => "Capture",
@@ -4513,7 +4539,7 @@ fn direct_callee(expr: &Spanned<Expr>, arity: usize, env: &HashMap<Var, ValueId>
                 }
                 break;
             }
-            Expr::Module(_) | Expr::BoundFunction(_) => break,
+            Expr::Alias(_) | Expr::Module(_) | Expr::BoundFunction(_) => break,
             Expr::Index(target, _) => {
                 current = &target.node;
             }

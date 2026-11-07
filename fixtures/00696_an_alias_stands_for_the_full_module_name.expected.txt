@@ -1,0 +1,5 @@
+Foo.Bar
+true
+"Elixir.Foo.Bar"
+Foo.Baz
+Foo.Bar.Inner

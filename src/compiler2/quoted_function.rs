@@ -468,7 +468,7 @@ fn decode_named_expr(
             let ty = quoted_type_expr_body(&args[1], sources)?;
             Ok(Spanned::new(Expr::Ascribe(Box::new(value), ty), span))
         }
-        ("__aliases__", _) => Ok(Spanned::new(Expr::Var(Var::user(alias_name_from_args(args)?)), span)),
+        ("__aliases__", _) => Ok(Spanned::new(Expr::Alias(alias_from_args(args)?), span)),
         (".", 2) => {
             let base = decode_expr(occurrences, &args[0], Some(span), sources)?;
             let field = Spanned::new(Expr::Atom(args[1].atom_name()?), span);
@@ -2078,11 +2078,17 @@ fn node_head_is_atom_named(node: &QuotedAstNode, name: &str) -> Result<bool, Quo
     Ok(atom_name(&node.head)? == name)
 }
 
-fn alias_name_from_args(args: &[QuotedSourceCursor]) -> Result<String, QuotedSourceError> {
-    args.iter()
+fn alias_from_args(args: &[QuotedSourceCursor]) -> Result<ModuleName, QuotedSourceError> {
+    let segments = args
+        .iter()
         .map(|segment| segment.atom_name())
-        .collect::<Result<Vec<_>, _>>()
-        .map(|segments| segments.join("."))
+        .collect::<Result<Vec<_>, _>>()?;
+    if segments.iter().any(String::is_empty) || segments.is_empty() {
+        return Err(QuotedSourceError::new(
+            "a module alias needs at least one non-empty segment",
+        ));
+    }
+    Ok(ModuleName::from_segments(segments))
 }
 
 fn is_alias(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<bool, QuotedSourceError> {

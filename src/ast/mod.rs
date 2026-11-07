@@ -71,16 +71,19 @@ impl CallableName {
                     path.push(var.name.clone());
                     path.reverse();
                     let name = path.pop()?;
-                    // An alias written `A.B` arrives as one identifier, so its
-                    // own spelling is what says where its segments divide.
-                    let segments = path
-                        .iter()
-                        .flat_map(|segment| segment.split('.'))
-                        .map(str::to_string)
-                        .collect::<Vec<_>>();
-                    let module =
-                        (!segments.is_empty()).then(|| ModuleTarget::Unresolved(ModuleName::from_segments(segments)));
+                    let module = (!path.is_empty()).then(|| ModuleTarget::Unresolved(ModuleName::from_segments(path)));
                     return Some(Self { module, name });
+                }
+                Expr::Alias(alias) => {
+                    path.reverse();
+                    let name = path.pop()?;
+                    let module = path
+                        .into_iter()
+                        .fold(alias.clone(), |module, segment| module.child(segment));
+                    return Some(Self {
+                        module: Some(ModuleTarget::Unresolved(module)),
+                        name,
+                    });
                 }
                 Expr::Module(module) => {
                     path.reverse();
@@ -213,6 +216,10 @@ pub enum Expr {
 
     // identifier reference
     Var(Var),
+
+    /// A module alias as source wrote it (`Foo.Bar`, `B`). In value position
+    /// it is the atom of the module it resolves to.
+    Alias(ModuleName),
 
     /// A resolved module alias supplied by compiler reflection. Display
     /// segments are not retained as a second semantic authority.

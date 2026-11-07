@@ -1,0 +1,4 @@
+[RuntimeError, Foo.Bar]
+%{Foo.Bar => 1, "m" => Foo}
+Foo.Bar
+true

@@ -1,0 +1,10 @@
+#---
+# purpose: "a dotted module path is one atom named for its whole path, equal to the same atom written out"
+# oracle: 00695_a_dotted_module_path_is_one_atom.oracle.exs
+#---
+def main() do
+  dbg(Foo.Bar)
+  dbg(Atom.to_string(Foo.Bar.Baz))
+  dbg(Foo.Bar == :"Elixir.Foo.Bar")
+  dbg(Foo.Bar == Foo)
+end
