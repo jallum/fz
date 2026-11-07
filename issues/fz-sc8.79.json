@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-07T22:33:57Z",
+  "description": "Found while building fz-sc8.72. World::resolve_module_name (src/compiler2/world.rs) returns Option\u003cModuleId\u003e but every branch returns Some: an unbound name falls back to reference_module. Six callers carry an error path that can never run: resolve_struct_module and record_struct_reference (jobs/body.rs), SourcePatternResolver::struct_type and SourcePatternResolver::module_alias_atom (compiler2/dispatch.rs), the source_publish expects, and lower_alias (jobs/body.rs) with World::module_alias_atom.\n\nMake it return ModuleId and delete the six dead paths and their diagnostics. A pure fold: no behaviour changes, so no fixture moves; the deleted diagnostics' codes are checked for other users first. Lands ahead of fz-sc8.25, which reworks qualified-call resolution on top of this function.",
+  "id": "fz-sc8.79",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "resolve_module_name is total, and its dead error paths go",
+  "type": "task",
+  "updated_at": "2026-11-07T22:33:57Z"
+}
