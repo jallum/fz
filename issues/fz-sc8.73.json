@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-07T22:33:56Z",
+  "description": "Found while building fz-sc8.72. resolve_module_name (src/compiler2/world.rs) returns the current module when a single-segment name equals the current module's last segment. So inside a top-level `defmodule Foo.Bar`, a bare `Bar` means Foo.Bar. In Elixir `Bar` is the atom Elixir.Bar unless an alias binds it; the current module is reachable only as __MODULE__ or by its full name.\n\nProbe: `defmodule Foo.Bar do def me(), do: Bar end` then `alias Foo.Bar; dbg(Bar.me())`. fz prints Foo.Bar; Elixir prints Bar.\n\nFix at the one authority: drop the last-segment rule from resolve_module_name, then confirm with an oracle fixture that nothing in lib relied on it. Deviation from Elixir; not needed by the distiller.",
+  "id": "fz-sc8.73",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A bare module name inside defmodule Foo.Bar is Bar, not the current module",
+  "type": "bug",
+  "updated_at": "2026-11-07T22:33:56Z"
+}
