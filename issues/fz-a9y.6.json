@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-a9y.4"
+  ],
   "blocks": [],
   "created": "2026-11-07T23:29:51Z",
   "description": "With the probe running on the sender (prior ticket), the matcher's process argument is the sender. Erlang allows self() in guards. Any identity-dependent value read inside a receive guard must be pinned into the park record's pinned values at park time, exactly as bound variables are pinned, so the matcher uses its process argument for allocation only.\n\nFirst establish what fz allows today: can a receive guard call self() (or any other process-identity builtin)? Report the compiler rule with file:line.\n\nDone when, on all three paths, one of:\n- fz allows self() in receive guards: a fixture where a receiver parks on a guard comparing against self() and a DIFFERENT process sends both a matching and a non-matching message; the match is decided by the receiver's pid. The compiler pins the value; the matcher never asks the allocating process for identity.\n- fz refuses self() in receive guards: the refusal is a loud compile diagnostic pinned by a fixture, and .agent/docs/pattern-matching.md states the rule and why (sender-run probe).\n\nFull gate green; no pin edited (report). Commit in Why / What changed / Verification form; no co-author trailer.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "self() in a receive guard names the receiver when a sender runs the probe",
   "type": "task",
-  "updated_at": "2026-11-07T23:29:51Z"
+  "updated_at": "2026-11-07T23:30:23Z"
 }
