@@ -184,15 +184,17 @@ pub type PidId = u32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
-    /// Default; created but not yet ever scheduled.
+    /// Created and not yet queued.
     New,
-    /// Ready to run / in run_queue.
+    /// In the run queue. Only `SchedulingCore::make_runnable` writes this, so
+    /// a process is queued exactly when it is Ready.
     Ready,
-    /// Currently running on a worker (a worker has it installed in TLS).
+    /// Installed on a worker, executing a quantum.
     Running,
-    /// Awaiting a message (.19.3); send wakes back to Ready.
+    /// Off the run queue, waiting to be made runnable: a receive that found no
+    /// message, or a process kept alive between entries.
     Blocked,
-    /// Halted; halt_value is final.
+    /// Halted; halt_value is final. Never runs again.
     Exited,
 }
 

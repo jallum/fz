@@ -184,7 +184,7 @@ pub fn send_via<T: Telemetry + ?Sized>(
     let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
     let copied = deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
     if probe_sender(receiver, copied) == ProbeOutcome::Hit {
-        rt.core.enqueue(receiver_pid);
+        rt.core.make_runnable(receiver_pid, &mut receiver.state);
     }
 }
 
@@ -240,7 +240,6 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         self.next_pid += 1;
         let mut process = self.compiled.make_process();
         process.pid = pid;
-        process.state = ProcessState::Ready;
         let fp = self
             .compiled
             .fn_ptr(fn_id)
@@ -253,9 +252,15 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         // the task's own code runs; reset so alloc telemetry measures only the
         // task's execution (and matches the raw-fp entry's zero-alloc start).
         process.heap.reset_alloc_stats();
-        self.tasks.insert(pid, Box::new(process));
-        self.core.enqueue(pid);
+        self.queue_task(pid, Box::new(process));
         pid
+    }
+
+    /// Queue `task` to run and keep it in the registry under `pid`; the
+    /// scheduling core performs its transition to Ready.
+    fn queue_task(&mut self, pid: PidId, mut task: Box<Process>) {
+        self.core.make_runnable(pid, &mut task.state);
+        self.tasks.insert(pid, task);
     }
 
     /// fz-ul4.29.5: spawn a task from a closure value owned by the
@@ -267,7 +272,6 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         self.next_pid += 1;
         let mut process = self.compiled.make_process();
         process.pid = pid;
-        process.state = ProcessState::Ready;
 
         // Deep-copy the closure from sender's heap into the new task's heap.
         assert!(!sender.is_null(), "spawn_closure: no sender process");
@@ -284,8 +288,8 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
 
         // Wrap the copied closure in an entry thunk and queue it as
         // `runnable`; the scheduler resumes it via `fz_resume` on the next
-        // quantum. Insert into the task registry before queueing so a
-        // cross-task send() during the new task's run can find this pid.
+        // quantum. The registry holds the child before it runs so a
+        // cross-task send() during its quantum can find this pid.
         process.next_frame = null_mut();
         let thunk = mint_entry_thunk(&mut process.heap, self.compiled.entry_thunk_addr, copied_addr);
         process.set_runnable_closure(thunk);
@@ -293,8 +297,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         // prepared before the child runs; reset so its alloc telemetry
         // measures only the child's own execution.
         process.heap.reset_alloc_stats();
-        self.tasks.insert(pid, Box::new(process));
-        self.core.enqueue(pid);
+        self.queue_task(pid, Box::new(process));
         pid
     }
 
@@ -338,9 +341,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
                     Ok(())
                 })
                 .expect("compiled boundary maintenance is infallible");
-                task.state = ProcessState::Ready;
-                self.tasks.insert(pid, task);
-                self.core.enqueue(pid);
+                self.queue_task(pid, task);
                 continue;
             } else if task.state == ProcessState::Blocked {
                 // Parked on a receive: keep in registry, no re-enqueue. A
@@ -377,9 +378,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             } else if task.state == ProcessState::Running {
                 // Other cooperative yield (future builtin).
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
-                task.state = ProcessState::Ready;
-                self.tasks.insert(pid, task);
-                self.core.enqueue(pid);
+                self.queue_task(pid, task);
                 continue;
             }
             // Keep Exited / Blocked tasks in the registry so callers can
@@ -395,10 +394,12 @@ impl<T: Telemetry + ?Sized> Scheduler for Runtime<'_, T> {
         &mut self.core
     }
 
-    fn wake_expired(&mut self, pid: PidId, timer: TimerId) -> bool {
-        self.tasks
-            .get_mut(&pid)
-            .is_some_and(|task| fire_after_timer(task, timer))
+    fn wake_expired(&mut self, pid: PidId, timer: TimerId) {
+        if let Some(task) = self.tasks.get_mut(&pid)
+            && fire_after_timer(task, timer)
+        {
+            self.core.make_runnable(pid, &mut task.state);
+        }
     }
 
     fn about_to_sleep(&mut self, wait: Duration) {

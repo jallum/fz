@@ -124,8 +124,8 @@ relying on an alternate `outer_cont` mode.
 ```text
 message arrives for a waiting receive and matches clause k:
   outcome = materialize_outcome_closure(clause_bodies[k], bound_vals)
-  wait = None ; runnable = outcome ; state = Ready
-  enqueue process
+  wait = None ; runnable = outcome
+  core.make_runnable(pid, &mut state)   # Blocked -> Ready, queued once
 ```
 
 The scheduler never passes the message to the closure. The message is already
@@ -153,10 +153,10 @@ receive ... after 500 -> :timeout:
 
 The timer wheel entry holds only `(id, deadline, pid)` — not the closure. When it
 fires, `fire_after_timer` checks the parked task still holds that exact timer id,
-then moves `after_cont` into `runnable` and flips Ready. If a message matches
-first, the matcher-hit path cancels the timer via `timer_cancel` and schedules
-the matched outcome instead. Either way the runnable result has the same shape:
-`runnable()`.
+then moves `after_cont` into `runnable`; the scheduler makes the task runnable
+through its core. If a message matches first, the matcher-hit path cancels the
+timer via `timer_cancel` and schedules the matched outcome instead. Either way
+the runnable result has the same shape: `runnable()`.
 
 ## The Scheduling Core
 
@@ -164,14 +164,24 @@ the matched outcome instead. Either way the runnable result has the same shape:
 wheel. The JIT `Runtime`, the AOT `AotScheduler`, and the interpreter's
 `BackendSchedulerAdapter` each hold one and implement `Scheduler`: `core()`
 exposes it, `wake_expired(pid, timer)` says how an expired timer wakes that
-path's process (`fire_after_timer` for JIT and AOT; the interpreter stages the
+path's process (`fire_after_timer` for JIT and AOT; the interpreter queues the
 parked receive's `after` entry), and `about_to_sleep(wait)` observes a sleep.
+
+`SchedulingCore::make_runnable(pid, &mut state)` is the one way a process
+becomes Ready. It takes the process's state word, moves New, Running or Blocked
+to Ready and pushes the pid once, and returns whether this call made the process
+runnable; a process that is already Ready is in the queue and is not pushed
+again, and an Exited one never runs. Spawn, send, yield and timer wakes on all
+three paths go through it, so `Ready` and "in the run queue" are the same fact.
+`probe_sender` and `fire_after_timer` only report their decision; the caller
+hands it to the core.
 
 `next_runnable` is the single loop and the single definition of idle:
 
 ```text
 loop:
-  wake every process whose timer expired (enqueue those that woke)
+  wake every process whose timer expired (each scheduler makes the woken
+                                          ones runnable through its core)
   if a process is runnable: return it
   if a timer is pending:   about_to_sleep(wait); sleep until its deadline
   else:                    return None   # idle
@@ -185,10 +195,10 @@ instantiated per scheduler type.
 
 The interpreter arms a timer for a receive with a positive timeout through the
 same `ExecCtx` hooks and records its id on the `BackendParkRecord`; a matching
-send cancels it, and an expired one stages the receive's `after` entry. The
-interpreter's macro path (`keepalive_pid`) leaves its finished process Ready but
-not queued and holding no timer, so the core reports idle once only that process
-remains.
+send cancels it, and an expired one queues the receive's `after` entry. The
+interpreter's macro path (`keepalive_pid`) leaves its finished process Blocked
+(off the queue, holding no timer) until the next entry queues it, so the core
+reports idle once only that process remains.
 
 ## Mid-flight Reduction Yield
 

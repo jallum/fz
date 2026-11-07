@@ -86,9 +86,8 @@ pub enum ProbeOutcome {
 ///
 /// If `task.wait.is_some()`, the receive has already searched the mailbox, so
 /// only `msg` is tested against its matcher:
-/// - Hit: clear `wait`, cancel after-timer (via
-///   `dispatch_timer_cancel`), set `runnable_closure`, flip
-///   Ready. Caller enqueues.
+/// - Hit: clear `wait`, cancel the after-timer, set `runnable_closure`. The
+///   caller makes the process runnable through its scheduling core.
 /// - Miss: push msg to mailbox. Caller does NOT wake.
 ///
 /// If not parked: push msg to mailbox. Returns Miss.
@@ -107,7 +106,6 @@ pub fn probe_sender(task: &mut Process, msg: AnyValueRef) -> ProbeOutcome {
                     timer_cancel(task, id);
                 }
                 task.set_runnable_closure(cont);
-                task.state = ProcessState::Ready;
                 ProbeOutcome::Hit
             }
             None => {
@@ -165,12 +163,11 @@ pub fn reach_receive(task: &mut Process, mut park: ParkRecord) -> ReceiveStep {
 
 /// After-timer fire. Called by the scheduler's timer drain for each
 /// expired entry. If `task` is still parked on a `ReceiveMatched` with
-/// that exact `id`, stash the after-cont as the runnable zero-arg closure and
-/// flip Ready.
+/// that exact `id`, stash the after-cont as the runnable zero-arg closure.
 ///
-/// Returns `true` when the task transitioned (caller should enqueue);
-/// `false` for stale entries whose task is no longer parked on this
-/// timer (matcher hit got there first, etc.).
+/// Returns `true` when the after entry fired and the caller makes the task
+/// runnable through its scheduling core; `false` for stale entries whose
+/// task is no longer parked on this timer (matcher hit got there first, etc.).
 pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
     let Some(park) = task.wait.as_ref() else {
         return false;
@@ -181,7 +178,6 @@ pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
     let after_cont = park.after_cont;
     task.wait = None;
     task.set_runnable_closure(after_cont);
-    task.state = ProcessState::Ready;
     true
 }
 

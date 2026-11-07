@@ -486,11 +486,10 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
     // Scaffolding is prepared before the child runs; reset so its alloc
     // telemetry measures only the child's execution.
     child.heap.reset_alloc_stats();
-    child.state = ProcessState::Ready;
 
     unsafe {
+        (*sched).core.make_runnable(pid, &mut child.state);
         (*sched).tasks.insert(pid, child);
-        (*sched).core.enqueue(pid);
     }
 
     pid
@@ -509,31 +508,28 @@ fn deep_copy_self_send_ref_for_aot(sender: &mut Process, msg: AnyValueRef) -> An
     deep_copy_any_value_ref(msg, src_heap, dst_heap, &mut forwarding)
 }
 
-/// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.
-/// Every arrival routes through `sched::probe_sender`, which flips a
-/// matched waiting receiver to Ready and enqueues it.
+/// Send hook. Pushes a message into the receiver's mailbox. Every arrival
+/// routes through `sched::probe_sender`; a matched waiting receiver is made
+/// runnable through the scheduling core.
 extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
     let msg = AnyValueRef::from_raw_word(msg_ref_word).expect("aot_send message ref");
     assert!(!sender_ptr.is_null(), "aot_send_hook: no sender process");
     let sched = scheduler as *mut AotScheduler;
-    let wake = {
-        let tasks = unsafe { &mut (*sched).tasks };
-        let Some(task) = tasks.get_mut(&receiver_pid) else {
-            return;
-        };
-        if task.state == ProcessState::Exited {
-            return;
-        }
-        let msg = if task.pid == unsafe { (*sender_ptr).pid } {
-            deep_copy_self_send_ref_for_aot(task, msg)
-        } else {
-            let sender = unsafe { &*sender_ptr };
-            deep_copy_send_ref_for_aot(sender, task, msg)
-        };
-        matches!(probe_sender(task, msg), ProbeOutcome::Hit)
+    let tasks = unsafe { &mut (*sched).tasks };
+    let Some(task) = tasks.get_mut(&receiver_pid) else {
+        return;
     };
-    if wake {
-        unsafe { (*sched).core.enqueue(receiver_pid) };
+    if task.state == ProcessState::Exited {
+        return;
+    }
+    let msg = if task.pid == unsafe { (*sender_ptr).pid } {
+        deep_copy_self_send_ref_for_aot(task, msg)
+    } else {
+        let sender = unsafe { &*sender_ptr };
+        deep_copy_send_ref_for_aot(sender, task, msg)
+    };
+    if probe_sender(task, msg) == ProbeOutcome::Hit {
+        unsafe { (*sched).core.make_runnable(receiver_pid, &mut task.state) };
     }
 }
 
@@ -577,7 +573,7 @@ pub extern "C" fn fz_aot_run_main(
     // measures only main's execution.
     process.heap.reset_alloc_stats();
     unsafe {
-        (*sched).core.enqueue(1);
+        (*sched).core.make_runnable(1, &mut process.state);
     }
 
     aot_run_queue_loop(sched);
@@ -682,10 +678,7 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
             process.quiet_quanta = process.quiet_quanta.saturating_add(1);
         }
         process.clear_yield_reasons();
-        unsafe {
-            (*proc_ptr).state = ProcessState::Ready;
-            (*sched).core.enqueue(pid);
-        }
+        unsafe { (*sched).core.make_runnable(pid, &mut process.state) };
     } else if state == ProcessState::Running {
         // fz-4mk.3b — task halted; flush MSO resources through the dtor
         // drain shim before the heap drops.
@@ -706,10 +699,12 @@ impl Scheduler for AotScheduler {
         &mut self.core
     }
 
-    fn wake_expired(&mut self, pid: u32, timer: TimerId) -> bool {
-        self.tasks
-            .get_mut(&pid)
-            .is_some_and(|task| fire_after_timer(task, timer))
+    fn wake_expired(&mut self, pid: u32, timer: TimerId) {
+        if let Some(task) = self.tasks.get_mut(&pid)
+            && fire_after_timer(task, timer)
+        {
+            self.core.make_runnable(pid, &mut task.state);
+        }
     }
 }
 

@@ -72,12 +72,16 @@ fn mailbox_ints(task: &Process) -> Vec<i64> {
 }
 
 #[test]
-fn probe_sender_hit_sets_runnable_and_flips_ready() {
+fn probe_sender_hit_sets_runnable_and_leaves_the_state_to_the_core() {
     let mut task = fresh_task();
     park_on_42(&mut task, None);
     assert_eq!(probe_sender(&mut task, int_ref(42)), ProbeOutcome::Hit);
     assert!(task.wait.is_none());
-    assert_eq!(task.state, ProcessState::Ready);
+    assert_eq!(
+        task.state,
+        ProcessState::Blocked,
+        "only the scheduling core flips Ready"
+    );
     let runnable = task.runnable_ptr();
     assert!(!runnable.is_null());
     unsafe {

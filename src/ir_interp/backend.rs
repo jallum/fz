@@ -223,11 +223,11 @@ impl IrInterpRuntime {
                 continuations,
             },
         );
-        self.core.enqueue(pid);
-        self.set_process_state(pid, ProcessState::Ready);
+        self.make_runnable(pid);
         Ok(())
     }
 
+    /// Record that `pid` resumes at `entry` and queue it to run.
     fn enqueue_backend_local_entry(
         &mut self,
         pid: u32,
@@ -236,23 +236,8 @@ impl IrInterpRuntime {
         env: HashMap<ValueId, BackendBoundValue>,
         continuations: Vec<BackendContinuation>,
     ) -> Result<(), String> {
-        self.stage_backend_local_entry(pid, executable, entry, env, continuations)?;
-        self.core.enqueue(pid);
-        Ok(())
-    }
-
-    /// Make `pid` ready to resume at `entry` without queueing it; the caller
-    /// queues it, or the scheduling core does when a timer woke it.
-    fn stage_backend_local_entry(
-        &mut self,
-        pid: u32,
-        executable: Rc<BackendExecutable>,
-        entry: crate::compiler2::ControlEntryId,
-        env: HashMap<ValueId, BackendBoundValue>,
-        continuations: Vec<BackendContinuation>,
-    ) -> Result<(), String> {
         if !self.tasks.contains_key(&pid) {
-            return Err(format!("stage_backend_local_entry: unknown pid {}", pid));
+            return Err(format!("enqueue_backend_local_entry: unknown pid {}", pid));
         }
         self.backend_resume.insert(
             pid,
@@ -263,7 +248,7 @@ impl IrInterpRuntime {
                 continuations,
             },
         );
-        self.set_process_state(pid, ProcessState::Ready);
+        self.make_runnable(pid);
         Ok(())
     }
 
@@ -291,7 +276,6 @@ impl IrInterpRuntime {
             pid,
             DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));
-        child.state = ProcessState::Ready;
         let mut forwarding = HashMap::new();
         let args = args
             .into_iter()
@@ -314,17 +298,17 @@ impl IrInterpRuntime {
     }
 
     /// The `after` timer `timer` of the receive `pid` is parked on has
-    /// expired: stage the receive's `after` entry. Returns `false` for a stale
-    /// timer whose receiver a message already woke.
+    /// expired: queue the receive's `after` entry. A stale timer, whose
+    /// receiver a message already woke, is dropped.
     fn wake_receive_after(
         &mut self,
         transport: &TransportStore,
         program: &BackendProgram,
         pid: u32,
         timer: TimerId,
-    ) -> Result<bool, String> {
+    ) -> Result<(), String> {
         if self.backend_parked.get(&pid).and_then(|park| park.after_timer) != Some(timer) {
-            return Ok(false);
+            return Ok(());
         }
         let park = self.backend_parked.remove(&pid).expect("checked above");
         let entries = entries_for_executable(&park.executable)?;
@@ -341,8 +325,7 @@ impl IrInterpRuntime {
         let receiver = self.process_ptr(pid).ok_or_else(|| format!("unknown receiver {pid}"))?;
         self.current_proc = receiver;
         let env = delivered_env(self, transport, program, entries, &park.env, after.entry, None, &[])?;
-        self.stage_backend_local_entry(pid, park.executable.clone(), after.entry, env, park.continuations)?;
-        Ok(true)
+        self.enqueue_backend_local_entry(pid, park.executable.clone(), after.entry, env, park.continuations)
     }
 
     pub(super) fn send_ref<T: Telemetry + ?Sized>(
@@ -447,13 +430,12 @@ impl<T: Telemetry + ?Sized> Scheduler for BackendSchedulerAdapter<T> {
         &mut unsafe { &mut *self.runtime }.core
     }
 
-    fn wake_expired(&mut self, pid: u32, timer: TimerId) -> bool {
+    fn wake_expired(&mut self, pid: u32, timer: TimerId) {
         let runtime = unsafe { &mut *self.runtime };
         let woke = runtime.wake_receive_after(unsafe { &*self.transport }, unsafe { &*self.program }, pid, timer);
-        woke.unwrap_or_else(|error| {
+        if let Err(error) = woke {
             runtime.record_callback_error(error);
-            false
-        })
+        }
     }
 
     fn about_to_sleep(&mut self, wait: Duration) {
@@ -597,7 +579,9 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
             BackendRunStep::Done(value) => {
                 completions.push((pid, value));
                 if run == BackendRun::Macro && pid == MAIN_PID {
-                    runtime.set_process_state(pid, ProcessState::Ready);
+                    // Kept alive for its next entry: off the run queue until
+                    // that entry queues it.
+                    runtime.set_process_state(pid, ProcessState::Blocked);
                     continue;
                 }
                 let exit = ProcessExit::Completed(value);

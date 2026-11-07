@@ -3,12 +3,15 @@
 //!
 //! The JIT `Runtime`, the AOT `AotScheduler`, and the interpreter's scheduler
 //! adapter each own a [`SchedulingCore`] and implement [`Scheduler`] to say how
-//! an expired timer wakes their process. [`next_runnable`] is the single place
-//! that answers "what runs next?": it wakes expired timers, hands out the next
-//! runnable process, sleeps until the next deadline when only timers remain,
-//! and reports idle only when nothing is runnable and no timer is pending.
+//! an expired timer wakes their process. [`SchedulingCore::make_runnable`] is
+//! the one place a process becomes Ready: it writes the state and queues the
+//! pid together, so a process is in the run queue exactly when it is Ready.
+//! [`next_runnable`] is the single place that answers "what runs next?": it
+//! wakes expired timers, hands out the next runnable process, sleeps until the
+//! next deadline when only timers remain, and reports idle only when nothing is
+//! runnable and no timer is pending.
 
-use crate::process::PidId;
+use crate::process::{PidId, ProcessState};
 use crate::scheduler_hooks::{TimerCancelHook, TimerScheduleHook};
 use crate::timer::{TimerId, TimerWheel};
 use std::collections::VecDeque;
@@ -27,9 +30,20 @@ impl SchedulingCore {
         Self::default()
     }
 
-    /// Queue `pid` behind every process that is already runnable.
-    pub fn enqueue(&mut self, pid: PidId) {
-        self.run_queue.push_back(pid);
+    /// Make `pid` runnable and record that in `state`. A process that is New,
+    /// Running (it yielded) or Blocked becomes Ready and is queued behind every
+    /// process already runnable. A process that is already Ready sits in the
+    /// queue and is not queued twice; an Exited process never runs again.
+    /// Returns whether this call is the one that made the process runnable.
+    pub fn make_runnable(&mut self, pid: PidId, state: &mut ProcessState) -> bool {
+        match *state {
+            ProcessState::New | ProcessState::Running | ProcessState::Blocked => {
+                *state = ProcessState::Ready;
+                self.run_queue.push_back(pid);
+                true
+            }
+            ProcessState::Ready | ProcessState::Exited => false,
+        }
     }
 
     /// The runnable processes in the order they will run.
@@ -57,10 +71,11 @@ impl SchedulingCore {
 pub trait Scheduler {
     fn core(&mut self) -> &mut SchedulingCore;
 
-    /// The timer `timer` that `pid` was waiting on has expired. Returns `true`
-    /// when the process became runnable and must be queued; `false` for a stale
-    /// timer whose process was already woken by a message.
-    fn wake_expired(&mut self, pid: PidId, timer: TimerId) -> bool;
+    /// The timer `timer` that `pid` was waiting on has expired. A scheduler
+    /// whose process is still waiting on that timer makes it runnable through
+    /// its core; a stale timer, whose process a message already woke, is
+    /// dropped.
+    fn wake_expired(&mut self, pid: PidId, timer: TimerId);
 
     /// The core is about to sleep for `wait` because only timers remain.
     fn about_to_sleep(&mut self, _wait: Duration) {}
@@ -72,9 +87,7 @@ pub fn next_runnable<S: Scheduler + ?Sized>(scheduler: &mut S) -> Option<PidId> 
     loop {
         let expired = scheduler.core().timers.drain_expired(Instant::now());
         for entry in expired {
-            if scheduler.wake_expired(entry.pid, entry.id) {
-                scheduler.core().enqueue(entry.pid);
-            }
+            scheduler.wake_expired(entry.pid, entry.id);
         }
         if let Some(pid) = scheduler.core().run_queue.pop_front() {
             return Some(pid);
