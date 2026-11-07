@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-a9y.4"
+  ],
   "created": "2026-11-07T23:29:51Z",
   "description": "The fz heap is a chain: allocation bumps into the tip; overflow pushes the tip onto abandoned_blocks and takes a larger block (runtime/src/heap/imp.rs:147-192); Cheney snapshots tip + abandoned as from-space (imp.rs:1045-1049) and returns blocks to a pool. A gift is a window on that chain: begin_gift sets the tip aside and installs a fresh block (smallest size class); the copy allocates through alloc_kind as usual; end_gift cuts the segment and restores the saved tip with its free space intact. graft appends the segment to the receiving heap; the next Cheney pass copies live data out of it like any from-space block.\n\nWhat travels with the segment (each a split, never a walk): suffix of abandoned_blocks since begin plus the window's final tip; suffix of fragments (oversize, marked in place); prefix of the mso chain (alloc_procbin pushes at head, runtime/src/procbin.rs:318-330) spliced onto the receiver's old head at graft; suffix of pending_dtors. The pressure flag is recomputed for the restored heap at end_gift. Alloc stats stay with the sender.\n\nAccounting rules (verified against imp.rs:988-996 and 1087-1090):\n- Adopted blocks live on their own list, never on abandoned_blocks, so the GROW band keeps meaning \"allocation overflowed mid-quantum\".\n- Adopted bytes count by fill, not by size-class capacity.\n- The GC event gains adopted-block count and adopted bytes.\n\nTests (runtime/src/heap/heap_test.rs or a sibling *_test.rs; heap-only, no send-path change in this ticket):\n- A gift containing a SharedBin stub survives the receiver's GC: stub on the receiver's mso chain, refcount unchanged, gift blocks returned to a pool.\n- A gift with an oversize object travels via fragments and is marked, not copied.\n- Several thousand small gifts grafted onto a heap that never reads them leave the heap's size class unchanged after GC (fill-based accounting made loud).\n- end_gift leaves the sender's pressure flag equal to what bytes_used says for the restored heap.\n- Dropping an un-grafted segment (orphan) returns its blocks to a pool and frees its fragments; pool occupancy asserted.\n- The GC telemetry event reports the adopted count and bytes.\n\nDone when the above pass, the full gate is green, allocation goldens are unchanged (report any that would move; do not edit), docs for the heap in .agent/docs are updated in present tense. Commit in Why / What changed / Verification form; no co-author trailer.",
   "id": "fz-a9y.3",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A heap can open, cut and graft a gift segment",
   "type": "task",
-  "updated_at": "2026-11-07T23:29:51Z"
+  "updated_at": "2026-11-07T23:30:22Z"
 }
