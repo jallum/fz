@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.72"
+  ],
   "blocks": [],
   "created": "2026-11-07T22:33:56Z",
   "description": "Found while building fz-sc8.72. `case m do Foo -\u003e :yes; _ -\u003e :no end` is refused with \"module aliases are not valid patterns\". In Elixir an alias in a pattern is the atom Elixir.Foo and matches by equality, like any atom literal. Since fz-sc8.72 the decoder produces Expr::Alias(ModuleName) and World::module_alias_atom answers which atom it is; the pattern reader (src/dispatch_matrix/pattern.rs) should turn an alias into the same constant-atom test it already builds for an atom literal, through the same authority guards use. Oracle fixtures for case, function heads and =. Deviation from Elixir; not needed by the distiller.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A module alias in a pattern matches that module's atom",
   "type": "bug",
-  "updated_at": "2026-11-07T22:33:56Z"
+  "updated_at": "2026-11-07T22:33:57Z"
 }
