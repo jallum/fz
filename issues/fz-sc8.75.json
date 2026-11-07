@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-07T22:33:56Z",
+  "description": "Found while building fz-sc8.72. In Elixir __MODULE__ in a function body is the enclosing module's atom (Elixir.Foo.Bar), and nil at the top level. In fz it fails to compile: \"compiler2 lowering found unresolved value `__MODULE__`\". The namespace already binds __ENV__ as a Splice symbol just before a body is expanded (src/compiler2/namespace.rs); __MODULE__ is the same mechanism with the module's atom as the spliced value, or a direct lowering through World::module_alias_atom. Fix in one place, with an oracle fixture on interp, run and build. Deviation from Elixir; not needed by the distiller.",
+  "id": "fz-sc8.75",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "__MODULE__ in a function body is the module's atom",
+  "type": "bug",
+  "updated_at": "2026-11-07T22:33:56Z"
+}
