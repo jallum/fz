@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-07T23:29:51Z",
+  "description": "Today SchedulingCore::enqueue is a bare push_back (runtime/src/sched_core.rs:31-33) and the Ready write happens separately at every call site: src/exec/runtime.rs (186, 258, 298, 344, 383), runtime/src/aot_shim.rs (493, 536, 579, 699), src/ir_interp/backend.rs (202, 216), plus sched.rs probe_sender/fire_after_timer setting ProcessState::Ready themselves. libdispatch sets the ENQUEUED bit in dq_state as the one wakeup authority; the BEAM flips the atomic process state word the same way.\n\nDone when:\n- SchedulingCore exposes one operation that takes the process's state, performs the transition to Ready (from New, Running or Blocked), pushes exactly once, and returns whether the process was newly made runnable. A process already Ready/queued is never pushed twice.\n- Every separate ProcessState::Ready write beside an enqueue is deleted on all three paths; sched.rs helpers report the decision and no longer flip state themselves.\n- runtime/src/sched_core_test.rs proves: Blocked -\u003e wake enqueues once; a second wake of an already-Ready process does not push; the queued order is unchanged.\n- No behavior change: full gate green (cargo test --workspace --all-targets, doc tests, fixture_matrix --test-threads=1); no golden, pin or fixture expectation edits. Any pin that would need to move is reported, not edited.\n- Commit message in Why / What changed / Verification form. No co-author trailer.",
+  "id": "fz-a9y.1",
+  "labels": [],
+  "parent": "fz-a9y",
+  "priority": 2,
+  "status": "open",
+  "title": "The scheduling core owns the Blocked-to-Ready transition",
+  "type": "task",
+  "updated_at": "2026-11-07T23:29:51Z"
+}
