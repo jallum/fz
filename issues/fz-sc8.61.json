@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.72"
+  ],
   "blocks": [
     "fz-sc8.62",
     "fz-sc8.63",
@@ -15,5 +17,5 @@
   "status": "open",
   "title": "raise is a Kernel function over one panic route, and a failure never dies by signal",
   "type": "feature",
-  "updated_at": "2026-11-03T13:40:40Z"
+  "updated_at": "2026-11-07T21:43:14Z"
 }
