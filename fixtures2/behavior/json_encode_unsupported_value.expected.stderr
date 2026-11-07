@@ -1,1 +1,1 @@
-fz panic: {:json_encode, :unsupported_value, :not_json}
+** (ErlangError) Erlang error: {:json_encode, :unsupported_value, :not_json}

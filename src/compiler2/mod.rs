@@ -74,7 +74,7 @@ pub(crate) use canon::function_label;
 pub use cli::run as run_cli;
 pub use code::{CodeMap, CodeState, QuotedCodeSource, SourceOwner};
 pub(crate) use compiler::BackendRequestEvent;
-pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
+pub use compiler::{CodeSubmission, Compiler2, RootSubmission, RunFailure};
 pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
 pub(crate) use drive::JobEffects;

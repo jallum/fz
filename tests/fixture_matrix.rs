@@ -50,8 +50,9 @@
 //! `expected.txt` for an oracle fixture.
 //!
 //! `expect: success` (the default) requires exit 0 with matching stdout/diagnostics.
-//! `expect: abort` flips the contract: the program must exit nonzero and its
-//! stderr must contain the `expected.stderr` golden as a substring. `expect:
+//! `expect: abort` flips the contract: the program's main process fails, so it
+//! must exit 1, and its stderr must contain the `expected.stderr` golden as a
+//! substring. `expect:
 //! diagnostic` checks the emitted `[fz, diag, error]` telemetry code.
 //!
 //! Workflow: re-run with `BLESS=1 cargo test fixture_matrix` to rewrite
@@ -849,7 +850,7 @@ fn discover() -> Vec<FixtureCase> {
 /// each path runner.
 struct Ran {
     /// The program's exit status.
-    success: bool,
+    status: ExitStatus,
     /// stdout, captured verbatim.
     stdout: String,
     /// stderr / diagnostics, captured verbatim.
@@ -1720,7 +1721,7 @@ fn diagnostic_build_path_cleans_every_output() {
     let out_path = temp_build_output_path("diagnostic");
     let outcome = run_fz2_build_path_to(&fixture, &header, out_path.clone());
     assert!(
-        matches!(outcome, RunOutcome::Ran(Ran { success: true, .. })),
+        matches!(&outcome, RunOutcome::Ran(ran) if ran.status.success()),
         "the deliberately valid diagnostic fixture must exercise unexpected build success"
     );
     assert_fz2_build_outputs_absent(&out_path);
@@ -1777,7 +1778,7 @@ fn run_path(fixture: &FixtureCase, header: &Header, path: FixtureMatrixPath) -> 
     };
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     RunOutcome::Ran(Ran {
-        success: out.status.success(),
+        status: out.status,
         stdout: String::from_utf8_lossy(&out.stdout).to_string(),
         diagnostics: stderr,
     })
@@ -1824,7 +1825,7 @@ fn run_fz2_build_path_owned(fixture: &FixtureCase, header: &Header, out_path: &P
     let build_stderr = String::from_utf8_lossy(&build.stderr).to_string();
     if header.expect == Expect::Diagnostic {
         return RunOutcome::Ran(Ran {
-            success: build.status.success(),
+            status: build.status,
             stdout: String::from_utf8_lossy(&build.stdout).to_string(),
             diagnostics: build_stderr,
         });
@@ -1844,7 +1845,7 @@ fn run_fz2_build_path_owned(fixture: &FixtureCase, header: &Header, out_path: &P
     let run_stderr = String::from_utf8_lossy(&run.stderr).to_string();
     let diagnostics = format!("{}{}", build_stderr, run_stderr);
     RunOutcome::Ran(Ran {
-        success: run.status.success(),
+        status: run.status,
         stdout: String::from_utf8_lossy(&run.stdout).to_string(),
         diagnostics,
     })
@@ -1993,7 +1994,7 @@ fn check_success(
     oracle_owned: bool,
 ) -> CheckOutcome {
     let path_id = path.id();
-    if !ran.success {
+    if !ran.status.success() {
         return CheckOutcome::Fail(format!(
             "{} via {}: expected success but the program exited nonzero\n--- stderr\n{}",
             fixture.display_path().display(),
@@ -2091,12 +2092,21 @@ fn check_failure(
 ) -> CheckOutcome {
     let path_id = path.id();
     let diagnostics = fixture.normalize_actual_diagnostics(&ran.diagnostics);
-    if ran.success {
+    if ran.status.success() {
         return CheckOutcome::Fail(format!(
             "{} via {}: expected {} (nonzero exit) but the program exited 0",
             fixture.display_path().display(),
             path_id,
             kind
+        ));
+    }
+    if kind == "abort" && ran.status.code() != Some(1) {
+        return CheckOutcome::Fail(format!(
+            "{} via {}: expected abort, a failed main process exiting 1, but the program exited {}\n--- stderr\n{}",
+            fixture.display_path().display(),
+            path_id,
+            ran.status,
+            diagnostics.trim_end()
         ));
     }
     if kind == "diagnostic"

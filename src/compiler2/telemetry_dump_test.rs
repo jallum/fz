@@ -249,7 +249,7 @@ fn jsonl_backend_records_compiler2_drive_timeouts() {
         .run_root_interp(root)
         .expect_err("zero drive timeout should abort before compiler work runs");
     assert!(
-        error.contains("exceeded 0 ms drive limit"),
+        error.to_string().contains("exceeded 0 ms drive limit"),
         "timeout should surface through the compiler entrypoint, got: {error}"
     );
 

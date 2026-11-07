@@ -1,0 +1,9 @@
+#---
+# purpose: "a raise while a macro expands fails the compile with the exception's line, on every path"
+# expect: diagnostic
+#---
+defmacro refuse(_ast) do
+  raise ArgumentError, "refused at compile time"
+end
+
+def main(), do: dbg(refuse(1))

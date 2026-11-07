@@ -20,7 +20,7 @@ use fz_runtime::exec_ctx::Argv;
 
 use super::dump::{DumpKind, DumpSpec, FileRequestedOutput, max_requested_stage, parse_dump_spec};
 use super::quoted_surface::{MacroCallForm, ScopeForm, ScopeSurface, read_module_body_surface, read_scope_surface};
-use super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission, parse_quoted_program};
+use super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission, RunFailure, parse_quoted_program};
 
 // Keep the frontdoor drive budget aligned with the slowest fixture path budget;
 // larger Enum protocol frontiers can legitimately take more than five seconds
@@ -55,8 +55,8 @@ pub fn run() {
     let exit_code = match dispatch(tel, args, program_args, &diagnostic_status) {
         Ok(()) => 0,
         Err(error) => {
-            if !diagnostic_status.saw_error() {
-                eprintln!("{}", error.message);
+            if let Some(message) = error.message.filter(|_| !diagnostic_status.saw_error()) {
+                eprintln!("{message}");
             }
             error.code
         }
@@ -72,28 +72,38 @@ pub fn run() {
 
 struct CliError {
     code: i32,
-    message: String,
+    /// What to print on stderr, if the failure has not already said so.
+    message: Option<String>,
 }
 
 impl CliError {
     fn usage(message: impl Into<String>) -> Self {
         Self {
             code: 2,
-            message: message.into(),
+            message: Some(message.into()),
         }
     }
 
     fn failure(message: impl Into<String>) -> Self {
         Self {
             code: 1,
-            message: message.into(),
+            message: Some(message.into()),
         }
     }
 
     fn deferred(message: impl Into<String>) -> Self {
         Self {
             code: 75,
-            message: message.into(),
+            message: Some(message.into()),
+        }
+    }
+
+    /// A program run that did not complete. A failed main process has
+    /// already printed its failure line, so the command only exits 1.
+    fn run(command: &str, failure: RunFailure) -> Self {
+        match failure {
+            RunFailure::MainFailed => Self { code: 1, message: None },
+            RunFailure::Error(message) => Self::failure(format!("{command}: {message}")),
         }
     }
 }
@@ -246,7 +256,7 @@ fn run_command(
     emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
     compiler
         .run_root_jit(root)
-        .map_err(|error| CliError::failure(format!("fz2 run: {error}")))?;
+        .map_err(|failure| CliError::run("fz2 run", failure))?;
     Ok(())
 }
 
@@ -262,14 +272,12 @@ fn interp_command(
     compiler.set_program_args(program_args);
     compiler.set_requested_output(Box::new(FileRequestedOutput::new(root, &options.dumps)));
     emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
-    let result = compiler.run_root_interp(root).map_err(|error| {
-        if error.contains("not yet supported") {
+    compiler.run_root_interp(root).map_err(|failure| match failure {
+        RunFailure::Error(error) if error.contains("not yet supported") => {
             CliError::deferred(format!("fz2 interp: {error}"))
-        } else {
-            CliError::failure(format!("fz2 interp: {error}"))
         }
-    });
-    result?;
+        failure => CliError::run("fz2 interp", failure),
+    })?;
     Ok(())
 }
 
@@ -310,9 +318,8 @@ fn build_command(
 
 /// `fz2 test <src.fz>`: discovers every `test(:name) do ... end` item — at
 /// top level or nested in a `defmodule` — and runs each as its own root.
-/// Each test runs in a fresh `run-test-root` subprocess: on the JIT backend a
-/// failing `assert` reaches the native `Never` trap after `fz_panic`, so sibling
-/// tests would never run if the driver executed them in-process.
+/// Each test runs in a fresh `run-test-root` subprocess, so a test's failure
+/// line and exit status are its own and every sibling test still runs.
 fn test_command(
     tel: ConfiguredTelemetry,
     args: &[String],
@@ -422,11 +429,11 @@ fn run_test_root_command(
     if interp {
         compiler
             .run_root_interp(root)
-            .map_err(|error| CliError::failure(format!("fz2 test: {error}")))?;
+            .map_err(|failure| CliError::run("fz2 test", failure))?;
     } else {
         compiler
             .run_root_jit(root)
-            .map_err(|error| CliError::failure(format!("fz2 test: {error}")))?;
+            .map_err(|failure| CliError::run("fz2 test", failure))?;
     }
     Ok(())
 }

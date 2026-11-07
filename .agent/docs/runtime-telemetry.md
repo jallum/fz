@@ -52,9 +52,12 @@ signature:    (&PidId, &Process)
 
 `ExitRecord` is a handler-side projection: `{ pid, halt_value: i64, live_count:
 usize, bytes_used: usize, list_retention_attempts: u64,
-list_retention_hits: u64 }`. `ProcessExitCapture` builds it during dispatch by
-reading the live process. `JsonlBackend` performs the same projection only when
-it handles the event. The emitter does not traverse the process for telemetry.
+list_retention_hits: u64, failed: bool }`. `failed` is `Process.failed`: whether
+the process ended through `fz_panic` (see [process failure](process-failure.md));
+a failed process's `halt_value` is not a return value. `ProcessExitCapture`
+builds it during dispatch by reading the live process. `JsonlBackend` performs
+the same projection only when it handles the event, writing `failed` as a JSON
+boolean. The emitter does not traverse the process for telemetry.
 
 List-retention fallbacks are derived, not emitted separately:
 `fallback_count = list_retention_attempts - list_retention_hits`. The runtime

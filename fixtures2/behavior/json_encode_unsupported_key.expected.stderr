@@ -1,1 +1,1 @@
-fz panic: {:json_encode, :unsupported_key, {:tuple, 1}}
+** (ErlangError) Erlang error: {:json_encode, :unsupported_key, {:tuple, 1}}

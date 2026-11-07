@@ -12,8 +12,8 @@ defmodule Kernel do
       `!==` and the total term order `compare/2`
     * process primitives: `self/0`, `send/2`, `spawn/1`,
       `make_ref/0` and `make_resource/2`
-    * `panic/1`, `assert/1`, `assert/2`, `refute/1` and `refute/2`, for
-      aborting the current process
+    * `panic/1`, `raise/1`, `raise/2`, `assert/1`, `assert/2`, `refute/1`
+      and `refute/2`, for failing the current process
     * `dbg/1`, `to_string/1`, `div/2`, `rem/2` and `range/3`
     * the sizes and accessors `byte_size/1`, `map_size/1`, `tuple_size/1`,
       `length/1` and `elem/2`, and the type tests `is_integer/1`,
@@ -28,14 +28,37 @@ defmodule Kernel do
   """
 
   @doc """
-  Aborts the current process with `msg` as the reason.
+  Fails the current process with `reason`.
 
-  There is no return value: the process stops before this call returns.
+  The process prints one line on stderr and ends; this call never returns.
+  An exception, a map of the shape `raise/2` builds, prints as
+  `** (Name) message`. Any other reason prints the way Elixir prints a raw
+  Erlang error, `** (ErlangError) Erlang error: :reason`. Other processes
+  carry on, and a failed main process exits the program with status 1.
   """
   @spec panic(any) :: never
-  def panic(msg), do: fz_panic(msg)
+  def panic(reason), do: fz_panic(reason)
 
   extern "fz" defp fz_panic(any) :: never
+
+  @doc """
+  Raises a `RuntimeError` with `message`.
+
+      raise "boom"
+      # ** (RuntimeError) boom
+  """
+  @spec raise(binary) :: never
+  def raise(message), do: raise(RuntimeError, message)
+
+  @doc """
+  Raises the exception `name` with `message`: the current process fails with
+  `%{__struct__: name, __exception__: true, message: message}`.
+
+      raise ArgumentError, "bad"
+      # ** (ArgumentError) bad
+  """
+  @spec raise(atom, binary) :: never
+  def raise(name, message), do: panic(%{__struct__: name, __exception__: true, message: message})
 
   @doc """
   Answers `left` when it is truthy, and `right` otherwise.

@@ -63,6 +63,9 @@ fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) 
 pub(super) enum ExternCallValue {
     Scalar(AnyValue),
     Pair([AnyValue; 2]),
+    /// A `never` extern returned having failed the current process, as
+    /// `fz_panic` does: the process ends here.
+    ProcessFailed,
 }
 
 pub(super) fn call_lowered_extern(
@@ -112,13 +115,19 @@ pub(super) fn call_lowered_extern(
         ));
     }
     let result = unsafe { call_declared_return(fp, &raw_args, signature) };
-    // A helper that reports through the execution context, such as
-    // `fz_panic`, leaves its error pending; that error is the answer whatever
-    // lane the call came back in.
+    // A helper that reports through the execution context leaves its error
+    // pending; that error is the answer whatever lane the call came back in.
+    // A macro's fault sink reports a failure this way, so a failure during
+    // expansion is a compile error.
     if let Some(error) = runtime.take_callback_error() {
         return Err(error);
     }
-    result
+    match result? {
+        ExternCallValue::ProcessFailed if !unsafe { &*runtime.cur_proc() }.failed => {
+            Err(format!("extern `{}` declared Never returned", signature.symbol))
+        }
+        value => Ok(value),
+    }
 }
 
 /// A C variadic call, made through a generated trampoline.
@@ -323,7 +332,7 @@ unsafe fn call_declared_return(
         }
         ExternReturn::Scalar(ExternTy::Never) => {
             unsafe { dispatch_fn_void(fp, raw_args) };
-            Err(format!("extern `{}` declared Never returned", signature.symbol))
+            Ok(ExternCallValue::ProcessFailed)
         }
         ExternReturn::Scalar(ExternTy::I64) => {
             let value = unsafe { dispatch_fn_returning_int(fp, raw_args) };

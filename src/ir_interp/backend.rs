@@ -17,7 +17,7 @@ use crate::compiler2::{
     BackendProgram, BackendStep as ProgramStep, BackendTail, CallEdge, CallTarget, ClosureCallEdge, ControlDestination,
     ExecutableDispatch, ValueId,
 };
-use crate::compiler2::{ExecutableKey, FunctionId};
+use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
@@ -43,6 +43,7 @@ use std::time::Duration;
 enum BackendRunStep {
     Done(AnyValue),
     Blocked,
+    Failed,
 }
 
 enum BackendEvalState {
@@ -63,10 +64,28 @@ enum BackendEvalTransition {
     Next(BackendEvalState),
     Done(AnyValue),
     Blocked,
+    /// The process failed: its line went to the fault sink, and nothing
+    /// after the failure runs.
+    Failed,
 }
 
+/// What an interpreter run is for, which decides where a failing process's
+/// line goes and whether the entry process outlives its completion.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BackendRun {
+    /// A program: a failure prints its line on stderr and ends the process.
+    Program,
+    /// A macro expansion: a failure is a compile error, and the macro's
+    /// process stays alive for the next expansion.
+    Macro,
+}
+
+/// The pid of the process a run starts with.
+const MAIN_PID: u32 = 1;
+
 /// Runs one closed Compiler2 backend program through the shared interpreter
-/// runtime without reopening planner or type-resolution work.
+/// runtime without reopening planner or type-resolution work. Answers the
+/// main process's halt value.
 pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
@@ -74,7 +93,7 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
     output: &dyn OutputSink,
     argv: &Argv,
     program: &BackendProgram,
-) -> Result<i64, String> {
+) -> Result<i64, RunFailure> {
     let atom_names = program
         .atom_names
         .iter()
@@ -90,7 +109,11 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
             .collect(),
         ..Module::default()
     };
-    runtime.enqueue_backend_entry(1, backend_executable_ref(program, types, program.entry())?, Vec::new())?;
+    runtime.enqueue_backend_entry(
+        MAIN_PID,
+        backend_executable_ref(program, types, program.entry())?,
+        Vec::new(),
+    )?;
     let completions = drive_backend_until_idle(
         &mut runtime,
         types,
@@ -100,13 +123,16 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
         argv,
         program,
         &module,
-        None,
+        BackendRun::Program,
     )?;
+    if runtime.process_ref(MAIN_PID).is_some_and(|main| main.failed) {
+        return Err(RunFailure::MainFailed);
+    }
     let halt_val = completions
         .iter()
         .rev()
         .find_map(|(pid, value)| {
-            (*pid == 1).then(|| {
+            (*pid == MAIN_PID).then(|| {
                 runtime
                     .process_ref(*pid)
                     .map(|task| value_to_halt(task as *const Process as *mut Process, *value))
@@ -133,7 +159,7 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
         .collect::<Vec<_>>();
     let mut runtime = IrInterpRuntime::with_process(process, &names);
     let atom_names = runtime
-        .process_ref(1)
+        .process_ref(MAIN_PID)
         .expect("macro runtime should own pid 1")
         .node
         .atom_names();
@@ -147,7 +173,7 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
         ..Module::default()
     };
     let result = (|| {
-        runtime.enqueue_backend_entry(1, backend_executable_ref(program, types, program.entry())?, args)?;
+        runtime.enqueue_backend_entry(MAIN_PID, backend_executable_ref(program, types, program.entry())?, args)?;
         let completions = drive_backend_until_idle(
             &mut runtime,
             types,
@@ -157,16 +183,16 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
             &NO_ARGV,
             program,
             &module,
-            Some(1),
+            BackendRun::Macro,
         )?;
         completions
             .into_iter()
             .rev()
-            .find_map(|(pid, value)| (pid == 1).then_some(value))
+            .find_map(|(pid, value)| (pid == MAIN_PID).then_some(value))
             .ok_or_else(|| "backend macro entry produced no completion".to_string())
     })();
     let process = runtime
-        .take_process(1)
+        .take_process(MAIN_PID)
         .expect("macro runtime should return its source process");
     (process, result)
 }
@@ -450,10 +476,13 @@ fn next_backend_runnable<T: Telemetry + ?Sized>(
     }
 }
 
-extern "C" fn interp_fault_hook<T: Telemetry + ?Sized>(process: *mut Process, scheduler: *mut (), value_ref_word: u64) {
+/// The fault sink of a macro run: a failure during expansion is a compile
+/// error carrying the failure's line, never the exit of a program.
+unsafe extern "C" fn macro_fault_hook<T: Telemetry + ?Sized>(scheduler: *mut (), line: *const u8, len: usize) {
     let adapter = unsafe { &mut *(scheduler as *mut BackendSchedulerAdapter<T>) };
     let runtime = unsafe { &mut *adapter.runtime };
-    runtime.record_callback_error(fz_runtime::render_panic_message(process, value_ref_word));
+    let line = unsafe { std::slice::from_raw_parts(line, len) };
+    runtime.record_callback_error(String::from_utf8_lossy(line).into_owned());
 }
 
 extern "C" fn interp_spawn_hook<T: Telemetry + ?Sized>(
@@ -525,7 +554,7 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
     argv: &Argv,
     program: &BackendProgram,
     module: &Module,
-    keepalive_pid: Option<u32>,
+    run: BackendRun,
 ) -> Result<Vec<(u32, AnyValue)>, String> {
     let mut completions = Vec::new();
     let output = OutputContext::new(output);
@@ -543,7 +572,10 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
         output_context: output.as_ptr(),
         spawn: Some(interp_spawn_hook::<T>),
         send: Some(interp_send_hook::<T>),
-        fault: Some(interp_fault_hook::<T>),
+        fault: Some(match run {
+            BackendRun::Program => fz_runtime::failure::STDERR_FAULT_HOOK,
+            BackendRun::Macro => macro_fault_hook::<T>,
+        }),
         output: Some(OUTPUT_HOOK),
         timer_schedule: Some(timer_schedule_hook::<BackendSchedulerAdapter<T>>()),
         timer_cancel: Some(timer_cancel_hook::<BackendSchedulerAdapter<T>>()),
@@ -566,19 +598,16 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
         match run_backend_resume(runtime, types, transport, tel, program, module, resume)? {
             BackendRunStep::Done(value) => {
                 completions.push((pid, value));
-                if keepalive_pid == Some(pid) {
+                if run == BackendRun::Macro && pid == MAIN_PID {
                     runtime.set_process_state(pid, ProcessState::Ready);
                     continue;
                 }
-                unsafe {
-                    mso_drop_all_deferred(&mut (*proc_ptr).heap);
-                }
-                drain_pending_dtors_backend(runtime, types, transport, tel, program, module)?;
-                unsafe {
-                    (*proc_ptr).halt_value = value_to_halt(proc_ptr, value);
-                    ExitRecord::emit(tel, &pid, &*proc_ptr);
-                }
-                runtime.set_process_state(pid, ProcessState::Exited);
+                let exit = ProcessExit::Completed(value);
+                exit_backend_process(runtime, types, transport, tel, program, module, pid, proc_ptr, exit)?;
+            }
+            BackendRunStep::Failed => {
+                let exit = ProcessExit::Failed;
+                exit_backend_process(runtime, types, transport, tel, program, module, pid, proc_ptr, exit)?;
             }
             BackendRunStep::Blocked => {
                 runtime.set_process_state(pid, ProcessState::Blocked);
@@ -587,6 +616,40 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
     }
 
     Ok(completions)
+}
+
+/// How an interpreted process ended.
+enum ProcessExit {
+    Completed(AnyValue),
+    Failed,
+}
+
+/// End process `pid`: run its pending destructors, record a completed
+/// process's halt value, report its exit, and mark it exited.
+#[allow(clippy::too_many_arguments)]
+fn exit_backend_process<T: Telemetry + ?Sized>(
+    runtime: &mut IrInterpRuntime,
+    types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
+    tel: &T,
+    program: &BackendProgram,
+    module: &Module,
+    pid: u32,
+    proc_ptr: *mut Process,
+    exit: ProcessExit,
+) -> Result<(), String> {
+    unsafe {
+        mso_drop_all_deferred(&mut (*proc_ptr).heap);
+    }
+    drain_pending_dtors_backend(runtime, types, transport, tel, program, module)?;
+    unsafe {
+        if let ProcessExit::Completed(value) = exit {
+            (*proc_ptr).halt_value = value_to_halt(proc_ptr, value);
+        }
+        ExitRecord::emit(tel, &pid, &*proc_ptr);
+    }
+    runtime.set_process_state(pid, ProcessState::Exited);
+    Ok(())
 }
 
 fn run_backend_resume<T: Telemetry + ?Sized>(
@@ -667,6 +730,7 @@ fn run_backend_resume<T: Telemetry + ?Sized>(
             BackendEvalTransition::Next(next) => state = next,
             BackendEvalTransition::Done(value) => return Ok(BackendRunStep::Done(value)),
             BackendEvalTransition::Blocked => return Ok(BackendRunStep::Blocked),
+            BackendEvalTransition::Failed => return Ok(BackendRunStep::Failed),
         }
     }
 }
@@ -730,27 +794,17 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
     match &executable.body {
         BackendBody::Extern { signature } => {
             let value = call_lowered_extern(runtime, signature, None, &args)?;
-            continue_backend_value(
-                runtime,
-                transport,
-                program,
-                bind_extern_result(transport, program, runtime.cur_proc(), &executable, value)?,
-                continuations,
-            )
+            continue_after_extern(runtime, transport, program, &executable, value, continuations)
         }
         BackendBody::Clauses { clauses, entries, .. } => {
             let semantic_inputs = bind_executable_inputs(transport, types, runtime, &executable, &args)?;
             let clause_index = match &executable.abi.materialized.entry_dispatch {
                 None => 0,
                 Some(dispatch) => {
-                    select_clause(runtime, types, transport, program, module, dispatch, &semantic_inputs)?.ok_or_else(
-                        || {
-                            format!(
-                                "function_clause: no backend entry clause matched for executable {:?}",
-                                executable.key
-                            )
-                        },
-                    )?
+                    match select_clause(runtime, types, transport, program, module, dispatch, &semantic_inputs)? {
+                        Some(index) => index,
+                        None => return fail_with_atom(runtime, "function_clause"),
+                    }
                 }
             };
             let clause = clauses
@@ -1290,7 +1344,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             );
             Ok(BackendEvalTransition::Blocked)
         }
-        BackendTail::Halt { atom } => Err(atom.clone()),
+        BackendTail::Halt { atom } => fail_with_atom(runtime, atom),
     };
     transition.map_err(|error| {
         format!(
@@ -1963,16 +2017,44 @@ fn eval_direct_call(
         }
     };
     match &executable.body {
-        BackendBody::Extern { signature } => call_lowered_extern(runtime, signature, extern_marshals, &call_args)
-            .and_then(|value| {
-                let value = bind_extern_result(transport, program, runtime.cur_proc(), executable, value)?;
-                continue_backend_value(runtime, transport, program, value, continuations)
-            }),
+        BackendBody::Extern { signature } => {
+            let value = call_lowered_extern(runtime, signature, extern_marshals, &call_args)?;
+            continue_after_extern(runtime, transport, program, executable, value, continuations)
+        }
         BackendBody::Clauses { .. } => Ok(BackendEvalTransition::Next(BackendEvalState::Executable {
             executable: callee,
             args: call_args,
             continuations,
         })),
+    }
+}
+
+/// Deliver an extern call's answer to the continuation, unless the call
+/// failed the process, which ends it.
+fn continue_after_extern(
+    runtime: &mut IrInterpRuntime,
+    transport: &TransportStore,
+    program: &BackendProgram,
+    executable: &BackendExecutable,
+    result: ExternCallValue,
+    continuations: Vec<BackendContinuation>,
+) -> Result<BackendEvalTransition, String> {
+    if let ExternCallValue::ProcessFailed = result {
+        return Ok(BackendEvalTransition::Failed);
+    }
+    let value = bind_extern_result(transport, program, runtime.cur_proc(), executable, result)?;
+    continue_backend_value(runtime, transport, program, value, continuations)
+}
+
+/// Fail the current process with the atom `reason` through the one panic
+/// route, as compiled code does at the same point.
+fn fail_with_atom(runtime: &mut IrInterpRuntime, reason: &str) -> Result<BackendEvalTransition, String> {
+    let proc = runtime.cur_proc();
+    let reason = AnyValue::Atom(runtime.node.intern_atom(reason)).extern_arg_ref_word(proc)?;
+    fz_runtime::failure::fz_panic(proc, reason);
+    match runtime.take_callback_error() {
+        Some(error) => Err(error),
+        None => Ok(BackendEvalTransition::Failed),
     }
 }
 
@@ -1983,11 +2065,12 @@ fn bind_extern_result(
     executable: &BackendExecutable,
     result: ExternCallValue,
 ) -> Result<BackendBoundValue, String> {
-    let ExternCallValue::Pair(values) = result else {
-        let ExternCallValue::Scalar(value) = result else {
-            unreachable!()
-        };
-        return Ok(BackendBoundValue::Runtime(value));
+    let values = match result {
+        ExternCallValue::Scalar(value) => return Ok(BackendBoundValue::Runtime(value)),
+        ExternCallValue::Pair(values) => values,
+        ExternCallValue::ProcessFailed => {
+            return Err("a failed process has no extern result to bind".to_string());
+        }
     };
     let shape = executable.abi.return_layout.layout.structural;
     let ShapeDescr::Tuple(fields) = transport.interners().shape(shape) else {

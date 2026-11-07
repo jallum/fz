@@ -1,1 +1,1 @@
-fz panic: "custom assertion message"
+** (ErlangError) Erlang error: "custom assertion message"

@@ -74,6 +74,7 @@ pub struct ExitRecord {
     pub bytes_used: usize,
     pub list_retention_attempts: u64,
     pub list_retention_hits: u64,
+    pub failed: bool,
 }
 
 impl ExitRecord {
@@ -218,19 +219,17 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         self
     }
 
+    /// Whether the task `pid` failed. Exited tasks stay in the registry, so a
+    /// driver reads this after `run_until_idle` to give a failed main process
+    /// its exit status.
+    pub fn failed(&self, pid: PidId) -> bool {
+        self.tasks.get(&pid).is_some_and(|task| task.failed)
+    }
+
     /// Spawn a new task that begins execution at `fn_id` (which must take
     /// zero entry params — the typical "main" shape for v1). Returns the
     /// fresh pid. The task is enqueued immediately; `run_until_idle()`
     /// will drive it.
-    /// Exit kind of an exited task: `None` = normal completion, `Some(atom)`
-    /// = it halted through a fault trap and the atom names the reason.
-    /// Exited tasks stay in the registry, so drivers read this after
-    /// `run_until_idle` to report faults instead of unifying them with
-    /// success.
-    pub fn exit_fault(&self, pid: PidId) -> Option<u32> {
-        self.tasks.get(&pid).and_then(|task| task.exit_fault)
-    }
-
     pub fn spawn(&mut self, fn_id: FnId) -> PidId {
         // Every fn is Tail-CC, including main. Make the entry a closure: mint
         // a synthetic inner closure carrying the raw `(cont)` main fp (via
@@ -312,7 +311,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             output_context: output.as_ptr(),
             spawn: Some(spawn_hook_thunk::<T>),
             send: Some(send_hook_thunk::<T>),
-            fault: Some(fz_runtime::STDERR_FAULT_HOOK),
+            fault: Some(fz_runtime::failure::STDERR_FAULT_HOOK),
             output: Some(OUTPUT_HOOK),
             timer_schedule: Some(timer_schedule_hook::<Self>()),
             timer_cancel: Some(timer_cancel_hook::<Self>()),
@@ -432,6 +431,7 @@ impl ProcessExitCapture {
                     bytes_used: process.heap.bytes_used(),
                     list_retention_attempts: process.list_retention_attempts,
                     list_retention_hits: process.list_retention_hits,
+                    failed: process.failed,
                 });
             },
         );

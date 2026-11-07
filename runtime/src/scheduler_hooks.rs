@@ -36,10 +36,11 @@ pub type SpawnHook = extern "C" fn(sender: *mut Process, scheduler: *mut (), clo
 /// handles the deep-copy into the receiver's heap and the wake-up.
 pub type SendHook = extern "C" fn(sender: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64);
 
-/// Process-fault notification used by a runtime helper whose source contract
-/// returns `never`. The value remains owned by `process`; callbacks consume it
-/// synchronously and must not retain the raw word past the call.
-pub type FaultHook = extern "C" fn(process: *mut Process, context: *mut (), value_ref_word: u64);
+/// The fault sink: where a failing process's line goes. `fz_panic` renders
+/// the line and passes it here with the context's scheduler handle; the sink
+/// decides only the destination (stderr for a running program, a compile
+/// error for a macro). The bytes are borrowed for the call.
+pub type FaultHook = unsafe extern "C" fn(context: *mut (), line_ptr: *const u8, line_len: usize);
 
 pub type OutputHook = unsafe extern "C" fn(context: *const (), line_ptr: *const u8, line_len: usize);
 

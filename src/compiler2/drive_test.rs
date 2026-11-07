@@ -7,7 +7,7 @@ use super::drive_harness::{
     latest_entry_dispatch, latest_guard_dispatch, lowered_body, metadata_str, module_function_id, module_id,
     module_indexed_ids, module_name, named_module_id, presence, try_module_function_id,
 };
-use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
+use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission, RunFailure};
 use crate::compiler2::ReachKey;
 use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
@@ -9173,9 +9173,10 @@ def main(), do: choose(dbg(:b))
         .run_root_interp(root_id)
         .expect_err("a nonmatching value should fail retained single-clause dispatch");
 
-    assert!(
-        error.contains("function_clause: no backend entry clause matched"),
-        "the backend interpreter should report the retained dispatch failure: {error}",
+    assert_eq!(
+        error,
+        RunFailure::MainFailed,
+        "a retained dispatch miss fails the main process with function_clause",
     );
 }
 
@@ -9328,7 +9329,7 @@ fn compiler2_private_fz_spawn_opt_name_uses_ordinary_foreign_resolution() {
         .run_root_interp(root_id)
         .expect_err("the retired scheduler intrinsic must not seize a private foreign extern name");
     assert!(
-        error.contains("dlsym: symbol `fz_spawn_opt` not found"),
+        error.to_string().contains("dlsym: symbol `fz_spawn_opt` not found"),
         "the declaration must reach ordinary C symbol resolution, not scheduler execution: {error}",
     );
 }
@@ -10154,19 +10155,15 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let interp_error = compiler
-        .run_root_interp(root)
-        .expect_err("interp must abort on the uncovered dispatch witness");
-    assert!(
-        interp_error.contains("function_clause"),
-        "interp fault should name function_clause: {interp_error}"
+    assert_eq!(
+        compiler.run_root_interp(root),
+        Err(RunFailure::MainFailed),
+        "interp must fail the main process on the uncovered dispatch witness"
     );
-    let jit_error = compiler
-        .run_root_jit(root)
-        .expect_err("the JIT driver must report the runtime fault, not unify it with normal completion");
-    assert!(
-        jit_error.contains("function_clause"),
-        "JIT fault should name function_clause: {jit_error}"
+    assert_eq!(
+        compiler.run_root_jit(root),
+        Err(RunFailure::MainFailed),
+        "the JIT driver must report the failed main process, not unify it with normal completion"
     );
     assert_eq!(
         dbg.lines(),
@@ -10203,21 +10200,15 @@ end
             need: ExecutableNeed::Value,
         });
 
-        let interp_error = match compiler.run_root_interp(root) {
-            Ok(value) => panic!("interp must preserve the {case} callee's function-clause halt, got {value}"),
-            Err(error) => error,
-        };
-        assert!(
-            interp_error.contains("function_clause"),
-            "interp {case} fault should name function_clause: {interp_error}"
+        assert_eq!(
+            compiler.run_root_interp(root),
+            Err(RunFailure::MainFailed),
+            "interp must fail main through the {case} callee's function-clause miss"
         );
-        let jit_error = match compiler.run_root_jit(root) {
-            Ok(()) => panic!("JIT must preserve the {case} callee's function-clause halt, got success"),
-            Err(error) => error,
-        };
-        assert!(
-            jit_error.contains("function_clause"),
-            "JIT {case} fault should name function_clause: {jit_error}"
+        assert_eq!(
+            compiler.run_root_jit(root),
+            Err(RunFailure::MainFailed),
+            "JIT must fail main through the {case} callee's function-clause miss"
         );
     }
 }
@@ -13893,6 +13884,7 @@ fn compiler2_interp_reports_a_fail_that_analysis_proved_unreachable() {
     let (types, transport) = compiler.world_mut().types_mut_and_transport();
     let error = crate::ir_interp::run_backend_main(types, transport, &tel, &dbg, &Default::default(), &forged)
         .expect_err("a fail with no miss entry is an internal error");
+    let error = error.to_string();
     assert!(
         error.contains("internal error: the case at entry") && error.contains("proved unreachable"),
         "the interpreter names the dispatch it could not leave: {error}"
@@ -16810,7 +16802,7 @@ fn compiler2_kernel_panic_is_one_private_fz_never_extern() {
     assert_eq!(signature.ret, ExternTy::Never);
     assert_eq!(
         crate::ir_interp::tests_support_resolved_symbol_addr("fz_panic").unwrap(),
-        fz_runtime::fz_panic as *const (),
+        fz_runtime::failure::fz_panic as *const (),
         "the interpreter must resolve the exact physical panic export",
     );
 
@@ -20611,7 +20603,7 @@ fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_cra
             "if callable-entry evidence is settled, the fixture should complete with both Enum results",
         ),
         Err(error) => assert!(
-            !error.contains("is unbound"),
+            !error.to_string().contains("is unbound"),
             "the demand-floor fix should stop the shared-body accumulator from being left as an unbound \
              backend value, but got: {error}",
         ),
@@ -21530,7 +21522,7 @@ const QUOTED_HELPER_REQUESTER: &str = "defmodule App do\n  alias FutureMacros, a
 
 /// Submits the two sources in the given order, drives once, and reports the
 /// value `main` produces alongside the function `App.run/1` ends up calling.
-fn quoted_helper_target(sources: [(&str, &str); 2]) -> (Result<i64, String>, FunctionId, FunctionId) {
+fn quoted_helper_target(sources: [(&str, &str); 2]) -> (Result<i64, RunFailure>, FunctionId, FunctionId) {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);

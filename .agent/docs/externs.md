@@ -176,10 +176,11 @@ there is no heap-hint variant or compatibility export.
 
 `Kernel.panic/1` likewise wraps a private `extern "fz" defp fz_panic(any) ::
 never`. Its arbitrary fz value stays borrowed from the current process while
-the physical export synchronously reports it through `ExecCtx`. The interpreter
-turns that report into an owned pending error before the call returns; native
-execution writes the same rendered reason to stderr. It never reuses the
-atom-only `Process.exit_fault` field, which belongs to compiler dispatch traps.
+the physical export renders its failure line, marks the process failed and
+hands the line to the `ExecCtx` fault sink, all before it returns. A `never`
+extern that returns has failed its process: native code returns to the
+scheduler (and traps if the process was not marked failed), and the interpreter
+ends the process. See [process failure](process-failure.md).
 
 ## Helpers the code generator calls itself
 

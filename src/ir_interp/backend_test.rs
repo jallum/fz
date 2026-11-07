@@ -51,10 +51,16 @@ fn entry_dispatch_refuses_an_input_its_plan_reads_but_never_received() {
 }
 
 #[test]
-fn kernel_panic_preserves_a_composite_reason_without_terminating_the_interpreter_host() {
-    use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+fn a_panicking_main_fails_the_run_without_terminating_the_interpreter_host() {
+    use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission, RunFailure};
+    use crate::exec::runtime::ProcessExitCapture;
 
-    let mut compiler = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let exits = ProcessExitCapture::new();
+    exits.install(&tel);
+    let dbg = crate::exec::runtime::DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("composite_panic_reason.fz".into()),
         text: "def main() do\n  panic({:stop, [1, 2]})\n  dbg(:unreachable)\nend\n".into(),
@@ -65,10 +71,20 @@ fn kernel_panic_preserves_a_composite_reason_without_terminating_the_interpreter
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let error = compiler
-        .run_root_interp(root)
-        .expect_err("panic is an interpreter process error");
-    assert!(error.contains("fz panic: {:stop, [1, 2]}"), "{error}");
+    assert_eq!(
+        compiler.run_root_interp(root),
+        Err(RunFailure::MainFailed),
+        "a panic fails the main process; the run reports that, not an interpreter error"
+    );
+    assert!(
+        dbg.lines().is_empty(),
+        "nothing after the panic runs: {:?}",
+        dbg.lines()
+    );
+    let main_exit = exits
+        .by_pid(MAIN_PID)
+        .expect("the failed main process still exits through the normal exit path");
+    assert!(main_exit.failed, "the exit record says the process failed");
 
     let mut survivor = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
     survivor.submit_code(CodeSubmission {
@@ -85,7 +101,7 @@ fn kernel_panic_preserves_a_composite_reason_without_terminating_the_interpreter
 }
 
 #[test]
-fn generic_panic_dispatch_consumes_the_context_fault_before_the_never_return_error() {
+fn a_panic_during_macro_expansion_becomes_the_expansion_error() {
     use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 
     let mut compiler = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
@@ -137,14 +153,14 @@ fn generic_panic_dispatch_consumes_the_context_fault_before_the_never_return_err
     };
     let mut exec_ctx = ExecCtx {
         scheduler: &mut scheduler_adapter as *mut BackendSchedulerAdapter<_> as *mut (),
-        fault: Some(interp_fault_hook::<crate::telemetry::ConfiguredTelemetry>),
+        fault: Some(macro_fault_hook::<crate::telemetry::ConfiguredTelemetry>),
         ..ExecCtx::empty()
     };
     unsafe { &mut *process }.ctx = &mut exec_ctx;
 
     let error = call_lowered_extern(&mut runtime, &signature, None, &[AnyValue::Int(9)])
-        .expect_err("the callback error must win over the generic Never-returned fallback");
-    assert_eq!(error, "fz panic: 9");
+        .expect_err("a macro run's fault sink turns the failure line into the expansion's error");
+    assert_eq!(error, "** (ErlangError) Erlang error: 9");
     assert_eq!(
         runtime.take_callback_error(),
         None,
@@ -171,6 +187,9 @@ fn a_foreign_function_declared_never_cannot_return_into_interpreted_code() {
     let error = compiler
         .run_root_interp(root)
         .expect_err("a Never extern returning is a runtime contract violation");
+    let crate::compiler2::RunFailure::Error(error) = error else {
+        panic!("a contract violation is an interpreter error, not a failed process: {error}");
+    };
     assert!(
         error.contains("extern `_test_never_returns` declared Never returned"),
         "the generic return policy must diagnose the declaration, not resume unreachable source: {error}",

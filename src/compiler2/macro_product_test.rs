@@ -7,7 +7,9 @@ use crate::exec::runtime::ProcessExitCapture;
 use crate::telemetry::ConfiguredTelemetry;
 
 use super::pull::{ProductKey, ProductRequestId, PullOutcome};
-use super::{CodeSubmission, Compiler2, ExecutableNeed, Job, ModuleId, QuotedSourceRoot, RootSubmission, World};
+use super::{
+    CodeSubmission, Compiler2, ExecutableNeed, Job, ModuleId, QuotedSourceRoot, RootSubmission, RunFailure, World,
+};
 
 #[test]
 fn body_macro_caller_uses_the_definition_function_and_source_namespace() {
@@ -200,7 +202,7 @@ fn macro_expansion_cache_reuses_unchanged_calls_and_invalidates_changed_inputs()
     );
 }
 
-fn run_macro_program(text: String) -> Result<i64, String> {
+fn run_macro_program(text: String) -> Result<i64, RunFailure> {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
@@ -216,7 +218,7 @@ fn run_macro_program(text: String) -> Result<i64, String> {
     compiler.run_root_interp(root)
 }
 
-fn run_macro_with_span_metadata(span_entries: &str) -> Result<i64, String> {
+fn run_macro_with_span_metadata(span_entries: &str) -> Result<i64, RunFailure> {
     run_macro_program(format!(
         "def answer(), do: 42\ndefmacro forged() do\n  {{:answer, %{{__fz_span__: %{{{span_entries}}}}}, []}}\nend\ndef main(), do: forged()\n"
     ))

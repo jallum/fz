@@ -57,6 +57,8 @@ import Kernel, only: [
   tuple_size: 1,
   make_resource: 2,
   panic: 1,
+  raise: 1,
+  raise: 2,
   range: 3,
   refute: 1,
   rem: 2,
