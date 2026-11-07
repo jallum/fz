@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.25"
+  ],
   "blocks": [],
   "created": "2026-11-07T22:33:56Z",
   "description": "Found while building fz-sc8.72. `defmodule Foo.Bar do def me(), do: 1 end` followed by `Foo.Bar.me()` fails on every path with \"unresolved direct runtime callee\", on the base and new binaries. The callee qualifier goes through lookup_module_path (src/compiler2/world.rs), which walks the namespace segment by segment with no fallback, and nothing binds the first segment `Foo`. Elixir prints 1.\n\nThis is the acceptance case for fz-sc8.25 (one module resolution for qualified calls): when qualified callees resolve through resolve_module_name, this works. This ticket holds the probe and the oracle fixture that proves it. Deviation from Elixir; not needed by the distiller.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A dotted qualified call reaches a module defined under that dotted name",
   "type": "bug",
-  "updated_at": "2026-11-07T22:33:56Z"
+  "updated_at": "2026-11-07T22:33:57Z"
 }
