@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-a9y.4"
+  ],
   "created": "2026-11-07T23:29:51Z",
   "description": "When sender and receiver are the same process nothing has to leave the heap. The BEAM special-cases this in erts_send_message with a data-less message struct. fz pushes the reference onto its own mailbox (already a GC root) and publishes it with Heap::mark_published_ref_aliased (runtime/src/heap/imp.rs:838-852), because the mailbox is a second holder and the in-place list rewrite guard (imp.rs:863-885, .agent/docs/pattern-matching.md:334-344) must see the spine as aliased.\n\nTests first:\n- An adversarial fixture on all three paths: build a list, send it to self, append to it with a construction the compiler grants Rewrite permission, receive, assert the received list has the contents it had when sent. Show with list_retention telemetry (Process::list_retention_hits) that the rewrite path is actually exercised by the fixture; if no program can obtain Rewrite permission after a self-send, report exactly why (compiler rule, file:line) before deciding whether publication is still required.\n- The fixture is seen to pass under today's deep copy, then fail under zero-copy without publication, then pass with it.\n\nDone when:\n- deep_copy_self_send_ref_for_aot (runtime/src/aot_shim.rs:504-510) and the JIT and interpreter self-send copies are deleted; the raw-pointer aliasing of one heap as both source and destination is gone.\n- A self-send allocates zero bytes on the send path (alloc telemetry assertion in the fixture).\n- Full gate green; pins reported, not edited. Commit in Why / What changed / Verification form; no co-author trailer.",
   "id": "fz-a9y.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A self-send is a mailbox push and a spine publication",
   "type": "task",
-  "updated_at": "2026-11-07T23:29:51Z"
+  "updated_at": "2026-11-07T23:30:22Z"
 }
