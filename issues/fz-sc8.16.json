@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-sc8.56",
     "fz-sc8.57",
@@ -16,8 +16,8 @@
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "OptionParser.parse/2 with strict:",
   "type": "feature",
-  "updated_at": "2026-11-03T12:49:39Z"
+  "updated_at": "2026-11-08T11:19:16Z"
 }
