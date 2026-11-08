@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.19"
+  ],
   "created": "2026-11-08T13:06:20Z",
   "description": "Seen building fz-sc8.16 at 492b32fe1. A private helper\n  defp wrap(nil), do: []\n  defp wrap(list) when is_list(list), do: list\n  defp wrap(other), do: [other]\ncalled as wrap(:integer) returned the bare atom :integer (the second clause's body) when the same program also called wrap([:integer, :keep]). The caller then ran List.member?/2 on an atom: interp dies with 'ListHead of a value that is not a list cons (Atom)', run panics in fz_list_head_ref (ExpectedTag ValueKind(1) found ValueKind(15)). A silent wrong value, not a diagnostic. Repro: the earlier shape of lib/option_parser.fz kept at the session scratchpad p16/op.fz (fz2 interp|run op.fz; main parses with strict: [top: :integer] and with [top: [:integer, :keep]]); it could not be shrunk by the builder. Suspect the dispatch plan for the activation keyed on the union atom | list: the is_list test or clause order is lost. Fix at the root (dispatch planning), with a small fixture on all three paths. The .16 code sidestepped it by normalizing kinds once in build_config; that stays, since it is also cleaner.",
   "id": "fz-sc8.86",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A three-clause function returns the wrong clause's value when one caller passes an atom and another a list",
   "type": "bug",
-  "updated_at": "2026-11-08T13:06:20Z"
+  "updated_at": "2026-11-08T13:07:33Z"
 }
