@@ -27,6 +27,7 @@ use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
 use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
+use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryCapture, BackendEntryOrigin, BackendExecutable,
@@ -1420,7 +1421,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
                 BackendStep::FieldAccess { value, base, field } => {
                     let base = self.env_runtime_var(ctx, executable, env, *base);
-                    let (var, _) = ctx.emit_let(Prim::StructField(base, field.clone()));
+                    let prim = if field == STRUCT_MODULE_FIELD {
+                        Prim::StructModule(base)
+                    } else {
+                        Prim::StructField(base, field.clone())
+                    };
+                    let (var, _) = ctx.emit_let(prim);
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::RequireMapValue { value, source, key } => {

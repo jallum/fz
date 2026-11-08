@@ -46,6 +46,7 @@ mod budget {
     use super::super::{Limit, render_with_limit};
     use crate::any_value::{AnyValue, EMPTY_LIST_BITS, ValueKind};
     use crate::heap::{Schema, SchemaRegistry};
+    use crate::module_name::ModuleName;
     use crate::process::Process;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -100,6 +101,17 @@ mod budget {
             let p = self.process.heap.alloc_struct(schema);
             for (index, item) in items.iter().enumerate() {
                 unsafe { self.process.heap.write_field_slot(p, 8 * index as u32, *item) };
+            }
+            AnyValue::heap_ptr(p, ValueKind::STRUCT)
+        }
+
+        fn named(&mut self, module: &str, fields: &[(&str, AnyValue)]) -> AnyValue {
+            let module = ModuleName::parse_dotted(module).expect("module name");
+            let schema = Schema::named_struct(module, fields.iter().map(|(name, _)| name.to_string()));
+            let schema = self.process.heap.register_schema(schema);
+            let p = self.process.heap.alloc_struct(schema);
+            for (index, (_, value)) in fields.iter().enumerate() {
+                unsafe { self.process.heap.write_field_slot(p, 8 * index as u32, *value) };
             }
             AnyValue::heap_ptr(p, ValueKind::STRUCT)
         }
@@ -246,6 +258,47 @@ mod budget {
         let shown = b.show_default(list);
         assert!(shown.ends_with("99, 100, ...]"), "{shown}");
         assert_eq!(shown, b.show(list, Count(100)));
+    }
+
+    #[test]
+    fn a_named_struct_prints_as_its_module_and_its_fields_in_schema_order() {
+        let mut b = Built::new();
+        let nil = b.atom("nil");
+        let point = b.named("Pt", &[("x", AnyValue::int(1)), ("y", nil)]);
+        assert_eq!(b.show_default(point), "%Pt{x: 1, y: nil}");
+        let inner = b.named("Outer.Inner", &[("v", AnyValue::int(7))]);
+        assert_eq!(b.show_default(inner), "%Outer.Inner{v: 7}");
+    }
+
+    #[test]
+    fn a_struct_prints_inside_tuples_lists_and_other_structs() {
+        let mut b = Built::new();
+        let point = b.named("Pt", &[("x", AnyValue::int(1)), ("y", AnyValue::int(2))]);
+        let pair = b.tuple(&[point, AnyValue::int(3)]);
+        assert_eq!(b.show_default(pair), "{%Pt{x: 1, y: 2}, 3}");
+        let seg = b.named("Seg", &[("a", point), ("b", point)]);
+        assert_eq!(b.show_default(seg), "%Seg{a: %Pt{x: 1, y: 2}, b: %Pt{x: 1, y: 2}}");
+        let list = b.list(&[point]);
+        assert_eq!(b.show_default(list), "[%Pt{x: 1, y: 2}]");
+    }
+
+    #[test]
+    fn struct_fields_spell_as_keyword_keys() {
+        let mut b = Built::new();
+        let odd = b.named("Odd", &[("foo bar", AnyValue::int(1)), ("Foo", AnyValue::int(2))]);
+        assert_eq!(b.show_default(odd), "%Odd{\"foo bar\": 1, Foo: 2}");
+    }
+
+    #[test]
+    fn a_struct_spends_per_field() {
+        let mut b = Built::new();
+        let point = b.named("Pt", &[("x", AnyValue::int(1)), ("y", AnyValue::int(2))]);
+        assert_eq!(b.show(point, Count(1)), "%Pt{x: 1, ...}");
+        assert_eq!(b.show(point, Count(0)), "%Pt{...}");
+        let items = ints(&b, &[1, 2, 3]);
+        let list = b.list(&items);
+        let holder = b.named("Pt", &[("x", list), ("y", AnyValue::int(2))]);
+        assert_eq!(b.show(holder, Count(2)), "%Pt{x: [1, ...], ...}");
     }
 
     #[test]

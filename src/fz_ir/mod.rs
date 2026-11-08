@@ -469,6 +469,8 @@ pub enum Prim {
     TupleField(Var, u32),
     /// Project a named field from a schema-backed struct.
     StructField(Var, String),
+    /// Project the module atom a struct belongs to (`p.__struct__`).
+    StructModule(Var),
     /// Build a list [v1, v2, ... | optional_tail]; tail defaults to Nil.
     MakeList(Vec<Var>, Option<Var>, Option<ListRetention<Var>>),
     /// Build a thin function reference: callable code identity with no
@@ -582,7 +584,7 @@ impl Prim {
                     used.insert(*v);
                 }
             }
-            Prim::TupleField(a, _) | Prim::StructField(a, _) => {
+            Prim::TupleField(a, _) | Prim::StructField(a, _) | Prim::StructModule(a) => {
                 used.insert(*a);
             }
             Prim::MakeList(els, tail, retention) => {
@@ -1317,6 +1319,7 @@ impl fmt::Display for Prim {
             }
             Prim::TupleField(v, i) => write!(f, "tuple_field({}, {})", v, i),
             Prim::StructField(v, name) => write!(f, "struct_field({}, {})", v, name),
+            Prim::StructModule(v) => write!(f, "struct_module({})", v),
             Prim::MakeList(els, tail, retention) => {
                 match tail {
                     Some(t) => write!(f, "list([{}] | {})", fmt_var_list(els), t)?,

@@ -330,6 +330,27 @@ constructor, so no program has to be scanned for bitstring use. Registration is
 by identity, so a program's own 1- or 3-tuple resolves to the same ids. Every
 other schema id follows these two.
 
+### A named struct's module is its schema identity
+
+A struct's schema identity is `SchemaIdentity::Named(ModuleName)`, and that is
+the only place its module lives: the heap object stores no module word and the
+registry keeps no second copy. Three reads of that identity exist:
+
+- `p.__struct__` lowers to `Prim::StructModule`, which calls `fz_struct_module`
+  (`Heap::struct_module_atom` for a struct, the map's `__struct__` entry for a
+  map). The answer is the atom `Elixir.<Name>`, the same atom an alias spells
+  in value position, so `p.__struct__ == Pt` holds. It is a read of the
+  identity, not a stored field; `ProjectionKind::StructField` in patterns never
+  names it.
+- `Types::field_lookup` answers `__struct__` on a struct-tagged map signature
+  with the singleton atom of that module.
+- The inspect renderer's `struct_value` prints by identity: a Range as its
+  literal (`1..10`, `1..10//2`), a named struct as `%Name{field: value}` in
+  schema order (a nested module as `%Outer.Inner{...}`), a tuple as `{a, b}`.
+  A struct's fields are keyword entries: each name is spelled by the same
+  keyword-key rule as a map's or a list's (`"foo bar": 1`), and each field
+  spends one from the `limit:` budget (`%Pt{x: 1, ...}`).
+
 ### A map is a flat sorted array
 
 Every map has one entry per strict structural key, stored in comparator order.

@@ -1330,7 +1330,7 @@ pub mod debug {
         map_addr_from_tagged, map_count, map_entry_raw_kinds, procbin_addr_from_tagged, struct_addr_from_tagged,
         struct_schema_id,
     };
-    use crate::heap::FieldKind;
+    use crate::heap::{FieldKind, SchemaIdentity};
     use crate::module_name::{alias_spelling, is_alias_namespace_atom};
     use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
     use crate::process::Process;
@@ -1560,33 +1560,46 @@ pub mod debug {
             format!("{open}{}{close}", parts.join(", "))
         }
 
-        /// A heap Struct: a tuple, a range, or a record. Its fields print
-        /// inline as `{…}`; non-value fields are elided.
+        /// A heap Struct, by its schema's identity: a range as its literal, a
+        /// named struct as `%Name{field: value}` in schema order, a tuple as
+        /// `{a, b}`. Non-value fields are elided.
         fn struct_value(&mut self, bits: u64) -> String {
             let p = struct_addr_from_tagged(bits).expect("struct bits");
             let schema_id = unsafe { struct_schema_id(p) };
             let heap = &unsafe { &*self.proc }.heap;
-            {
-                let reg = heap.schemas_registry();
-                let registry = reg.borrow();
-                if registry.get(schema_id).is_range() {
-                    return self.range(bits);
-                }
-            }
-            let field_offsets: Vec<u32> = {
+            let (identity, fields): (SchemaIdentity, Vec<(Option<String>, u32)>) = {
                 let reg = heap.schemas_registry();
                 let registry = reg.borrow();
                 let schema = registry.get(schema_id);
-                schema
+                if schema.is_range() {
+                    return self.range(bits);
+                }
+                let fields = schema
                     .fields
                     .iter()
                     .filter(|f| matches!(f.kind, FieldKind::AnyValue))
-                    .map(|f| f.offset)
-                    .collect()
+                    .map(|f| (f.name.clone(), f.offset))
+                    .collect();
+                (schema.identity.clone(), fields)
             };
-            self.container("{", "}", field_offsets, |renderer, offset| {
-                renderer.value(heap.read_field_slot(p, offset))
-            })
+            match identity {
+                SchemaIdentity::Named(module) => {
+                    let open = format!("%{}{{", atom_literal(&module.atom_name()));
+                    let entries = fields
+                        .into_iter()
+                        .map(|(name, offset)| {
+                            let name = name.expect("a named struct's fields are named");
+                            (atom_key(&name), heap.read_field_slot(p, offset))
+                        })
+                        .collect();
+                    self.keyword_container(&open, "}", entries)
+                }
+                SchemaIdentity::Tuple(_) | SchemaIdentity::Internal(_) => {
+                    self.container("{", "}", fields, |renderer, (_, offset)| {
+                        renderer.value(heap.read_field_slot(p, offset))
+                    })
+                }
+            }
         }
 
         fn range(&self, bits: u64) -> String {

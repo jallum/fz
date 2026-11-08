@@ -2832,3 +2832,26 @@ fn a_map_holding_a_literal_closure_and_a_literal_struct_survives_a_collection_wi
         "the static struct stays in place"
     );
 }
+
+#[test]
+fn a_named_struct_answers_its_module_atom() {
+    use crate::module_name::ModuleName;
+    let node = Rc::new(crate::process::Node::empty());
+    let mut heap = Heap::with_node(4096, fresh_registry(), node.clone());
+    let nested = ModuleName::from_segments(vec!["Geo".into(), "Pt".into()]);
+    let schema_id = heap.register_schema(Schema::named_struct(nested, ["x".to_string()]));
+    let object = AnyValueRef::from_heap_object(ValueKind::STRUCT, heap.alloc_struct(schema_id)).expect("struct");
+
+    let module = heap.struct_module_atom(object).expect("module atom");
+
+    assert_eq!(module, AnyValue::atom(node.intern_atom("Elixir.Geo.Pt")));
+}
+
+#[test]
+#[should_panic(expected = "has no module")]
+fn a_tuple_has_no_module_to_answer() {
+    let mut heap = Heap::new(4096, fresh_registry());
+    let schema_id = heap.register_schema(Schema::tuple_of_arity(1));
+    let object = AnyValueRef::from_heap_object(ValueKind::STRUCT, heap.alloc_struct(schema_id)).expect("struct");
+    let _ = heap.struct_module_atom(object);
+}

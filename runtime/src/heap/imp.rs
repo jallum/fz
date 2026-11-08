@@ -9,6 +9,7 @@ use super::ref_io::{
     any_value_ref_from_storage, list_tail_bits_from_ref, map_entry_refs, ptr_in_ranges, reject_scalar_ref_write,
     write_any_value_to_storage,
 };
+use super::schema::SchemaIdentity;
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::GcStats;
 use super::{Heap, HeapAllocKind, HeapAllocStats, SHARED_BIN_THRESHOLD_BYTES};
@@ -955,6 +956,18 @@ impl Heap {
                 .offset
         };
         self.read_struct_field_ref(obj, field_offset)
+    }
+
+    /// The module atom (`Elixir.Pt`) of a named struct: its schema identity,
+    /// spelled as the atom a module name is in value position.
+    pub fn struct_module_atom(&self, obj: AnyValueRef) -> Result<AnyValue, AnyValueRefError> {
+        let addr = obj.struct_addr()?;
+        let schema_id = unsafe { struct_schema_id(addr as *const u8) };
+        let schemas = self.schemas.borrow();
+        match &schemas.get(schema_id).identity {
+            SchemaIdentity::Named(name) => Ok(AnyValue::atom(self.node.intern_atom(&name.atom_name()))),
+            other => panic!("schema {} has no module", other.display_name()),
+        }
     }
 
     pub fn read_closure_capture_ref(&self, closure: AnyValueRef, idx: usize) -> Result<AnyValueRef, AnyValueRefError> {
