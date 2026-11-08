@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-sc8.8"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "A root main returning a tuple of six or more lanes crashes the JIT and the native build",
   "type": "bug",
-  "updated_at": "2026-11-08T16:24:18Z"
+  "updated_at": "2026-11-08T16:29:26Z"
 }
