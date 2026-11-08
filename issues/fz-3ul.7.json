@@ -4,14 +4,15 @@
   "blocks": [
     "fz-3ul.5"
   ],
+  "closed_at": "2026-11-08T12:14:40Z",
   "created": "2026-11-08T03:34:29Z",
   "description": "Plan: /Users/j5n/Workspace/fz-exceptions.html, ticket 7. Re-evaluated 2026-11-08 after the rebase onto fz-sc8.62: the premise that fz has no inspect primitive is gone. fz-sc8.64 added Kernel.inspect/1 (the dbg rendering; maps print as %{:a =\u003e 1} until fz-sc8.10, which is that ticket's scope, not this one's) and fz-sc8.63 made every decision a plan with a LastResort (exception, message lead, shows_subject) that both backends raise through fz_raise_showing / raise_last_resort, rendering the subject. case, =, with ... else and and/or already print Elixir's full banner. Only the try ... else miss still builds its own %TryClauseError{term:, message:} map by hand (try_clause_block in jobs/body.rs), with the lead alone as its message.\n\nBuild: the else miss is LastResort::try_clause() (showing \"Elixir.TryClauseError\", \"no try clause matching:\") through lower_clause_dispatch_block like with ... else; try_clause_block, TRY_CLAUSE_* and the DecisionMiss enum are deleted. A last resort that shows its subject carries it as the exception's term field (raise_exception_showing in runtime/src/failure.rs, used by fz_raise_showing and the interpreter), as Elixir's TryClauseError, CaseClauseError, MatchError, WithClauseError and BadBooleanError do.\n\nAcceptance: 00733's expected.stderr equals Elixir's banner (lead, blank line, indented value) and the harness substring rule holds; new oracle fixture 00793 rescues a CaseClauseError, MatchError, WithClauseError and TryClauseError and prints e.term and e.message, matching elixir on interp, run and build; 00780 (e.term of a rescued TryClauseError) unchanged; grep over lib/*.fz finds no message ending at a colon without inspect; .agent/docs/exceptions.md 'The line' and the else section updated, fixtures.md 'lead alone' clause gone; gate green.",
   "id": "fz-3ul.7",
   "labels": [],
   "parent": "fz-3ul",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "An exception message that embeds a value renders it with inspect",
   "type": "feature",
-  "updated_at": "2026-11-08T11:44:26Z"
+  "updated_at": "2026-11-08T12:14:40Z"
 }
