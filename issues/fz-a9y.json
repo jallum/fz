@@ -3,12 +3,12 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-07T23:27:16Z",
-  "description": "Proposal page (approved 2026-11-07): https://claude.ai/artifact/Wx4cwENxiEe7qPfqni84ZN\n\nA send runs the receiver's matcher on the sender against the sender's own message, copies only what the pattern binds (hit) or the message (miss) into a detached segment of the sender's own heap chain, and gifts that segment to the receiver through its in-queue under the receiver's queue lock. The receiver grafts the segment with pointer moves; the next Cheney pass treats it as from-space. No process ever writes into another process's live heap. Self-send is a mailbox push plus a spine publication.\n\nBase: fz-sc8.66/scheduling-core @ 0163a8805 (PR #276). Work happens on one branch in worktree ../fz-gift and lands as one PR stacked on #276; each child ticket is one commit pushed to that PR as it closes.\n\nDecisions taken from the proposal's open list: a gift's first block starts at the smallest size class and chains upward (measure before changing); tip adoption on graft is not built; the interpreter path is in scope for parity on every step.\n\nNot in scope: multi-worker scheduling itself, receive markers, an off-heap message mode, the BEAM direct-on-heap try-lock fast path.",
+  "description": "Proposal page (approved 2026-11-07): https://claude.ai/artifact/Wx4cwENxiEe7qPfqni84ZN\n\nA send runs the receiver's matcher on the sender against the sender's own message, copies only what the pattern binds (hit) or the message (miss) into a detached segment of the sender's own heap chain, and gifts that segment to the receiver through its in-queue under the receiver's queue lock. The receiver grafts the segment with pointer moves; the next Cheney pass treats it as from-space. No process ever writes into another process's live heap. Self-send is a mailbox push; the compiler's call-site publication of possibly-aliased arguments (construct_call_ownership) already keeps the message intact, so the runtime copies and publishes nothing.\n\nBase: fz-sc8.66/scheduling-core @ 0163a8805 (PR #276). Work happens on one branch in worktree ../fz-gift and lands as one PR stacked on #276; each child ticket is one commit pushed to that PR as it closes.\n\nDecisions taken from the proposal's open list: a gift's first block starts at the smallest size class and chains upward (measure before changing); tip adoption on graft is not built; the interpreter path is in scope for parity on every step.\n\nNot in scope: multi-worker scheduling itself, receive markers, an off-heap message mode, the BEAM direct-on-heap try-lock fast path.",
   "id": "fz-a9y",
   "labels": [],
   "priority": 2,
   "status": "open",
   "title": "Gift-heap send: a sender matches in place and gifts a heap segment the receiver grafts",
   "type": "epic",
-  "updated_at": "2026-11-07T23:27:16Z"
+  "updated_at": "2026-11-08T00:15:48Z"
 }
