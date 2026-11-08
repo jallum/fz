@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T16:53:26Z",
+  "description": "Found while building fz-sc8.18 (the landed Stream keeps its functions in a list and applies them per element instead). Reproduces on b870f5a87 on interp and run: compilation does not finish within 10 s of CPU for\n\n    def compose([], reducer), do: reducer\n    def compose([fun | earlier], reducer), do: compose(earlier, fn entry, acc -\u003e reducer.(fun.(entry), acc) end)\n\nused from an Enumerable impl: `Enumerable.reduce(enum, acc, MS.compose(funs, reducer))`, with `Enum.to_list(MS.map([1, 2, 3], fn x -\u003e x + 1 end))` in main. Each recursion wraps the reducer in a new closure that captures the previous one, so the closure's captured type nests one level per step; something in the analysis follows that nesting without converging. Full repro: session scratchpad p18/repro_recursive_closure_compose_hangs_compile.fz. The first measurement to take is the --log-telemetry job trace for the first few seconds (which job repeats, on which activation key, with what arrow). fz-sc8.33 (two closures through a helper) is the closed neighbour.",
+  "id": "fz-sc8.100",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Composing closures through a recursive helper hangs compilation",
+  "type": "bug",
+  "updated_at": "2026-11-08T16:53:26Z"
+}
