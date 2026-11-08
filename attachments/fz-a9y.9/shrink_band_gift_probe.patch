@@ -1,0 +1,63 @@
+diff --git a/runtime/src/heap/gift_test.rs b/runtime/src/heap/gift_test.rs
+index de274b985..d4b55d7ac 100644
+--- a/runtime/src/heap/gift_test.rs
++++ b/runtime/src/heap/gift_test.rs
+@@ -452,3 +452,58 @@ fn a_collection_inside_a_window_is_refused() {
+     let mut root = null_mut();
+     sender.gc(&mut root);
+ }
++
++fn probe_receiver_in_shrink_band(reg: &Rc<RefCell<SchemaRegistry>>) -> (Heap, u64) {
++    let mut receiver = Heap::new(SIZE_TABLE[9], reg.clone());
++    // 60000 bytes of garbage plus a 2000-byte live list; the first GC is
++    // pressured and grows the heap, leaving prev_live small vs block_size.
++    for _ in 0..60 {
++        let _ = receiver.alloc(1000);
++    }
++    let mut live = EMPTY_LIST;
++    for i in 0..125 {
++        live = alloc_int_list_cons(&mut receiver, i, live);
++    }
++    let mut root = null_mut();
++    let mut roots = [heap_root(live)];
++    receiver.gc_with_extra_root_slots(&mut root, &mut roots);
++    let live = roots[0].heap_object_word().expect("live list");
++    receiver.clear_should_gc_flag();
++    eprintln!("after first gc: block {} prev_live {} threshold {}",
++        receiver.block_size, receiver.last_gc_live_bytes, receiver.gc_threshold_bytes);
++    // 80000 bytes of LIVE allocation, below the own-footprint threshold.
++    let mut live2 = live;
++    for i in 0..5000 {
++        live2 = alloc_int_list_cons(&mut receiver, i, live2);
++    }
++    eprintln!("own_footprint {} should_gc {}", receiver.bytes_used(), receiver.should_gc());
++    (receiver, live2)
++}
++
++#[test]
++fn probe_control_no_gifts_no_gc_fires() {
++    let reg = fresh_registry();
++    let (receiver, _) = probe_receiver_in_shrink_band(&reg);
++    assert!(!receiver.should_gc(), "control: no pressure without gifts");
++}
++
++#[test]
++fn probe_gifts_alone_set_pressure_and_the_shrink_band_undersizes_to_space() {
++    let reg = fresh_registry();
++    let (mut receiver, live) = probe_receiver_in_shrink_band(&reg);
++    let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
++    for _ in 0..16 {
++        sender.begin_gift();
++        let mut l = EMPTY_LIST;
++        for i in 0..60 {
++            l = alloc_int_list_cons(&mut sender, i, l);
++        }
++        receiver.graft(sender.end_gift());
++    }
++    eprintln!("bytes_used {} adopted_fill {} should_gc {}", receiver.bytes_used(), receiver.adopted_fill(), receiver.should_gc());
++    assert!(receiver.should_gc(), "gifts alone raised the pressure flag");
++    let mut root = null_mut();
++    let mut roots = [heap_root(live)];
++    let stats = receiver.gc_with_extra_root_slots(&mut root, &mut roots);
++    eprintln!("to_space {} ", stats.to_space_capacity_bytes);
++}
