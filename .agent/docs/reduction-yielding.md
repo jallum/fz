@@ -31,7 +31,9 @@ and every loop still crosses a tail call.
 - **`Heap`** (`runtime/src/heap`) owns allocation, block growth, and the
   `should_gc` pressure flag. Crossing `gc_threshold_bytes` sets that flag.
   Exhausting the current block allocates a larger block and parks the old block
-  in `abandoned_blocks` for the next Cheney pass.
+  in `abandoned_blocks` for the next Cheney pass. Blocks grafted from another
+  heap's gift segment (`Heap::graft`) sit on `adopted_blocks`, are from-space
+  for the next pass like abandoned blocks, and count toward pressure by fill.
 - **The schedulers** (JIT `src/exec/runtime.rs`, interpreter `src/ir_interp`,
   AOT `runtime/src/aot_shim.rs`) own dispatch and the boundary decision: install
   a fresh budget, run the process, then collect if the heap pressure flag is set
@@ -104,6 +106,25 @@ Large objects above the heap fragment threshold use fragment allocations. They
 also mark pressure through `note_alloc_pressure`, but they do not move during
 Cheney; the collector marks survivors and frees unmarked fragments during the
 fragment sweep.
+
+## The gift window
+
+`Heap::begin_gift` sets the current tip aside and installs a fresh block from
+the smallest size class; allocation continues through `alloc_kind` and overflows
+upward as usual. `Heap::end_gift` cuts the blocks, fragments, MSO stubs and
+pending destructors produced since the window opened into a `GiftSegment`,
+restores the saved tip, puts `live_count` back and recomputes the pressure flag
+from the restored footprint. Allocation statistics stay with the heap that did
+the copying. `Heap::graft` on another heap adopts the segment; dropping an
+un-grafted segment returns its blocks to the pool, frees its fragments and
+releases its stubs' off-heap references. A collection asserts that no window is
+open.
+
+Adopted blocks take no part in the grow/keep/shrink decision, which is made
+from the heap's own footprint; the adopted fill is added to the band's target,
+so to-space is the band's own target plus the adopted fill, and with nothing
+adopted the sizing is unchanged. `GcStats::adopted_blocks` and
+`GcStats::adopted_bytes` report what a pass consumed.
 
 Compiled yield telemetry still samples the slow path that materializes a
 continuation closure:

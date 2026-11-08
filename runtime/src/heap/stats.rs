@@ -84,6 +84,11 @@ pub struct GcStats {
     pub live_bytes: u64,
     pub from_space_capacity_bytes: u64,
     pub to_space_capacity_bytes: u64,
+    /// Blocks grafted from gift segments that this collection consumed, and
+    /// the bytes they held by fill. Zero when no gift arrived since the last
+    /// collection.
+    pub adopted_blocks: u64,
+    pub adopted_bytes: u64,
     pub size_class: u8,
     pub root_heap_edges: u64,
     pub root_scalar_slots: u64,

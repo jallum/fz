@@ -417,8 +417,8 @@ pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle, closure: AnyValue
         write(p.add(RESOURCE_STUB_MAGIC_OFFSET) as *mut u64, RESOURCE_STUB_MAGIC);
     }
     rs.closure_value_set(closure);
-    rs.mso_next_set(heap.mso_head);
-    heap.mso_head = heap_object_word(p, ValueKind::RESOURCE);
+    let previous_head = heap.mso_push(heap_object_word(p, ValueKind::RESOURCE));
+    rs.mso_next_set(previous_head);
     rs
 }
 

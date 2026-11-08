@@ -346,8 +346,35 @@ stub that points into the <a href="#shared-zone">shared zone</a>.</p>
 
 <p>Blocks come from a per-thread pool sized by a Fibonacci-then-geometric size
 table (1 KiB up to ~6 MiB). When a block fills before GC fires, a new (larger)
-block is allocated and the old one joins <code>abandoned_blocks</code>. All
-abandoned blocks are reclaimed at the next GC.</p>
+block is allocated and the old one joins <code>abandoned_blocks</code>, recorded
+with its fill and size class. All abandoned blocks are reclaimed at the next
+GC.</p>
+
+<h3>The gift window</h3>
+
+<p>A heap can lend its allocation path to a copy whose result belongs to another
+heap. <code>Heap::begin_gift</code> sets the current tip aside and installs a
+fresh block from the smallest size class; allocation then proceeds through the
+ordinary bump path, overflowing into larger blocks exactly as any allocation
+does. <code>Heap::end_gift</code> cuts everything allocated since the window
+opened into a <code>GiftSegment</code> and puts the saved tip back with its
+free space intact. The segment carries the window's blocks (each with its fill),
+the suffix of fragments, the prefix of the MSO chain and the suffix of pending
+destructors that the window produced, and the number of objects allocated. Each
+of those is a split of a list the heap already keeps, not a walk. The heap's
+allocation statistics stay with it, its <code>live_count</code> goes back to
+what it was, and its pressure flag is recomputed from the restored footprint.
+A collection cannot run while a window is open.</p>
+
+<p>The receiving heap calls <code>Heap::graft</code>: the segment's blocks join
+its <code>adopted_blocks</code>, its fragments join the fragment list, its MSO
+prefix is spliced ahead of the receiver's chain, and its pending destructors
+queue behind the receiver's. Adopted blocks are kept apart from abandoned
+blocks so that "an abandoned block exists" keeps meaning "allocation overflowed
+mid-quantum". Their bytes count toward <code>bytes_used</code> by fill, never by
+capacity, so a kilobyte block holding one cons cell costs sixteen bytes of
+pressure. A segment that is dropped without being grafted returns its blocks to
+the pool, frees its fragments and releases every stub's off-heap reference.</p>
 
 <h3>The MSO chain</h3>
 
@@ -440,7 +467,7 @@ from scheduler-owned roots: mailbox values, receive outcome closure templates,
 and runnable continuation closures. No stack scan, no register enumeration.</p>
 
 <pre>
-  from-space (current block + abandoned blocks)
+  from-space (current block + abandoned blocks + adopted blocks)
   ┌────────────────────────────────┐
   │ [dead]  [dead]  <span class="live">[live]</span>  [dead]  │
   │      scheduler roots point ──►│──►<span class="live">closures + AnyValueRefs</span>
@@ -472,6 +499,16 @@ ride.
   — the exact bump-arena bytes that survived the previous GC, doubled for
   slack. Accurate, no pre-pass needed.</li>
 </ul>
+
+<p>The grow, keep and shrink bands are decided from the heap's own footprint
+alone: a gift arriving is not this heap's allocation rate, so adopted blocks
+never push the heap into the grow band. Their fill is then added to the band's
+target: to-space is the band's own target plus the adopted fill, because every
+adopted byte may be live. With nothing adopted the sizing is exactly what it
+was. After the pass the adopted blocks go back to the pool with the rest of
+from-space, and <code>GcStats</code> reports how many were consumed
+(<code>adopted_blocks</code>) and what they held
+(<code>adopted_bytes</code>).</p>
 
 <p>After the BFS scan: <code>last_gc_live_bytes = free - to_start</code>.
 That feeds the next GC. Fragment survivors are counted in telemetry as

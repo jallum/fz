@@ -1,6 +1,6 @@
 //! impl Heap — the giant impl block + Drop.
 
-use super::block_pool::{SIZE_TABLE, pick_size_class, pool_alloc, pool_free};
+use super::block_pool::{Block, SIZE_TABLE, pick_size_class, pool_alloc, pool_free};
 use super::fragment::{CopiedObject, FRAGMENT_THRESHOLD, Fragment, classify_fragment};
 use super::gc::{
     cheney_forward_strict_bits, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
@@ -105,6 +105,8 @@ impl Heap {
             last_gc_live_bytes: 0,
             last_gc_stats: GcStats::default(),
             abandoned_blocks: Vec::new(),
+            adopted_blocks: Vec::new(),
+            gift: None,
             node,
             schemas,
             pressure: AtomicBool::new(false),
@@ -176,7 +178,7 @@ impl Heap {
             let bumped = self.size_class.saturating_add(1).min((SIZE_TABLE.len() - 1) as u8);
             let new_class = want_for_alloc.max(bumped);
             let new_size = SIZE_TABLE[new_class as usize];
-            self.abandoned_blocks.push((self.block_start, self.size_class));
+            self.abandoned_blocks.push(self.current_block());
             let new_block = pool_alloc(new_class);
             self.block_start = new_block;
             self.bump_top = new_block;
@@ -189,6 +191,23 @@ impl Heap {
         self.alloc_count += 1;
         self.note_alloc_pressure();
         p
+    }
+
+    /// The block being bumped into, with its fill so far.
+    pub(super) fn current_block(&self) -> Block {
+        Block {
+            start: self.block_start,
+            top: self.bump_top,
+            size_class: self.size_class,
+        }
+    }
+
+    pub(super) fn install_block(&mut self, block: Block) {
+        self.block_start = block.start;
+        self.bump_top = block.top;
+        self.block_end = block.end();
+        self.block_size = block.capacity();
+        self.size_class = block.size_class;
     }
 
     pub fn alloc_stats_snapshot(&self) -> HeapAllocStats {
@@ -356,7 +375,8 @@ impl Heap {
             || self
                 .abandoned_blocks
                 .iter()
-                .any(|&(start, sc)| p >= start && p < unsafe { start.add(SIZE_TABLE[sc as usize]) })
+                .chain(&self.adopted_blocks)
+                .any(|block| p >= block.start && p < block.end())
             || classify_fragment(p, &self.fragments).is_some()
     }
 
@@ -983,19 +1003,31 @@ impl Heap {
         0
     }
 
-    /// Bytes consumed across the current block + every abandoned block.
-    /// Tracks total memory footprint, not "logically live" data.
+    /// Bytes consumed across the current block, every abandoned block, every
+    /// adopted block and every fragment. Tracks total memory footprint, not
+    /// "logically live" data. Abandoned blocks count by capacity, adopted
+    /// blocks by fill.
     pub fn bytes_used(&self) -> usize {
+        self.own_footprint() + self.adopted_fill() + self.fragment_bytes()
+    }
+
+    /// The current block's fill plus every abandoned block's capacity: the
+    /// bytes this heap's own allocation has claimed since the last GC.
+    fn own_footprint(&self) -> usize {
         let current = unsafe { self.bump_top.offset_from(self.block_start) } as usize;
-        let abandoned: usize = self
-            .abandoned_blocks
-            .iter()
-            .map(|(_, sc)| SIZE_TABLE[*sc as usize])
-            .sum();
-        // fz-q8d.4 — include fragment sizes so allocation pressure
-        // accounting reflects the full per-heap footprint.
-        let fragments: usize = self.fragments.iter().map(|f| f.size).sum();
-        current + abandoned + fragments
+        let abandoned: usize = self.abandoned_blocks.iter().map(Block::capacity).sum();
+        current + abandoned
+    }
+
+    /// Bytes actually written into adopted blocks. A gift's blocks are mostly
+    /// empty, so counting their capacity would make every small message look
+    /// like a kilobyte.
+    pub(super) fn adopted_fill(&self) -> usize {
+        self.adopted_blocks.iter().map(Block::fill).sum()
+    }
+
+    fn fragment_bytes(&self) -> usize {
+        self.fragments.iter().map(|f| f.size).sum()
     }
 
     pub fn bytes_remaining_in_block(&self) -> usize {
@@ -1041,16 +1073,23 @@ impl Heap {
         extra_roots: &mut [AnyValue],
         ref_roots: &mut [AnyValueRef],
     ) -> GcStats {
+        assert!(
+            self.gift.is_none(),
+            "a gift window is open; the heap collects only between end_gift and the next begin_gift"
+        );
         // Snapshot from-space block ranges before we allocate to-space.
-        let mut from_ranges: Vec<(*mut u8, *mut u8)> = Vec::with_capacity(1 + self.abandoned_blocks.len());
+        let mut from_ranges: Vec<(*mut u8, *mut u8)> =
+            Vec::with_capacity(1 + self.abandoned_blocks.len() + self.adopted_blocks.len());
         from_ranges.push((self.block_start, self.block_end));
-        for &(p, sc) in &self.abandoned_blocks {
-            from_ranges.push((p, unsafe { p.add(SIZE_TABLE[sc as usize]) }));
+        for block in self.abandoned_blocks.iter().chain(&self.adopted_blocks) {
+            from_ranges.push((block.start, block.end()));
         }
         let from_space_capacity_bytes: usize = from_ranges
             .iter()
             .map(|(start, end)| unsafe { end.offset_from(*start) as usize })
             .sum();
+        let adopted_blocks = self.adopted_blocks.len() as u64;
+        let adopted_bytes = self.adopted_fill();
 
         // fz-q8d.4 — reset fragment marks at the start of each GC.
         for f in &mut self.fragments {
@@ -1063,12 +1102,12 @@ impl Heap {
         //
         // The steady-state target is ~2x live (a 50% post-GC fill).
         // `prev_live` is the last GC's survivor bytes (0 before the first GC).
-        let fragment_bytes: usize = self.fragments.iter().map(|f| f.size).sum();
+        let own_footprint = self.own_footprint();
         let prev_live = self.last_gc_live_bytes;
         let fit_to_live = if prev_live > 0 {
             prev_live.saturating_mul(2)
         } else {
-            self.bytes_used().saturating_sub(fragment_bytes)
+            own_footprint
         };
 
         // Three bands, biased toward holding size — unlike a BEAM minor
@@ -1084,16 +1123,19 @@ impl Heap {
         //            as needed and never less than one class up.
         //   SHRINK — live has fallen to <=25% of the heap; refit to ~50%.
         //   KEEP   — live sits in the 25%–75% dead zone; hold the current size.
-        let occupied_before_gc = self.bytes_used().saturating_sub(fragment_bytes);
-        let was_pressured = !self.abandoned_blocks.is_empty() || occupied_before_gc >= self.gc_threshold_bytes;
-        let target_bytes = if was_pressured {
-            let footprint = self.bytes_used().saturating_sub(fragment_bytes);
-            fit_to_live.max(footprint.saturating_mul(2))
+        //
+        // Adopted blocks take no part in the band decision: a gift arriving is
+        // not this heap's allocation rate. Their fill is added on top of the
+        // band's target, because whatever they hold may be live and must fit.
+        let was_pressured = !self.abandoned_blocks.is_empty() || own_footprint >= self.gc_threshold_bytes;
+        let band_target = if was_pressured {
+            fit_to_live.max(own_footprint.saturating_mul(2))
         } else if prev_live == 0 || prev_live.saturating_mul(4) <= self.block_size {
             fit_to_live
         } else {
             self.block_size
         };
+        let target_bytes = band_target.saturating_add(adopted_bytes);
         let mut size_class = pick_size_class(target_bytes.max(SIZE_TABLE[0]));
         if was_pressured {
             let grown = self.size_class.saturating_add(1).min((SIZE_TABLE.len() - 1) as u8);
@@ -1109,6 +1151,8 @@ impl Heap {
             from_space_capacity_bytes: from_space_capacity_bytes as u64,
             to_space_capacity_bytes: to_size as u64,
             size_class,
+            adopted_blocks,
+            adopted_bytes: adopted_bytes as u64,
             ..GcStats::default()
         };
 
@@ -1335,18 +1379,18 @@ impl Heap {
             }
         }
 
-        // Return old from-space (current + abandoned) to the pool (§6.6).
+        // Return old from-space (current + abandoned + adopted) to the pool (§6.6).
         pool_free(self.block_start, self.size_class);
-        for (p, sc) in self.abandoned_blocks.drain(..) {
-            pool_free(p, sc);
+        for block in self.abandoned_blocks.drain(..).chain(self.adopted_blocks.drain(..)) {
+            pool_free(block.start, block.size_class);
         }
 
         // Install to-space as the new current block.
-        self.block_start = to_start;
-        self.bump_top = free;
-        self.block_end = to_end;
-        self.block_size = to_size;
-        self.size_class = size_class;
+        self.install_block(Block {
+            start: to_start,
+            top: free,
+            size_class,
+        });
         self.alloc_count = live_count;
         self.gc_run_count += 1;
         self.gc_threshold_bytes = to_size / 2;
@@ -1427,10 +1471,14 @@ impl Drop for Heap {
             unsafe { dealloc(f.ptr, f.layout) };
         }
         // Return blocks to the pool (§6.6) instead of free'ing. Next
-        // spawn pulls from the same class — no per-spawn malloc.
+        // spawn pulls from the same class — no per-spawn malloc. A tip set
+        // aside by an unfinished gift window goes back too.
         pool_free(self.block_start, self.size_class);
-        for (p, sc) in self.abandoned_blocks.drain(..) {
-            pool_free(p, sc);
+        if let Some(window) = self.gift.take() {
+            pool_free(window.saved_tip.start, window.saved_tip.size_class);
+        }
+        for block in self.abandoned_blocks.drain(..).chain(self.adopted_blocks.drain(..)) {
+            pool_free(block.start, block.size_class);
         }
     }
 }

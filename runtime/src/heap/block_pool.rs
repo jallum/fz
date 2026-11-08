@@ -43,6 +43,32 @@ pub fn pick_size_class(bytes: usize) -> u8 {
     (SIZE_TABLE.len() - 1) as u8
 }
 
+/// A pool block the heap has stopped bumping into: `start` is the block,
+/// `top` is where its last allocation ended, and `size_class` indexes
+/// `SIZE_TABLE` for its capacity. Abandoned blocks (overflowed mid-quantum)
+/// and adopted blocks (grafted from another heap's gift) are both recorded
+/// this way, so a block's fill and its capacity are each one subtraction.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Block {
+    pub(super) start: *mut u8,
+    pub(super) top: *mut u8,
+    pub(super) size_class: u8,
+}
+
+impl Block {
+    pub(super) fn capacity(&self) -> usize {
+        SIZE_TABLE[self.size_class as usize]
+    }
+
+    pub(super) fn end(&self) -> *mut u8 {
+        unsafe { self.start.add(self.capacity()) }
+    }
+
+    pub(super) fn fill(&self) -> usize {
+        unsafe { self.top.offset_from(self.start) as usize }
+    }
+}
+
 /// Per-thread block pool (§6.6). One free list per size_class. Spawn /
 /// grow / gc pull from here; Heap::drop and gc()'s old-block release
 /// return blocks here. Avoids per-spawn `malloc`/`free` churn under

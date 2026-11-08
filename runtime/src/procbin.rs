@@ -323,10 +323,23 @@ pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle, byte_offset: u64)
     let p = heap.alloc_kind(HeapAllocKind::ProcBin, PROCBIN_BYTES);
     let pb = unsafe { ProcBin::from_raw(p) };
     pb.shared_raw_set(handle.into_raw());
-    pb.mso_next_set(heap.mso_head);
     pb.byte_offset_set(byte_offset);
-    heap.mso_head = heap_object_word(p, ValueKind::PROCBIN);
+    let previous_head = heap.mso_push(heap_object_word(p, ValueKind::PROCBIN));
+    pb.mso_next_set(previous_head);
     pb
+}
+
+/// Point the `mso_next` link of the stub at `bits` to `next`. The stub's kind
+/// comes from the tag, since ProcBin and Resource keep the link at different
+/// offsets.
+pub(crate) fn mso_set_next(bits: u64, next: u64) {
+    use crate::resource::ResourceStub;
+    let addr = mso_addr(bits);
+    match bits & TAG_MASK {
+        TAG_PROCBIN => unsafe { ProcBin::from_raw(addr).mso_next_set(next) },
+        TAG_RESOURCE => unsafe { ResourceStub::from_raw(addr).mso_next_set(next) },
+        kind => panic!("mso_set_next: invalid MSO tag {kind:#x}"),
+    }
 }
 
 // ===== MSO sweep + drop =====================================================
@@ -428,8 +441,16 @@ fn mso_addr(bits: u64) -> *mut u8 {
 /// Drop every ProcBin in `heap.mso_head`'s chain, releasing each
 /// SharedBin reference. Called from `Heap::drop` before pool reclaim.
 pub fn mso_drop_all(heap: &mut Heap) {
+    mso_release_chain(heap.mso_head);
+    heap.mso_head = 0;
+}
+
+/// Release every stub on the chain that starts at `head_bits`: each ProcBin
+/// drops its SharedBin reference and each Resource stub drops its Resource
+/// reference. The chain's memory is left to its owner.
+pub(crate) fn mso_release_chain(head_bits: u64) {
     use crate::resource::{ResourceStub, fz_resource_release};
-    let mut cur_bits = heap.mso_head;
+    let mut cur_bits = head_bits;
     while cur_bits != 0 {
         let kind = cur_bits & TAG_MASK;
         let cur = mso_addr(cur_bits);
@@ -446,10 +467,9 @@ pub fn mso_drop_all(heap: &mut Heap) {
                 unsafe { fz_resource_release(rs.shared_raw()) };
                 cur_bits = next;
             }
-            _ => panic!("mso_drop_all: invalid MSO tag {kind:#x}"),
+            _ => panic!("mso_release_chain: invalid MSO tag {kind:#x}"),
         }
     }
-    heap.mso_head = 0;
 }
 
 // ===== Bitstring dispatch helpers (moved from any_value.rs) ==================

@@ -21,17 +21,22 @@ mod block_pool;
 mod deep_copy;
 mod fragment;
 mod gc;
+mod gift;
 mod imp;
 mod ref_io;
 mod schema;
 mod stats;
 
 #[cfg(test)]
+mod gift_test;
+#[cfg(test)]
 mod heap_test;
 #[cfg(test)]
 mod schema_test;
 
+use self::block_pool::Block;
 use self::fragment::Fragment;
+use self::gift::GiftWindow;
 use crate::process::Node;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -42,6 +47,7 @@ pub use self::block_pool::{SIZE_TABLE, pick_size_class};
 #[cfg(test)]
 pub use self::block_pool::{pool_drain_for_test, pool_total_cached_blocks};
 pub use self::deep_copy::{deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_tagged_bits};
+pub use self::gift::GiftSegment;
 pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
 pub(crate) use self::ref_io::map_entry_refs;
 pub use self::schema::{
@@ -72,10 +78,19 @@ pub struct Heap {
     /// this without coupling the `fz-runtime` crate to the compiler telemetry
     /// bus.
     pub last_gc_stats: GcStats,
-    /// Old blocks abandoned by `grow`. Each carries its size_class so
-    /// `Drop` / gc() can return it to the pool (§6.6). Cheney (.8)
-    /// frees the entire list at every collection.
-    abandoned_blocks: Vec<(*mut u8, u8)>,
+    /// Old blocks abandoned by `grow`, each with its fill and size class so
+    /// `Drop` / gc() can return it to the pool (§6.6). Cheney frees the
+    /// entire list at every collection.
+    abandoned_blocks: Vec<Block>,
+    /// Blocks grafted from other heaps' gift segments. They are from-space
+    /// for the next Cheney pass like abandoned blocks, but they are kept
+    /// apart so that "an abandoned block exists" keeps meaning "allocation
+    /// overflowed mid-quantum". Their bytes count by fill, never by
+    /// capacity.
+    adopted_blocks: Vec<Block>,
+    /// The open gift window, if `begin_gift` has set the tip aside and
+    /// `end_gift` has not yet cut the segment.
+    gift: Option<GiftWindow>,
     /// The atom-name authority for map key ordering. A process heap shares its
     /// process's node, so every map construction and lookup uses the same atom
     /// order as `Kernel.compare` without callers having to supply ambient
