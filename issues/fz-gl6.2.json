@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-gl6.1"
   ],
@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-gl6",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "A resource freed by a collection runs its fz destructor at the next boundary; the scheduling core owns the one post-quantum step",
   "type": "bug",
-  "updated_at": "2026-11-08T22:51:56Z"
+  "updated_at": "2026-11-08T23:57:25Z"
 }
