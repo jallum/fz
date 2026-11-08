@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T11:18:08Z",
+  "description": "Three pieces of the heap and process exist only as scaffolding for work that was never built or cannot happen. They go first because they are free and because the accounting fold that follows is smaller without them.\n\n- Process.quiet_quanta is written at six sites (process.rs boundary_maintenance, aot_shim.rs dispatch, exec/runtime.rs run_until_idle) and read nowhere. It was the counter for a \"proactive shrinkage\" heuristic that does not exist.\n- GiftWindow.pending_dtors_len, GiftSegment.pending_dtors and the extend in Heap::graft carry a list that is empty by construction: the only writer of Heap::pending_dtors is procbin::mso_sweep, which runs only inside gc_with_extra_roots, which asserts that no gift window is open.\n- Heap::freelist_len returns a constant zero and is \"retained for tests asserting freelist invariants\".\n\nDone when:\n- The three items above are gone, with every writer, reader, field, comment and doc sentence that mentions them. A rename-to-underscore pass (cargo check enumerates dependents) is the way to find them all.\n- Tests that asserted freelist_len == 0 are deleted, not rewritten. Tests that construct a GiftSegment or read pending_dtors through a gift are adjusted to the smaller type.\n- .agent/docs sentences that describe quiet quanta or a dtor list inside a gift are removed.\n- Full gate green (fmt, clippy -D warnings, doc tests, workspace tests, fixture_matrix --test-threads=1). Commit in Why / What changed / Verification form. No co-author trailer.\n\nTests: no new tests. A deletion is proven by the gate staying green and by grep returning nothing for the three names.",
+  "id": "fz-a9y.8",
+  "labels": [],
+  "parent": "fz-a9y",
+  "priority": 2,
+  "status": "open",
+  "title": "Heap scaffolding that nothing reads is deleted",
+  "type": "task",
+  "updated_at": "2026-11-08T11:18:08Z"
+}
