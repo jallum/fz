@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.102"
+  ],
   "created": "2026-11-08T00:15:24Z",
   "description": "Proposal (approved 2026-11-07): /Users/j5n/Workspace/fz-exceptions.html, published at https://claude.ai/artifact/EsjTtpXU3kJqaChtmgP7Sv. Research fact sheets (Elixir 1.20.5 surface, OTP 30 emulator, OTP 30 compiler) are summarised on the page.\n\nGoal: an fz program can catch what it raises, with Elixir's semantics, on interp, run and build. Signal: Elixir-oracle fixtures for every try form, and the existing abort fixtures gaining rescuing twins once fz-sc8.64 names the library's exceptions.\n\nDesign in one paragraph: the process gains a handler stack. fz_panic keeps its signature; its contract becomes \"deliver (kind, value) to the nearest handler if one is active, else render the line and fail\" (the empty-stack case is #278 unchanged). try lowers in body.rs in the vocabulary receive uses: a body block, a handler closure template (outer continuation + captures) pushed on entry and popped by the body's continuation, a dispatch over (kind, __struct__) for the arms, one join. after and else are desugarings (nested try + re-raise, as v3_core does); no runtime concept. Rescue dispatch is over __struct__ only (five legal Elixir shapes); normalisation is identity because every fz failure is a struct after fz-sc8.63/.64; ErlangError wraps a panic of a non-struct. Kinds error/throw/exit share the stack with one tag. defexception waits on fz-sc8.77 (__struct__ at runtime).\n\nDecisions taken with approval: __STACKTRACE__ evaluates to [] inside rescue/catch and is a compile error elsewhere (documented difference). throw/exit/catch are the third ticket. Own epic, based off 243d62f89 (#278 head); rebase onto fz-sc8.63/.64 when they land. panic/1 stays public.\n\nWorking rules: one worktree /Users/j5n/Workspace/fz-exceptions; one PR stacked on #278, one commit per ticket pushed as each closes; every ticket updates .agent/docs and fixtures docs for what it adds; gate per ticket is RUST_TEST_THREADS=1 cargo test --workspace --all-targets, doc tests, clippy -D warnings, fmt --check; no pin or golden rises without a measured explanation brought to the coordinator; deferrals need prior authorisation.",
   "id": "fz-3ul",
@@ -16,5 +18,5 @@
   "status": "open",
   "title": "Exceptions: try, rescue, catch and after over the one failure route",
   "type": "epic",
-  "updated_at": "2026-11-08T00:15:25Z"
+  "updated_at": "2026-11-08T23:07:55Z"
 }
