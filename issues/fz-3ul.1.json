@@ -10,9 +10,15 @@
   "id": "fz-3ul.1",
   "labels": [],
   "parent": "fz-3ul",
+  "comments": [
+    {
+      "text": "Landed as 5371db0a0 on fz-3ul/exceptions, pushed; reviewed and A/B probed on interp, run and build against the base binary at 243d62f89.",
+      "timestamp": "2026-11-08T02:45:45Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A raise reaches the nearest handler, and try/rescue catches it on every path",
   "type": "feature",
-  "updated_at": "2026-11-08T00:16:01Z"
+  "updated_at": "2026-11-08T02:45:45Z"
 }
