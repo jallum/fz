@@ -590,9 +590,10 @@ unsafe extern "C" fn interp_raise_hook<T: Telemetry + ?Sized>(
     name: *const u8,
     name_len: usize,
     depth: usize,
+    stack_bytes: usize,
 ) {
     let adapter = unsafe { &*(scheduler as *mut BackendSchedulerAdapter<T>) };
-    let record = unsafe { Raise::from_hook_args(kind, kind_len, name, name_len, depth) };
+    let record = unsafe { Raise::from_hook_args(kind, kind_len, name, name_len, depth, stack_bytes) };
     emit_runtime_event(unsafe { &*adapter.tel }, RuntimeEvent::Raise(&record));
 }
 
@@ -710,7 +711,11 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
             (*proc_ptr).ctx = &mut exec_ctx;
         }
         runtime.current_proc = proc_ptr;
-        match run_backend_resume(runtime, types, transport, tel, program, module, resume)? {
+        let stack_marker = 0u8;
+        unsafe { (*proc_ptr).stack_base = &stack_marker as *const u8 as usize };
+        let step = run_backend_resume(runtime, types, transport, tel, program, module, resume);
+        unsafe { (*proc_ptr).stack_base = 0 };
+        match step? {
             BackendRunStep::Done(value) => {
                 if run == BackendRun::Macro && pid == MAIN_PID {
                     // Lent by a caller that holds refs into its heap, so no

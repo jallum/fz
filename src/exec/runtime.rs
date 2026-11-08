@@ -110,9 +110,10 @@ unsafe extern "C" fn raise_hook_thunk<T: Telemetry + ?Sized>(
     name: *const u8,
     name_len: usize,
     depth: usize,
+    stack_bytes: usize,
 ) {
     let rt = unsafe { &*(scheduler as *mut Runtime<'_, T>) };
-    let record = unsafe { Raise::from_hook_args(kind, kind_len, name, name_len, depth) };
+    let record = unsafe { Raise::from_hook_args(kind, kind_len, name, name_len, depth, stack_bytes) };
     emit_runtime_event(rt.tel, RuntimeEvent::Raise(&record));
 }
 

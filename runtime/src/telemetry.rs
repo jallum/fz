@@ -33,12 +33,14 @@ pub const RAISE: [&str; 3] = ["fz", "runtime", "raise"];
 
 /// One raise as the runtime saw it: its kind (`error` for `raise`/`panic`),
 /// the exception's name (empty for a value that is not an exception), and how
-/// many handlers were on the stack. Depth zero is an uncaught raise.
+/// many handlers were on the stack. Depth zero is an uncaught raise. The stack
+/// bytes are the machine stack between the quantum's entry and the raise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Raise {
     pub kind: String,
     pub exception: String,
     pub handler_depth: usize,
+    pub stack_bytes: usize,
 }
 
 impl Raise {
@@ -52,12 +54,14 @@ impl Raise {
         name: *const u8,
         name_len: usize,
         depth: usize,
+        stack_bytes: usize,
     ) -> Self {
         let text = |ptr, len| String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(ptr, len) }).into_owned();
         Self {
             kind: text(kind, kind_len),
             exception: text(name, name_len),
             handler_depth: depth,
+            stack_bytes,
         }
     }
 }
@@ -153,8 +157,8 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
         RuntimeEvent::Raise(raise) => {
             write!(
                 out,
-                "\"kind\":\"{}\",\"exception\":\"{}\",\"handler_depth\":{}",
-                raise.kind, raise.exception, raise.handler_depth
+                "\"kind\":\"{}\",\"exception\":\"{}\",\"handler_depth\":{},\"stack_bytes\":{}",
+                raise.kind, raise.exception, raise.handler_depth, raise.stack_bytes
             )
             .unwrap();
         }

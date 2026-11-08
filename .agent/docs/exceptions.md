@@ -114,7 +114,10 @@ is by kind, whatever it holds).
   The raising frame returns 0, as a yield does, and every frame above it
   returns that 0 to the quantum entry: the machine frames between the `try` and
   the raise are gone before the handler runs, so a loop that raises on every
-  iteration uses the same stack for each. The entry is `Process::run_quantum`,
+  iteration uses the same stack for each: its raises are delivered at the entry
+  path's depth, the resumed-handler path's depth and the resumed-yield paths'
+  depths, and never deeper as the iterations go (`stack_bytes` on the raise
+  event shows it). The entry is `Process::run_quantum`,
   which both the JIT driver (`CompiledModule::run_quantum`) and the AOT driver
   (`dispatch_quantum`) call. When the code unwinds, `run_quantum` takes
   `Process::delivered` and, if a handler is there, resumes it at once in the same
@@ -403,10 +406,12 @@ The fixture matrix pins what it can: an `expect: abort` fixture must exit exactl
 
 ## Observing
 
-`fz_raise` reports every raise, caught or not, as `fz.runtime.raise` carrying a
-`Raise { kind, exception, handler_depth }` (`runtime/src/telemetry.rs`): the
-kind is `error`, `throw` or `exit`, the exception name is empty for a throw and
-an exit, and depth zero is an uncaught raise. `Process::ended_in_failure` and
+The raise route reports every raise, caught or not, as `fz.runtime.raise`
+carrying a `Raise { kind, exception, handler_depth, stack_bytes }`
+(`runtime/src/telemetry.rs`): the kind is `error`, `throw` or `exit`, the
+exception name is empty for a throw and an exit, depth zero is an uncaught
+raise, and `stack_bytes` is the machine stack between the quantum's entry and
+the raise. `Process::ended_in_failure` and
 `raises_delivered` are projected into `fz.runtime.process_exited` as
 `ExitRecord.failed` and `ExitRecord.raises_delivered`. See
 [runtime telemetry](runtime-telemetry.md).

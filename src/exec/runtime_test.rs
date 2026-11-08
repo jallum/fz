@@ -129,11 +129,12 @@ const ALLOCATING_TRY_BODY: &str =
 fn assert_one_raise_under_two_handlers(door: Door) {
     let (raises, exit) = raises_while_running(NESTED_RESCUE, door);
     assert_eq!(
-        raises,
+        without_stack_depth(raises),
         vec![Raise {
             kind: "error".to_string(),
             exception: "Elixir.ArgumentError".to_string(),
             handler_depth: 2,
+            stack_bytes: 0,
         }]
     );
     assert_eq!(exit.raises_delivered, 1);
@@ -159,8 +160,9 @@ fn assert_after_re_raises_the_original(door: Door) {
         kind: "error".to_string(),
         exception: "Elixir.ArgumentError".to_string(),
         handler_depth,
+        stack_bytes: 0,
     };
-    assert_eq!(raises, vec![raise_at(2), raise_at(1)]);
+    assert_eq!(without_stack_depth(raises), vec![raise_at(2), raise_at(1)]);
     assert_eq!(exit.raises_delivered, 2);
     assert!(!exit.failed);
 }
@@ -195,28 +197,38 @@ fn the_jit_delivers_every_raise_of_a_rescuing_loop_and_yields() {
     assert!(exit.reduction_yields >= 1, "the loop yields to the scheduler: {exit:?}");
 }
 
-/// A delivered raise unwinds the machine frames between its `try` and the raise
-/// before the handler runs, so a loop that raises on every iteration needs the
-/// same stack for its hundred-thousandth raise as for its first. The thread's
-/// stack is far smaller than a quantum of orphaned frames would need.
+/// A handler resumes from the quantum entry, so a loop that raises on every
+/// iteration repeats its depth instead of rising: every one of the hundred
+/// thousand raises is delivered at one of a few depths, the entry path (the
+/// first iteration), the resumed-handler path and the resumed-yield paths.
 #[test]
-fn the_jit_runs_a_raising_loop_on_a_small_stack() {
-    let small_stack = std::thread::Builder::new()
-        .stack_size(256 * 1024)
-        .spawn(|| {
-            let (raises, exit) = raises_while_running(RAISING_LOOP, Door::Jit);
-            assert_eq!(raises.len(), 100_000);
-            assert_eq!(exit.raises_delivered, 100_000);
-        })
-        .expect("spawn the small-stack thread");
-    small_stack
-        .join()
-        .expect("the raising loop finishes on a 256 KiB stack");
+fn the_jit_delivers_every_raise_of_a_loop_at_a_few_stack_depths() {
+    let (raises, exit) = raises_while_running(RAISING_LOOP, Door::Jit);
+    assert_eq!(raises.len(), 100_000);
+    assert_eq!(exit.raises_delivered, 100_000);
+    assert!(
+        distinct_depths(&raises) <= MOST_DEPTHS_OF_A_RAISING_LOOP,
+        "the depth repeats: {:?}",
+        depths_seen(&raises)
+    );
 }
 
 #[test]
 fn the_interpreter_delivers_every_raise_of_a_rescuing_loop() {
     assert_every_iteration_delivers(Door::Interp);
+}
+
+/// The interpreter's handler also resumes from its quantum entry, so its
+/// hundred thousand raises are delivered at a few depths, not a rising run.
+#[test]
+fn the_interpreter_delivers_every_raise_of_a_loop_at_a_few_stack_depths() {
+    let (raises, _) = raises_while_running(RAISING_LOOP, Door::Interp);
+    assert_eq!(raises.len(), 100_000);
+    assert!(
+        distinct_depths(&raises) <= MOST_DEPTHS_OF_A_RAISING_LOOP,
+        "the depth repeats: {:?}",
+        depths_seen(&raises)
+    );
 }
 
 /// A try body that spends more than a quantum's reductions and conses past the
@@ -244,7 +256,59 @@ fn raise_of(kind: &str, depth: usize) -> Raise {
         kind: kind.to_string(),
         exception: String::new(),
         handler_depth: depth,
+        stack_bytes: 0,
     }
+}
+
+/// The records with their machine-stack depth zeroed, for tests that compare
+/// what was raised and not where the machine stack stood.
+fn without_stack_depth(raises: Vec<Raise>) -> Vec<Raise> {
+    raises
+        .into_iter()
+        .map(|raise| Raise {
+            stack_bytes: 0,
+            ..raise
+        })
+        .collect()
+}
+
+fn depths_seen(raises: &[Raise]) -> Vec<usize> {
+    let mut seen: Vec<usize> = raises.iter().map(|raise| raise.stack_bytes).collect();
+    seen.sort_unstable();
+    seen.dedup();
+    seen
+}
+
+/// The depths a raising loop is delivered at: the entry path, the
+/// resumed-handler path and the resumed-yield paths. A loop that sank deeper
+/// with each iteration would show hundreds.
+const MOST_DEPTHS_OF_A_RAISING_LOOP: usize = 4;
+
+/// How many different machine-stack depths a run's raises were delivered at.
+fn distinct_depths(raises: &[Raise]) -> usize {
+    raises
+        .iter()
+        .map(|raise| raise.stack_bytes)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+/// A raise whose depth is `stack_bytes`, for exercising the depth counting.
+fn raise_at_depth(stack_bytes: usize) -> Raise {
+    Raise {
+        stack_bytes,
+        ..raise_of("error", 1)
+    }
+}
+
+/// The depth count tells a loop that repeats its depth from one that sinks
+/// deeper with each iteration, which is the difference the loop tests rely on.
+#[test]
+fn the_depth_count_tells_a_repeating_loop_from_a_sinking_one() {
+    let sinking: Vec<_> = (0..1000).map(|i| raise_at_depth(100 + 40 * i)).collect();
+    let repeating: Vec<_> = (0..1000).map(|i| raise_at_depth(100 + 40 * (i % 3))).collect();
+    assert_eq!(distinct_depths(&sinking), 1000);
+    assert_eq!(distinct_depths(&repeating), 3);
 }
 
 /// A throw and an exit each reach the handler as one raise event naming their
@@ -253,7 +317,10 @@ fn assert_throw_and_exit_report_their_kinds(door: Door) {
     let source = "def main() do\n  try do\n    throw(:ball)\n  catch\n    v -> v\n  end\n  try do\n    exit(:gone)\n  catch\n    :exit, r -> r\n  end\nend\n";
     let (raises, exit, ran) = observe_run(source, door);
     assert_eq!(ran, Ok(()));
-    assert_eq!(raises, vec![raise_of("throw", 1), raise_of("exit", 1)]);
+    assert_eq!(
+        without_stack_depth(raises),
+        vec![raise_of("throw", 1), raise_of("exit", 1)]
+    );
     assert_eq!(exit.raises_delivered, 2);
     assert!(!exit.failed);
 }

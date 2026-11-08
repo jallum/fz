@@ -151,6 +151,7 @@ unsafe extern "C" fn observing_raise(
     name: *const u8,
     name_len: usize,
     depth: usize,
+    _stack_bytes: usize,
 ) {
     let observed = unsafe { &mut *(context as *mut Observed) };
     let text = |ptr, len| String::from_utf8_lossy(unsafe { slice::from_raw_parts(ptr, len) }).into_owned();

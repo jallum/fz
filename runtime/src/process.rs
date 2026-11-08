@@ -139,6 +139,9 @@ pub struct Process {
     /// Cumulative raises this process delivered to a handler rather than
     /// failing on.
     pub raises_delivered: u64,
+    /// The machine-stack address at which the running quantum began; 0 when no
+    /// quantum is running. A raise measures its depth against it.
+    pub stack_base: usize,
 
     /// Cumulative compiled-code mid-flight yields for this process. Each
     /// increment means native code built a scheduler-owned continuation
@@ -454,6 +457,7 @@ impl Process {
             handlers: Vec::new(),
             raised: None,
             raises_delivered: 0,
+            stack_base: 0,
             scheduler_yields: 0,
             interpreter_yields: 0,
             reductions_remaining: reductions_per_quantum,
@@ -505,14 +509,17 @@ impl Process {
     /// every other way out hands the process back to the scheduler. This is the
     /// one place that answers whether the quantum continues.
     pub fn run_quantum(&mut self, first: AnyValueRef, mut resume: impl FnMut(&mut Process, AnyValueRef)) {
+        let stack_marker = 0u8;
+        self.stack_base = &stack_marker as *const u8 as usize;
         let mut closure = first;
         loop {
             resume(self, closure);
             match self.delivered.take() {
                 Some(handler) => closure = handler.as_ref(),
-                None => return,
+                None => break,
             }
         }
+        self.stack_base = 0;
     }
 
     /// Take the queued runnable closure, clearing the slot.

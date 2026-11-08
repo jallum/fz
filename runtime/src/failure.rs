@@ -224,7 +224,12 @@ fn raise(process: *mut Process, kind: RaiseKind, value_ref: u64) {
     let value_ref = AnyValueRef::from_raw_word(value_ref).expect("raise: a value ref");
     let value = AnyValue::from_ref(value_ref).expect("raise: a value");
     let name = exception_name(process_ptr, value);
-    report_raise(ctx, process, kind, name, process.handlers.len());
+    let stack_marker = 0u8;
+    let stack_bytes = match process.stack_base {
+        0 => 0,
+        base => base.saturating_sub(&stack_marker as *const u8 as usize),
+    };
+    report_raise(ctx, process, kind, name, process.handlers.len(), stack_bytes);
     let Some(handler) = process.handlers.pop() else {
         let line = failure_line(process_ptr, kind, value_ref);
         process.failed = true;
@@ -261,8 +266,16 @@ fn raise(process: *mut Process, kind: RaiseKind, value_ref: u64) {
 
 /// Tell the context's raise observer about a raise: its kind, the exception's
 /// name (empty for a value that is not an exception), and how many handlers
-/// could receive it.
-fn report_raise(ctx: &ExecCtx, process: &Process, kind: RaiseKind, name: Option<AnyValue>, depth: usize) {
+/// could receive it, and how many bytes of machine stack lie between the
+/// quantum's entry and the raise.
+fn report_raise(
+    ctx: &ExecCtx,
+    process: &Process,
+    kind: RaiseKind,
+    name: Option<AnyValue>,
+    depth: usize,
+    stack_bytes: usize,
+) {
     let Some(observe) = ctx.raise else {
         return;
     };
@@ -280,6 +293,7 @@ fn report_raise(ctx: &ExecCtx, process: &Process, kind: RaiseKind, name: Option<
             name.as_ptr(),
             name.len(),
             depth,
+            stack_bytes,
         )
     };
 }

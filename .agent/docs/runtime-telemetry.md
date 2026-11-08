@@ -255,12 +255,15 @@ sequence, collections and per-process `dtors_dispatched` equal `run`'s.
 The raise route (`fz_panic`, `fz_raise_kind`, `fz_raise`) reports every raise before deciding
 where it goes, through the
 `ExecCtx.raise` hook; the JIT runtime and the interpreter's scheduler adapter
-emit `RuntimeEvent::Raise` with a `Raise { kind, exception,
-handler_depth }` (`runtime/src/telemetry.rs`): the kind's name (`error`, `throw`
+emit `RuntimeEvent::Raise` with a `Raise { kind, exception, handler_depth,
+stack_bytes }` (`runtime/src/telemetry.rs`): the kind's name (`error`, `throw`
 or `exit`), the exception's module name (empty when the raised value is not an
 exception, as it never is for a throw or an exit), and how many handlers could
-take it. Depth zero is an uncaught raise. `write_line` renders the three as
-`kind`, `exception` and `handler_depth`. The AOT scheduler keeps the default
+take it. Depth zero is an uncaught raise. `stack_bytes` is the bytes of machine
+stack between the running quantum's entry and the raise (`Process::stack_base`,
+set by `Process::run_quantum` and by the interpreter's drive loop), 0 when no
+quantum is running. `write_line` renders the four as `kind`, `exception`,
+`handler_depth` and `stack_bytes`. The AOT scheduler keeps the default
 no-op hook. See [exceptions](exceptions.md).
 
 ## Program Output
