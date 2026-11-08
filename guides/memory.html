@@ -350,10 +350,12 @@ block is allocated and the old one joins <code>abandoned_blocks</code>, recorded
 with its fill and size class. All abandoned blocks are reclaimed at the next
 GC.</p>
 
-<h3>The gift window</h3>
+<h3 id="the-gift-window">The gift window</h3>
 
 <p>A heap can lend its allocation path to a copy whose result belongs to another
-heap. <code>Heap::begin_gift</code> sets the current tip aside and installs a
+heap. Cross-process send is its user: the sender copies a message, or a match's
+bound values, inside one, and the segment waits on the receiver's
+<code>in_queue</code> until the receiver's next dispatch grafts it. <code>Heap::begin_gift</code> sets the current tip aside and installs a
 fresh block from the smallest size class; allocation then proceeds through the
 ordinary bump path, overflowing into larger blocks exactly as any allocation
 does. <code>Heap::end_gift</code> cuts everything allocated since the window
@@ -687,12 +689,26 @@ wired yet.</p>
 that scalar first; if it already has a heap-object ref, it passes the ref as
 is.</p>
 
-<p>When sender and receiver are different processes,
-<code>Runtime::send_via_current_runtime</code> deep-copies the any value ref into
-the receiver's heap. Heap objects are recursively copied by layout. Scalar
-boxes are copied as scalar boxes and are not scanned as child pointers. The
-receiver stores the copied <code>AnyValueRef</code> in its mailbox, and
-process-root GC traces that mailbox directly.</p>
+<p>When sender and receiver are different processes, the sender does all the
+work and never writes into the receiver's heap. <code>sched::probe_sender</code>
+tests the message against the receiver's parked matcher, if it has one, with
+the sender as the allocating process. It then opens a <a href="#the-gift-window">gift
+window</a> on its own heap and deep-copies what the receiver will keep: the
+values the winning clause bound on a hit, the whole message on a miss. A hit
+that binds nothing opens no window and gifts an empty segment. Heap
+objects are copied by layout, a list spine cell by cell; scalar boxes are
+copied as scalar boxes and are not scanned as child pointers. The segment is
+queued on the receiver's <code>in_queue</code> with its payload, and a hit makes
+the receiver runnable.</p>
+
+<p>The receiver grafts every queued segment as the first act of its next
+dispatch, before any of its code or a collection runs. A miss payload joins the
+mailbox, which process-root GC traces directly; the hit payload finishes the
+receive, building the outcome closure on the receiver's own heap over the
+gifted bound values. A receiver whose receive is already matched is not probed
+again, so there is at most one match in its queue. A receiver that exits with
+gifts still queued drops them: each un-grafted segment returns its blocks to
+the pool and releases its stubs' references.</p>
 
 <h3>Self-send (same process)</h3>
 
@@ -724,9 +740,8 @@ Instead:</p>
   forwarding[src] = dst_proc_bin
 </pre>
 
-<p>The receiver's heap gets a fresh 32-byte ProcBin viewing the same suffix of
-the same
-SharedBin. The SharedBin's refcount is now one higher. The bytes themselves
+<p>The gift gets a fresh 32-byte ProcBin viewing the same suffix of the same
+SharedBin, and the receiver's heap adopts it with the segment. The SharedBin's refcount is now one higher. The bytes themselves
 never move. A 1 MiB binary sent to 100 receivers exists once in memory, with
 101 references to it (sender + 100 receivers).</p>
 
@@ -865,7 +880,8 @@ rather than accepting one.
   allocated ProcBin is the sole reference.</li>
   <li><strong>Send</strong> across processes: <code>deep_copy_any_value_ref</code>
   retains the shared_ptr (refcount ++) and allocates a fresh ProcBin in the
-  receiver's heap. Bytes don't move.</li>
+  sender's gift window; the receiver adopts it when it grafts the segment.
+  Bytes don't move.</li>
   <li><strong>Die</strong>: either a ProcBin fails to survive a GC (refcount
   −− in the <a href="#roots">MSO sweep</a>), or the entire heap is dropped
   (every ProcBin still on <code>mso_head</code> is released by
@@ -932,9 +948,10 @@ existing construction loops; there is no extra structural runtime scan.</p>
 <p>Extern calls do not publish their arguments for alias tracking. If an extern
 wants to retain a value after returning, the extern must copy it.</p>
 
-<p>Cross-process send is a copy boundary, not an alias boundary. It deep-copies
-the message graph before enqueueing it, so the sender's list cells need not be
-marked aliased just because they were sent. A singly copied list can remain
+<p>Cross-process send is a copy boundary, not an alias boundary. The sender
+deep-copies the message graph into a gift before queueing it on the receiver,
+so the sender's list cells need not be marked aliased just because they were
+sent. A singly copied list can remain
 unshared; repeated references and copied container fields protect sharing in
 the receiver. Self-send copies nothing: the sender's own reference enters the
 mailbox, and the compiler's call-site Share publication is what marks a list

@@ -92,7 +92,7 @@ fn named_schema_blob_preserves_module_segment_boundaries() {
 }
 
 #[test]
-fn aot_send_deep_copies_message_into_receiver_heap() {
+fn aot_send_gifts_the_message_and_the_receiver_grafts_it_at_its_next_dispatch() {
     let mut sched = test_scheduler();
 
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
@@ -116,8 +116,18 @@ fn aot_send_deep_copies_message_into_receiver_heap() {
         .map(|p| p.as_mut() as *mut Process)
         .expect("sender task");
 
+    let receiver_bytes = sched.tasks[&2].heap.bytes_used();
     aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, msg.raw_word());
 
+    let receiver = sched.tasks.get_mut(&2).expect("receiver");
+    assert_eq!(receiver.in_queue.len(), 1, "the gift waits for the receiver's dispatch");
+    assert!(receiver.mailbox.is_empty());
+    assert_eq!(
+        receiver.heap.bytes_used(),
+        receiver_bytes,
+        "the sender never writes the receiver's heap"
+    );
+    deliver_in_queue(receiver);
     let sender = sched.tasks.get(&1).expect("sender");
     let receiver = sched.tasks.get(&2).expect("receiver");
     let copied = receiver.mailbox.front().expect("receiver mailbox");

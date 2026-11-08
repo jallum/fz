@@ -1,15 +1,17 @@
 use super::*;
 use crate::any_value::AnyValueRef;
 use crate::any_value::ValueKind;
-use crate::heap::SchemaRegistry;
+use crate::heap::{SchemaRegistry, pool_drain_for_test, pool_total_cached_blocks};
 use crate::park::ParkRecord;
+use crate::procbin::{SharedBinHandle, alloc_procbin};
+use crate::sync::Ordering;
 use std::cell::RefCell;
 use std::ptr::{read, write};
 use std::rc::Rc;
 
 extern "C" fn match_42(_process: *mut Process, msg: u64, _pinned: *const AnyValueRef, out: *mut AnyValueRef) -> u32 {
     let msg_ref = AnyValueRef::from_raw_word(msg).expect("msg ref");
-    if msg_ref.load_int().expect("int msg") == 42 {
+    if msg_ref.tag() == ValueKind::INT && msg_ref.load_int().expect("int msg") == 42 {
         unsafe {
             *out = msg_ref;
         }
@@ -17,6 +19,10 @@ extern "C" fn match_42(_process: *mut Process, msg: u64, _pinned: *const AnyValu
     } else {
         0
     }
+}
+
+fn shared_refs(handle: &SharedBinHandle) -> usize {
+    unsafe { (*handle.as_raw()).refcount.load(Ordering::Relaxed) }
 }
 
 fn int_ref(n: i64) -> AnyValueRef {
@@ -71,45 +77,297 @@ fn mailbox_ints(task: &Process) -> Vec<i64> {
     task.mailbox.iter().map(|v| v.load_int().unwrap()).collect()
 }
 
+/// A sender's list `[n]`, allocated on the sender's heap so the copy has
+/// something to gift.
+fn sender_list(sender: &mut Process, n: i64) -> AnyValueRef {
+    sender
+        .heap
+        .alloc_list_cons_int(n, AnyValueRef::empty_list())
+        .expect("sender list ref")
+}
+
+/// Matches any one-element list and binds the whole list twice, so both
+/// bound values alias one cell.
+extern "C" fn bind_list_twice(
+    _process: *mut Process,
+    msg: u64,
+    _pinned: *const AnyValueRef,
+    out: *mut AnyValueRef,
+) -> u32 {
+    let msg_ref = AnyValueRef::from_raw_word(msg).expect("msg ref");
+    if msg_ref.tag() != ValueKind::LIST || msg_ref.is_empty_list() {
+        return 0;
+    }
+    unsafe {
+        *out = msg_ref;
+        *out.add(1) = msg_ref;
+    }
+    1
+}
+
+/// Matches the integer 7 and binds nothing.
+extern "C" fn match_7_binding_nothing(
+    _process: *mut Process,
+    msg: u64,
+    _pinned: *const AnyValueRef,
+    _out: *mut AnyValueRef,
+) -> u32 {
+    let msg_ref = AnyValueRef::from_raw_word(msg).expect("msg ref");
+    u32::from(msg_ref.tag() == ValueKind::INT && msg_ref.load_int().expect("int msg") == 7)
+}
+
+fn park_binding_nothing(task: &mut Process) {
+    let template = template_closure(task, 0xdead_beef);
+    task.wait = Some(Box::new(ParkRecord {
+        matcher_fn: match_7_binding_nothing,
+        pinned: vec![],
+        clause_bodies: vec![template],
+        clause_bound_counts: vec![0],
+        bound_arity: 0,
+        after_deadline_ms: None,
+        after_cont: 0xcafe_babe as *mut u8,
+        after_timer_id: None,
+    }));
+    task.state = ProcessState::Blocked;
+}
+
+fn park_binding_twice(task: &mut Process) {
+    let template = template_closure(task, 0xdead_beef);
+    task.wait = Some(Box::new(ParkRecord {
+        matcher_fn: bind_list_twice,
+        pinned: vec![],
+        clause_bodies: vec![template],
+        clause_bound_counts: vec![2],
+        bound_arity: 2,
+        after_deadline_ms: None,
+        after_cont: 0xcafe_babe as *mut u8,
+        after_timer_id: None,
+    }));
+    task.state = ProcessState::Blocked;
+}
+
+fn pending_match(task: &Process) -> Option<(usize, &[AnyValueRef])> {
+    task.in_queue.iter().find_map(|gift| match &gift.payload {
+        GiftPayload::Match { clause_idx, bound_vals } => Some((*clause_idx, bound_vals.as_slice())),
+        GiftPayload::Message(_) => None,
+    })
+}
+
 #[test]
-fn probe_sender_hit_sets_runnable_and_leaves_the_state_to_the_core() {
+fn probe_sender_hit_queues_the_match_and_leaves_the_receiver_untouched_until_it_runs() {
+    let mut sender = running_task();
     let mut task = fresh_task();
     park_on_42(&mut task, None);
-    assert_eq!(probe_sender(&mut task, int_ref(42)), ProbeOutcome::Hit);
-    assert!(task.wait.is_none());
+    let receiver_bytes = task.heap.bytes_used();
+    let probe = probe_sender(&mut sender, &mut task, int_ref(42));
+    assert_eq!(probe.outcome, ProbeOutcome::Hit);
+    assert_eq!(probe.receiver, task.pid);
+    assert!(task.wait.is_some(), "the park record stays until the receiver delivers");
     assert_eq!(
         task.state,
         ProcessState::Blocked,
         "only the scheduling core flips Ready"
     );
+    assert!(task.runnable_ptr().is_null());
+    assert_eq!(
+        task.heap.bytes_used(),
+        receiver_bytes,
+        "a sender never writes the receiver's heap"
+    );
+    assert!(task.mailbox.is_empty());
+    let (clause_idx, bound) = pending_match(&task).expect("the match waits in the in-queue");
+    assert_eq!(clause_idx, 0);
+    assert_eq!(bound.len(), 1);
+    assert!(task.has_pending_match());
+}
+
+#[test]
+fn deliver_in_queue_finishes_a_matched_receive_with_the_gifted_values() {
+    let mut sender = running_task();
+    let mut task = fresh_task();
+    park_on_42(&mut task, None);
+    probe_sender(&mut sender, &mut task, int_ref(42));
+    deliver_in_queue(&mut task);
+    assert!(task.wait.is_none());
+    assert!(task.in_queue.is_empty());
     let runnable = task.runnable_ptr();
     assert!(!runnable.is_null());
     unsafe {
         assert_eq!(read((runnable as *const u8).add(8) as *const u64), 0xdead_beef);
-        let cont_addr = runnable;
         let capture_ref =
-            AnyValueRef::from_raw_word(any_value::closure_capture_ref_word(cont_addr, 1)).expect("capture ref");
+            AnyValueRef::from_raw_word(any_value::closure_capture_ref_word(runnable, 1)).expect("capture ref");
         assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);
     }
     assert!(task.mailbox.is_empty());
 }
 
 #[test]
-fn probe_sender_miss_pushes_mailbox_keeps_park() {
+fn probe_sender_miss_queues_the_message_and_keeps_the_park() {
+    let mut sender = running_task();
     let mut task = fresh_task();
     park_on_42(&mut task, None);
-    assert_eq!(probe_sender(&mut task, int_ref(99)), ProbeOutcome::Miss);
+    let msg = sender_list(&mut sender, 99);
+    let probe = probe_sender(&mut sender, &mut task, msg);
+    assert_eq!(probe.outcome, ProbeOutcome::Miss);
+    assert_eq!(probe.gift_bytes, 16, "one cons cell crosses");
+    assert_eq!(probe.gift_blocks, 1);
     assert!(task.wait.is_some());
     assert_eq!(task.state, ProcessState::Blocked);
     assert!(task.runnable_ptr().is_null());
+    assert!(task.mailbox.is_empty(), "the message waits in the in-queue");
+    assert_eq!(task.in_queue.len(), 1);
+    deliver_in_queue(&mut task);
     assert_eq!(task.mailbox.len(), 1);
+    let delivered = task.mailbox[0];
+    assert!(task.heap.contains_heap_addr(delivered.list_addr().expect("list")));
+    assert!(task.wait.is_some(), "a miss never decides the receive");
 }
 
 #[test]
-fn probe_sender_not_parked_pushes_mailbox_returns_miss() {
+fn probe_sender_not_parked_queues_the_message_and_returns_miss() {
+    let mut sender = running_task();
     let mut task = fresh_task();
-    assert_eq!(probe_sender(&mut task, int_ref(7)), ProbeOutcome::Miss);
-    assert_eq!(task.mailbox.len(), 1);
+    let probe = probe_sender(&mut sender, &mut task, int_ref(7));
+    assert_eq!(probe.outcome, ProbeOutcome::Miss);
+    assert_eq!(task.in_queue.len(), 1);
+    assert!(!task.has_pending_match());
+}
+
+#[test]
+fn bound_values_that_share_structure_keep_sharing_through_one_forwarding_map() {
+    let mut sender = running_task();
+    let mut task = fresh_task();
+    park_binding_twice(&mut task);
+    let msg = sender_list(&mut sender, 5);
+    let probe = probe_sender(&mut sender, &mut task, msg);
+    assert_eq!(probe.outcome, ProbeOutcome::Hit);
+    assert_eq!(probe.gift_bytes, 16, "two bindings of one cell copy it once");
+    let (_, bound) = pending_match(&task).expect("match queued");
+    assert_eq!(bound.len(), 2);
+    assert_eq!(
+        bound[0].raw_word(),
+        bound[1].raw_word(),
+        "both bindings point at the one copy"
+    );
+}
+
+#[test]
+fn a_hit_that_binds_nothing_gifts_nothing() {
+    pool_drain_for_test();
+    let mut sender = running_task();
+    let mut task = fresh_task();
+    park_binding_nothing(&mut task);
+    let cached_before = pool_total_cached_blocks();
+    let probe = probe_sender(&mut sender, &mut task, int_ref(7));
+    assert_eq!(probe.outcome, ProbeOutcome::Hit);
+    assert_eq!(
+        (probe.gift_bytes, probe.gift_blocks),
+        (0, 0),
+        "no window opens for an empty binding"
+    );
+    assert_eq!(pool_total_cached_blocks(), cached_before, "no block was taken");
+    let (clause_idx, bound) = pending_match(&task).expect("the match waits in the in-queue");
+    assert_eq!((clause_idx, bound.len()), (0, 0));
+    deliver_in_queue(&mut task);
+    assert!(task.wait.is_none());
+    assert!(!task.runnable_ptr().is_null());
+    drop(task);
+    drop(sender);
+    pool_drain_for_test();
+}
+
+#[test]
+fn a_second_sender_does_not_probe_a_receive_that_is_already_matched() {
+    let mut first = running_task();
+    let mut second = running_task();
+    let mut task = fresh_task();
+    park_on_42(&mut task, None);
+    assert_eq!(
+        probe_sender(&mut first, &mut task, int_ref(42)).outcome,
+        ProbeOutcome::Hit
+    );
+    assert_eq!(
+        probe_sender(&mut second, &mut task, int_ref(42)).outcome,
+        ProbeOutcome::Miss,
+        "the receive is decided; a later 42 is an ordinary arrival"
+    );
+    deliver_in_queue(&mut task);
+    assert!(task.wait.is_none());
+    assert_eq!(mailbox_ints(&task), vec![42], "the second 42 waits in the mailbox");
+}
+
+#[test]
+#[should_panic(expected = "one match per parked receive")]
+fn a_second_match_for_one_parked_receive_is_refused() {
+    let mut sender = running_task();
+    let mut task = fresh_task();
+    park_on_42(&mut task, None);
+    probe_sender(&mut sender, &mut task, int_ref(42));
+    let (segment, bound_vals) = gift_copy(&mut sender.heap, &[int_ref(42)]);
+    push_gift(
+        &mut task,
+        Gift {
+            segment,
+            payload: GiftPayload::Match {
+                clause_idx: 0,
+                bound_vals,
+            },
+        },
+    );
+}
+
+#[test]
+fn drain_in_queue_grafts_in_arrival_order() {
+    let mut sender = running_task();
+    let mut task = fresh_task();
+    for n in [1, 2, 3] {
+        let msg = sender_list(&mut sender, n);
+        probe_sender(&mut sender, &mut task, msg);
+    }
+    assert!(drain_in_queue(&mut task).is_none());
+    assert!(task.in_queue.is_empty());
+    let heads: Vec<i64> = task
+        .mailbox
+        .iter()
+        .map(|m| task.heap.read_list_head_ref(*m).unwrap().load_int().unwrap())
+        .collect();
+    assert_eq!(heads, vec![1, 2, 3]);
+    for m in &task.mailbox {
+        assert!(
+            task.heap.contains_heap_addr(m.list_addr().expect("list")),
+            "grafted cells are the receiver's"
+        );
+    }
+}
+
+#[test]
+fn a_dropped_receiver_returns_its_pending_gifts_to_the_pool_and_releases_their_binaries() {
+    pool_drain_for_test();
+    let witness = SharedBinHandle::from_bytes(&[0x55; 16], 128);
+    let mut sender = running_task();
+    let mut task = Box::new(fresh_task());
+    let binary = alloc_procbin(&mut sender.heap, witness.clone(), 0);
+    let binary_ref =
+        AnyValueRef::from_heap_object(ValueKind::PROCBIN, binary.as_raw() as *const u8).expect("procbin ref");
+    probe_sender(&mut sender, &mut task, binary_ref);
+    let msg = sender_list(&mut sender, 1);
+    probe_sender(&mut sender, &mut task, msg);
+    assert_eq!(task.in_queue.len(), 2);
+    assert_eq!(
+        shared_refs(&witness),
+        3,
+        "the sender's stub and the gifted copy each hold the binary"
+    );
+    let cached_before = pool_total_cached_blocks();
+    drop(task);
+    assert_eq!(
+        pool_total_cached_blocks(),
+        cached_before + 3,
+        "the receiver's own block and both gift blocks are back in the pool"
+    );
+    assert_eq!(shared_refs(&witness), 2, "the dropped gift released its reference");
+    drop(sender);
+    pool_drain_for_test();
 }
 
 #[test]

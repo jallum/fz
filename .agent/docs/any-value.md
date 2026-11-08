@@ -344,10 +344,11 @@ use that same boundary. Raw `write_field_slot` remains an unpublished storage
 operation used by internal runtime structs too; the language constructor, not
 every internal field write, owns publication. No structural runtime scan is added.
 
-Cross-process send copies into receiver-owned storage. A singly copied list can
-remain clear; repeated forwarding hits and copied container fields protect
-receiver-side sharing. The sender's cells are not marked merely because a copy
-was sent. Self-send copies nothing and the runtime publishes nothing: the
+Cross-process send copies into storage the receiver will own: the sender
+copies into a gift window on its own heap (`sched::gift_copy`), and the receiver
+grafts the segment at its next dispatch. A singly copied list can remain clear;
+repeated forwarding hits and copied container fields protect receiver-side
+sharing. The sender's cells are not marked merely because a copy was sent. Self-send copies nothing and the runtime publishes nothing: the
 sender's own reference is pushed onto its mailbox (`sched::self_send`). The
 mailbox is then a second holder, and the compiler's call-site ownership rule is
 what protects it: `construct_call_ownership` (src/compiler2/jobs/body.rs) marks

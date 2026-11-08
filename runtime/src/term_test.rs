@@ -273,7 +273,7 @@ fn typed_closure_and_resource_identity_survive_transport_without_comparison_allo
         (heap_value(changed), AnyValue::int(3)),
     ]);
     assert_eq!(unsafe { map_count(map_addr_from_tagged(map).unwrap()) }, 2);
-    let copied = deep_copy_slot(heap_value(map), &source, &mut destination, &mut HashMap::new());
+    let copied = deep_copy_slot(heap_value(map), &source.view(), &mut destination, &mut HashMap::new());
     let mut roots = [copied];
     destination.gc_with_extra_root_slots(&mut std::ptr::null_mut(), &mut roots);
     let before = destination.alloc_stats_snapshot();

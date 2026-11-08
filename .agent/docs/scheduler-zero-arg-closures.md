@@ -95,17 +95,33 @@ a sender tests only its own message.
 When a message matches, `materialize_outcome_closure` turns the winning clause
 template into a runnable zero-arg closure. The template env is
 `[outer_cont, cap0, …]`; the outcome env splices the matcher's bound values in
-after the outer continuation: `[outer_cont, bound0, …, cap0, …]`. The matcher hit
-then clears `wait`, cancels any after-timer, and moves the outcome closure into
-`runnable` (a sender-side hit) or returns it to the receive that is running (a
-scan hit).
+after the outer continuation: `[outer_cont, bound0, …, cap0, …]`. A scan hit
+returns that closure to the receive that is running. A sender-side hit is
+delivered in two halves: the sender runs the matcher (`ParkRecord::try_match`
+with the sender as the allocating process), cancels the after-timer and calls
+`sched::gift_match`, which copies the bound values with one forwarding map into
+a gift on the sender's heap (`sched::gift_copy`) and queues a `Gift { segment,
+payload: GiftPayload::Match { clause_idx, bound_vals } }` on the receiver's
+`in_queue`; a miss calls `sched::gift_message`, which gifts the whole message
+as a `GiftPayload::Message`. These two functions are the only implementation of
+"gift and queue": `sched::probe_sender` (JIT and AOT) and the interpreter's
+`probe_parked_receive` differ only in which matcher runs and which record holds
+the after-timer. A clause that binds nothing gifts nothing: `gift_copy` of no
+values returns `GiftSegment::empty()` without opening a window, and grafting it
+is a no-op. The receiver's dispatch grafts each segment, takes the park record
+and materializes the outcome closure (`sched::deliver_in_queue`). The queued
+entry is the partial closure: a clause index and gifted bound values, no new
+heap object type.
 
 This is outcome-closure delivery, not mailbox delivery. A sender-side hit does
 not enqueue the message and does not wake the receiver for a second mailbox
-scan. The matcher projects only the winning arm's useful payload, the runtime
-deep-copies only that projected capture set into the receiver heap, and the
-receiver resumes directly from the receiver-owned outcome closure. Mailbox
-traffic is the miss path only.
+scan. The matcher projects only the winning arm's useful payload, the sender
+copies only that projected capture set, and the receiver resumes from an
+outcome closure built on its own heap. Mailbox traffic is the miss path only: a
+rejected message is gifted whole as `GiftPayload::Message` and joins the
+mailbox when the receiver next drains its queue. A sender never writes into a
+receiver's heap, and a receiver whose receive is already matched is not probed
+again; its later arrivals are misses.
 
 For compiler2-native codegen, that resumed clause body is just another
 continuation boundary. The parked outcome closure publishes the bound-value
@@ -132,10 +148,16 @@ The scheduler never passes the message to the closure. The message is already
 consumed and its useful parts captured. Two entry points drive this:
 `reach_receive` walks the mailbox in arrival order when the receive is reached
 (rejected messages stay in the mailbox — Erlang save-queue semantics), and
-`probe_sender` runs the matcher on `send` arrival for a process that is already
-waiting and bypasses the mailbox entirely on a hit. Both the JIT `Runtime` and
-the AOT scheduler deliver every send through `probe_sender` after copying the
-message into the receiver heap.
+`probe_sender(sender, receiver, msg)` runs the matcher on `send` arrival for a
+process that is already waiting and bypasses the mailbox entirely on a hit. The
+JIT `Runtime` and the AOT scheduler deliver every send through `probe_sender`;
+the interpreter runs the same shape with its own matcher
+(`IrInterpRuntime::probe_parked_receive`). Every path drains the receiver's
+`in_queue` as the first act of a dispatch, before the runnable closure or resume
+entry is taken: `deliver_in_queue` in `run_until_idle` (JIT) and
+`dispatch_quantum` (AOT), `IrInterpRuntime::deliver_in_queue` in
+`drive_backend_until_idle`. A receiver that exits with gifts still queued drops
+them with its `Process`; each un-grafted segment returns its blocks to the pool.
 
 ## Timeout
 
@@ -237,7 +259,9 @@ closure's `halt_kind`, and tail-calls the inner body `(inner, halt_cl)`.
 The inner closure is one of two things:
 
 - a spawned user closure, deep-copied from the sender's heap into the new task's
-  heap (`spawn_closure`); or
+  heap (`spawn_closure`; the spawn paths are the only remaining callers of
+  `deep_copy_any_value_ref` that write another process's heap, and the child
+  has not run yet); or
 - a synthetic main-style entry. A `main` function has a raw `(cont)` body, so
   `mint_main_inner` wraps the raw fn pointer in a raw-int capture (GC never treats
   it as a heap reference) behind the fixed `fz_main_trampoline` body, which reads
@@ -295,10 +319,15 @@ The roots the boundary GC traces are exactly the `runnable` closure and the
 - `cargo test --test fixture_matrix receive_selective_refs` — selective receive
   with `^`-pinned matchers and an `after` timeout resumes through the closure entry
   across all four paths.
-- `cargo test send_probe_hit_projects_only_matched_payload_into_outcome_closure`
-  (`src/exec/runtime_test.rs`) — a sender-side hit bypasses the mailbox and
-  copies only the projected payload needed by the winning clause into the
-  receiver-owned outcome closure.
+- `cargo test --test fixture_matrix a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`
+  — fixtures 00695 and 00696 on the `run` and `interp` paths: a miss gifts the
+  whole message, a hit gifts exactly the bound cells (48 bytes for `[1, 2, 3]`),
+  the receiver is woken once, and its own heap allocates no list cells for the
+  delivery.
+- `runtime/src/sched_test.rs` — the probe, drain and delivery primitives: a hit
+  leaves the receiver's heap untouched until it runs, two bindings of one cell
+  copy it once, a second sender does not re-probe a matched receive, a dropped
+  receiver returns its queued gifts to the pool and releases their binaries.
 - `cargo test --test fixture_matrix spawn_with_captures` — a spawned task is
   resumed as an entry thunk through `fz_resume`, the same verb a continuation
   uses.

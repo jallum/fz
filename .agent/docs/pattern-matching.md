@@ -346,9 +346,11 @@ Receive origins terminate at `MailboxMessage(owner)`, not a fabricated caller
 value. Semantic parameters project their types from mailbox `any` through the
 winning plan's evidence. Native receive preserves subject-to-parameter identity
 in its function ABI; pinned values and prepared keys are indexed by the plan,
-never by source spelling. A sender-side winning probe copies only those exact
-projected arguments, including physical sources, into the receiver heap with
-one forwarding map. Misses and timeouts expose no outcome arguments.
+never by source spelling. A sender-side winning probe runs the matcher on the
+sender and copies only those exact projected arguments, including physical
+sources, with one forwarding map into a gift on the sender's own heap; the
+receiver grafts the gift at its next dispatch. Misses and timeouts expose no
+outcome arguments.
 
 A one-cons `List` construction may carry `ListRetention { source, permission }`.
 The source is an ordinary traced physical operand through entries, captures,

@@ -36,7 +36,10 @@ use fz_runtime::heap::deep_copy_any_value_ref;
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
 use fz_runtime::pinned_abi::call2;
 use fz_runtime::procbin::mso_drop_all_deferred;
-use fz_runtime::sched::{ProbeOutcome, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send};
+use fz_runtime::sched::{
+    ProbeOutcome, SendProbe, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender,
+    self_send,
+};
 use fz_runtime::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
 use fz_runtime::timer::TimerId;
 #[cfg(test)]
@@ -87,6 +90,15 @@ impl ExitRecord {
 /// the `Duration` it is about to wait.
 pub const SCHEDULER_SLEPT: [&str; 3] = ["fz", "runtime", "scheduler_slept"];
 
+/// Emitted once per cross-process send on the JIT and interpreter paths;
+/// carries the `SendProbe` the sender's probe produced.
+pub const SEND_PROBE: [&str; 4] = ["fz", "runtime", "send", "probe"];
+
+/// Report one send's probe on the telemetry bus.
+pub fn emit_send_probe<T: Telemetry + ?Sized>(tel: &T, probe: &SendProbe) {
+    tel.raw_event1(&SEND_PROBE, probe);
+}
+
 /// fz-ul4.23.10 scheduler-hook thunks. These are the extern "C" fns the
 /// runtime crate dispatches through when fz_spawn / fz_send fire from
 /// JIT'd code. They translate the raw-u32 hook ABI back into the
@@ -131,7 +143,8 @@ pub fn spawn_closure_via<T: Telemetry + ?Sized>(sender: *mut Process, scheduler:
 /// Sender and receiver are distinct Processes — the sender is currently
 /// running (its Box<Process> has been taken OUT of the registry by
 /// run_until_idle), the receiver is sitting in the registry. No borrow
-/// conflict.
+/// conflict. The sender matches and copies on its own heap and queues the
+/// gift on the receiver; the receiver's heap is untouched until it runs.
 pub fn send_via<T: Telemetry + ?Sized>(
     sender: *mut Process,
     scheduler: *mut (),
@@ -155,9 +168,9 @@ pub fn send_via<T: Telemetry + ?Sized>(
     if receiver.state == ProcessState::Exited {
         return;
     }
-    let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
-    let copied = deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
-    if probe_sender(receiver, copied) == ProbeOutcome::Hit {
+    let probe = probe_sender(sender, receiver, msg);
+    emit_send_probe(rt.tel, &probe);
+    if probe.outcome == ProbeOutcome::Hit {
         rt.core.make_runnable(receiver_pid, &mut receiver.state);
     }
 }
@@ -255,7 +268,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         closure_ref
             .closure_addr()
             .expect("spawn_closure: closure must be a closure");
-        let copied = deep_copy_any_value_ref(closure_ref, &sender.heap, &mut process.heap, &mut forwarding);
+        let copied = deep_copy_any_value_ref(closure_ref, &sender.heap.view(), &mut process.heap, &mut forwarding);
         let copied_addr = copied
             .closure_addr()
             .expect("spawn_closure: copied closure must be a closure");
@@ -301,6 +314,9 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             task.reset_reduction_budget();
             task.ctx = ctx_ptr;
             debug_assert!(!task.ctx.is_null(), "task.ctx installed before dispatch");
+            // Gifts queued by senders become this heap's before any code
+            // runs; a matched receive becomes the runnable closure here.
+            deliver_in_queue(&mut task);
             self.compiled.run_quantum(&mut task);
             // After a quantum the task is in one of three states: still
             // Running with a continuation in `runnable` (a mid-flight

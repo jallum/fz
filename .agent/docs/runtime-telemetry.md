@@ -13,7 +13,7 @@ route through the same typed raw emit site, so `NullTelemetry` remains
 monomorphizable and configured handlers behave identically across interpreter,
 JIT, and AOT.
 
-Three events matter:
+Four events matter:
 
 - `fz.runtime.execution_ready` — the boundary between compiling a program and
   running it, emitted by `run_root_jit` and `run_root_interp`.
@@ -21,6 +21,8 @@ Three events matter:
   live `Process` authority.
 - `fz.runtime.scheduler_slept` — one each time the scheduling core sleeps for a
   pending receive-after timer because nothing is runnable.
+- `fz.runtime.send.probe` — one per cross-process send, carrying what the
+  sender's probe decided and what it cost.
 
 ## `fz.runtime.execution_ready`
 
@@ -81,6 +83,33 @@ is empty and a timer pends, so a program whose timers are all cancelled by
 arriving messages never emits it. The AOT scheduler carries no telemetry bus and
 keeps the default no-op hook. `exec/runtime_test.rs` observes the event on the
 `run` and `interp` paths.
+
+## `fz.runtime.send.probe`
+
+A send to another process runs `sched::probe_sender` on the sender: the
+receiver's parked matcher, if any, is tested against the message with the
+sender as the allocating process, and whatever the receiver will keep (the
+bound values on a hit, the whole message on a miss) is copied into a gift on the
+sender's heap and queued on the receiver's `in_queue`. `emit_send_probe`
+(`exec/runtime.rs`) is the single emit site; the JIT `send_via` and the
+interpreter's `send_ref` call it with the `SendProbe` the probe returned:
+
+```text
+raw event:    fz.runtime.send.probe
+signature:    (&SendProbe)
+```
+
+`SendProbe` is `{ outcome: Hit | Miss, receiver: PidId, reductions: i64,
+gift_bytes: usize, gift_blocks: usize }`. `reductions` is the change in the
+sender's remaining budget across the matcher call; `gift_bytes` and
+`gift_blocks` are the segment's fill and block count, both `0` when a hit binds
+nothing and no window opens. `JsonlBackend` renders the
+outcome as `"hit"` or `"miss"` and the rest as numbers. A self-send is a mailbox
+push and emits nothing. The AOT scheduler carries no telemetry bus and emits
+nothing, as for the other runtime events. `tests/fixture_matrix.rs`
+(`a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`)
+pins the event sequence of fixtures 00695 and 00696 on the `run` and `interp`
+paths.
 
 ## Program Output
 

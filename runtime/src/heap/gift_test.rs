@@ -339,6 +339,36 @@ fn end_gift_leaves_the_senders_pressure_flag_equal_to_bytes_used_against_the_thr
 }
 
 #[test]
+fn an_empty_segment_grafts_as_a_no_op_and_never_touches_the_pool() {
+    pool_drain_for_test();
+    let mut receiver = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let _ = alloc_int_list_cons(&mut receiver, 1, EMPTY_LIST);
+    let bytes_before = receiver.bytes_used();
+    let adopted_before = receiver.adopted_blocks.len();
+    let cached_before = pool_total_cached_blocks();
+
+    let segment = GiftSegment::empty();
+    assert_eq!(
+        (segment.block_count(), segment.fill_bytes(), segment.fragment_count()),
+        (0, 0, 0)
+    );
+    assert_eq!(segment.mso_head(), 0);
+    receiver.graft(segment);
+
+    assert_eq!(receiver.bytes_used(), bytes_before, "nothing was adopted");
+    assert_eq!(receiver.adopted_blocks.len(), adopted_before);
+    assert_eq!(
+        pool_total_cached_blocks(),
+        cached_before,
+        "no block was taken or returned"
+    );
+    assert!(receiver.fragments.is_empty());
+    assert_eq!(mso_chain(&receiver), Vec::<u64>::new());
+    drop(receiver);
+    pool_drain_for_test();
+}
+
+#[test]
 fn dropping_an_ungrafted_segment_returns_its_blocks_frees_its_fragments_and_releases_its_stubs() {
     pool_drain_for_test();
     let witness = SharedBinHandle::from_bytes(&[0x55; 16], 128);

@@ -242,7 +242,7 @@ fn closure_denotation_survives_cross_heap_copy_and_gc() {
     let bits = source.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(73), 1, 1, 0);
     let closure = closure_addr_from_tagged(bits).expect("source closure");
     unsafe { closure_capture_set(closure, 0, AnyValue::int(42)) };
-    let copied = deep_copy_slot(heap_root(bits), &source, &mut destination, &mut HashMap::new());
+    let copied = deep_copy_slot(heap_root(bits), &source.view(), &mut destination, &mut HashMap::new());
     let mut roots = [copied];
     destination.gc_with_extra_root_slots(&mut null_mut(), &mut roots);
     let moved = roots[0].heap_addr().expect("copied closure");
@@ -1257,7 +1257,7 @@ fn deep_copy_tagged_list_preserves_nested_list_head() {
     let parent_bits = src.alloc_list_cons_slot(heap_root(child_bits), EMPTY_LIST);
     let mut forwarding = HashMap::new();
 
-    let copied = deep_copy_slot(heap_root(parent_bits), &src, &mut dst, &mut forwarding);
+    let copied = deep_copy_slot(heap_root(parent_bits), &src.view(), &mut dst, &mut forwarding);
     let copied_parent = list_addr_from_tagged(tagged_bits(copied)).expect("copied parent list ptr");
     let parent = unsafe { &*(copied_parent as *const ListCons) };
     assert_eq!(parent.head_kind(), ValueKind::LIST);
@@ -1285,7 +1285,7 @@ fn deep_copy_repeated_list_reference_establishes_receiver_owned_sharing() {
     let mut forwarding = HashMap::new();
     let copied = deep_copy_slot(
         AnyValue::heap_ptr(tuple, ValueKind::STRUCT),
-        &source,
+        &source.view(),
         &mut destination,
         &mut forwarding,
     );
@@ -1333,7 +1333,7 @@ fn assert_copied_boxed_list_is_published(duplicate: bool) {
     let mut forwarding = HashMap::new();
     let copied = deep_copy_slot(
         AnyValue::heap_ptr(root, ValueKind::STRUCT),
-        &source,
+        &source.view(),
         &mut destination,
         &mut forwarding,
     );
@@ -1362,7 +1362,7 @@ fn deep_copy_closure_publishes_its_list_capture() {
     let address = closure_addr_from_tagged(closure).unwrap();
     unsafe { source.write_closure_capture_value(address, 0, heap_root(list)) };
     let mut forwarding = HashMap::new();
-    let copied = deep_copy_slot(heap_root(closure), &source, &mut destination, &mut forwarding);
+    let copied = deep_copy_slot(heap_root(closure), &source.view(), &mut destination, &mut forwarding);
     let captured = unsafe { destination.read_closure_capture_value(copied.heap_addr().unwrap(), 0) };
     assert!(
         unsafe { &*(captured.heap_addr().unwrap() as *const ListCons) }.aliased(),
@@ -1379,7 +1379,7 @@ fn deep_copy_clears_list_alias_metadata() {
         .expect("mark aliased");
 
     let mut forwarding = HashMap::new();
-    let copied = deep_copy_slot(heap_root(list_bits), &src, &mut dst, &mut forwarding);
+    let copied = deep_copy_slot(heap_root(list_bits), &src.view(), &mut dst, &mut forwarding);
     let copied_list = list_addr_from_tagged(tagged_bits(copied)).expect("copied list ptr");
     let copied_cons = unsafe { &*(copied_list as *const ListCons) };
 
@@ -1449,7 +1449,7 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
     let map_bits = src.alloc_map_slots(&entries);
     let mut forwarding = HashMap::new();
 
-    let copied = deep_copy_slot(heap_root(map_bits), &src, &mut dst, &mut forwarding);
+    let copied = deep_copy_slot(heap_root(map_bits), &src.view(), &mut dst, &mut forwarding);
     let copied_map = map_addr_from_tagged(tagged_bits(copied)).unwrap();
 
     let copied_values = (0..entries.len())
@@ -1893,7 +1893,7 @@ fn deep_copy_tagged_map_preserves_nested_list_value() {
         AnyValue::heap_ptr(child_ptr, ValueKind::LIST),
     )]);
     let mut forwarding = HashMap::new();
-    let copied = deep_copy_slot(heap_root(map_bits), &src, &mut dst, &mut forwarding);
+    let copied = deep_copy_slot(heap_root(map_bits), &src.view(), &mut dst, &mut forwarding);
     let copied_map = map_addr_from_tagged(tagged_bits(copied)).unwrap();
     let (_, value) = unsafe { map_entry(copied_map as *const u8, 0) };
     assert_eq!(value.kind(), ValueKind::LIST);
@@ -2135,7 +2135,7 @@ fn deep_copy_procbin_shares_via_retain() {
     let mut fwd = HashMap::new();
     let copied = deep_copy_slot(
         AnyValue::heap_ptr(src_pb.as_raw(), ValueKind::PROCBIN),
-        &src,
+        &src.view(),
         &mut dst,
         &mut fwd,
     );
@@ -2184,7 +2184,12 @@ fn deep_copy_procbin_dedup_via_forwarding_map() {
     unsafe { src.write_field_slot(pair, 0, proc_value) };
     unsafe { src.write_field_slot(pair, 8, proc_value) };
     let mut fwd = HashMap::new();
-    let _ = deep_copy_slot(AnyValue::heap_ptr(pair, ValueKind::STRUCT), &src, &mut dst, &mut fwd);
+    let _ = deep_copy_slot(
+        AnyValue::heap_ptr(pair, ValueKind::STRUCT),
+        &src.view(),
+        &mut dst,
+        &mut fwd,
+    );
     assert_eq!(mso_chain(&dst).len(), 1, "dedup");
     assert_eq!(
         shared_refs(&witness),
@@ -2253,7 +2258,7 @@ fn shared_heap_acceptance_spawn_and_share() {
     let mut receiver_roots: Vec<u64> = Vec::with_capacity(N);
     for r in receivers.iter_mut() {
         let mut fwd = HashMap::new();
-        let copied = deep_copy_slot(heap_root(sender_bits), &sender, r, &mut fwd);
+        let copied = deep_copy_slot(heap_root(sender_bits), &sender.view(), r, &mut fwd);
         receiver_roots.push(tagged_bits(copied));
     }
     assert_eq!(

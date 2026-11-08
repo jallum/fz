@@ -55,6 +55,20 @@ pub struct GiftSegment {
 }
 
 impl GiftSegment {
+    /// The segment of a copy that copied nothing: no blocks, no fragments, no
+    /// stubs, no destructors. Grafting it changes nothing, and it never
+    /// touches the block pool.
+    pub fn empty() -> Self {
+        GiftSegment {
+            blocks: Vec::new(),
+            fragments: Vec::new(),
+            mso_head: 0,
+            oldest_mso: 0,
+            pending_dtors: Vec::new(),
+            objects: 0,
+        }
+    }
+
     /// Bytes written into the segment's blocks, by fill.
     pub fn fill_bytes(&self) -> usize {
         self.blocks.iter().map(Block::fill).sum()

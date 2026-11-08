@@ -1,0 +1,27 @@
+#---
+# purpose: "a message no parked receive matches is gifted whole and waits in the receiver's mailbox until a later receive asks for it; the receiver's heap allocates nothing for either delivery"
+#---
+#
+# The parent parks on `:go`. The child's first send, `{:other, [7, 8]}`, is
+# rejected by the matcher, so the child gifts the whole message and the parent
+# stays parked. The second send, `:go`, matches and wakes the parent. The parent
+# grafts both gifts at its dispatch: `:go` finishes the first receive and
+# `{:other, [7, 8]}` is in the mailbox for the second. Both lists the parent
+# prints were allocated by the child; the parent's own `list_cons_allocs` does
+# not move.
+def main() do
+  parent = self()
+  spawn(fn () ->
+    send(parent, {:other, [7, 8]})
+    send(parent, :go)
+  end)
+  before = Process.heap_alloc_stats()
+  receive do
+    :go -> dbg(:go)
+  end
+  receive do
+    {:other, xs} -> dbg(xs)
+  end
+  after_receive = Process.heap_alloc_stats()
+  dbg(after_receive[:list_cons_allocs] - before[:list_cons_allocs])
+end

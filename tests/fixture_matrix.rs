@@ -232,6 +232,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             self_send_pushes_the_senders_reference_and_the_send_site_publishes_it,
         ),
         (
+            "a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue",
+            a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue,
+        ),
+        (
             "interpreter_stepper_does_not_update_quiet_quanta",
             interpreter_stepper_does_not_update_quiet_quanta,
         ),
@@ -2916,6 +2920,104 @@ fn self_send_pushes_the_senders_reference_and_the_send_site_publishes_it() {
         "self-send fixture pins four retention attempts with exactly one refused rewrite",
     );
     assert_eq!(stats.runtime_fallback_count(), 1);
+}
+
+/// One `fz.runtime.send.probe` event as the jsonl log renders it.
+#[derive(Debug, PartialEq, Eq)]
+struct SendProbeEvent {
+    outcome: String,
+    receiver: usize,
+    gift_bytes: usize,
+    gift_blocks: usize,
+}
+
+impl SendProbeEvent {
+    fn new(outcome: &str, receiver: usize, gift_bytes: usize, gift_blocks: usize) -> Self {
+        Self {
+            outcome: outcome.to_string(),
+            receiver,
+            gift_bytes,
+            gift_blocks,
+        }
+    }
+}
+
+fn json_str_field(line: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{}\":\"", key);
+    let start = line.find(&needle)? + needle.len();
+    let end = line[start..].find('"')?;
+    Some(line[start..start + end].to_string())
+}
+
+/// Every send probe the fixture emits on `path`, in emission order.
+fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<SendProbeEvent> {
+    let header = parse_header(fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
+    let (out, log) =
+        run_path_logged(fixture, &header, path).unwrap_or_else(|e| panic!("fz2 {label} --log-telemetry: {}", e));
+    assert!(
+        out.status.success(),
+        "fz2 {label} --log-telemetry {} exited {}: {}",
+        fixture.display_path().display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    log.lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"send\",\"probe\"]"))
+        .map(|line| SendProbeEvent {
+            outcome: json_str_field(line, "outcome").unwrap_or_else(|| panic!("send probe missing outcome")),
+            receiver: required_json_u64_field(line, "receiver", "send probe"),
+            gift_bytes: required_json_u64_field(line, "gift_bytes", "send probe"),
+            gift_blocks: required_json_u64_field(line, "gift_blocks", "send probe"),
+        })
+        .collect()
+}
+
+fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue() {
+    let matched =
+        FixtureCase::new("fixtures/00695_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz");
+    let expected = fs::read_to_string(matched.sidecar_path("expected.txt")).expect("read 00695 expected.txt");
+    assert_eq!(
+        expected, "[1, 2, 3]\n0\n50000\n",
+        "the parent prints the matched reply, allocates no list cells across its receive, and finds the whole log in its mailbox"
+    );
+    let unmatched = FixtureCase::new("fixtures/00696_an_unmatched_message_is_gifted_whole_and_waits_in_the_mailbox.fz");
+    let expected = fs::read_to_string(unmatched.sidecar_path("expected.txt")).expect("read 00696 expected.txt");
+    assert_eq!(
+        expected, ":go\n[7, 8]\n0\n",
+        "the parent takes :go first, then the earlier unmatched tuple from its mailbox, and allocates no list cells for either"
+    );
+
+    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+        // The 50000-element log misses: the tuple and every cons cell cross
+        // as one gift. The reply hits: exactly the three bound cells cross,
+        // and the receiver is woken by that one hit.
+        let events = send_probe_events_for_fixture(&matched, path, label);
+        assert_eq!(
+            events,
+            vec![
+                SendProbeEvent::new("miss", 1, 800_032, 14),
+                SendProbeEvent::new("hit", 1, 48, 1),
+            ],
+            "{label}: one miss gifting the whole log, then one hit gifting three cons cells"
+        );
+        assert_eq!(
+            events.iter().filter(|e| e.outcome == "hit").count(),
+            1,
+            "{label}: the parent is woken once"
+        );
+
+        // The tuple misses and crosses whole; the matching atom binds nothing,
+        // so its gift has no block at all.
+        let events = send_probe_events_for_fixture(&unmatched, path, label);
+        assert_eq!(
+            events,
+            vec![
+                SendProbeEvent::new("miss", 1, 64, 1),
+                SendProbeEvent::new("hit", 1, 0, 0)
+            ],
+            "{label}: the unmatched tuple is gifted whole; the matching atom gifts nothing"
+        );
+    }
 }
 
 fn interpreter_stepper_does_not_update_quiet_quanta() {

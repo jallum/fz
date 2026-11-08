@@ -268,7 +268,7 @@ fn copied_shared_bin_is_freed_only_when_the_last_heap_releases_it() {
     let pb = alloc_procbin(&mut source, handle, 0);
     crate::heap::deep_copy_slot(
         AnyValue::heap_ptr(pb.as_raw(), ValueKind::PROCBIN),
-        &source,
+        &source.view(),
         &mut destination,
         &mut std::collections::HashMap::new(),
     );

@@ -118,7 +118,9 @@ from the restored footprint. Allocation statistics stay with the heap that did
 the copying. `Heap::graft` on another heap adopts the segment; dropping an
 un-grafted segment returns its blocks to the pool, frees its fragments and
 releases its stubs' off-heap references. A collection asserts that no window is
-open.
+open. Cross-process send is the window's user: `sched::gift_copy` copies a
+message, or a match's bound values, inside one, and the segment travels to the
+receiver on its `in_queue` (see [scheduler](scheduler-zero-arg-closures.md)).
 
 Adopted blocks take no part in the grow/keep/shrink decision, which is made
 from the heap's own footprint; the adopted fill is added to the band's target,
