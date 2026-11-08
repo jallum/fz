@@ -24,6 +24,7 @@ use crate::runtime_type_predicate::CallableShape;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use crate::types::ClosureTarget;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged};
+use fz_runtime::delivery::Delivery;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule};
 use fz_runtime::heap::Schema;
 use fz_runtime::heap::deep_copy_any_value_ref;
@@ -99,6 +100,7 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
         .iter()
         .map(|name| name.as_ref().clone())
         .collect::<Vec<_>>();
+    let pool_outstanding_before_run = fz_runtime::heap::pool_outstanding_blocks();
     let mut runtime = IrInterpRuntime::fresh_with_atoms(atom_names.clone());
     let module = Module {
         atom_names,
@@ -109,38 +111,43 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
             .collect(),
         ..Module::default()
     };
-    runtime.enqueue_backend_entry(
-        MAIN_PID,
-        backend_executable_ref(program, types, program.entry())?,
-        Vec::new(),
-    )?;
-    let completions = drive_backend_until_idle(
-        &mut runtime,
-        types,
-        transport,
-        tel,
-        output,
-        argv,
-        program,
-        &module,
-        BackendRun::Program,
-    )?;
-    if runtime.process_ref(MAIN_PID).is_some_and(|main| main.failed) {
-        return Err(RunFailure::MainFailed);
-    }
-    let halt_val = completions
-        .iter()
-        .rev()
-        .find_map(|(pid, value)| {
-            (*pid == MAIN_PID).then(|| {
-                runtime
-                    .process_ref(*pid)
-                    .map(|task| value_to_halt(task as *const Process as *mut Process, *value))
+    let outcome = (|| -> Result<i64, RunFailure> {
+        runtime.enqueue_backend_entry(
+            MAIN_PID,
+            backend_executable_ref(program, types, program.entry())?,
+            Vec::new(),
+        )?;
+        let completions = drive_backend_until_idle(
+            &mut runtime,
+            types,
+            transport,
+            tel,
+            output,
+            argv,
+            program,
+            &module,
+            BackendRun::Program,
+        )?;
+        if runtime.process_ref(MAIN_PID).is_some_and(|main| main.failed) {
+            return Err(RunFailure::MainFailed);
+        }
+        let halt_val = completions
+            .iter()
+            .rev()
+            .find_map(|(pid, value)| {
+                (*pid == MAIN_PID).then(|| {
+                    runtime
+                        .process_ref(*pid)
+                        .map(|task| value_to_halt(task as *const Process as *mut Process, *value))
+                })
             })
-        })
-        .flatten()
-        .unwrap_or(0);
-    Ok(halt_val)
+            .flatten()
+            .unwrap_or(0);
+        Ok(halt_val)
+    })();
+    drop(runtime);
+    crate::exec::runtime::emit_run_ended(tel, pool_outstanding_before_run);
+    outcome
 }
 
 pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
@@ -305,10 +312,15 @@ impl IrInterpRuntime {
         pid: u32,
         timer: TimerId,
     ) -> Result<(), String> {
+        let Some(receiver) = self.process_ptr(pid) else {
+            return Ok(());
+        };
+        let delivery = unsafe { &*receiver }.delivery.lock();
         if self.backend_parked.get(&pid).and_then(|park| park.after_timer) != Some(timer) {
             return Ok(());
         }
         let park = self.backend_parked.remove(&pid).expect("checked above");
+        drop(delivery);
         let (entries, receive) = parked_receive(&park)?;
         let after = receive
             .after
@@ -343,15 +355,25 @@ impl IrInterpRuntime {
             return Ok(());
         }
         let receiver = self.process_ptr(*receiver_pid).expect("receiver checked above");
+        let mut delivery = unsafe { &*receiver }.delivery.lock();
         let probe = match self.backend_parked.remove(receiver_pid) {
             Some(mut park) => {
-                let outcome =
-                    self.probe_parked_receive(types, transport, program, module, &mut park, sender, receiver, msg_ref)?;
+                let outcome = self.probe_parked_receive(
+                    types,
+                    transport,
+                    program,
+                    module,
+                    &mut park,
+                    sender,
+                    (unsafe { &*receiver }, &mut delivery),
+                    msg_ref,
+                )?;
                 self.backend_parked.insert(*receiver_pid, park);
                 outcome
             }
-            None => gift_message(sender, unsafe { &mut *receiver }, msg_ref),
+            None => gift_message(sender, &mut delivery, *receiver_pid, msg_ref),
         };
+        drop(delivery);
         emit_send_probe(tel, &probe);
         if probe.outcome == ProbeOutcome::Hit {
             self.make_runnable(*receiver_pid);
@@ -359,9 +381,10 @@ impl IrInterpRuntime {
         Ok(())
     }
 
-    /// Match `msg` against the receive `park` records, on the sender. A hit
-    /// gifts the bound values and cancels the after-timer; a miss, or a
-    /// receive another sender already matched, gifts the message.
+    /// Match `msg` against the receive `park` records, on the sender, with
+    /// the receiver's delivery lock held by the caller. A hit gifts the bound
+    /// values and cancels the after-timer; a miss, or a receive another sender
+    /// already matched, gifts the message.
     #[allow(clippy::too_many_arguments)]
     fn probe_parked_receive(
         &mut self,
@@ -371,12 +394,11 @@ impl IrInterpRuntime {
         module: &Module,
         park: &mut BackendParkRecord,
         sender: &mut Process,
-        receiver: *mut Process,
+        (receiver, delivery): (&Process, &mut Delivery),
         msg_ref: AnyValueRef,
     ) -> Result<SendProbe, String> {
-        let receiver = unsafe { &mut *receiver };
-        if receiver.has_pending_match() {
-            return Ok(gift_message(sender, receiver, msg_ref));
+        if delivery.has_pending_match() {
+            return Ok(gift_message(sender, delivery, receiver.pid, msg_ref));
         }
         let (_, receive) = parked_receive(park)?;
         let msg = AnyValue::from_any_value_ref(msg_ref)?;
@@ -397,7 +419,7 @@ impl IrInterpRuntime {
         let Some((clause_idx, _, params)) = matched else {
             return Ok(SendProbe {
                 reductions,
-                ..gift_message(sender, receiver, msg_ref)
+                ..gift_message(sender, delivery, receiver.pid, msg_ref)
             });
         };
         let bound = params
@@ -407,7 +429,14 @@ impl IrInterpRuntime {
         if let Some(timer) = park.after_timer.take() {
             timer_cancel(receiver, timer);
         }
-        Ok(gift_match(sender, receiver, clause_idx, &bound, reductions))
+        Ok(gift_match(
+            sender,
+            delivery,
+            receiver.pid,
+            clause_idx,
+            &bound,
+            reductions,
+        ))
     }
 
     /// Graft every gift queued on `pid` into its heap and, when a sender
@@ -422,13 +451,16 @@ impl IrInterpRuntime {
         let receiver = self
             .process_ptr(pid)
             .expect("backend pid in run queue with no process entry");
-        let Some((clause_idx, bound_vals)) = drain_in_queue(unsafe { &mut *receiver }) else {
+        let task = unsafe { &mut *receiver };
+        let mut delivery = task.delivery.lock();
+        let Some((clause_idx, bound_vals)) = drain_in_queue(&mut delivery, &mut task.heap, &mut task.mailbox) else {
             return Ok(());
         };
         let park = self
             .backend_parked
             .remove(&pid)
             .expect("a matched receive is still parked");
+        drop(delivery);
         let (entries, receive) = parked_receive(&park)?;
         let edge = receive
             .outcomes

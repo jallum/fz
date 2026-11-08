@@ -60,6 +60,7 @@ pub struct Runtime<'a, T: Telemetry + ?Sized> {
     /// and when the runtime is idle.
     core: SchedulingCore,
     next_pid: u32,
+    pool_outstanding_before_run: usize,
 
     /// Observability sink. The run loop emits `fz.runtime.process_exited`
     /// at each task exit (see `ExitRecord`), which is the seam tests observe
@@ -89,6 +90,35 @@ impl ExitRecord {
 /// Emitted each time the scheduling core sleeps for a pending timer; carries
 /// the `Duration` it is about to wait.
 pub const SCHEDULER_SLEPT: [&str; 3] = ["fz", "runtime", "scheduler_slept"];
+
+/// What the block pool holds once a run has torn down every process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunEnded {
+    /// Blocks handed out and not returned when the run began. The compiler's
+    /// own heaps live on the same thread, so this is never zero.
+    pub pool_outstanding_before_run: usize,
+    /// The same count once every process has been torn down. Equal to
+    /// `pool_outstanding_before_run` means the run returned every block it took.
+    pub pool_outstanding_after_run: usize,
+    /// Blocks resting in the pool's free lists.
+    pub pool_cached_blocks: usize,
+}
+
+/// Emitted once per run, after every process has been torn down, on the JIT
+/// and interpreter paths; carries the `RunEnded` pool census.
+pub const RUN_ENDED: [&str; 3] = ["fz", "runtime", "run_ended"];
+
+/// Report the pool census at the end of a run.
+pub fn emit_run_ended<T: Telemetry + ?Sized>(tel: &T, pool_outstanding_before_run: usize) {
+    tel.raw_event1(
+        &RUN_ENDED,
+        &RunEnded {
+            pool_outstanding_before_run,
+            pool_outstanding_after_run: fz_runtime::heap::pool_outstanding_blocks(),
+            pool_cached_blocks: fz_runtime::heap::pool_total_cached_blocks(),
+        },
+    );
+}
 
 /// Emitted once per cross-process send on the JIT and interpreter paths;
 /// carries the `SendProbe` the sender's probe produced.
@@ -189,6 +219,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             tasks: HashMap::new(),
             core: SchedulingCore::new(),
             next_pid: 1,
+            pool_outstanding_before_run: fz_runtime::heap::pool_outstanding_blocks(),
             tel,
             output: &STDOUT_OUTPUT,
             argv: &NO_ARGV,
@@ -376,6 +407,15 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             // so send() can find a Blocked receiver.
             self.tasks.insert(pid, task);
         }
+    }
+}
+
+impl<T: Telemetry + ?Sized> Drop for Runtime<'_, T> {
+    /// The registry keeps exited and parked tasks until the runtime goes
+    /// away; drop them all, then report what the pool still holds.
+    fn drop(&mut self) {
+        self.tasks.clear();
+        emit_run_ended(self.tel, self.pool_outstanding_before_run);
     }
 }
 

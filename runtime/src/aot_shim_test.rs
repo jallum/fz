@@ -120,7 +120,11 @@ fn aot_send_gifts_the_message_and_the_receiver_grafts_it_at_its_next_dispatch() 
     aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, msg.raw_word());
 
     let receiver = sched.tasks.get_mut(&2).expect("receiver");
-    assert_eq!(receiver.in_queue.len(), 1, "the gift waits for the receiver's dispatch");
+    assert_eq!(
+        receiver.delivery.lock().queued_gifts().count(),
+        1,
+        "the gift waits for the receiver's dispatch"
+    );
     assert!(receiver.mailbox.is_empty());
     assert_eq!(
         receiver.heap.bytes_used(),
@@ -199,7 +203,7 @@ fn timer_drain_wakes_after_cont() {
     p.pid = 7;
     let timer_id = timer_schedule_hook::<AotScheduler>()(sched_handle(&mut sched), p.pid, 1);
     let after_cont_addr: usize = 0xCAFE_BABE;
-    p.wait = Some(Box::new(ParkRecord {
+    p.delivery.lock().install_park(ParkRecord {
         matcher_fn: never_match,
         pinned: vec![],
         clause_bodies: vec![],
@@ -208,7 +212,7 @@ fn timer_drain_wakes_after_cont() {
         after_deadline_ms: Some(1),
         after_cont: after_cont_addr as *mut u8,
         after_timer_id: Some(timer_id),
-    }));
+    });
     p.state = ProcessState::Blocked;
     sched.tasks.insert(7, p);
 
@@ -218,7 +222,7 @@ fn timer_drain_wakes_after_cont() {
 
     let task = sched.tasks.get(&7).unwrap();
     assert_eq!(task.state, ProcessState::Ready);
-    assert!(task.wait.is_none());
+    assert!(task.delivery.lock().park().is_none());
     assert_eq!(task.runnable_ptr() as usize, after_cont_addr);
     assert_eq!(next_runnable(&mut sched), None, "nothing else runs or waits");
 }

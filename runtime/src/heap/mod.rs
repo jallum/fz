@@ -43,9 +43,10 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 
-pub use self::block_pool::{SIZE_TABLE, pick_size_class};
 #[cfg(test)]
-pub use self::block_pool::{pool_drain_for_test, pool_total_cached_blocks};
+pub use self::block_pool::pool_drain_for_test;
+pub use self::block_pool::{SIZE_TABLE, pick_size_class};
+pub use self::block_pool::{pool_outstanding_blocks, pool_total_cached_blocks};
 pub use self::deep_copy::{
     HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_tagged_bits,
 };

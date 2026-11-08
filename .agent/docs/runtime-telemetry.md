@@ -13,7 +13,7 @@ route through the same typed raw emit site, so `NullTelemetry` remains
 monomorphizable and configured handlers behave identically across interpreter,
 JIT, and AOT.
 
-Four events matter:
+Five events matter:
 
 - `fz.runtime.execution_ready` — the boundary between compiling a program and
   running it, emitted by `run_root_jit` and `run_root_interp`.
@@ -23,6 +23,8 @@ Four events matter:
   pending receive-after timer because nothing is runnable.
 - `fz.runtime.send.probe` — one per cross-process send, carrying what the
   sender's probe decided and what it cost.
+- `fz.runtime.run_ended` — one per run, after every process has been torn down,
+  carrying the block pool's census.
 
 ## `fz.runtime.execution_ready`
 
@@ -83,6 +85,33 @@ is empty and a timer pends, so a program whose timers are all cancelled by
 arriving messages never emits it. The AOT scheduler carries no telemetry bus and
 keeps the default no-op hook. `exec/runtime_test.rs` observes the event on the
 `run` and `interp` paths.
+
+## `fz.runtime.run_ended`
+
+`emit_run_ended` (`exec/runtime.rs`) is the single emit site. The JIT `Runtime`
+emits it from its `Drop`, after clearing the task registry (exited and parked
+tasks stay in the registry until then, so their heaps and any gifts still
+queued on them are dropped first). The interpreter emits it from
+`run_backend_main` after dropping its `IrInterpRuntime`.
+
+```text
+raw event:    fz.runtime.run_ended
+signature:    (&RunEnded)
+```
+
+`RunEnded` is `{ pool_outstanding_before_run, pool_outstanding_after_run,
+pool_cached_blocks }`, all block counts of the thread's block pool. Outstanding
+is the count `pool_alloc` has handed out minus the count `pool_free` has taken
+back (`heap::pool_outstanding_blocks`), sampled when the run began and again
+once every process has been torn down; `pool_cached_blocks` is the blocks
+resting in the pool's free lists. The compiler's own heaps live on the same
+thread for the whole run, so the absolute outstanding count is never zero. The
+run's guarantee is `pool_outstanding_after_run == pool_outstanding_before_run`:
+it returned every block it took. `JsonlBackend` renders
+all three as numbers. The AOT scheduler carries no telemetry bus and emits
+nothing, as for the other runtime events. `tests/fixture_matrix.rs`
+(`a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`) asserts the
+equality for fixture 00697 on the `run` and `interp` paths.
 
 ## `fz.runtime.send.probe`
 

@@ -1,7 +1,8 @@
 use super::*;
 use crate::any_value::AnyValueRef;
 use crate::any_value::ValueKind;
-use crate::heap::{SchemaRegistry, pool_drain_for_test, pool_total_cached_blocks};
+use crate::exec_ctx::ExecCtx;
+use crate::heap::{SchemaRegistry, pool_drain_for_test, pool_outstanding_blocks, pool_total_cached_blocks};
 use crate::park::ParkRecord;
 use crate::procbin::{SharedBinHandle, alloc_procbin};
 use crate::sync::Ordering;
@@ -63,7 +64,7 @@ fn record_on_42(task: &mut Process, timer: Option<TimerId>) -> ParkRecord {
 
 fn park_on_42(task: &mut Process, timer: Option<TimerId>) {
     let record = record_on_42(task, timer);
-    task.wait = Some(Box::new(record));
+    task.delivery.lock().install_park(record);
     task.state = ProcessState::Blocked;
 }
 
@@ -118,7 +119,7 @@ extern "C" fn match_7_binding_nothing(
 
 fn park_binding_nothing(task: &mut Process) {
     let template = template_closure(task, 0xdead_beef);
-    task.wait = Some(Box::new(ParkRecord {
+    task.delivery.lock().install_park(ParkRecord {
         matcher_fn: match_7_binding_nothing,
         pinned: vec![],
         clause_bodies: vec![template],
@@ -127,13 +128,13 @@ fn park_binding_nothing(task: &mut Process) {
         after_deadline_ms: None,
         after_cont: 0xcafe_babe as *mut u8,
         after_timer_id: None,
-    }));
+    });
     task.state = ProcessState::Blocked;
 }
 
 fn park_binding_twice(task: &mut Process) {
     let template = template_closure(task, 0xdead_beef);
-    task.wait = Some(Box::new(ParkRecord {
+    task.delivery.lock().install_park(ParkRecord {
         matcher_fn: bind_list_twice,
         pinned: vec![],
         clause_bodies: vec![template],
@@ -142,15 +143,23 @@ fn park_binding_twice(task: &mut Process) {
         after_deadline_ms: None,
         after_cont: 0xcafe_babe as *mut u8,
         after_timer_id: None,
-    }));
+    });
     task.state = ProcessState::Blocked;
 }
 
-fn pending_match(task: &Process) -> Option<(usize, &[AnyValueRef])> {
-    task.in_queue.iter().find_map(|gift| match &gift.payload {
-        GiftPayload::Match { clause_idx, bound_vals } => Some((*clause_idx, bound_vals.as_slice())),
-        GiftPayload::Message(_) => None,
-    })
+fn pending_match(task: &Process) -> Option<(usize, Vec<AnyValueRef>)> {
+    task.delivery
+        .lock()
+        .queued_gifts()
+        .find_map(|gift| match &gift.payload {
+            GiftPayload::Match { clause_idx, bound_vals } => Some((*clause_idx, bound_vals.clone())),
+            GiftPayload::Message(_) => None,
+        })
+}
+
+fn drain(task: &mut Process) -> Option<(usize, Vec<AnyValueRef>)> {
+    let mut delivery = task.delivery.lock();
+    drain_in_queue(&mut delivery, &mut task.heap, &mut task.mailbox)
 }
 
 #[test]
@@ -159,10 +168,13 @@ fn probe_sender_hit_queues_the_match_and_leaves_the_receiver_untouched_until_it_
     let mut task = fresh_task();
     park_on_42(&mut task, None);
     let receiver_bytes = task.heap.bytes_used();
-    let probe = probe_sender(&mut sender, &mut task, int_ref(42));
+    let probe = probe_sender(&mut sender, &task, int_ref(42));
     assert_eq!(probe.outcome, ProbeOutcome::Hit);
     assert_eq!(probe.receiver, task.pid);
-    assert!(task.wait.is_some(), "the park record stays until the receiver delivers");
+    assert!(
+        task.delivery.lock().park().is_some(),
+        "the park record stays until the receiver delivers"
+    );
     assert_eq!(
         task.state,
         ProcessState::Blocked,
@@ -178,7 +190,7 @@ fn probe_sender_hit_queues_the_match_and_leaves_the_receiver_untouched_until_it_
     let (clause_idx, bound) = pending_match(&task).expect("the match waits in the in-queue");
     assert_eq!(clause_idx, 0);
     assert_eq!(bound.len(), 1);
-    assert!(task.has_pending_match());
+    assert!(task.delivery.lock().has_pending_match());
 }
 
 #[test]
@@ -186,10 +198,10 @@ fn deliver_in_queue_finishes_a_matched_receive_with_the_gifted_values() {
     let mut sender = running_task();
     let mut task = fresh_task();
     park_on_42(&mut task, None);
-    probe_sender(&mut sender, &mut task, int_ref(42));
+    probe_sender(&mut sender, &task, int_ref(42));
     deliver_in_queue(&mut task);
-    assert!(task.wait.is_none());
-    assert!(task.in_queue.is_empty());
+    assert!(task.delivery.lock().park().is_none());
+    assert!(task.delivery.lock().queued_gifts().next().is_none());
     let runnable = task.runnable_ptr();
     assert!(!runnable.is_null());
     unsafe {
@@ -207,30 +219,33 @@ fn probe_sender_miss_queues_the_message_and_keeps_the_park() {
     let mut task = fresh_task();
     park_on_42(&mut task, None);
     let msg = sender_list(&mut sender, 99);
-    let probe = probe_sender(&mut sender, &mut task, msg);
+    let probe = probe_sender(&mut sender, &task, msg);
     assert_eq!(probe.outcome, ProbeOutcome::Miss);
     assert_eq!(probe.gift_bytes, 16, "one cons cell crosses");
     assert_eq!(probe.gift_blocks, 1);
-    assert!(task.wait.is_some());
+    assert!(task.delivery.lock().park().is_some());
     assert_eq!(task.state, ProcessState::Blocked);
     assert!(task.runnable_ptr().is_null());
     assert!(task.mailbox.is_empty(), "the message waits in the in-queue");
-    assert_eq!(task.in_queue.len(), 1);
+    assert_eq!(task.delivery.lock().queued_gifts().count(), 1);
     deliver_in_queue(&mut task);
     assert_eq!(task.mailbox.len(), 1);
     let delivered = task.mailbox[0];
     assert!(task.heap.contains_heap_addr(delivered.list_addr().expect("list")));
-    assert!(task.wait.is_some(), "a miss never decides the receive");
+    assert!(
+        task.delivery.lock().park().is_some(),
+        "a miss never decides the receive"
+    );
 }
 
 #[test]
 fn probe_sender_not_parked_queues_the_message_and_returns_miss() {
     let mut sender = running_task();
-    let mut task = fresh_task();
-    let probe = probe_sender(&mut sender, &mut task, int_ref(7));
+    let task = fresh_task();
+    let probe = probe_sender(&mut sender, &task, int_ref(7));
     assert_eq!(probe.outcome, ProbeOutcome::Miss);
-    assert_eq!(task.in_queue.len(), 1);
-    assert!(!task.has_pending_match());
+    assert_eq!(task.delivery.lock().queued_gifts().count(), 1);
+    assert!(!task.delivery.lock().has_pending_match());
 }
 
 #[test]
@@ -239,7 +254,7 @@ fn bound_values_that_share_structure_keep_sharing_through_one_forwarding_map() {
     let mut task = fresh_task();
     park_binding_twice(&mut task);
     let msg = sender_list(&mut sender, 5);
-    let probe = probe_sender(&mut sender, &mut task, msg);
+    let probe = probe_sender(&mut sender, &task, msg);
     assert_eq!(probe.outcome, ProbeOutcome::Hit);
     assert_eq!(probe.gift_bytes, 16, "two bindings of one cell copy it once");
     let (_, bound) = pending_match(&task).expect("match queued");
@@ -258,7 +273,7 @@ fn a_hit_that_binds_nothing_gifts_nothing() {
     let mut task = fresh_task();
     park_binding_nothing(&mut task);
     let cached_before = pool_total_cached_blocks();
-    let probe = probe_sender(&mut sender, &mut task, int_ref(7));
+    let probe = probe_sender(&mut sender, &task, int_ref(7));
     assert_eq!(probe.outcome, ProbeOutcome::Hit);
     assert_eq!(
         (probe.gift_bytes, probe.gift_blocks),
@@ -269,7 +284,7 @@ fn a_hit_that_binds_nothing_gifts_nothing() {
     let (clause_idx, bound) = pending_match(&task).expect("the match waits in the in-queue");
     assert_eq!((clause_idx, bound.len()), (0, 0));
     deliver_in_queue(&mut task);
-    assert!(task.wait.is_none());
+    assert!(task.delivery.lock().park().is_none());
     assert!(!task.runnable_ptr().is_null());
     drop(task);
     drop(sender);
@@ -282,17 +297,14 @@ fn a_second_sender_does_not_probe_a_receive_that_is_already_matched() {
     let mut second = running_task();
     let mut task = fresh_task();
     park_on_42(&mut task, None);
+    assert_eq!(probe_sender(&mut first, &task, int_ref(42)).outcome, ProbeOutcome::Hit);
     assert_eq!(
-        probe_sender(&mut first, &mut task, int_ref(42)).outcome,
-        ProbeOutcome::Hit
-    );
-    assert_eq!(
-        probe_sender(&mut second, &mut task, int_ref(42)).outcome,
+        probe_sender(&mut second, &task, int_ref(42)).outcome,
         ProbeOutcome::Miss,
         "the receive is decided; a later 42 is an ordinary arrival"
     );
     deliver_in_queue(&mut task);
-    assert!(task.wait.is_none());
+    assert!(task.delivery.lock().park().is_none());
     assert_eq!(mailbox_ints(&task), vec![42], "the second 42 waits in the mailbox");
 }
 
@@ -302,18 +314,15 @@ fn a_second_match_for_one_parked_receive_is_refused() {
     let mut sender = running_task();
     let mut task = fresh_task();
     park_on_42(&mut task, None);
-    probe_sender(&mut sender, &mut task, int_ref(42));
+    probe_sender(&mut sender, &task, int_ref(42));
     let (segment, bound_vals) = gift_copy(&mut sender.heap, &[int_ref(42)]);
-    push_gift(
-        &mut task,
-        Gift {
-            segment,
-            payload: GiftPayload::Match {
-                clause_idx: 0,
-                bound_vals,
-            },
+    task.delivery.lock().push_gift(Gift {
+        segment,
+        payload: GiftPayload::Match {
+            clause_idx: 0,
+            bound_vals,
         },
-    );
+    });
 }
 
 #[test]
@@ -322,10 +331,10 @@ fn drain_in_queue_grafts_in_arrival_order() {
     let mut task = fresh_task();
     for n in [1, 2, 3] {
         let msg = sender_list(&mut sender, n);
-        probe_sender(&mut sender, &mut task, msg);
+        probe_sender(&mut sender, &task, msg);
     }
-    assert!(drain_in_queue(&mut task).is_none());
-    assert!(task.in_queue.is_empty());
+    assert!(drain(&mut task).is_none());
+    assert!(task.delivery.lock().queued_gifts().next().is_none());
     let heads: Vec<i64> = task
         .mailbox
         .iter()
@@ -345,14 +354,14 @@ fn a_dropped_receiver_returns_its_pending_gifts_to_the_pool_and_releases_their_b
     pool_drain_for_test();
     let witness = SharedBinHandle::from_bytes(&[0x55; 16], 128);
     let mut sender = running_task();
-    let mut task = Box::new(fresh_task());
+    let task = Box::new(fresh_task());
     let binary = alloc_procbin(&mut sender.heap, witness.clone(), 0);
     let binary_ref =
         AnyValueRef::from_heap_object(ValueKind::PROCBIN, binary.as_raw() as *const u8).expect("procbin ref");
-    probe_sender(&mut sender, &mut task, binary_ref);
+    probe_sender(&mut sender, &task, binary_ref);
     let msg = sender_list(&mut sender, 1);
-    probe_sender(&mut sender, &mut task, msg);
-    assert_eq!(task.in_queue.len(), 2);
+    probe_sender(&mut sender, &task, msg);
+    assert_eq!(task.delivery.lock().queued_gifts().count(), 2);
     assert_eq!(
         shared_refs(&witness),
         3,
@@ -399,7 +408,7 @@ fn reach_receive_with_an_empty_mailbox_parks() {
     let mut task = running_task();
     let record = record_on_42(&mut task, None);
     assert_eq!(reach_receive(&mut task, record), ReceiveStep::Parked);
-    assert!(task.wait.is_some());
+    assert!(task.delivery.lock().park().is_some());
     assert_eq!(task.state, ProcessState::Blocked);
 }
 
@@ -420,7 +429,7 @@ fn reach_receive_hit_continues_with_the_clause_and_splices_the_message_out() {
             AnyValueRef::from_raw_word(any_value::closure_capture_ref_word(cont, 1)).expect("capture ref");
         assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);
     }
-    assert!(task.wait.is_none());
+    assert!(task.delivery.lock().park().is_none());
     assert_eq!(task.state, ProcessState::Running);
     assert_eq!(mailbox_ints(&task), vec![1, 2, 3]);
 }
@@ -444,7 +453,7 @@ fn reach_receive_miss_parks_blocked_and_keeps_the_mailbox() {
     let record = record_on_42(&mut task, None);
     assert_eq!(reach_receive(&mut task, record), ReceiveStep::Parked);
     assert_eq!(task.state, ProcessState::Blocked);
-    assert!(task.wait.is_some());
+    assert!(task.delivery.lock().park().is_some());
     assert_eq!(mailbox_ints(&task), vec![1, 2]);
 }
 
@@ -458,7 +467,7 @@ fn reach_receive_after_zero_miss_continues_with_the_after_body() {
         reach_receive(&mut task, record),
         ReceiveStep::Continue(0xcafe_babe as *mut u8)
     );
-    assert!(task.wait.is_none());
+    assert!(task.delivery.lock().park().is_none());
     assert_eq!(task.state, ProcessState::Running);
     assert_eq!(mailbox_ints(&task), vec![1]);
 }
@@ -487,4 +496,196 @@ fn reach_receive_never_leaves_the_process_ready() {
         reach_receive(&mut task, record);
         assert_ne!(task.state, ProcessState::Ready, "mailbox {messages:?}");
     }
+}
+
+thread_local! {
+    /// The process whose delivery lock `match_42_noting_the_lock` watches.
+    static WATCHED: std::cell::Cell<*const Process> = const { std::cell::Cell::new(std::ptr::null()) };
+    /// One entry per matcher run: was the watched delivery lock held?
+    static LOCK_HELD_AT_MATCH: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+}
+
+/// `match_42`, noting whether the watched process's delivery lock was held
+/// while the matcher ran.
+extern "C" fn match_42_noting_the_lock(
+    process: *mut Process,
+    msg: u64,
+    pinned: *const AnyValueRef,
+    out: *mut AnyValueRef,
+) -> u32 {
+    let watched = WATCHED.with(std::cell::Cell::get);
+    let held = unsafe { &*watched }.delivery.try_lock().is_none();
+    LOCK_HELD_AT_MATCH.with(|notes| notes.borrow_mut().push(held));
+    match_42(process, msg, pinned, out)
+}
+
+fn watch_matches_on(task: &mut Process) -> ParkRecord {
+    WATCHED.with(|watched| watched.set(task as *const Process));
+    LOCK_HELD_AT_MATCH.with(|notes| notes.borrow_mut().clear());
+    let mut record = record_on_42(task, None);
+    record.matcher_fn = match_42_noting_the_lock;
+    record
+}
+
+fn matcher_runs_and_whether_the_lock_was_held() -> Vec<bool> {
+    LOCK_HELD_AT_MATCH.with(|notes| notes.borrow().clone())
+}
+
+const TIMER: TimerId = 9;
+
+#[test]
+fn a_hit_then_the_timer_decides_the_receive_once_and_the_timer_finds_it_stale() {
+    let mut sender = running_task();
+    let mut task = fresh_task();
+    park_on_42(&mut task, Some(TIMER));
+
+    let probe = probe_sender(&mut sender, &task, int_ref(42));
+    assert_eq!(probe.outcome, ProbeOutcome::Hit);
+    assert!(
+        !fire_after_timer(&mut task, TIMER),
+        "the hit cancelled the timer, so its firing is stale"
+    );
+    assert!(task.runnable_ptr().is_null(), "the stale timer woke nothing");
+
+    deliver_in_queue(&mut task);
+    assert!(!task.runnable_ptr().is_null(), "the hit's delivery is the one wake");
+    assert!(task.delivery.lock().park().is_none());
+}
+
+#[test]
+fn the_timer_then_a_sender_decides_the_receive_once_and_the_sender_delivers_a_miss() {
+    let mut sender = running_task();
+    let mut task = fresh_task();
+    let record = watch_matches_on(&mut task);
+    task.delivery.lock().install_park(ParkRecord {
+        after_timer_id: Some(TIMER),
+        ..record
+    });
+
+    assert!(fire_after_timer(&mut task, TIMER), "the timer took the park");
+    assert_eq!(
+        task.runnable_ptr(),
+        0xcafe_babe as *mut u8,
+        "the timer woke the after body"
+    );
+
+    let probe = probe_sender(&mut sender, &task, int_ref(42));
+    assert_eq!(
+        probe.outcome,
+        ProbeOutcome::Miss,
+        "the park is gone, so the arrival is a plain miss"
+    );
+    assert_eq!(probe.reductions, 0);
+    assert!(
+        matcher_runs_and_whether_the_lock_was_held().is_empty(),
+        "no park, no matcher run"
+    );
+    assert!(!task.delivery.lock().has_pending_match());
+    deliver_in_queue(&mut task);
+    assert_eq!(mailbox_ints(&task), vec![42], "the message waits for a later receive");
+    assert_eq!(task.runnable_ptr(), 0xcafe_babe as *mut u8, "the sender woke nothing");
+}
+
+#[test]
+fn a_second_timer_fire_for_a_decided_receive_is_stale() {
+    let mut task = fresh_task();
+    park_on_42(&mut task, Some(TIMER));
+    assert!(fire_after_timer(&mut task, TIMER));
+    assert!(!fire_after_timer(&mut task, TIMER), "the park is already taken");
+}
+
+#[test]
+fn a_matcher_run_by_a_sender_holds_the_receivers_delivery_lock() {
+    let mut sender = running_task();
+    let mut task = fresh_task();
+    let record = watch_matches_on(&mut task);
+    task.delivery.lock().install_park(record);
+
+    probe_sender(&mut sender, &task, int_ref(42));
+
+    assert_eq!(
+        matcher_runs_and_whether_the_lock_was_held(),
+        vec![true],
+        "the sender decides the receive with the lock held, read to queue"
+    );
+    assert!(
+        task.delivery.try_lock().is_some(),
+        "the lock is released after the probe"
+    );
+}
+
+#[test]
+fn a_delivery_waits_out_the_receive_entry_and_is_probed_against_the_installed_park() {
+    let mut sender = running_task();
+    let mut task = running_task();
+    task.mailbox.push_back(int_ref(1));
+    task.mailbox.push_back(int_ref(2));
+    let record = watch_matches_on(&mut task);
+
+    assert_eq!(reach_receive(&mut task, record), ReceiveStep::Parked);
+    assert_eq!(
+        matcher_runs_and_whether_the_lock_was_held(),
+        vec![true, true],
+        "the delivery path cannot take the lock while the walk is running"
+    );
+    assert!(
+        task.delivery.try_lock().is_some(),
+        "the entry released the lock with the park installed"
+    );
+
+    let probe = probe_sender(&mut sender, &task, int_ref(42));
+    assert_eq!(
+        probe.outcome,
+        ProbeOutcome::Hit,
+        "the delivery is probed against the installed park"
+    );
+    assert_eq!(matcher_runs_and_whether_the_lock_was_held(), vec![true, true, true]);
+}
+
+/// Arming the after-timer happens between the mailbox walk and the park
+/// install. The hook notes whether the delivery lock is held at that point.
+extern "C" fn note_the_lock_while_arming_the_timer(_scheduler: *mut (), _pid: u32, _after_ms: u64) -> u64 {
+    let watched = WATCHED.with(std::cell::Cell::get);
+    let held = unsafe { &*watched }.delivery.try_lock().is_none();
+    LOCK_HELD_AT_MATCH.with(|notes| notes.borrow_mut().push(held));
+    TIMER
+}
+
+#[test]
+fn the_lock_stays_held_from_the_end_of_the_walk_to_the_park_install() {
+    let mut task = running_task();
+    task.mailbox.push_back(int_ref(1));
+    let mut record = watch_matches_on(&mut task);
+    record.after_deadline_ms = Some(10);
+    let mut ctx = ExecCtx {
+        timer_schedule: Some(note_the_lock_while_arming_the_timer),
+        ..ExecCtx::empty()
+    };
+    task.ctx = &mut ctx;
+
+    assert_eq!(reach_receive(&mut task, record), ReceiveStep::Parked);
+
+    assert_eq!(
+        matcher_runs_and_whether_the_lock_was_held(),
+        vec![true, true],
+        "the walk's one matcher run and the timer arming, which sits between walk and install, both hold the lock"
+    );
+    assert_eq!(task.delivery.lock().park().and_then(|p| p.after_timer_id), Some(TIMER));
+    task.ctx = std::ptr::null_mut();
+}
+
+#[test]
+fn a_receiver_dropped_with_queued_gifts_leaves_no_block_outstanding() {
+    let outstanding_before = pool_outstanding_blocks();
+    {
+        let mut sender = running_task();
+        let receiver = fresh_task();
+        probe_sender(&mut sender, &receiver, int_ref(1));
+        probe_sender(&mut sender, &receiver, int_ref(2));
+        assert!(
+            pool_outstanding_blocks() > outstanding_before,
+            "the heaps and the gifts hold blocks while they live"
+        );
+    }
+    assert_eq!(pool_outstanding_blocks(), outstanding_before);
 }

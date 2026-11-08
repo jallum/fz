@@ -114,7 +114,8 @@ impl CompiledModule {
 
             let parked_clause_start = 0usize;
             let mut roots: Vec<AnyValue> = Vec::new();
-            if let Some(park) = process.wait.as_ref() {
+            let mut delivery = process.delivery.lock();
+            if let Some(park) = delivery.park() {
                 roots.extend(park.clause_bodies.iter().map(|&p| closure_root(p)));
                 roots.push(closure_root(park.after_cont));
             }
@@ -129,7 +130,7 @@ impl CompiledModule {
             process.mailbox.clear();
             process.mailbox.extend(mailbox_roots);
 
-            if let Some(park) = process.wait.as_mut() {
+            if let Some(park) = delivery.park_mut() {
                 for (i, body) in park.clause_bodies.iter_mut().enumerate() {
                     *body = closure_bits(roots[parked_clause_start + i]);
                 }
@@ -137,6 +138,7 @@ impl CompiledModule {
                 park.after_cont = closure_bits(roots[after_idx]);
             }
 
+            drop(delivery);
             if let Some(idx) = runnable_idx {
                 process.set_runnable_closure(closure_bits(roots[idx]));
             }

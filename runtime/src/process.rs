@@ -20,10 +20,10 @@ use std::sync::Arc;
 
 use crate::any_value::{AnyValueRef, TAG_MASK, closure_header_word, closure_size_for_count};
 use crate::bitstr::BitWriter;
+use crate::delivery::DeliveryLock;
 use crate::exec_ctx::ExecCtx;
 use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
 use crate::park::ParkRecord;
-use crate::sched::{Gift, GiftPayload};
 
 pub const DEFAULT_REDUCTIONS_PER_QUANTUM: i32 = 4000;
 pub const YIELD_REASON_REDUCTIONS: u8 = 1 << 0;
@@ -67,6 +67,10 @@ impl Drop for AlignedClosureStorage {
 /// .19.1). FFI functions do not yield, so its explicit process pointer stays
 /// valid for the duration of each call.
 pub struct Process {
+    /// The park record and the queue of gifts other processes made for this
+    /// one, reachable only through the lock. Declared before `heap` so a
+    /// process dropped with gifts still queued returns their storage first.
+    pub delivery: DeliveryLock,
     pub heap: Heap,
     /// Execution-context dispatch table for this task: scheduler services and
     /// output context, reached explicitly by BIFs instead of through
@@ -99,16 +103,6 @@ pub struct Process {
     /// here. v1 only writes this on halt (next_frame = null).
     pub next_frame: *mut u8,
     pub mailbox: VecDeque<AnyValueRef>,
-    /// Storage other processes allocated for this one, in arrival order.
-    /// A sender never writes into this heap: it copies into a segment of its
-    /// own and queues the segment here. The scheduler grafts the queue into
-    /// the heap at the start of this process's next dispatch, before any of
-    /// its code runs. At most one entry is a match for the parked receive.
-    pub in_queue: VecDeque<Gift>,
-    /// Receive-wait snapshot: the process is blocked in selective `receive`.
-    /// The record stays until the scheduler delivers the match a sender
-    /// queued in `in_queue`, or the after-timer fires.
-    pub wait: Option<Box<WaitState>>,
     /// The one re-entry verb: a `(self)`-callable closure the scheduler
     /// resumes via the single `fz_resume` shim. It is either a continuation
     /// (halt continuation baked into its captures, from a receive hit or
@@ -431,6 +425,7 @@ impl Process {
             // promotes to a higher size_class on first GC if the working
             // set demands it; shrink hysteresis (§6.5 / fz-siu.11) brings
             // it back down for short-lived spikes.
+            delivery: DeliveryLock::default(),
             heap: Heap::with_node(SIZE_TABLE[0], schemas, Rc::clone(&node)),
             ctx: null_mut(),
             halt_value: 0,
@@ -441,8 +436,6 @@ impl Process {
             state: ProcessState::New,
             next_frame: null_mut(),
             mailbox: VecDeque::new(),
-            in_queue: VecDeque::new(),
-            wait: None,
             runnable: None,
             halt_cont_singletons: [null_mut(); 4],
             static_closures: Vec::new(),
@@ -550,15 +543,6 @@ impl Process {
             self.halt_cont_singletons[slot] = base;
             self.static_closure_bufs.push(buf);
         }
-    }
-
-    /// Has a sender already matched this process's parked receive? The match
-    /// waits in `in_queue` for the next dispatch, so later senders must not
-    /// probe the receive again.
-    pub fn has_pending_match(&self) -> bool {
-        self.in_queue
-            .iter()
-            .any(|gift| matches!(gift.payload, GiftPayload::Match { .. }))
     }
 
     /// Queue a `(self)`-callable closure (continuation or entry thunk) as the

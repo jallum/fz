@@ -77,6 +77,8 @@ impl Block {
 /// per-worker pools or a Mutex-guarded shared pool.
 struct BlockPool {
     free_lists: [Vec<*mut u8>; SIZE_TABLE.len()],
+    /// Blocks handed out by `alloc` and not yet returned through `free`.
+    outstanding: usize,
 }
 
 impl BlockPool {
@@ -85,10 +87,12 @@ impl BlockPool {
         // because Vec is not Copy; use a manual array build.
         Self {
             free_lists: [const { Vec::new() }; SIZE_TABLE.len()],
+            outstanding: 0,
         }
     }
 
     fn alloc(&mut self, size_class: u8) -> *mut u8 {
+        self.outstanding += 1;
         let idx = size_class as usize;
         let size = SIZE_TABLE[idx];
         if let Some(p) = self.free_lists[idx].pop() {
@@ -106,6 +110,7 @@ impl BlockPool {
     }
 
     fn free(&mut self, p: *mut u8, size_class: u8) {
+        self.outstanding -= 1;
         // Free lists grow unbounded in v1. A real-world deployment would
         // cap each list (e.g., 4 entries) and `dealloc` the overflow.
         // For now we accept the worst-case memory footprint to keep the
@@ -170,8 +175,13 @@ pub fn pool_drain_for_test() {
     });
 }
 
-/// Test-only: total cached blocks across all size classes.
-#[cfg(test)]
+/// Blocks this thread's pool has handed out and not had returned. Zero once
+/// every heap and gift segment the thread created has been dropped.
+pub fn pool_outstanding_blocks() -> usize {
+    BLOCK_POOL.with(|pool| pool.borrow().outstanding)
+}
+
+/// Total cached blocks across all size classes.
 pub fn pool_total_cached_blocks() -> usize {
     BLOCK_POOL.with(|pool| pool.borrow().free_lists.iter().map(|l| l.len()).sum())
 }

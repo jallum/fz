@@ -15,13 +15,16 @@ process continues
 The closure captures everything needed to continue. The scheduler passes no
 message, timeout value, loop argument, continuation pointer, or resume token —
 all of that is captured into the closure before the process goes back on the run
-queue. So a `Process` carries just two scheduler-facing slots:
+queue. So a `Process` carries just two scheduler-facing slots, one of them behind a
+lock:
 
 - `runnable: Option<ClosureRef>` — the one re-entry verb. `ClosureRef` wraps a
   non-null pointer to a `(self)`-callable closure, so `Some` always names real
   work; `None` means nothing is queued.
-- `wait: Option<Box<WaitState>>` — the receive-park snapshot. A matcher hit
-  clears `wait` and moves the outcome closure into `runnable`.
+- `delivery: DeliveryLock` — the receive-park snapshot (`WaitState`) and the
+  in-queue of gifts, reachable only through the lock (see [Delivery
+  lock](#delivery-lock)). A matcher hit takes the park and moves the outcome
+  closure into `runnable`.
 
 `Process.state` (`ProcessState`: `New`, `Ready`, `Running`, `Blocked`, `Exited`)
 names which case the process is in:
@@ -68,7 +71,7 @@ every task through this one shim.
 
 A `receive` scans its mailbox when it is reached, oldest message first, and only
 a miss parks. The park snapshot is a `WaitState` (alias for `ParkRecord`) stored
-in `Process.wait` once a miss must wait. It holds the compiled `matcher_fn`, the pinned `^name` values in
+in `Process.delivery` once a miss must wait. It holds the compiled `matcher_fn`, the pinned `^name` values in
 matcher order, one `clause_bodies` closure-template pointer per clause, the
 per-clause bound-var counts, and (if there is an `after`) the timeout state.
 
@@ -86,10 +89,10 @@ receive:
   build WaitState (matcher + pinned + clause templates)
   a message matches clause k -> splice it out, return the outcome closure (no yield)
   no match, `after 0`        -> return the after body closure (no yield)
-  no match otherwise         -> wait = WaitState ; arm the after-timer ; Blocked ; yield
+  no match otherwise         -> park = WaitState ; arm the after-timer ; Blocked ; yield
 ```
 
-A process with `wait` set has therefore already searched its whole mailbox, so
+A process with a park has therefore already searched its whole mailbox, so
 a sender tests only its own message.
 
 When a message matches, `materialize_outcome_closure` turns the winning clause
@@ -158,6 +161,49 @@ entry is taken: `deliver_in_queue` in `run_until_idle` (JIT) and
 `dispatch_quantum` (AOT), `IrInterpRuntime::deliver_in_queue` in
 `drive_backend_until_idle`. A receiver that exits with gifts still queued drops
 them with its `Process`; each un-grafted segment returns its blocks to the pool.
+
+## Delivery lock
+
+A send and a receive contest three things: the park record, the in-queue and
+the walk of the mailbox that decides whether the receive parks at all. They
+live in one `Delivery` (`runtime/src/delivery.rs`) behind one `std::sync::Mutex`
+in `Process.delivery`, and a `&mut Delivery` can only come from the guard. The
+mailbox stays outside the lock: only the owning process touches it, and only
+after a drain. Each critical section holds the lock from its first read to its
+last write:
+
+- `sched::reach_receive` holds it across the mailbox walk and the park install.
+  If the walk and the install were separate sections, a delivery between the
+  end of the walk and the install would find no park to probe while the walk
+  had already passed the mailbox, and nobody would probe the message. Under the
+  lock the delivery waits for the install and is then probed against the park.
+  A hit or an `after 0` miss returns without installing a park.
+- `sched::probe_sender` (and the interpreter's `probe_parked_receive`, whose
+  caller takes the lock) holds it across reading the park, checking for a
+  pending match, running the matcher on the sender, queueing the gift and
+  cancelling the after-timer. The first hit decides the receive. A later sender
+  finds the match queued (`Delivery::undecided_park` is `None`) and gifts a
+  plain miss without running the matcher.
+- `sched::fire_after_timer` (and the interpreter's `wake_receive_after`) takes
+  the park under the same lock, so a timer and a hit win or lose the same way:
+  the loser finds no park, or a park whose timer id is not its own. The
+  stale-timer check in each scheduler's `wake_expired` is the fallback for a
+  timer that fires after the hit cancelled it.
+- `sched::drain_in_queue` takes entries under the lock, and `deliver_in_queue`
+  keeps it through taking the park for a matched receive.
+
+The matcher a sender runs executes with the receiver's lock held, so a guard
+that tried to deliver to the same receiver would deadlock; matchers never send.
+The interpreter keeps its own park record in `IrInterpRuntime.backend_parked`
+rather than in `Delivery`; its probe, timer and delivery paths still take the
+receiver's lock for the pending-match decision and the in-queue.
+
+`delivery` is declared before `heap` in `Process`, so a process dropped with
+gifts still queued drops them first: each `GiftSegment` returns its blocks to
+the pool, frees its fragments and releases its stubs. A receiver left parked
+when the run ends is torn down this way, and `fz.runtime.run_ended` reports that
+the pool got every block back ([runtime telemetry](runtime-telemetry.md)). With
+one worker the lock is never contended.
 
 ## Timeout
 
@@ -327,7 +373,16 @@ The roots the boundary GC traces are exactly the `runnable` closure and the
 - `runtime/src/sched_test.rs` — the probe, drain and delivery primitives: a hit
   leaves the receiver's heap untouched until it runs, two bindings of one cell
   copy it once, a second sender does not re-probe a matched receive, a dropped
-  receiver returns its queued gifts to the pool and releases their binaries.
+  receiver returns its queued gifts to the pool and releases their binaries. The
+  lock scope is pinned there too: a hit and a timer decide one park once in
+  either order, a sender's matcher runs with the receiver's lock held, and a
+  delivery cannot take the lock during the receive-entry walk and is probed
+  against the installed park afterwards.
+- `cargo test --test fixture_matrix a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
+  — fixture 00697: three messages gifted to a receiver that stays parked, on
+  `run` and `interp`; the run ends with them still queued and `run_ended` shows
+  the pool's outstanding count back at its starting value. The fixture runs on
+  all three paths for output parity.
 - `cargo test --test fixture_matrix spawn_with_captures` — a spawned task is
   resumed as an entry thunk through `fz_resume`, the same verb a continuation
   uses.

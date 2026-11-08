@@ -236,6 +236,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue,
         ),
         (
+            "a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown",
+            a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown,
+        ),
+        (
             "interpreter_stepper_does_not_update_quiet_quanta",
             interpreter_stepper_does_not_update_quiet_quanta,
         ),
@@ -3018,6 +3022,59 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
             "{label}: the unmatched tuple is gifted whole; the matching atom gifts nothing"
         );
     }
+}
+
+fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
+    let fixture = FixtureCase::new("fixtures/00697_a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown.fz");
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00697 expected.txt");
+    assert_eq!(
+        expected, ":child_is_parked\n:done\n",
+        "the run prints both lines and ends with the child still parked"
+    );
+    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+        let events = send_probe_events_for_fixture(&fixture, path, label);
+        let misses_for_the_child: Vec<_> = events
+            .iter()
+            .filter(|e| e.outcome == "miss" && e.receiver == 2)
+            .collect();
+        assert_eq!(
+            misses_for_the_child.len(),
+            3,
+            "{label}: all three messages are probed and gifted to the parked child, which never grafts them"
+        );
+        assert!(
+            misses_for_the_child.iter().all(|e| e.gift_blocks >= 1),
+            "{label}: each gift holds storage that teardown must return"
+        );
+        assert_eq!(
+            events.iter().filter(|e| e.outcome == "hit").count(),
+            1,
+            "{label}: only the child's announcement wakes anyone"
+        );
+        let (before, after) = run_ended_pool_census(&fixture, path, label);
+        assert_eq!(
+            after, before,
+            "{label}: the run returned every block it took, including the gifts still queued on the parked child"
+        );
+    }
+}
+
+/// `(pool_outstanding_before_run, pool_outstanding_after_run)` from the one
+/// `fz.runtime.run_ended` event the fixture's run emits on `path`.
+fn run_ended_pool_census(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> (usize, usize) {
+    let header = parse_header(fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
+    let (out, log) =
+        run_path_logged(fixture, &header, path).unwrap_or_else(|e| panic!("fz2 {label} --log-telemetry: {}", e));
+    assert!(out.status.success(), "fz2 {label} exited {}", out.status);
+    let ended: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"run_ended\"]"))
+        .collect();
+    assert_eq!(ended.len(), 1, "{label}: exactly one run_ended event");
+    (
+        required_json_u64_field(ended[0], "pool_outstanding_before_run", "run_ended"),
+        required_json_u64_field(ended[0], "pool_outstanding_after_run", "run_ended"),
+    )
 }
 
 fn interpreter_stepper_does_not_update_quiet_quanta() {
