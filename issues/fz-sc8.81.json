@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T03:00:54Z",
+  "description": "After fz-sc8.63 a destructuring = is a decision: a dispatch step, a branch arm entry and a value-join entry, +2 lowered-body entries per match on every path (eq.fz: main 3 -\u003e 5 entries). fz-sc8.80 removes the native cost; the entries remain for the interpreter and the compile-time walks, and pull.product requested/evaluated moved 302 -\u003e 309 on eq.fz (unattributed). When the trimmed plan is a lone outcome (graph root=n0 outcome o0: no test, nothing can fail), the arm's bindings are plain projections and the arm and its join can be spliced into the entry that holds the dispatch, giving zero extra entries. Trimming is per activation, so this decision belongs at backend time, not in body.rs. Alternative considered and set aside: lowering pattern = expr; rest with rest as the arm body (removes only the join, adds a nesting shape to block lowering). Measure first: entries_walked per walk is not observable from the CLI (the public trace filters *.walk events); either add the observation or compare lowered-body entry counts in a unit test. End of epic; not on the distiller thread.",
+  "id": "fz-sc8.81",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A decision whose trimmed plan is a lone outcome splices its arm into its entry",
+  "type": "task",
+  "updated_at": "2026-11-08T03:00:54Z"
+}
