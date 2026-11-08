@@ -1,1 +1,1 @@
-** (ErlangError) Erlang error: {:json_encode, :invalid_utf8, <<255>>}
+** (ErlangError) Erlang error: {:invalid_byte, 255}

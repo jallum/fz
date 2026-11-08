@@ -123,8 +123,8 @@ calls in native code too.
 
 Fallible arithmetic returns an unboxed `{result, boolean}` C scalar pair.
 The runtime returns initialized values and a canonical status word; Kernel's
-sole `arithmetic_error/0` helper turns `true` into the temporary `panic(:badarith)`
-policy. Numeric comparisons — ordering, equality and identity alike — are raw
+sole `arithmetic_error/0` helper raises `ArithmeticError`
+(`bad argument in arithmetic expression`). Numeric comparisons — ordering, equality and identity alike — are raw
 `extern "C"` calls on unboxed integer and float lanes. Binary and
 general-value comparisons use the ref-carrying `fz` ABI instead, so they
 retain process/schema context rather than pretending a C byte pointer has a

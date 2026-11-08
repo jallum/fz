@@ -3309,6 +3309,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 prepared,
                 dispatch,
             } => self.lower_guard_dispatch(ctx, plan, state, inputs, prepared, dispatch, fail)?,
+            PatternGuardExpr::Fails => Self::fail_guard(ctx, fail),
             PatternGuardExpr::Extern { extern_fn, args } => {
                 self.lower_guard_extern(ctx, plan, state, extern_fn, args, fail)?
             }
@@ -3401,8 +3402,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         Ok(answer)
     }
 
-    /// A call to an extern. One that returns `never` aborts the process, so
-    /// here it is the guard's failure and is not made.
+    /// A call to an extern.
     fn lower_guard_extern(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -3412,9 +3412,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         args: &[PatternGuardExpr<Ty>],
         fail: &mut Option<BlockId>,
     ) -> Result<Var, FatalError> {
-        if extern_fn.fails_the_guard() {
-            return Ok(Self::fail_guard(ctx, fail));
-        }
         let mut extern_args = Vec::with_capacity(args.len());
         for (arg, ty) in args.iter().zip(&extern_fn.params) {
             let var = self.lower_guard_expr(ctx, plan, state, arg, fail)?;

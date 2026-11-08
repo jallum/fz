@@ -870,7 +870,7 @@ defmodule String do
   Returns the integer that `s` names, in base 10.
 
   `s` must be an optional leading `-` followed by one or more decimal
-  digits; anything else halts the program. There is no base argument, so
+  digits; anything else raises `ArgumentError`. There is no base argument, so
   callers wanting another base cannot use this function.
 
   ## Examples
@@ -887,7 +887,7 @@ defmodule String do
   def to_integer(s), do: digits_value(s, 0, byte_size(s))
 
   @spec digits_value(binary, integer, integer) :: integer
-  defp digits_value(_s, _acc, 0), do: Kernel.panic("String.to_integer: not an integer")
+  defp digits_value(_s, _acc, 0), do: not_an_integer()
   defp digits_value(s, acc, _n), do: digits_fold(s, acc)
 
   @spec digits_fold(binary, integer) :: integer
@@ -895,12 +895,20 @@ defmodule String do
   defp digits_fold(<<c, rest :: binary>>, acc) when c >= 48 and c <= 57 do
     digits_fold(rest, acc * 10 + (c - 48))
   end
-  defp digits_fold(_s, _acc), do: Kernel.panic("String.to_integer: not an integer")
+  defp digits_fold(_s, _acc), do: not_an_integer()
+
+  @spec not_an_integer() :: never
+  defp not_an_integer(),
+    do:
+      raise(
+        ArgumentError,
+        "errors were found at the given arguments:\n\n  * 1st argument: not a textual representation of an integer\n"
+      )
 
   @doc """
-  Returns the float that `s` names, or halts.
+  Returns the float that `s` names, or raises `ArgumentError`.
 
-  `s` must have exactly one `.`, with digits on both sides -- `"1"` halts
+  `s` must have exactly one `.`, with digits on both sides -- `"1"` raises
   where `"1.0"` succeeds, matching Elixir's own `to_float/1`.
 
   ## Examples
@@ -920,7 +928,12 @@ defmodule String do
   # and both have to be digits.
   @spec float_parts([binary]) :: float
   defp float_parts([whole, fraction]), do: float_of(whole, fraction)
-  defp float_parts(_parts), do: Kernel.panic("String.to_float: not a float")
+  defp float_parts(_parts),
+    do:
+      raise(
+        ArgumentError,
+        "errors were found at the given arguments:\n\n  * 1st argument: not a textual representation of a float\n"
+      )
 
   @spec float_of(binary, binary) :: float
   defp float_of(<<45, whole :: binary>>, fraction), do: 0.0 - float_magnitude(whole, fraction)

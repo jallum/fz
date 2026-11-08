@@ -1,6 +1,7 @@
 #---
-# purpose: "JSON.encode!/1 rejects an object key with no string representation and names that key"
+# purpose: "JSON.encode!/1 of an object key with no string representation aborts with Protocol.UndefinedError"
 # expect: abort
+# oracle: json_encode_unsupported_key.oracle.exs
 #---
 def main() do
   key = {:tuple, 1}

@@ -61,7 +61,6 @@ defmodule Range do
   def reduce(first, last, step, {:suspend, acc}, reducer) do
     {:suspended, acc, (fn () -> reduce_cont(first, last, step, first, acc, reducer) end)}
   end
-  def reduce(_first, _last, _step, _command, _reducer), do: panic("Enumerable.ReduceProtocolError")
 
   @doc """
   Implements the `Enumerable.reduce_while/3` callback for ranges.
@@ -179,7 +178,6 @@ defmodule Range do
   defp reduce_step(first, last, step, current, {:suspend, acc}, reducer) do
     {:suspended, acc, (fn () -> reduce_cont(first, last, step, current + step, acc, reducer) end)}
   end
-  defp reduce_step(_first, _last, _step, _current, _command, _reducer), do: panic("Enumerable.ReduceProtocolError")
 
   @spec reduce_while_cont(integer, integer, integer, integer, b, (integer, b) -> {:cont, b} | {:halt, c}) :: b | c
   defp reduce_while_cont(first, last, step, current, acc, reducer) do

@@ -1,7 +1,8 @@
 #---
-# purpose: "JSON.encode!/1 rejects values outside JSON's domain with an explicit panic on every path"
+# purpose: "JSON.encode!/1 of a value outside JSON's domain aborts with Protocol.UndefinedError"
 # expect: abort
+# oracle: json_encode_unsupported_value.oracle.exs
 #---
 def main() do
-  JSON.encode!(:not_json)
+  JSON.encode!({:not_json})
 end

@@ -1,5 +1,5 @@
 #---
-# purpose: "tuple_size/1 of a non-tuple aborts with :badarg in a body, as Elixir raises ArgumentError"
+# purpose: "tuple_size/1 of a non-tuple aborts with ArgumentError and Elixir's message"
 # expect: abort
 # oracle: 00618_tuple_size_of_a_non_tuple_aborts.oracle.exs
 #---

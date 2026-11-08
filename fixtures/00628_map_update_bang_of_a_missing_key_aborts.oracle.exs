@@ -1,8 +1,7 @@
-value = hd([2])
-
 try do
+  value = hd([2])
   Map.update!(%{1 => :a}, value, fn v -> v end)
-  raise "Map.update! accepted a missing key"
+  raise "no exception was raised"
 rescue
-  KeyError -> :ok
+  e -> IO.puts(Exception.format_banner(:error, e, __STACKTRACE__))
 end

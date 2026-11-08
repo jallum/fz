@@ -159,7 +159,11 @@ fn static_reach_work_on_enum_take_drop_split_is_proportional_to_edges() {
     // fz-sc8.9: (105, 148, 206) -> (106, 149, 208). `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
     // proper-list check: `proper_length` aborts with `:badarg` on an improper
     // list, so the check and its abort path become executables of their own.
-    assert_eq!((functions, edges, evaluations), (106, 149, 208));
+    // fz-sc8.64: (106, 149, 208) -> (106, 145, 208). The negative-step clauses
+    // of `Enum.map_every/2`, `take_every/2` and `drop_every/2` and the three
+    // `reduce_first` catch-alls are gone, so four fewer call edges are
+    // reached; the function and evaluation counts are unchanged.
+    assert_eq!((functions, edges, evaluations), (106, 145, 208));
     assert!(
         evaluations <= functions + edges,
         "each function evaluates once to discover its callees and once more for each callee it waits on"

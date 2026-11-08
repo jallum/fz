@@ -254,6 +254,23 @@ pub(crate) enum GuardCallee<TypeHandle> {
     Extern(Arc<GuardExtern>),
 }
 
+impl<TypeHandle> GuardCallee<TypeHandle> {
+    /// Whether a call can only abort: the extern returns `never`, or the
+    /// helper has bodies and every one of them is a failing node.
+    fn always_fails(&self) -> bool {
+        match self {
+            GuardCallee::Extern(extern_fn) => extern_fn.fails_the_guard(),
+            GuardCallee::Helper(dispatch) => {
+                !dispatch.bodies.is_empty()
+                    && dispatch
+                        .bodies
+                        .iter()
+                        .all(|body| matches!(body, PatternGuardExpr::Fails))
+            }
+        }
+    }
+}
+
 /// An extern a guard calls. Every parameter and the return are one of the two
 /// classes all three guard evaluators can carry: an integer, or a reference
 /// word. A return of `never` is the call that fails the guard.
@@ -307,8 +324,8 @@ impl GuardExtern {
     }
 
     /// A call to this extern aborts the process, so in a guard it is the
-    /// guard's failure.
-    pub(crate) fn fails_the_guard(&self) -> bool {
+    /// guard's failure. `guard_expr_from_ast` is the one place that reads this.
+    fn fails_the_guard(&self) -> bool {
         self.ret == ExternTy::Never
     }
 }
@@ -373,6 +390,11 @@ pub(crate) enum PatternGuardExpr<TypeHandle> {
         extern_fn: Arc<GuardExtern>,
         args: Vec<PatternGuardExpr<TypeHandle>>,
     },
+    /// A call that can only abort the process: an extern returning `never`,
+    /// or a helper every body of which is itself this node. In a guard the
+    /// abort is the guard's failure, so the node carries no arguments and no
+    /// evaluator builds any.
+    Fails,
 }
 
 impl<TypeHandle> PatternGuardExpr<TypeHandle> {
@@ -387,7 +409,7 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
 
     fn collect_leaves(&self, leaves: &mut Vec<GuardLeaf>) {
         match self {
-            PatternGuardExpr::Const(_) => {}
+            PatternGuardExpr::Const(_) | PatternGuardExpr::Fails => {}
             PatternGuardExpr::Subject(subject) => leaves.push(GuardLeaf::Subject(*subject)),
             PatternGuardExpr::Pinned(pinned) => leaves.push(GuardLeaf::Pinned(*pinned)),
             PatternGuardExpr::Unary { expr, .. } => expr.collect_leaves(leaves),
@@ -414,6 +436,7 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
     ) -> PatternGuardExpr<MappedHandle> {
         match self {
             PatternGuardExpr::Const(value) => PatternGuardExpr::Const(value.clone()),
+            PatternGuardExpr::Fails => PatternGuardExpr::Fails,
             PatternGuardExpr::Subject(subject) => PatternGuardExpr::Subject(*subject),
             PatternGuardExpr::Pinned(pinned) => PatternGuardExpr::Pinned(*pinned),
             PatternGuardExpr::Unary { op, expr } => PatternGuardExpr::Unary {
@@ -685,14 +708,17 @@ where
             let Some(callee) = crate::ast::Callee::for_call(&target.node, arity) else {
                 return Err(SourcePatternError::UnsupportedGuardExpr);
             };
+            let callee = resolver
+                .guard_call(&callee, arity)?
+                .ok_or(SourcePatternError::UnsupportedGuardExpr)?;
+            if callee.always_fails() {
+                return Ok(PatternGuardExpr::Fails);
+            }
             let args = args
                 .iter()
                 .map(|arg| guard_expr_from_ast(&arg.node, bindings, pinned_by_name, prepared_keys, resolver))
                 .collect::<Result<Vec<_>, _>>()?;
-            match resolver
-                .guard_call(&callee, arity)?
-                .ok_or(SourcePatternError::UnsupportedGuardExpr)?
-            {
+            match callee {
                 GuardCallee::Helper(dispatch) => {
                     let prepared = dispatch
                         .plan

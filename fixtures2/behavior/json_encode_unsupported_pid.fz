@@ -1,0 +1,8 @@
+#---
+# purpose: "JSON.encode!/1 of a pid aborts with Protocol.UndefinedError naming its kind"
+# expect: abort
+# oracle: json_encode_unsupported_pid.oracle.exs
+#---
+def main() do
+  JSON.encode!(self())
+end

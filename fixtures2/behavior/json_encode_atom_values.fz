@@ -1,0 +1,10 @@
+#---
+# purpose: "JSON.encode!/1 renders an atom value as the JSON string of its name"
+# oracle: json_encode_atom_values.oracle.exs
+#---
+def main() do
+  dbg(JSON.encode!(:foo))
+  dbg(JSON.encode!([:a, :b]))
+  dbg(JSON.encode!(%{k: :v}))
+  dbg(JSON.encode!(:"with space"))
+end

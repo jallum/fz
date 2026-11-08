@@ -1,5 +1,5 @@
 #---
-# purpose: "or with a non-boolean left operand aborts with BadBooleanError, as Elixir raises BadBooleanError"
+# purpose: "or with a non-boolean left operand aborts with BadBooleanError and Elixir's message"
 # expect: abort
 # oracle: 00638_or_of_a_non_boolean_aborts.oracle.exs
 #---

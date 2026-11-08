@@ -19,7 +19,7 @@ defmodule Enum do
   Invokes `reducer` for each remaining element of `enumerable`, threading
   an accumulator that starts out as the first element.
 
-  Aborts if `enumerable` is empty, since there is no first element to seed
+  Raises `Enum.EmptyError` if `enumerable` is empty, since there is no first element to seed
   the accumulator with. Use `reduce/3` for a version that takes an initial
   accumulator instead.
 
@@ -333,7 +333,7 @@ defmodule Enum do
   `enumerable`, starting with the first.
 
   A `nth` of `0` leaves `enumerable` untouched, converted to a list.
-  Aborts if `nth` is negative.
+  Raises `FunctionClauseError` if `nth` is negative.
 
   ## Examples
 
@@ -343,8 +343,7 @@ defmodule Enum do
   """
   @spec map_every(Enumerable.t(a), integer, (a) -> a) :: [a]
   def map_every(enumerable, 0, _fun), do: to_list(enumerable)
-  def map_every(_enumerable, nth, _fun) when nth < 0, do: panic("Enum.OutOfBoundsError")
-  def map_every(enumerable, nth, fun), do: map_every_list(to_list(enumerable), nth, 0, fun)
+  def map_every(enumerable, nth, fun) when nth > 0, do: map_every_list(to_list(enumerable), nth, 0, fun)
 
   @doc """
   Maps `mapper` over `enumerable` and concatenates the results.
@@ -580,7 +579,7 @@ defmodule Enum do
   Returns a list of every `nth` element of `enumerable`, starting with the
   first.
 
-  A `nth` of `0` returns `[]`. Aborts if `nth` is negative.
+  A `nth` of `0` returns `[]`. Raises `FunctionClauseError` if `nth` is negative.
 
   ## Examples
 
@@ -591,8 +590,7 @@ defmodule Enum do
   @spec take_every(Enumerable.t(a), integer) :: [a]
   def take_every(_enumerable, 0), do: []
   def take_every(enumerable, 1), do: to_list(enumerable)
-  def take_every(_enumerable, nth) when nth < 0, do: panic("Enum.OutOfBoundsError")
-  def take_every(enumerable, nth) do
+  def take_every(enumerable, nth) when nth > 1 do
     take_every_finish(
       reduce_while(enumerable, {[], 0}, fn (entry, {acc, countdown}) ->
         {:cont, if(countdown == 0, do: {[entry | acc], nth - 1}, else: {acc, countdown - 1})}
@@ -660,8 +658,7 @@ defmodule Enum do
   @spec drop_every(Enumerable.t(a), integer) :: [a]
   def drop_every(_enumerable, 1), do: []
   def drop_every(enumerable, 0), do: to_list(enumerable)
-  def drop_every(_enumerable, nth) when nth < 0, do: panic("Enum.OutOfBoundsError")
-  def drop_every(enumerable, nth) do
+  def drop_every(enumerable, nth) when nth > 1 do
     drop_every_finish(
       reduce_while(enumerable, {[], 0}, fn (entry, {acc, countdown}) ->
         {:cont, if(countdown == 0, do: {acc, nth - 1}, else: {[entry | acc], countdown - 1})}
@@ -786,17 +783,14 @@ defmodule Enum do
   @spec reduce_first_step(a, :first | {:acc, a}, (a, a) -> a) :: {:cont, {:acc, a}}
   defp reduce_first_step(entry, :first, _reducer), do: {:cont, {:acc, entry}}
   defp reduce_first_step(entry, {:acc, acc}, reducer), do: {:cont, {:acc, reducer.(entry, acc)}}
-  defp reduce_first_step(_entry, _state, _reducer), do: panic("Enum.ReduceStateError")
 
   @spec reduce_first_finish({:done, :first | {:acc, a}} | {:halted, :first | {:acc, a}} | {:suspended, :first | {:acc, a}, () -> any}) :: a
   defp reduce_first_finish({:done, state}), do: reduce_first_acc(state)
   defp reduce_first_finish({:halted, state}), do: reduce_first_acc(state)
   defp reduce_first_finish({:suspended, state, _continuation}), do: reduce_first_acc(state)
-  defp reduce_first_finish(_result), do: panic("Enum.ReduceStateError")
   @spec reduce_first_acc(:first | {:acc, a}) :: a
   defp reduce_first_acc(:first), do: empty_error()
   defp reduce_first_acc({:acc, acc}), do: acc
-  defp reduce_first_acc(_state), do: panic("Enum.ReduceStateError")
 
   @spec each_step(a, b, (a) -> any) :: b
   defp each_step(entry, acc, fun) do
@@ -1024,7 +1018,7 @@ defmodule Enum do
   @doc """
   Returns the largest element of `enumerable`, by term order.
 
-  Aborts if `enumerable` is empty.
+  Raises `Enum.EmptyError` if `enumerable` is empty.
 
   ## Examples
 
@@ -1054,7 +1048,7 @@ defmodule Enum do
   @doc """
   Returns the smallest element of `enumerable`, by term order.
 
-  Aborts if `enumerable` is empty.
+  Raises `Enum.EmptyError` if `enumerable` is empty.
 
   ## Examples
 
@@ -1084,7 +1078,7 @@ defmodule Enum do
   @doc """
   Returns a `{minimum, maximum}` pair for `enumerable`, by term order.
 
-  Aborts if `enumerable` is empty.
+  Raises `Enum.EmptyError` if `enumerable` is empty.
 
   ## Examples
 
@@ -1096,7 +1090,7 @@ defmodule Enum do
   def min_max(enumerable), do: {min(enumerable), max(enumerable)}
 
   @spec empty_error() :: never
-  defp empty_error(), do: Kernel.panic("Enum.EmptyError")
+  defp empty_error(), do: raise(Enum.EmptyError, "empty error")
 
   @spec extreme([a], integer, () -> b) :: a | b
   defp extreme([], _want, empty_fallback), do: empty_fallback.()
@@ -1116,7 +1110,7 @@ defmodule Enum do
   Returns the element of `enumerable` for which `fun` returns the largest
   value, by term order.
 
-  Aborts if `enumerable` is empty.
+  Raises `Enum.EmptyError` if `enumerable` is empty.
 
   ## Examples
 
@@ -1131,7 +1125,7 @@ defmodule Enum do
   Returns the element of `enumerable` for which `fun` returns the smallest
   value, by term order.
 
-  Aborts if `enumerable` is empty.
+  Raises `Enum.EmptyError` if `enumerable` is empty.
 
   ## Examples
 
@@ -1146,7 +1140,7 @@ defmodule Enum do
   Returns a `{min_by, max_by}` pair for `enumerable`, both computed from
   the same `fun`.
 
-  Aborts if `enumerable` is empty.
+  Raises `Enum.EmptyError` if `enumerable` is empty.
 
   ## Examples
 
@@ -1291,7 +1285,7 @@ defmodule Enum do
   @doc """
   Returns the element of `enumerable` at `index`.
 
-  Aborts if `index` is out of range.
+  Raises `Enum.OutOfBoundsError` if `index` is out of range.
 
   ## Examples
 
@@ -1300,11 +1294,16 @@ defmodule Enum do
 
   """
   @spec fetch!([a], integer) :: a
-  def fetch!(enumerable, index), do: fetch_result(fetch(enumerable, index))
+  def fetch!(enumerable, index), do: fetch_result(fetch(enumerable, index), enumerable, index)
 
-  @spec fetch_result({:ok, a} | :error) :: a
-  defp fetch_result({:ok, value}), do: value
-  defp fetch_result(:error), do: Kernel.panic("Enum.fetch!: out of range")
+  @spec fetch_result({:ok, a} | :error, [a], integer) :: a
+  defp fetch_result({:ok, value}, _enumerable, _index), do: value
+  defp fetch_result(:error, enumerable, index) do
+    raise(
+      Enum.OutOfBoundsError,
+      "out of bounds error at position #{index} when traversing enumerable #{Kernel.inspect(enumerable)}"
+    )
+  end
 
   @doc """
   Returns the element of `enumerable` at `index`, or `nil` if `index` is

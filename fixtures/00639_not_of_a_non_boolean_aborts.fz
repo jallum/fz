@@ -1,5 +1,5 @@
 #---
-# purpose: "not of a non-boolean aborts with ArgumentError, as Elixir raises ArgumentError"
+# purpose: "not of a non-boolean aborts with ArgumentError and Elixir's message"
 # expect: abort
 # oracle: 00639_not_of_a_non_boolean_aborts.oracle.exs
 #---

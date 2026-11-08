@@ -1,8 +1,7 @@
-value = List.first([nil])
-
 try do
+  value = List.first([nil])
   value or 5
-  raise "or accepted a non-boolean"
+  raise "no exception was raised"
 rescue
-  BadBooleanError -> :ok
+  e -> IO.puts(Exception.format_banner(:error, e, __STACKTRACE__))
 end

@@ -1503,7 +1503,13 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // list `count` reads Kernel's `length`, whose proper-list
                 // check and abort path are bodies of their own.
                 // 00420 cold 623 -> 627: a tuple-field demand derived from an `=` arm settles one round after the floor it replaces, with the same final facts.
-                [[151, 0, 0, 9, 4], [476, 0, 0, 64, 4], [627, 0, 0, 69, 4]][fixture_index][scenario],
+                // fz-sc8.64: 00420 cold 627 -> 629. `raise/2` and `fz_raise/2`
+                // are walked beside `panic/1` and `fz_panic/1` (four and two
+                // walks against two and one), a wash in count; the two extra
+                // walks are `main`'s lambdas 13 and 14, which now run once
+                // more because `raise/2`'s demand concludes after their first
+                // runs.
+                [[151, 0, 0, 9, 4], [476, 0, 0, 64, 4], [629, 0, 0, 69, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1658,7 +1664,11 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // fz-sc8.9: 58 -> 59 DeriveStaticCallees evaluations. `Enumerable`'s map
     // `count` reads Kernel's `map_size`, a typed wrapper over `fz_map_count`,
     // where it used to call the extern directly.
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 27, 7, 59, 0),
+    // fz-sc8.64: 59 -> 63 DeriveStaticCallees evaluations. `raise/2` and
+    // `fz_raise/2` replace `panic/1` and `fz_panic/1` one for one, and
+    // `Kernel.inspect/1`, `fz_inspect/1`, `<>/2` and `fz_binary_concat/2`
+    // enter the cone through `Map.key_error`'s message.
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 27, 7, 63, 0),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -2286,7 +2296,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // PlanEntryDispatch, LowerFunction, DeriveExecutableFacts and
         // DeriveStaticCallees.
         // fz-sc8.37: 589 -> 598. Kernel defines `&&`, `||` and `!` as macros.
-        total_evaluations: 598,
+        // fz-sc8.64: 598 -> 612. `panic/1` and `fz_panic/1` leave the cone
+        // and `raise/2` and `fz_raise/2` take their place one for one;
+        // `Kernel.inspect/1`, `fz_inspect/1`, `<>/2` and `fz_binary_concat/2`
+        // enter it through `Map.key_error`'s message. Measured job deltas:
+        // DefineFunction +2, DeriveInputDemand +3, DeriveStaticCallees +4,
+        // ExpandFunctionSource +2, LowerFunction +2, PlanEntryDispatch +1.
+        total_evaluations: 612,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2380,7 +2396,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // the same pass removes five reruns that used to wait for a later
         // pass to see them.
         // fz-sc8.37: 498 -> 499. Kernel defines `&&`, `||` and `!` as macros.
-        analyze_evaluations: 499,
+        // fz-sc8.64: 499 -> 502. `raise/2` and `fz_raise/2` replace `panic/1`
+        // and `fz_panic/1` (7 analyses become 8 across the two pairs), and
+        // `arithmetic_error/0` and `+/2` are analyzed once more each:
+        // `raise/2`'s contract concludes after their first runs.
+        analyze_evaluations: 502,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -2467,7 +2487,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 911 -> 894: exactly the DeriveRecursive drop pinned in
         // DERIVE_RECURSIVE_RATCHET (one shared reach product per function).
         // fz-sc8.37: 894 -> 903. Kernel defines `&&`, `||` and `!` as macros.
-        total_evaluations: 903,
+        // fz-sc8.64: 903 -> 915. `raise/2` and `fz_raise/2` are defined beside
+        // the `panic/1` pair that this fixture's `assert` keeps. Measured job
+        // deltas: DefineFunction +2, ExpandFunctionSource +2,
+        // DeriveFunctionContract +2, PlanEntryDispatch +2, LowerFunction +1,
+        // AnalyzeActivation +3 (pinned above).
+        total_evaluations: 915,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2601,7 +2626,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // already pinned above on `enum_predicate_search`.
         // fz-sc8.9: 420 -> 421, the call edges of Kernel's `length` path in
         // place of `List.count`'s.
-        callsites: lifecycle(421, 421, 0),
+        // fz-sc8.64: 421 -> 417. `Enum.drop_every/2` and `take_every/2` each
+        // publish two fewer callsite summaries (8 -> 6) now that their
+        // negative-step clauses are gone. The `panic/1` callsites that
+        // become `raise/2` callsites (3 -> 1 and 0 -> 2) cancel.
+        callsites: lifecycle(417, 417, 0),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -2759,7 +2788,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-sc8.9: 619 holds while initial runs rise 232 -> 235 with the
         // three added activations above; zero-change stays 8.
         // fz-sc8.37: 619 -> 620. Kernel defines `&&`, `||` and `!` as macros.
-        analyze_evaluations: 620,
+        // fz-sc8.64: 620 -> 624. `arithmetic_error/0` and the panic/raise
+        // pair are analyzed once more each, `main`'s lambdas 12, 13 and 14
+        // once more each, and `Enum.split_counted_finish/1` once fewer:
+        // `raise/2`'s contract concludes after their first runs.
+        analyze_evaluations: 624,
         analyze_zero_change: 8,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
@@ -2830,7 +2863,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-sc8.9: 1441 -> 1446: three with the added activations above and
         // two with the `@spec` that declares `proper_length`'s domains.
         // fz-sc8.37: 1446 -> 1455. Kernel defines `&&`, `||` and `!` as macros.
-        total_evaluations: 1455,
+        // fz-sc8.64: 1455 -> 1468. Measured job deltas: DefineFunction +2,
+        // ExpandFunctionSource +2, DeriveFunctionContract +2,
+        // PlanEntryDispatch +2, LowerFunction +1, AnalyzeActivation +4
+        // (pinned above) for `raise/2` and `fz_raise/2`.
+        total_evaluations: 1468,
     },
 ];
 

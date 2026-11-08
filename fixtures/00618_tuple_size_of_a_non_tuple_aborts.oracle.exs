@@ -1,8 +1,7 @@
-value = hd([:x])
-
 try do
+  value = hd([:x])
   tuple_size(value)
-  raise "tuple_size accepted a value outside its domain"
+  raise "no exception was raised"
 rescue
-  ArgumentError -> :ok
+  e -> IO.puts(Exception.format_banner(:error, e, __STACKTRACE__))
 end

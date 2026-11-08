@@ -742,12 +742,8 @@ impl<'a> Dispatch<'a> {
                 let body = required(dispatch.bodies.get(dispatch.plan.body_id(decided.outcome()) as usize))?;
                 decided.run.eval_guard(body)?
             }
+            PatternGuardExpr::Fails => return Err(DispatchStop::NoMatch),
             PatternGuardExpr::Extern { extern_fn, args } => {
-                // A call that aborts the process is not made: in a guard it is
-                // the guard that fails.
-                if extern_fn.fails_the_guard() {
-                    return Err(DispatchStop::NoMatch);
-                }
                 let mut values = Vec::with_capacity(args.len());
                 for arg in args {
                     values.push(self.eval_guard(arg)?);

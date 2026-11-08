@@ -1,0 +1,6 @@
+#---
+# purpose: "Enum.fetch!/2 past the end aborts with Enum.OutOfBoundsError and Elixir's message"
+# expect: abort
+# oracle: 00723_enum_fetch_bang_past_the_end_raises_out_of_bounds_error.oracle.exs
+#---
+def main(), do: Enum.fetch!([1, 2], 5)

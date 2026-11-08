@@ -527,7 +527,11 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-5xp.30 re-measured 113 -> 114: binary-concat sugar now
             // retains the public Kernel.<>/2 wrapper between source callers
             // and the private fz_binary_concat/2 physical gateway.
-            118,
+            // fz-sc8.64: 118 -> 116. `Enum.map_every/2`, `take_every/2` and
+            // `drop_every/2` no longer carry a negative-step clause, and the
+            // three `reduce_first` catch-alls are gone, so their executables
+            // are not emitted.
+            116,
         ),
         (562, 36), // mailbox_closure_each
         (

@@ -1,0 +1,6 @@
+#---
+# purpose: "String.to_float/1 of text that is not a float aborts with ArgumentError and Elixir's message"
+# expect: abort
+# oracle: 00729_string_to_float_of_text_raises_argument_error.oracle.exs
+#---
+def main(), do: String.to_float("x")
