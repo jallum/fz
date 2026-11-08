@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T16:12:30Z",
+  "description": "Found while building fz-sc8.8. Reproduces on b870f5a87 (fz-sc8.18 head), so it predates .8.\n\nObserved, with `fz2 run` and the binary from `fz2 build` behaving the same:\n\n    def main(), do: {1, 2, 3, 4, 5}                exit 0\n    def main(), do: {1, 2, 3, 4, 5, 6}             exit 138\n    def main(), do: {1, 2, 3, 4, 5, 6, 7}          exit 138\n    def main(), do: {1, 2, 3, 4, 5, 6, 7, 8}       exit 0\n    def main(), do: {1, 2, 3, 4, 5, 6, 7, 8, 9}    exit 139\n    def main(), do: {1, 2, {2, 3, 4, 5}}           exit 138   (nested: six scalar lanes)\n    def main(), do: {1, 2, {2, 3, 4}}              exit 0     (five lanes)\n    def main(), do: [1, 2, {3, 4, 5, 6}]           exit 0     (a list, not a tuple)\n    def f(), do: {1, 2, 3, 4, 5, 6}; def main(), do: f()                   exit 138\n    def f(), do: {1, 2, 3, 4, 5, 6}; def main() do {a,_,_,_,_,f} = f(); a + f end   exit 0\n\nSo a six-lane tuple survives a call between fz functions; what fails is the ROOT returning it (main's own return reaching the driver). `fz2 interp` exits 0 on every line. The types dump shows `main/0[] =\u003e {int, int, int, int, int, int}`.\n\nRelated symptom, build only: `def main() do x = {1, 2, 3, 4, 5, 6}; dbg(x); :ok end` aborts with exit 134 on the AOT binary and exits 0 on run (dbg here is the pre-.8 `fz_dbg_value(any)` extern, so a six-lane tuple boxed for an any extern).\n\nIt was masked until .8 because `dbg/1` returned through an `any` extern; with .8 `fixtures2/behavior/anonymous_fn_bare_params` ends main in a six-lane `dbg({...})` and goes red on run and build. Repro files: session scratchpad p8/bugA/ (a1..a10, b1..b9, c5..c9).\n\nBlocks fz-sc8.8. Fix lands first, on its own branch above fz-sc8.18.",
+  "id": "fz-sc8.97",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "A root main returning a tuple of six or more lanes crashes the JIT and the native build",
+  "type": "bug",
+  "updated_at": "2026-11-08T16:12:30Z"
+}
