@@ -344,10 +344,16 @@ use that same boundary. Raw `write_field_slot` remains an unpublished storage
 operation used by internal runtime structs too; the language constructor, not
 every internal field write, owns publication. No structural runtime scan is added.
 
-Cross-process send and self-send copy into receiver-owned storage. A singly
-copied list can remain clear; repeated forwarding hits and copied container
-fields protect receiver-side sharing. The sender's cells are not marked merely
-because a copy was sent. The alias bit remains one-way within a heap.
+Cross-process send copies into receiver-owned storage. A singly copied list can
+remain clear; repeated forwarding hits and copied container fields protect
+receiver-side sharing. The sender's cells are not marked merely because a copy
+was sent. Self-send copies nothing and the runtime publishes nothing: the
+sender's own reference is pushed onto its mailbox (`sched::self_send`). The
+mailbox is then a second holder, and the compiler's call-site ownership rule is
+what protects it: `construct_call_ownership` (src/compiler2/jobs/body.rs) marks
+a send argument `Share` when the continuation retains a name that may alias it,
+and Share publishes the spine before the call on every path. The alias bit
+remains one-way within a heap.
 
 ## GC: Roots, Edges, And Lifetime
 
@@ -418,7 +424,7 @@ another.
 rather than sharing heap pointers across processes:
 
 ```text
-self-send:                deep-copy the message into the same heap, push to own mailbox
+self-send:                push the sender's own ref onto its mailbox; nothing is copied
 cross-process, parked:    run the receiver's matcher on the sender's ref;
                           on a hit, deep-copy the exact outcome arguments into the
                           receiver heap and wake it; on a miss, deep-copy the

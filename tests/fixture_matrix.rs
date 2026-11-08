@@ -228,6 +228,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             enum_sort_constant_sorter_erased_under_return_demand_specs,
         ),
         (
+            "self_send_pushes_the_senders_reference_and_the_send_site_publishes_it",
+            self_send_pushes_the_senders_reference_and_the_send_site_publishes_it,
+        ),
+        (
             "interpreter_stepper_does_not_update_quiet_quanta",
             interpreter_stepper_does_not_update_quiet_quanta,
         ),
@@ -2890,6 +2894,28 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
         "enum_sort pins retaining constructions, actual physical captures, and runtime reuse",
     );
     assert_eq!(stats.runtime_fallback_count(), 0);
+}
+
+fn self_send_pushes_the_senders_reference_and_the_send_site_publishes_it() {
+    let fixture =
+        FixtureCase::new("fixtures/00694_a_self_sent_list_stays_intact_because_the_send_site_publishes_it.fz");
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00694 expected.txt");
+    assert_eq!(
+        expected, "[1, 9]\n0\n[4, 5, 6]\n[4, 9]\n",
+        "the control rewrite prints [1, 9]; the send allocates no list cells; the received message is intact; the refused rewrite still yields [4, 9]"
+    );
+
+    // Four one-cons constructions retain a source cell: the two identical
+    // aliases, the control rewrite that runs in place, and the rewrite of the
+    // sent cell. Only the last one misses, because the send site published
+    // the cell before the call.
+    let stats = list_retention_telemetry_stats_for_fixture(&fixture);
+    assert_eq!(
+        (stats.runtime_attempted_count, stats.runtime_reused_count),
+        (4, 3),
+        "self-send fixture pins four retention attempts with exactly one refused rewrite",
+    );
+    assert_eq!(stats.runtime_fallback_count(), 1);
 }
 
 fn interpreter_stepper_does_not_update_quiet_quanta() {

@@ -34,6 +34,7 @@ use fz_runtime::ir_runtime::{
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
 use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
+use fz_runtime::sched::self_send;
 use fz_runtime::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
 use fz_runtime::timer::TimerId;
 use std::time::Duration;
@@ -345,8 +346,13 @@ impl IrInterpRuntime {
         if receiver.state == ProcessState::Exited {
             return Ok(());
         }
+        let sender = unsafe { &mut *self.cur_proc() };
+        if sender.pid == *receiver_pid {
+            self_send(sender, msg_ref);
+            return Ok(());
+        }
         let msg = AnyValue::from_any_value_ref(msg_ref)?;
-        let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const Heap;
+        let sender_heap = &sender.heap as *const Heap;
         if let Some(park) = self.backend_parked.remove(receiver_pid) {
             let entries = entries_for_executable(&park.executable)?;
             let entry = entries

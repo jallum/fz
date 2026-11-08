@@ -119,6 +119,14 @@ pub fn probe_sender(task: &mut Process, msg: AnyValueRef) -> ProbeOutcome {
     }
 }
 
+/// A process sending to itself hands its own mailbox the reference it already
+/// holds; nothing leaves the heap. The sender is running, so it cannot be
+/// parked, and the mailbox push is the whole delivery.
+pub fn self_send(task: &mut Process, msg: AnyValueRef) {
+    assert!(task.wait.is_none(), "a running process has no parked receive");
+    task.mailbox.push_back(msg);
+}
+
 /// What reaching a `receive` does to the running process.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReceiveStep {

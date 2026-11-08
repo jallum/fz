@@ -659,12 +659,21 @@ process-root GC traces that mailbox directly.</p>
 
 <h3>Self-send (same process)</h3>
 
-<p>In <code>Runtime::send_via_current_runtime</code>, a process sending to
-itself still deep-copies the <code>AnyValueRef</code> into its own heap
-before enqueueing the mailbox entry. That gives self-send the same
-fresh-message semantics as cross-process send. Since process-root GC roots the
-mailbox, the copied value survives any subsequent back-edge GC even if the
-sending code no longer holds a local reference to it.</p>
+<p>A process sending to itself pushes the <code>AnyValueRef</code> it already
+holds onto its own mailbox (<code>sched::self_send</code>). Nothing is copied
+and the runtime publishes nothing: the sender is running, so it cannot be
+parked, and the push is the whole delivery. Since process-root GC roots the
+mailbox, the value survives any subsequent back-edge GC even if the sending
+code no longer holds a local reference to it.</p>
+
+<p>The mailbox is now a second holder of the same cells, and the in-place list
+rewrite guard must see them as aliased. The compiler owns that: when the
+continuation after a call retains a name that may alias an argument,
+<code>construct_call_ownership</code> (src/compiler2/jobs/body.rs) marks the
+argument <code>Share</code>, and the Share mode publishes the list spine before
+the call on every path. A self-sent list the sender can still reach is
+therefore already published when it enters the mailbox, and a later rewrite of
+one of its cells allocates a fresh cell instead.</p>
 
 <h3>ProcBin — bytes are shared, not copied</h3>
 
@@ -886,13 +895,15 @@ existing construction loops; there is no extra structural runtime scan.</p>
 <p>Extern calls do not publish their arguments for alias tracking. If an extern
 wants to retain a value after returning, the extern must copy it.</p>
 
-<p>Send is a copy boundary, not an alias boundary. Cross-process send and
-self-send deep-copy the message graph before enqueueing it, so the sender's
-current-process list cells need not be marked aliased just because they were
-sent. A singly copied list can remain unshared; repeated references and copied
-container fields protect sharing in the receiver. Inside a single heap the alias bit is one-way, so a rewrite miss
-falls back to allocation rather than rewiring a value another observer may still
-hold.</p>
+<p>Cross-process send is a copy boundary, not an alias boundary. It deep-copies
+the message graph before enqueueing it, so the sender's list cells need not be
+marked aliased just because they were sent. A singly copied list can remain
+unshared; repeated references and copied container fields protect sharing in
+the receiver. Self-send copies nothing: the sender's own reference enters the
+mailbox, and the compiler's call-site Share publication is what marks a list
+the sender still names. Inside a single heap the alias bit is one-way, so a
+rewrite miss falls back to allocation rather than rewiring a value another
+observer may still hold.</p>
 
 <!-- ─────────────────────────────── 11. ALLOC STATS ─────────────────────────────── -->
 <h2 id="alloc-stats">11. Heap allocation stats</h2>

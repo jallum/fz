@@ -113,6 +113,30 @@ fn probe_sender_not_parked_pushes_mailbox_returns_miss() {
 }
 
 #[test]
+fn self_send_pushes_the_senders_own_reference_and_allocates_nothing() {
+    let mut task = running_task();
+    let msg = int_ref(7);
+    let live_before = task.heap.live_count();
+    self_send(&mut task, msg);
+    assert_eq!(
+        task.heap.live_count(),
+        live_before,
+        "a self-send allocates nothing on the sender's heap"
+    );
+    assert_eq!(task.mailbox.len(), 1);
+    assert_eq!(
+        task.mailbox.back().expect("pushed").raw_word(),
+        msg.raw_word(),
+        "the mailbox holds the very reference the sender passed"
+    );
+    assert_eq!(
+        task.state,
+        ProcessState::Running,
+        "delivery to self changes no scheduling state"
+    );
+}
+
+#[test]
 fn reach_receive_with_an_empty_mailbox_parks() {
     let mut task = running_task();
     let record = record_on_42(&mut task, None);

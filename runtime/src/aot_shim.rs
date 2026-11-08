@@ -28,11 +28,11 @@
 use crate::any_value::{AnyValueRef, ValueKind};
 use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
-use crate::heap::{Heap, Schema, SchemaRegistry, deep_copy_any_value_ref};
+use crate::heap::{Schema, SchemaRegistry, deep_copy_any_value_ref};
 use crate::pinned_abi::{call1, call2};
 use crate::procbin::mso_drop_all_deferred;
 use crate::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
-use crate::sched::{ProbeOutcome, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender};
+use crate::sched::{ProbeOutcome, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send};
 use crate::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
 use crate::timer::TimerId;
 use std::cell::RefCell;
@@ -500,17 +500,10 @@ fn deep_copy_send_ref_for_aot(sender: &Process, receiver: &mut Process, msg: Any
     deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding)
 }
 
-fn deep_copy_self_send_ref_for_aot(sender: &mut Process, msg: AnyValueRef) -> AnyValueRef {
-    let mut forwarding = HashMap::new();
-    let heap_ptr: *mut Heap = &mut sender.heap as *mut _;
-    let src_heap: &Heap = unsafe { &*heap_ptr };
-    let dst_heap: &mut Heap = unsafe { &mut *heap_ptr };
-    deep_copy_any_value_ref(msg, src_heap, dst_heap, &mut forwarding)
-}
-
-/// Send hook. Pushes a message into the receiver's mailbox. Every arrival
-/// routes through `sched::probe_sender`; a matched waiting receiver is made
-/// runnable through the scheduling core.
+/// Send hook. A self-send is a mailbox push on the sender's own heap. Every
+/// other arrival is copied into the receiver and routes through
+/// `sched::probe_sender`; a matched waiting receiver is made runnable through
+/// the scheduling core.
 extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
     let msg = AnyValueRef::from_raw_word(msg_ref_word).expect("aot_send message ref");
     assert!(!sender_ptr.is_null(), "aot_send_hook: no sender process");
@@ -522,12 +515,12 @@ extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiv
     if task.state == ProcessState::Exited {
         return;
     }
-    let msg = if task.pid == unsafe { (*sender_ptr).pid } {
-        deep_copy_self_send_ref_for_aot(task, msg)
-    } else {
-        let sender = unsafe { &*sender_ptr };
-        deep_copy_send_ref_for_aot(sender, task, msg)
-    };
+    if task.pid == unsafe { (*sender_ptr).pid } {
+        self_send(task, msg);
+        return;
+    }
+    let sender = unsafe { &*sender_ptr };
+    let msg = deep_copy_send_ref_for_aot(sender, task, msg);
     if probe_sender(task, msg) == ProbeOutcome::Hit {
         unsafe { (*sched).core.make_runnable(receiver_pid, &mut task.state) };
     }

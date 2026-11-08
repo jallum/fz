@@ -32,11 +32,11 @@ use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
-use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
+use fz_runtime::heap::deep_copy_any_value_ref;
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
 use fz_runtime::pinned_abi::call2;
 use fz_runtime::procbin::mso_drop_all_deferred;
-use fz_runtime::sched::{ProbeOutcome, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender};
+use fz_runtime::sched::{ProbeOutcome, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send};
 use fz_runtime::sched_core::{Scheduler, SchedulingCore, next_runnable, timer_cancel_hook, timer_schedule_hook};
 use fz_runtime::timer::TimerId;
 #[cfg(test)]
@@ -146,33 +146,7 @@ pub fn send_via<T: Telemetry + ?Sized>(
     assert!(!sender.is_null(), "send() called with no sender process");
     let sender = unsafe { &mut *sender };
     if sender.pid == receiver_pid {
-        // Self-send: sender is currently OUT of rt.tasks (run_until_idle
-        // has it borrowed). We can't .get_mut from rt.tasks. Write
-        // directly to the sender's mailbox.
-        //
-        // Deep-copy is still semantically required (a process sending
-        // to itself should still observe the message as a fresh copy),
-        // but src_heap == dst_heap == sender.heap. We can't borrow it
-        // both ways at once; split borrows are fine because each
-        // deep_copy_slot alloc is a self-contained &mut access.
-        //
-        // For self-send we use a single &mut borrow path: alloc into
-        // the same heap. Since src and dst are the same heap, the
-        // existing forwarding-pointer technique handles sharing.
-        let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
-        // SAFETY: split the &mut Process into &Heap (for read) and
-        // &mut Heap (for write). The pointers are aliased but Rust's
-        // borrow checker can't see that the same Heap is both src and
-        // dst. The deep_copy_slot impl doesn't mutate src; we use
-        // distinct raw-pointer reads from src vs &mut writes through
-        // dst. Equivalent to running deep_copy on a clone of the heap,
-        // which would be correct.
-        let heap_ptr: *mut Heap = &mut sender.heap as *mut _;
-        let src_heap: &Heap = unsafe { &*heap_ptr };
-        let dst_heap: &mut Heap = unsafe { &mut *heap_ptr };
-        let copied = deep_copy_any_value_ref(msg, src_heap, dst_heap, &mut forwarding);
-        sender.mailbox.push_back(copied);
-        // No state transition needed: sender is Running.
+        self_send(sender, msg);
         return;
     }
     let Some(receiver) = rt.tasks.get_mut(&receiver_pid) else {
