@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-3ul.3",
-    "fz-3ul.4"
+    "fz-3ul.4",
+    "fz-3ul.7"
   ],
   "blocks": [],
   "created": "2026-11-08T00:15:24Z",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "__STACKTRACE__ is an empty list in rescue and catch, and the exceptions docs are complete",
   "type": "task",
-  "updated_at": "2026-11-08T00:15:25Z"
+  "updated_at": "2026-11-08T03:34:29Z"
 }
