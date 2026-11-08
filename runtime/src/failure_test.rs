@@ -165,7 +165,7 @@ fn with_observed_process<R>(f: impl FnOnce(&mut Process, &mut Observed) -> R) ->
 }
 
 #[test]
-fn a_panic_under_a_compiled_handler_makes_the_handler_runnable_with_kind_value_and_name() {
+fn a_panic_under_a_compiled_handler_delivers_the_handler_with_kind_value_and_name() {
     with_observed_process(|process, observed| {
         let template = handler_template(process);
         process.push_handler(Handler::Closure(template));
@@ -181,10 +181,12 @@ fn a_panic_under_a_compiled_handler_makes_the_handler_runnable_with_kind_value_a
         assert_eq!(process.raises_delivered, 1);
         assert!(observed.lines.is_empty(), "nothing is printed for a caught raise");
         let handler = process
-            .runnable_closure()
-            .expect("the handler is what runs next")
+            .delivered
+            .expect("the handler is what the quantum resumes")
+            .as_ref()
             .closure_addr()
             .expect("a closure ref");
+        assert!(process.runnable.is_none(), "nothing is queued for the scheduler");
         assert_ne!(
             handler,
             template.as_ref().closure_addr().expect("a closure ref"),

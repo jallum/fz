@@ -645,15 +645,13 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     // matched receive becomes the runnable closure here.
     deliver_in_queue(unsafe { &mut *proc_ptr });
 
-    fn run_scheduler_closure(resume_addr: *const u8, process: *mut Process, closure: AnyValueRef) {
-        let _ = unsafe { call1(resume_addr, process, closure.raw_word()) };
-    }
-
     // One re-entry verb: resume the task's `runnable` closure (a fresh entry
     // thunk for a spawned task / main, or a continuation for a receive or
     // mid-flight wakeup). Bound args travel in the closure env.
     let closure = unsafe { (*proc_ptr).take_runnable_closure() }.expect("a dispatched process has a runnable closure");
-    run_scheduler_closure(addrs.resume, proc_ptr, closure);
+    unsafe { &mut *proc_ptr }.run_quantum(closure, |process, closure| {
+        let _ = unsafe { call1(addrs.resume, process, closure.raw_word()) };
+    });
     let process = unsafe { &mut *proc_ptr };
     if end_quantum(unsafe { &mut *sched }, process) == Disposition::Requeue {
         unsafe { (*sched).core.make_runnable(pid, &mut process.state) };

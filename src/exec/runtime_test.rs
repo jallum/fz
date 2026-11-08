@@ -179,13 +179,32 @@ fn assert_every_iteration_delivers(door: Door) -> ExitRecord {
     exit
 }
 
-/// Compiled code runs a handler in the raising call's place, inside the same
-/// quantum, so the loop's reductions accumulate and the scheduler gets its
-/// turn through the ordinary reduction yield.
+/// A delivered handler runs inside the same quantum, so the loop's reductions
+/// accumulate and the scheduler gets its turn through the ordinary reduction
+/// yield.
 #[test]
 fn the_jit_delivers_every_raise_of_a_rescuing_loop_and_yields() {
     let exit = assert_every_iteration_delivers(Door::Jit);
     assert!(exit.reduction_yields >= 1, "the loop yields to the scheduler: {exit:?}");
+}
+
+/// A delivered raise unwinds the machine frames between its `try` and the raise
+/// before the handler runs, so a loop that raises on every iteration needs the
+/// same stack for its hundred-thousandth raise as for its first. The thread's
+/// stack is far smaller than a quantum of orphaned frames would need.
+#[test]
+fn the_jit_runs_a_raising_loop_on_a_small_stack() {
+    let small_stack = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let (raises, exit) = raises_while_running(RAISING_LOOP, Door::Jit);
+            assert_eq!(raises.len(), 100_000);
+            assert_eq!(exit.raises_delivered, 100_000);
+        })
+        .expect("spawn the small-stack thread");
+    small_stack
+        .join()
+        .expect("the raising loop finishes on a 256 KiB stack");
 }
 
 #[test]

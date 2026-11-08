@@ -3,13 +3,14 @@
 //! `fz_panic` is the runtime primitive behind `Kernel.panic/1`, and so behind
 //! `raise`. It reports the raise, then delivers it to the innermost handler on
 //! the process's handler stack: a compiled handler is a continuation template
-//! that becomes the process's `runnable` closure applied to the raise, the way
-//! a receive outcome does; an interpreter handler reads the raise back from
+//! that becomes the process's delivered handler closure applied to the raise,
+//! the way a receive outcome is materialized; an interpreter handler reads the raise back from
 //! `Process::raised`. With no handler the value is rendered as the line Elixir
 //! prints for an uncaught exception, that line goes to the execution context's
 //! fault sink, and the process is marked failed. The physical export returns
-//! either way; the caller unwinds to its scheduler, which resumes the handler
-//! or ends the process.
+//! either way; the caller unwinds to its quantum entry, which resumes the
+//! delivered handler in the same quantum or hands the failed process back to
+//! the scheduler.
 //!
 //! An exception is a map in Elixir's struct shape,
 //! `%{__struct__: Name, __exception__: true, message: "..."}`, and prints as
@@ -100,12 +101,12 @@ const ERROR_KIND: &str = "error";
 
 /// Raise `value` in the current process. The raise is reported to the
 /// context's raise observer, then reaches the innermost handler: a compiled
-/// handler becomes the runnable closure applied to `(kind, value, name)`, an
+/// handler becomes the delivered closure applied to `(kind, value, name)`, an
 /// interpreter handler receives the same three values through
 /// `Process::raised`. With no handler the process fails: its failure line goes
 /// to the context's fault sink and `failed` is set. The physical export
-/// returns, so each caller unwinds itself: compiled code returns to the
-/// scheduler, the interpreter takes its raised or failed transition.
+/// returns, so each caller unwinds itself: compiled code returns to its
+/// quantum entry, the interpreter takes its raised or failed transition.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_panic(process: *mut Process, value_ref: u64) {
@@ -134,7 +135,7 @@ pub extern "C" fn fz_panic(process: *mut Process, value_ref: u64) {
             let template = template.as_ref().closure_addr().expect("a handler is a closure ref");
             // SAFETY: a handler on the stack is a live closure the collector keeps current.
             let handler = unsafe { materialize_outcome_closure(&mut process.heap, template, &[kind, value_ref, name]) };
-            process.set_runnable_closure(
+            process.deliver_handler(
                 AnyValueRef::from_heap_object(ValueKind::CLOSURE, handler).expect("handler closure ref"),
             );
         }

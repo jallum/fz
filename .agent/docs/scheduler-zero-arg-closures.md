@@ -409,11 +409,12 @@ setup — belongs to compiler-generated closure construction or to runtime event
 handlers that produce a closure. There is no separate "pending resume" vs.
 "parked continuation" concept and no side-band argument slab: a resume never
 passes arguments into a helper, because the closure already carries its own state.
-The roots the boundary GC traces are the `runnable` closure, the park record's
-clause bodies, after body and pinned values, the handlers of the `try` bodies
-the process is inside (see [exceptions](exceptions.md)), the `mailbox`, and the
-caller's transient values, all gathered by `Process::collect`; the process
-`heap` is the arena being collected, not a root.
+The roots the boundary GC traces are the `runnable` closure, the `delivered`
+handler slot (a raise's handler, resumed inside the quantum that raised it, see
+[exceptions](exceptions.md)), the park record's clause bodies, after body and
+pinned values, the handlers of the `try` bodies the process is inside, the
+`mailbox`, and the caller's transient values, all gathered by
+`Process::collect`; the process `heap` is the arena being collected, not a root.
 
 ## Proof Gates
 

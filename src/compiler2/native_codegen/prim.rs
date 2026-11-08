@@ -28,10 +28,10 @@ use fz_runtime::ir_runtime::{
     fz_map_dest_put_parts, fz_map_dest_put_ref, fz_map_get_atom_key_ref, fz_map_get_float_key_ref,
     fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
     fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
-    fz_struct_schema_id_ref, fz_take_raised_handler, fz_try_pop, fz_value_cmp_raw_const, fz_value_cmp_ref,
-    fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_struct_schema_id_ref, fz_try_pop, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const,
+    fz_value_eq_ref, fz_value_eq_widening_ref,
 };
-use fz_runtime::process_abi::PROCESS_FAILED_OFFSET;
+use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
 use std::collections::HashMap;
 use target_lexicon::{Architecture, OperatingSystem, Triple};
 
@@ -1863,39 +1863,25 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     Ok(LowerOut::DeadUnit)
 }
 
-/// A `Never` extern has failed the process by the time it returns: the
-/// process ends here, through the normal return to the scheduler. An extern
-/// that returns without marking the process failed broke its declaration,
-/// and that traps rather than running on. Code after the call is unreachable
-/// and lands in a block nothing enters.
-/// After a `never`-returning call: the process has failed, or a raise has
-/// queued its handler as the runnable closure. Either way this frame, and
-/// every frame above it, unwinds to the trampoline. Neither is a trap.
-/// What follows a call that cannot return: the callee raised. When a handler
-/// took the raise, `fz_panic` left that handler queued, and it runs here in
-/// the raising call's place, inside the same quantum. Otherwise the process
-/// has failed and control returns to the scheduler. A process that neither
-/// failed nor has a handler queued was ended by an extern that broke its
-/// `never` contract, which traps.
+/// What follows a call that cannot return: the callee raised. `fz_panic` either
+/// delivered the raise to a handler or failed the process, and in both cases
+/// this frame returns 0, as a yield does, so every frame above it unwinds to
+/// the quantum entry, which resumes the delivered handler or ends the process.
+/// A process that neither failed nor has a delivered handler was ended by an
+/// extern that broke its `never` contract, which traps. Code after the call is
+/// unreachable and lands in a block nothing enters.
 pub(super) fn continue_after_raise<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>) {
     let process = body.process_arg();
-    let handler = runtime_call1!(body, fz_take_raised_handler, [process]);
-    let handler_blk = body.b.create_block();
-    let failed_blk = body.b.create_block();
-    let no_args: Vec<BlockArg> = Vec::new();
-    body.b.ins().brif(handler, handler_blk, &no_args, failed_blk, &no_args);
-
-    body.b.switch_to_block(handler_blk);
-    body.b.seal_block(handler_blk);
-    emit_resume_closure(body, handler);
-
-    body.b.switch_to_block(failed_blk);
-    body.b.seal_block(failed_blk);
     let failed = body
         .b
         .ins()
         .uload8(types::I64, MemFlags::trusted(), process, PROCESS_FAILED_OFFSET);
-    body.b.ins().trapz(failed, TrapCode::user(1).unwrap());
+    let delivered = body
+        .b
+        .ins()
+        .load(types::I64, MemFlags::trusted(), process, PROCESS_DELIVERED_OFFSET);
+    let unwinds = body.b.ins().bor(failed, delivered);
+    body.b.ins().trapz(unwinds, TrapCode::user(1).unwrap());
     let done = body.b.ins().iconst(types::I64, 0);
     body.b.ins().return_(&[done]);
     let after = body.b.create_block();

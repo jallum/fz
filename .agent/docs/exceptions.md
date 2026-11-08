@@ -37,7 +37,8 @@ rescuable like any other raise.
 handlers a raise can reach, innermost last. A `try` pushes one frame on entry
 and pops it when its body completes; `fz_panic` pops the top frame and delivers
 to it. The stack is a GC root beside `runnable` and the mailbox: a boundary
-collection forwards every compiled handler on it (`Process::collect`).
+collection forwards every compiled handler on it (`Process::collect`),
+and the `delivered` slot below.
 
 Every handler receives the same three values: the kind atom (`:error` for a
 `raise`/`panic`), the raised value, and the exception's name atom (`nil` when
@@ -48,7 +49,9 @@ the value is not an exception map).
   `native_codegen/terminator.rs`); `fz_try_pop` pops it where the body's
   continuation begins. Delivery materializes the template with the three values
   as its bound values (`materialize_outcome_closure`, the receive-outcome
-  machinery) and queues the result as the process's `runnable` closure.
+  machinery) and stores the result in `Process::delivered`. That slot is not
+  `runnable`: `runnable` means queued for the scheduler, `delivered` means a
+  handler the current quantum is about to run.
 - `Handler::Interpreter` is the interpreter's frame. The interpreter keeps a
   `BackendContinuation` with `handler: true` on its continuation stack and
   pushes this marker beside it; delivery leaves the three values in
@@ -62,15 +65,22 @@ the value is not an exception map).
 - **Native code (run and build).** After a call to a `never` extern,
   `lower_extern_generic` emits `continue_after_raise`
   (`native_codegen/prim.rs`); `Term::Halt` emits `fz_panic` and then the same.
-  It calls `fz_take_raised_handler`, which hands back the queued handler as a
-  closure ref and clears the slot. With a handler, native code runs it in the
-  raising call's place through the same tail call `fz_resume` would make
-  (`emit_resume_closure`), inside the current quantum: the reduction budget keeps
-  counting, so a loop that raises and rescues every iteration yields through its
-  ordinary back edges. With none, the process has failed and the code returns 0
-  to the scheduler, which finds no runnable closure and marks the process
-  exited. A process that neither failed nor queued a handler was ended by an
-  extern that broke its `never` contract, which traps.
+  The raising frame returns 0, as a yield does, and every frame above it
+  returns that 0 to the quantum entry: the machine frames between the `try` and
+  the raise are gone before the handler runs, so a loop that raises on every
+  iteration uses the same stack for each. The entry is `Process::run_quantum`,
+  which both the JIT driver (`CompiledModule::run_quantum`) and the AOT driver
+  (`dispatch_quantum`) call. When the code unwinds, `run_quantum` takes
+  `Process::delivered` and, if a handler is there, resumes it at once in the same
+  quantum: it does not pass through the scheduler's run queue and does not reset
+  the reduction budget, so a loop that raises and rescues every iteration still
+  yields through its ordinary back edges. Every other way out of a quantum (a
+  reduction or explicit yield, a receive park, process end, a failure) leaves
+  `delivered` empty and hands the process back to the scheduler. With no
+  handler the process has failed and the scheduler finds no runnable closure
+  and marks the process exited. A process that neither failed nor has a
+  delivered handler was ended by an extern that broke its `never` contract,
+  which traps.
 - **Interpreter.** A `never` extern answers `ExternCallValue::ProcessFailed`
   when the process has diverged (`Process::diverged`: failed, or a raise is
   waiting), and an error naming the broken contract when it has not.
@@ -239,16 +249,17 @@ raise. `Process.failed` and `raises_delivered` are projected into
 
 - `runtime/src/failure.rs` — `failure_line`, `fz_panic`, `STDERR_FAULT_HOOK`.
 - `runtime/src/process.rs` — `Handler`, `Raised`, `handlers`, `raised`,
-  `raises_delivered`, `push_handler`, `pop_handler`, `diverged`.
-- `runtime/src/ir_runtime.rs` — `fz_try_push`, `fz_try_pop`,
-  `fz_take_raised_handler`.
+  `delivered`, `raises_delivered`, `push_handler`, `pop_handler`,
+  `deliver_handler`, `run_quantum`, `diverged`.
+- `runtime/src/ir_runtime.rs` — `fz_try_push`, `fz_try_pop`.
+- `runtime/src/process_abi.rs` — `PROCESS_DELIVERED_OFFSET`, read by
+  `continue_after_raise`.
 - `lib/kernel.fz` — `panic/1`, `raise/1`, `raise/2`.
 - `src/ast/mod.rs` — `Expr::Try`, `RescueClause`.
 - `src/compiler2/quoted_function.rs` — `decode_try`, `decode_rescue_head`.
 - `src/compiler2/source_sugar.rs` — the `in` rewrite and its operator stamp.
 - `src/compiler2/jobs/body.rs` — `lower_try`, `lower_rescued`, `rescue_arms`, `reraise_block`, `push_try_else`.
-- `src/compiler2/native_codegen/terminator.rs` — `emit_try`, `emit_halt`,
-  `emit_resume_closure`.
+- `src/compiler2/native_codegen/terminator.rs` — `emit_try`, `emit_halt`.
 - `src/compiler2/native_codegen/prim.rs` — `continue_after_raise`,
   `Prim::PopHandler`.
 - `src/ir_interp/backend.rs` — `after_panic`, `fail_with_atom`,

@@ -9,6 +9,8 @@ use std::mem::offset_of;
 pub const PROCESS_REDUCTIONS_REMAINING_OFFSET: i32 = offset_of!(Process, reductions_remaining) as i32;
 pub const PROCESS_YIELD_REASONS_OFFSET: i32 = offset_of!(Process, yield_reasons) as i32;
 pub const PROCESS_FAILED_OFFSET: i32 = offset_of!(Process, failed) as i32;
+/// `Process::delivered` is an `Option<ClosureRef>`: one word, zero when empty.
+pub const PROCESS_DELIVERED_OFFSET: i32 = offset_of!(Process, delivered) as i32;
 
 #[cfg(test)]
 #[path = "process_abi_test.rs"]

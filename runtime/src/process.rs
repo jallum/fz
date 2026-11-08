@@ -13,6 +13,7 @@ use crate::function_denotation::FunctionDenotation;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
+use std::num::NonZeroU64;
 use std::ptr::null_mut;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -119,6 +120,12 @@ pub struct Process {
     /// entry closure; the thunk supplies the halt continuation and enters it
     /// on first resume). `None` means no work is queued.
     pub runnable: Option<ClosureRef>,
+    /// The compiled handler a raise just delivered: the materialized handler
+    /// template, applied to `(kind, value, name)`. Unlike `runnable`, which
+    /// means "queued for the scheduler", this slot is only ever filled while a
+    /// quantum is unwinding to its entry; `run_quantum` resumes it before the
+    /// quantum ends.
+    pub delivered: Option<ClosureRef>,
     /// The handlers a raise can reach, innermost last. See [`Handler`].
     pub handlers: Vec<Handler>,
     /// A raise waiting for the interpreter's handler frame. Set by `fz_panic`
@@ -203,9 +210,11 @@ pub type WaitState = ParkRecord;
 
 /// A `(self)`-callable closure the scheduler can resume through the `fz_resume`
 /// shim. It is a closure ref, so a closure the program ships as read-only data
-/// keeps its literal bit. A `ClosureRef` always names a real closure to run.
+/// keeps its literal bit. A `ClosureRef` always names a real closure to run,
+/// so its word is never zero and an `Option<ClosureRef>` is one word that is
+/// zero when empty: compiled code reads that word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ClosureRef(AnyValueRef);
+pub struct ClosureRef(NonZeroU64);
 
 impl ClosureRef {
     pub fn new(closure: AnyValueRef) -> Self {
@@ -214,11 +223,11 @@ impl ClosureRef {
             !closure.is_empty_list() && !closure.storage_addr().is_null(),
             "a runnable closure is not null"
         );
-        Self(closure)
+        Self(NonZeroU64::new(closure.raw_word()).expect("a closure ref word is not zero"))
     }
 
     pub fn as_ref(self) -> AnyValueRef {
-        self.0
+        AnyValueRef::from_raw_word(self.0.get()).expect("a ClosureRef holds a valid ref word")
     }
 }
 
@@ -231,9 +240,9 @@ impl ClosureRef {
 pub enum Handler {
     /// Compiled code's handler: a continuation template whose environment is
     /// `[outer_cont, captures...]`. Delivery materializes it with the raise's
-    /// `(kind, value, name)` as its bound values and queues it as `runnable`,
-    /// the same verb a receive outcome uses; the raising call takes it from
-    /// there and runs it in its own place.
+    /// `(kind, value, name)` as its bound values, the way a receive outcome is
+    /// materialized, and stores it in `Process::delivered`; the raising frame
+    /// returns to the quantum entry, which resumes it.
     Closure(ClosureRef),
     /// The interpreter's handler. The interpreter keeps the frame itself; the
     /// raise is left in `Process::raised` for it to read when the panicking
@@ -436,6 +445,7 @@ impl Process {
             next_frame: null_mut(),
             mailbox: VecDeque::new(),
             runnable: None,
+            delivered: None,
             handlers: Vec::new(),
             raised: None,
             raises_delivered: 0,
@@ -470,6 +480,34 @@ impl Process {
     /// next thing to resume.
     pub fn set_runnable_closure(&mut self, closure: AnyValueRef) {
         self.runnable = Some(ClosureRef::new(closure));
+    }
+
+    /// Hand a raise's materialized handler to the quantum that is unwinding
+    /// from the raise.
+    pub fn deliver_handler(&mut self, handler: AnyValueRef) {
+        self.delivered = Some(ClosureRef::new(handler));
+    }
+
+    /// Whether a compiled raise delivered a handler the quantum has yet to run.
+    pub fn has_delivered_handler(&self) -> bool {
+        self.delivered.is_some()
+    }
+
+    /// Run one quantum starting at `first`. `resume` enters a closure and
+    /// returns when the code unwinds to the quantum entry: because it yielded,
+    /// parked, ended, failed, or delivered a raise to a handler. Only the last
+    /// continues the quantum, with the handler, at once and on the same budget;
+    /// every other way out hands the process back to the scheduler. This is the
+    /// one place that answers whether the quantum continues.
+    pub fn run_quantum(&mut self, first: AnyValueRef, mut resume: impl FnMut(&mut Process, AnyValueRef)) {
+        let mut closure = first;
+        loop {
+            resume(self, closure);
+            match self.delivered.take() {
+                Some(handler) => closure = handler.as_ref(),
+                None => return,
+            }
+        }
     }
 
     /// Take the queued runnable closure, clearing the slot.
@@ -538,8 +576,8 @@ impl Process {
 
     /// Collect this process's heap. The roots are everything the process
     /// holds into its heap, in one flat slice: the runnable closure, the park
-    /// record (clause bodies, after body, pinned values), the compiled
-    /// handlers of the `try` bodies the process is inside, the mailbox and the
+    /// record (clause bodies, after body, pinned values), a delivered handler,
+    /// the compiled handlers of the `try` bodies the process is inside, the mailbox and the
     /// caller's `transient` values. Each holds its forwarded value on return.
     ///
     /// The delivery lock is held throughout, so a sender cannot probe the
@@ -555,6 +593,7 @@ impl Process {
             roots.extend(park.after_cont);
             roots.extend(park.pinned.iter().copied());
         }
+        roots.extend(self.delivered.map(ClosureRef::as_ref));
         roots.extend(
             self.handlers
                 .iter()
@@ -581,6 +620,9 @@ impl Process {
             for pinned in park.pinned.iter_mut() {
                 *pinned = next();
             }
+        }
+        if self.delivered.is_some() {
+            self.delivered = Some(ClosureRef::new(next()));
         }
         for handler in self.handlers.iter_mut() {
             if let Handler::Closure(closure) = handler {

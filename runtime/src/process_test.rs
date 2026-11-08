@@ -1,4 +1,6 @@
-use super::{ClosureRef, Disposition, Handler, Node, Process, ProcessState, YIELD_REASON_REDUCTIONS};
+use super::{
+    ClosureRef, Disposition, Handler, Node, Process, ProcessState, YIELD_REASON_EXPLICIT, YIELD_REASON_REDUCTIONS,
+};
 use crate::any_value::{
     AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ValueKind, closure_addr_from_tagged, closure_capture_set,
     closure_capture_value, list_addr_from_tagged,
@@ -256,4 +258,129 @@ fn quantum_end_is_read_off_the_process_state() {
     process.state = ProcessState::Running;
     process.take_runnable_closure();
     assert_eq!(process.quantum_end(), Disposition::Exited);
+}
+
+/// A closure standing in for a scheduler continuation or a handler.
+fn a_closure(process: &mut Process) -> AnyValueRef {
+    let capture = int_list(&mut process.heap, 1);
+    closure_capturing(process, capture)
+}
+
+fn a_process() -> Process {
+    Process::new(Rc::new(RefCell::new(SchemaRegistry::new())))
+}
+
+/// Runs one quantum whose code does `unwind` each time it is entered, and
+/// returns the closures it was entered with.
+fn entries_of_a_quantum(process: &mut Process, mut unwind: impl FnMut(&mut Process, usize)) -> Vec<AnyValueRef> {
+    let first = a_closure(process);
+    let mut entered = Vec::new();
+    process.run_quantum(first, |process, closure| {
+        unwind(process, entered.len());
+        entered.push(closure);
+    });
+    assert_eq!(entered[0], first);
+    entered
+}
+
+#[test]
+fn a_delivered_handler_continues_the_quantum_without_the_scheduler() {
+    let mut process = a_process();
+    let handler = a_closure(&mut process);
+    process.reductions_remaining = 17;
+
+    let entered = entries_of_a_quantum(&mut process, |process, entry| {
+        if entry == 0 {
+            process.deliver_handler(handler);
+        }
+    });
+
+    assert_eq!(entered.len(), 2, "the handler ran in the same quantum");
+    assert_eq!(entered[1], handler);
+    assert!(!process.has_delivered_handler(), "the handler was taken");
+    assert!(process.runnable.is_none(), "nothing was queued for the scheduler");
+    assert_eq!(process.reductions_remaining, 17, "the budget is not reset");
+}
+
+#[test]
+fn a_handler_that_yields_hands_the_process_back_to_the_scheduler() {
+    let mut process = a_process();
+    let handler = a_closure(&mut process);
+    let continuation = a_closure(&mut process);
+
+    let entered = entries_of_a_quantum(&mut process, |process, entry| match entry {
+        0 => process.deliver_handler(handler),
+        _ => {
+            process.set_runnable_closure(continuation);
+            process.finish_yield_report(0, YIELD_REASON_REDUCTIONS);
+        }
+    });
+
+    assert_eq!(entered.len(), 2);
+    assert_eq!(process.runnable_closure(), Some(continuation));
+}
+
+#[test]
+fn a_reduction_yield_hands_the_process_back_to_the_scheduler() {
+    let mut process = a_process();
+    let continuation = a_closure(&mut process);
+
+    let entered = entries_of_a_quantum(&mut process, |process, _| {
+        process.set_runnable_closure(continuation);
+        process.finish_yield_report(0, YIELD_REASON_REDUCTIONS);
+    });
+
+    assert_eq!(entered.len(), 1);
+    assert_eq!(process.runnable_closure(), Some(continuation));
+    assert_eq!(process.reduction_yields, 1);
+}
+
+#[test]
+fn an_explicit_yield_hands_the_process_back_to_the_scheduler() {
+    let mut process = a_process();
+    let continuation = a_closure(&mut process);
+
+    let entered = entries_of_a_quantum(&mut process, |process, _| {
+        process.set_runnable_closure(continuation);
+        process.finish_yield_report(10, YIELD_REASON_EXPLICIT);
+    });
+
+    assert_eq!(entered.len(), 1);
+    assert_eq!(process.runnable_closure(), Some(continuation));
+}
+
+#[test]
+fn a_park_hands_the_process_back_to_the_scheduler() {
+    let mut process = a_process();
+
+    let entered = entries_of_a_quantum(&mut process, |process, _| process.state = ProcessState::Blocked);
+
+    assert_eq!(entered.len(), 1);
+    assert!(process.runnable.is_none());
+    assert_eq!(process.state, ProcessState::Blocked);
+}
+
+#[test]
+fn a_failure_hands_the_process_back_to_the_scheduler() {
+    let mut process = a_process();
+
+    let entered = entries_of_a_quantum(&mut process, |process, _| process.failed = true);
+
+    assert_eq!(entered.len(), 1);
+    assert!(process.failed);
+}
+
+#[test]
+fn collect_forwards_a_delivered_handler() {
+    let mut process = a_process();
+    let capture = int_list(&mut process.heap, 21);
+    let handler = closure_capturing(&mut process, capture);
+    process.deliver_handler(handler);
+
+    let stats = process.collect(&mut []);
+
+    let moved = process.delivered.expect("the handler stays delivered").as_ref();
+    assert_ne!(moved, handler);
+    assert_eq!(list_head(captured_list(moved)), 21);
+    assert_eq!(stats.root_heap_edges, 1, "the delivered handler is the only root");
 }

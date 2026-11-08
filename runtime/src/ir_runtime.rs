@@ -454,17 +454,6 @@ pub extern "C" fn fz_try_pop(process: *mut Process) {
     unsafe { &mut *process }.pop_handler();
 }
 
-/// The handler a raise just queued, as a closure ref word, or zero when the
-/// raise found none. Compiled code asks after a call that cannot return and
-/// runs the handler in that call's place; asking clears the queue slot.
-#[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_take_raised_handler(process: *mut Process) -> u64 {
-    unsafe { &mut *process }
-        .take_runnable_closure()
-        .map_or(0, AnyValueRef::raw_word)
-}
-
 /// Selective receive entry. Called by JIT/AOT
 /// codegen at the `Term::ReceiveMatched` seam after the matcher fn,
 /// pinned snapshot, clause-body table, and (optional) after-cont
