@@ -27,7 +27,7 @@ use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind,
 use fz_runtime::delivery::Delivery;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule};
 use fz_runtime::heap::Schema;
-use fz_runtime::heap::deep_copy_any_value_ref;
+use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_empty,
     fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref,
@@ -285,7 +285,7 @@ impl IrInterpRuntime {
             pid,
             DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));
-        let mut forwarding = HashMap::new();
+        let mut forwarding = AddressMap::default();
         let sender_view = unsafe { &*sender }.heap.view();
         let args = args
             .into_iter()

@@ -32,7 +32,7 @@ use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
-use fz_runtime::heap::deep_copy_any_value_ref;
+use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
 use fz_runtime::pinned_abi::call2;
 use fz_runtime::procbin::mso_drop_all_deferred;
@@ -294,7 +294,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         // Deep-copy the closure from sender's heap into the new task's heap.
         assert!(!sender.is_null(), "spawn_closure: no sender process");
         let sender = unsafe { &*sender };
-        let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
+        let mut forwarding = AddressMap::default();
         let closure_ref = AnyValueRef::from_raw_word(closure_ref_word).expect("spawn_closure: closure ref");
         closure_ref
             .closure_addr()

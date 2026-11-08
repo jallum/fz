@@ -105,15 +105,17 @@ with the sender as the allocating process, which the matcher uses for allocation
 only: a guard's `self()` is a pinned value the receiver took at park time, see
 [pattern-matching](pattern-matching.md#receive-guards-run-on-the-sender)), cancels the after-timer and calls
 `sched::gift_match`, which copies the bound values with one forwarding map into
-a gift on the sender's heap (`sched::gift_copy`) and queues a `Gift { segment,
+a gift on the sender's heap (`sched::gift_copy`: measure, then copy into one
+block of the measured size) and queues a `Gift { segment,
 payload: GiftPayload::Match { clause_idx, bound_vals } }` on the receiver's
 `in_queue`; a miss calls `sched::gift_message`, which gifts the whole message
 as a `GiftPayload::Message`. These two functions are the only implementation of
 "gift and queue": `sched::probe_sender` (JIT and AOT) and the interpreter's
 `probe_parked_receive` differ only in which matcher runs and which record holds
-the after-timer. A clause that binds nothing gifts nothing: `gift_copy` of no
-values returns `GiftSegment::empty()` without opening a window, and grafting it
-is a no-op. The receiver's dispatch grafts each segment, takes the park record
+the after-timer. A copy that allocates nothing gifts nothing: `gift_copy` of no
+values, or of values that cross as they are (the empty list, a pointer the
+sender does not own), measures zero and returns `GiftSegment::empty()` without
+opening a window, and grafting it is a no-op. The receiver's dispatch grafts each segment, takes the park record
 and materializes the outcome closure (`sched::deliver_in_queue`). The queued
 entry is the partial closure: a clause index and gifted bound values, no new
 heap object type.
@@ -201,7 +203,7 @@ rather than in `Delivery`; its probe, timer and delivery paths still take the
 receiver's lock for the pending-match decision and the in-queue.
 
 `delivery` is declared before `heap` in `Process`, so a process dropped with
-gifts still queued drops them first: each `GiftSegment` returns its blocks to
+gifts still queued drops them first: each `GiftSegment` returns its block to
 the pool (or the allocator, for an exact block) and releases its stubs. A receiver left parked
 when the run ends is torn down this way, and `fz.runtime.run_ended` reports that
 the pool got every block back ([runtime telemetry](runtime-telemetry.md)). With
@@ -369,7 +371,7 @@ The roots the boundary GC traces are exactly the `runnable` closure and the
   across all four paths.
 - `cargo test --test fixture_matrix a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`
   — fixtures 00695 and 00696 on the `run` and `interp` paths: a miss gifts the
-  whole message, a hit gifts exactly the bound cells (48 bytes for `[1, 2, 3]`),
+  whole message in one block (800032 bytes for the 50000-element log), a hit gifts exactly the bound cells (48 bytes for `[1, 2, 3]`),
   the receiver is woken once, and its own heap allocates no list cells for the
   delivery.
 - `runtime/src/sched_test.rs` — the probe, drain and delivery primitives: a hit
@@ -382,7 +384,7 @@ The roots the boundary GC traces are exactly the `runnable` closure and the
   against the installed park afterwards.
 - `cargo test --test fixture_matrix a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
   — fixture 00697: three messages gifted to a receiver that stays parked, on
-  `run` and `interp`; the run ends with them still queued and `run_ended` shows
+  `run` and `interp`, each one block of exactly its measured bytes; the run ends with them still queued and `run_ended` shows
   the pool's outstanding count back at its starting value. The fixture runs on
   all three paths for output parity.
 - `cargo test --test fixture_matrix spawn_with_captures` — a spawned task is

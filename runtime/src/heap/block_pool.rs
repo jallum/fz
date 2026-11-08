@@ -33,7 +33,8 @@ const fn build_size_table() -> [usize; 32] {
     t
 }
 
-fn round_up_16(bytes: usize) -> usize {
+/// `bytes` rounded up to the 16-byte slot every allocation occupies.
+pub(super) fn round_up_16(bytes: usize) -> usize {
     (bytes + 15) & !15
 }
 

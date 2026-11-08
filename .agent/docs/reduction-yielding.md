@@ -109,15 +109,22 @@ grows past the table to hold it.
 
 ## The gift window
 
-`Heap::begin_gift` sets the current tip aside and installs a fresh block from
-the smallest capacity; allocation continues through `alloc_kind` and overflows
-upward as usual. `Heap::end_gift` cuts the blocks and MSO stubs
-produced since the window opened into a `GiftSegment`, restores the saved tip,
-and puts `live_count` back. Allocation statistics stay with the heap that did
-the copying. `Heap::graft` on another heap adopts the segment; dropping an
-un-grafted segment releases its blocks and its stubs' off-heap references. A collection asserts that no window is
-open. Cross-process send is the window's user: `sched::gift_copy` copies a
-message, or a match's bound values, inside one, and the segment travels to the
+A gift is measured, then copied. `measure_deep_copy` returns the bytes the
+copy will allocate: it walks the same kinds under the same ownership test and
+the same sharing as `deep_copy_any_value_ref`, so an object reached twice is
+counted once, and each object is the size `strict_object_size` states for its
+source. `Heap::begin_gift(measured_bytes)` sets the current tip aside and
+installs one fresh block of `pick_block_capacity(measured_bytes)`: a table
+entry, or an exact block above the table. The copy allocates through
+`alloc_kind` into that block and cannot overflow it. `Heap::end_gift` asserts
+the block's fill is exactly the measured bytes, turns the block and the MSO
+stubs produced since the window opened
+into a `GiftSegment` of exactly one block, restores the saved tip, and puts
+`live_count` back. Allocation statistics stay with the heap that did the
+copying. `Heap::graft` on another heap adopts the segment; dropping an
+un-grafted segment releases its block and its stubs' off-heap references. A
+collection asserts that no window is open. Cross-process send is the window's user: `sched::gift_copy` measures a
+message, or a match's bound values, and copies it inside one, and the segment travels to the
 receiver on its `in_queue` (see [scheduler](scheduler-zero-arg-closures.md)).
 
 Grafted blocks are parked blocks like any other, so a gift's fill is part of

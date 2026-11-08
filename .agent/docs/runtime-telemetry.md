@@ -131,14 +131,18 @@ signature:    (&SendProbe)
 `SendProbe` is `{ outcome: Hit | Miss, receiver: PidId, reductions: i64,
 gift_bytes: usize, gift_blocks: usize }`. `reductions` is the change in the
 sender's remaining budget across the matcher call; `gift_bytes` and
-`gift_blocks` are the segment's fill and block count, both `0` when a hit binds
-nothing and no window opens. `JsonlBackend` renders the
+`gift_blocks` are the segment's fill and block count. `gift_bytes` equals the
+bytes `measure_deep_copy` returned before the copy, and `gift_blocks` is `1`
+for every gift that allocates; both are `0` when a hit binds nothing and no
+window opens. `JsonlBackend` renders the
 outcome as `"hit"` or `"miss"` and the rest as numbers. A self-send is a mailbox
 push and emits nothing. The AOT scheduler carries no telemetry bus and emits
 nothing, as for the other runtime events. `tests/fixture_matrix.rs`
 (`a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`)
 pins the event sequence of fixtures 00695 and 00696 on the `run` and `interp`
-paths.
+paths, and `a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
+pins each of fixture 00697's three gifts (`gift_bytes` 16032, 64 and 16, one
+block each).
 
 ## Program Output
 

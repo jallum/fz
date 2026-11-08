@@ -361,23 +361,27 @@ copied like any other.</p>
 <p>A heap can lend its allocation path to a copy whose result belongs to another
 heap. Cross-process send is its user: the sender copies a message, or a match's
 bound values, inside one, and the segment waits on the receiver's
-<code>in_queue</code> until the receiver's next dispatch grafts it. <code>Heap::begin_gift</code> sets the current tip aside and installs a
-fresh block of the smallest capacity; allocation then proceeds through the
-ordinary bump path, overflowing into larger blocks exactly as any allocation
-does. <code>Heap::end_gift</code> cuts everything allocated since the window
-opened into a <code>GiftSegment</code> and puts the saved tip back with its
-free space intact. The segment carries the window's blocks (each with its fill),
-the prefix of the MSO chain that the window
-produced, and the number of objects allocated. Each
-of those is a split of a list the heap already keeps, not a walk. The heap's
-allocation statistics stay with it, its <code>live_count</code> goes back to
-what it was. A collection cannot run while a window is open.</p>
+<code>in_queue</code> until the receiver's next dispatch grafts it.</p>
 
-<p>The receiving heap calls <code>Heap::graft</code>: the segment's blocks join
+<p>The sender measures first. <code>measure_deep_copy</code> walks the value
+set the way the copy will and returns the bytes it will allocate, counting
+shared structure once. <code>Heap::begin_gift</code> takes that figure, sets the
+current tip aside and installs one block of the smallest capacity that holds it
+(an exact block when it exceeds the table). The copy runs through the ordinary
+bump path and fills the block without overflowing it. <code>Heap::end_gift</code>
+asserts the block's fill is exactly the measured bytes, turns the block into a
+<code>GiftSegment</code> and puts
+the saved tip back with its free space intact. The segment carries that one
+block (with its fill), the prefix of the MSO chain that the window produced,
+and the number of objects allocated. The heap's allocation statistics stay with
+it, its <code>live_count</code> goes back to what it was. A collection cannot
+run while a window is open.</p>
+
+<p>The receiving heap calls <code>Heap::graft</code>: the segment's block joins
 its <code>blocks</code>, its MSO
 prefix is spliced ahead of the receiver's chain. Every parked block counts
 toward <code>bytes_used</code> by fill, never by capacity, so a kilobyte block
-holding one cons cell costs sixteen bytes toward <code>should_gc</code>. A segment that is dropped without being grafted releases its blocks
+holding one cons cell costs sixteen bytes toward <code>should_gc</code>. A segment that is dropped without being grafted releases its block
 and every stub's off-heap reference.</p>
 
 <h3>The MSO chain</h3>
@@ -512,7 +516,7 @@ past the table to hold it.</p>
   <li><strong>Keep:</strong> otherwise the current size, raised to the floor.</li>
 </ul>
 
-<p>Gifts are parked blocks like any other, so their fill is part of the
+<p>A gift is one parked block like any other, so its fill is part of the
 bytes in use whatever raised <code>should_gc</code>. After the pass the
 parked blocks go back to the pool with the rest of from-space.</p>
 

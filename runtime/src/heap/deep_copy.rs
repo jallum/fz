@@ -6,12 +6,14 @@
 //! holds one `&mut Heap` and no second reference to the same heap.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::ptr::{copy_nonoverlapping, null_mut, read, write};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
 
-use super::ref_io::ptr_in_ranges;
+use super::block_pool::round_up_16;
+use super::ref_io::{ptr_in_ranges, strict_object_size};
 use super::schema::{FieldKind, SchemaRegistry};
 use super::{Heap, HeapAllocKind};
 use crate::any_value::AnyValueRef;
@@ -61,11 +63,160 @@ impl Heap {
     }
 }
 
+/// The bytes `deep_copy_any_value_ref` allocates when it copies `values`
+/// through one forwarding map, without allocating or writing anything.
+///
+/// It walks what the copy walks: the same kinds, the same ownership test
+/// against the source view, the same sharing (an object reached twice is one
+/// object in the copy, so it is counted once). A copied object has the size of
+/// its source, which `strict_object_size` states for the collector too; each
+/// scalar the copy boxes takes one slot.
+pub fn measure_deep_copy(values: &[AnyValueRef], src_heap: &HeapView) -> usize {
+    let mut measure = CopyMeasure {
+        src_heap,
+        reached: AddressSet::default(),
+        bytes: 0,
+    };
+    for value in values {
+        measure.value_ref(*value);
+    }
+    measure.bytes
+}
+
+/// A map keyed by object address: the forwarding map of a copy.
+pub type AddressMap<V> = HashMap<*mut u8, V, BuildHasherDefault<AddressHasher>>;
+
+/// A set of object addresses: the objects a measuring pass has reached.
+pub type AddressSet = HashSet<*mut u8, BuildHasherDefault<AddressHasher>>;
+
+/// Hashes an object address. Both passes of a copy insert every object they
+/// reach, so the hash is one multiply with the product folded onto itself: the low bits
+/// of a 16-aligned address carry nothing, and the table indexes by them.
+#[derive(Default)]
+pub struct AddressHasher(u64);
+
+impl Hasher for AddressHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, _bytes: &[u8]) {
+        unreachable!("an address is hashed as one usize");
+    }
+
+    fn write_usize(&mut self, address: usize) {
+        let product = (address as u64 >> 4).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = product ^ (product >> 32);
+    }
+}
+
+struct CopyMeasure<'a> {
+    src_heap: &'a HeapView,
+    /// The source objects already counted: the forwarding map's keys.
+    reached: AddressSet,
+    bytes: usize,
+}
+
+impl CopyMeasure<'_> {
+    fn value_ref(&mut self, value: AnyValueRef) {
+        if value.is_empty_list() {
+            return;
+        }
+        match value.tag() {
+            ValueKind::NULL => {}
+            tag if tag.is_scalar() => self.bytes += round_up_16(size_of::<u64>()),
+            tag if tag.is_heap() => {
+                let bits = value.heap_object_word().expect("heap ref bits");
+                self.value(AnyValue::decode_tagged_heap_bits(bits).expect("heap bits"));
+            }
+            _ => unreachable!("AnyValueRef tag set is exhaustive"),
+        }
+    }
+
+    /// Count `child` when it is a heap value; an inline slot costs nothing.
+    fn slot(&mut self, child: AnyValue) {
+        if child.kind().is_heap() {
+            self.value(child);
+        }
+    }
+
+    fn value(&mut self, src: AnyValue) {
+        let Some(sp) = src.heap_addr() else {
+            return;
+        };
+        if sp.is_null() || !self.src_heap.contains(sp) {
+            return;
+        }
+        match src.kind() {
+            ValueKind::LIST => self.list(sp),
+            ValueKind::MAP
+            | ValueKind::CLOSURE
+            | ValueKind::STRUCT
+            | ValueKind::BITSTRING
+            | ValueKind::PROCBIN
+            | ValueKind::RESOURCE => self.object(sp, src),
+            _ => {}
+        }
+    }
+
+    /// Count the object at `sp` and what it holds, unless it was already
+    /// reached.
+    fn object(&mut self, sp: *mut u8, src: AnyValue) {
+        if !self.reached.insert(sp) {
+            return;
+        }
+        let bits = src.heap_object_word().expect("heap object bits");
+        self.bytes += strict_object_size(bits, &self.src_heap.schemas.borrow());
+        self.children(sp, src.kind());
+    }
+
+    fn children(&mut self, sp: *mut u8, kind: ValueKind) {
+        match kind {
+            ValueKind::MAP => {
+                for i in 0..unsafe { map_count(sp as *const u8) } {
+                    let (key, value) = unsafe { map_entry(sp as *const u8, i) };
+                    self.slot(key);
+                    self.slot(value);
+                }
+            }
+            ValueKind::CLOSURE => {
+                for i in 0..unsafe { closure_captured_count(sp as *const u8) } {
+                    self.slot(unsafe { closure_capture_value(sp as *const u8, i) });
+                }
+            }
+            ValueKind::STRUCT => {
+                let schema_id = unsafe { struct_schema_id(sp as *const u8) };
+                let registry = self.src_heap.schemas.borrow();
+                for (field, _) in registry.get(schema_id).any_value_fields_with_kind_offsets() {
+                    self.slot(self.src_heap.read_field_slot(sp, field.offset));
+                }
+            }
+            ValueKind::RESOURCE => self.slot(unsafe { ResourceStub::from_raw(sp) }.closure_value()),
+            _ => {}
+        }
+    }
+
+    /// A list is walked along its spine, like the copy: it stops at the empty
+    /// list, at a cell already reached, or at a tail that is not this heap's.
+    fn list(&mut self, first: *mut u8) {
+        let mut cell = first;
+        while self.reached.insert(cell) {
+            self.bytes += size_of::<ListCons>();
+            let cons = unsafe { &*(cell as *const ListCons) };
+            self.slot(cons.head_value());
+            cell = cons.tail_addr() as *mut u8;
+            if cell.is_null() || !self.src_heap.contains(cell) {
+                return;
+            }
+        }
+    }
+}
+
 pub fn deep_copy_any_value_ref(
     value: AnyValueRef,
     src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> AnyValueRef {
     if value.is_empty_list() {
         return value;
@@ -94,7 +245,7 @@ pub fn deep_copy_tagged_bits(
     bits: u64,
     src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> u64 {
     let copied = deep_copy_any_value(
         AnyValue::decode_tagged_heap_bits(bits).expect("deep_copy_tagged_bits expects heap bits"),
@@ -111,7 +262,7 @@ pub fn deep_copy_any_value(
     src: AnyValue,
     src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> AnyValue {
     let Some(sp) = src.heap_addr() else {
         return src;
@@ -204,7 +355,7 @@ fn deep_copy_list(
     sp: *mut u8,
     src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> AnyValue {
     if let Some(&dp) = forwarding.get(&sp) {
         return share_copied_list(dp, dst_heap);
@@ -257,7 +408,7 @@ fn copy_list_cell(
     sp: *mut u8,
     src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> (*mut u8, AnyValue) {
     let bits = dst_heap.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
     let dp = list_addr_from_tagged(bits).expect("new list ptr");
@@ -282,7 +433,7 @@ fn deep_copy_strict_closure(
     sp: *mut u8,
     src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> AnyValue {
     if let Some(&dp) = forwarding.get(&sp) {
         return AnyValue::heap_ptr(dp, ValueKind::CLOSURE);
@@ -313,7 +464,7 @@ fn deep_copy_strict_struct(
     sp: *mut u8,
     src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> AnyValue {
     if let Some(&dp) = forwarding.get(&sp) {
         return AnyValue::heap_ptr(dp, ValueKind::STRUCT);
@@ -352,7 +503,7 @@ pub fn deep_copy_slot(
     src: AnyValue,
     src_heap: &HeapView,
     dst_heap: &mut Heap,
-    forwarding: &mut HashMap<*mut u8, *mut u8>,
+    forwarding: &mut AddressMap<*mut u8>,
 ) -> AnyValue {
     deep_copy_any_value(src, src_heap, dst_heap, forwarding)
 }

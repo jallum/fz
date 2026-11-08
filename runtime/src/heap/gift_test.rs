@@ -4,9 +4,9 @@
 use super::*;
 use crate::any_value::{
     AnyValue, AnyValueRef, EMPTY_LIST, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, ValueKind, heap_object_word,
-    list_addr_from_tagged, procbin_addr_from_tagged, struct_addr_from_tagged,
+    list_addr_from_tagged, procbin_addr_from_tagged, struct_addr_from_tagged, struct_size_for_payload,
 };
-use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin};
+use crate::procbin::{PROCBIN_BYTES, ProcBin, SharedBinHandle, alloc_procbin};
 use crate::resource::ResourceStub;
 use crate::sync::Ordering;
 use std::cell::RefCell;
@@ -79,7 +79,7 @@ fn oversize_schema(reg: &Rc<RefCell<SchemaRegistry>>) -> u32 {
 /// One cons cell copied through a gift window, as a sender would copy a
 /// matched message part.
 fn gift_one_cons(sender: &mut Heap, value: i64) -> (GiftSegment, u64) {
-    sender.begin_gift();
+    sender.begin_gift(16);
     let bits = alloc_int_list_cons(sender, value, EMPTY_LIST);
     (sender.end_gift(), bits)
 }
@@ -91,24 +91,22 @@ fn end_gift_restores_the_senders_tip_and_leaves_its_earlier_allocations_untouche
     let (start, top, capacity) = (sender.block_start, sender.bump_top, sender.block_size);
     let (bytes_used, live_count) = (sender.bytes_used(), sender.live_count());
 
-    sender.begin_gift();
-    assert_eq!(sender.block_size, SIZE_TABLE[0], "a gift starts at the smallest block");
+    sender.begin_gift(1008 + 64);
+    assert_eq!(
+        sender.block_size,
+        pick_block_capacity(1008 + 64),
+        "a gift opens the smallest block that holds the measured bytes"
+    );
     assert_ne!(sender.block_start, start, "the gift allocates into its own block");
-    // Fill the first gift block and overflow into a second one.
     let _ = sender.alloc(1008);
     let _ = sender.alloc(64);
-    assert_eq!(
-        sender.blocks.len(),
-        1,
-        "overflow inside the window abandons the gift block"
+    assert!(
+        sender.blocks.is_empty(),
+        "the measured bytes fit; the window never overflows"
     );
     let segment = sender.end_gift();
 
-    assert_eq!(
-        segment.block_count(),
-        2,
-        "the segment carries the abandoned block and the final tip"
-    );
+    assert_eq!(segment.block_count(), 1, "the segment is the one gift block");
     assert_eq!(segment.fill_bytes(), 1008 + 64);
     assert_eq!(
         (sender.block_start, sender.bump_top, sender.block_size),
@@ -138,7 +136,7 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut receiver = Heap::new(SIZE_TABLE[0], reg);
 
-    sender.begin_gift();
+    sender.begin_gift(PROCBIN_BYTES);
     let pb = alloc_procbin(&mut sender, witness.clone(), 0);
     let gifted = procbin_word(&pb);
     let segment = sender.end_gift();
@@ -185,7 +183,7 @@ fn graft_splices_the_gifts_mso_prefix_ahead_of_the_receivers_chain() {
     let sender_own = procbin_word(&alloc_procbin(&mut sender, witness.clone(), 0));
     let receiver_own = procbin_word(&alloc_procbin(&mut receiver, witness.clone(), 0));
 
-    sender.begin_gift();
+    sender.begin_gift(2 * PROCBIN_BYTES);
     let older = procbin_word(&alloc_procbin(&mut sender, witness.clone(), 1));
     let newer = procbin_word(&alloc_procbin(&mut sender, witness.clone(), 2));
     let segment = sender.end_gift();
@@ -216,20 +214,21 @@ fn graft_splices_the_gifts_mso_prefix_ahead_of_the_receivers_chain() {
 fn a_gift_with_an_object_above_the_table_grafts_and_is_copied_by_the_receivers_collection() {
     let reg = fresh_registry();
     let schema = oversize_schema(&reg);
+    let size = struct_size_for_payload(reg.borrow().get(schema).allocation_payload_size());
+    assert!(size > TABLE_CEILING);
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut receiver = Heap::new(SIZE_TABLE[0], reg);
     let pooled_before = pool_outstanding_blocks();
 
-    sender.begin_gift();
+    sender.begin_gift(size);
     let big = sender.alloc_struct(schema);
-    let size = TABLE_CEILING + 256 + 8;
     let segment = sender.end_gift();
     assert_eq!(
         pool_outstanding_blocks(),
-        pooled_before + 1,
-        "only the gift's first block is pooled; the exact block is not"
+        pooled_before,
+        "the gift block is exact, above the table, and not pooled"
     );
-    assert_eq!(segment.block_count(), 2, "the abandoned gift block and the exact block");
+    assert_eq!(segment.block_count(), 1, "the object is the segment's one exact block");
     assert!(segment.fill_bytes() >= size, "the object is written into the segment");
     assert!(!sender.contains_heap_addr(big), "the object left the sender");
 
@@ -321,7 +320,7 @@ fn end_gift_leaves_the_senders_should_gc_answering_for_the_restored_heap_alone()
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     let _ = sender.alloc(256);
     assert!(!sender.should_gc());
-    sender.begin_gift();
+    sender.begin_gift(608);
     let _ = sender.alloc(608);
     assert!(sender.should_gc(), "the gift block alone crossed the threshold");
     let _segment = sender.end_gift();
@@ -332,7 +331,7 @@ fn end_gift_leaves_the_senders_should_gc_answering_for_the_restored_heap_alone()
     let mut pressured = Heap::new(SIZE_TABLE[0], fresh_registry());
     let _ = pressured.alloc(608);
     assert!(pressured.should_gc());
-    pressured.begin_gift();
+    pressured.begin_gift(16);
     let _ = pressured.alloc(16);
     let _segment = pressured.end_gift();
     assert_eq!(pressured.bytes_used(), 608);
@@ -372,22 +371,12 @@ fn dropping_an_ungrafted_segment_returns_its_blocks_and_releases_its_stubs() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     let pooled_before = pool_outstanding_blocks();
 
-    sender.begin_gift();
+    sender.begin_gift(PROCBIN_BYTES + 32);
     let _ = alloc_procbin(&mut sender, witness.clone(), 0);
-    let _ = sender.alloc(TABLE_CEILING + 16);
-    let _ = sender.alloc(1008);
     let _ = sender.alloc(32);
     let segment = sender.end_gift();
-    assert_eq!(
-        segment.block_count(),
-        3,
-        "the gift block, the exact block for the large object, and the block after it"
-    );
-    assert_eq!(
-        pool_outstanding_blocks(),
-        pooled_before + 1,
-        "only the gift block is pooled"
-    );
+    assert_eq!(segment.block_count(), 1);
+    assert_eq!(pool_outstanding_blocks(), pooled_before + 1, "the gift block is pooled");
     assert_eq!(shared_refs(&witness), 2);
     assert_eq!(pool_total_cached_blocks(), 0);
 
@@ -430,15 +419,15 @@ fn a_grafted_list_is_readable_and_survives_the_receivers_gc() {
 #[should_panic(expected = "begin_gift while a gift window is already open")]
 fn a_second_begin_gift_inside_a_window_is_refused() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
-    sender.begin_gift();
-    sender.begin_gift();
+    sender.begin_gift(16);
+    sender.begin_gift(16);
 }
 
 #[test]
 #[should_panic(expected = "a gift window is open")]
 fn a_collection_inside_a_window_is_refused() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
-    sender.begin_gift();
+    sender.begin_gift(16);
     let mut root = null_mut();
     sender.gc(&mut root);
 }
@@ -465,7 +454,7 @@ fn receiver_with_live_allocation_since_a_small_collection(reg: &Rc<RefCell<Schem
 }
 
 fn gift_of_cons_cells(sender: &mut Heap, cells: i64) -> GiftSegment {
-    sender.begin_gift();
+    sender.begin_gift(cells as usize * 16);
     let mut list = EMPTY_LIST;
     for i in 0..cells {
         list = alloc_int_list_cons(sender, i, list);
@@ -514,4 +503,35 @@ fn a_direct_collection_in_the_shrink_band_holds_every_live_byte_without_gifts() 
 
     assert!(stats.to_space_capacity_bytes >= stats.copied_bytes);
     assert_eq!(stats.live_bytes, 2000 + 5000 * 16, "every own live byte survived");
+}
+
+#[test]
+#[should_panic(expected = "gift copy allocated a different number of bytes than it was measured at")]
+fn end_gift_refuses_a_copy_that_allocated_less_than_its_measure() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    sender.begin_gift(32);
+    let _ = sender.alloc(16);
+    let _ = sender.end_gift();
+}
+
+#[test]
+#[should_panic(expected = "gift copy overflowed its measured block")]
+fn end_gift_refuses_a_copy_that_allocated_past_its_measured_block() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    sender.begin_gift(16);
+    let _ = sender.alloc(16);
+    let _ = sender.alloc(SIZE_TABLE[0]);
+    let _ = sender.end_gift();
+}
+
+#[test]
+fn a_gift_of_the_exact_measured_bytes_fills_its_block_without_overflow() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    for bytes in [16, SIZE_TABLE[0], SIZE_TABLE[0] + 16, SIZE_TABLE[3], TABLE_CEILING + 16] {
+        sender.begin_gift(bytes);
+        let _ = sender.alloc(bytes);
+        let segment = sender.end_gift();
+        assert_eq!(segment.block_count(), 1, "{bytes} bytes");
+        assert_eq!(segment.fill_bytes(), bytes);
+    }
 }

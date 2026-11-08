@@ -1,30 +1,37 @@
 //! The gift window: a heap lends its allocation path to a copy whose result
 //! belongs to another heap.
 //!
-//! A sender that has matched a message for a receiver copies what the receiver
-//! will keep. It does so into its own heap, through the ordinary bump
-//! allocator, but with the tip set aside: `begin_gift` installs a fresh block,
-//! the copy allocates as usual (overflowing into larger blocks exactly as any
-//! allocation does), and `end_gift` cuts everything allocated since the window
-//! opened into a `GiftSegment` and puts the saved tip back. The receiver later
-//! calls `graft` and owns the segment's blocks and off-heap stubs
-//! as if it had allocated them. Its next Cheney pass
-//! treats the grafted blocks as from-space and copies the live data out.
+//! A sender that has matched a message for a receiver measures what the
+//! receiver will keep (`measure_deep_copy`) and copies it into its own heap,
+//! through the ordinary bump allocator, but with the tip set aside:
+//! `begin_gift` installs one fresh block of the smallest capacity that holds
+//! the measured bytes, the copy fills it, and `end_gift` turns that block and
+//! the off-heap stubs the copy pushed into a `GiftSegment` and puts the saved
+//! tip back. The copy allocates exactly the measured bytes, so it cannot run
+//! past the block; `end_gift` refuses a window whose fill is not the
+//! measurement. The receiver later
+//! calls `graft` and owns the segment's block and off-heap stubs as if it had
+//! allocated them. Its next Cheney pass treats the grafted block as
+//! from-space and copies the live data out.
 //!
 //! No process ever writes into another process's live heap: the sender only
-//! writes into blocks that are not yet anyone's, and the receiver only moves
+//! writes into a block that is not yet anyone's, and the receiver only moves
 //! pointers.
 
-use super::block_pool::{Block, pool_alloc};
-use super::{Heap, SIZE_TABLE};
+use super::Heap;
+use super::block_pool::{Block, pick_block_capacity, pool_alloc};
 use crate::procbin::{mso_release_chain, mso_set_next};
 
-/// What `begin_gift` records so `end_gift` can cut the segment with splits
-/// alone: the tip to restore, the list lengths at which the window opened, the
-/// mso head at that moment, and the oldest stub pushed since.
+/// What `begin_gift` records so `end_gift` can cut the segment: the tip to
+/// restore, the gift block's start (the tip while the copy has not
+/// overflowed), the allocation count and mso head at that moment, and the
+/// oldest stub pushed since.
 pub(super) struct GiftWindow {
     pub(super) saved_tip: Block,
-    blocks_len: usize,
+    block_start: *mut u8,
+    /// The bytes the copy was measured at; the gift block's fill must equal
+    /// it when the window closes.
+    measured_bytes: usize,
     alloc_count: u64,
     saved_mso_head: u64,
     /// The first stub pushed onto the mso chain while the window was open,
@@ -34,38 +41,40 @@ pub(super) struct GiftWindow {
 }
 
 /// A detached run of heap storage with no reference into any heap. It holds
-/// the blocks the copy filled (by start, fill and capacity), the off-heap
+/// the one block the copy filled (by start, fill and capacity), the off-heap
 /// stubs it pushed (as an mso chain whose last link is 0) and how many
 /// objects it allocated. `Heap::graft` adopts all of it; dropping an
-/// un-grafted segment releases every block and every stub's off-heap
+/// un-grafted segment releases the block and every stub's off-heap
 /// reference, so an orphan leaks nothing.
 pub struct GiftSegment {
-    blocks: Vec<Block>,
+    /// `None` only for the segment of a copy that allocated nothing.
+    block: Option<Block>,
     mso_head: u64,
     oldest_mso: u64,
     objects: u64,
 }
 
 impl GiftSegment {
-    /// The segment of a copy that copied nothing: no blocks, no
+    /// The segment of a copy that copied nothing: no block, no
     /// stubs. Grafting it changes nothing, and it never
     /// touches the block pool.
     pub fn empty() -> Self {
         GiftSegment {
-            blocks: Vec::new(),
+            block: None,
             mso_head: 0,
             oldest_mso: 0,
             objects: 0,
         }
     }
 
-    /// Bytes written into the segment's blocks, by fill.
+    /// Bytes written into the segment's block.
     pub fn fill_bytes(&self) -> usize {
-        self.blocks.iter().map(Block::fill).sum()
+        self.block.as_ref().map_or(0, Block::fill)
     }
 
+    /// One for a copy that allocated, zero for one that did not.
     pub fn block_count(&self) -> usize {
-        self.blocks.len()
+        usize::from(self.block.is_some())
     }
 
     /// The head of the segment's own mso chain, or 0 when the copy made no
@@ -78,28 +87,30 @@ impl GiftSegment {
 impl Drop for GiftSegment {
     fn drop(&mut self) {
         mso_release_chain(self.mso_head);
-        for block in self.blocks.drain(..) {
+        if let Some(block) = self.block.take() {
             block.release();
         }
     }
 }
 
 impl Heap {
-    /// Set the tip aside and allocate into a fresh block of the smallest
-    /// capacity until `end_gift`. Everything allocated in between belongs to
-    /// the gift; the heap's own data is untouched and its free space is kept.
-    pub fn begin_gift(&mut self) {
+    /// Set the tip aside and allocate into one fresh block that holds
+    /// `measured_bytes` until `end_gift`. Everything allocated in between
+    /// belongs to the gift; the heap's own data is untouched and its free
+    /// space is kept.
+    pub fn begin_gift(&mut self, measured_bytes: usize) {
         assert!(self.gift.is_none(), "begin_gift while a gift window is already open");
         let saved_tip = self.current_block();
+        let capacity = pick_block_capacity(measured_bytes);
+        let start = pool_alloc(capacity);
         self.gift = Some(GiftWindow {
             saved_tip,
-            blocks_len: self.blocks.len(),
+            block_start: start,
+            measured_bytes,
             alloc_count: self.alloc_count,
             saved_mso_head: self.mso_head,
             oldest_mso: 0,
         });
-        let capacity = Self::gift_first_block_bytes();
-        let start = pool_alloc(capacity);
         self.install_block(Block {
             start,
             top: start,
@@ -107,13 +118,24 @@ impl Heap {
         });
     }
 
-    /// Cut everything allocated since `begin_gift` into a segment and restore
-    /// the saved tip. Allocation statistics stay with this heap: the sender did
-    /// the work.
+    /// Cut the gift block and the stubs pushed since `begin_gift` into a
+    /// segment and restore the saved tip. The block's fill must be the
+    /// measured bytes: a copy that allocated more or less than its measure is
+    /// a disagreement between two passes that must walk the same objects, and
+    /// it stops here. Allocation statistics stay with this heap: the sender
+    /// did the work.
     pub fn end_gift(&mut self) -> GiftSegment {
         let window = self.gift.take().expect("end_gift without an open gift window");
-        let mut blocks = self.blocks.split_off(window.blocks_len);
-        blocks.push(self.current_block());
+        assert!(
+            self.block_start == window.block_start,
+            "gift copy overflowed its measured block: the measure and the copy disagree"
+        );
+        let block = self.current_block();
+        assert_eq!(
+            block.fill(),
+            window.measured_bytes,
+            "gift copy allocated a different number of bytes than it was measured at: the measure and the copy disagree"
+        );
         let mso_head = if window.oldest_mso == 0 {
             0
         } else {
@@ -125,19 +147,19 @@ impl Heap {
         self.alloc_count = window.alloc_count;
         self.install_block(window.saved_tip);
         GiftSegment {
-            blocks,
+            block: Some(block),
             mso_head,
             oldest_mso: window.oldest_mso,
             objects,
         }
     }
 
-    /// Take ownership of a segment: its blocks join this heap's parked blocks
-    /// as from-space, its mso prefix is
-    /// spliced ahead of this heap's chain. Their fill counts toward
-    /// `should_gc`, so a heap that receives many gifts collects them.
+    /// Take ownership of a segment: its block joins this heap's parked blocks
+    /// as from-space, its mso prefix is spliced ahead of this heap's chain.
+    /// Its fill counts toward `should_gc`, so a heap that receives many gifts
+    /// collects them.
     pub fn graft(&mut self, mut segment: GiftSegment) {
-        self.blocks.append(&mut segment.blocks);
+        self.blocks.extend(segment.block.take());
         if segment.mso_head != 0 {
             mso_set_next(segment.oldest_mso, self.mso_head);
             self.mso_head = segment.mso_head;
@@ -158,10 +180,5 @@ impl Heap {
             window.oldest_mso = bits;
         }
         previous
-    }
-
-    /// Capacity of the smallest block a gift window opens with.
-    pub fn gift_first_block_bytes() -> usize {
-        SIZE_TABLE[0]
     }
 }

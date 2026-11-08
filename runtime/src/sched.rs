@@ -18,11 +18,11 @@
 use crate::any_value::{self, AnyValue, AnyValueRef, ValueKind};
 use crate::delivery::Delivery;
 use crate::exec_ctx::{timer_cancel, timer_schedule};
-use crate::heap::{GiftSegment, Heap, deep_copy_any_value_ref};
+use crate::heap::{AddressMap, GiftSegment, Heap, deep_copy_any_value_ref, measure_deep_copy};
 use crate::park::ParkRecord;
 use crate::process::{PidId, Process, ProcessState};
 use crate::timer::TimerId;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::ptr::write;
 
 /// Mint a fresh-task entry thunk on `heap`: a one-capture closure whose code
@@ -120,16 +120,19 @@ pub struct SendProbe {
     pub gift_blocks: usize,
 }
 
-/// Copy `values` into a gift window on `heap`. One forwarding map spans all
-/// of them, so structure shared between two values stays shared in the copy.
-/// Nothing to copy opens no window and costs no block.
+/// Measure `values`, then copy them into a gift window on `heap` sized to the
+/// measurement. One forwarding map spans all of them, so structure shared
+/// between two values stays shared in the copy. A copy that allocates nothing
+/// (no values, or only values that cross as they are) opens no window and
+/// costs no block.
 pub fn gift_copy(heap: &mut Heap, values: &[AnyValueRef]) -> (GiftSegment, Vec<AnyValueRef>) {
-    if values.is_empty() {
-        return (GiftSegment::empty(), Vec::new());
-    }
     let source = heap.view();
-    let mut forwarding = HashMap::new();
-    heap.begin_gift();
+    let measured = measure_deep_copy(values, &source);
+    if measured == 0 {
+        return (GiftSegment::empty(), values.to_vec());
+    }
+    let mut forwarding = AddressMap::default();
+    heap.begin_gift(measured);
     let copied = values
         .iter()
         .map(|value| deep_copy_any_value_ref(*value, &source, heap, &mut forwarding))

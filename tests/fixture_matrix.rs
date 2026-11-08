@@ -2999,10 +2999,10 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
         assert_eq!(
             events,
             vec![
-                SendProbeEvent::new("miss", 1, 800_032, 14),
+                SendProbeEvent::new("miss", 1, 800_032, 1),
                 SendProbeEvent::new("hit", 1, 48, 1),
             ],
-            "{label}: one miss gifting the whole log, then one hit gifting three cons cells"
+            "{label}: one miss gifting the whole log in one block, then one hit gifting three cons cells"
         );
         assert_eq!(
             events.iter().filter(|e| e.outcome == "hit").count(),
@@ -3042,6 +3042,10 @@ fn a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_prob
             vec!["miss", "hit"],
             "{label}: the sender's own pid misses; the receiver's pid hits"
         );
+        assert!(
+            events.iter().all(|e| e.gift_blocks == 1),
+            "{label}: each gift occupies one block"
+        );
     }
 }
 
@@ -3058,14 +3062,17 @@ fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
             .iter()
             .filter(|e| e.outcome == "miss" && e.receiver == 2)
             .collect();
+        // Each gift is measured first and occupies one block: the tuple and
+        // its 1000 cells (32 + 1000 * 16), the tuple and its two cells
+        // (32 + 2 * 16), and one boxed atom.
         assert_eq!(
-            misses_for_the_child.len(),
-            3,
-            "{label}: all three messages are probed and gifted to the parked child, which never grafts them"
-        );
-        assert!(
-            misses_for_the_child.iter().all(|e| e.gift_blocks >= 1),
-            "{label}: each gift holds storage that teardown must return"
+            misses_for_the_child,
+            vec![
+                &SendProbeEvent::new("miss", 2, 16_032, 1),
+                &SendProbeEvent::new("miss", 2, 64, 1),
+                &SendProbeEvent::new("miss", 2, 16, 1),
+            ],
+            "{label}: all three messages are probed and gifted to the parked child, which never grafts them; each holds one exactly sized block that teardown must return"
         );
         assert_eq!(
             events.iter().filter(|e| e.outcome == "hit").count(),

@@ -1,6 +1,6 @@
 //! impl Heap — the giant impl block + Drop.
 
-use super::block_pool::{Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pool_alloc};
+use super::block_pool::{Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pool_alloc, round_up_16};
 use super::gc::{
     CopiedObject, cheney_forward_strict_bits, cheney_trace_closure, cheney_trace_list, cheney_trace_map,
     cheney_trace_resource, cheney_trace_struct, forward_any_value_ref_root,
@@ -129,7 +129,7 @@ impl Heap {
     }
 
     pub fn alloc_kind(&mut self, kind: HeapAllocKind, size: usize) -> *mut u8 {
-        let size = (size + 15) & !15;
+        let size = round_up_16(size);
         assert!(size >= 16, "alloc must reserve at least one 16-byte object slot");
         self.alloc_stats.record(kind, size as u64);
         let new_top = unsafe { self.bump_top.add(size) };
@@ -174,7 +174,7 @@ impl Heap {
     }
 
     pub fn record_external_alloc(&mut self, kind: HeapAllocKind, bytes: usize) {
-        let bytes = ((bytes + 15) & !15) as u64;
+        let bytes = round_up_16(bytes) as u64;
         self.alloc_stats.record(kind, bytes);
     }
 
