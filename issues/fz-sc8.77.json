@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "fz-38",
   "blocked_by": [],
   "blocks": [
     "fz-3ul.4"
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A struct carries __struct__ and prints as %Name{...}",
   "type": "bug",
-  "updated_at": "2026-11-08T00:15:25Z"
+  "updated_at": "2026-11-08T16:45:17Z"
 }
