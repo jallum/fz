@@ -2,8 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-sc8.19",
-    "fz-sc8.8"
+    "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:42Z",
   "description": "No Inspect facility returns a binary. runtime render_value (runtime/src/any_value.rs:1440) backs dbg but prints. Elixir format must match: atom-keyed maps as `%{a: 1}`, quoted strings, charlists, `limit:` truncation (`...`). Used at distill lines 77, 90, 376.\n\nAlso (probed at 492b32fe1 for fz-sc8.18): dbg renders a struct as a bare tuple of its fields, '{\"x.txt\", [:raw, :read_ahead, :binary], nil}' for %Outer.Inner{path: \"x.txt\", modes: [...], node: nil}; Elixir prints '%Outer.Inner{path: \"x.txt\", modes: [...], node: nil}'. The renderer gains the struct form with its module name.\n\n## Design review (2026-10-17)\nThe renderer behind dbg becomes Elixir-faithful (atom-keyed maps as a: 1, quoted atoms, ~c charlists, \u003c\u003c1::size(3)\u003e\u003e, limit:). dbg output changes with it: 14 expected files carry %{:a =\u003e ...} forms (e.g. fixtures/00306_atom_keyed_map.expected.txt, fixtures2/behavior/quicksort.expected.txt). Each re-bless is a move to Elixir's own text and is listed on the proposal page; oracle fixtures already expect Elixir's form.",
@@ -14,5 +13,5 @@
   "status": "open",
   "title": "inspect/1,2 returns Elixir's rendering, with limit:",
   "type": "feature",
-  "updated_at": "2026-11-08T13:06:21Z"
+  "updated_at": "2026-11-08T14:44:35Z"
 }
