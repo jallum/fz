@@ -1,0 +1,24 @@
+#---
+# purpose: "a catch with no matching clause re-raises with the kind it was given: a throw stays a throw, an exit stays an exit, an error stays an error, through two enclosing tries"
+# oracle: 00847_a_catch_that_matches_nothing_passes_the_original_kind_on.oracle.exs
+#---
+def attempt(f) do
+  try do
+    try do
+      f.()
+    catch
+      :error, :never -> :never
+    end
+  rescue
+    ArgumentError -> :rescued_by_middle
+  catch
+    kind, value -> {kind, value}
+  end
+end
+
+def main() do
+  dbg(attempt(fn () -> throw(:t) end))
+  dbg(attempt(fn () -> exit(:x) end))
+  dbg(attempt(fn () -> raise ArgumentError, "a" end))
+  dbg(attempt(fn () -> panic(:plain) end))
+end

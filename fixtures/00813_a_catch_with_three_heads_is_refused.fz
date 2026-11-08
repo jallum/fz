@@ -1,0 +1,12 @@
+#---
+# purpose: "a catch clause takes one or two heads; three are refused with Elixir's words"
+# expect: diagnostic
+# diagnostic.code: parse/invalid-try
+#---
+def main() do
+  try do
+    1
+  catch
+    a, b, c -> 2
+  end
+end

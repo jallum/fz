@@ -292,15 +292,16 @@ pub enum Expr {
         clauses: Vec<MatchClause>,
         after: Option<Box<AfterClause>>,
     },
-    /// `try do … rescue … else … after … end`. The body runs under a handler;
-    /// a raise in it reaches the first rescue clause that takes the exception,
-    /// and the clause's value is the value of the whole expression. A raise no
-    /// clause takes continues outward unchanged. `else` clauses match the
+    /// `try do … rescue … catch … else … after … end`. The body runs under a
+    /// handler; a raise in it reaches the first rescue or catch clause that
+    /// takes it, and the clause's value is the value of the whole expression.
+    /// A raise no clause takes continues outward unchanged, with its kind. `else` clauses match the
     /// body's value outside that protection; `after` runs once on the way out,
     /// whichever way the rest ended, and its value is discarded.
     Try {
         body: Box<Spanned<Expr>>,
         rescue: Vec<RescueClause>,
+        catch: Vec<CatchClause>,
         else_clauses: Vec<MatchClause>,
         after: Option<Box<Spanned<Expr>>>,
     },
@@ -418,6 +419,19 @@ pub struct RescueClause {
     pub exceptions: Vec<ModuleName>,
     pub body: Spanned<Expr>,
     /// Span of the whole clause: `head -> body`.
+    pub span: Span,
+}
+
+/// One `catch` clause: `kind, value when guard -> body`. A clause written
+/// with one head, `value -> body`, is a clause for throws, so its kind is the
+/// atom pattern `:throw`.
+#[derive(Debug, Clone)]
+pub struct CatchClause {
+    pub kind: Spanned<Pattern>,
+    pub value: Spanned<Pattern>,
+    pub guard: Option<Spanned<Expr>>,
+    pub body: Spanned<Expr>,
+    /// Span of the whole clause: `heads when guard -> body`.
     pub span: Span,
 }
 

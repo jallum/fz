@@ -1,0 +1,4 @@
+{:throw, :t}
+{:exit, :x}
+:rescued_by_middle
+{:error, :plain}

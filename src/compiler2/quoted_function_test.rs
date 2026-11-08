@@ -854,15 +854,58 @@ fn a_rescue_section_that_is_not_clauses_is_refused_with_elixirs_words() {
 }
 
 #[test]
-fn a_catch_section_is_refused_as_not_yet_supported() {
-    let source = "def f() do\n  try do\n    1\n  rescue\n    e -> 2\n  catch\n    v -> v\n  end\nend\n";
-    assert_eq!(
-        try_refusal(source),
-        (
-            Some(crate::diag::codes::PARSE_UNSUPPORTED),
-            "`try` with `catch` is not yet supported".to_string()
-        )
+fn a_catch_clause_with_one_head_is_a_throw_clause_and_with_two_names_its_kind() {
+    let surface = surface_of(
+        "def f() do\n  try do\n    1\n  catch\n    v -> v\n    :exit, r -> r\n    k, v when k == :error -> v\n    w when w > 1 -> w\n  end\nend\n",
     );
+    let Expr::Try { catch, .. } = &surface.clauses[0].body.node else {
+        panic!("expected a try, got {:?}", surface.clauses[0].body.node);
+    };
+    assert_eq!(catch.len(), 4);
+    let kinds = catch.iter().map(|clause| &clause.kind.node).collect::<Vec<_>>();
+    assert!(
+        matches!(kinds[0], Pattern::Atom(kind) if kind == "throw"),
+        "one head means a throw: {kinds:?}"
+    );
+    assert!(matches!(kinds[1], Pattern::Atom(kind) if kind == "exit"), "{kinds:?}");
+    assert!(matches!(kinds[2], Pattern::Var(_)), "{kinds:?}");
+    let guarded = catch.iter().map(|clause| clause.guard.is_some()).collect::<Vec<_>>();
+    assert_eq!(guarded, [false, false, true, true], "a guard belongs to its clause");
+}
+
+#[test]
+fn a_catch_clause_of_three_heads_is_refused_with_elixirs_words() {
+    for source in [
+        "def f() do\n  try do\n    1\n  catch\n    a, b, c -> 2\n  end\nend\n",
+        "def f() do\n  try do\n    1\n  catch\n    a, b, c when true -> 2\n  end\nend\n",
+        "def f() do\n  try do\n    1\n  catch\n    -> 2\n  end\nend\n",
+    ] {
+        assert_eq!(
+            try_refusal(source),
+            (
+                Some(crate::diag::codes::PARSE_INVALID_TRY),
+                "expected one or two args for :catch clauses (->) in \"try\"".to_string()
+            ),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn a_catch_section_that_is_not_clauses_is_refused_with_elixirs_words() {
+    for source in [
+        "def f() do\n  try do\n    1\n  catch\n    :x\n  end\nend\n",
+        "def f() do\n  try do\n    1\n  catch\n  end\nend\n",
+    ] {
+        assert_eq!(
+            try_refusal(source),
+            (
+                Some(crate::diag::codes::PARSE_INVALID_TRY),
+                "expected -> clauses for :catch in \"try\"".to_string()
+            ),
+            "{source}"
+        );
+    }
 }
 
 #[test]
@@ -903,6 +946,7 @@ fn rescue_else_and_after_decode_beside_the_body_in_any_section_order() {
         rescue,
         else_clauses,
         after,
+        ..
     } = &surface.clauses[0].body.node
     else {
         panic!("expected a try, got {:?}", surface.clauses[0].body.node);

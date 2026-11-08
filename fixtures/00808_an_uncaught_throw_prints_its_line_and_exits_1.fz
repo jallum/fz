@@ -1,0 +1,9 @@
+#---
+# purpose: "a throw no catch takes fails the main process: it prints the throw line and exits 1"
+# expect: abort
+# oracle: 00808_an_uncaught_throw_prints_its_line_and_exits_1.oracle.exs
+#---
+def main() do
+  dbg(:before)
+  throw({:ball, 1})
+end

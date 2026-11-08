@@ -72,16 +72,17 @@ signature:    (&PidId, &Process)
 `ExitRecord` is the test-side projection: `{ pid, halt_value: i64, live_count:
 usize, bytes_used: usize, list_retention_attempts: u64,
 list_retention_hits: u64, raises_delivered: u64, reduction_yields: u64,
-failed: bool, dtors_dispatched: u64 }`. `failed` is `Process.failed`: whether
-the process ended through an uncaught `fz_panic` (see
-[exceptions](exceptions.md)); a failed process's `halt_value` is not a return
-value. `raises_delivered` counts the raises a handler took in this process, and
-`reduction_yields` the times its reduction budget ran out and it yielded to the
-scheduler. `ProcessExitCapture` builds it during dispatch by reading the live
-process. `write_line` reads the same fields when it renders the event, nested
-under `"process":{"opaque_type":"fz_runtime::process::Process",...}` with
-`failed` as a JSON boolean. The emitter does not traverse the process for
-telemetry.
+failed: bool, dtors_dispatched: u64 }`. `failed` is
+`Process::ended_in_failure`: whether the process ended through an uncaught raise
+with a non-zero exit status (see [exceptions](exceptions.md)); an exit with a
+shutdown reason of status 0 ends a process without failing it. A failed
+process's `halt_value` is not a return value. `raises_delivered` counts the
+raises a handler took in this process, and `reduction_yields` the times its
+reduction budget ran out and it yielded to the scheduler. `ProcessExitCapture`
+builds it during dispatch by reading the live process. `write_line` reads the
+same fields when it renders the event, nested under
+`"process":{"opaque_type":"fz_runtime::process::Process",...}` with `failed` as
+a JSON boolean. The emitter does not traverse the process for telemetry.
 
 List-retention fallbacks are derived, not emitted separately:
 `fallback_count = list_retention_attempts - list_retention_hits`. The runtime
@@ -251,11 +252,13 @@ sequence, collections and per-process `dtors_dispatched` equal `run`'s.
 
 ## `fz.runtime.raise`
 
-`fz_panic` reports every raise before deciding where it goes, through the
+The raise route (`fz_panic`, `fz_raise_kind`, `fz_raise`) reports every raise before deciding
+where it goes, through the
 `ExecCtx.raise` hook; the JIT runtime and the interpreter's scheduler adapter
 emit `RuntimeEvent::Raise` with a `Raise { kind, exception,
-handler_depth }` (`runtime/src/telemetry.rs`): the kind atom's name (`error`), the exception's module name
-(empty when the raised value is not an exception), and how many handlers could
+handler_depth }` (`runtime/src/telemetry.rs`): the kind's name (`error`, `throw`
+or `exit`), the exception's module name (empty when the raised value is not an
+exception, as it never is for a throw or an exit), and how many handlers could
 take it. Depth zero is an uncaught raise. `write_line` renders the three as
 `kind`, `exception` and `handler_depth`. The AOT scheduler keeps the default
 no-op hook. See [exceptions](exceptions.md).

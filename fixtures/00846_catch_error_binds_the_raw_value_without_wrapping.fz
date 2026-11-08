@@ -1,0 +1,17 @@
+#---
+# purpose: "catch :error, value binds the raised value as raised: an exception stays the exception, a plain reason stays the reason and is not wrapped in ErlangError"
+# oracle: 00846_catch_error_binds_the_raw_value_without_wrapping.oracle.exs
+#---
+def attempt(f) do
+  try do
+    f.()
+  catch
+    :error, value -> value
+  end
+end
+
+def main() do
+  dbg(attempt(fn () -> panic(:bare_reason) end))
+  dbg(attempt(fn () -> raise ArgumentError, "bad" end).message)
+  dbg(attempt(fn () -> raise ArgumentError, "bad" end).__struct__)
+end

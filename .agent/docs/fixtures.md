@@ -420,8 +420,8 @@ Fixtures `00815` through `00831` are the `try`/`rescue` set. Each `expect:
 success` fixture has an Elixir oracle, so the rescued value and the
 `e.message`/`e.original` reads are Elixir's answers; `00822` and `00828` are
 `expect: abort` with an `.expected.stderr` carrying the `** (Name) message`
-line of the uncaught raise; `00829`, `00830` and `00850` are `expect: diagnostic`
-pinning the refused `try` forms (`parse/invalid-try`, `parse/unsupported`).
+line of the uncaught raise; `00829` and `00830` are `expect: diagnostic`
+pinning the refused `try` forms (`parse/invalid-try`).
 `00819` compares `{e.__struct__, e.original}` rather than the exception itself,
 because Elixir prints a `%ErlangError{}` struct with a `reason` field that fz
 does not carry. The raising loop (`00826`) and the allocating try body
@@ -440,6 +440,27 @@ rescue arms (`00836`, `00801`, `00802`); all four sections together (`00806`);
 (`lower/unbound`) for a binding that does not outlive the `try`. The raise
 sequence through an `after` (`00833`) is also read through telemetry in
 `exec/runtime_test.rs`.
+
+Fixtures `00841` through `00847` and `00807` through `00814` are the `throw`, `exit` and `catch` set, with
+the same oracle discipline. `catch` matching: one head (`00841`), `catch :throw,
+v` (`00842`), a guard on the kind (`00843`), `catch :exit, r` and the one-head
+catch that does not take an exit (`00844`), `catch :error, r` binding the raw
+value (`00846`), a rescue-only `try` that lets a throw and an exit through
+(`00845`), a miss that re-raises with its original kind (`00847`), and
+`reraise/2` (`00807`). The oracles use atoms, integers and tuples of them, whose
+dbg rendering is Elixir's `inspect`. Uncaught: `00808` (throw) and `00809`
+(exit) are `expect: abort` whose `.expected.stderr` is the `** (throw)` or
+`** (exit)` line, and whose `.expected.txt` is Elixir's banner from
+`Exception.format_banner/3`; `00810` and `00811` are success fixtures that
+`exit(:normal)` and `exit(:shutdown)` from main, pinning status 0 with nothing
+printed (the matrix pins exit 0 and an empty stderr), and `00812` throws in a
+spawned process, whose `.expected.diagnostics` holds the line fz prints on
+stderr (Elixir logs an `ErlangError` wrapping `{:nocatch, ...}`, which the
+oracle silences). `00813` and `00814` are `expect: diagnostic`
+(`parse/invalid-try`) for a `catch` clause of three heads and a `catch` section
+that is not clauses. The statuses the matrix cannot pin, such as
+`exit({:shutdown, 7})`, are pinned in `exec/runtime_test.rs` and
+`tests/fz2_cli.rs`. See [exceptions](exceptions.md).
 
 ## Relationship to the runtime library
 

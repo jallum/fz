@@ -1,0 +1,12 @@
+#---
+# purpose: "a catch clause with one head matches a throw, binds the thrown value, and the try takes the clause's value"
+# oracle: 00841_a_one_head_catch_takes_a_throw.oracle.exs
+#---
+def main() do
+  result = try do
+    throw({:found, 42})
+  catch
+    {:found, n} -> n
+  end
+  dbg(result)
+end

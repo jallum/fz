@@ -1,0 +1,12 @@
+#---
+# purpose: "a catch section that is not made of -> clauses is refused with Elixir's words"
+# expect: diagnostic
+# diagnostic.code: parse/invalid-try
+#---
+def main() do
+  try do
+    1
+  catch
+    :x
+  end
+end

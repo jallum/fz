@@ -1,7 +1,7 @@
 //! The runtime's sleep and raise telemetry, observed through the real `run` (JIT)
 //! and `interp` doors.
 
-use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission, RunFailure};
 use crate::telemetry::ConfiguredTelemetry;
 use fz_runtime::telemetry::SCHEDULER_SLEPT;
 use std::cell::RefCell;
@@ -81,6 +81,14 @@ use fz_runtime::telemetry::{RAISE, Raise};
 /// Runs `source` through `door` and returns every raise the runtime reported
 /// with the main process's exit record.
 fn raises_while_running(source: &str, door: Door) -> (Vec<Raise>, ExitRecord) {
+    let (raises, exit, ran) = observe_run(source, door);
+    ran.unwrap_or_else(|error| panic!("raise fixture should run: {error}"));
+    (raises, exit)
+}
+
+/// Runs `source` through `door` and returns how the run ended, with every raise
+/// reported and the main process's exit record.
+fn observe_run(source: &str, door: Door) -> (Vec<Raise>, ExitRecord, Result<(), RunFailure>) {
     let tel = ConfiguredTelemetry::new();
     let raises = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&raises);
@@ -100,13 +108,12 @@ fn raises_while_running(source: &str, door: Door) -> (Vec<Raise>, ExitRecord) {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    match door {
+    let ran = match door {
         Door::Jit => compiler.run_root_jit(root).map(|_| ()),
         Door::Interp => compiler.run_root_interp(root).map(|_| ()),
-    }
-    .unwrap_or_else(|error| panic!("raise fixture should run: {error}"));
+    };
     let main_exit = exits.last().expect("the main process exits");
-    (raises.take(), main_exit)
+    (raises.take(), main_exit, ran)
 }
 
 const NESTED_RESCUE: &str = include_str!("../../fixtures/00821_a_nested_try_rescues_at_the_innermost_handler.fz");
@@ -228,4 +235,65 @@ fn the_jit_keeps_a_handler_across_the_yields_and_collections_of_its_try_body() {
         "the collector ran under the handlers: {exit:?}"
     );
     assert!(!exit.failed);
+}
+
+// Kinds and exit statuses.
+
+fn raise_of(kind: &str, depth: usize) -> Raise {
+    Raise {
+        kind: kind.to_string(),
+        exception: String::new(),
+        handler_depth: depth,
+    }
+}
+
+/// A throw and an exit each reach the handler as one raise event naming their
+/// kind, and neither fails the process.
+fn assert_throw_and_exit_report_their_kinds(door: Door) {
+    let source = "def main() do\n  try do\n    throw(:ball)\n  catch\n    v -> v\n  end\n  try do\n    exit(:gone)\n  catch\n    :exit, r -> r\n  end\nend\n";
+    let (raises, exit, ran) = observe_run(source, door);
+    assert_eq!(ran, Ok(()));
+    assert_eq!(raises, vec![raise_of("throw", 1), raise_of("exit", 1)]);
+    assert_eq!(exit.raises_delivered, 2);
+    assert!(!exit.failed);
+}
+
+#[test]
+fn the_jit_reports_a_throw_and_an_exit_with_their_kinds() {
+    assert_throw_and_exit_report_their_kinds(Door::Jit);
+}
+
+#[test]
+fn the_interpreter_reports_a_throw_and_an_exit_with_their_kinds() {
+    assert_throw_and_exit_report_their_kinds(Door::Interp);
+}
+
+/// How a main process that ends by an uncaught raise ends the run: the status
+/// Elixir's CLI gives it, and whether the exit record calls it a failure.
+fn assert_main_status(door: Door, body: &str, ends: Result<(), RunFailure>, failed: bool) {
+    let source = format!("def main() do\n  {body}\nend\n");
+    let (_, exit, ran) = observe_run(&source, door);
+    assert_eq!(ran, ends, "{body}");
+    assert_eq!(exit.failed, failed, "{body}");
+}
+
+fn assert_main_statuses_follow_the_cli(door: Door) {
+    assert_main_status(door, "exit(:normal)", Ok(()), false);
+    assert_main_status(door, "exit(:shutdown)", Ok(()), false);
+    assert_main_status(door, "exit({:shutdown, 0})", Ok(()), false);
+    assert_main_status(door, "exit({:shutdown, 7})", Err(RunFailure::MainExited(7)), true);
+    assert_main_status(door, "exit({:shutdown, 1})", Err(RunFailure::MainFailed), true);
+    assert_main_status(door, "exit(:boom)", Err(RunFailure::MainFailed), true);
+    assert_main_status(door, "throw(:ball)", Err(RunFailure::MainFailed), true);
+    assert_main_status(door, "raise \"boom\"", Err(RunFailure::MainFailed), true);
+}
+
+#[test]
+fn the_jit_ends_main_with_the_status_of_its_uncaught_raise() {
+    assert_main_statuses_follow_the_cli(Door::Jit);
+}
+
+#[test]
+fn the_interpreter_ends_main_with_the_status_of_its_uncaught_raise() {
+    assert_main_statuses_follow_the_cli(Door::Interp);
 }

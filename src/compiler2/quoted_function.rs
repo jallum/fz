@@ -1,6 +1,6 @@
 use crate::ast::{
-    AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, CallableName, Endian, Expr, FnClause,
-    LambdaClause, MatchClause, Pattern, RescueClause, Spanned, SpecDecl, TypeExprBody, UnOp, Var, VarContext,
+    AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, CallableName, CatchClause, Endian, Expr,
+    FnClause, LambdaClause, MatchClause, Pattern, RescueClause, Spanned, SpecDecl, TypeExprBody, UnOp, Var, VarContext,
     WithBinding,
 };
 use crate::function_surface::FunctionSurface;
@@ -837,8 +837,8 @@ fn decode_receive(
 /// `try do … rescue … else … after … end`, judged the way Elixir judges it and
 /// refused with Elixir's words: a `try` needs `do` and at least one of
 /// `rescue`, `catch`, `else` and `after`; a section appears at most once;
-/// `rescue` holds `->` clauses whose heads are one of the five rescue shapes.
-/// `catch` parses but is not yet supported.
+/// `rescue` holds `->` clauses whose heads are one of the five rescue shapes;
+/// `catch` holds `->` clauses of one head (a throw) or two (kind and value).
 fn decode_try(
     occurrences: &mut LambdaOccurrences,
     args: &[QuotedSourceCursor],
@@ -851,6 +851,7 @@ fn decode_try(
     }
     let mut body = None;
     let mut rescue = None;
+    let mut catch = None;
     let mut else_clauses = None;
     let mut after = None;
     for (key, value) in &entries {
@@ -867,13 +868,9 @@ fn decode_try(
             "after" => after
                 .replace(Box::new(decode_expr(occurrences, value, Some(span), sources)?))
                 .is_some(),
-            "catch" => {
-                return Err(QuotedSourceError::user(
-                    crate::diag::codes::PARSE_UNSUPPORTED,
-                    Some(span),
-                    format!("`try` with `{key}` is not yet supported"),
-                ));
-            }
+            "catch" => catch
+                .replace(decode_catch_clauses(occurrences, value, span, sources)?)
+                .is_some(),
             other => {
                 return Err(QuotedSourceError::new(format!(
                     "unsupported quoted `try` keyword `{other}`"
@@ -892,6 +889,7 @@ fn decode_try(
         Expr::Try {
             body: Box::new(body),
             rescue: rescue.unwrap_or_default(),
+            catch: catch.unwrap_or_default(),
             else_clauses: else_clauses.unwrap_or_default(),
             after,
         },
@@ -975,6 +973,84 @@ fn decode_rescue_clauses(
             })
         })
         .collect()
+}
+
+fn decode_catch_clauses(
+    occurrences: &mut LambdaOccurrences,
+    cursor: &QuotedSourceCursor,
+    try_span: Span,
+    sources: &SourceMap,
+) -> Result<Vec<CatchClause>, QuotedSourceError> {
+    let invalid_block = || invalid_try(try_span, "expected -> clauses for :catch in \"try\"");
+    if !cursor.is_list_like() {
+        return Err(invalid_block());
+    }
+    cursor
+        .list_items()?
+        .iter()
+        .map(|clause| {
+            let Some(node) = clause.ast_node(sources)? else {
+                return Err(invalid_block());
+            };
+            if !node_head_is_atom_named(&node, "->")? {
+                return Err(invalid_block());
+            }
+            let span = node.span.unwrap_or(try_span);
+            let parts = node.tail.list_items()?;
+            if parts.len() != 2 {
+                return Err(QuotedSourceError::new("quoted clause expects pattern list and body"));
+            }
+            let (heads, guard) = split_guarded_heads(&parts[0], sources)?;
+            let (kind, value) = match heads.as_slice() {
+                [value] => (
+                    Spanned::new(Pattern::Atom("throw".to_string()), span),
+                    decode_pattern(value, Some(span), sources)?,
+                ),
+                [kind, value] => (
+                    decode_pattern(kind, Some(span), sources)?,
+                    decode_pattern(value, Some(span), sources)?,
+                ),
+                _ => {
+                    return Err(invalid_try(
+                        span,
+                        "expected one or two args for :catch clauses (->) in \"try\"",
+                    ));
+                }
+            };
+            Ok(CatchClause {
+                kind,
+                value,
+                guard: guard
+                    .map(|guard| decode_expr(occurrences, &guard, Some(span), sources))
+                    .transpose()?,
+                body: decode_expr(occurrences, &parts[1], Some(span), sources)?,
+                span,
+            })
+        })
+        .collect()
+}
+
+/// The heads of a clause and its guard: `a, b when g` is one `when` call whose
+/// last argument is the guard and whose others are the heads.
+fn split_guarded_heads(
+    heads: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<(Vec<QuotedSourceCursor>, Option<QuotedSourceCursor>), QuotedSourceError> {
+    let heads = heads.list_items()?;
+    let [only] = heads.as_slice() else {
+        return Ok((heads, None));
+    };
+    let Some(node) = only.ast_node(sources)? else {
+        return Ok((heads, None));
+    };
+    if !node_head_is_atom_named(&node, "when")? {
+        return Ok((heads, None));
+    }
+    let mut args = node.tail.list_items()?;
+    let guard = args
+        .pop()
+        .ok_or_else(|| QuotedSourceError::new("quoted guarded clause expects a guard"))?;
+    Ok((args, Some(guard)))
 }
 
 /// The head of a rescue clause: `e`, `_`, `Alias`, `[A, B]`, `e in Alias` or

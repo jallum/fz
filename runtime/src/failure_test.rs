@@ -4,7 +4,7 @@ use crate::any_value::{
     map_addr_from_tagged,
 };
 use crate::exec_ctx::ExecCtx;
-use crate::heap::SchemaRegistry;
+use crate::heap::{Schema, SchemaRegistry};
 use crate::process::ClosureRef;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -48,11 +48,20 @@ fn exception(process: &mut Process, name: &str, message: &str) -> AnyValue {
     )
 }
 
+fn line(process: &mut Process, kind: RaiseKind, value: AnyValue) -> Option<String> {
+    let value = process.heap.box_any_value_ref(value);
+    failure_line(process, kind, value)
+}
+
+fn error_line(process: &mut Process, value: AnyValue) -> String {
+    line(process, RaiseKind::Error, value).expect("an error always has a line")
+}
+
 #[test]
 fn an_exception_prints_its_name_and_message() {
     with_process(|process| {
         let value = exception(process, "Elixir.ArgumentError", "bad");
-        assert_eq!(failure_line(process, value), "** (ArgumentError) bad");
+        assert_eq!(error_line(process, value), "** (ArgumentError) bad");
     });
 }
 
@@ -60,9 +69,9 @@ fn an_exception_prints_its_name_and_message() {
 fn a_value_that_is_not_an_exception_prints_as_an_erlang_error() {
     with_process(|process| {
         let reason = atom(process, "badarg");
-        assert_eq!(failure_line(process, reason), "** (ErlangError) Erlang error: :badarg");
+        assert_eq!(error_line(process, reason), "** (ErlangError) Erlang error: :badarg");
         let text = binary(process, "boom");
-        assert_eq!(failure_line(process, text), "** (ErlangError) Erlang error: \"boom\"");
+        assert_eq!(error_line(process, text), "** (ErlangError) Erlang error: \"boom\"");
     });
 }
 
@@ -72,7 +81,7 @@ fn a_struct_shaped_map_without_the_exception_flag_is_not_an_exception() {
         let name = atom(process, "Elixir.ArgumentError");
         let message = binary(process, "bad");
         let value = map(process, &[("__struct__", name), ("message", message)]);
-        let line = failure_line(process, value);
+        let line = error_line(process, value);
         assert!(
             line.starts_with("** (ErlangError) Erlang error: %{"),
             "only a map flagged __exception__: true names an exception: {line}"
@@ -292,6 +301,162 @@ fn a_panic_reports_nothing_when_the_context_does_not_observe_raises() {
 
         assert!(process.raised.is_some());
         assert!(lines.is_empty());
+    });
+}
+
+/// A two-tuple `{first, second}`, as a value.
+fn pair(process: &mut Process, first: AnyValue, second: AnyValue) -> AnyValue {
+    let schema = process.heap.register_schema(Schema::tuple_of_arity(2));
+    let tuple = process.heap.alloc_struct(schema);
+    let object = AnyValueRef::from_heap_object(ValueKind::STRUCT, tuple as *const u8).expect("tuple object");
+    for (index, field) in [first, second].into_iter().enumerate() {
+        let field = process.heap.box_any_value_ref(field);
+        unsafe {
+            process
+                .heap
+                .write_struct_field_ref(object, (index * 8) as u32, field)
+                .expect("tuple field");
+        }
+    }
+    AnyValue::from_ref(object).expect("tuple value")
+}
+
+/// Raise `value` with the kind named `kind` and return what a closure handler
+/// was delivered as its kind and value.
+fn delivered_kind_and_value(process: &mut Process, kind: &str, value: AnyValue) -> (AnyValue, AnyValue) {
+    let template = handler_template(process);
+    process.push_handler(Handler::Closure(template));
+    let kind_ref = process.heap.box_any_value_ref(atom(process, kind));
+    let value_ref = process.heap.box_any_value_ref(value);
+
+    fz_raise_kind(process, kind_ref.raw_word(), value_ref.raw_word());
+
+    let handler = process
+        .delivered
+        .expect("the handler was delivered")
+        .as_ref()
+        .closure_addr()
+        .expect("a closure ref");
+    (capture(handler, 1), capture(handler, 2))
+}
+
+#[test]
+fn a_throw_delivers_kind_throw_and_an_exit_delivers_kind_exit() {
+    with_observed_process(|process, observed| {
+        let ball = atom(process, "ball");
+        let (kind, value) = delivered_kind_and_value(process, "throw", ball);
+        assert_eq!((kind, value), (atom(process, "throw"), ball));
+
+        let reason = atom(process, "gone");
+        let (kind, value) = delivered_kind_and_value(process, "exit", reason);
+        assert_eq!((kind, value), (atom(process, "exit"), reason));
+
+        assert!(!process.failed, "a caught throw or exit is not a failure");
+        assert!(observed.lines.is_empty());
+    });
+}
+
+#[test]
+fn a_raise_event_carries_the_kind_text_with_no_exception_name_for_a_throw_or_an_exit() {
+    with_observed_process(|process, observed| {
+        for kind in ["error", "throw", "exit"] {
+            let value = atom(process, "v");
+            delivered_kind_and_value(process, kind, value);
+        }
+        assert_eq!(
+            observed.raises,
+            [
+                ("error".to_string(), String::new(), 1),
+                ("throw".to_string(), String::new(), 1),
+                ("exit".to_string(), String::new(), 1),
+            ]
+        );
+    });
+}
+
+#[test]
+fn a_kind_that_is_not_error_throw_or_exit_is_a_badarg_error() {
+    with_observed_process(|process, observed| {
+        let value = atom(process, "v");
+        let (kind, value) = delivered_kind_and_value(process, "bogus", value);
+        assert_eq!((kind, value), (atom(process, "error"), atom(process, "badarg")));
+        assert_eq!(observed.raises, [("error".to_string(), String::new(), 1)]);
+    });
+}
+
+#[test]
+fn an_uncaught_throw_prints_its_value_and_ends_the_process_with_status_1() {
+    with_observed_process(|process, observed| {
+        let ball = pair(process, atom(process, "ball"), AnyValue::int(1));
+        let value_ref = process.heap.box_any_value_ref(ball);
+        let kind_ref = process.heap.box_any_value_ref(atom(process, "throw"));
+
+        fz_raise_kind(process, kind_ref.raw_word(), value_ref.raw_word());
+
+        assert!(process.failed);
+        assert_eq!(process.exit_status, 1);
+        assert_eq!(observed.lines, ["** (throw) {:ball, 1}"]);
+        assert_eq!(observed.raises, [("throw".to_string(), String::new(), 0)]);
+    });
+}
+
+fn uncaught_exit(process: &mut Process, reason: AnyValue) -> Option<String> {
+    let reason = process.heap.box_any_value_ref(reason);
+    let kind = process.heap.box_any_value_ref(atom(process, "exit"));
+    process.failed = false;
+    process.exit_status = 0;
+    fz_raise_kind(process, kind.raw_word(), reason.raw_word());
+    assert!(process.failed, "an exit nothing handles ends the process");
+    failure_line(process, RaiseKind::Exit, reason)
+}
+
+#[test]
+fn an_uncaught_exit_prints_its_reason_and_exits_1_unless_the_reason_is_a_shutdown() {
+    with_observed_process(|process, observed| {
+        let reason = pair(process, atom(process, "bad"), atom(process, "reason"));
+        assert_eq!(
+            uncaught_exit(process, reason).as_deref(),
+            Some("** (exit) {:bad, :reason}")
+        );
+        assert_eq!(process.exit_status, 1);
+        assert_eq!(observed.lines, ["** (exit) {:bad, :reason}"]);
+
+        let reason = pair(process, atom(process, "other"), AnyValue::int(7));
+        assert_eq!(uncaught_exit(process, reason).as_deref(), Some("** (exit) {:other, 7}"));
+        assert_eq!(process.exit_status, 1, "only a tuple led by :shutdown is a shutdown");
+    });
+}
+
+#[test]
+fn an_exit_with_a_shutdown_reason_ends_silently_with_the_status_elixirs_cli_gives() {
+    let statuses = |process: &mut Process, reasons: Vec<AnyValue>| {
+        reasons
+            .into_iter()
+            .map(|reason| {
+                assert_eq!(uncaught_exit(process, reason), None, "a shutdown prints nothing");
+                process.exit_status
+            })
+            .collect::<Vec<_>>()
+    };
+    with_observed_process(|process, observed| {
+        let shutdown = atom(process, "shutdown");
+        let reasons = vec![
+            atom(process, "normal"),
+            shutdown,
+            pair(process, shutdown, AnyValue::int(7)),
+            pair(process, shutdown, AnyValue::int(0)),
+            pair(process, shutdown, atom(process, "not_a_status")),
+        ];
+        assert_eq!(statuses(process, reasons), [0, 0, 7, 0, 0]);
+        assert!(
+            observed.lines.is_empty(),
+            "no shutdown prints a line: {:?}",
+            observed.lines
+        );
+        assert!(
+            !process.ended_in_failure(),
+            "the last of them left status 0, which is not a failure"
+        );
     });
 }
 

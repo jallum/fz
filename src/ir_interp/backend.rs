@@ -131,8 +131,8 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
             BackendRun::Program,
         )?;
         let main = runtime.process_ref(MAIN_PID);
-        if main.is_some_and(|main| main.failed) {
-            return Err(RunFailure::MainFailed);
+        if let Some(main) = main {
+            RunFailure::from_main_status(main.exit_status)?;
         }
         Ok(main.map_or(0, |main| main.halt_value))
     })();

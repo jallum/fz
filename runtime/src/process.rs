@@ -92,10 +92,14 @@ pub struct Process {
     /// through it, so two schedulers can be live at once.
     pub ctx: *mut ExecCtx,
     pub halt_value: i64,
-    /// Whether the process failed: set only by `fz_panic`, the one route an
-    /// uncaught failure takes, never inferred from `halt_value`. Drivers read
-    /// it at the exit boundary: a failed main process exits 1.
+    /// Whether the process ended by a raise no handler took: set only by the
+    /// raise route, never inferred from `halt_value`. An exit with a shutdown
+    /// reason ends a process this way too, with status 0.
     pub failed: bool,
+    /// The status a process that ended by an uncaught raise leaves: 1, or what
+    /// the exit's shutdown reason says. Drivers read it at the exit boundary
+    /// for the main process; it is 0 until the process fails.
+    pub exit_status: i32,
     pub bs_builder: Option<BitWriter>,
     /// Node-global state shared by every Process in this execution context:
     /// the atom table and the per-fn frame-size table. Cloned (`Rc`) into each
@@ -438,6 +442,7 @@ impl Process {
             ctx: null_mut(),
             halt_value: 0,
             failed: false,
+            exit_status: 0,
             bs_builder: None,
             node,
             pid,
@@ -518,6 +523,12 @@ impl Process {
     /// The queued runnable closure, if any, without clearing it.
     pub fn runnable_closure(&self) -> Option<AnyValueRef> {
         self.runnable.map(ClosureRef::as_ref)
+    }
+
+    /// Whether an uncaught raise ended the process with a non-zero status. An
+    /// exit with a shutdown reason of 0 ends a process without failing it.
+    pub fn ended_in_failure(&self) -> bool {
+        self.failed && self.exit_status != 0
     }
 
     /// Whether a `never`-returning call has ended this process's current

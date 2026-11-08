@@ -1,0 +1,9 @@
+#---
+# purpose: "exit(:shutdown) from main ends the program at once, prints nothing, and exits 0"
+# oracle: 00811_exit_shutdown_ends_the_program_silently_with_status_0.oracle.exs
+#---
+def main() do
+  dbg(:before)
+  exit(:shutdown)
+  dbg(:after)
+end

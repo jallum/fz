@@ -224,11 +224,12 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         self
     }
 
-    /// Whether the task `pid` failed. Exited tasks stay in the registry, so a
-    /// driver reads this after `run_until_idle` to give a failed main process
-    /// its exit status.
-    pub fn failed(&self, pid: PidId) -> bool {
-        self.tasks.get(&pid).is_some_and(|task| task.failed)
+    /// The exit status of the task `pid`: what an uncaught raise left it with,
+    /// 0 for a task that did not end that way. Exited tasks stay in the
+    /// registry, so a driver reads this after `run_until_idle` to give the main
+    /// process its exit status.
+    pub fn exit_status(&self, pid: PidId) -> i32 {
+        self.tasks.get(&pid).map_or(0, |task| task.exit_status)
     }
 
     /// Spawn a new task that begins execution at `fn_id` (which must take
@@ -420,7 +421,7 @@ impl ProcessExitCapture {
                     list_retention_hits: process.list_retention_hits,
                     raises_delivered: process.raises_delivered,
                     reduction_yields: process.reduction_yields,
-                    failed: process.failed,
+                    failed: process.ended_in_failure(),
                     dtors_dispatched: process.dtors_dispatched,
                 });
             },

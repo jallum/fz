@@ -1087,6 +1087,46 @@ fn run_and_interp_hand_every_token_after_the_path_to_the_program() {
     let _ = remove_file(&program);
 }
 
+/// How a program whose main ends by an uncaught `exit` or `throw` ends the
+/// process, on every door: the status Elixir's CLI gives, and the line it
+/// prints (none for a shutdown).
+#[test]
+fn a_main_that_exits_or_throws_ends_the_process_with_elixirs_status_and_line() {
+    let cases: [(&str, i32, &str); 7] = [
+        ("exit(:normal)", 0, ""),
+        ("exit(:shutdown)", 0, ""),
+        ("exit({:shutdown, 7})", 7, ""),
+        ("exit({:shutdown, 1})", 1, ""),
+        ("exit(:boom)", 1, "** (exit) :boom\n"),
+        ("throw({:ball, 1})", 1, "** (throw) {:ball, 1}\n"),
+        ("raise \"boom\"", 1, "** (RuntimeError) boom\n"),
+    ];
+    for (body, status, line) in cases {
+        let source = unique_temp_path("fz2_exit_status", ".fz");
+        write(&source, format!("def main() do\n  dbg(:before)\n  {body}\nend\n")).expect("write exit program");
+        let binary = unique_temp_path("fz2_exit_status", ".bin");
+        let built = run_fz2(&[
+            OsStr::new("build"),
+            source.as_os_str(),
+            OsStr::new("-o"),
+            binary.as_os_str(),
+        ]);
+        assert!(built.status.success(), "build {body}: {}", output_text(&built));
+        let outs = [
+            ("run", run_fz2(&[OsStr::new("run"), source.as_os_str()])),
+            ("interp", run_fz2(&[OsStr::new("interp"), source.as_os_str()])),
+            ("build", Command::new(&binary).output().expect("run the built program")),
+        ];
+        for (door, out) in outs {
+            assert_eq!(out.status.code(), Some(status), "{door} {body}: {}", output_text(&out));
+            assert_eq!(String::from_utf8_lossy(&out.stdout), ":before\n", "{door} {body}");
+            assert_eq!(String::from_utf8_lossy(&out.stderr), line, "{door} {body}");
+        }
+        let _ = remove_file(&source);
+        let _ = remove_file(&binary);
+    }
+}
+
 /// Before the source path the same spelling is fz2's own option.
 #[test]
 fn global_options_before_the_path_still_mean_what_they_say() {

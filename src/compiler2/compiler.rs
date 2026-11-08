@@ -33,8 +33,23 @@ pub enum RunFailure {
     /// The program ran and its main process failed. The failure's
     /// `** (Name) message` line is already on stderr; there is nothing to add.
     MainFailed,
+    /// The program ran and its main process ended with an exit status other
+    /// than 0 and 1: `exit({:shutdown, status})`. Nothing was printed.
+    MainExited(i32),
     /// The program could not run to completion; the message says why.
     Error(String),
+}
+
+impl RunFailure {
+    /// How a main process that ended by an uncaught raise with `status` ends
+    /// the run: `Ok` for a clean exit, the failure its status names otherwise.
+    pub(crate) fn from_main_status(status: i32) -> Result<(), RunFailure> {
+        match status {
+            0 => Ok(()),
+            1 => Err(Self::MainFailed),
+            status => Err(Self::MainExited(status)),
+        }
+    }
 }
 
 impl From<String> for RunFailure {
@@ -47,6 +62,7 @@ impl std::fmt::Display for RunFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MainFailed => f.write_str("the main process failed"),
+            Self::MainExited(status) => write!(f, "the main process exited with status {status}"),
             Self::Error(message) => f.write_str(message),
         }
     }
@@ -494,10 +510,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         signal_execution_ready(tel);
         let root_pid = runtime.spawn(program.entry);
         runtime.run_until_idle();
-        if runtime.failed(root_pid) {
-            return Err(RunFailure::MainFailed);
-        }
-        Ok(())
+        RunFailure::from_main_status(runtime.exit_status(root_pid))
     }
 
     /// Runs an executable macro over a quoted source heap and returns the
