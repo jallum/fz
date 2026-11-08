@@ -1,0 +1,15 @@
+#---
+# purpose: "IO.puts, IO.write, IO.inspect and dbg write to one sink: alternating them prints their bytes in program order, and a write without a newline is continued by the next print"
+# oracle: 00782_every_print_shares_one_sink_in_program_order.oracle.exs
+#---
+def main() do
+  IO.puts("one")
+  IO.write("two ")
+  IO.inspect(:three)
+  dbg("four")
+  IO.write("five")
+  IO.puts("")
+  dbg({:six, 6})
+  IO.puts("seven")
+  IO.inspect([8, 9.5])
+end

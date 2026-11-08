@@ -168,7 +168,10 @@ fn static_reach_work_on_enum_take_drop_split_is_proportional_to_edges() {
     // so each gains that successor; `arithmetic_result/1` is evaluated twice
     // instead of three times, one fewer wait on a callee the operators now
     // reach directly. The function count is unchanged.
-    assert_eq!((functions, edges, evaluations), (106, 147, 207));
+    // fz-sc8.8: (106, 147, 207) -> (115, 157, 229). `dbg` is `IO.inspect`,
+    // whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`,
+    // `Binary.to_string`, `raise`, `==`) joins the static call graph.
+    assert_eq!((functions, edges, evaluations), (115, 157, 229));
     assert!(
         evaluations <= functions + edges,
         "each function evaluates once to discover its callees and once more for each callee it waits on"

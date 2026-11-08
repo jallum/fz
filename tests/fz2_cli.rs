@@ -58,7 +58,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // `panic/1` and `fz_panic/1`, and `main`'s lambdas 13 and 14 each run
         // once more because `raise/2`'s demand concludes after their first
         // runs.
-        runtime_demand_walks: 626,
+        // fz-sc8.8: 626 -> 658. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
+        runtime_demand_walks: 658,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -67,7 +68,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         golden: "fixtures/00571_enum_predicate_search.fz",
         // The same cause as `00420_enum_take_drop_split` above.
         // fz-sc8.37: 472 -> 473. Kernel defines `&&`, `||` and `!` as macros.
-        runtime_demand_walks: 473,
+        // fz-sc8.8: 473 -> 528. Same cause.
+        runtime_demand_walks: 528,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -77,7 +79,10 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // fz-sc8.9: 145 -> 147. The map `count` reads Kernel's `map_size`, a
         // typed wrapper over `fz_map_count`.
         // fz-sc8.37: 147 -> 148. Kernel defines `&&`, `||` and `!` as macros.
-        runtime_demand_walks: 148,
+        // fz-sc8.8: 148 -> 183. `dbg` is `IO.inspect`, whose cone (`IO.puts`,
+        // `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`,
+        // `raise`, `==`) is walked.
+        runtime_demand_walks: 183,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -1462,6 +1467,8 @@ fn quicksort_run_lexes_each_source_once() {
         "runtime:runtime.fz".to_string(),
         "runtime:Kernel.fz".to_string(),
         "runtime:Process.fz".to_string(),
+        "runtime:IO.fz".to_string(),
+        "runtime:String.Chars.fz".to_string(),
     ];
 
     let out = run_fz2(&[

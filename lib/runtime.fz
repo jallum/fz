@@ -7,6 +7,7 @@ alias Enumerable
 alias File
 alias File.Stream
 alias Float
+alias IO
 alias Integer
 alias JSON
 alias Kernel

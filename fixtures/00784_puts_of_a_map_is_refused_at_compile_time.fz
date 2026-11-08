@@ -1,0 +1,5 @@
+#---
+# purpose: "IO.puts converts through String.Chars, so a map argument, which has no String.Chars implementation, is refused at compile time where Elixir raises Protocol.UndefinedError at run time"
+# expect: diagnostic
+#---
+def main(), do: IO.puts(%{a: 1})

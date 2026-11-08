@@ -1,1 +1,1 @@
-def main(), do: dbg(Process.heap_alloc_stats())
+def main(), do: send(self(), Process.heap_alloc_stats())

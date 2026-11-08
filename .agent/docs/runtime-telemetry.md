@@ -246,9 +246,9 @@ sequence, collections and per-process `dtors_dispatched` equal `run`'s.
 
 ## Program Output
 
-`dbg`/print lines are semantic program output, not telemetry. `emit_print_line`
-passes its existing rendered bytes through the running process's
-`ExecCtx.output` hook to an event-scoped `OutputSink`. The CLI sink writes those
+Printed bytes are semantic program output, not telemetry. `write_output`
+passes the bytes `fz_io_write` was given, unchanged and with no newline added,
+through the running process's `ExecCtx.output` hook to an event-scoped `OutputSink`. The CLI sink writes those
 bytes to stdout immediately. A retaining test sink copies them during the
 callback. `NullOutput` does nothing. No sink constructs an event or stages a
 second copy for a later telemetry call.

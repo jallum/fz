@@ -67,7 +67,7 @@ defimpl String.Chars, for: Binary do
     else
       raise(
         Protocol.UndefinedError,
-        "protocol String.Chars not implemented for BitString, cannot convert a bitstring to a string\n\nGot value:\n\n    #{Kernel.inspect(s)}\n"
+        "protocol String.Chars not implemented for BitString, cannot convert a bitstring to a string\n\nGot value:\n\n    " <> Kernel.inspect(s) <> "\n"
       )
     end
   end

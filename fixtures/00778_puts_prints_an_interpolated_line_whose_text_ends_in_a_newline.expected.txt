@@ -1,0 +1,3 @@
+3 records, 2 spans, 18100 ms from first record to last
+
+after

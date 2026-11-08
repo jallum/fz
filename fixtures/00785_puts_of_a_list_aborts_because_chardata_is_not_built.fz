@@ -1,0 +1,8 @@
+#---
+# purpose: "IO.puts of a list raises ArgumentError because chardata lists are not built; Elixir would print the list as chardata, so there is no oracle until chardata flattening exists"
+# expect: abort
+#---
+def main() do
+  IO.puts("before")
+  IO.puts([97])
+end

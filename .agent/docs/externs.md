@@ -451,25 +451,25 @@ inferred return type, and a wrapper coerces the boxed result to match. That is
 what makes an ordinary wrapper come back correctly:
 
 ```fz
-@spec dbg(t) :: t when t: any
-def dbg(x), do: fz_dbg_value(x)
+@spec send(pid, t) :: t when t: any
+def send(pid, msg), do: fz_send(pid, msg)
 ```
 
-The body calls `extern "fz" defp fz_dbg_value(t) :: t when t: any`, so the
-argument is boxed (the ABI adds the process alongside it, which the wrapper
+The body calls `extern "fz" defp fz_send(pid, t) :: t when t: any`, so the
+message is boxed (the ABI adds the process alongside it, which the wrapper
 never sees) and the result is a boxed `AnyValueRef`; reached for an `integer`,
 the wrapper's return unboxes that word back to an `i64`. A repeated type
 variable means "same type", not "same object" — boundary correctness is the
 marshal class on the way in plus this coercion on the way out. The declared
 bound answers only where the call pinned nothing, so `t` is whatever the
-caller passed, the empty list included: `dbg([])` is typed `[]` and not `any`
+caller passed, the empty list included: `send(pid, [])` is typed `[]` and not `any`
 (`types::arrow_match`, fz-kdt.120).
 
-`fz_dbg_value`'s own return evidence is its `FunctionContract` applied to the
+`fz_send`'s own return evidence is its `FunctionContract` applied to the
 activation's row: the extern has no body to observe, so its declared clause
 is the only witness it has for what it returns (see
 [`semantic-authorities`](semantic-authorities.md), "what does an activation
-return"). `dbg(1)` therefore defines its return as `int` once, and every
+return"). `send(pid, 1)` therefore defines its return as `int` once, and every
 caller sees that value rather than the unconstrained `t`.
 
 ## One-word boundaries
@@ -507,6 +507,18 @@ adds, reads `process_ctx(process).argv()`, and allocates one binary per argument
 from its raw bytes. The JIT, the interpreter and the AOT scheduler each fill
 `ExecCtx.argv`; see [`runtime-telemetry`](runtime-telemetry.md), "Program
 Arguments".
+
+## The one output extern
+
+`IO` prints through a single private
+`extern "fz" defp fz_io_write(binary) :: unit`. `fz_io_write(process, binary_ref)`
+hands the bytes of a byte-aligned binary, exactly as given, to `write_output`
+in `runtime/src/lib.rs`, which passes them to the running process's output
+hook. It returns `unit`, so a print allocates nothing; `IO.write/1` and
+`IO.puts/1` answer `:ok` themselves. No output extern appends anything: the
+caller owns the newline, so `IO.puts/1` concatenates `"\n"` itself and
+`IO.write/1` does not. `Kernel.dbg/1` is `IO.inspect/1`, so every print on the
+interpreter, JIT and AOT paths ends in this one function.
 
 ## A helper that may have no answer
 
