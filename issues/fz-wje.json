@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T03:34:29Z",
+  "description": "Found while building fz-3ul.1: src/ir_interp charges no reductions anywhere, so no interpreted loop ever yields and process_exited.reduction_yields is always 0 on interp. Fixture 00720 (100_000 raising iterations) yields 150 times on JIT and AOT and 0 times on interp; a plain tail loop with no try shows the same. The reduction-yielding doc claims interpreter parity. The runtime test for 00720 on the interpreter therefore asserts delivery and completion only.\n\nAcceptance: the interpreter charges reductions at the same points the compiled code does (one authority for where a reduction is spent, shared or mirrored and tested as equal); reduction_yields on interp for 00720 is \u003e= 1 and the interp runtime test asserts it like the JIT one; three-path parity on the fixture matrix; the doc that claims parity is made true or corrected to the facts; gate green.",
+  "id": "fz-wje",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "The interpreter charges reductions so an interpreted loop yields like a compiled one",
+  "type": "bug",
+  "updated_at": "2026-11-08T03:34:29Z"
+}
