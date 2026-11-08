@@ -1,7 +1,6 @@
 //! A heap opens a gift window, cuts the segment, and another heap grafts it.
 //! Each test states the property it holds the gift window to.
 
-use super::fragment::FRAGMENT_THRESHOLD;
 use super::*;
 use crate::any_value::{
     AnyValue, AnyValueRef, EMPTY_LIST, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, ValueKind, heap_object_word,
@@ -56,10 +55,13 @@ fn mso_chain(h: &Heap) -> Vec<u64> {
     out
 }
 
-/// A struct schema whose payload is larger than the largest block, so
-/// `alloc_struct` routes it to a fragment.
+/// The last table entry: anything larger is outside the pool.
+const TABLE_CEILING: usize = SIZE_TABLE[SIZE_TABLE.len() - 1];
+
+/// A struct schema whose object is larger than every table entry, so
+/// `alloc_struct` gives it an exact block.
 fn oversize_schema(reg: &Rc<RefCell<SchemaRegistry>>) -> u32 {
-    let n_fields = (FRAGMENT_THRESHOLD + 256) / 8;
+    let n_fields = (TABLE_CEILING + 256) / 8;
     let fields = (0..n_fields)
         .map(|i| FieldDescriptor {
             offset: (i * 8) as u32,
@@ -86,11 +88,11 @@ fn gift_one_cons(sender: &mut Heap, value: i64) -> (GiftSegment, u64) {
 fn end_gift_restores_the_senders_tip_and_leaves_its_earlier_allocations_untouched() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     let kept = alloc_int_list_cons(&mut sender, 42, EMPTY_LIST);
-    let (start, top, class) = (sender.block_start, sender.bump_top, sender.size_class);
+    let (start, top, capacity) = (sender.block_start, sender.bump_top, sender.block_size);
     let (bytes_used, live_count) = (sender.bytes_used(), sender.live_count());
 
     sender.begin_gift();
-    assert_eq!(sender.size_class, 0, "a gift starts at the smallest size class");
+    assert_eq!(sender.block_size, SIZE_TABLE[0], "a gift starts at the smallest block");
     assert_ne!(sender.block_start, start, "the gift allocates into its own block");
     // Fill the first gift block and overflow into a second one.
     let _ = sender.alloc(1008);
@@ -109,8 +111,8 @@ fn end_gift_restores_the_senders_tip_and_leaves_its_earlier_allocations_untouche
     );
     assert_eq!(segment.fill_bytes(), 1008 + 64);
     assert_eq!(
-        (sender.block_start, sender.bump_top, sender.size_class),
-        (start, top, class)
+        (sender.block_start, sender.bump_top, sender.block_size),
+        (start, top, capacity)
     );
     assert!(sender.blocks.is_empty(), "the sender's own chain is as it was");
     assert_eq!(sender.bytes_used(), bytes_used);
@@ -211,51 +213,57 @@ fn graft_splices_the_gifts_mso_prefix_ahead_of_the_receivers_chain() {
 }
 
 #[test]
-fn a_gift_with_an_oversize_object_travels_as_a_fragment_and_is_marked_not_copied() {
+fn a_gift_with_an_object_above_the_table_grafts_and_is_copied_by_the_receivers_collection() {
     let reg = fresh_registry();
     let schema = oversize_schema(&reg);
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut receiver = Heap::new(SIZE_TABLE[0], reg);
+    let pooled_before = pool_outstanding_blocks();
 
     sender.begin_gift();
     let big = sender.alloc_struct(schema);
+    let size = TABLE_CEILING + 256 + 8;
     let segment = sender.end_gift();
-    assert!(sender.fragments.is_empty(), "the fragment left the sender");
-    assert_eq!(segment.fragment_count(), 1);
     assert_eq!(
-        segment.fill_bytes(),
-        0,
-        "nothing was written into the gift block itself"
+        pool_outstanding_blocks(),
+        pooled_before + 1,
+        "only the gift's first block is pooled; the exact block is not"
     );
+    assert_eq!(segment.block_count(), 2, "the abandoned gift block and the exact block");
+    assert!(segment.fill_bytes() >= size, "the object is written into the segment");
+    assert!(!sender.contains_heap_addr(big), "the object left the sender");
 
     receiver.graft(segment);
-    assert_eq!(receiver.fragments.len(), 1);
     assert!(
         receiver.contains_heap_addr(big),
-        "the receiver now owns the fragment's address"
+        "the receiver now owns the object's address"
     );
     let mut root = heap_object_word(big as *const u8, ValueKind::STRUCT) as *mut u8;
     let stats = receiver.gc(&mut root);
 
+    let moved = struct_addr_from_tagged(root as u64).expect("struct root");
+    assert_ne!(moved, big, "the object was copied");
+    assert!(receiver.contains_heap_addr(moved));
+    assert!(!receiver.contains_heap_addr(big));
+    assert_eq!(stats.copied_objects, 1);
+    assert!(stats.to_space_capacity_bytes as usize >= size);
+    assert_eq!(stats.live_bytes, receiver.last_gc_live_bytes as u64);
+    drop(receiver);
+    drop(sender);
     assert_eq!(
-        struct_addr_from_tagged(root as u64),
-        Some(big),
-        "the fragment did not move"
+        pool_outstanding_blocks(),
+        pooled_before - 2,
+        "every pooled block came back"
     );
-    assert_eq!(receiver.fragments.len(), 1);
-    assert_eq!(receiver.fragments[0].ptr, big);
-    assert!(!receiver.fragments[0].mark, "its mark is reset for the next pass");
-    assert_eq!(stats.fragment_survivors, 1);
-    assert_eq!(stats.copied_objects, 0, "no bytes were copied for it");
 }
 
 #[test]
-fn thousands_of_small_unread_gifts_leave_the_receivers_size_class_unchanged_after_gc() {
+fn thousands_of_small_unread_gifts_leave_the_receivers_capacity_unchanged_after_gc() {
     pool_drain_for_test();
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut receiver = Heap::new(SIZE_TABLE[11], reg);
-    let class_before = receiver.size_class;
+    let capacity_before = receiver.block_size;
 
     // The receiver's own live data: a 2000-cell list it keeps.
     let mut list = EMPTY_LIST;
@@ -289,10 +297,10 @@ fn thousands_of_small_unread_gifts_leave_the_receivers_size_class_unchanged_afte
     let mut roots = [heap_root(list)];
     let stats = receiver.gc_with_extra_root_slots(&mut root, &mut roots);
 
-    assert_eq!(receiver.size_class, class_before, "dead gifts do not grow the heap");
+    assert_eq!(receiver.block_size, capacity_before, "dead gifts do not grow the heap");
     assert_eq!(
         stats.to_space_capacity_bytes, SIZE_TABLE[11] as u64,
-        "to-space is sized from the 128000 copyable bytes (32000 own, 96000 adopted) and the gifts are dead"
+        "to-space is sized from the 128000 bytes in use (32000 own, 96000 adopted) and the gifts are dead"
     );
     assert_eq!(stats.live_bytes, own_live as u64, "none of the gifts was reachable");
     assert!(receiver.blocks.is_empty());
@@ -341,10 +349,7 @@ fn an_empty_segment_grafts_as_a_no_op_and_never_touches_the_pool() {
     let cached_before = pool_total_cached_blocks();
 
     let segment = GiftSegment::empty();
-    assert_eq!(
-        (segment.block_count(), segment.fill_bytes(), segment.fragment_count()),
-        (0, 0, 0)
-    );
+    assert_eq!((segment.block_count(), segment.fill_bytes()), (0, 0));
     assert_eq!(segment.mso_head(), 0);
     receiver.graft(segment);
 
@@ -355,33 +360,49 @@ fn an_empty_segment_grafts_as_a_no_op_and_never_touches_the_pool() {
         cached_before,
         "no block was taken or returned"
     );
-    assert!(receiver.fragments.is_empty());
     assert_eq!(mso_chain(&receiver), Vec::<u64>::new());
     drop(receiver);
     pool_drain_for_test();
 }
 
 #[test]
-fn dropping_an_ungrafted_segment_returns_its_blocks_frees_its_fragments_and_releases_its_stubs() {
+fn dropping_an_ungrafted_segment_returns_its_blocks_and_releases_its_stubs() {
     pool_drain_for_test();
     let witness = SharedBinHandle::from_bytes(&[0x55; 16], 128);
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let pooled_before = pool_outstanding_blocks();
 
     sender.begin_gift();
     let _ = alloc_procbin(&mut sender, witness.clone(), 0);
-    let _ = sender.alloc(FRAGMENT_THRESHOLD + 16);
+    let _ = sender.alloc(TABLE_CEILING + 16);
     let _ = sender.alloc(1008);
     let _ = sender.alloc(32);
     let segment = sender.end_gift();
-    assert_eq!(segment.block_count(), 2);
-    assert_eq!(segment.fragment_count(), 1);
+    assert_eq!(
+        segment.block_count(),
+        3,
+        "the gift block, the exact block for the large object, and the block after it"
+    );
+    assert_eq!(
+        pool_outstanding_blocks(),
+        pooled_before + 1,
+        "only the gift block is pooled"
+    );
     assert_eq!(shared_refs(&witness), 2);
-    assert!(sender.fragments.is_empty());
     assert_eq!(pool_total_cached_blocks(), 0);
 
     drop(segment);
 
-    assert_eq!(pool_total_cached_blocks(), 2, "both gift blocks are back in the pool");
+    assert_eq!(
+        pool_total_cached_blocks(),
+        1,
+        "the pooled gift block is back in the pool"
+    );
+    assert_eq!(
+        pool_outstanding_blocks(),
+        pooled_before,
+        "the exact blocks never counted"
+    );
     assert_eq!(shared_refs(&witness), 1, "the orphaned stub released its reference");
     drop(sender);
     pool_drain_for_test();

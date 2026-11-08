@@ -52,12 +52,10 @@ impl HeapView {
 
 impl Heap {
     /// A snapshot of every address range this heap owns right now: the tip,
-    /// the tip set aside by an open gift window, parked blocks, and fragments.
+    /// the tip set aside by an open gift window, and parked blocks.
     pub fn view(&self) -> HeapView {
-        let mut ranges: Vec<_> = self.block_ranges().collect();
-        ranges.extend(self.fragments.iter().map(|f| (f.ptr, unsafe { f.ptr.add(f.size) })));
         HeapView {
-            ranges,
+            ranges: self.block_ranges().collect(),
             schemas: Rc::clone(&self.schemas),
         }
     }

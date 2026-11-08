@@ -418,7 +418,7 @@ impl Process {
     ) -> Self {
         let mut p = Self {
             // §6.3: initial size on spawn = SIZE_TABLE[0] (1 KiB). Cheney
-            // promotes to a higher size_class on first GC if the working
+            // promotes to a larger block capacity on first GC if the working
             // set demands it; shrink hysteresis (§6.5 / fz-siu.11) brings
             // it back down for short-lived spikes.
             delivery: DeliveryLock::default(),

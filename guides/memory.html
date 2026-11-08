@@ -342,13 +342,19 @@ above <code>SHARED_BIN_THRESHOLD_BYTES</code> (64 bytes) <em>don't</em>
 live on the process heap. Instead the heap carries a 16-byte <strong>ProcBin</strong>
 stub that points into the <a href="#shared-zone">shared zone</a>.</p>
 
-<h3>Block pool and size classes</h3>
+<h3>Block pool and block capacities</h3>
 
 <p>Blocks come from a per-thread pool sized by a Fibonacci-then-geometric size
 table (1 KiB up to ~6 MiB). When a block fills before GC fires, a new (larger)
 block is allocated and the old one joins <code>blocks</code>, recorded
-with its fill and size class. All parked blocks are reclaimed at the next
+with its fill and capacity. All parked blocks are reclaimed at the next
 GC.</p>
+
+<p>The table has no ceiling on what a block may be. An object larger than the
+last table entry gets a block of exactly its size (rounded up to 16 bytes); that
+block comes from the system allocator, not the pool, and goes back to it when
+the collection that copies the object out releases the block. Such an object is
+copied like any other.</p>
 
 <h3 id="the-gift-window">The gift window</h3>
 
@@ -356,23 +362,23 @@ GC.</p>
 heap. Cross-process send is its user: the sender copies a message, or a match's
 bound values, inside one, and the segment waits on the receiver's
 <code>in_queue</code> until the receiver's next dispatch grafts it. <code>Heap::begin_gift</code> sets the current tip aside and installs a
-fresh block from the smallest size class; allocation then proceeds through the
+fresh block of the smallest capacity; allocation then proceeds through the
 ordinary bump path, overflowing into larger blocks exactly as any allocation
 does. <code>Heap::end_gift</code> cuts everything allocated since the window
 opened into a <code>GiftSegment</code> and puts the saved tip back with its
 free space intact. The segment carries the window's blocks (each with its fill),
-the suffix of fragments, the prefix of the MSO chain that the window
+the prefix of the MSO chain that the window
 produced, and the number of objects allocated. Each
 of those is a split of a list the heap already keeps, not a walk. The heap's
 allocation statistics stay with it, its <code>live_count</code> goes back to
 what it was. A collection cannot run while a window is open.</p>
 
 <p>The receiving heap calls <code>Heap::graft</code>: the segment's blocks join
-its <code>blocks</code>, its fragments join the fragment list, its MSO
+its <code>blocks</code>, its MSO
 prefix is spliced ahead of the receiver's chain. Every parked block counts
 toward <code>bytes_used</code> by fill, never by capacity, so a kilobyte block
-holding one cons cell costs sixteen bytes toward <code>should_gc</code>. A segment that is dropped without being grafted returns its blocks to
-the pool, frees its fragments and releases every stub's off-heap reference.</p>
+holding one cons cell costs sixteen bytes toward <code>should_gc</code>. A segment that is dropped without being grafted releases its blocks
+and every stub's off-heap reference.</p>
 
 <h3>The MSO chain</h3>
 
@@ -417,7 +423,7 @@ block, the heap allocates a larger block and parks the old one in
       blocks.push(old_block)
   }
 
-  should_gc = copyable_bytes >= block_size / 2
+  should_gc = bytes_used >= block_size / 2
 </pre>
 
 <p>Compiled yield telemetry still samples the margin before and after the
@@ -492,26 +498,27 @@ ride.
 <h3>Sizing to-space</h3>
 
 <p>To-space holds at least every byte a pass can copy: the tip's fill plus
-every parked block's fill. The size class that holds those bytes is the floor,
-and three bands choose between the floor and a larger class. Fragment bytes
-are tracked separately because oversized fragments do not move.</p>
+every parked block's fill. The capacity that holds those bytes is the floor,
+and three bands choose between the floor and a larger capacity. An object
+larger than the table's last entry is part of those bytes, so to-space grows
+past the table to hold it.</p>
 
 <ul>
-  <li><strong>Grow:</strong> the copyable bytes fill 75% or more of the tip.
-  To-space holds twice the copyable bytes, and is at least one class up.</li>
+  <li><strong>Grow:</strong> the bytes in use fill 75% or more of the tip.
+  To-space holds twice the bytes in use, and is at least one capacity step up.</li>
   <li><strong>Shrink:</strong> the last GC's survivors fill 25% or less of the
-  tip. To-space is <code>last_gc_live_bytes × 2</code> (the copyable bytes on
+  tip. To-space is <code>last_gc_live_bytes × 2</code> (the bytes in use on
   the first GC), raised to the floor.</li>
   <li><strong>Keep:</strong> otherwise the current size, raised to the floor.</li>
 </ul>
 
 <p>Gifts are parked blocks like any other, so their fill is part of the
-copyable bytes whatever raised <code>should_gc</code>. After the pass the
+bytes in use whatever raised <code>should_gc</code>. After the pass the
 parked blocks go back to the pool with the rest of from-space.</p>
 
 <p>After the BFS scan: <code>last_gc_live_bytes = free - to_start</code>.
-That feeds the next GC. Fragment survivors are counted in telemetry as
-fragment live bytes, not in <code>last_gc_live_bytes</code>.</p>
+That feeds the next GC, and is the <code>live_bytes</code> of the pass's
+<code>GcStats</code>.</p>
 
 <p>Each copied from-space object gets an in-band forwarding marker written into
 its first word: <code>(to_space_address &amp; ~0xF) | TAG_FWD</code>. Any other
@@ -874,10 +881,10 @@ is no central registry to contend on.
 
 <p>Because binaries above 64 bytes go off-heap, the process heap deals only
 with small inline objects, cons cells, tuples, maps, closures, resources, and
-ProcBin stubs — all bounded by the largest block class (~6 MiB) but in
-practice well under that. The grow logic in <code>Heap::alloc()</code> picks
-the smallest size class that fits any individual object, and asserts the
-object isn't larger than the largest available class.</p>
+ProcBin stubs — in practice well under the table's last entry (~6 MiB).
+The grow logic in <code>Heap::alloc()</code> picks the smallest capacity that
+fits any individual object; an object larger than the whole table gets a block
+of exactly its size.</p>
 
 <!-- ─────────────────────────────── 10. RETURN DEMAND ─────────────────────────────── -->
 <h2 id="return-demand">10. Return-demand destination planning</h2>

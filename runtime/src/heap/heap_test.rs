@@ -1,4 +1,3 @@
-use super::fragment::FRAGMENT_THRESHOLD;
 use super::*;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, TAG_BITSTRING, TAG_CLOSURE,
@@ -750,22 +749,22 @@ fn heap_pointers_are_16_aligned() {
     }
 }
 
-/// Bump overflow triggers a grow at the next size_class. Old block is
+/// Bump overflow triggers a grow at the next capacity. Old block is
 /// abandoned; new block holds further allocations. `bytes_used`
 /// covers both. The next gc() returns both blocks to the pool.
 #[test]
-fn alloc_grows_to_next_size_class_on_overflow() {
+fn alloc_grows_to_next_capacity_on_overflow() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     // SIZE_TABLE[0] = 1024 bytes -> 64 headerless cons cells fit exactly.
     // Allocate 80 to force grow.
     let initial_block = h.block_start;
-    let initial_class = h.size_class;
+    let initial_capacity = h.block_size;
     for _ in 0..80 {
         let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
     }
     assert_ne!(h.block_start, initial_block, "grow must move block_start");
-    assert!(h.size_class > initial_class, "grow must bump size_class");
-    assert_eq!(h.block_size, SIZE_TABLE[h.size_class as usize]);
+    assert!(h.block_size > initial_capacity, "grow must raise the capacity");
+    assert_eq!(h.block_size, next_block_capacity(initial_capacity));
     assert!(!h.blocks.is_empty());
     assert_eq!(h.live_count(), 80);
 }
@@ -1488,7 +1487,7 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
 
 /// Acceptance (fz-siu.10 / §6.6): spawn under load shows no per-spawn
 /// malloc after warm-up. After dropping a Heap, its block goes to the
-/// pool; the next Heap::new of the same size_class pulls from the
+/// pool; the next Heap::new of the same capacity pulls from the
 /// pool, no malloc required. Repeating spawn+drop with a fixed pool
 /// occupancy proves the cache is doing its job.
 #[test]
@@ -1548,19 +1547,32 @@ fn size_table_tail_is_geometric_ish() {
 }
 
 #[test]
-fn pick_size_class_smallest_fit() {
-    assert_eq!(pick_size_class(0), 0);
-    assert_eq!(pick_size_class(1024), 0);
-    assert_eq!(pick_size_class(1025), 1);
-    assert_eq!(pick_size_class(SIZE_TABLE[5]), 5);
-    assert_eq!(pick_size_class(SIZE_TABLE[5] + 1), 6);
+fn pick_block_capacity_is_the_smallest_table_entry_that_fits() {
+    assert_eq!(pick_block_capacity(0), SIZE_TABLE[0]);
+    assert_eq!(pick_block_capacity(1024), SIZE_TABLE[0]);
+    assert_eq!(pick_block_capacity(1025), SIZE_TABLE[1]);
+    assert_eq!(pick_block_capacity(SIZE_TABLE[5]), SIZE_TABLE[5]);
+    assert_eq!(pick_block_capacity(SIZE_TABLE[5] + 1), SIZE_TABLE[6]);
+    assert_eq!(pick_block_capacity(TABLE_CEILING), TABLE_CEILING);
 }
 
 #[test]
-fn pick_size_class_clamps_on_tail_no_panic() {
-    // Far past the last entry — must clamp, not panic.
-    let class = pick_size_class(usize::MAX);
-    assert_eq!(class as usize, SIZE_TABLE.len() - 1);
+fn pick_block_capacity_past_the_table_is_the_request_rounded_to_16() {
+    assert_eq!(pick_block_capacity(TABLE_CEILING + 1), TABLE_CEILING + 16);
+    assert_eq!(pick_block_capacity(TABLE_CEILING + 16), TABLE_CEILING + 16);
+    assert_eq!(pick_block_capacity(TABLE_CEILING * 10 + 3), TABLE_CEILING * 10 + 16);
+}
+
+#[test]
+fn next_block_capacity_climbs_the_table_then_grows_by_a_fifth() {
+    assert_eq!(next_block_capacity(SIZE_TABLE[0]), SIZE_TABLE[1]);
+    assert_eq!(next_block_capacity(SIZE_TABLE[0] + 1), SIZE_TABLE[1]);
+    assert_eq!(next_block_capacity(TABLE_CEILING - 1), TABLE_CEILING);
+    let past = next_block_capacity(TABLE_CEILING);
+    assert!(past > TABLE_CEILING);
+    assert_eq!(past % 16, 0);
+    assert_eq!(past, (TABLE_CEILING * 6).div_ceil(5).next_multiple_of(16));
+    assert!(next_block_capacity(past) > past, "it never stops climbing");
 }
 
 /// Acceptance: under increasing load, gc sizes the heap to fit the live
@@ -1578,7 +1590,7 @@ fn pick_size_class_clamps_on_tail_no_panic() {
 #[test]
 fn gc_sizes_to_fit_and_never_shrinks_below_live_as_load_grows() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let mut last_class: i32 = -1;
+    let mut last_capacity = 0usize;
     for power in 6..=12 {
         let len = 1usize << power; // 64, 128, ..., 4096 cells
         // Build a chain of `len` cons cells, rooted at head.
@@ -1590,20 +1602,20 @@ fn gc_sizes_to_fit_and_never_shrinks_below_live_as_load_grows() {
         let mut roots = [heap_root(tail)];
         h.gc_with_extra_root_slots(&mut root, &mut roots);
         let live_bytes = len * 16;
-        let expected_min = pick_size_class(live_bytes); // without slack
+        let expected_min = pick_block_capacity(live_bytes); // without slack
         assert!(
-            h.size_class >= expected_min,
-            "size_class {} should fit live_bytes {}",
-            h.size_class,
+            h.block_size >= expected_min,
+            "capacity {} should fit live_bytes {}",
+            h.block_size,
             live_bytes
         );
         assert!(
-            (h.size_class as i32) >= last_class,
-            "size_class shrank below the growing working set: prev={}, now={}",
-            last_class,
-            h.size_class
+            h.block_size >= last_capacity,
+            "capacity shrank below the growing working set: prev={}, now={}",
+            last_capacity,
+            h.block_size
         );
-        last_class = h.size_class as i32;
+        last_capacity = h.block_size;
         // Drop the root so next iteration starts fresh.
         let _ = root; // reachable until here
     }
@@ -1629,7 +1641,7 @@ fn gc_updates_last_gc_live_bytes() {
     // clamped to SIZE_TABLE[0]. live bytes stay the same.
     h.gc_with_extra_root_slots(&mut root, &mut roots);
     assert_eq!(h.last_gc_live_bytes, 3 * 16, "live bytes unchanged");
-    assert_eq!(h.size_class, 0, "tiny live set stays at smallest class");
+    assert_eq!(h.block_size, SIZE_TABLE[0], "tiny live set stays at smallest block");
 }
 
 #[test]
@@ -1642,9 +1654,9 @@ fn allocation_pressure_marks_gc_without_spending_reductions() {
 }
 
 /// Large struct (200-byte payload, well past the old 64-byte cap)
-/// allocates without panic; grow promotes to a larger size_class as needed.
+/// allocates without panic; grow promotes to a larger capacity as needed.
 #[test]
-fn alloc_large_struct_succeeds_and_grows_size_class() {
+fn alloc_large_struct_succeeds_and_grows_capacity() {
     let reg = fresh_registry();
     // Build a schema whose payload is 200 bytes of typed value fields.
     let n_fields = 200 / 8; // 25 any values
@@ -2302,197 +2314,181 @@ fn shared_heap_acceptance_spawn_and_share() {
     assert_eq!(shared_refs(&witness), 1, "the sender releases its edge too");
 }
 
-// ===== fz-q8d.4 — heap fragments ======================================
+// ===== blocks above the size table =====================================
 
-/// Oversized allocations land in the fragment list, bypass the bump
-/// arena, and report their size via `bytes_used()`.
-#[test]
-fn alloc_oversized_routes_to_fragment_list() {
-    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let want = SIZE_TABLE[SIZE_TABLE.len() - 1] + 16;
-    let p = h.alloc(want);
-    assert!(!p.is_null());
-    assert_eq!(h.fragments.len(), 1);
-    assert_eq!(h.fragments[0].size, (want + 15) & !15);
-    // bytes_used includes the fragment size.
-    assert!(h.bytes_used() >= h.fragments[0].size);
-}
+/// The last table entry: anything larger than this is outside the pool.
+const TABLE_CEILING: usize = SIZE_TABLE[SIZE_TABLE.len() - 1];
 
-/// Rooted oversized struct survives GC; mark bit cycles back to false.
-#[test]
-fn rooted_fragment_survives_gc() {
-    let reg = fresh_registry();
-    // A schema large enough that alloc_struct routes to fragments.
-    let n_fields = (FRAGMENT_THRESHOLD + 256) / 8; // payload size > threshold
-    let mut fields = Vec::with_capacity(n_fields);
-    for i in 0..n_fields {
-        fields.push(FieldDescriptor {
+/// A struct schema whose object is larger than every table entry, so the heap
+/// must give it an exact block.
+fn above_table_schema(reg: &Rc<RefCell<SchemaRegistry>>) -> u32 {
+    let n_fields = (TABLE_CEILING + 256) / 8;
+    let fields = (0..n_fields)
+        .map(|i| FieldDescriptor {
             offset: (i * 8) as u32,
             kind: FieldKind::AnyValue,
             name: None,
-        });
-    }
-    let id = reg.borrow_mut().register(Schema {
+        })
+        .collect();
+    reg.borrow_mut().register(Schema {
         identity: SchemaIdentity::Internal("Big".into()),
         size: (n_fields * 8) as u32,
         fields,
-    });
+    })
+}
+
+fn struct_root(p: *mut u8) -> *mut u8 {
+    heap_object_word(p as *const u8, ValueKind::STRUCT) as *mut u8
+}
+
+/// An object larger than the table's last entry takes a block of exactly its
+/// size, and that block is outside the pool: the pool's outstanding count is
+/// the same before and after.
+#[test]
+fn an_object_above_the_table_allocates_into_an_exact_unpooled_block() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let pooled_before = pool_outstanding_blocks();
+    let want = TABLE_CEILING + 8;
+
+    let p = h.alloc(want);
+
+    assert!(!p.is_null());
+    assert_eq!(h.block_size, TABLE_CEILING + 16, "capacity is the size rounded to 16");
+    assert_eq!(
+        h.bytes_remaining_in_block(),
+        0,
+        "the block holds the object and nothing else"
+    );
+    assert_eq!(h.block_start, p);
+    assert_eq!(h.blocks.len(), 1, "the tiny first block was abandoned");
+    assert_eq!(
+        pool_outstanding_blocks(),
+        pooled_before,
+        "an exact block never touches the pool"
+    );
+    assert!(h.bytes_used() >= TABLE_CEILING + 16);
+}
+
+/// A rooted object above the table is copied like any other: it moves, the
+/// to-space is at least as large as it, and the root follows it.
+#[test]
+fn a_rooted_object_above_the_table_survives_a_collection_by_being_copied() {
+    let reg = fresh_registry();
+    let id = above_table_schema(&reg);
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let big = h.alloc_struct(id);
-    assert_eq!(h.fragments.len(), 1);
-    let frag_ptr = h.fragments[0].ptr;
-    let mut root = heap_object_word(big as *const u8, ValueKind::STRUCT) as *mut u8;
-    h.gc(&mut root);
-    assert_eq!(h.fragments.len(), 1, "fragment survives");
-    assert_eq!(h.fragments[0].ptr, frag_ptr, "fragment did not move");
-    assert!(!h.fragments[0].mark, "mark reset post-GC");
-    // Root is unchanged because the fragment did not move.
-    assert_eq!(struct_addr_from_tagged(root as u64), Some(big));
+    let size = TABLE_CEILING + 256 + 8;
+    let mut root = struct_root(big);
+
+    let stats = h.gc(&mut root);
+
+    let moved = struct_addr_from_tagged(root as u64).expect("root is still a struct");
+    assert_ne!(moved, big, "the object was copied, not marked in place");
+    assert!(h.contains_heap_addr(moved));
+    assert!(!h.contains_heap_addr(big), "its old block went back");
+    assert!(stats.to_space_capacity_bytes as usize >= size);
+    assert_eq!(stats.copied_objects, 1);
+    assert_eq!(stats.live_objects, 1);
+    assert_eq!(
+        stats.live_bytes, h.last_gc_live_bytes as u64,
+        "live bytes are the to-space fill"
+    );
+    assert!(stats.live_bytes as usize >= size);
 }
 
-/// Unrooted oversized object is freed by GC; fragment list shrinks.
+/// An unrooted object above the table is reclaimed by the collection that
+/// finds it dead, and the heap sheds the capacity it needed on the next one.
 #[test]
-fn unrooted_fragment_is_freed_by_gc() {
+fn an_unrooted_object_above_the_table_is_freed_by_a_collection() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let _ = h.alloc(FRAGMENT_THRESHOLD + 16);
-    assert_eq!(h.fragments.len(), 1);
+    let pooled_before = pool_outstanding_blocks();
+    let p = h.alloc(TABLE_CEILING + 16);
     let mut root: *mut u8 = null_mut();
+
+    let stats = h.gc(&mut root);
+
+    assert!(!h.contains_heap_addr(p), "the exact block was released");
+    assert!(h.blocks.is_empty());
+    assert_eq!(stats.live_bytes, 0);
+    assert_eq!(stats.live_objects, 0);
+    assert_eq!(
+        pool_outstanding_blocks(),
+        pooled_before - 1,
+        "only the tiny first block was pooled, and it went back"
+    );
+
     h.gc(&mut root);
-    assert!(h.fragments.is_empty(), "unrooted fragment freed");
+    assert_eq!(
+        h.block_size, SIZE_TABLE[0],
+        "with nothing live the heap is back to the smallest block"
+    );
 }
 
-/// Three fragments, two rooted: the unrooted one is reclaimed.
+/// An object above the table that holds an edge to a small object carries it
+/// through the collection: the child is copied and the field follows it.
 #[test]
-fn mixed_fragment_liveness() {
+fn an_object_above_the_table_keeps_its_small_children_alive() {
     let reg = fresh_registry();
-    let n_fields = (FRAGMENT_THRESHOLD + 256) / 8;
-    let mut fields = Vec::with_capacity(n_fields);
-    for i in 0..n_fields {
-        fields.push(FieldDescriptor {
-            offset: (i * 8) as u32,
-            kind: FieldKind::AnyValue,
-            name: None,
-        });
-    }
-    let id = reg.borrow_mut().register(Schema {
-        identity: SchemaIdentity::Internal("Big".into()),
-        size: (n_fields * 8) as u32,
-        fields,
-    });
-    let mut h = Heap::new(SIZE_TABLE[0], reg.clone());
-    let a = h.alloc_struct(id);
-    let _b_dead = h.alloc_struct(id);
-    let c = h.alloc_struct(id);
-    assert_eq!(h.fragments.len(), 3);
-    // We can only thread one root pointer through `gc`; package a
-    // pair {a, c} into a typed tuple in the bump arena; that becomes a
-    // root containing both.
-    let pair_id = reg.borrow_mut().register(Schema {
-        identity: SchemaIdentity::Internal("Pair".into()),
-        size: 16,
-        fields: vec![
-            FieldDescriptor {
-                offset: 0,
-                kind: FieldKind::AnyValue,
-                name: None,
-            },
-            FieldDescriptor {
-                offset: 8,
-                kind: FieldKind::AnyValue,
-                name: None,
-            },
-        ],
-    });
-    let pair = h.alloc_struct(pair_id);
-    unsafe { h.write_field_slot(pair, 0, AnyValue::heap_ptr(a, ValueKind::STRUCT)) };
-    unsafe { h.write_field_slot(pair, 8, AnyValue::heap_ptr(c, ValueKind::STRUCT)) };
-    let mut root = heap_object_word(pair as *const u8, ValueKind::STRUCT) as *mut u8;
-    h.gc(&mut root);
-    assert_eq!(h.fragments.len(), 2, "the unrooted fragment was reclaimed");
-}
-
-/// Fragment → fragment edge: the head fragment holds a pointer at
-/// payload offset 0 to a second fragment. Rooting the head must
-/// keep both alive.
-#[test]
-fn fragment_to_fragment_edge_survives_gc() {
-    let reg = fresh_registry();
-    let n_fields = (FRAGMENT_THRESHOLD + 256) / 8;
-    let mut fields = Vec::with_capacity(n_fields);
-    for i in 0..n_fields {
-        fields.push(FieldDescriptor {
-            offset: (i * 8) as u32,
-            kind: FieldKind::AnyValue,
-            name: None,
-        });
-    }
-    let id = reg.borrow_mut().register(Schema {
-        identity: SchemaIdentity::Internal("Big".into()),
-        size: (n_fields * 8) as u32,
-        fields,
-    });
-    let mut h = Heap::new(SIZE_TABLE[0], reg);
-    let head = h.alloc_struct(id);
-    let tail = h.alloc_struct(id);
-    unsafe { h.write_field_slot(head, 0, AnyValue::heap_ptr(tail, ValueKind::STRUCT)) };
-    let mut root = heap_object_word(head as *const u8, ValueKind::STRUCT) as *mut u8;
-    h.gc(&mut root);
-    assert_eq!(h.fragments.len(), 2, "both fragments survive");
-}
-
-/// Fragment → to-space edge: a fragment holds a pointer to a
-/// normal heap-resident List cons. Rooting the fragment must
-/// preserve the cons and move it to to-space.
-#[test]
-fn fragment_to_block_edge_promotes_block_object() {
-    let reg = fresh_registry();
-    let n_fields = (FRAGMENT_THRESHOLD + 256) / 8;
-    let mut fields = Vec::with_capacity(n_fields);
-    for i in 0..n_fields {
-        fields.push(FieldDescriptor {
-            offset: (i * 8) as u32,
-            kind: FieldKind::AnyValue,
-            name: None,
-        });
-    }
-    let id = reg.borrow_mut().register(Schema {
-        identity: SchemaIdentity::Internal("Big".into()),
-        size: (n_fields * 8) as u32,
-        fields,
-    });
+    let id = above_table_schema(&reg);
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let cons = alloc_int_list_cons(&mut h, 7, EMPTY_LIST);
     let big = h.alloc_struct(id);
     unsafe { h.write_field_slot(big, 0, heap_root(cons)) };
-    let mut root = heap_object_word(big as *const u8, ValueKind::STRUCT) as *mut u8;
+    let mut root = struct_root(big);
+
     h.gc(&mut root);
-    assert_eq!(h.fragments.len(), 1, "fragment survives");
-    let child_value = h.read_field_slot(big, 0);
-    assert_eq!(child_value.kind(), ValueKind::LIST);
-    let child = child_value.raw() as *mut u8;
-    unsafe {
-        let cons = &*(child as *const ListCons);
-        assert_eq!(cons.head_kind(), ValueKind::INT);
-        assert_eq!(cons.head as i64, 7);
-    }
+
+    let moved = struct_addr_from_tagged(root as u64).expect("struct root");
+    let child = h.read_field_slot(moved, 0);
+    assert_eq!(child.kind(), ValueKind::LIST);
+    assert!(h.contains_heap_addr(child.raw() as *mut u8));
+    let cons = unsafe { &*(child.raw() as *const ListCons) };
+    assert_eq!(cons.head_kind(), ValueKind::INT);
+    assert_eq!(cons.head as i64, 7);
 }
 
-/// Heap::drop with live fragments deallocates them (no leak).
-/// Verified indirectly: drop without panic, and a follow-up alloc
-/// at the same allocator gets a fresh pointer.
+/// Two objects above the table, one reaching the other, both survive; a third
+/// that nothing reaches does not.
 #[test]
-fn heap_drop_releases_fragments_without_leak() {
-    // Two heaps in sequence: first holds a fragment then drops; the
-    // drop frees the fragment. Second heap can allocate without
-    // tripping anything in the allocator's reuse path.
+fn objects_above_the_table_are_kept_by_reachability_alone() {
+    let reg = fresh_registry();
+    let id = above_table_schema(&reg);
+    let mut h = Heap::new(SIZE_TABLE[0], reg);
+    let head = h.alloc_struct(id);
+    let tail = h.alloc_struct(id);
+    let _dead = h.alloc_struct(id);
+    unsafe { h.write_field_slot(head, 0, AnyValue::heap_ptr(tail, ValueKind::STRUCT)) };
+    let mut root = struct_root(head);
+
+    let stats = h.gc(&mut root);
+
+    assert_eq!(
+        stats.copied_objects, 2,
+        "head and tail were copied; the unreached one was not"
+    );
+    assert_eq!(stats.live_objects, 2);
+    let moved = struct_addr_from_tagged(root as u64).expect("struct root");
+    let moved_tail = h.read_field_slot(moved, 0);
+    assert_eq!(moved_tail.kind(), ValueKind::STRUCT);
+    assert!(h.contains_heap_addr(moved_tail.raw() as *mut u8));
+}
+
+/// Dropping a heap that holds exact blocks returns them to the allocator and
+/// leaves the pool's accounting exact.
+#[test]
+fn dropping_a_heap_with_an_object_above_the_table_releases_everything() {
+    let pooled_before = pool_outstanding_blocks();
     {
         let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-        let _ = h.alloc(FRAGMENT_THRESHOLD + 16);
-        assert_eq!(h.fragments.len(), 1);
+        let _ = h.alloc(TABLE_CEILING + 16);
+        let _ = h.alloc(TABLE_CEILING + 16);
+        assert_eq!(
+            pool_outstanding_blocks(),
+            pooled_before + 1,
+            "only the first pooled block is counted"
+        );
     }
-    let mut h2 = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let p = h2.alloc(FRAGMENT_THRESHOLD + 16);
-    assert!(!p.is_null());
+    assert_eq!(pool_outstanding_blocks(), pooled_before);
 }
 
 #[test]

@@ -7,7 +7,7 @@
 //! the copy allocates as usual (overflowing into larger blocks exactly as any
 //! allocation does), and `end_gift` cuts everything allocated since the window
 //! opened into a `GiftSegment` and puts the saved tip back. The receiver later
-//! calls `graft` and owns the segment's blocks, fragments and off-heap stubs
+//! calls `graft` and owns the segment's blocks and off-heap stubs
 //! as if it had allocated them. Its next Cheney pass
 //! treats the grafted blocks as from-space and copies the live data out.
 //!
@@ -15,11 +15,9 @@
 //! writes into blocks that are not yet anyone's, and the receiver only moves
 //! pointers.
 
-use super::block_pool::{Block, pool_alloc, pool_free};
-use super::fragment::Fragment;
+use super::block_pool::{Block, pool_alloc};
 use super::{Heap, SIZE_TABLE};
 use crate::procbin::{mso_release_chain, mso_set_next};
-use std::alloc::dealloc;
 
 /// What `begin_gift` records so `end_gift` can cut the segment with splits
 /// alone: the tip to restore, the list lengths at which the window opened, the
@@ -27,7 +25,6 @@ use std::alloc::dealloc;
 pub(super) struct GiftWindow {
     pub(super) saved_tip: Block,
     blocks_len: usize,
-    fragments_len: usize,
     alloc_count: u64,
     saved_mso_head: u64,
     /// The first stub pushed onto the mso chain while the window was open,
@@ -37,28 +34,25 @@ pub(super) struct GiftWindow {
 }
 
 /// A detached run of heap storage with no reference into any heap. It holds
-/// the blocks the copy filled (by start, fill and size class), the oversize
-/// fragments it made, the off-heap stubs it pushed (as an mso chain whose
-/// last link is 0) and how many objects it allocated. `Heap::graft` adopts
-/// all of it; dropping an un-grafted segment
-/// returns every block to the pool, frees every fragment and releases every
-/// stub's off-heap reference, so an orphan leaks nothing.
+/// the blocks the copy filled (by start, fill and capacity), the off-heap
+/// stubs it pushed (as an mso chain whose last link is 0) and how many
+/// objects it allocated. `Heap::graft` adopts all of it; dropping an
+/// un-grafted segment releases every block and every stub's off-heap
+/// reference, so an orphan leaks nothing.
 pub struct GiftSegment {
     blocks: Vec<Block>,
-    fragments: Vec<Fragment>,
     mso_head: u64,
     oldest_mso: u64,
     objects: u64,
 }
 
 impl GiftSegment {
-    /// The segment of a copy that copied nothing: no blocks, no fragments, no
+    /// The segment of a copy that copied nothing: no blocks, no
     /// stubs. Grafting it changes nothing, and it never
     /// touches the block pool.
     pub fn empty() -> Self {
         GiftSegment {
             blocks: Vec::new(),
-            fragments: Vec::new(),
             mso_head: 0,
             oldest_mso: 0,
             objects: 0,
@@ -74,10 +68,6 @@ impl GiftSegment {
         self.blocks.len()
     }
 
-    pub fn fragment_count(&self) -> usize {
-        self.fragments.len()
-    }
-
     /// The head of the segment's own mso chain, or 0 when the copy made no
     /// off-heap stub.
     pub fn mso_head(&self) -> u64 {
@@ -88,18 +78,15 @@ impl GiftSegment {
 impl Drop for GiftSegment {
     fn drop(&mut self) {
         mso_release_chain(self.mso_head);
-        for f in self.fragments.drain(..) {
-            unsafe { dealloc(f.ptr, f.layout) };
-        }
         for block in self.blocks.drain(..) {
-            pool_free(block.start, block.size_class);
+            block.release();
         }
     }
 }
 
 impl Heap {
-    /// Set the tip aside and allocate into a fresh block from the smallest
-    /// size class until `end_gift`. Everything allocated in between belongs to
+    /// Set the tip aside and allocate into a fresh block of the smallest
+    /// capacity until `end_gift`. Everything allocated in between belongs to
     /// the gift; the heap's own data is untouched and its free space is kept.
     pub fn begin_gift(&mut self) {
         assert!(self.gift.is_none(), "begin_gift while a gift window is already open");
@@ -107,16 +94,16 @@ impl Heap {
         self.gift = Some(GiftWindow {
             saved_tip,
             blocks_len: self.blocks.len(),
-            fragments_len: self.fragments.len(),
             alloc_count: self.alloc_count,
             saved_mso_head: self.mso_head,
             oldest_mso: 0,
         });
-        let start = pool_alloc(0);
+        let capacity = Self::gift_first_block_bytes();
+        let start = pool_alloc(capacity);
         self.install_block(Block {
             start,
             top: start,
-            size_class: 0,
+            capacity,
         });
     }
 
@@ -127,7 +114,6 @@ impl Heap {
         let window = self.gift.take().expect("end_gift without an open gift window");
         let mut blocks = self.blocks.split_off(window.blocks_len);
         blocks.push(self.current_block());
-        let fragments = self.fragments.split_off(window.fragments_len);
         let mso_head = if window.oldest_mso == 0 {
             0
         } else {
@@ -140,7 +126,6 @@ impl Heap {
         self.install_block(window.saved_tip);
         GiftSegment {
             blocks,
-            fragments,
             mso_head,
             oldest_mso: window.oldest_mso,
             objects,
@@ -148,12 +133,11 @@ impl Heap {
     }
 
     /// Take ownership of a segment: its blocks join this heap's parked blocks
-    /// as from-space, its fragments join this heap's, its mso prefix is
+    /// as from-space, its mso prefix is
     /// spliced ahead of this heap's chain. Their fill counts toward
     /// `should_gc`, so a heap that receives many gifts collects them.
     pub fn graft(&mut self, mut segment: GiftSegment) {
         self.blocks.append(&mut segment.blocks);
-        self.fragments.append(&mut segment.fragments);
         if segment.mso_head != 0 {
             mso_set_next(segment.oldest_mso, self.mso_head);
             self.mso_head = segment.mso_head;

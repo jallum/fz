@@ -3,7 +3,9 @@
 //! One block per `Process`. Allocation is pure bump: `bump_top += size`. When
 //! `bump_top` would cross `block_end`, we allocate a fresh (larger) block and
 //! park the old one in `blocks`; a grafted gift segment parks its blocks there
-//! too. At the next park-time GC, the collector copies everything reachable
+//! too. Block capacities are `SIZE_TABLE` entries, which the pool recycles, or
+//! for an object larger than the whole table exactly that object's size, which
+//! the system allocator provides and takes back. At the next park-time GC, the collector copies everything reachable
 //! from scheduler-owned roots into a fresh to-space block; the old current
 //! block and all parked blocks are then freed.
 //!
@@ -21,7 +23,6 @@
 
 mod block_pool;
 mod deep_copy;
-mod fragment;
 mod gc;
 mod gift;
 mod imp;
@@ -37,7 +38,6 @@ mod heap_test;
 mod schema_test;
 
 use self::block_pool::Block;
-use self::fragment::Fragment;
 use self::gift::GiftWindow;
 use crate::process::Node;
 use std::cell::RefCell;
@@ -46,7 +46,7 @@ use std::rc::Rc;
 
 #[cfg(test)]
 pub use self::block_pool::pool_drain_for_test;
-pub use self::block_pool::{SIZE_TABLE, pick_size_class};
+pub use self::block_pool::{SIZE_TABLE, next_block_capacity, pick_block_capacity};
 pub use self::block_pool::{pool_outstanding_blocks, pool_total_cached_blocks};
 pub use self::deep_copy::{
     HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_tagged_bits,
@@ -70,10 +70,9 @@ pub struct Heap {
     block_start: *mut u8,
     bump_top: *mut u8,
     block_end: *mut u8,
+    /// The tip's capacity in bytes: a `SIZE_TABLE` entry, or an exact size
+    /// above the table for a block made to hold a larger object.
     block_size: usize,
-    /// Index into SIZE_TABLE (§6.3, wired in fz-siu.9). Tracked here so
-    /// proactive shrinkage can read/adjust it without growing the API.
-    pub size_class: u8,
     /// Exact live bytes after the most recent GC. Zero until the first GC.
     /// Used by proactive shrinkage to size the to-space and detect low-live
     /// quiet periods.
@@ -84,7 +83,7 @@ pub struct Heap {
     pub last_gc_stats: GcStats,
     /// Blocks the heap has stopped bumping into: old tips abandoned by `grow`
     /// and blocks grafted from other heaps' gift segments. Each records its
-    /// fill and size class, so `Drop` / gc() can return it to the pool (§6.6)
+    /// fill and capacity, so `Drop` / gc() can return it to the pool (§6.6)
     /// and the collector counts it by fill. Cheney frees the entire list at
     /// every collection.
     blocks: Vec<Block>,
@@ -121,9 +120,4 @@ pub struct Heap {
     /// `(closure_bits, payload)` here and the scheduler drains the queue
     /// at the next quantum boundary. See ticket fz-4mk.
     pub pending_dtors: VecDeque<(u64, u64)>,
-    /// fz-q8d.4 — fragment list. Oversized allocations (above the
-    /// largest size_class) live here as their own system-allocator
-    /// backed singletons. GC marks them via the `mark` bit; survivors
-    /// stay put across collections, dead fragments are freed.
-    fragments: Vec<Fragment>,
 }

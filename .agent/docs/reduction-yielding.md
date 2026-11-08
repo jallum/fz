@@ -30,7 +30,7 @@ and every loop still crosses a tail call.
   `boundary_maintenance`.
 - **`Heap`** (`runtime/src/heap`) owns allocation, block growth, and
   `should_gc`, a pure function of the heap's state: the tip's fill plus the fill
-  of every parked block (`copyable_bytes`) against half the
+  of every parked block (`bytes_used`) against half the
   tip's capacity. Exhausting the current block allocates a larger block and
   parks the old block in `blocks` for the next Cheney pass. Blocks grafted from
   another heap's gift segment (`Heap::graft`) join `blocks`, are from-space for
@@ -79,7 +79,7 @@ allocation        bump_top += size
                     allocate a larger block
                     move old current block to blocks
 
-boundary          if heap.should_gc():   (copyable_bytes >= block_size / 2)
+boundary          if heap.should_gc():   (bytes_used >= block_size / 2)
                     gc over scheduler-owned roots
                   clear yield_reasons
 ```
@@ -95,33 +95,36 @@ after-continuations, never building a closure.
 ## Allocation and block growth
 
 Allocation is pure bump on the fast path. When the current block cannot fit an
-object, `Heap::alloc_kind` allocates a fresh block from the next size class that
-can hold it, records the old block in `blocks`, and continues. This is
-why allocation does not need to force a scheduler yield to remain total.
+object, `Heap::alloc_kind` allocates a fresh block one capacity step up, or
+exactly large enough for the object when that is more, records the old block in
+`blocks`, and continues. This is why allocation does not need to force a
+scheduler yield to remain total.
 
-Large objects above the heap fragment threshold use fragment allocations. They
-play no part in `should_gc` and do not move during Cheney; the collector marks
-survivors and frees unmarked fragments during the fragment sweep.
+`SIZE_TABLE` lists the capacities the block pool recycles, from 1 KiB to about
+6 MiB. A block above the table is allocated at the object's size rounded up to
+16 bytes and is returned to the system allocator, not the pool, when it is
+released; `pool_outstanding_blocks` counts pooled blocks only. Such an object is
+part of `bytes_used` and is copied by Cheney like any other, so to-space
+grows past the table to hold it.
 
 ## The gift window
 
 `Heap::begin_gift` sets the current tip aside and installs a fresh block from
-the smallest size class; allocation continues through `alloc_kind` and overflows
-upward as usual. `Heap::end_gift` cuts the blocks, fragments and MSO stubs
+the smallest capacity; allocation continues through `alloc_kind` and overflows
+upward as usual. `Heap::end_gift` cuts the blocks and MSO stubs
 produced since the window opened into a `GiftSegment`, restores the saved tip,
 and puts `live_count` back. Allocation statistics stay with the heap that did
 the copying. `Heap::graft` on another heap adopts the segment; dropping an
-un-grafted segment returns its blocks to the pool, frees its fragments and
-releases its stubs' off-heap references. A collection asserts that no window is
+un-grafted segment releases its blocks and its stubs' off-heap references. A collection asserts that no window is
 open. Cross-process send is the window's user: `sched::gift_copy` copies a
 message, or a match's bound values, inside one, and the segment travels to the
 receiver on its `in_queue` (see [scheduler](scheduler-zero-arg-closures.md)).
 
 Grafted blocks are parked blocks like any other, so a gift's fill is part of
-`copyable_bytes`. A collection sizes to-space from `copyable_bytes` first: the
-size class holding every copyable byte is the floor, and the grow, keep and
-shrink bands choose between that floor and a larger class. Grow applies when
-`copyable_bytes` fills 75% or more of the tip; shrink when the last survivors
+`bytes_used`. A collection sizes to-space from `bytes_used` first: the
+capacity holding every byte in use is the floor, and the grow, keep and
+shrink bands choose between that floor and a larger capacity. Grow applies when
+`bytes_used` fills 75% or more of the tip; shrink when the last survivors
 fill 25% or less of it; keep otherwise. To-space capacity is therefore at
 least the bytes a pass can copy, whatever raised `should_gc`.
 
