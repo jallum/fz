@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T13:06:20Z",
+  "description": "lib/kernel.fz defines % as arithmetic remainder (def (left :: integer) % (right :: integer) ... with int/float clauses and, since fz-sc8.62, a default clause raising ArithmeticError). Elixir has no % operator: % only opens %{} and %Struct{}; remainder is rem/2 and Integer.mod/2. The epic's goal says fz moves toward Elixir surface syntax, and the operator cannot have an oracle fixture (fz-sc8.62 noted this). Decide: retire % (delete the clauses, their fz_op_rem_* wiring and fixtures that use it, pointing users at rem/2), or keep it and document it as an fz extension. Recommendation: retire.",
+  "id": "fz-sc8.90",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "The percent operator has no Elixir counterpart",
+  "type": "task",
+  "updated_at": "2026-11-08T13:06:20Z"
+}
