@@ -6,6 +6,7 @@
   "blocks": [
     "fz-3ul.3"
   ],
+  "closed_at": "2026-11-08T03:23:18Z",
   "created": "2026-11-08T00:15:24Z",
   "description": "Plan: /Users/j5n/Workspace/fz-exceptions.html, decision 2, ticket 2. No runtime change.\n\nBuild: in body.rs, `try do B after A end` lowers as the nested-try form v3_core uses (after body on the success path after the pop, and in a handler whose only row runs A then re-raises the original kind and value); `try do B rescue/catch ... after A end` is two nested trys; `else` arms are a case over the body's value outside the protected region, whose miss raises TryClauseError with the value; a try with only do and else is the Elixir warning/error. Body and after bindings do not escape.\n\nAcceptance (interp, run, build; elixir oracle):\n- after runs on success and its value is discarded (try's value is the body's).\n- after runs on a raise, then the outer rescue sees the ORIGINAL exception.\n- an exception raised inside after masks the original.\n- else matches the body's value; a miss raises TryClauseError \"no try clause matching: \u003cvalue\u003e\" not caught by the same try's rescue; a raise inside an else arm is not caught by the same try.\n- try with rescue and after: rescue handles, after still runs once.\n- a variable bound in the body is unbound after the try: expected.diagnostics fixture.\n- unit tests for the desugaring shape (the lowered step structure: nested handlers, one after block, no second runtime concept).\n- exceptions doc gains the after/else section; fixtures.md updated.\n- gate green as in the epic.",
   "id": "fz-3ul.2",
@@ -18,7 +19,7 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "after and else are desugarings of try",
   "type": "feature",
   "updated_at": "2026-11-08T03:23:18Z"
