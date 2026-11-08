@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-08T18:59:28Z",
   "created": "2026-11-02T21:30:40Z",
   "description": "A script whose only top-level statement is `IO.puts(\"a\")` fails with lower/unbound. Found while working fz-sc8.41; it is not that ticket's cause. Probe on interp, run and build against elixir, and find where the binding is lost. May overlap with fz-sc8.8 (IO.puts/1); check that ticket first and fold it in if it is the same cause.",
   "id": "fz-sc8.55",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A top-level IO.puts on its own compiles",
   "type": "bug",
-  "updated_at": "2026-11-02T21:30:40Z"
+  "updated_at": "2026-11-08T18:59:28Z"
 }
