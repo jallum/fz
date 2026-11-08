@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T03:34:29Z",
+  "description": "Found while building fz-3ul.2 (fixture 00731), reproduced on 5371db0a0 without any try. Native codegen (JIT run and AOT build) panics with 'known scalar kind does not match requested raw ABI repr' at src/compiler2/native_codegen/fn_ctx.rs:443 when a call whose result is delivered as a raw int joins a branch whose other arm is a different kind:\n\ndef f(x) do\n  a = if x do :ok else 10 + 10 end\n  dbg(a)\nend\ndef main() do\n  f(true)\n  f(false)\nend\n\nThe interpreter prints :ok then 20. The same panic appears with case in place of if, and with a rescue arm ending in 10 + 10 when the try body returns an atom. The fixture 00731 was rewritten to avoid the shape ({:got, n} tuples) and must be restored to the direct form when this is fixed.\n\nAcceptance: the program above runs on interp, run and build with the same output; fixture 00731 restored to arms that return bare ints and atoms; a native codegen unit test in the sibling _test.rs for the join repr decision; no numeric pin rises without explanation; gate green.",
+  "id": "fz-bpd",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "A call returning a raw int can join a branch of another kind",
+  "type": "bug",
+  "updated_at": "2026-11-08T03:34:29Z"
+}
