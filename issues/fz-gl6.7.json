@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-gl6.6"
+  ],
   "blocks": [],
   "created": "2026-11-08T22:51:54Z",
   "description": "should_gc is bytes_used \u003e= block_size / 2, and a grafted gift's fill lands in bytes_used, so a gift trips the receiver's trigger and (through to_space_capacity) sizes its next tip. Fixture 00901: the parent's 1 KiB tip becomes 1.7 MB and then shrinks again, chosen entirely by one message. A gift is produced by a copy from live roots, arrives packed and fully live in a block the receiver owns: that is the state of a heap after a collection, so it is survivor data, not allocation pressure.\n\nDone when:\n- Heap keeps a live_baseline: set by a collection to the bytes that survived, raised by graft by the gift's fill, left alone by allocation. The trigger is allocated_since = bytes_used - live_baseline; collect when allocated_since \u003e= max(live_baseline, SIZE_TABLE[0] / 2). On an empty heap this is the 512 bytes should_gc_follows_bytes_in_use_against_half_the_tip_and_a_collection_answers_it already pins.\n- last_gc_live_bytes is replaced by live_baseline wherever it was a sizing input (to_space_capacity still reads it until .8 deletes that function).\n- Fixture 00901's runtime test from .1 shows the parent no longer collects at the boundary after the graft; its pinned collection count and copied bytes move and the new values are explained in the commit.\n- A heap unit test grafts a gift onto a quiet heap and asserts should_gc stays false, then allocates to the baseline and asserts it turns true.\n- The accepted consequence is written into the memory guide: a receiver that consumed a lot of mail keeps the dead blocks until its own allocation reaches the baseline; idle shrinking is a separate policy if the census ever shows the need.\n- Documentation in the same commit: every .agent/docs page, guide (guides/*.html), README.md section and fixture README that describes a mechanism this ticket changes or removes is rewritten to the present fact in the same commit, and a grep for the old names and phrases over .agent, guides, README.md and fixtures returns nothing. Full gate green (--workspace --all-targets plus doc tests, fixture matrix with --test-threads=1). Commit in Why / What changed / Verification form. No co-author trailer, no attribution line.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A gift is a survivor: the trigger counts allocation since the last collection against the live baseline",
   "type": "task",
-  "updated_at": "2026-11-08T22:51:54Z"
+  "updated_at": "2026-11-08T22:51:55Z"
 }

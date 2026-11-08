@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-gl6.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-gl6.7"
+  ],
   "created": "2026-11-08T22:51:54Z",
   "description": "alloc_kind's overflow path (runtime/src/heap/imp.rs:137) picks capacity = pick_block_capacity(size).max(next_block_capacity(block_size)), pushes the current tip onto blocks and installs the new block as the tip. For an object larger than the tip, the exact block becomes the tip, and the next small allocation overflows it into next_block_capacity(huge): 1.2x the huge object for a tip that will mostly stay empty.\n\nGive a huge object the gift's treatment: an exact block pushed straight onto blocks with the object in it, tip untouched. The 1.2x rule then applies only to a tip that climbs past the table on its own.\n\nDone when:\n- An allocation larger than next_block_capacity(block_size) (or whatever threshold the test settles; state it) is placed in an exact block that is parked on blocks immediately; the tip, its block_size and bump pointer are unchanged by it.\n- A heap unit test allocates one huge object then one small one and asserts block_size did not move and the small object landed in the tip.\n- A probe program recorded in the commit shows the tip sizes before and after through the gc event.\n- No fixture pin changes.\n- Documentation in the same commit: every .agent/docs page, guide (guides/*.html), README.md section and fixture README that describes a mechanism this ticket changes or removes is rewritten to the present fact in the same commit, and a grep for the old names and phrases over .agent, guides, README.md and fixtures returns nothing. Full gate green (--workspace --all-targets plus doc tests, fixture matrix with --test-threads=1). Commit in Why / What changed / Verification form. No co-author trailer, no attribution line.",
   "id": "fz-gl6.6",
