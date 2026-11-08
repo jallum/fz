@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-a9y.10"
+  ],
   "blocks": [],
   "created": "2026-11-08T11:18:08Z",
   "description": "A gift window installs a class-0 block (1024 bytes) and lets the copy overflow through the ordinary allocator. So end_gift must snapshot the block-list length at begin_gift and split off everything appended since, every gift costs at least one 1 KiB pool block however small the message, and a large gift leaves a chain of partly filled blocks for the receiver to adopt. The epic's decision to \"start at the smallest class and chain upward (measure before changing)\" has now been measured: 00697 holds thousands of 1 KiB blocks for 16-byte messages until the receiver's next pass.\n\nBEAM measures first. erts_send_message calls size_object (or copy_shared_calculate) and allocates one exact-size fragment; the copy cannot overflow (erl_message.c erts_send_message, erts_try_alloc_message_on_heap).\n\nDone when:\n- deep_copy has a measuring pass over a value set through a HeapView, returning the bytes the copy will allocate, with the same traversal rules as the copy (shared sub-structure counted once via the forwarding map). begin_gift takes the measured bytes and installs one block of pick_size_class(bytes); the copy cannot overflow it, and end_gift asserts it did not.\n- GiftWindow holds the saved tip, the mso seam and the alloc count; the block-list length snapshot and the split are gone. GiftSegment holds exactly one block.\n- fz.runtime.send.probe's gift_blocks is 1 for every gift in 00694 to 00698. A new fixture (or an extension of 00697) pins gift_bytes for a known message so the measurement is checked against the copy.\n- A/B against the parent commit on the 00697 fixture and the send-heavy fixtures in the matrix: sends per second and pool_outstanding_before/after at run_ended. Both are reported in the commit's Verification section. A regression in either is a stop, not a trade.\n- Full gate green. Commit in Why / What changed / Verification form. No co-author trailer.\n\nTests: a measure-equals-copy test for a list, a struct with shared sub-structure, a map, a closure and a ProcBin stub (measured bytes == segment fill after copy); a test that end_gift panics if the copy allocated past the measured block (reachable only by a deliberate mismatch in the test); the probe telemetry pin above.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A gift is measured first and occupies one block sized to the measurement",
   "type": "task",
-  "updated_at": "2026-11-08T11:18:08Z"
+  "updated_at": "2026-11-08T11:18:09Z"
 }
