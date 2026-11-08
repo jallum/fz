@@ -31,8 +31,8 @@ use crate::telemetry::TelemetryExt as _;
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryCapture, BackendEntryOrigin, BackendExecutable,
     BackendProgram, BackendReturnFlow, BackendStep, BackendTail, CallEdge, CallTarget, ClosureCallEdge,
-    DispatchCallEdge, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId,
-    NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram,
+    DispatchCallEdge, EffectSummary, EntryTransfer, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
+    NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram,
 };
 use super::super::body::{ControlDestination, ControlEntryId, DispatchBindings, LoweredExtern, ValueId};
 use super::super::identity::RootId;
@@ -245,7 +245,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 match &executable.body {
                     BackendBody::Extern { signature } => self.lower_extern_executable(index, executable, signature),
                     BackendBody::Clauses { clauses, entries, .. } => {
-                        let mut entry_fns = EntryFns::default();
+                        let mut entry_fns = EntryFns::for_entries(entries);
                         if executable.abi.materialized.entry_dispatch.is_some() {
                             self.lower_clause_dispatch_executable(index, executable, clauses, entries, &mut entry_fns)?;
                         } else {
@@ -937,7 +937,32 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
         }
         self.lower_entry_steps(&mut ctx, executable, &mut env, &clause.projections)?;
-        self.lower_entry_from_id(&mut ctx, executable, entries, entry_fns, clause.entry, env)?;
+        self.lower_entry_here(&mut ctx, executable, entries, entry_fns, clause.entry, &[], env)?;
+        self.finish_entry_lowering_fn(ctx, executable, entries, entry_fns)
+    }
+
+    /// Finishes a function that lowers entries: every entry it reached as a
+    /// block is lowered into it first.
+    fn finish_entry_lowering_fn(
+        &mut self,
+        mut ctx: NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &mut EntryFns,
+    ) -> Result<(), FatalError> {
+        while let Some(entry_id) = ctx.pending_entry_blocks.pop_front() {
+            let (block, entry_vars) = ctx.entry_blocks[&entry_id].clone();
+            ctx.current_block = block;
+            self.lower_entry_here(
+                &mut ctx,
+                executable,
+                entries,
+                entry_fns,
+                entry_id,
+                &entry_vars,
+                ValueEnv::default(),
+            )?;
+        }
         self.finish_native_fn(ctx);
         Ok(())
     }
@@ -1002,9 +1027,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             return_tuple_arity,
             executable.abi.effects,
         );
-        let mut env = ValueEnv::default();
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        let mut capture_offset = self.bind_entry_input(&mut ctx, executable, entry, &entry_vars, &mut env)?;
         let arguments = outcome
             .into_iter()
             .flat_map(|edge| edge.arguments.iter())
@@ -1017,26 +1040,67 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 (argument.subject, entry_vars[index])
             })
             .collect();
-        self.mark_delivered_entry_semantics(&mut ctx, executable, entry, &entry_vars[..capture_offset])?;
-        self.bind_entry_captures(&mut ctx, executable, entry, &entry_vars, &mut capture_offset, &mut env)?;
-        self.lower_entry_steps(&mut ctx, executable, &mut env, &entry.steps)?;
-        self.lower_entry_tail(&mut ctx, executable, entries, entry_fns, &env, &entry.tail)?;
-        self.finish_native_fn(ctx);
+        let input_lanes = self.lower_entry_here(
+            &mut ctx,
+            executable,
+            entries,
+            entry_fns,
+            entry_id,
+            &entry_vars,
+            ValueEnv::default(),
+        )?;
+        self.mark_entry_function_params(&mut ctx, executable, entry, &entry_vars, input_lanes)?;
+        self.finish_entry_lowering_fn(ctx, executable, entries, entry_fns)?;
         Ok(arguments)
     }
 
-    fn lower_entry_from_id(
+    /// Lowers an entry where control already is: binds what it is entered
+    /// with, then its steps and tail. Answers how many of `entry_vars` carry
+    /// the entry's input.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_entry_here(
         &mut self,
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
         entry_fns: &mut EntryFns,
         entry_id: ControlEntryId,
+        entry_vars: &[Var],
         mut env: ValueEnv,
-    ) -> Result<(), FatalError> {
+    ) -> Result<usize, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
+        let input_lanes = self.bind_entry_input(ctx, executable, entry, entry_vars, &mut env)?;
+        let mut capture_offset = input_lanes;
+        self.bind_entry_captures(ctx, executable, entry, entry_vars, &mut capture_offset, &mut env)?;
         self.lower_entry_steps(ctx, executable, &mut env, &entry.steps)?;
-        self.lower_entry_tail(ctx, executable, entries, entry_fns, &env, &entry.tail)
+        self.lower_entry_tail(ctx, executable, entries, entry_fns, &env, &entry.tail)?;
+        Ok(input_lanes)
+    }
+
+    /// Hands control to an entry: a block of this function when the transfer
+    /// is the entry's only way in, otherwise a tail call to its own function.
+    fn transfer_to_entry(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &mut EntryFns,
+        entry_id: ControlEntryId,
+        args: Vec<Var>,
+    ) {
+        let term = if entry_fns.is_block(entry_id) {
+            let entry = &entries[entry_id.as_u32() as usize];
+            let (entry_tys, _, _) = self.entry_signature(executable, entry, entry.physical_captures.as_slice());
+            Term::Goto(ctx.entry_block(entry_id, &entry_tys), args)
+        } else {
+            Term::TailCall {
+                ident: CallsiteIdent::from_source(Span::DUMMY),
+                callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, entry_id)),
+                args,
+                is_back_edge: false,
+            }
+        };
+        ctx.set_term(term);
     }
 
     fn lower_entry_steps(
@@ -1733,20 +1797,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 });
                 ctx.current_block = then_b;
                 let then_args = self.entry_capture_args(ctx, executable, entries, *then_entry, env)?;
-                ctx.set_term(Term::TailCall {
-                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, *then_entry)),
-                    args: then_args,
-                    is_back_edge: false,
-                });
+                self.transfer_to_entry(ctx, executable, entries, entry_fns, *then_entry, then_args);
                 ctx.current_block = else_b;
                 let else_args = self.entry_capture_args(ctx, executable, entries, *else_entry, env)?;
-                ctx.set_term(Term::TailCall {
-                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, *else_entry)),
-                    args: else_args,
-                    is_back_edge: false,
-                });
+                self.transfer_to_entry(ctx, executable, entries, entry_fns, *else_entry, else_args);
                 Ok(())
             }
             BackendTail::Dispatch {
@@ -2158,12 +2212,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             ControlDestination::Deliver(entry_id) => {
                 let args = self.entry_call_args_from_value(ctx, executable, entries, *entry_id, env, value_id)?;
-                ctx.set_term(Term::TailCall {
-                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, *entry_id)),
-                    args,
-                    is_back_edge: false,
-                });
+                self.transfer_to_entry(ctx, executable, entries, entry_fns, *entry_id, args);
                 Ok(())
             }
         }
@@ -2304,9 +2353,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome => {
                 for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
                     self.bind_runtime_value(ctx, executable, env, value, var);
-                    if entry.physical_params.contains(&value) {
-                        ctx.builder.record_physical_entry_param(var);
-                    }
                 }
                 Ok(entry.params.len())
             }
@@ -2367,8 +2413,38 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 )
             })?;
             self.bind_runtime_value(ctx, executable, env, capture, physical_var);
-            ctx.builder.record_physical_entry_param(physical_var);
             *capture_offset += 1;
+        }
+        Ok(())
+    }
+
+    /// Records what an entry function's parameters carry beyond its source
+    /// values: the physical capabilities it is handed, and which lanes of a
+    /// delivered value it never reads. A block of another function has no
+    /// parameters of its own to describe.
+    fn mark_entry_function_params(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entry: &BackendEntry,
+        entry_vars: &[Var],
+        input_lanes: usize,
+    ) -> Result<(), FatalError> {
+        if matches!(
+            entry.origin,
+            BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome
+        ) {
+            for (value, var) in entry.params.iter().zip(entry_vars) {
+                if entry.physical_params.contains(value) {
+                    ctx.builder.record_physical_entry_param(*var);
+                }
+            }
+        }
+        self.mark_delivered_entry_semantics(ctx, executable, entry, &entry_vars[..input_lanes])?;
+        // The signature carries physical captures as its trailing parameters.
+        let physical_start = entry_vars.len() - entry.physical_captures.len();
+        for var in &entry_vars[physical_start..] {
+            ctx.builder.record_physical_entry_param(*var);
         }
         Ok(())
     }
@@ -2958,12 +3034,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     ));
                 };
                 let args = self.entry_capture_args(ctx, executable, entries, miss_entry, env)?;
-                ctx.set_term(Term::TailCall {
-                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, miss_entry)),
-                    args,
-                    is_back_edge: false,
-                });
+                self.transfer_to_entry(ctx, executable, entries, entry_fns, miss_entry, args);
                 Ok(())
             }
             DispatchNode::Outcome { outcome, .. } => {
@@ -2976,12 +3047,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     args.push(self.dispatch_subject_var(ctx, plan, state, argument.subject)?);
                 }
                 args.extend(self.entry_capture_args(ctx, executable, entries, arm_entry, env)?);
-                ctx.set_term(Term::TailCall {
-                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, arm_entry)),
-                    args,
-                    is_back_edge: false,
-                });
+                self.transfer_to_entry(ctx, executable, entries, entry_fns, arm_entry, args);
                 Ok(())
             }
             DispatchNode::Test {
@@ -4454,14 +4520,43 @@ fn same_entry_capture_contract(left: &BackendEntryCapture, right: &BackendEntryC
     left.value == right.value && left.layout == right.layout
 }
 
+/// How one executable's entries become native code. An entry whose only way
+/// in is a single direct transfer is a block of the function that makes that
+/// transfer; every other entry is a function of its own, emitted once.
 #[derive(Default)]
 struct EntryFns {
     ids: HashMap<ControlEntryId, FnId>,
     pending: VecDeque<(ControlEntryId, FnId)>,
+    blocks: HashSet<ControlEntryId>,
 }
 
 impl EntryFns {
+    fn for_entries(entries: &[BackendEntry]) -> Self {
+        let mut incoming: HashMap<ControlEntryId, Vec<EntryTransfer>> = HashMap::new();
+        for entry in entries {
+            for (target, transfer) in entry.tail.transfers() {
+                incoming.entry(target).or_default().push(transfer);
+            }
+        }
+        let blocks = incoming
+            .into_iter()
+            .filter_map(|(entry, transfers)| matches!(transfers.as_slice(), [EntryTransfer::Direct]).then_some(entry))
+            .collect();
+        Self {
+            blocks,
+            ..Self::default()
+        }
+    }
+
+    fn is_block(&self, entry: ControlEntryId) -> bool {
+        self.blocks.contains(&entry)
+    }
+
     fn reference(&mut self, module: &mut ModuleBuilder, entry: ControlEntryId) -> FnId {
+        assert!(
+            !self.is_block(entry),
+            "entry {entry:?} is a block of the function that reaches it, never a function of its own"
+        );
         *self.ids.entry(entry).or_insert_with(|| {
             let fn_id = module.fresh_fn_id();
             self.pending.push_back((entry, fn_id));
@@ -4775,6 +4870,8 @@ struct NativeFnCtx {
     return_tuple_arity: Option<usize>,
     effects: EffectSummary,
     next_token: u32,
+    entry_blocks: HashMap<ControlEntryId, (BlockId, Vec<Var>)>,
+    pending_entry_blocks: VecDeque<ControlEntryId>,
 }
 
 impl NativeFnCtx {
@@ -4807,7 +4904,25 @@ impl NativeFnCtx {
             return_tuple_arity,
             effects,
             next_token: 0,
+            entry_blocks: HashMap::new(),
+            pending_entry_blocks: VecDeque::new(),
         }
+    }
+
+    /// The block an entry is lowered into within this function, created the
+    /// first time control reaches it.
+    fn entry_block(&mut self, entry: ControlEntryId, tys: &[Ty]) -> BlockId {
+        if let Some((block, _)) = self.entry_blocks.get(&entry) {
+            return *block;
+        }
+        let params = tys.iter().map(|_| self.builder.fresh_var()).collect::<Vec<_>>();
+        let block = self.builder.block(params.clone());
+        for (param, ty) in params.iter().copied().zip(tys.iter().copied()) {
+            self.value_types.insert(param, ty);
+        }
+        self.entry_blocks.insert(entry, (block, params));
+        self.pending_entry_blocks.push_back(entry);
+        block
     }
 
     fn entry_params(&mut self, tys: &[Ty]) -> Vec<Var> {

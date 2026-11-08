@@ -1303,6 +1303,54 @@ pub enum BackendTail {
     },
 }
 
+/// How control reaches an entry from the tail that names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EntryTransfer {
+    /// The tail hands control over itself: an `if` arm, a decision's outcome
+    /// or miss, or a value delivered to the entry that continues with it.
+    Direct,
+    /// A call's return resumes the entry.
+    CallReturn,
+    /// The runtime enters it: a received message's clause, the receive's
+    /// timeout, or the entry the receive's value continues in.
+    Runtime,
+}
+
+impl BackendTail {
+    /// Every entry this tail can hand control to, and how control gets there.
+    pub(crate) fn transfers(&self) -> Vec<(ControlEntryId, EntryTransfer)> {
+        let delivered = |dest: &ControlDestination, transfer| match dest {
+            ControlDestination::Return => Vec::new(),
+            ControlDestination::Deliver(entry) => vec![(*entry, transfer)],
+        };
+        match self {
+            Self::Value { dest, .. } => delivered(dest, EntryTransfer::Direct),
+            Self::DirectCall { dest, .. } | Self::ClosureCall { dest, .. } => {
+                delivered(dest, EntryTransfer::CallReturn)
+            }
+            Self::If {
+                then_entry, else_entry, ..
+            } => vec![
+                (*then_entry, EntryTransfer::Direct),
+                (*else_entry, EntryTransfer::Direct),
+            ],
+            Self::Dispatch { dispatch, .. } => dispatch
+                .successors()
+                .map(|entry| (entry, EntryTransfer::Direct))
+                .collect(),
+            Self::Receive(receive) => receive
+                .outcomes
+                .iter()
+                .map(|edge| edge.target)
+                .chain(receive.after.iter().map(|after| after.entry))
+                .map(|entry| (entry, EntryTransfer::Runtime))
+                .chain(delivered(&receive.dest, EntryTransfer::Runtime))
+                .collect(),
+            Self::Halt { .. } => Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendStep {
     Omitted {

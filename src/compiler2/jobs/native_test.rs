@@ -441,3 +441,85 @@ fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
             .all(|statement| { !matches!(statement, crate::fz_ir::Stmt::Let(_, Prim::TupleField(_, _))) })
     );
 }
+
+/// A branch arm and a join reached by exactly one direct transfer are blocks of
+/// the function that reaches them: native emits no function for either, and
+/// control reaches them by `Goto`. A join two arms deliver to keeps its own
+/// function.
+#[test]
+fn single_predecessor_entries_are_blocks_of_the_function_that_reaches_them() {
+    use crate::compiler2::drive_harness::NativeProgramCapture;
+    use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
+    use crate::telemetry::ConfiguredTelemetry;
+    use std::collections::BTreeSet;
+
+    let source = "\
+def pick(x) do
+  sign = if x > 0 do
+    :pos
+  else
+    :neg
+  end
+  pair = case x do
+    n -> {n, sign}
+  end
+  dbg(pair)
+end
+
+def main(), do: pick(3)
+";
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("entry_blocks.fz".into()),
+        text: source.into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Native)
+        .expect("native product should settle");
+    let program = native.last(root).program;
+    let names = program
+        .module
+        .fns
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        names.iter().all(|name| !name.contains("__branch_")),
+        "an arm has exactly one predecessor, so it is never a function of its own: {names:?}"
+    );
+    let pick = names
+        .iter()
+        .filter(|name| name.starts_with("pick__"))
+        .map(|name| name.split_once("__e").expect("executable-named").1)
+        .map(|rest| rest.split_once("__").map_or("", |(_, suffix)| suffix))
+        .collect::<BTreeSet<_>>();
+    // e1 resumes after `x > 0`; e3 is the join both `if` arms deliver to, so
+    // it keeps its function. The `case` arm (e4) and the join only that arm
+    // delivers to (e5) live inside e3.
+    assert_eq!(
+        pick,
+        BTreeSet::from(["", "resume_1", "resume_3"]),
+        "pick lowers to its entry, the comparison's resume and the two-armed join: {names:?}"
+    );
+    let join = program
+        .module
+        .fns
+        .iter()
+        .find(|function| function.name.starts_with("pick__") && function.name.ends_with("__resume_3"))
+        .expect("two-armed join keeps its function");
+    let goto_target = |block: &crate::fz_ir::Block| match &block.terminator {
+        Term::Goto(target, _) => Some(join.block(*target)),
+        _ => None,
+    };
+    let arm = goto_target(join.block(join.entry)).expect("the case decision enters its arm by Goto");
+    goto_target(arm).expect("the arm delivers its tuple to the join only it reaches by Goto");
+}
