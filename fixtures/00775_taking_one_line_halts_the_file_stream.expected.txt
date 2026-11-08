@@ -1,0 +1,4 @@
+["one\n"]
+["one\n", "two\n"]
+"one\n"
+["one\n"]

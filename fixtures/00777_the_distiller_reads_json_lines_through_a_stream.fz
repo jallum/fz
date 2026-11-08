@@ -1,0 +1,11 @@
+#---
+# purpose: "The distiller's line 16, path |> File.stream!() |> Stream.map(&JSON.decode!/1) |> Enum.to_list(), decodes each line of a three-line JSON file"
+# oracle: 00777_the_distiller_reads_json_lines_through_a_stream.oracle.exs
+#---
+def main() do
+  path = "00777_trace.tmp"
+  File.write!(path, "{\"a\":1}\n[1,2]\n\"x\"\n")
+  records = path |> File.stream!() |> Stream.map(&JSON.decode!/1) |> Enum.to_list()
+  File.rm!(path)
+  dbg(records)
+end

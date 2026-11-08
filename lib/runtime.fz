@@ -5,6 +5,7 @@ alias Atom
 alias Enum
 alias Enumerable
 alias File
+alias File.Stream
 alias Float
 alias Integer
 alias JSON
@@ -15,6 +16,7 @@ alias Map
 alias OptionParser
 alias Process
 alias Range
+alias Stream
 alias String
 alias String.Chars
 alias System

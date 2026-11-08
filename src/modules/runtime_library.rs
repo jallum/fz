@@ -77,6 +77,14 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/string_chars.fz"),
     },
     RuntimeModuleSource {
+        name: "Stream",
+        source: include_str!("../../lib/stream.fz"),
+    },
+    RuntimeModuleSource {
+        name: "File.Stream",
+        source: include_str!("../../lib/file_stream.fz"),
+    },
+    RuntimeModuleSource {
         name: "JSON",
         source: include_str!("../../lib/json.fz"),
     },

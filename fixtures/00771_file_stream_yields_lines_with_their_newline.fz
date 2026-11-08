@@ -1,0 +1,21 @@
+#---
+# purpose: "File.stream! over a file yields each line with its newline: blank lines are kept, a last line without a newline comes back as is, a CRLF line ends in a bare LF as Elixir reads it (a lone CR stays), and an empty file yields no lines"
+# oracle: 00771_file_stream_yields_lines_with_their_newline.oracle.exs
+#---
+def lines_of(path, contents) do
+  File.write!(path, contents)
+  lines = Enum.to_list(File.stream!(path))
+  File.rm!(path)
+  lines
+end
+
+def main() do
+  path = "00771_lines.tmp"
+  dbg(lines_of(path, "a\nb\n\nc"))
+  dbg(lines_of(path, "a\r\nb\n"))
+  dbg(lines_of(path, "a\r"))
+  dbg(lines_of(path, "a\r\r\n"))
+  dbg(lines_of(path, "a\rb\n"))
+  dbg(lines_of(path, ""))
+  dbg(lines_of(path, "x"))
+end
