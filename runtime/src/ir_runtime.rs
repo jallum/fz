@@ -437,13 +437,15 @@ pub extern "C" fn fz_send(process: *mut Process, receiver_pid_bits: u64, msg_ref
     msg_ref_word
 }
 
-/// Enter a `try`: `template_word` is the handler's continuation template, a
-/// closure ref whose environment is `[outer_cont, captures...]`, as codegen
-/// holds it (like a receive outcome template). The next raise in this process reaches it first.
+/// Enter a `try`: `template_ref_word` is the handler's continuation template,
+/// a closure whose environment is `[outer_cont, captures...]`, as a closure
+/// reference word, the form codegen holds a heap closure in. The handler stack
+/// keeps the reference, literal bit included. The next raise in this process
+/// reaches it first.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_try_push(process: *mut Process, template_word: u64) {
-    let handler = ClosureRef::new(closure_ref_from_word(template_word, "fz_try_push handler"));
+pub extern "C" fn fz_try_push(process: *mut Process, template_ref_word: u64) {
+    let handler = ClosureRef::new(closure_ref_from_word(template_ref_word, "fz_try_push handler template"));
     unsafe { &mut *process }.push_handler(Handler::Closure(handler));
 }
 

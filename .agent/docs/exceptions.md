@@ -88,7 +88,8 @@ when the value is not an exception map, which a throw or an exit's value never
 is by kind, whatever it holds).
 
 - `Handler::Closure(template)` is compiled code's frame. `fz_try_push(process,
-  template)` pushes it at the start of the try body (`emit_try` in
+  template)` takes the template as the closure reference word codegen holds a
+  heap closure in, and the frame keeps that reference, literal bit included. It pushes it at the start of the try body (`emit_try` in
   `native_codegen/terminator.rs`); `fz_try_pop` pops it where the body's
   continuation begins. Delivery materializes the template with the three values
   as its bound values (`materialize_outcome_closure`, the receive-outcome

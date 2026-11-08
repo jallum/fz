@@ -860,7 +860,7 @@ fn a_struct_answers_its_module_and_a_map_answers_its_struct_entry() {
 }
 
 #[test]
-fn try_push_installs_a_handler_from_its_template_ref_and_try_pop_removes_it() {
+fn try_push_stores_the_closure_reference_word_codegen_emits_and_try_pop_removes_it() {
     with_process(|process| {
         let template = process
             .heap
@@ -873,7 +873,11 @@ fn try_push_installs_a_handler_from_its_template_ref_and_try_pop_removes_it() {
         fz_try_pop(process);
         fz_try_push(process, template_ref.raw_word());
 
-        assert_eq!(process.handlers, [handler]);
+        assert_eq!(
+            process.handlers,
+            [handler],
+            "the handler holds the closure reference as codegen emitted it"
+        );
 
         fz_try_pop(process);
 
