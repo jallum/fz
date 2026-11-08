@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-sc8.10"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-3ul.5"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "An exception message that embeds a value renders it with inspect",
   "type": "feature",
-  "updated_at": "2026-11-08T03:34:29Z"
+  "updated_at": "2026-11-08T11:44:26Z"
 }

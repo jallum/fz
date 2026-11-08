@@ -2,7 +2,6 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-3ul.7",
     "fz-sc8.19",
     "fz-sc8.8"
   ],
@@ -15,5 +14,5 @@
   "status": "open",
   "title": "inspect/1,2 returns Elixir's rendering, with limit:",
   "type": "feature",
-  "updated_at": "2026-11-08T03:34:29Z"
+  "updated_at": "2026-11-08T11:44:26Z"
 }
