@@ -7,8 +7,8 @@
 //! the copy allocates as usual (overflowing into larger blocks exactly as any
 //! allocation does), and `end_gift` cuts everything allocated since the window
 //! opened into a `GiftSegment` and puts the saved tip back. The receiver later
-//! calls `graft` and owns the segment's blocks, fragments, off-heap stubs and
-//! deferred destructors as if it had allocated them. Its next Cheney pass
+//! calls `graft` and owns the segment's blocks, fragments and off-heap stubs
+//! as if it had allocated them. Its next Cheney pass
 //! treats the adopted blocks as from-space and copies the live data out.
 //!
 //! No process ever writes into another process's live heap: the sender only
@@ -29,7 +29,6 @@ pub(super) struct GiftWindow {
     pub(super) saved_tip: Block,
     abandoned_len: usize,
     fragments_len: usize,
-    pending_dtors_len: usize,
     alloc_count: u64,
     saved_mso_head: u64,
     /// The first stub pushed onto the mso chain while the window was open,
@@ -41,8 +40,8 @@ pub(super) struct GiftWindow {
 /// A detached run of heap storage with no reference into any heap. It holds
 /// the blocks the copy filled (by start, fill and size class), the oversize
 /// fragments it made, the off-heap stubs it pushed (as an mso chain whose
-/// last link is 0), the destructors it deferred and how many objects it
-/// allocated. `Heap::graft` adopts all of it; dropping an un-grafted segment
+/// last link is 0) and how many objects it allocated. `Heap::graft` adopts
+/// all of it; dropping an un-grafted segment
 /// returns every block to the pool, frees every fragment and releases every
 /// stub's off-heap reference, so an orphan leaks nothing.
 pub struct GiftSegment {
@@ -50,13 +49,12 @@ pub struct GiftSegment {
     fragments: Vec<Fragment>,
     mso_head: u64,
     oldest_mso: u64,
-    pending_dtors: Vec<(u64, u64)>,
     objects: u64,
 }
 
 impl GiftSegment {
     /// The segment of a copy that copied nothing: no blocks, no fragments, no
-    /// stubs, no destructors. Grafting it changes nothing, and it never
+    /// stubs. Grafting it changes nothing, and it never
     /// touches the block pool.
     pub fn empty() -> Self {
         GiftSegment {
@@ -64,7 +62,6 @@ impl GiftSegment {
             fragments: Vec::new(),
             mso_head: 0,
             oldest_mso: 0,
-            pending_dtors: Vec::new(),
             objects: 0,
         }
     }
@@ -112,7 +109,6 @@ impl Heap {
             saved_tip,
             abandoned_len: self.abandoned_blocks.len(),
             fragments_len: self.fragments.len(),
-            pending_dtors_len: self.pending_dtors.len(),
             alloc_count: self.alloc_count,
             saved_mso_head: self.mso_head,
             oldest_mso: 0,
@@ -135,7 +131,6 @@ impl Heap {
         let mut blocks = self.abandoned_blocks.split_off(window.abandoned_len);
         blocks.push(self.current_block());
         let fragments = self.fragments.split_off(window.fragments_len);
-        let pending_dtors = self.pending_dtors.split_off(window.pending_dtors_len).into();
         let mso_head = if window.oldest_mso == 0 {
             0
         } else {
@@ -153,14 +148,13 @@ impl Heap {
             fragments,
             mso_head,
             oldest_mso: window.oldest_mso,
-            pending_dtors,
             objects,
         }
     }
 
     /// Take ownership of a segment: its blocks become adopted from-space, its
     /// fragments join this heap's, its mso prefix is spliced ahead of this
-    /// heap's chain, and its deferred destructors queue behind this heap's.
+    /// heap's chain.
     /// Adopted bytes count toward allocation pressure by fill, so a heap that
     /// receives many gifts collects them.
     pub fn graft(&mut self, mut segment: GiftSegment) {
@@ -171,7 +165,6 @@ impl Heap {
             self.mso_head = segment.mso_head;
             segment.mso_head = 0;
         }
-        self.pending_dtors.extend(segment.pending_dtors.drain(..));
         self.alloc_count += segment.objects;
         if self.bytes_used() >= self.gc_threshold_bytes {
             self.pressure.store(true, Ordering::Relaxed);

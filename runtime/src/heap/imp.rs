@@ -997,12 +997,6 @@ impl Heap {
         self.alloc_count as usize
     }
 
-    /// Always zero under bump-only. Retained for tests asserting freelist
-    /// invariants; .8 / .9 may remove entirely.
-    pub fn freelist_len(&self) -> usize {
-        0
-    }
-
     /// Bytes consumed across the current block, every abandoned block, every
     /// adopted block and every fragment. Tracks total memory footprint, not
     /// "logically live" data. Abandoned blocks count by capacity, adopted

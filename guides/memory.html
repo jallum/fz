@@ -19,7 +19,7 @@
   <li><a href="#gc-parktime">4. Park-time GC — Cheney with one root</a></li>
   <li><a href="#gc-midflight">5. Mid-flight GC — collecting a running loop</a></li>
   <li><a href="#roots">6. GC roots and the MSO sweep</a></li>
-  <li><a href="#scheduler">7. Scheduler dispatch and proactive shrinkage</a></li>
+  <li><a href="#scheduler">7. Scheduler dispatch</a></li>
   <li><a href="#messages">8. Message passing — copy, self-send, share</a></li>
   <li><a href="#shared-zone">9. The shared zone — refcounted off-heap binaries</a></li>
   <li><a href="#return-demand">10. Return-demand destination planning</a></li>
@@ -361,8 +361,8 @@ ordinary bump path, overflowing into larger blocks exactly as any allocation
 does. <code>Heap::end_gift</code> cuts everything allocated since the window
 opened into a <code>GiftSegment</code> and puts the saved tip back with its
 free space intact. The segment carries the window's blocks (each with its fill),
-the suffix of fragments, the prefix of the MSO chain and the suffix of pending
-destructors that the window produced, and the number of objects allocated. Each
+the suffix of fragments, the prefix of the MSO chain that the window
+produced, and the number of objects allocated. Each
 of those is a split of a list the heap already keeps, not a walk. The heap's
 allocation statistics stay with it, its <code>live_count</code> goes back to
 what it was, and its pressure flag is recomputed from the restored footprint.
@@ -370,8 +370,7 @@ A collection cannot run while a window is open.</p>
 
 <p>The receiving heap calls <code>Heap::graft</code>: the segment's blocks join
 its <code>adopted_blocks</code>, its fragments join the fragment list, its MSO
-prefix is spliced ahead of the receiver's chain, and its pending destructors
-queue behind the receiver's. Adopted blocks are kept apart from abandoned
+prefix is spliced ahead of the receiver's chain. Adopted blocks are kept apart from abandoned
 blocks so that "an abandoned block exists" keeps meaning "allocation overflowed
 mid-quantum". Their bytes count toward <code>bytes_used</code> by fill, never by
 capacity, so a kilobyte block holding one cons cell costs sixteen bytes of
@@ -534,7 +533,6 @@ passed to the next iteration, plus the current continuation.</p>
   struct Process {
     ...
     runnable_closure:      *mut u8,       <span class="note">// tagged closure to run next; null = none</span>
-    quiet_quanta:          u8,            <span class="note">// non-yielding quanta since last GC</span>
     reduction_yields:      u64,           <span class="note">// ordinary budget exhaustion</span>
   }
 </pre>
@@ -636,7 +634,7 @@ pass runs in park-time GC and process-root GC. When a heap itself is dropped
 stub still on the chain.</p>
 
 <!-- ─────────────────────────────── 7. SCHEDULER ─────────────────────────────── -->
-<h2 id="scheduler">7. Scheduler dispatch and proactive shrinkage</h2>
+<h2 id="scheduler">7. Scheduler dispatch</h2>
 
 <h3>run_quantum dispatch order</h3>
 
@@ -644,7 +642,6 @@ stub still on the chain.</p>
   1. if runnable_closure != null:
        if heap.should_gc:
          gc_process_roots(runnable_closure, mailbox)
-         quiet_quanta = 0
        re-enqueue process
        return
   2. if pending_main_entry / pending_closure_entry:
@@ -652,32 +649,6 @@ stub still on the chain.</p>
 
   (AOT mirrors the same runnable_closure path.)
 </pre>
-
-<h3>quiet_quanta — the bookkeeping for future proactive shrinkage</h3>
-
-<p>Every time <code>run_until_idle</code> finishes a quantum without firing a
-mid-flight GC, it bumps <code>task.quiet_quanta</code>. The counter resets
-to <code>0</code> whenever a mid-flight GC runs:</p>
-
-<pre>
-  if task.runnable_closure != null {
-      if task.needs_boundary_gc() {
-          gc_process_roots(...);
-          task.quiet_quanta = 0;
-      }
-      re-enqueue;
-  } else {
-      task.quiet_quanta = task.quiet_quanta.saturating_add(1);
-      ...
-  }
-</pre>
-
-<p>The intent: a process that allocated a lot, GC'd down to a small live
-set, and is now allocating very little shouldn't keep hogging a large
-block. The counter is the signal a future scheduler pass can use to choose a
-natural boundary for shrinkage; it must not force an early yield just to run
-GC. The counter exists and is maintained; the heuristic that consumes it isn't
-wired yet.</p>
 
 <!-- ─────────────────────────────── 8. MESSAGES ─────────────────────────────── -->
 <h2 id="messages">8. Message passing — copy, self-send, share</h2>

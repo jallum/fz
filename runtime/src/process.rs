@@ -131,10 +131,6 @@ pub struct Process {
     /// `static_closures` aliases the start of the corresponding allocation.
     pub static_closure_bufs: Vec<AlignedClosureStorage>,
 
-    /// Consecutive quanta elapsed since the last GC triggered. Used by
-    /// the proactive shrinkage heuristic: after N quiet quanta the
-    /// scheduler may shrink the heap below `last_gc_live_bytes * 2`.
-    pub quiet_quanta: u8,
     /// Cumulative compiled-code mid-flight yields for this process. Each
     /// increment means native code built a scheduler-owned continuation
     /// closure and returned to the scheduler through `fz_yield_mid_flight_report`.
@@ -440,7 +436,6 @@ impl Process {
             halt_cont_singletons: [null_mut(); 4],
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
-            quiet_quanta: 0,
             scheduler_yields: 0,
             interpreter_yields: 0,
             reductions_remaining: reductions_per_quantum,
@@ -587,15 +582,11 @@ impl Process {
     /// Scheduler-boundary maintenance shared by every execution mode. Decide
     /// whether this boundary must GC; if so, run the caller's mode-specific
     /// root-gather GC (compiled: runnable closure + mailbox; interpreter:
-    /// resume args + after-conts) and reset the quiet-quanta shrink counter,
-    /// otherwise advance it. Either way, clear the transient pressure and
-    /// yield-reason signals so the next quantum starts clean.
+    /// resume args + after-conts). Either way, clear the transient pressure
+    /// and yield-reason signals so the next quantum starts clean.
     pub fn boundary_maintenance<E>(&mut self, gc_roots: impl FnOnce(&mut Self) -> Result<(), E>) -> Result<(), E> {
         if self.needs_boundary_gc() {
             gc_roots(self)?;
-            self.quiet_quanta = 0;
-        } else {
-            self.quiet_quanta = self.quiet_quanta.saturating_add(1);
         }
         self.heap.clear_should_gc_flag();
         self.clear_yield_reasons();

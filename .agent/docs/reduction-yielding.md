@@ -81,9 +81,7 @@ allocation        bump_top += size
                     move old current block to abandoned_blocks
 
 boundary          if heap.should_gc():
-                    gc over scheduler-owned roots; quiet_quanta = 0
-                  else:
-                    quiet_quanta += 1
+                    gc over scheduler-owned roots
                   clear should_gc flag; clear yield_reasons
 ```
 
@@ -111,9 +109,9 @@ fragment sweep.
 
 `Heap::begin_gift` sets the current tip aside and installs a fresh block from
 the smallest size class; allocation continues through `alloc_kind` and overflows
-upward as usual. `Heap::end_gift` cuts the blocks, fragments, MSO stubs and
-pending destructors produced since the window opened into a `GiftSegment`,
-restores the saved tip, puts `live_count` back and recomputes the pressure flag
+upward as usual. `Heap::end_gift` cuts the blocks, fragments and MSO stubs
+produced since the window opened into a `GiftSegment`, restores the saved tip,
+puts `live_count` back and recomputes the pressure flag
 from the restored footprint. Allocation statistics stay with the heap that did
 the copying. `Heap::graft` on another heap adopts the segment; dropping an
 un-grafted segment returns its blocks to the pool, frees its fragments and
@@ -148,11 +146,10 @@ how far past budget the process ran before reaching a back edge.
 `needs_boundary_gc()` is true when `heap.should_gc()` is set. When it fires, the
 scheduler runs Cheney over scheduler-owned roots — the runnable continuation
 closure plus the mailbox in compiled code; the resume args plus pending
-after-continuations in the interpreter — and resets `quiet_quanta`; otherwise it
-advances `quiet_quanta`. `quiet_quanta` moves at scheduler-quantum boundaries,
-never per back edge, so it counts quanta completed without a boundary GC.
+after-continuations in the interpreter. The decision is made at scheduler-quantum boundaries,
+never per back edge.
 
-`boundary_maintenance` packages this decision (GC-or-advance, then clear the
+`boundary_maintenance` packages this decision (GC if needed, then clear the
 `should_gc` flag and the reason bits) for the interpreter and the JIT mid-flight
 yield path. The AOT shim runs the same steps inline rather than calling it.
 
@@ -169,7 +166,7 @@ count(5000, 0) with reductions_per_quantum = 4000:
     -> compiled: build the zero-arg continuation capturing (n, acc)
        interpreter: forward resume_fn + resume_args (n, acc)
     -> yield reporting REDUCTIONS
-  boundary: if heap.should_gc is set, collect; otherwise quiet_quanta += 1
+  boundary: if heap.should_gc is set, collect
   dispatch resumes the continuation with a fresh 4000 budget
     -> the count finishes in the next quantum
 ```

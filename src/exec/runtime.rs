@@ -367,10 +367,8 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             } else if task.state == ProcessState::Blocked {
                 // Parked on a receive: keep in registry, no re-enqueue. A
                 // send or the after-timer wakes it.
-                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
             } else if task.next_frame.is_null() {
                 task.state = ProcessState::Exited;
-                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 // fz-4mk.3a — task is exiting; before the Heap drops at
                 // task-cleanup time, flush surviving MSO resources onto
                 // `pending_dtors` and dispatch each dtor closure body as
@@ -398,7 +396,6 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
                 ExitRecord::emit(self.tel, &pid, &task);
             } else if task.state == ProcessState::Running {
                 // Other cooperative yield (future builtin).
-                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 self.queue_task(pid, task);
                 continue;
             }

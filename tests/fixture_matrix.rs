@@ -243,10 +243,6 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown",
             a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown,
         ),
-        (
-            "interpreter_stepper_does_not_update_quiet_quanta",
-            interpreter_stepper_does_not_update_quiet_quanta,
-        ),
         ("fixture_hang_guard_policy", fixture_hang_guard_policy),
         (
             "execution_ready_writer_uses_multi_digit_descriptor",
@@ -3100,14 +3096,6 @@ fn run_ended_pool_census(fixture: &FixtureCase, path: FixtureMatrixPath, label: 
         required_json_u64_field(ended[0], "pool_outstanding_before_run", "run_ended"),
         required_json_u64_field(ended[0], "pool_outstanding_after_run", "run_ended"),
     )
-}
-
-fn interpreter_stepper_does_not_update_quiet_quanta() {
-    let source = fs::read_to_string("src/ir_interp/backend.rs").expect("read interp backend runner");
-    assert!(
-        !source.contains("quiet_quanta"),
-        "interpreter hot loop must leave quiet_quanta to scheduler boundary code"
-    );
 }
 
 fn assert_fixture_output_contains(fixture: &str, file: &str, needles: &[&str]) {
