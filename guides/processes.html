@@ -195,9 +195,9 @@ This makes the receiver's pattern matching read cleanly.</p>
 <h3>One copy on send</h3>
 
 <p>Like <code>spawn</code>'s captures, <code>send</code>'s message is
-copied. The <em>sender</em> makes the copy, once, into a separate piece of
-its own memory, and hands that piece to the recipient, which adopts it the
-next time it runs. No process ever writes into another process's heap.
+copied. The <em>sender</em> measures the message, makes the copy once, into one
+separate block of its own memory sized to fit it, and hands that block to the
+recipient, which adopts it the next time it runs. No process ever writes into another process's heap.
 After the call returns, the sender and receiver hold independent copies.
 If the sender mutates its local copy (by rebinding the name to something
 else), the receiver sees no change. fz values are immutable anyway, so this

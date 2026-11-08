@@ -164,7 +164,7 @@ the interpreter runs the same shape with its own matcher
 entry is taken: `deliver_in_queue` in `run_until_idle` (JIT) and
 `dispatch_quantum` (AOT), `IrInterpRuntime::deliver_in_queue` in
 `drive_backend_until_idle`. A receiver that exits with gifts still queued drops
-them with its `Process`; each un-grafted segment returns its blocks to the pool.
+them with its `Process`; each un-grafted segment returns its block to the pool.
 
 ## Delivery lock
 
@@ -356,8 +356,10 @@ setup — belongs to compiler-generated closure construction or to runtime event
 handlers that produce a closure. There is no separate "pending resume" vs.
 "parked continuation" concept and no side-band argument slab: a resume never
 passes arguments into a helper, because the closure already carries its own state.
-The roots the boundary GC traces are exactly the `runnable` closure and the
-`mailbox`; the process `heap` is the arena being collected, not a root.
+The roots the boundary GC traces are the `runnable` closure, the park record's
+clause bodies, after body and pinned values, the `mailbox`, and the caller's
+transient values, all gathered by `Process::collect`; the process `heap` is the
+arena being collected, not a root.
 
 ## Proof Gates
 

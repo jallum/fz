@@ -144,6 +144,22 @@ paths, and `a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
 pins each of fixture 00697's three gifts (`gift_bytes` 16032, 64 and 16, one
 block each).
 
+## Collection stats
+
+`Heap::collect` returns a `GcStats` and keeps the latest in
+`Heap.last_gc_stats` (`runtime/src/heap/stats.rs`). It is not emitted as a
+telemetry event; the caller of `Heap::collect` or `Process::collect` receives
+it as the return value. The fields are:
+
+- sizes: `copied_objects`, `copied_bytes`, `live_objects`, `live_bytes`,
+  `from_space_capacity_bytes`, `to_space_capacity_bytes`;
+- root edges: `root_heap_edges`, `root_scalar_slots`;
+- edges followed while scanning, as heap-edge and scalar-slot counts per
+  container: `list_head_heap_edges`, `list_head_scalar_slots`,
+  `list_tail_edges`, `struct_heap_edges`, `struct_scalar_slots`,
+  `map_heap_edges`, `map_scalar_slots`, `closure_heap_edges`,
+  `closure_scalar_slots`, `resource_heap_edges`, `resource_scalar_slots`.
+
 ## Program Output
 
 `dbg`/print lines are semantic program output, not telemetry. `emit_print_line`

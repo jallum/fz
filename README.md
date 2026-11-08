@@ -228,8 +228,8 @@ def main() do
 end
 ```
 
-When a value is sent across processes, the sender copies it once, into
-memory the recipient then adopts. There are no shared references because
+When a value is sent across processes, the sender measures it and copies it
+once, into one block of memory the recipient then adopts. There are no shared references because
 there are no references — only values. A process that sends to itself copies
 nothing: the message goes straight onto its own mailbox.
 
@@ -294,8 +294,8 @@ the **sending** side.
 So when `send(...)` runs:
 
 - **If the message matches**, the sender copies *only the values the
-  pattern bound* into a fresh segment of its own memory and queues that
-  segment for the receiver. The parts of the message the receiver didn't
+  pattern bound* into one fresh block of its own memory and queues that
+  block for the receiver. The parts of the message the receiver didn't
   name (the `:reply` tag, the matched ref, anything else) stay in the
   sender's heap and get collected normally. The receiver wakes up,
   adopts the segment, builds the resumption closure over the values it
@@ -307,7 +307,7 @@ So when `send(...)` runs:
   mailbox (a later `receive` might want it), and the parked receiver
   stays parked. What we *don't* do is wake the receiver up just to
   look at a message we already know it would reject. The sender copies
-  the whole message once, into a segment the receiver adopts the next
+  the whole message once, into one block the receiver adopts the next
   time it runs.
 
 That's the trick: compilation lets us turn "send the whole message,
@@ -316,10 +316,11 @@ asked for" — while keeping BEAM mailbox semantics intact. The
 receiver told us, by writing a `receive`, exactly what it cared
 about; the sender does the work on its own time and its own heap.
 
-A message is copied once, by the sender, into memory the receiver
-adopts. No process ever writes into another process's heap: the receiver
-grafts the sender's segment onto its own heap with pointer moves, and its
-next garbage collection copies out whatever is still live. Because the
+A message is measured, then copied once by the sender into one block of
+memory the receiver adopts. No process ever writes into another process's heap: the receiver
+grafts the sender's block onto its own heap with pointer moves, and its
+next garbage collection, sized to hold everything that could survive, copies
+out whatever is still live. Because the
 receiver's matcher runs on the sender, a `when` guard in a `receive`
 runs there too, so it must be pure; a call such as `self()` in a guard
 names the receiver, because the receiver evaluates it before it parks.

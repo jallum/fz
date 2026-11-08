@@ -345,7 +345,7 @@ stub that points into the <a href="#shared-zone">shared zone</a>.</p>
 <h3>Block pool and block capacities</h3>
 
 <p>Blocks come from a per-thread pool sized by a Fibonacci-then-geometric size
-table (1 KiB up to ~6 MiB). When a block fills before GC fires, a new (larger)
+table (1 KiB up to ~7 MiB). When a block fills before GC fires, a new (larger)
 block is allocated and the old one joins <code>blocks</code>, recorded
 with its fill and capacity. All parked blocks are reclaimed at the next
 GC.</p>
@@ -401,12 +401,12 @@ their off-heap payload. See
 </div>
 
 <!-- ─────────────────────────────── 3. PRESSURE ─────────────────────────────── -->
-<h2 id="pressure">3. Reductions, allocation pressure, and boundary GC</h2>
+<h2 id="pressure">3. Reductions, collection timing, and boundary GC</h2>
 
 <p>Processes run on a reduction budget. Every compiled or interpreted loop
 back-edge spends budget. When the budget reaches zero, the process materializes
-a scheduler-owned continuation closure and yields. Allocation pressure is
-separate: it makes the heap due for GC, but it does not spend reductions and
+a scheduler-owned continuation closure and yields. Collection timing is
+separate: allocation makes the heap due for GC, but it does not spend reductions and
 does not force a yield.</p>
 
 <h3>should_gc</h3>
@@ -465,9 +465,9 @@ mutual recursion (<code>f → g → f</code>) is covered automatically.</p>
   return_call loop_fn(args...)                <span class="note">; unchanged hot path</span>
 </pre>
 
-<p>The slow path only fires when the process has spent its quantum. Allocation
-pressure makes that happen by expiring the same budget instead of using a
-separate GC-yield flag.</p>
+<p>The slow path only fires when the process has spent its quantum. Nothing else
+makes a process yield: a heap that is due for collection waits for the
+process to reach a boundary.</p>
 
 <!-- ─────────────────────────────── 4. PARK-TIME GC ─────────────────────────────── -->
 <h2 id="gc-parktime">4. Park-time GC — Cheney with explicit roots</h2>
@@ -485,7 +485,7 @@ closure. No stack scan, no register enumeration.</p>
   └────────────────────────────────┘
            │ Cheney BFS copy │
            ▼
-  to-space (new block, sized by last_gc_live_bytes × 2)
+  to-space (new block, sized to hold every byte that can be copied)
   ┌─────────────────┐
   │ <span class="live">[live][live][live]</span>│
   │         bump_top│
@@ -690,7 +690,7 @@ mailbox, which process-root GC traces directly; the hit payload finishes the
 receive, building the outcome closure on the receiver's own heap over the
 gifted bound values. A receiver whose receive is already matched is not probed
 again, so there is at most one match in its queue. A receiver that exits with
-gifts still queued drops them: each un-grafted segment returns its blocks to
+gifts still queued drops them: each un-grafted segment returns its block to
 the pool and releases its stubs' references.</p>
 
 <h3>Self-send (same process)</h3>
@@ -888,7 +888,7 @@ is no central registry to contend on.
 
 <p>Because binaries above 64 bytes go off-heap, the process heap deals only
 with small inline objects, cons cells, tuples, maps, closures, resources, and
-ProcBin stubs — in practice well under the table's last entry (~6 MiB).
+ProcBin stubs — in practice well under the table's last entry (~7 MiB).
 The grow logic in <code>Heap::alloc()</code> picks the smallest capacity that
 fits any individual object; an object larger than the whole table gets a block
 of exactly its size.</p>

@@ -154,9 +154,9 @@ pub struct Process {
     pub list_retention_hits: u64,
     /// Compact reason bits pending for the next scheduler boundary. A yielding
     /// back edge sets the reduction bit, and the boundary consumes it via
-    /// `finish_yield_report` and `boundary_maintenance`. GC pressure is tracked
-    /// on the heap, not here: collection has no authority to force a scheduler
-    /// yield. See `YIELD_REASON_*`.
+    /// `finish_yield_report` and `boundary_maintenance`. Collection timing is
+    /// decided by the heap, not here: collection has no authority to force a
+    /// scheduler yield. See `YIELD_REASON_*`.
     pub yield_reasons: u8,
     /// Heap margin sampled before the compiled yield slow path starts building
     /// its scheduler continuation. Zero means no active sample.

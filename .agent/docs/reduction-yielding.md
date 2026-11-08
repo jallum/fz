@@ -7,7 +7,7 @@ process keeps going until exactly one of these happens:
 - it blocks on receive or another scheduler-visible wait;
 - it halts.
 
-GC pressure does not force a yield. Allocation may make the heap due for
+A due collection does not force a yield. Allocation may make the heap due for
 collection, and it may grow into a new heap block, but it never zeroes
 `reductions_remaining` and never sets a yield reason. The scheduler asks
 `Heap::should_gc` only at a natural boundary: a reduction yield, a block, or a
@@ -102,7 +102,7 @@ exactly large enough for the object when that is more, records the old block in
 scheduler yield to remain total.
 
 `SIZE_TABLE` lists the capacities the block pool recycles, from 1 KiB to about
-6 MiB. A block above the table is allocated at the object's size rounded up to
+7 MiB (32 entries). A block above the table is allocated at the object's size rounded up to
 16 bytes and is returned to the system allocator, not the pool, when it is
 released; `pool_outstanding_blocks` counts pooled blocks only. Such an object is
 part of `bytes_used` and is copied by Cheney like any other, so to-space
@@ -198,5 +198,5 @@ The resume carrier differs — a zero-arg continuation closure in compiled code,
 forwarded `resume_fn` + `resume_args` in the interpreter, which does not collect.
 Pure fz code yields automatically by reduction budget. Tests pin both sides:
 allocation-light loops assert `reduction_yields > 0`, and allocation-heavy loops
-with spare budget assert allocation pressure does not produce a yield before
+with spare budget assert a due collection does not produce a yield before
 budget exhaustion.

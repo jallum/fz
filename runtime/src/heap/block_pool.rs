@@ -8,7 +8,7 @@ use std::ptr::write_bytes;
 /// geometric tail (~×1.2, ceiling-rounded to 16 alignment). Cheney picks the
 /// smallest entry that fits `live_bytes + slack`.
 ///
-/// The 32 entries reach ~6 MiB and are the capacities the pool recycles. A
+/// The 32 entries reach ~7 MiB and are the capacities the pool recycles. A
 /// block needing more is allocated at exactly the size asked for (rounded to
 /// 16) and returned to the system allocator when it is released.
 pub const SIZE_TABLE: [usize; 32] = build_size_table();
