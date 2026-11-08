@@ -1,0 +1,4 @@
+:after
+{:rescued, "bad"}
+:after
+:fine

@@ -1,0 +1,18 @@
+#---
+# purpose: "a raise from a rescue arm leaves through the after block, which runs before the enclosing rescue sees it"
+# oracle: 00804_an_after_runs_after_a_rescue_arm_that_raises.oracle.exs
+#---
+def main() do
+  result = try do
+    try do
+      raise ArgumentError, "first"
+    rescue
+      e in ArgumentError -> raise RuntimeError, "from rescue of " <> e.message
+    after
+      dbg(:after)
+    end
+  rescue
+    e in RuntimeError -> e.message
+  end
+  dbg(result)
+end

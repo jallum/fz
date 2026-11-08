@@ -751,7 +751,7 @@ fn try_of(rescue_clauses: &str) -> (Expr, Vec<crate::ast::RescueClause>) {
     let surface = surface_of(&format!(
         "def f() do\n  try do\n    1\n  rescue\n{rescue_clauses}\n  end\nend\n"
     ));
-    let Expr::Try { body, rescue } = &surface.clauses[0].body.node else {
+    let Expr::Try { body, rescue, .. } = &surface.clauses[0].body.node else {
         panic!("expected a try, got {:?}", surface.clauses[0].body.node);
     };
     (body.node.clone(), rescue.clone())
@@ -854,17 +854,61 @@ fn a_rescue_section_that_is_not_clauses_is_refused_with_elixirs_words() {
 }
 
 #[test]
-fn catch_after_and_else_sections_are_refused_as_not_yet_supported() {
-    for (section, clauses) in [("catch", "v -> v"), ("after", "1"), ("else", "v -> v")] {
-        let source =
-            format!("def f() do\n  try do\n    1\n  rescue\n    e -> 2\n  {section}\n    {clauses}\n  end\nend\n");
+fn a_catch_section_is_refused_as_not_yet_supported() {
+    let source = "def f() do\n  try do\n    1\n  rescue\n    e -> 2\n  catch\n    v -> v\n  end\nend\n";
+    assert_eq!(
+        try_refusal(source),
+        (
+            Some(crate::diag::codes::PARSE_UNSUPPORTED),
+            "`try` with `catch` is not yet supported".to_string()
+        )
+    );
+}
+
+#[test]
+fn an_else_section_that_is_not_clauses_is_refused_with_elixirs_words() {
+    assert_eq!(
+        try_refusal("def f() do\n  try do\n    1\n  rescue\n    e -> 2\n  else\n    3\n  end\nend\n"),
+        (
+            Some(crate::diag::codes::PARSE_INVALID_TRY),
+            "expected -> clauses for :else in \"try\"".to_string()
+        )
+    );
+}
+
+#[test]
+fn an_after_or_else_section_given_twice_is_refused_with_elixirs_words() {
+    for (section, clauses) in [("after", "1"), ("else", "v -> v")] {
+        let source = format!(
+            "def f() do\n  try do\n    1\n  {section}\n    {clauses}\n  {section}\n    {clauses}\n  end\nend\n"
+        );
         assert_eq!(
             try_refusal(&source),
             (
-                Some(crate::diag::codes::PARSE_UNSUPPORTED),
-                format!("`try` with `{section}` is not yet supported")
+                Some(crate::diag::codes::PARSE_INVALID_TRY),
+                format!("duplicate \"{section}\" clauses given for \"try\"")
             ),
             "{section}"
         );
     }
+}
+
+#[test]
+fn rescue_else_and_after_decode_beside_the_body_in_any_section_order() {
+    let surface = surface_of(
+        "def f() do\n  try do\n    1\n  after\n    4\n  else\n    1 -> 2\n    n -> n\n  rescue\n    e -> 3\n  end\nend\n",
+    );
+    let Expr::Try {
+        body,
+        rescue,
+        else_clauses,
+        after,
+    } = &surface.clauses[0].body.node
+    else {
+        panic!("expected a try, got {:?}", surface.clauses[0].body.node);
+    };
+    assert!(matches!(body.node, Expr::Int(1)), "{body:?}");
+    assert_eq!(rescue.len(), 1);
+    assert_eq!(else_clauses.len(), 2);
+    assert!(matches!(after.as_deref().map(|after| &after.node), Some(Expr::Int(4))));
 }

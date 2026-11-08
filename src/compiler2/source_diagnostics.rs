@@ -13,6 +13,16 @@ pub(crate) fn redundant_clause_diagnostic(clause_span: Span, always_matches_line
     .with_label("unreachable")
 }
 
+/// A `try` with an `else` and none of `rescue`, `catch` or `after`. Elixir
+/// warns in these words and compiles it as the `case` it is.
+pub(crate) fn try_else_only_diagnostic(span: Span) -> Diagnostic {
+    Diagnostic::warning(
+        codes::LOWER_TRY_ELSE_ONLY,
+        "\"else\" shouldn't be used as the only clause in \"try\", use \"case\" instead".to_string(),
+        span,
+    )
+}
+
 /// A `defimpl` that omits a callback its protocol declares. Elixir's
 /// behaviour checker raises the same warning, in the same words, for a
 /// `@behaviour` that skips a callback (`module/behaviour.ex:17`); this is

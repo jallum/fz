@@ -1,0 +1,15 @@
+#---
+# purpose: "else sees only the body's value: a value produced by a rescue arm is the try's value as it stands"
+# oracle: 00802_a_rescue_arm_value_does_not_pass_through_else.oracle.exs
+#---
+def main() do
+  result = try do
+    raise ArgumentError, "x"
+  rescue
+    _ -> :from_rescue
+  else
+    :from_rescue -> :wrongly_matched
+    other -> {:else, other}
+  end
+  dbg(result)
+end

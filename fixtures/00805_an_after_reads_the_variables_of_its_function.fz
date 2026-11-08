@@ -1,0 +1,18 @@
+#---
+# purpose: "an after block uses what is in scope at the try, on the completing path and on the raising path"
+# oracle: 00805_an_after_reads_the_variables_of_its_function.oracle.exs
+#---
+def attempt(label, f) do
+  try do
+    f.()
+  rescue
+    _ -> :rescued
+  after
+    dbg({:after, label})
+  end
+end
+
+def main() do
+  dbg(attempt(:one, fn () -> :fine end))
+  dbg(attempt(:two, fn () -> raise "x" end))
+end

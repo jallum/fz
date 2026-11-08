@@ -1,0 +1,7 @@
+warning[lower/try-else-only]: "else" shouldn't be used as the only clause in "try", use "case" instead
+  --> fixtures/00838_a_try_with_only_an_else_is_a_case_and_warns.fz:2:12
+   |
+2 |   result = try do
+   |            ^^^^^^
+   |
+

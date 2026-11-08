@@ -1,0 +1,24 @@
+#---
+# purpose: "an after block is lowered once per way out, so a closure inside it is built and called on the raising path and on the completing path"
+# oracle: 00840_an_after_that_builds_a_closure_runs_it_on_both_ways_out.oracle.exs
+#---
+def main() do
+  result = try do
+    try do
+      raise "x"
+    after
+      f = fn (v) -> dbg({:raising, v}) end
+      f.(1)
+    end
+  rescue
+    e -> e.message
+  end
+  dbg(result)
+  try do
+    :ok
+  after
+    g = fn (v) -> dbg({:completing, v}) end
+    g.(2)
+  end
+  dbg(:done)
+end

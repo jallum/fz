@@ -1,0 +1,4 @@
+{:raising, 1}
+"x"
+{:completing, 2}
+:done

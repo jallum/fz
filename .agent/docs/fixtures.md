@@ -428,6 +428,19 @@ does not carry. The raising loop (`00826`) and the allocating try body
 (`00831`) are also read through exit telemetry in `exec/runtime_test.rs`. See
 [exceptions](exceptions.md).
 
+Fixtures `00832` through `00840`, with `00800` through `00806`, are the `after` and `else` set, with the same
+oracle discipline: `after` on success, on a raise, masked by its own raise, and
+beside `rescue` (`00832` through `00835`, `00803`, `00804`, `00840`); `else`
+matching, missing (`00837` is caught by the enclosing `rescue`, `00800` is an
+`expect: abort` whose `.expected.stderr` holds the line fz prints, shorter than
+Elixir's because the message is the lead alone), raising from an arm, and bypassed by
+rescue arms (`00836`, `00801`, `00802`); all four sections together (`00806`);
+`00838` is an `else`-only `try`, a success fixture whose
+`.expected.diagnostics` holds Elixir's warning; `00839` is `expect: diagnostic`
+(`lower/unbound`) for a binding that does not outlive the `try`. The raise
+sequence through an `after` (`00833`) is also read through telemetry in
+`exec/runtime_test.rs`.
+
 ## Relationship to the runtime library
 
 Behavioural fixtures call the same runtime library that user programs do

@@ -1,0 +1,14 @@
+#---
+# purpose: "an else miss with no handler left prints the TryClauseError line and exits 1"
+# expect: abort
+# oracle: 00800_an_uncaught_else_miss_fails_the_process_with_a_try_clause_error.oracle.exs
+#---
+def main() do
+  try do
+    :unexpected
+  rescue
+    _ -> :inner_rescue
+  else
+    :expected -> :ok
+  end
+end

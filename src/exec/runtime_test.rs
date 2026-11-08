@@ -110,6 +110,8 @@ fn raises_while_running(source: &str, door: Door) -> (Vec<Raise>, ExitRecord) {
 }
 
 const NESTED_RESCUE: &str = include_str!("../../fixtures/00821_a_nested_try_rescues_at_the_innermost_handler.fz");
+const AFTER_THEN_RESCUE: &str =
+    include_str!("../../fixtures/00833_an_after_runs_on_a_raise_and_the_outer_rescue_sees_the_original.fz");
 const RAISING_LOOP: &str =
     include_str!("../../fixtures/00826_a_loop_that_raises_and_rescues_every_iteration_runs_to_the_end.fz");
 const ALLOCATING_TRY_BODY: &str =
@@ -139,6 +141,31 @@ fn the_jit_reports_a_raise_with_its_handler_depth_and_counts_the_delivery() {
 #[test]
 fn the_interpreter_reports_a_raise_with_its_handler_depth_and_counts_the_delivery() {
     assert_one_raise_under_two_handlers(Door::Interp);
+}
+
+/// A raise through an `after` is two events: the original, under the `after`
+/// handler and the enclosing rescue, then the `after` handler's re-raise of
+/// the same exception, under the rescue alone. Both are delivered.
+fn assert_after_re_raises_the_original(door: Door) {
+    let (raises, exit) = raises_while_running(AFTER_THEN_RESCUE, door);
+    let raise_at = |handler_depth| Raise {
+        kind: "error".to_string(),
+        exception: "Elixir.ArgumentError".to_string(),
+        handler_depth,
+    };
+    assert_eq!(raises, vec![raise_at(2), raise_at(1)]);
+    assert_eq!(exit.raises_delivered, 2);
+    assert!(!exit.failed);
+}
+
+#[test]
+fn the_jit_re_raises_through_an_after_to_the_enclosing_rescue() {
+    assert_after_re_raises_the_original(Door::Jit);
+}
+
+#[test]
+fn the_interpreter_re_raises_through_an_after_to_the_enclosing_rescue() {
+    assert_after_re_raises_the_original(Door::Interp);
 }
 
 /// A loop that raises and rescues on every iteration delivers every raise to

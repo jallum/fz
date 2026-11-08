@@ -83,11 +83,13 @@ the value is not an exception map).
 
 ## What `try` lowers to
 
-`Expr::Try { body, rescue: Vec<RescueClause> }` (`src/ast/mod.rs`) lowers in
-`jobs/body.rs::lower_try` to one `ExprStep::Try`:
+`Expr::Try { body, rescue, else_clauses, after }` (`src/ast/mod.rs`) lowers in
+`jobs/body.rs::lower_try`. `rescue` alone is one `ExprStep::Try`
+(`lower_rescued`); `after` and `else` are built from that step and from the
+dispatch step, below. A `try` with `rescue` has:
 
-- the body block, ending in `ExprStep::PopHandler`, whose continuation delivers
-  the body's value to the join;
+- the body block, which pops its handler (`ExprStep::PopHandler`) as soon as the
+  body completes and delivers the body's value to the join;
 - the handler block: a pattern dispatch over the three params `(kind, value,
   name)` built from the rescue heads, one row per exception a clause names, in
   source order. A clause that admits a non-exception value (`ErlangError`, or a
@@ -103,6 +105,51 @@ the try's own handler was popped, so the same try never catches it. The
 `BackendTail::Try { body, handler }` tail and `ControlEntryOrigin::Handler`
 carry this to the backend; `Term::Try { handler, captures, body }` and
 `Prim::PopHandler` carry it to native code.
+
+## `after` and `else`
+
+Neither adds a runtime concept. Both are written in the vocabulary above, in the
+nesting Erlang's `try` compiles to (`v3_core`):
+
+```text
+try do B rescue R else E after A end
+  =>
+Try#outer {                      handler: A ; panic(raised)
+  body: Try#inner {              handler: dispatch over R
+          body: B ; PopHandler ; case value of E
+        }
+        PopHandler
+}
+A                                (success path, after the join)
+```
+
+- `after` is the outermost layer, so `try ... rescue ... after` is two nested
+  `Try` steps and `try ... after` alone is one. The outer handler's only row
+  runs the after body and re-raises its second param through the same
+  `Kernel.panic/1` call the rescue miss makes, so the original exception
+  continues outward by the route it arrived by: a raise through an `after` is
+  two `fz.runtime.raise` events, the original at the full handler depth and the
+  re-raise one frame shallower. The success path runs the after body once, right
+  after the outer join; its value is dropped, so the try's value is the body's
+  (or the rescue's, or the `else`'s). The after body is lowered once per way
+  out, so the code it holds, a closure included, appears twice in the body. An
+  exception raised in the after body on either path leaves the outer handler
+  already popped, so it replaces the one in flight.
+- `else` clauses are a case over the body's value placed after the inner
+  `PopHandler`, still inside the body block, so a rescue arm's value never
+  reaches them and a raise in an `else` arm or in the miss is outside the
+  `rescue`. It is inside the `after` layer, so `after` still runs. A value no
+  clause matches raises `%TryClauseError{term: value}`. Its `message` is the
+  lead alone, `no try clause matching:`; the term is in `e.term`.
+- A `try` with `else` and neither `rescue`, `catch` nor `after` has no handler
+  to push: it lowers as the case it is, and carries Elixir's warning
+  `"else" shouldn't be used as the only clause in "try", use "case" instead`
+  (`lower/try-else-only`).
+- Bindings made in the body or the after body do not reach what follows the
+  `try`; reading one is `lower/unbound`.
+
+The `else` section must be `->` clauses (`expected -> clauses for :else in
+"try"`) and `after` and `else`, like `rescue`, may appear once.
 
 ## The rescue head
 
@@ -129,8 +176,8 @@ invalid "rescue" clause. The clause should match on an alias, a variable or be i
 A `try` with only a `do` block is `missing :catch/:rescue/:after option in
 "try"`; a repeated section is `duplicate "rescue" clauses given for "try"`; a
 `rescue` section that is not clauses is `invalid "rescue" block in "try", it
-expects "pattern -> expr" clauses`. The `catch`, `after` and `else` sections are
-refused with `` `try` with `catch` is not yet supported `` (`parse/unsupported`).
+expects "pattern -> expr" clauses`. The `catch` section is refused with
+`` `try` with `catch` is not yet supported `` (`parse/unsupported`).
 
 ## The line
 
@@ -199,7 +246,7 @@ raise. `Process.failed` and `raises_delivered` are projected into
 - `src/ast/mod.rs` — `Expr::Try`, `RescueClause`.
 - `src/compiler2/quoted_function.rs` — `decode_try`, `decode_rescue_head`.
 - `src/compiler2/source_sugar.rs` — the `in` rewrite and its operator stamp.
-- `src/compiler2/jobs/body.rs` — `lower_try`, `rescue_arms`, `reraise_block`.
+- `src/compiler2/jobs/body.rs` — `lower_try`, `lower_rescued`, `rescue_arms`, `reraise_block`, `push_try_else`.
 - `src/compiler2/native_codegen/terminator.rs` — `emit_try`, `emit_halt`,
   `emit_resume_closure`.
 - `src/compiler2/native_codegen/prim.rs` — `continue_after_raise`,
@@ -210,3 +257,5 @@ raise. `Process.failed` and `raises_delivered` are projected into
 - `fixtures/00815` through `fixtures/00831` — the rescue shapes, nesting,
   re-raise, the uncaught raise, a try in a spawned process, the raising loop,
   the allocating try body, and the refused `try` forms.
+- `fixtures/00832` through `fixtures/00840`, with `fixtures/00800` through
+  `fixtures/00806` — `after` and `else`.

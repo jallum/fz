@@ -1,0 +1,12 @@
+#---
+# purpose: "a try with only else runs as the case it is, and carries Elixir's warning"
+# oracle: 00838_a_try_with_only_an_else_is_a_case_and_warns.oracle.exs
+#---
+def main() do
+  result = try do
+    {:ok, 1}
+  else
+    {:ok, n} -> n
+  end
+  dbg(result)
+end

@@ -834,11 +834,11 @@ fn decode_receive(
     Ok(Spanned::new(Expr::Receive { clauses, after }, span))
 }
 
-/// `try do … rescue … end`, judged the way Elixir judges it and refused with
-/// Elixir's words: a `try` needs `do` and at least one of `rescue`, `catch`
-/// and `after`; a section appears at most once; `rescue` holds `->` clauses
-/// whose heads are one of the five rescue shapes. `catch`, `after` and
-/// `else` parse but are not yet supported.
+/// `try do … rescue … else … after … end`, judged the way Elixir judges it and
+/// refused with Elixir's words: a `try` needs `do` and at least one of
+/// `rescue`, `catch`, `else` and `after`; a section appears at most once;
+/// `rescue` holds `->` clauses whose heads are one of the five rescue shapes.
+/// `catch` parses but is not yet supported.
 fn decode_try(
     occurrences: &mut LambdaOccurrences,
     args: &[QuotedSourceCursor],
@@ -851,6 +851,8 @@ fn decode_try(
     }
     let mut body = None;
     let mut rescue = None;
+    let mut else_clauses = None;
+    let mut after = None;
     for (key, value) in &entries {
         let taken = match key.as_str() {
             "do" => body
@@ -859,7 +861,13 @@ fn decode_try(
             "rescue" => rescue
                 .replace(decode_rescue_clauses(occurrences, value, span, sources)?)
                 .is_some(),
-            "catch" | "after" | "else" => {
+            "else" => else_clauses
+                .replace(decode_try_else_clauses(occurrences, value, span, sources)?)
+                .is_some(),
+            "after" => after
+                .replace(Box::new(decode_expr(occurrences, value, Some(span), sources)?))
+                .is_some(),
+            "catch" => {
                 return Err(QuotedSourceError::user(
                     crate::diag::codes::PARSE_UNSUPPORTED,
                     Some(span),
@@ -880,11 +888,12 @@ fn decode_try(
         }
     }
     let body = body.ok_or_else(|| invalid_try(span, "missing :do option in \"try\""))?;
-    let rescue = rescue.expect("a try with two sections and no rescue was refused above");
     Ok(Spanned::new(
         Expr::Try {
             body: Box::new(body),
-            rescue,
+            rescue: rescue.unwrap_or_default(),
+            else_clauses: else_clauses.unwrap_or_default(),
+            after,
         },
         span,
     ))
@@ -892,6 +901,32 @@ fn decode_try(
 
 fn invalid_try(span: Span, message: impl Into<String>) -> QuotedSourceError {
     QuotedSourceError::user(crate::diag::codes::PARSE_INVALID_TRY, Some(span), message)
+}
+
+fn decode_try_else_clauses(
+    occurrences: &mut LambdaOccurrences,
+    cursor: &QuotedSourceCursor,
+    try_span: Span,
+    sources: &SourceMap,
+) -> Result<Vec<MatchClause>, QuotedSourceError> {
+    let invalid_block = || invalid_try(try_span, "expected -> clauses for :else in \"try\"");
+    if !cursor.is_list_like() {
+        return Err(invalid_block());
+    }
+    cursor
+        .list_items()?
+        .iter()
+        .map(|clause| {
+            let is_arrow = match clause.ast_node(sources)? {
+                Some(node) => node_head_is_atom_named(&node, "->")?,
+                None => false,
+            };
+            if !is_arrow {
+                return Err(invalid_block());
+            }
+            decode_match_clause(occurrences, clause, sources)
+        })
+        .collect()
 }
 
 fn decode_rescue_clauses(

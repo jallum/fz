@@ -1,0 +1,6 @@
+:after
+5
+:after
+{:else, :other}
+:after
+:rescued

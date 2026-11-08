@@ -292,13 +292,17 @@ pub enum Expr {
         clauses: Vec<MatchClause>,
         after: Option<Box<AfterClause>>,
     },
-    /// `try do … rescue … end`. The body runs under a handler; a raise in it
-    /// reaches the first rescue clause that takes the exception, and the
-    /// clause's value is the value of the whole expression. A raise no clause
-    /// takes continues outward unchanged.
+    /// `try do … rescue … else … after … end`. The body runs under a handler;
+    /// a raise in it reaches the first rescue clause that takes the exception,
+    /// and the clause's value is the value of the whole expression. A raise no
+    /// clause takes continues outward unchanged. `else` clauses match the
+    /// body's value outside that protection; `after` runs once on the way out,
+    /// whichever way the rest ended, and its value is discarded.
     Try {
         body: Box<Spanned<Expr>>,
         rescue: Vec<RescueClause>,
+        else_clauses: Vec<MatchClause>,
+        after: Option<Box<Spanned<Expr>>>,
     },
 
     // bindings

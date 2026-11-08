@@ -1,0 +1,22 @@
+#---
+# purpose: "do, rescue, else and after together: the body's value goes to else, a raise goes to rescue, and after runs last on both"
+# oracle: 00806_a_try_with_all_four_sections_runs_each_where_it_belongs.oracle.exs
+#---
+def attempt(f) do
+  try do
+    f.()
+  rescue
+    _ -> :rescued
+  else
+    {:ok, n} -> n
+    other -> {:else, other}
+  after
+    dbg(:after)
+  end
+end
+
+def main() do
+  dbg(attempt(fn () -> {:ok, 5} end))
+  dbg(attempt(fn () -> :other end))
+  dbg(attempt(fn () -> raise "x" end))
+end
