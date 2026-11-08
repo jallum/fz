@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T13:06:21Z",
+  "description": "Seen writing lib/option_parser.fz (fz-sc8.16): a module attribute with a value ('@read_ahead_size 64 * 1024', read back as @read_ahead_size) is not supported, and an @spec whose '::' return continues on the next line does not parse, so library code inlines constants and keeps every @spec on one line. Elixir allows both. Add them in the parser/module reader with tests and a fixture on all three paths. Library code that inlined a constant because of this is folded back onto an attribute.",
+  "id": "fz-sc8.96",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Module attributes hold values and a multi-line @spec parses",
+  "type": "feature",
+  "updated_at": "2026-11-08T13:06:21Z"
+}
