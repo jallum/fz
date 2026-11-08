@@ -177,10 +177,12 @@ there is no heap-hint variant or compatibility export.
 `Kernel.panic/1` likewise wraps a private `extern "fz" defp fz_panic(any) ::
 never`. Its arbitrary fz value stays borrowed from the current process while
 the physical export renders its failure line, marks the process failed and
-hands the line to the `ExecCtx` fault sink, all before it returns. A `never`
-extern that returns has failed its process: native code returns to the
-scheduler (and traps if the process was not marked failed), and the interpreter
-ends the process. See [process failure](process-failure.md).
+hands the line to the `ExecCtx` fault sink, all before it returns, unless a
+`try` handler is on the stack, in which case it delivers the raise there
+instead. A `never` extern that returns has raised: native code runs the queued
+handler in the call's place or returns to the scheduler when the process
+failed (and traps when neither happened), and the interpreter runs its handler
+frame or ends the process. See [exceptions](exceptions.md).
 
 `Kernel.inspect/1` wraps a private `extern "fz" defp fz_inspect(any) :: binary`,
 which renders with Elixir's default options. `Kernel.inspect/2` wraps

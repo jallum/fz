@@ -43,6 +43,19 @@ pub type FaultHook = unsafe extern "C" fn(context: *mut (), line_ptr: *const u8,
 
 pub type OutputHook = unsafe extern "C" fn(context: *const (), line_ptr: *const u8, line_len: usize);
 
+/// The raise observer: `fz_panic` reports every raise here before deciding
+/// where it goes, with the kind atom's text, the exception's name (empty when
+/// the value is not an exception), and how many handlers were on the stack.
+/// A depth of zero is an uncaught raise. The bytes are borrowed for the call.
+pub type RaiseHook = unsafe extern "C" fn(
+    context: *mut (),
+    kind_ptr: *const u8,
+    kind_len: usize,
+    name_ptr: *const u8,
+    name_len: usize,
+    depth: usize,
+);
+
 /// After-timer schedule hook. Called when a receive with a
 /// positive timeout parks. Each scheduler owns its `SchedulingCore` (and its
 /// `TimerWheel`), so the actual schedule lives there;

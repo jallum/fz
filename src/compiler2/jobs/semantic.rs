@@ -748,6 +748,7 @@ fn apply_step_evidence(
                 values.insert(*next_reader, reader_ty);
             }
         }
+        LoweredStep::PopHandler => {}
     }
     Ok(())
 }
@@ -1129,6 +1130,44 @@ fn analyze_tail(
                 merged = join_evidence(world, merged, after_ty);
             }
             Ok(merged)
+        }
+        LoweredTail::Try { body, handler } => {
+            let body_ty = analyze_branch(
+                world,
+                tel,
+                entries,
+                *body,
+                values,
+                &[],
+                walks,
+                value_types,
+                calls,
+                activation,
+                walk,
+            )?;
+            // A raise crosses the runtime boundary: the handler's kind,
+            // value and exception name are earned `any`, like a mailbox
+            // message.
+            let any = world.types_mut().any();
+            let params = entries[handler.as_u32() as usize]
+                .params
+                .iter()
+                .map(|param| (*param, any))
+                .collect::<Vec<_>>();
+            let handler_ty = analyze_branch(
+                world,
+                tel,
+                entries,
+                *handler,
+                values,
+                &params,
+                walks,
+                value_types,
+                calls,
+                activation,
+                walk,
+            )?;
+            Ok(join_evidence(world, body_ty, handler_ty))
         }
         // Control no execution reaches contributes no value: the join
         // identity, not a type.

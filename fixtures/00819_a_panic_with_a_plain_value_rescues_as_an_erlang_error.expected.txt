@@ -1,0 +1,2 @@
+:boom
+{ErlangError, {:stop, 3}}

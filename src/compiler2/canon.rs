@@ -965,6 +965,7 @@ impl ProgramCanon<'_> {
             BackendEntryOrigin::Clause => "clause".to_string(),
             BackendEntryOrigin::Branch => "branch".to_string(),
             BackendEntryOrigin::ReceiveOutcome => "receive_outcome".to_string(),
+            BackendEntryOrigin::Handler => "handler".to_string(),
             BackendEntryOrigin::DeliveredResume { value, layout } => {
                 let name = self.names.value(*value);
                 format!("delivered_resume {name} {}", self.return_layout(layout))
@@ -1120,6 +1121,7 @@ impl ProgramCanon<'_> {
                 let spec = self.bit_spec(spec);
                 format!("{ok}, {value}, {next_reader} = bitstring_read {reader} {spec} last={is_last}")
             }
+            BackendStep::PopHandler => "pop_handler".to_string(),
         }
     }
 
@@ -1256,6 +1258,13 @@ impl ProgramCanon<'_> {
                 out.exit();
             }
             BackendTail::Unreachable => out.put("tail unreachable"),
+            BackendTail::Try { body, handler } => {
+                out.put(&format!(
+                    "tail try body=e{} handler=e{}",
+                    body.as_u32(),
+                    handler.as_u32()
+                ));
+            }
         }
     }
 

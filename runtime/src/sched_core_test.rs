@@ -68,7 +68,10 @@ impl Scheduler for Recording {
             RuntimeEvent::SchedulerSlept(wait) => self.slept.push(wait),
             RuntimeEvent::Gc(collection) => self.collections.push(*collection),
             RuntimeEvent::ProcessExited(process) => self.exits.push((process.pid, process.dtors_dispatched)),
-            RuntimeEvent::ExecutionReady | RuntimeEvent::SendProbe(_) | RuntimeEvent::RunEnded(_) => {}
+            RuntimeEvent::ExecutionReady
+            | RuntimeEvent::SendProbe(_)
+            | RuntimeEvent::Raise(_)
+            | RuntimeEvent::RunEnded(_) => {}
         }
     }
 

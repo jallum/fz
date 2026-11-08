@@ -29,6 +29,20 @@ fn when_at_the_start_of_a_line_continues_the_previous_expression() {
 }
 
 #[test]
+fn rescue_and_catch_are_block_keywords() {
+    let tokens = test_lexer("try do\n  x\nrescue\n  e -> e\ncatch\n  v -> v\nafter\n  y\nend\n")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let keywords = tokens
+        .into_iter()
+        .filter(|token| matches!(token.tok, Tok::Do | Tok::Rescue | Tok::Catch | Tok::After | Tok::End))
+        .map(|token| token.tok)
+        .collect::<Vec<_>>();
+
+    assert_eq!(keywords, vec![Tok::Do, Tok::Rescue, Tok::Catch, Tok::After, Tok::End]);
+}
+
+#[test]
 fn def_and_defp_are_ordinary_identifiers() {
     let tokens = test_lexer("def public(), do: 1\ndefp private(), do: 2\n")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())

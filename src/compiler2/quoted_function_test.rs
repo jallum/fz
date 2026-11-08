@@ -744,3 +744,127 @@ fn an_equals_in_a_head_pattern_decodes_both_sides_as_patterns() {
 fn an_equals_in_a_case_pattern_decodes_both_sides_as_patterns() {
     assert_eq!(case_shape("[h | _] = [_ | t]"), "[h | _] = [_ | t]");
 }
+
+/// The body and rescue clauses of a `try` whose rescue section is
+/// `rescue_clauses`, decoded the way a function body is.
+fn try_of(rescue_clauses: &str) -> (Expr, Vec<crate::ast::RescueClause>) {
+    let surface = surface_of(&format!(
+        "def f() do\n  try do\n    1\n  rescue\n{rescue_clauses}\n  end\nend\n"
+    ));
+    let Expr::Try { body, rescue } = &surface.clauses[0].body.node else {
+        panic!("expected a try, got {:?}", surface.clauses[0].body.node);
+    };
+    (body.node.clone(), rescue.clone())
+}
+
+fn rescue_shape(clause: &crate::ast::RescueClause) -> (Option<String>, Vec<String>) {
+    (
+        clause.binding.as_ref().map(|binding| binding.name.clone()),
+        clause
+            .exceptions
+            .iter()
+            .map(|exception| exception.atom_name())
+            .collect(),
+    )
+}
+
+#[test]
+fn the_five_rescue_head_shapes_decode_to_a_binding_and_an_exception_list() {
+    let (body, rescue) = try_of(
+        "    e -> 1\n    ArgumentError -> 2\n    [ArgumentError, RuntimeError] -> 3\n    e in ArgumentError -> 4\n    e in [ArgumentError, RuntimeError] -> 5",
+    );
+    assert!(matches!(body, Expr::Int(1)), "{body:?}");
+    let shapes = rescue.iter().map(rescue_shape).collect::<Vec<_>>();
+    let name = |alias: &str| format!("Elixir.{alias}");
+    assert_eq!(
+        shapes,
+        vec![
+            (Some("e".to_string()), vec![]),
+            (None, vec![name("ArgumentError")]),
+            (None, vec![name("ArgumentError"), name("RuntimeError")]),
+            (Some("e".to_string()), vec![name("ArgumentError")]),
+            (Some("e".to_string()), vec![name("ArgumentError"), name("RuntimeError")]),
+        ]
+    );
+}
+
+#[test]
+fn a_wildcard_rescue_head_binds_nothing_and_catches_everything() {
+    let (_, rescue) = try_of("    _ -> 1");
+    assert_eq!(
+        rescue.iter().map(rescue_shape).collect::<Vec<_>>(),
+        vec![(None, vec![])]
+    );
+}
+
+fn try_refusal(source: &str) -> (Option<crate::diag::codes::DiagCode>, String) {
+    let (error, _) = refusal_of(source);
+    (error.user_code(), error.to_string())
+}
+
+#[test]
+fn a_rescue_head_outside_the_five_shapes_is_refused_with_elixirs_words() {
+    assert_eq!(
+        try_refusal("def f() do\n  try do\n    1\n  rescue\n    %{} -> 2\n  end\nend\n"),
+        (
+            Some(crate::diag::codes::PARSE_INVALID_TRY),
+            "invalid \"rescue\" clause. The clause should match on an alias, a variable or be in the \"var in [alias]\" format. Got: %{}".to_string()
+        )
+    );
+    assert_eq!(
+        try_refusal("def f() do\n  try do\n    1\n  rescue\n    e in 1 -> 2\n  end\nend\n"),
+        (
+            Some(crate::diag::codes::PARSE_INVALID_TRY),
+            "invalid \"rescue\" clause. The clause should match on an alias, a variable or be in the \"var in [alias]\" format. Got: e in 1".to_string()
+        )
+    );
+}
+
+#[test]
+fn a_try_with_only_a_do_block_is_refused_with_elixirs_words() {
+    assert_eq!(
+        try_refusal("def f() do\n  try do\n    1\n  end\nend\n"),
+        (
+            Some(crate::diag::codes::PARSE_INVALID_TRY),
+            "missing :catch/:rescue/:after option in \"try\"".to_string()
+        )
+    );
+}
+
+#[test]
+fn a_try_section_given_twice_is_refused_with_elixirs_words() {
+    assert_eq!(
+        try_refusal("def f() do\n  try do\n    1\n  rescue\n    e -> 2\n  rescue\n    e -> 3\n  end\nend\n"),
+        (
+            Some(crate::diag::codes::PARSE_INVALID_TRY),
+            "duplicate \"rescue\" clauses given for \"try\"".to_string()
+        )
+    );
+}
+
+#[test]
+fn a_rescue_section_that_is_not_clauses_is_refused_with_elixirs_words() {
+    assert_eq!(
+        try_refusal("def f() do\n  try do\n    1\n  rescue\n    2\n  end\nend\n"),
+        (
+            Some(crate::diag::codes::PARSE_INVALID_TRY),
+            "invalid \"rescue\" block in \"try\", it expects \"pattern -> expr\" clauses".to_string()
+        )
+    );
+}
+
+#[test]
+fn catch_after_and_else_sections_are_refused_as_not_yet_supported() {
+    for (section, clauses) in [("catch", "v -> v"), ("after", "1"), ("else", "v -> v")] {
+        let source =
+            format!("def f() do\n  try do\n    1\n  rescue\n    e -> 2\n  {section}\n    {clauses}\n  end\nend\n");
+        assert_eq!(
+            try_refusal(&source),
+            (
+                Some(crate::diag::codes::PARSE_UNSUPPORTED),
+                format!("`try` with `{section}` is not yet supported")
+            ),
+            "{section}"
+        );
+    }
+}

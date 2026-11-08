@@ -1454,24 +1454,37 @@ impl FrontDoorParser {
         Ok(())
     }
 
-    /// The body of a trailing `do ... end`, as `[do: ..., else: ..., after:
-    /// ...]`. The `do` token itself has already been consumed.
+    /// The body of a trailing `do ... end`, as `[do: ..., rescue: ...,
+    /// catch: ..., else: ..., after: ...]`. The `do` token itself has already
+    /// been consumed. Like Elixir's parser, this accepts the sections in any
+    /// order and keeps a repeated section as a repeated entry: the form that
+    /// receives the block decides which sections it takes and reports a
+    /// duplicate, so the message can name the form.
     fn parse_do_block(&mut self, module_path: &[String], scope: &[String]) -> Result<AnyValueRef, FrontDoorError> {
-        let do_body = self.parse_do_section(&[Tok::Else, Tok::After, Tok::End], module_path, scope)?;
+        const SECTIONS: [(Tok, &str); 4] = [
+            (Tok::Rescue, "rescue"),
+            (Tok::Catch, "catch"),
+            (Tok::Else, "else"),
+            (Tok::After, "after"),
+        ];
+        const TERMINATORS: [Tok; 5] = [Tok::Rescue, Tok::Catch, Tok::Else, Tok::After, Tok::End];
+        let do_body = self.parse_do_section(&TERMINATORS, module_path, scope)?;
         let mut kw_entries = vec![self.builder.keyword("do", do_body)?];
-        if self.eat(&Tok::Else) {
-            let else_body = self.parse_do_section(&[Tok::After, Tok::End], module_path, scope)?;
-            kw_entries.push(self.builder.keyword("else", else_body)?);
-        }
-        if self.eat(&Tok::After) {
-            let after_body = self.parse_do_section(&[Tok::End], module_path, scope)?;
-            kw_entries.push(self.builder.keyword("after", after_body)?);
+        'sections: loop {
+            for (token, name) in &SECTIONS {
+                if self.eat(token) {
+                    let body = self.parse_do_section(&TERMINATORS, module_path, scope)?;
+                    kw_entries.push(self.builder.keyword(name, body)?);
+                    continue 'sections;
+                }
+            }
+            break;
         }
         self.expect(&Tok::End, "`end`")?;
         self.builder.list(&kw_entries).map_err(FrontDoorError::from)
     }
 
-    /// One `do`/`else`/`after` section, decided the way Elixir decides it:
+    /// One `do`/`rescue`/`catch`/`else`/`after` section, decided the way Elixir decides it:
     /// a `->` right after the first statement makes the whole section a
     /// list of `pattern -> body` clauses; anything else makes it an
     /// ordinary block (one expression, or several joined with

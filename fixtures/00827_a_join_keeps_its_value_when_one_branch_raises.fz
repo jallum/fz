@@ -1,0 +1,16 @@
+#---
+# purpose: "an if whose one branch raises and whose other branch yields a value carries that value past the join"
+# oracle: 00827_a_join_keeps_its_value_when_one_branch_raises.oracle.exs
+#---
+def pick(x) do
+  v = if x > 0 do
+    raise ArgumentError, "positive"
+  else
+    7
+  end
+  v + 1
+end
+
+def main() do
+  dbg(pick(0))
+end

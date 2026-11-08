@@ -1,0 +1,17 @@
+#---
+# purpose: "a rescue head listing several aliases catches a raise of any one of them"
+# oracle: 00816_a_rescue_by_list_catches_any_listed_exception.oracle.exs
+#---
+def attempt(f) do
+  try do
+    f.()
+  rescue
+    [ArgumentError, RuntimeError] -> :listed
+  end
+end
+
+def main() do
+  dbg(attempt(fn () -> raise ArgumentError, "a" end))
+  dbg(attempt(fn () -> raise "r" end))
+  dbg(attempt(fn () -> :no_raise end))
+end

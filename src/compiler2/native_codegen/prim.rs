@@ -28,8 +28,8 @@ use fz_runtime::ir_runtime::{
     fz_map_dest_put_parts, fz_map_dest_put_ref, fz_map_get_atom_key_ref, fz_map_get_float_key_ref,
     fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
     fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
-    fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref,
-    fz_value_eq_widening_ref,
+    fz_struct_schema_id_ref, fz_take_raised_handler, fz_try_pop, fz_value_cmp_raw_const, fz_value_cmp_ref,
+    fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process_abi::PROCESS_FAILED_OFFSET;
 use std::collections::HashMap;
@@ -898,6 +898,11 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 return Ok(LowerOut::Condition(cmp));
             }
             Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
+        }
+        Prim::PopHandler => {
+            let process = body.process_arg();
+            runtime_call!(body, fz_try_pop, [process]);
+            Ok(LowerOut::DeadUnit)
         }
         Prim::MapGet(m, k) if ty_is_float(t, value_types, dest_var) => {
             let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k);
@@ -1826,7 +1831,7 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     };
     let inst = body.b.ins().call(fref, &call_args);
     if ret == ExternTy::Never {
-        end_failed_process(body);
+        continue_after_raise(body);
     }
     if returns_value {
         let raw = body.b.inst_results(inst)[0];
@@ -1863,8 +1868,29 @@ fn lower_extern_generic<M: cranelift_module::Module>(
 /// that returns without marking the process failed broke its declaration,
 /// and that traps rather than running on. Code after the call is unreachable
 /// and lands in a block nothing enters.
-fn end_failed_process<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>) {
+/// After a `never`-returning call: the process has failed, or a raise has
+/// queued its handler as the runnable closure. Either way this frame, and
+/// every frame above it, unwinds to the trampoline. Neither is a trap.
+/// What follows a call that cannot return: the callee raised. When a handler
+/// took the raise, `fz_panic` left that handler queued, and it runs here in
+/// the raising call's place, inside the same quantum. Otherwise the process
+/// has failed and control returns to the scheduler. A process that neither
+/// failed nor has a handler queued was ended by an extern that broke its
+/// `never` contract, which traps.
+pub(super) fn continue_after_raise<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>) {
     let process = body.process_arg();
+    let handler = runtime_call1!(body, fz_take_raised_handler, [process]);
+    let handler_blk = body.b.create_block();
+    let failed_blk = body.b.create_block();
+    let no_args: Vec<BlockArg> = Vec::new();
+    body.b.ins().brif(handler, handler_blk, &no_args, failed_blk, &no_args);
+
+    body.b.switch_to_block(handler_blk);
+    body.b.seal_block(handler_blk);
+    emit_resume_closure(body, handler);
+
+    body.b.switch_to_block(failed_blk);
+    body.b.seal_block(failed_blk);
     let failed = body
         .b
         .ins()

@@ -733,6 +733,26 @@ fn compiler2_frontdoor_general_when_feeds_each_guarded_clause_shape() {
 }
 
 #[test]
+fn compiler2_frontdoor_do_block_sections_come_in_any_order_and_repeat_as_given() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "try_sections.fz",
+        "probe(try do\n  x\nrescue\n  e -> e\ncatch\n  v -> v\nafter\n  y\nend)\nprobe(try do\n  x\nafter\n  y\nrescue\n  e -> e\nrescue\n  f -> f\nend)\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        [
+            "probe(try([{:do, $x}, {:rescue, [->([$e], $e)]}, {:catch, [->([$v], $v)]}, {:after, $y}]))",
+            "probe(try([{:do, $x}, {:after, $y}, {:rescue, [->([$e], $e)]}, {:rescue, [->([$f], $f)]}]))",
+        ],
+        "the parser records the sections as written; the receiving form judges them",
+    );
+}
+
+#[test]
 fn compiler2_frontdoor_rejects_when_as_an_expression_prefix() {
     let tel = ConfiguredTelemetry::new();
     let (error, version) = parse_quoted_error("invalid_when.fz", "when ready\n", &tel);

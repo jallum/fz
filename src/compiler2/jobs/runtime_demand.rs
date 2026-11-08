@@ -1695,6 +1695,26 @@ fn collect_entry_live_demands(
                 record_entry_capture_demands(out, target, &shared);
             }
         }
+        LoweredTail::Try { body, handler } => {
+            for target in [*body, *handler] {
+                merge_live_demands(
+                    &mut live,
+                    collect_entry_external_demands(
+                        types,
+                        executable,
+                        entries,
+                        target,
+                        outgoing_demand.clone(),
+                        facts,
+                        demands,
+                        out,
+                        call_return_demands,
+                        callable_flows,
+                        walks,
+                    ),
+                );
+            }
+        }
         LoweredTail::Unreachable => {}
     }
 
@@ -1925,6 +1945,7 @@ fn step_sources_of(step: &LoweredStep, value: ValueId) -> Vec<ValueId> {
         LoweredStep::Const { .. }
         | LoweredStep::FunctionRef { .. }
         | LoweredStep::Lambda { .. }
+        | LoweredStep::PopHandler
         | LoweredStep::Tuple { .. }
         | LoweredStep::List { .. }
         | LoweredStep::Map { .. }
@@ -2174,6 +2195,7 @@ pub(super) fn propagate_steps_reverse(
                     }
                 }
             }
+            LoweredStep::PopHandler => {}
         }
     }
 }
@@ -2313,6 +2335,7 @@ fn note_clause_matcher_demands(
                     note_live_demand(out, live, size, RuntimeDemand::whole());
                 }
             }
+            LoweredStep::PopHandler => {}
             LoweredStep::Const { .. }
             | LoweredStep::Tuple { .. }
             | LoweredStep::List { .. }

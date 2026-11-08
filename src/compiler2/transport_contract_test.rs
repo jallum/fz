@@ -5916,6 +5916,7 @@ fn assert_backend_body_has_typed_targets(body: &super::artifact::BackendBody, ca
             | BackendTail::If { .. }
             | BackendTail::Dispatch { .. }
             | BackendTail::Receive(_)
+            | BackendTail::Try { .. }
             | BackendTail::Unreachable => {}
         }
     }

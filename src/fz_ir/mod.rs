@@ -532,6 +532,8 @@ pub enum Prim {
     },
     /// True if the reader has consumed all bits.
     BitReaderDone(Var),
+    /// The `try` body completed: pop the process's innermost handler.
+    PopHandler,
     /// Runtime-membership check over the first-class runtime-observable
     /// predicate layer. Semantic dispatch/refinement stays in `Ty`; direct
     /// runtime tests and cached receive dispatch lower through this explicit
@@ -555,7 +557,7 @@ impl Prim {
     /// enforced exhaustive match guarantees no operand is ever silently missed.
     pub fn collect_used_vars(&self, used: &mut HashSet<Var>) {
         match self {
-            Prim::Const(_) | Prim::MakeFnRef(_, _) => {}
+            Prim::Const(_) | Prim::MakeFnRef(_, _) | Prim::PopHandler => {}
             Prim::ConstBitstring(_, _) => {}
             Prim::BinOp(_, a, b) => {
                 used.insert(*a);
@@ -780,6 +782,17 @@ pub enum Term {
     /// inside any clause's pattern;
     /// `captures` carries the outer-scope vars threaded into every
     /// body/guard/after fn so they can keep evaluating in scope.
+    /// Enter a `try`: install `handler` as the process's innermost handler
+    /// and continue in `body`. The handler is a continuation fn whose
+    /// closure environment is `[outer_cont, kind, value, name, captures...]`;
+    /// a raise materialises it with the three bound values and queues it as
+    /// the process's runnable closure, so the raise reaches it through the
+    /// trampoline after the native frames unwind.
+    Try {
+        handler: FnId,
+        captures: Vec<Var>,
+        body: BlockId,
+    },
     ReceiveMatched {
         ident: CallsiteIdent,
         clauses: Vec<ReceiveClause>,
@@ -1362,6 +1375,7 @@ impl fmt::Display for Prim {
             Prim::BitReaderInit(v) => write!(f, "bit_reader_init({})", v),
             Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
+            Prim::PopHandler => write!(f, "pop_handler"),
             Prim::RuntimeTypeTest(v, d) => {
                 write!(f, "runtime_type_test({}, {})", v, d)
             }
@@ -1429,6 +1443,17 @@ impl fmt::Display for Term {
                 subject: None,
             } => write!(f, "raise {exception} {message}"),
             Term::Unreachable => write!(f, "unreachable"),
+            Term::Try {
+                handler,
+                captures,
+                body,
+            } => write!(
+                f,
+                "try handler=fn{} caps=[{}] body={}",
+                handler.0,
+                fmt_var_list(captures),
+                body
+            ),
             Term::ReceiveMatched {
                 clauses,
                 after,

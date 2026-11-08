@@ -998,6 +998,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 format!("{base_name}__receive_{}", entry_id.as_u32()),
                 FnCategory::CpsCont,
             ),
+            BackendEntryOrigin::Handler => (
+                format!("{base_name}__handler_{}", entry_id.as_u32()),
+                FnCategory::CpsCont,
+            ),
             BackendEntryOrigin::DeliveredResume { .. } => (
                 format!("{base_name}__resume_{}", entry_id.as_u32()),
                 FnCategory::CpsCont,
@@ -1482,6 +1486,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let (reader_var, _) = ctx.emit_let(Prim::TupleField(result, 2));
                     self.bind_runtime_value(ctx, executable, env, *next_reader, reader_var);
                 }
+                BackendStep::PopHandler => {
+                    ctx.emit_let(Prim::PopHandler);
+                }
             }
         }
         Ok(())
@@ -1788,6 +1795,42 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     dispatch.plan.graph.root,
                     &mut state,
                 )
+            }
+            BackendTail::Try { body, handler } => {
+                let executable_index = self
+                    .program
+                    .executable_index(&executable.key, self.world.types())
+                    .expect("owning executable");
+                let handler_fn = self.module.fresh_fn_id();
+                assert!(
+                    entry_fns.ids.insert(*handler, handler_fn).is_none(),
+                    "one try owns its handler entry"
+                );
+                self.lower_entry_fn(
+                    executable_index,
+                    executable,
+                    entries,
+                    entry_fns,
+                    *handler,
+                    handler_fn,
+                    None,
+                )?;
+                let captures = self.entry_capture_args(ctx, executable, entries, *handler, env)?;
+                let body_block = ctx.builder.block(vec![]);
+                ctx.set_term(Term::Try {
+                    handler: handler_fn,
+                    captures,
+                    body: body_block,
+                });
+                ctx.current_block = body_block;
+                let body_args = self.entry_capture_args(ctx, executable, entries, *body, env)?;
+                ctx.set_term(Term::TailCall {
+                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, *body)),
+                    args: body_args,
+                    is_back_edge: false,
+                });
+                Ok(())
             }
             BackendTail::Receive(receive) => {
                 let bindings = &receive.bindings;
@@ -2261,7 +2304,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 entry_tys.extend(physical_capture_tys);
                 (entry_tys, param_reprs, NativeEntryAbi::Direct)
             }
-            BackendEntryOrigin::ReceiveOutcome => {
+            BackendEntryOrigin::ReceiveOutcome | BackendEntryOrigin::Handler => {
                 let mut param_reprs = param_tys
                     .iter()
                     .copied()
@@ -2307,7 +2350,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<usize, FatalError> {
         match &entry.origin {
             BackendEntryOrigin::Clause => Ok(0),
-            BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome => {
+            BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome | BackendEntryOrigin::Handler => {
                 for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
                     self.bind_runtime_value(ctx, executable, env, value, var);
                 }
@@ -2818,7 +2861,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<Vec<Var>, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
         let mut args = match &entry.origin {
-            BackendEntryOrigin::Clause | BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome => Vec::new(),
+            BackendEntryOrigin::Clause
+            | BackendEntryOrigin::Branch
+            | BackendEntryOrigin::ReceiveOutcome
+            | BackendEntryOrigin::Handler => Vec::new(),
             BackendEntryOrigin::DeliveredResume { layout, .. } => {
                 let mut lanes = Vec::new();
                 let local = env
@@ -4583,6 +4629,9 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
                     if let Some(after) = after {
                         entry.insert(after.body);
                     }
+                }
+                Term::Try { handler, .. } => {
+                    entry.insert(*handler);
                 }
                 Term::TailCallClosure { .. }
                 | Term::Goto(..)

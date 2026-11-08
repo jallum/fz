@@ -414,6 +414,20 @@ compiler-shape pins belong here instead of in the fixture matrix.
 stems. `BLESS=1` rewrites declared snapshot sidecars only; metric and edge
 assertions never auto-bless.
 
+## Rescue forms
+
+Fixtures `00815` through `00831` are the `try`/`rescue` set. Each `expect:
+success` fixture has an Elixir oracle, so the rescued value and the
+`e.message`/`e.original` reads are Elixir's answers; `00822` and `00828` are
+`expect: abort` with an `.expected.stderr` carrying the `** (Name) message`
+line of the uncaught raise; `00829`, `00830` and `00850` are `expect: diagnostic`
+pinning the refused `try` forms (`parse/invalid-try`, `parse/unsupported`).
+`00819` compares `{e.__struct__, e.original}` rather than the exception itself,
+because Elixir prints a `%ErlangError{}` struct with a `reason` field that fz
+does not carry. The raising loop (`00826`) and the allocating try body
+(`00831`) are also read through exit telemetry in `exec/runtime_test.rs`. See
+[exceptions](exceptions.md).
+
 ## Relationship to the runtime library
 
 Behavioural fixtures call the same runtime library that user programs do
@@ -423,6 +437,6 @@ assertion machinery a fixture uses is itself fz source under `lib/`.
 `Kernel.panic`, whose private `fz_panic` foreign declaration prints the failure
 line through the execution context and has a `never` return contract; that is
 why a failed assertion exits 1 on every path without requiring the interpreter
-to abort its host (see [process failure](process-failure.md)). A fixture that exercises a runtime-library
+to abort its host (see [exceptions](exceptions.md)). A fixture that exercises a runtime-library
 function both proves the function and (via allocation goldens) pins its
 allocation floor.

@@ -1,0 +1,7 @@
+KeyError
+ArithmeticError
+"bad argument in arithmetic expression"
+ArgumentError
+Enum.EmptyError
+"empty error"
+:done

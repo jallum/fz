@@ -1,0 +1,12 @@
+#---
+# purpose: "a try with a catch section is refused as not yet supported, not misread"
+# expect: diagnostic
+# diagnostic.code: parse/unsupported
+#---
+def main() do
+  try do
+    1
+  catch
+    v -> v
+  end
+end

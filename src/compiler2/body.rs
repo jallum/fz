@@ -137,13 +137,14 @@ pub(crate) fn step_defined_values(step: &LoweredStep) -> impl Iterator<Item = Va
         LoweredStep::BitstringRead {
             ok, value, next_reader, ..
         } => [Some(*ok), Some(*value), Some(*next_reader)],
+        LoweredStep::PopHandler => [None; 3],
     };
     values.into_iter().flatten()
 }
 
 pub(crate) fn step_used_values(step: &LoweredStep, out: &mut Vec<ValueId>) {
     match step {
-        LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } => {}
+        LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } | LoweredStep::PopHandler => {}
         LoweredStep::Tuple { items, .. } => out.extend(items.iter().map(|item| item.value)),
         LoweredStep::List { items, tail, .. } => {
             out.extend(items.iter().copied());
@@ -232,7 +233,7 @@ pub(crate) fn tail_used_values(tail: &LoweredTail, out: &mut Vec<ValueId>) {
                 out.push(after.timeout);
             }
         }
-        LoweredTail::Unreachable => {}
+        LoweredTail::Try { .. } | LoweredTail::Unreachable => {}
     }
 }
 
@@ -508,7 +509,12 @@ pub enum ControlEntryOrigin {
     Clause,
     Branch,
     ReceiveOutcome,
-    DeliveredResume { value: ValueId },
+    /// Entered by a raise under its `try`, with the raise's kind, value and
+    /// exception name as params.
+    Handler,
+    DeliveredResume {
+        value: ValueId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -526,7 +532,7 @@ pub(crate) struct DeliveredValueJoin {
 impl ControlEntryOrigin {
     pub fn input_value(&self) -> Option<ValueId> {
         match self {
-            Self::Clause | Self::Branch | Self::ReceiveOutcome => None,
+            Self::Clause | Self::Branch | Self::ReceiveOutcome | Self::Handler => None,
             Self::DeliveredResume { value } => Some(*value),
         }
     }
@@ -807,6 +813,12 @@ pub enum LoweredTail {
     /// Control that analysis proved no execution reaches. Reaching it anyway
     /// is a compiler fault, never a program's failure.
     Unreachable,
+    /// Push `handler` as the process's innermost handler, then run `body`
+    /// under it. Both deliver to the same destination.
+    Try {
+        body: ControlEntryId,
+        handler: ControlEntryId,
+    },
 }
 
 /// How a callsite's positional args map onto its callee's semantic input
@@ -867,6 +879,7 @@ pub(crate) fn callsite_input_modes(body: &LoweredBody) -> HashMap<CallSiteId, Ca
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
+            | LoweredTail::Try { .. }
             | LoweredTail::Unreachable => {}
         }
     }
@@ -994,6 +1007,9 @@ pub enum LoweredStep {
         spec: LoweredBitFieldSpec,
         is_last: bool,
     },
+    /// The `try` body completed: its handler leaves the process's handler
+    /// stack before the body's value travels on.
+    PopHandler,
 }
 
 #[derive(Debug, Clone)]

@@ -35,12 +35,12 @@ use fz_runtime::ir_runtime::{
 };
 use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
-use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Process, ProcessState};
+use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Handler, Process, ProcessState};
 use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
 use fz_runtime::sched_core::{
     Scheduler, SchedulingCore, end_quantum, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
-use fz_runtime::telemetry::{RunEnded, RuntimeEvent};
+use fz_runtime::telemetry::{Raise, RunEnded, RuntimeEvent};
 use fz_runtime::timer::TimerId;
 
 enum BackendRunStep {
@@ -581,6 +581,21 @@ unsafe extern "C" fn macro_fault_hook<T: Telemetry + ?Sized>(scheduler: *mut (),
     runtime.record_callback_error(String::from_utf8_lossy(line).into_owned());
 }
 
+/// The raise hook of an interpreted run: every raise becomes a
+/// `fz.runtime.raise` event on the run's telemetry.
+unsafe extern "C" fn interp_raise_hook<T: Telemetry + ?Sized>(
+    scheduler: *mut (),
+    kind: *const u8,
+    kind_len: usize,
+    name: *const u8,
+    name_len: usize,
+    depth: usize,
+) {
+    let adapter = unsafe { &*(scheduler as *mut BackendSchedulerAdapter<T>) };
+    let record = unsafe { Raise::from_hook_args(kind, kind_len, name, name_len, depth) };
+    emit_runtime_event(unsafe { &*adapter.tel }, RuntimeEvent::Raise(&record));
+}
+
 extern "C" fn interp_spawn_hook<T: Telemetry + ?Sized>(
     sender: *mut Process,
     scheduler: *mut (),
@@ -672,6 +687,7 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
             BackendRun::Program => fz_runtime::failure::STDERR_FAULT_HOOK,
             BackendRun::Macro => macro_fault_hook::<T>,
         }),
+        raise: Some(interp_raise_hook::<T>),
         output: Some(OUTPUT_HOOK),
         timer_schedule: Some(timer_schedule_hook::<BackendSchedulerAdapter<T>>()),
         timer_cancel: Some(timer_cancel_hook::<BackendSchedulerAdapter<T>>()),
@@ -823,6 +839,13 @@ fn continue_backend_value(
             &value,
         )?));
     };
+    if frame.handler {
+        return Err(format!(
+            "a value reached the try handler frame of executable {:?} entry {}; the body pops it first",
+            frame.executable.key,
+            frame.entry.as_u32()
+        ));
+    }
     let executable = frame.executable.as_ref();
     let BackendBody::Clauses { entries, .. } = &executable.body else {
         return Err(format!(
@@ -884,7 +907,14 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                                     executable.key
                                 )
                             })?;
-                            return raise_last_resort(runtime, transport, last_resort, &semantic_inputs);
+                            return raise_last_resort(
+                                runtime,
+                                transport,
+                                program,
+                                last_resort,
+                                &semantic_inputs,
+                                continuations,
+                            );
                         }
                     }
                 }
@@ -906,6 +936,7 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                     env.insert(param, value);
                 }
             }
+            let mut continuations = continuations;
             eval_steps(
                 runtime,
                 types,
@@ -916,6 +947,7 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                 &executable,
                 &clause.projections,
                 &mut env,
+                &mut continuations,
             )
             .map_err(|error| {
                 format!(
@@ -1039,7 +1071,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
     entries: &[BackendEntry],
     entry_id: crate::compiler2::ControlEntryId,
     mut env: HashMap<ValueId, BackendBoundValue>,
-    continuations: Vec<BackendContinuation>,
+    mut continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     let entry = entries
         .get(entry_id.as_u32() as usize)
@@ -1054,6 +1086,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
         executable,
         &entry.steps,
         &mut env,
+        &mut continuations,
     )
     .map_err(|error| {
         format!(
@@ -1297,6 +1330,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         executable: executable.clone(),
                         entry: *target,
                         env: capture_backend_continuation_env(transport, entries, *target, &env)?,
+                        handler: false,
                     });
                     continuations
                 }
@@ -1360,7 +1394,14 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 None => match (dispatch.miss_entry, &dispatch.plan.last_resort) {
                     (Some(miss_entry), _) => (miss_entry, Vec::new()),
                     (None, Some(last_resort)) => {
-                        return raise_last_resort(runtime, transport, last_resort, &input_values);
+                        return raise_last_resort(
+                            runtime,
+                            transport,
+                            program,
+                            last_resort,
+                            &input_values,
+                            continuations,
+                        );
                     }
                     (None, None) => {
                         return Err(format!(
@@ -1436,6 +1477,22 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             );
             Ok(BackendEvalTransition::Blocked)
         }
+        BackendTail::Try { body, handler } => {
+            let mut continuations = continuations;
+            continuations.push(BackendContinuation {
+                executable: executable.clone(),
+                entry: *handler,
+                env: capture_backend_continuation_env(transport, entries, *handler, &env)?,
+                handler: true,
+            });
+            unsafe { &mut *runtime.cur_proc() }.push_handler(Handler::Interpreter);
+            Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
+                executable: executable.clone(),
+                entry: *body,
+                env: delivered_env(runtime, transport, program, entries, &env, *body, None, &[])?,
+                continuations,
+            }))
+        }
         BackendTail::Unreachable => Err(format!(
             "internal error: executable {:?} reached entry {}, which analysis proved unreachable",
             executable.key,
@@ -1496,11 +1553,19 @@ fn eval_steps<T: Telemetry + ?Sized>(
     executable: &BackendExecutable,
     steps: &[ProgramStep],
     env: &mut HashMap<ValueId, BackendBoundValue>,
+    continuations: &mut Vec<BackendContinuation>,
 ) -> Result<(), String> {
     for step in steps {
         match step {
             ProgramStep::Omitted { value } => {
                 env.insert(*value, BackendBoundValue::Absent);
+            }
+            ProgramStep::PopHandler => {
+                unsafe { &mut *runtime.cur_proc() }.pop_handler();
+                let frame = continuations
+                    .pop()
+                    .expect("a try body completes under the handler frame it pushed");
+                assert!(frame.handler, "the frame a try body pops is its handler frame");
             }
             ProgramStep::Const { value, literal } => {
                 env.insert(*value, BackendBoundValue::Runtime(literal_value(runtime, literal)?));
@@ -1947,7 +2012,8 @@ fn delivered_env(
     match &entry.origin {
         crate::compiler2::BackendEntryOrigin::Clause
         | crate::compiler2::BackendEntryOrigin::Branch
-        | crate::compiler2::BackendEntryOrigin::ReceiveOutcome => {}
+        | crate::compiler2::BackendEntryOrigin::ReceiveOutcome
+        | crate::compiler2::BackendEntryOrigin::Handler => {}
         crate::compiler2::BackendEntryOrigin::DeliveredResume { value, layout } => {
             let bound = bind_delivered_value(
                 transport,
@@ -2040,6 +2106,7 @@ fn eval_direct_call(
                 executable: caller.clone(),
                 entry: target,
                 env: capture_backend_continuation_env(transport, entries_for_executable(caller)?, target, &env)?,
+                handler: false,
             });
             continuations
         }
@@ -2058,7 +2125,8 @@ fn eval_direct_call(
 }
 
 /// Deliver an extern call's answer to the continuation, unless the call
-/// failed the process, which ends it.
+/// never returned: then the raise it made reaches its handler, or the
+/// process has failed.
 fn continue_after_extern(
     runtime: &mut IrInterpRuntime,
     transport: &TransportStore,
@@ -2068,20 +2136,23 @@ fn continue_after_extern(
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     if let ExternCallValue::ProcessFailed = result {
-        return Ok(BackendEvalTransition::Failed);
+        return after_panic(runtime, transport, program, continuations);
     }
     let value = bind_extern_result(transport, program, runtime.cur_proc(), executable, result)?;
     continue_backend_value(runtime, transport, program, value, continuations)
 }
 
 /// A decision's last resort: raise the plan's exception through the one
-/// panic route, as compiled code does at the same point. A message that shows
-/// the subject reads the plan's first input.
+/// raise route, as compiled code does at the same point, and carry on as after
+/// any raise: into the nearest handler, or the process has failed. A message
+/// that shows the subject reads the plan's first input.
 fn raise_last_resort(
     runtime: &mut IrInterpRuntime,
     transport: &TransportStore,
+    program: &BackendProgram,
     last_resort: &crate::dispatch_matrix::pattern::LastResort,
     inputs: &[Option<BackendBoundValue>],
+    continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     let proc = runtime.cur_proc();
     let message = if last_resort.shows_subject {
@@ -2095,11 +2166,63 @@ fn raise_last_resort(
         last_resort.message.clone()
     };
     let exception = fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(last_resort.exception));
-    fz_runtime::failure::raise(proc, exception, &message);
+    fz_runtime::failure::raise_exception(proc, exception, &message);
     match runtime.take_callback_error() {
         Some(error) => Err(error),
-        None => Ok(BackendEvalTransition::Failed),
+        None => after_panic(runtime, transport, program, continuations),
     }
+}
+
+/// What follows `fz_panic` in the interpreter. A raise that found a handler
+/// left itself on the process; the frames above the handler frame are the
+/// calls the raise unwound, and the handler entry runs with the raise's kind,
+/// value and exception name as its params. With no handler the process has
+/// failed and nothing after it runs.
+fn after_panic(
+    runtime: &mut IrInterpRuntime,
+    transport: &TransportStore,
+    program: &BackendProgram,
+    mut continuations: Vec<BackendContinuation>,
+) -> Result<BackendEvalTransition, String> {
+    let Some(raised) = unsafe { &mut *runtime.cur_proc() }.raised.take() else {
+        return Ok(BackendEvalTransition::Failed);
+    };
+    let frame = loop {
+        let frame = continuations
+            .pop()
+            .expect("a raise delivered to the interpreter has its handler frame");
+        if frame.handler {
+            break frame;
+        }
+    };
+    let executable = frame.executable.as_ref();
+    let BackendBody::Clauses { entries, .. } = &executable.body else {
+        return Err(format!(
+            "backend handler executable {:?} is not clause-backed",
+            frame.executable.key
+        ));
+    };
+    let entry = &entries[frame.entry.as_u32() as usize];
+    let values = [raised.kind, raised.value, raised.name]
+        .into_iter()
+        .map(AnyValue::from_any_value_ref)
+        .collect::<Result<Vec<_>, _>>()?;
+    let params = entry.params.iter().copied().zip(values).collect::<Vec<_>>();
+    Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
+        executable: frame.executable.clone(),
+        entry: frame.entry,
+        env: delivered_env(
+            runtime,
+            transport,
+            program,
+            entries,
+            &frame.env,
+            frame.entry,
+            None,
+            &params,
+        )?,
+        continuations,
+    }))
 }
 
 fn bind_extern_result(

@@ -770,6 +770,10 @@ fn lower_backend_tail(
             dest: receive.dest.clone(),
         })),
         LoweredTail::Unreachable => BackendTail::Unreachable,
+        LoweredTail::Try { body, handler } => BackendTail::Try {
+            body: *body,
+            handler: *handler,
+        },
     })
 }
 
@@ -993,6 +997,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 spec: spec.clone(),
                 is_last: *is_last,
             },
+            LoweredStep::PopHandler => BackendStep::PopHandler,
         })
     }
 
@@ -1075,6 +1080,7 @@ fn lower_entry_origin(executable: &AbiReadyExecutable, entry_index: usize, entry
         ControlEntryOrigin::Clause => BackendEntryOrigin::Clause,
         ControlEntryOrigin::Branch => BackendEntryOrigin::Branch,
         ControlEntryOrigin::ReceiveOutcome => BackendEntryOrigin::ReceiveOutcome,
+        ControlEntryOrigin::Handler => BackendEntryOrigin::Handler,
         ControlEntryOrigin::DeliveredResume { .. } => unreachable!("delivered resumes return before branch fallback"),
     }
 }
@@ -1144,7 +1150,8 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut Hash
             | BackendStep::TupleField { .. }
             | BackendStep::SplitList { .. }
             | BackendStep::BitstringInit { .. }
-            | BackendStep::BitstringRead { .. } => {}
+            | BackendStep::BitstringRead { .. }
+            | BackendStep::PopHandler => {}
         }
     }
 }
@@ -1163,7 +1170,8 @@ fn collect_tail_atoms(world: &mut World, tail: &BackendTail, seen: &mut HashSet<
         | BackendTail::Unreachable
         | BackendTail::DirectCall { .. }
         | BackendTail::ClosureCall { .. }
-        | BackendTail::If { .. } => {}
+        | BackendTail::If { .. }
+        | BackendTail::Try { .. } => {}
     }
 }
 

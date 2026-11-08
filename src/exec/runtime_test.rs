@@ -1,4 +1,4 @@
-//! The scheduling core's sleep telemetry, observed through the real `run` (JIT)
+//! The runtime's sleep and raise telemetry, observed through the real `run` (JIT)
 //! and `interp` doors.
 
 use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
@@ -70,4 +70,116 @@ fn a_message_that_beats_the_timer_cancels_it_so_nothing_sleeps() {
     for door in [Door::Jit, Door::Interp] {
         assert!(sleeps_while_running(CANCELLED_TIMEOUT, door).is_empty());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Raises, observed through the same two doors.
+
+use super::{ExitRecord, ProcessExitCapture};
+use fz_runtime::telemetry::{RAISE, Raise};
+
+/// Runs `source` through `door` and returns every raise the runtime reported
+/// with the main process's exit record.
+fn raises_while_running(source: &str, door: Door) -> (Vec<Raise>, ExitRecord) {
+    let tel = ConfiguredTelemetry::new();
+    let raises = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&raises);
+    tel.attach_raw_event1::<Raise, _>(&RAISE, move |_, _, _, raise| sink.borrow_mut().push(raise.clone()));
+    let exits = ProcessExitCapture::new();
+    exits.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(crate::exec::runtime::DbgCapture::new().sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/raise.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    match door {
+        Door::Jit => compiler.run_root_jit(root).map(|_| ()),
+        Door::Interp => compiler.run_root_interp(root).map(|_| ()),
+    }
+    .unwrap_or_else(|error| panic!("raise fixture should run: {error}"));
+    let main_exit = exits.last().expect("the main process exits");
+    (raises.take(), main_exit)
+}
+
+const NESTED_RESCUE: &str = include_str!("../../fixtures/00821_a_nested_try_rescues_at_the_innermost_handler.fz");
+const RAISING_LOOP: &str =
+    include_str!("../../fixtures/00826_a_loop_that_raises_and_rescues_every_iteration_runs_to_the_end.fz");
+const ALLOCATING_TRY_BODY: &str =
+    include_str!("../../fixtures/00831_a_handler_outlives_the_yields_and_collections_of_its_try_body.fz");
+
+/// A raise under two tries is one event naming its kind, its exception and the
+/// two handlers that could take it, and the exit record counts the delivery.
+fn assert_one_raise_under_two_handlers(door: Door) {
+    let (raises, exit) = raises_while_running(NESTED_RESCUE, door);
+    assert_eq!(
+        raises,
+        vec![Raise {
+            kind: "error".to_string(),
+            exception: "Elixir.ArgumentError".to_string(),
+            handler_depth: 2,
+        }]
+    );
+    assert_eq!(exit.raises_delivered, 1);
+    assert!(!exit.failed);
+}
+
+#[test]
+fn the_jit_reports_a_raise_with_its_handler_depth_and_counts_the_delivery() {
+    assert_one_raise_under_two_handlers(Door::Jit);
+}
+
+#[test]
+fn the_interpreter_reports_a_raise_with_its_handler_depth_and_counts_the_delivery() {
+    assert_one_raise_under_two_handlers(Door::Interp);
+}
+
+/// A loop that raises and rescues on every iteration delivers every raise to
+/// its one handler.
+fn assert_every_iteration_delivers(door: Door) -> ExitRecord {
+    let (raises, exit) = raises_while_running(RAISING_LOOP, door);
+    assert_eq!(raises.len(), 100_000);
+    assert!(raises.iter().all(|raise| raise.handler_depth == 1));
+    assert_eq!(exit.raises_delivered, 100_000);
+    assert!(!exit.failed);
+    exit
+}
+
+/// Compiled code runs a handler in the raising call's place, inside the same
+/// quantum, so the loop's reductions accumulate and the scheduler gets its
+/// turn through the ordinary reduction yield.
+#[test]
+fn the_jit_delivers_every_raise_of_a_rescuing_loop_and_yields() {
+    let exit = assert_every_iteration_delivers(Door::Jit);
+    assert!(exit.reduction_yields >= 1, "the loop yields to the scheduler: {exit:?}");
+}
+
+#[test]
+fn the_interpreter_delivers_every_raise_of_a_rescuing_loop() {
+    assert_every_iteration_delivers(Door::Interp);
+}
+
+/// A try body that spends more than a quantum's reductions and conses past the
+/// collector's threshold yields and is collected with its handler on the stack;
+/// the raise at its end still reaches that handler. Two hundred thousand cons
+/// cells were allocated and almost none are live at the end, so the collector
+/// ran while the handlers were roots.
+#[test]
+fn the_jit_keeps_a_handler_across_the_yields_and_collections_of_its_try_body() {
+    let (raises, exit) = raises_while_running(ALLOCATING_TRY_BODY, Door::Jit);
+    assert_eq!(raises.len(), 100);
+    assert_eq!(exit.raises_delivered, 100);
+    assert!(exit.reduction_yields >= 1, "the body yields inside its try: {exit:?}");
+    assert!(
+        exit.live_count < 1_000,
+        "the collector ran under the handlers: {exit:?}"
+    );
+    assert!(!exit.failed);
 }

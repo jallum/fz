@@ -505,6 +505,7 @@ pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<Gu
         | Expr::Cond(_)
         | Expr::With(_, _, _)
         | Expr::Receive { .. }
+        | Expr::Try { .. }
         | Expr::Match(_, _)
         | Expr::Block(_)
         | Expr::Lambda { .. }

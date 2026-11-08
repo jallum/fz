@@ -1099,7 +1099,8 @@ fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
             | LoweredStep::TupleField { .. }
             | LoweredStep::SplitList { .. }
             | LoweredStep::BitstringInit { .. }
-            | LoweredStep::BitstringRead { .. } => {}
+            | LoweredStep::BitstringRead { .. }
+            | LoweredStep::PopHandler => {}
         }
     }
 }
@@ -1112,6 +1113,7 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
         | LoweredTail::If { .. }
         | LoweredTail::Dispatch { .. }
         | LoweredTail::Receive(_)
+        | LoweredTail::Try { .. }
         | LoweredTail::Unreachable => {}
     }
 }

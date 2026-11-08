@@ -28,6 +28,40 @@ pub const GC: [&str; 3] = ["fz", "runtime", "gc"];
 /// pool census.
 pub const RUN_ENDED: [&str; 3] = ["fz", "runtime", "run_ended"];
 
+/// One per raise, before the runtime decides where it goes; carries the `Raise`.
+pub const RAISE: [&str; 3] = ["fz", "runtime", "raise"];
+
+/// One raise as the runtime saw it: its kind (`error` for `raise`/`panic`),
+/// the exception's name (empty for a value that is not an exception), and how
+/// many handlers were on the stack. Depth zero is an uncaught raise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Raise {
+    pub kind: String,
+    pub exception: String,
+    pub handler_depth: usize,
+}
+
+impl Raise {
+    /// Build the record from the raise hook's borrowed arguments.
+    ///
+    /// # Safety
+    /// `kind`/`name` must point at `kind_len`/`name_len` readable bytes.
+    pub unsafe fn from_hook_args(
+        kind: *const u8,
+        kind_len: usize,
+        name: *const u8,
+        name_len: usize,
+        depth: usize,
+    ) -> Self {
+        let text = |ptr, len| String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(ptr, len) }).into_owned();
+        Self {
+            kind: text(kind, kind_len),
+            exception: text(name, name_len),
+            handler_depth: depth,
+        }
+    }
+}
+
 /// What the block pool holds once a run has torn down every process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunEnded {
@@ -58,6 +92,7 @@ pub enum RuntimeEvent<'a> {
     ProcessExited(&'a Process),
     SchedulerSlept(Duration),
     SendProbe(&'a SendProbe),
+    Raise(&'a Raise),
     Gc(&'a Collection),
     RunEnded(RunEnded),
 }
@@ -69,6 +104,7 @@ impl RuntimeEvent<'_> {
             RuntimeEvent::ProcessExited(_) => &PROCESS_EXITED,
             RuntimeEvent::SchedulerSlept(_) => &SCHEDULER_SLEPT,
             RuntimeEvent::SendProbe(_) => &SEND_PROBE,
+            RuntimeEvent::Raise(_) => &RAISE,
             RuntimeEvent::Gc(_) => &GC,
             RuntimeEvent::RunEnded(_) => &RUN_ENDED,
         }
@@ -114,6 +150,14 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
             )
             .unwrap();
         }
+        RuntimeEvent::Raise(raise) => {
+            write!(
+                out,
+                "\"kind\":\"{}\",\"exception\":\"{}\",\"handler_depth\":{}",
+                raise.kind, raise.exception, raise.handler_depth
+            )
+            .unwrap();
+        }
         RuntimeEvent::Gc(collection) => {
             let stats = &collection.stats;
             write!(
@@ -145,13 +189,15 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
 fn write_process_exited(out: &mut String, process: &Process) {
     write!(
         out,
-        "\"pid\":{},\"process\":{{\"opaque_type\":\"{}\",\"live_count\":{},\"bytes_used\":{},\"list_retention_attempts\":{},\"list_retention_hits\":{},\"dtors_dispatched\":{},\"halt_value\":{},\"failed\":{}}}",
+        "\"pid\":{},\"process\":{{\"opaque_type\":\"{}\",\"live_count\":{},\"bytes_used\":{},\"list_retention_attempts\":{},\"list_retention_hits\":{},\"raises_delivered\":{},\"reduction_yields\":{},\"dtors_dispatched\":{},\"halt_value\":{},\"failed\":{}}}",
         process.pid,
         std::any::type_name::<Process>(),
         process.heap.live_count(),
         process.heap.bytes_used(),
         process.list_retention_attempts,
         process.list_retention_hits,
+        process.raises_delivered,
+        process.reduction_yields,
         process.dtors_dispatched,
         process.halt_value,
         process.failed

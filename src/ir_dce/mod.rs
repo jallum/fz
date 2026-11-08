@@ -79,6 +79,11 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
+        Term::Try { captures, .. } => {
+            for v in captures {
+                used.insert(*v);
+            }
+        }
         Term::Return(a) => {
             used.insert(*a);
         }

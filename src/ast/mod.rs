@@ -292,6 +292,14 @@ pub enum Expr {
         clauses: Vec<MatchClause>,
         after: Option<Box<AfterClause>>,
     },
+    /// `try do … rescue … end`. The body runs under a handler; a raise in it
+    /// reaches the first rescue clause that takes the exception, and the
+    /// clause's value is the value of the whole expression. A raise no clause
+    /// takes continues outward unchanged.
+    Try {
+        body: Box<Spanned<Expr>>,
+        rescue: Vec<RescueClause>,
+    },
 
     // bindings
     // pattern = expr (rebinds names; immutable, just shadows)
@@ -392,6 +400,20 @@ pub struct AfterClause {
     pub body: Spanned<Expr>,
     /// Span of the full `after <expr> -> <body>` clause; threaded into
     /// `ReceiveAfter.span` for diagnostics.
+    pub span: Span,
+}
+
+/// One `rescue` clause, in one of the five head shapes Elixir admits:
+/// `e`, `Alias`, `[A, B]`, `e in Alias`, `e in [A, B]`.
+#[derive(Debug, Clone)]
+pub struct RescueClause {
+    /// The variable the exception is bound to, when the head names one.
+    pub binding: Option<Var>,
+    /// The exceptions the clause takes, by module name. Empty takes every
+    /// exception, the way a bare variable does.
+    pub exceptions: Vec<ModuleName>,
+    pub body: Spanned<Expr>,
+    /// Span of the whole clause: `head -> body`.
     pub span: Span,
 }
 

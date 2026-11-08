@@ -410,9 +410,10 @@ handlers that produce a closure. There is no separate "pending resume" vs.
 "parked continuation" concept and no side-band argument slab: a resume never
 passes arguments into a helper, because the closure already carries its own state.
 The roots the boundary GC traces are the `runnable` closure, the park record's
-clause bodies, after body and pinned values, the `mailbox`, and the caller's
-transient values, all gathered by `Process::collect`; the process `heap` is the
-arena being collected, not a root.
+clause bodies, after body and pinned values, the handlers of the `try` bodies
+the process is inside (see [exceptions](exceptions.md)), the `mailbox`, and the
+caller's transient values, all gathered by `Process::collect`; the process
+`heap` is the arena being collected, not a root.
 
 ## Proof Gates
 

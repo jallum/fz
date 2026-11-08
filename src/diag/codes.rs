@@ -18,6 +18,10 @@ pub const PARSE_BITSTRING_BAD_MODIFIER: DiagCode = DiagCode("parse/bitstring-bad
 pub const PARSE_BITSTRING_BAD_SIZE: DiagCode = DiagCode("parse/bitstring-bad-size");
 pub const PARSE_CONCAT_PATTERN_OPERAND: DiagCode = DiagCode("parse/concat-pattern-operand");
 pub const PARSE_COMPREHENSION: DiagCode = DiagCode("parse/comprehension");
+/// A `try` whose sections or rescue heads Elixir would reject, with Elixir's text.
+pub const PARSE_INVALID_TRY: DiagCode = DiagCode("parse/invalid-try");
+/// A form fz parses but does not yet support.
+pub const PARSE_UNSUPPORTED: DiagCode = DiagCode("parse/unsupported");
 
 // ----- resolver -----
 

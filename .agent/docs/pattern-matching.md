@@ -334,7 +334,7 @@ readings of "did this input arrive" cannot disagree quietly.
 
 Each of these plans carries the exception it raises
 (`PatternDispatchPlan::last_resort`); see
-[process failure](process-failure.md) for the table of what each prints.
+[exceptions](exceptions.md) for the table of what each prints.
 - `receive` builds one subject for the candidate message. The receive term
   stores an `Arc<PatternDispatchPlan>`; the interpreter and native receive probe
   both run that cached plan against mailbox messages.

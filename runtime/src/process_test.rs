@@ -1,4 +1,4 @@
-use super::{Disposition, Node, Process, ProcessState, YIELD_REASON_REDUCTIONS};
+use super::{ClosureRef, Disposition, Handler, Node, Process, ProcessState, YIELD_REASON_REDUCTIONS};
 use crate::any_value::{
     AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ValueKind, closure_addr_from_tagged, closure_capture_set,
     closure_capture_value, list_addr_from_tagged,
@@ -168,6 +168,49 @@ fn collect_forwards_every_root_a_parked_process_holds() {
         "the moved pinned value still matches"
     );
     assert_eq!(stats.root_heap_edges, 6);
+}
+
+#[test]
+fn handlers_pop_innermost_first() {
+    let mut process = Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
+    let capture = int_list(&mut process.heap, 1);
+    let outer = ClosureRef::new(closure_capturing(&mut process, capture));
+    process.push_handler(Handler::Closure(outer));
+    process.push_handler(Handler::Interpreter);
+
+    assert_eq!(process.handlers.len(), 2);
+    assert_eq!(process.pop_handler(), Handler::Interpreter);
+    assert_eq!(process.pop_handler(), Handler::Closure(outer));
+    assert!(process.handlers.is_empty());
+}
+
+#[test]
+#[should_panic(expected = "a try body completes under the handler it pushed")]
+fn popping_without_a_handler_is_a_compiler_defect() {
+    let mut process = Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
+    process.pop_handler();
+}
+
+/// A compiled handler is a root: a collection while a `try` body runs moves
+/// its template and what it captures, and the interpreter's marker frame
+/// holds nothing to move.
+#[test]
+fn collect_forwards_every_compiled_handler_on_the_stack() {
+    let mut process = Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
+    let capture = int_list(&mut process.heap, 11);
+    let handler = closure_capturing(&mut process, capture);
+    process.push_handler(Handler::Closure(ClosureRef::new(handler)));
+    process.push_handler(Handler::Interpreter);
+
+    let stats = process.collect(&mut []);
+
+    let Handler::Closure(moved) = process.handlers[0] else {
+        panic!("the closure handler keeps its place under the interpreter marker");
+    };
+    assert_ne!(moved.as_ref(), handler, "the handler template moved");
+    assert_eq!(list_head(captured_list(moved.as_ref())), 11);
+    assert_eq!(process.handlers[1], Handler::Interpreter);
+    assert_eq!(stats.root_heap_edges, 1, "the handler template is the only root");
 }
 
 /// A receive with no `after` has a null after body and a running process has

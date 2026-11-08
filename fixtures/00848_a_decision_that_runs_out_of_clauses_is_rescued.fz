@@ -1,0 +1,57 @@
+#---
+# purpose: "a decision that runs out of clauses raises its Elixir exception, and a rescue around it catches it like any raise and lets the program continue"
+# oracle: 00848_a_decision_that_runs_out_of_clauses_is_rescued.oracle.exs
+#---
+defmodule Shapes do
+  def sides(:triangle), do: 3
+  def sides(:square), do: 4
+end
+
+defp two(), do: 2
+defp pair(), do: {1, 2}
+defp bad(), do: {:bad, 1}
+
+def main() do
+  try do
+    case two() do
+      1 -> :one
+      3 -> :three
+    end
+  rescue
+    e in [CaseClauseError, MatchError, FunctionClauseError, CondClauseError, WithClauseError] -> dbg(e.__struct__)
+  end
+  dbg(:after_case)
+  try do
+    {a} = pair()
+    dbg(a)
+  rescue
+    e in [CaseClauseError, MatchError, FunctionClauseError, CondClauseError, WithClauseError] -> dbg(e.__struct__)
+  end
+  dbg(:after_match)
+  try do
+    dbg(Shapes.sides(:circle))
+  rescue
+    e in [CaseClauseError, MatchError, FunctionClauseError, CondClauseError, WithClauseError] -> dbg(e.__struct__)
+  end
+  dbg(:after_function)
+  try do
+    x = two()
+    cond do
+      x == 1 -> :one
+      x > 5 -> :many
+    end
+  rescue
+    e in [CaseClauseError, MatchError, FunctionClauseError, CondClauseError, WithClauseError] -> dbg(e.__struct__)
+  end
+  dbg(:after_cond)
+  try do
+    with {:ok, v} <- bad() do
+      v
+    else
+      :error -> :e
+    end
+  rescue
+    e in [CaseClauseError, MatchError, FunctionClauseError, CondClauseError, WithClauseError] -> dbg(e.__struct__)
+  end
+  dbg(:after_with)
+end

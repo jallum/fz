@@ -1,0 +1,14 @@
+#---
+# purpose: "once a try has completed its handler is gone: a later raise reaches no handler, prints its line, and exits 1"
+# expect: abort
+# oracle: 00822_an_uncaught_raise_after_a_completed_try_fails_the_process.oracle.exs
+#---
+def main() do
+  result = try do
+    raise ArgumentError, "caught"
+  rescue
+    e in ArgumentError -> e.message
+  end
+  dbg(result)
+  raise ArgumentError, "uncaught"
+end

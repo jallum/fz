@@ -1,9 +1,14 @@
 use super::*;
-use crate::any_value::{AnyValueRef, ValueKind, map_addr_from_tagged};
+use crate::any_value::{
+    AnyValueRef, ClosureDenotationId, ValueKind, closure_addr_from_tagged, closure_capture_set, closure_capture_value,
+    map_addr_from_tagged,
+};
 use crate::exec_ctx::ExecCtx;
 use crate::heap::SchemaRegistry;
+use crate::process::ClosureRef;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::slice;
 
 fn with_process<R>(f: impl FnOnce(&mut Process) -> R) -> R {
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
@@ -105,6 +110,189 @@ fn a_panic_hands_its_line_to_the_fault_sink_marks_the_process_failed_and_returns
     });
 }
 
+/// A handler template: `[outer_cont]` with the outer continuation standing in
+/// as `nil`, the shape codegen builds before `fz_try_push`.
+fn handler_template(process: &mut Process) -> ClosureRef {
+    let closure = closure_addr_from_tagged(process.heap.alloc_closure_slots(ClosureDenotationId::INTERNAL, 0, 1, 0))
+        .expect("a closure");
+    unsafe { closure_capture_set(closure, 0, AnyValue::nil_atom()) };
+    ClosureRef::new(AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure).expect("a closure ref"))
+}
+
+fn capture(closure: *mut u8, index: usize) -> AnyValue {
+    unsafe { closure_capture_value(closure, index) }
+}
+
+#[derive(Default)]
+struct Observed {
+    lines: Vec<String>,
+    raises: Vec<(String, String, usize)>,
+}
+
+unsafe extern "C" fn observing_sink(context: *mut (), line: *const u8, len: usize) {
+    let observed = unsafe { &mut *(context as *mut Observed) };
+    let line = unsafe { slice::from_raw_parts(line, len) };
+    observed.lines.push(String::from_utf8_lossy(line).into_owned());
+}
+
+unsafe extern "C" fn observing_raise(
+    context: *mut (),
+    kind: *const u8,
+    kind_len: usize,
+    name: *const u8,
+    name_len: usize,
+    depth: usize,
+) {
+    let observed = unsafe { &mut *(context as *mut Observed) };
+    let text = |ptr, len| String::from_utf8_lossy(unsafe { slice::from_raw_parts(ptr, len) }).into_owned();
+    observed
+        .raises
+        .push((text(kind, kind_len), text(name, name_len), depth));
+}
+
+fn with_observed_process<R>(f: impl FnOnce(&mut Process, &mut Observed) -> R) -> R {
+    with_process(|process| {
+        let mut observed = Observed::default();
+        let mut ctx = ExecCtx {
+            scheduler: &mut observed as *mut Observed as *mut (),
+            fault: Some(observing_sink),
+            raise: Some(observing_raise),
+            ..ExecCtx::empty()
+        };
+        process.ctx = &mut ctx;
+        f(process, &mut observed)
+    })
+}
+
+#[test]
+fn a_panic_under_a_compiled_handler_makes_the_handler_runnable_with_kind_value_and_name() {
+    with_observed_process(|process, observed| {
+        let template = handler_template(process);
+        process.push_handler(Handler::Closure(template));
+        let value = exception(process, "Elixir.RuntimeError", "boom");
+
+        fz_panic(process, value.ref_word().raw_word());
+
+        assert!(!process.failed, "a caught raise is not a failure");
+        assert!(
+            process.handlers.is_empty(),
+            "the handler is consumed by the raise it catches"
+        );
+        assert_eq!(process.raises_delivered, 1);
+        assert!(observed.lines.is_empty(), "nothing is printed for a caught raise");
+        let handler = process
+            .runnable_closure()
+            .expect("the handler is what runs next")
+            .closure_addr()
+            .expect("a closure ref");
+        assert_ne!(
+            handler,
+            template.as_ref().closure_addr().expect("a closure ref"),
+            "the template itself is untouched"
+        );
+        assert_eq!(
+            capture(handler, 0),
+            AnyValue::nil_atom(),
+            "the outer continuation comes first"
+        );
+        assert_eq!(capture(handler, 1), atom(process, "error"));
+        assert_eq!(capture(handler, 2), value);
+        assert_eq!(capture(handler, 3), atom(process, "Elixir.RuntimeError"));
+        assert_eq!(
+            observed.raises,
+            [("error".to_string(), "Elixir.RuntimeError".to_string(), 1)]
+        );
+    });
+}
+
+#[test]
+fn a_panic_under_an_interpreter_handler_leaves_the_raise_for_the_interpreter_to_read() {
+    with_observed_process(|process, observed| {
+        process.push_handler(Handler::Interpreter);
+        let value = atom(process, "boom");
+        let value_ref = process.heap.box_any_value_ref(value);
+
+        fz_panic(process, value_ref.raw_word());
+
+        assert!(!process.failed);
+        assert!(process.handlers.is_empty());
+        assert!(
+            process.runnable_closure().is_none(),
+            "the interpreter owns its own frames"
+        );
+        let raised = process.raised.expect("the raise waits in the process");
+        assert_eq!(AnyValue::from_ref(raised.kind).expect("kind"), atom(process, "error"));
+        assert_eq!(AnyValue::from_ref(raised.value).expect("value"), value);
+        assert_eq!(
+            AnyValue::from_ref(raised.name).expect("name"),
+            AnyValue::nil_atom(),
+            "a value that is not an exception has no name"
+        );
+        assert_eq!(process.raises_delivered, 1);
+        assert_eq!(observed.raises, [("error".to_string(), String::new(), 1)]);
+    });
+}
+
+#[test]
+fn a_panic_reaches_the_innermost_handler_and_leaves_the_outer_one_in_place() {
+    with_observed_process(|process, observed| {
+        let outer = handler_template(process);
+        process.push_handler(Handler::Closure(outer));
+        process.push_handler(Handler::Interpreter);
+        let value = exception(process, "Elixir.KeyError", "key :a not found");
+
+        fz_panic(process, value.ref_word().raw_word());
+
+        assert_eq!(process.handlers, [Handler::Closure(outer)]);
+        assert!(
+            process.raised.is_some(),
+            "the interpreter marker, innermost, took the raise"
+        );
+        assert_eq!(
+            observed.raises,
+            [("error".to_string(), "Elixir.KeyError".to_string(), 2)]
+        );
+    });
+}
+
+#[test]
+fn a_panic_without_a_handler_is_reported_at_depth_zero_and_still_fails_the_process() {
+    with_observed_process(|process, observed| {
+        let value = exception(process, "Elixir.RuntimeError", "boom");
+
+        fz_panic(process, value.ref_word().raw_word());
+
+        assert!(process.failed);
+        assert_eq!(process.raises_delivered, 0);
+        assert_eq!(observed.lines, ["** (RuntimeError) boom"]);
+        assert_eq!(
+            observed.raises,
+            [("error".to_string(), "Elixir.RuntimeError".to_string(), 0)]
+        );
+    });
+}
+
+#[test]
+fn a_panic_reports_nothing_when_the_context_does_not_observe_raises() {
+    with_process(|process| {
+        let mut lines: Vec<String> = Vec::new();
+        let mut ctx = ExecCtx {
+            scheduler: &mut lines as *mut Vec<String> as *mut (),
+            fault: Some(recording_sink),
+            ..ExecCtx::empty()
+        };
+        process.ctx = &mut ctx;
+        process.push_handler(Handler::Interpreter);
+        let value = atom(process, "boom");
+        let value_ref = process.heap.box_any_value_ref(value);
+
+        fz_panic(process, value_ref.raw_word());
+
+        assert!(process.raised.is_some());
+        assert!(lines.is_empty());
+    });
+}
+
 /// Runs `f` on a process whose fault sink records lines; answers the lines
 /// and whether the process failed.
 fn recording(f: impl FnOnce(&mut Process)) -> (Vec<String>, bool) {
@@ -126,7 +314,7 @@ fn recording(f: impl FnOnce(&mut Process)) -> (Vec<String>, bool) {
 fn a_raise_panics_with_the_exception_elixir_raises() {
     let (lines, failed) = recording(|process| {
         let name = atom(process, "Elixir.CondClauseError");
-        raise(process, name, "no cond clause evaluated to a truthy value");
+        raise_exception(process, name, "no cond clause evaluated to a truthy value");
     });
     assert!(failed, "a raise fails the process through the panic route");
     assert_eq!(

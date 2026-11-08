@@ -65,6 +65,8 @@ pub(super) enum ExternCallValue {
     Pair([AnyValue; 2]),
     /// A `never` extern returned having failed the current process, as
     /// `fz_panic` does: the process ends here.
+    /// A `never`-returning extern came back: the process failed, or a raise
+    /// is waiting for the interpreter's handler frame.
     ProcessFailed,
 }
 
@@ -123,7 +125,7 @@ pub(super) fn call_lowered_extern(
         return Err(error);
     }
     match result? {
-        ExternCallValue::ProcessFailed if !unsafe { &*runtime.cur_proc() }.failed => {
+        ExternCallValue::ProcessFailed if !unsafe { &*runtime.cur_proc() }.diverged() => {
             Err(format!("extern `{}` declared Never returned", signature.symbol))
         }
         value => Ok(value),

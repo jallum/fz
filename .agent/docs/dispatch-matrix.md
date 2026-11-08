@@ -1189,9 +1189,11 @@ plan with no last resort belongs to a construct that handles the miss itself:
 a `with` binding (its `else` takes the value, or without one the `with` yields
 it), a guard, `receive`. Native lowering of a reached
 fail emits `Term::Raise`, which calls `fz_raise` or `fz_raise_showing`; the
-interpreter calls `failure::raise`. The process prints Elixir's line for that
-exception and ends; drivers read `Process.failed`, never `halt_value`. See
-[process failure](process-failure.md).
+interpreter's `raise_last_resort` calls `failure::raise_exception` and then
+`after_panic`. The raise goes to the nearest handler, so a `rescue` around the
+decision catches it like any raise; with no handler the process prints Elixir's
+line for that exception and ends, and drivers read `Process.failed`, never
+`halt_value`. See [exceptions](exceptions.md).
 
 A plan also records the tuple arity every outcome proves each input to have
 (`PatternDispatchPlan::proven_tuple_arity`), read from the graph as built so a
