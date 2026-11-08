@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-sc8.61"
+    "fz-sc8.61",
+    "fz-sc8.84"
   ],
   "blocks": [
     "fz-sc8.62"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "The library raises Elixir's exceptions by name",
   "type": "task",
-  "updated_at": "2026-11-03T13:40:18Z"
+  "updated_at": "2026-11-08T03:20:31Z"
 }
