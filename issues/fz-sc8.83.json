@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T03:00:54Z",
+  "description": "runtime/src/extern_binary.rs:29 panic_arg prints with eprintln and aborts the whole program. Since fz-sc8.61 there is one failure route: fz_panic renders the line, marks the process failed and hands the line to the fault sink, and the process ends while others carry on. An extern argument of the wrong kind is a contract violation and should fail the same way (an ArgumentError or an internal error through the sink), not abort the program. Fold panic_arg into the one route and delete it; the fz-sc8.61 removal ledger is otherwise complete.",
+  "id": "fz-sc8.83",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "panic_arg in extern_binary.rs is a second failure route; fold it into fz_panic",
+  "type": "task",
+  "updated_at": "2026-11-08T03:00:54Z"
+}
