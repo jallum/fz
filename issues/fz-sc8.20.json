@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
+    "fz-sc8.17",
     "fz-sc8.19",
     "fz-sc8.26"
   ],
@@ -14,5 +15,5 @@
   "status": "in_progress",
   "title": "p1 = p2 in a pattern matches both",
   "type": "bug",
-  "updated_at": "2026-11-08T19:05:25Z"
+  "updated_at": "2026-11-08T19:05:40Z"
 }

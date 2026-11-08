@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-sc8.12"
+    "fz-sc8.12",
+    "fz-sc8.20"
   ],
   "blocks": [
     "fz-sc8.19"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "for comprehensions: pattern generators, filters, into:, reduce:",
   "type": "feature",
-  "updated_at": "2026-10-17T19:19:58Z"
+  "updated_at": "2026-11-08T19:05:40Z"
 }
