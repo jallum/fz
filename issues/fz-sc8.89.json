@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.18"
+  ],
   "blocks": [],
   "created": "2026-11-08T13:06:20Z",
   "description": "File.read/1 (lib/file.fz read_bytes/read_byte) crosses the extern door once per byte with libc::fgetc and appends each byte with \u003c\u003e, so a 137 KB file costs 137,000 extern calls and quadratic copying. fz-sc8.18 adds one runtime helper, fz_file_read_line(c_pointer) :: any, that reads a line in one call. Fold File.read onto a sibling whole-file read in the same runtime module (or onto the line helper), delete read_bytes/read_byte, keep every File fixture green on all three paths.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "File.read reads through the line helper instead of one extern call per byte",
   "type": "task",
-  "updated_at": "2026-11-08T13:06:20Z"
+  "updated_at": "2026-11-08T13:07:33Z"
 }
