@@ -4,7 +4,8 @@
     "fz-3ul.3",
     "fz-3ul.4",
     "fz-3ul.7",
-    "fz-3ul.8"
+    "fz-3ul.8",
+    "fz-3ul.9"
   ],
   "blocks": [],
   "created": "2026-11-08T00:15:24Z",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "__STACKTRACE__ is an empty list in rescue and catch, and the exceptions docs are complete",
   "type": "task",
-  "updated_at": "2026-11-08T05:50:53Z"
+  "updated_at": "2026-11-08T06:24:07Z"
 }
