@@ -7,7 +7,7 @@
     "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:43Z",
-  "description": "No MapSet. defstruct exists (lib/range.fz:26); Enumerable impls in lib/enumerable.fz. Used at distill lines 104, 115 (`in` desugars to Enum.member?).",
+  "description": "No MapSet. defstruct exists (lib/range.fz:26); Enumerable impls in lib/enumerable.fz. Used at distill lines 104, 115 (`in` desugars to Enum.member?).; Proposal page /Users/j5n/Workspace/fz-sc8.15.html (2026-11-08, awaiting approval): lib/map_set.fz, struct with one field map (members as keys, [] values, as Elixir); new/0, new/1, put/2, delete/2, member?/2, size/1, to_list/1; Enumerable impl over to_list and Collectable impl via put, beside the struct like Range; registry + alias. Rest of the API (union, intersection, difference, subset?, equal?, ...) proposed as one P3 ticket. Fixtures print Enum.sort(MapSet.to_list(set)). Lands above .17; predicted frontier after: the first unresolved callee past line 115.",
   "id": "fz-sc8.15",
   "labels": [],
   "parent": "fz-sc8",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "MapSet: new/0,1, member?, Enumerable and Collectable",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:46Z"
+  "updated_at": "2026-11-08T23:48:08Z"
 }
