@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T00:15:24Z",
+  "description": "Plan: /Users/j5n/Workspace/fz-exceptions.html, open decision resolved: __STACKTRACE__ evaluates to [] inside rescue and catch clauses and is a compile error elsewhere, with Elixir's own text (\"__STACKTRACE__ is available only inside catch and rescue clauses of try expressions\").\n\nBuild: the special form in body.rs; the compile-error diagnostic; the documented difference in the charlists doc's \"where fz differs from Elixir\" list (rename or relocate that list if it has outgrown charlists); a final sweep of .agent/docs (docs.md index, process-failure -\u003e exceptions, fixtures.md, dispatch-matrix.md if the handler dispatch touched it) and any guide that mentions failure or panic; the PR description.\n\nAcceptance:\n- fixture: __STACKTRACE__ in a rescue is []; passing it to reraise/2 works.\n- expected.diagnostics fixture: __STACKTRACE__ outside try is the compile error.\n- every doc claim in the exceptions doc is checked against the code at the commit; no stale reference to the pre-handler failure route remains (grep for \"render, mark failed\" style text, Process.exit_fault, halt atoms).\n- gate green as in the epic.",
+  "id": "fz-3ul.5",
+  "labels": [],
+  "parent": "fz-3ul",
+  "priority": 2,
+  "status": "open",
+  "title": "__STACKTRACE__ is an empty list in rescue and catch, and the exceptions docs are complete",
+  "type": "task",
+  "updated_at": "2026-11-08T00:15:24Z"
+}
