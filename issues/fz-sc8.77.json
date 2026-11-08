@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-3ul.4"
+  ],
   "created": "2026-11-07T22:33:57Z",
   "description": "Found while building fz-sc8.72. A fz struct carries no __struct__ at runtime: `dbg(%Pt{x: 1})` prints {1}, `Map.keys(p)` panics with :badmap, and `p.__struct__` panics the host on interp with \"schema Pt has no field named __struct__\" instead of a diagnostic or a value. In Elixir a struct is a map with __struct__ bound to the module's atom (Elixir.Pt, which since fz-sc8.72 is a value), dbg prints %Pt{x: 1}, Map.keys lists :__struct__ and :x, and p.__struct__ is Pt.\n\nSettle how the struct schema and the one-word map model (.agent/docs/any-value.md) represent the module atom without a second identity (the schema already knows its module), and give the renderer the %Name{} form through render_atom's alias spelling. The exception shape in fz-sc8.61 is a plain map with __struct__ and converges on this. Deviation from Elixir; not needed by the distiller.",
   "id": "fz-sc8.77",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A struct carries __struct__ and prints as %Name{...}",
   "type": "bug",
-  "updated_at": "2026-11-07T22:33:57Z"
+  "updated_at": "2026-11-08T00:15:25Z"
 }
