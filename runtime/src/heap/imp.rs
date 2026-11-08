@@ -2,8 +2,8 @@
 
 use super::block_pool::{Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pool_alloc, round_up_16};
 use super::gc::{
-    CopiedObject, cheney_forward_strict_bits, cheney_trace_closure, cheney_trace_list, cheney_trace_map,
-    cheney_trace_resource, cheney_trace_struct, forward_any_value_ref_root,
+    CopiedObject, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
+    cheney_trace_struct, forward_any_value_ref_root,
 };
 use super::ref_io::{
     any_value_ref_from_storage, list_tail_bits_from_ref, map_entry_refs, ptr_in_ranges, reject_scalar_ref_write,
@@ -27,7 +27,7 @@ use crate::term::{NumericMode, TermComparator};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::mem::size_of;
-use std::ptr::{copy_nonoverlapping, null_mut, read, write, write_bytes};
+use std::ptr::{copy_nonoverlapping, read, write, write_bytes};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
 
@@ -967,39 +967,6 @@ impl Heap {
         unsafe { self.block_end.offset_from(self.bump_top) as usize }
     }
 
-    /// Park-time Cheney GC (§6.4). The caller passes a primary closure root
-    /// by mutable pointer; on return it is updated to the to-space copy (or
-    /// left null on entry — nothing to trace, just recycle blocks).
-    ///
-    /// Algorithm: standard Cheney two-finger BFS. Allocate a to-space block
-    /// at the chosen capacity (§6.3 / §6.5 picker), copy the root, then
-    /// scan to-space objects breadth-first, forwarding each from-space
-    /// child pointer to its newly-copied address. Off-heap pointers
-    /// (static-closure / halt-cont singletons) are detected by an
-    /// in-from-space range check and left untouched.
-    pub fn gc(&mut self, root_slot: &mut *mut u8) -> GcStats {
-        self.gc_with_extra_root_slots(root_slot, &mut [])
-    }
-
-    /// Cheney GC with an optional slice of extra typed roots. Each element is
-    /// forwarded in-place.
-    pub fn gc_with_extra_root_slots(&mut self, root_slot: &mut *mut u8, extra_roots: &mut [AnyValue]) -> GcStats {
-        self.gc_with_extra_roots(root_slot, extra_roots, &mut [])
-    }
-
-    pub fn gc_with_any_value_ref_roots(&mut self, root_slot: &mut *mut u8, ref_roots: &mut [AnyValueRef]) -> GcStats {
-        self.gc_with_extra_roots(root_slot, &mut [], ref_roots)
-    }
-
-    pub fn gc_with_value_and_any_value_ref_roots(
-        &mut self,
-        root_slot: &mut *mut u8,
-        extra_roots: &mut [AnyValue],
-        ref_roots: &mut [AnyValueRef],
-    ) -> GcStats {
-        self.gc_with_extra_roots(root_slot, extra_roots, ref_roots)
-    }
-
     /// The capacity of the next to-space.
     ///
     /// To-space holds at least the bytes a collection can copy: the sizing
@@ -1047,12 +1014,25 @@ impl Heap {
         }
     }
 
-    fn gc_with_extra_roots(
-        &mut self,
-        root_slot: &mut *mut u8,
-        extra_roots: &mut [AnyValue],
-        ref_roots: &mut [AnyValueRef],
-    ) -> GcStats {
+    /// The one collection entry: a Cheney two-finger copy of everything
+    /// `roots` reaches into a fresh to-space block, after which the old
+    /// blocks are released.
+    ///
+    /// Every slot of `roots` holds its forwarded value on return. A slot
+    /// that is not a pointer into this heap's from-space (a scalar immediate,
+    /// the empty list, a static closure or halt-continuation singleton) is
+    /// left as it was; a scalar box in from-space is copied without tracing
+    /// its payload.
+    ///
+    /// The caller passes every reference it holds into this heap. For a
+    /// `Process` that is `Process::collect`, which assembles the runnable
+    /// closure, the park record, the mailbox and the caller's transient
+    /// values into one slice. Gifts still waiting in a delivery in-queue are
+    /// not roots: their blocks join the from-space only when grafted, and
+    /// every reference inside a gift points into its own segment.
+    ///
+    /// The heap must not have a gift window open.
+    pub fn collect(&mut self, roots: &mut [AnyValueRef]) -> GcStats {
         assert!(
             self.gift.is_none(),
             "a gift window is open; the heap collects only between end_gift and the next begin_gift"
@@ -1075,46 +1055,7 @@ impl Heap {
             ..GcStats::default()
         };
 
-        if !root_slot.is_null() {
-            stats.root_heap_edges += 1;
-            let root_bits = *root_slot as u64;
-            if let Some(new_root) = cheney_forward_strict_bits(
-                root_bits,
-                &from_ranges,
-                &mut free,
-                to_end,
-                &self.schemas.borrow(),
-                &mut copied_objects,
-                &mut stats,
-            ) {
-                *root_slot = new_root as *mut u8;
-            }
-        }
-
-        // Forward extra roots (mid-flight args, mailbox items).
-        for value in extra_roots.iter_mut() {
-            if !value.kind().is_heap() || value.raw() == 0 {
-                stats.root_scalar_slots += 1;
-                continue;
-            }
-            stats.root_heap_edges += 1;
-            let bits = value
-                .heap_object_word()
-                .expect("heap root should encode as tagged bits");
-            if let Some(new_bits) = cheney_forward_strict_bits(
-                bits,
-                &from_ranges,
-                &mut free,
-                to_end,
-                &self.schemas.borrow(),
-                &mut copied_objects,
-                &mut stats,
-            ) {
-                *value = AnyValue::heap_ptr((new_bits & !TAG_MASK) as *mut u8, value.kind());
-            }
-        }
-
-        for value in ref_roots.iter_mut() {
+        for value in roots.iter_mut() {
             forward_any_value_ref_root(
                 value,
                 &from_ranges,
@@ -1183,7 +1124,7 @@ impl Heap {
         }
         drop(schemas);
 
-        // fz-q8d.1 — MSO sweep walks the intrusive chain. Survivors get
+        // MSO sweep walks the intrusive chain. Survivors get
         // rewritten to their to-space copies; dead entries release their
         // SharedBin reference. Must run before `pool_free` below because
         // it dereferences from-space ProcBins (specifically their
@@ -1212,53 +1153,6 @@ impl Heap {
         self.last_gc_stats = stats;
         stats
     }
-
-    /// Cheney with a scheduler-owned primary closure root plus persistent
-    /// process roots. This is the closure-shaped mid-flight path: the
-    /// continuation closure captures the live loop state, while mailbox
-    /// entries remain process-owned roots until consumed.
-    pub fn gc_process_roots(&mut self, primary_root: &mut *mut u8, mailbox: &mut VecDeque<AnyValueRef>) -> GcStats {
-        let mut primary_root_bits = if primary_root.is_null() {
-            null_mut()
-        } else {
-            heap_object_word(*primary_root as *const u8, ValueKind::CLOSURE) as *mut u8
-        };
-        let mut mb_roots: Vec<AnyValueRef> = mailbox.drain(..).collect();
-        let stats = self.gc_with_extra_roots(&mut primary_root_bits, &mut [], &mut mb_roots);
-
-        *primary_root = if primary_root_bits.is_null() {
-            null_mut()
-        } else {
-            closure_addr_from_tagged(primary_root_bits as u64).expect("forwarded process closure root")
-        };
-        for v in mb_roots {
-            mailbox.push_back(v);
-        }
-        stats
-    }
-
-    /// Cheney with interpreter-owned typed roots plus persistent process roots.
-    /// The interpreter has no parked continuation closure while it is
-    /// synchronously executing a tail-recursive loop, so its current argument
-    /// vector is the root set.
-    pub fn gc_any_value_roots_with_process_roots(
-        &mut self,
-        roots: &mut [AnyValue],
-        mailbox: &mut VecDeque<AnyValueRef>,
-    ) -> GcStats {
-        let mut null_root: *mut u8 = null_mut();
-        let mut mb_roots: Vec<AnyValueRef> = mailbox.drain(..).collect();
-        let mut all_extras: Vec<AnyValue> = roots.to_vec();
-
-        let stats = self.gc_with_extra_roots(&mut null_root, &mut all_extras, &mut mb_roots);
-
-        let roots_end = roots.len();
-        roots.copy_from_slice(&all_extras[..roots_end]);
-        for v in mb_roots {
-            mailbox.push_back(v);
-        }
-        stats
-    }
 }
 
 fn nonempty_list_addr(list: AnyValueRef) -> Result<*mut u8, AnyValueRefError> {
@@ -1271,7 +1165,7 @@ fn nonempty_list_addr(list: AnyValueRef) -> Result<*mut u8, AnyValueRefError> {
 
 impl Drop for Heap {
     fn drop(&mut self) {
-        // fz-q8d.1 — release every SharedBin held via the intrusive MSO
+        // release every SharedBin held via the intrusive MSO
         // chain. Order matters: must run before pool_free below, since
         // mso_drop_all walks ProcBin payloads in the from-space blocks.
         mso_drop_all(self);

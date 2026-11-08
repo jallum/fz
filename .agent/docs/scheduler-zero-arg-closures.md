@@ -37,10 +37,10 @@ Exited           = no closure remains; `halt_value` is final
 
 That gives one re-entry rule and one GC rule. In the JIT and AOT schedulers every
 resume is `runnable()`, run through the single `fz_resume` shim. The runnable
-closure is the primary GC root: if a process can resume after a scheduler
-boundary, its live continuation state is reachable from that closure. The
-boundary's GC (`gc_process_roots`) copies the closure, copies everything it
-reaches, rewrites the root pointer in place to the to-space copy, and the
+closure is a GC root: if a process can resume after a scheduler boundary, its
+live continuation state is reachable from that closure. The boundary's GC
+(`Process::collect`) lists the closure among the process's roots, copies it and
+everything it reaches, rewrites `runnable` to the to-space copy, and the
 scheduler resumes the moved closure.
 
 The interpreter is a parallel scheduler with the same shape but its own state. It
@@ -290,8 +290,8 @@ else:
 
 `fz_yield_mid_flight_report` stores `k` into `runnable` (`set_runnable_closure`),
 banks the burned reductions, and returns the `YIELD_PTR` sentinel so the trampoline
-hands control back to the scheduler. `k` is then the primary GC root, forwarded to
-its to-space copy at the boundary if GC runs, and restart is `k()`.
+hands control back to the scheduler. `k` is then a GC root, forwarded to its
+to-space copy at the boundary if GC runs, and restart is `k()`.
 
 Synchronous native calls do not build this closure eagerly. They carry
 compiler-known continuation state as a stack-backed lazy descriptor and

@@ -18,11 +18,11 @@ use std::ptr::{NonNull, null, null_mut, write};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::any_value::{AnyValueRef, TAG_MASK, closure_header_word, closure_size_for_count};
+use crate::any_value::{AnyValueRef, TAG_MASK, ValueKind, closure_header_word, closure_size_for_count};
 use crate::bitstr::BitWriter;
 use crate::delivery::DeliveryLock;
 use crate::exec_ctx::ExecCtx;
-use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
+use crate::heap::{GcStats, Heap, SIZE_TABLE, SchemaRegistry};
 use crate::park::ParkRecord;
 
 pub const DEFAULT_REDUCTIONS_PER_QUANTUM: i32 = 4000;
@@ -215,6 +215,14 @@ impl ClosureRef {
     pub fn as_ptr(self) -> *mut u8 {
         self.0
     }
+}
+
+fn closure_root(closure: *mut u8) -> AnyValueRef {
+    AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure).expect("a closure root is a non-null closure address")
+}
+
+fn closure_addr(root: AnyValueRef) -> *mut u8 {
+    root.closure_addr().expect("a forwarded closure root stays a closure")
 }
 
 /// The node-global atom table: text↔id, append-only. Seeded from a module's
@@ -579,17 +587,62 @@ impl Process {
         self.yield_reasons = 0;
     }
 
-    /// Scheduler-boundary maintenance shared by every execution mode. Decide
-    /// whether this boundary must GC; if so, run the caller's mode-specific
-    /// root-gather GC (compiled: runnable closure + mailbox; interpreter:
-    /// resume args + after-conts). Either way, clear the yield-reason signals so
-    /// the next quantum starts clean.
-    pub fn boundary_maintenance<E>(&mut self, gc_roots: impl FnOnce(&mut Self) -> Result<(), E>) -> Result<(), E> {
+    /// Scheduler-boundary maintenance shared by every execution path: collect
+    /// when the heap is due, and clear the yield-reason signals so the next
+    /// quantum starts clean.
+    pub fn boundary_maintenance(&mut self) {
         if self.needs_boundary_gc() {
-            gc_roots(self)?;
+            self.collect(&mut []);
         }
         self.clear_yield_reasons();
-        Ok(())
+    }
+
+    /// Collect this process's heap. The roots are everything the process
+    /// holds into its heap, in one flat slice: the runnable closure, the park
+    /// record (clause bodies, after body, pinned values), the mailbox and the
+    /// caller's `transient` values. Each holds its forwarded value on return.
+    ///
+    /// The delivery lock is held throughout, so a sender cannot probe the
+    /// park record while its closures and pinned values move. Gifts waiting in
+    /// the in-queue are not roots (see `Heap::collect`).
+    pub fn collect(&mut self, transient: &mut [AnyValueRef]) -> GcStats {
+        let mut delivery = self.delivery.lock();
+        let park = delivery.park_mut();
+        let mut roots: Vec<AnyValueRef> = Vec::new();
+        roots.extend(self.runnable.map(|closure| closure_root(closure.as_ptr())));
+        if let Some(park) = park.as_deref() {
+            roots.extend(park.clause_bodies.iter().map(|&body| closure_root(body)));
+            roots.extend((!park.after_cont.is_null()).then(|| closure_root(park.after_cont)));
+            roots.extend(park.pinned.iter().copied());
+        }
+        roots.extend(self.mailbox.iter().copied());
+        roots.extend_from_slice(transient);
+
+        let stats = self.heap.collect(&mut roots);
+
+        let mut forwarded = roots.into_iter();
+        let mut next = || forwarded.next().expect("one forwarded root per gathered root");
+        if self.runnable.is_some() {
+            self.runnable = ClosureRef::new(closure_addr(next()));
+        }
+        if let Some(park) = park {
+            for body in park.clause_bodies.iter_mut() {
+                *body = closure_addr(next());
+            }
+            if !park.after_cont.is_null() {
+                park.after_cont = closure_addr(next());
+            }
+            for pinned in park.pinned.iter_mut() {
+                *pinned = next();
+            }
+        }
+        for message in self.mailbox.iter_mut() {
+            *message = next();
+        }
+        for value in transient.iter_mut() {
+            *value = next();
+        }
+        stats
     }
 
     pub fn needs_boundary_gc(&self) -> bool {

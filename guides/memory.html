@@ -473,8 +473,9 @@ separate GC-yield flag.</p>
 <h2 id="gc-parktime">4. Park-time GC — Cheney with explicit roots</h2>
 
 <p>When a process parks on <code>receive</code>, all live data is reachable
-from scheduler-owned roots: mailbox values, receive outcome closure templates,
-and runnable continuation closures. No stack scan, no register enumeration.</p>
+from the roots the process holds: mailbox values, the park record's outcome
+closure templates, after body and pinned values, and the runnable continuation
+closure. No stack scan, no register enumeration.</p>
 
 <pre>
   from-space (current block + parked blocks)
@@ -583,34 +584,36 @@ the callee's native ABI and tail-calls the loop body.</p>
 
 <p>The GC traces only explicit roots. Everything else is dead.</p>
 
-<div class="box blue">
-<strong>Park-time GC roots</strong><br>
-<code>parked_matched</code> — the receive park record. Every parked receive
-carries a compiled matcher; the catch-all form <code>receive do msg -&gt;
-msg end</code> is the accept-any shape. Clause-body closures are forwarded
-in place.<br><br>
-<code>process.mailbox</code> — messages already delivered to this process.
-Self-send can leave a matching message in the mailbox before the scheduler
-gets control again, so mailbox roots are always traced.
-</div>
+<p>One method, <code>Process::collect</code>, builds the root set from the
+process and calls the one collection entry, <code>Heap::collect</code>. Every
+scheduler reaches the same root set, and each slot holds its forwarded value
+when the call returns.</p>
 
 <div class="box blue">
-<strong>Mid-flight GC roots</strong><br>
-<code>runnable_closure</code> — a zero-arg closure capturing the next loop
-state. The closure is forwarded as the primary root, and its captures are
+<strong>The roots of a process</strong><br>
+<code>runnable</code> — a zero-arg closure capturing the next loop state. It is
 traced through the normal closure layout.<br><br>
-<code>process.mailbox</code> — every message is a <code>AnyValueRef</code>.
-Heap-object refs are forwarded in place during process-root GC. Scalar refs
-are scalar boxes: the box is copied, but the payload is not followed as a child
-edge. This matters for self-send: a process can send itself a message and keep
-running; that message lives only in the mailbox and would otherwise be
-collected.
+The park record — the receive's clause-body closures, its after body, and its
+pinned values (heap values the matcher compares against). The matcher reads
+the pinned values whenever a message arrives, so they move with everything
+else. Every parked receive carries a compiled matcher; the catch-all form
+<code>receive do msg -&gt; msg end</code> is the accept-any shape.<br><br>
+<code>process.mailbox</code> — every message is an <code>AnyValueRef</code>.
+Heap-object refs are forwarded in place. Scalar refs are scalar boxes: the box
+is copied, but the payload is not followed as a child edge. This matters for
+self-send: a process can send itself a message and keep running; that message
+lives only in the mailbox and would otherwise be collected.<br><br>
+Transient values — whatever the caller holds across the call.
 </div>
 
-<p>The interpreter uses the same shape without building a scheduler closure:
-its current tail-call arguments are explicit typed roots, so cooperative GC
-forwards that root slice alongside <code>mailbox</code>. Immediate typed values
-pass through unchanged; heap refs are rewritten to their copied addresses.</p>
+<p>Gifts waiting in the delivery in-queue are not roots. Their blocks join the
+heap only when <code>drain_in_queue</code> grafts them, and every reference in
+a gift points into its own segment. <code>Process::collect</code> holds the
+delivery lock for the whole pass, so a sender cannot probe the park record
+while it moves.</p>
+
+<p>The interpreter keeps its resume arguments and parked receives in its own
+structures and does not collect.</p>
 
 <h3>MSO sweep — keeping shared-zone refcounts honest</h3>
 
@@ -638,7 +641,7 @@ bookkeeping:</p>
 </pre>
 
 <p>The sweep is O(number of MSO stubs on this heap), not O(heap size). This
-pass runs in park-time GC and process-root GC. When a heap itself is dropped
+pass runs in every collection. When a heap itself is dropped
 (process exited), <code>Heap::drop</code> releases every ProcBin and Resource
 stub still on the chain.</p>
 
@@ -648,15 +651,15 @@ stub still on the chain.</p>
 <h3>run_quantum dispatch order</h3>
 
 <pre>
-  1. if runnable_closure != null:
+  1. resume the runnable closure
+  2. process.boundary_maintenance():
        if heap.should_gc:
-         gc_process_roots(runnable_closure, mailbox)
-       re-enqueue process
-       return
-  2. if pending_main_entry / pending_closure_entry:
-       dispatch entry
+         process.collect()
+       clear yield reasons
+  3. runnable: re-enqueue.  blocked on a receive: wait for a send or the timer.
 
-  (AOT mirrors the same runnable_closure path.)
+  (The JIT and AOT schedulers both run step 2; the JIT after every quantum, AOT
+  when the process is runnable or parked.)
 </pre>
 
 <!-- ─────────────────────────────── 8. MESSAGES ─────────────────────────────── -->

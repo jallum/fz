@@ -3,8 +3,9 @@
 
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, EMPTY_LIST, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, ValueKind, heap_object_word,
-    list_addr_from_tagged, procbin_addr_from_tagged, struct_addr_from_tagged, struct_size_for_payload,
+    AnyValue, AnyValueRef, EMPTY_LIST, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, ValueKind, heap_kind_from_tagged,
+    heap_object_word, list_addr_from_tagged, procbin_addr_from_tagged, struct_addr_from_tagged,
+    struct_size_for_payload,
 };
 use crate::procbin::{PROCBIN_BYTES, ProcBin, SharedBinHandle, alloc_procbin};
 use crate::resource::ResourceStub;
@@ -30,8 +31,9 @@ fn list_ref_from_bits(bits: u64) -> AnyValueRef {
     AnyValueRef::from_heap_object(ValueKind::LIST, addr).expect("list ref")
 }
 
-fn heap_root(bits: u64) -> AnyValue {
-    AnyValue::decode_tagged_heap_bits(bits).expect("tagged heap root")
+fn heap_ref(bits: u64) -> AnyValueRef {
+    let kind = heap_kind_from_tagged(bits).expect("tagged heap root");
+    AnyValueRef::from_heap_object(kind, (bits & !TAG_MASK) as *const u8).expect("heap root ref")
 }
 
 fn procbin_word(pb: &ProcBin) -> u64 {
@@ -148,7 +150,7 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
     assert_eq!(mso_chain(&receiver), vec![gifted]);
     let mut root = gifted as *mut u8;
     assert_eq!(pool_total_cached_blocks(), 0);
-    receiver.gc(&mut root);
+    receiver.collect_tagged(&mut root);
 
     let moved = procbin_addr_from_tagged(root as u64).expect("procbin root");
     assert_ne!(moved, pb.as_raw(), "the stub was copied out of the adopted block");
@@ -238,7 +240,7 @@ fn a_gift_with_an_object_above_the_table_grafts_and_is_copied_by_the_receivers_c
         "the receiver now owns the object's address"
     );
     let mut root = heap_object_word(big as *const u8, ValueKind::STRUCT) as *mut u8;
-    let stats = receiver.gc(&mut root);
+    let stats = receiver.collect_tagged(&mut root);
 
     let moved = struct_addr_from_tagged(root as u64).expect("struct root");
     assert_ne!(moved, big, "the object was copied");
@@ -291,10 +293,8 @@ fn thousands_of_small_unread_gifts_leave_the_receivers_capacity_unchanged_after_
         "adopted bytes count by fill"
     );
     assert!(receiver.should_gc(), "adopted fill counts toward should_gc");
-
-    let mut root = null_mut();
-    let mut roots = [heap_root(list)];
-    let stats = receiver.gc_with_extra_root_slots(&mut root, &mut roots);
+    let mut roots = [heap_ref(list)];
+    let stats = receiver.collect(&mut roots);
 
     assert_eq!(receiver.block_size, capacity_before, "dead gifts do not grow the heap");
     assert_eq!(
@@ -405,10 +405,8 @@ fn a_grafted_list_is_readable_and_survives_the_receivers_gc() {
     let (segment, bits) = gift_one_cons(&mut sender, 7);
     receiver.graft(segment);
     assert!(receiver.contains_heap_addr(list_addr_from_tagged(bits).expect("addr")));
-
-    let mut root = null_mut();
-    let mut roots = [heap_root(bits)];
-    receiver.gc_with_extra_root_slots(&mut root, &mut roots);
+    let mut roots = [heap_ref(bits)];
+    receiver.collect(&mut roots);
     let moved = roots[0].heap_object_word().expect("moved list");
     assert_ne!(moved, bits, "the cell moved into the receiver's to-space");
     let head = receiver.read_list_head_ref(list_ref_from_bits(moved)).expect("head");
@@ -429,7 +427,7 @@ fn a_collection_inside_a_window_is_refused() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     sender.begin_gift(16);
     let mut root = null_mut();
-    sender.gc(&mut root);
+    sender.collect_tagged(&mut root);
 }
 
 /// A receiver in the SHRINK band: its last collection kept 2000 bytes in a
@@ -443,9 +441,8 @@ fn receiver_with_live_allocation_since_a_small_collection(reg: &Rc<RefCell<Schem
     for i in 0..125 {
         live = alloc_int_list_cons(&mut receiver, i, live);
     }
-    let mut root = null_mut();
-    let mut roots = [heap_root(live)];
-    receiver.gc_with_extra_root_slots(&mut root, &mut roots);
+    let mut roots = [heap_ref(live)];
+    receiver.collect(&mut roots);
     let mut live = roots[0].heap_object_word().expect("live list");
     for i in 0..5000 {
         live = alloc_int_list_cons(&mut receiver, i, live);
@@ -478,10 +475,8 @@ fn gifts_alone_make_should_gc_true_and_to_space_holds_every_live_byte() {
         receiver.should_gc(),
         "the gifts' fill carried the heap over half its block"
     );
-
-    let mut root = null_mut();
-    let mut roots = [heap_root(live)];
-    let stats = receiver.gc_with_extra_root_slots(&mut root, &mut roots);
+    let mut roots = [heap_ref(live)];
+    let stats = receiver.collect(&mut roots);
 
     assert!(
         stats.to_space_capacity_bytes >= stats.copied_bytes,
@@ -496,10 +491,8 @@ fn gifts_alone_make_should_gc_true_and_to_space_holds_every_live_byte() {
 fn a_direct_collection_in_the_shrink_band_holds_every_live_byte_without_gifts() {
     let reg = fresh_registry();
     let (mut receiver, live) = receiver_with_live_allocation_since_a_small_collection(&reg);
-
-    let mut root = null_mut();
-    let mut roots = [heap_root(live)];
-    let stats = receiver.gc_with_extra_root_slots(&mut root, &mut roots);
+    let mut roots = [heap_ref(live)];
+    let stats = receiver.collect(&mut roots);
 
     assert!(stats.to_space_capacity_bytes >= stats.copied_bytes);
     assert_eq!(stats.live_bytes, 2000 + 5000 * 16, "every own live byte survived");

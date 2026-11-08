@@ -661,13 +661,12 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     let has_runnable = unsafe { (*proc_ptr).runnable.is_some() };
     if state == ProcessState::Running && has_runnable {
         let process = unsafe { &mut *proc_ptr };
-        if process.needs_boundary_gc() {
-            let mut root = process.runnable_ptr();
-            process.heap.gc_process_roots(&mut root, &mut process.mailbox);
-            process.set_runnable_closure(root);
-        }
-        process.clear_yield_reasons();
+        process.boundary_maintenance();
         unsafe { (*sched).core.make_runnable(pid, &mut process.state) };
+    } else if state == ProcessState::Blocked {
+        // Parked on a receive: the park record's closures and pinned values
+        // are roots, so the heap is trimmed while the process waits.
+        unsafe { (*proc_ptr).boundary_maintenance() };
     } else if state == ProcessState::Running {
         // fz-4mk.3b — task halted; flush MSO resources through the dtor
         // drain shim before the heap drops.

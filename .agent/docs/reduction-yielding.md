@@ -27,7 +27,8 @@ and every loop still crosses a tail call.
 - **`Process`** (`runtime/src/process.rs`) owns the budget cell, cumulative
   reduction counters, and transient per-quantum yield reason bits. Its budget
   accounting methods are `reset_reduction_budget`, `finish_yield_report`, and
-  `boundary_maintenance`.
+  `boundary_maintenance`. `Process::collect` is the one place a process's roots
+  are assembled (see "Accounting at the boundary").
 - **`Heap`** (`runtime/src/heap`) owns allocation, block growth, and
   `should_gc`, a pure function of the heap's state: the tip's fill plus the fill
   of every parked block (`bytes_used`) against half the
@@ -35,10 +36,11 @@ and every loop still crosses a tail call.
   parks the old block in `blocks` for the next Cheney pass. Blocks grafted from
   another heap's gift segment (`Heap::graft`) join `blocks`, are from-space for
   the next pass, and count by fill like any other parked block.
-- **The schedulers** (JIT `src/exec/runtime.rs`, interpreter `src/ir_interp`,
-  AOT `runtime/src/aot_shim.rs`) own dispatch and the boundary decision: install
-  a fresh budget, run the process, then collect if `Heap::should_gc` holds at the
-  boundary.
+- **The schedulers** (JIT `src/exec/runtime.rs` with `CompiledModule::run_quantum`
+  in `src/ir_codegen/compiled.rs`, AOT `runtime/src/aot_shim.rs`, interpreter
+  `src/ir_interp`) own dispatch and the boundary decision: install a fresh
+  budget, run the process, then call `Process::boundary_maintenance`, which
+  collects if `Heap::should_gc` holds. The interpreter does not collect.
 
 ## Process budget state
 
@@ -80,7 +82,7 @@ allocation        bump_top += size
                     move old current block to blocks
 
 boundary          if heap.should_gc():   (bytes_used >= block_size / 2)
-                    gc over scheduler-owned roots
+                    Process::collect
                   clear yield_reasons
 ```
 
@@ -89,8 +91,7 @@ materializes a zero-arg continuation closure on exhaustion and leaves it in
 `runnable` (see
 [`scheduler-zero-arg-closures.md`](scheduler-zero-arg-closures.md)). The
 interpreter runs synchronously: it forwards the next iteration's `resume_fn` and
-`resume_args` to the scheduler and gathers GC roots over those args and the
-after-continuations, never building a closure.
+`resume_args` to the scheduler, never building a closure.
 
 ## Allocation and block growth
 
@@ -150,15 +151,21 @@ records the signed remaining budget reported by the yielding back edge, derives
 `reductions_executed`. A signed, possibly negative `remaining_reductions` records
 how far past budget the process ran before reaching a back edge.
 
-`needs_boundary_gc()` is true when `heap.should_gc()` holds. When it fires, the
-scheduler runs Cheney over scheduler-owned roots — the runnable continuation
-closure plus the mailbox in compiled code; the resume args plus pending
-after-continuations in the interpreter. The decision is made at scheduler-quantum boundaries,
-never per back edge.
+`needs_boundary_gc()` is true when `heap.should_gc()` holds. When it fires,
+`Process::collect` runs `Heap::collect` over one root slice that it builds from
+the process: the runnable continuation closure; the park record's clause
+bodies, after body and pinned values; the mailbox; and any transient values the
+caller passes. Each slot holds its forwarded value afterwards and is written
+back to where it came from. The decision is made at scheduler-quantum
+boundaries, never per back edge. Gifts waiting in the delivery in-queue are not
+roots: their blocks join the heap only when grafted, and every reference in a
+gift points into its own segment.
 
-`boundary_maintenance` packages this decision (GC if needed, then clear the
-reason bits) for the interpreter and the JIT mid-flight
-yield path. The AOT shim runs the same steps inline rather than calling it.
+`Process::boundary_maintenance` packages this decision (collect if needed,
+then clear the reason bits). The JIT calls it after every quantum, whatever
+state the process is in. The AOT shim calls it after a quantum that leaves the
+process runnable or parked on a receive. The interpreter keeps its resume args
+and parked receives in its own structures and never collects.
 
 ## A tiny walkthrough
 
@@ -184,11 +191,11 @@ reduction budget. The next yield still happens when reductions run out.
 
 ## Parity
 
-The model is identical in the interpreter, JIT, and AOT: the same `Process`
-budget fields, the same `Heap::should_gc`, and the same boundary-GC decision.
+The budget model is identical in the interpreter, JIT, and AOT: the same
+`Process` budget fields and the same `Heap::should_gc`. The compiled paths (JIT
+and AOT) share the boundary collection through `Process::boundary_maintenance`.
 The resume carrier differs — a zero-arg continuation closure in compiled code,
-forwarded `resume_fn` + `resume_args` in the interpreter — but the boundary sees
-the same budget accounting and roots the live continuation state either way.
+forwarded `resume_fn` + `resume_args` in the interpreter, which does not collect.
 Pure fz code yields automatically by reduction budget. Tests pin both sides:
 allocation-light loops assert `reduction_yields > 0`, and allocation-heavy loops
 with spare budget assert allocation pressure does not produce a yield before

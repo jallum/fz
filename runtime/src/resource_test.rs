@@ -218,7 +218,7 @@ fn unrooted_resource_dies_in_gc_and_sweep_fires_dtor() {
     let (handle, drops) = observed_resource();
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     alloc_resource(&mut heap, handle, AnyValue::nil_atom());
-    heap.gc(&mut null_mut());
+    heap.collect_tagged(&mut null_mut());
     assert_eq!(heap.mso_head, 0, "dead Resource swept from MSO");
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     drop(heap);
@@ -237,7 +237,7 @@ fn resource_forwarding_marker_through_gc() {
     let from = rs.as_raw();
     let shared = rs.shared_raw();
     let mut root = heap_object_word(from as *const u8, ValueKind::RESOURCE) as *mut u8;
-    heap.gc(&mut root);
+    heap.collect_tagged(&mut root);
     let to = resource_addr_from_tagged(root as u64).unwrap();
     assert_ne!(to, from);
     assert_eq!(unsafe { ResourceStub::from_raw(to).shared_raw() }, shared);

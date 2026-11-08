@@ -4,7 +4,7 @@ use crate::exec::runtime::{ProcessExitCapture, Runtime};
 use crate::fz_ir::FnId;
 use cranelift_jit::JITModule;
 use cranelift_module::FuncId;
-use fz_runtime::any_value::{AnyValue, AnyValueRef, ValueKind};
+use fz_runtime::any_value::{AnyValueRef, ValueKind};
 use fz_runtime::heap::SchemaRegistry;
 use fz_runtime::pinned_abi::call1;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
@@ -77,75 +77,6 @@ impl CompiledModule {
 
     /// Run one quantum for a Process.
     pub(crate) fn run_quantum(&self, process: &mut Process) {
-        fn park_time_gc(process: &mut Process) {
-            if !process.needs_boundary_gc() {
-                return;
-            }
-
-            fn closure_root(ptr: *mut u8) -> AnyValue {
-                if ptr.is_null() {
-                    AnyValue::null()
-                } else if let Some(value) = AnyValue::decode_tagged_heap_bits(ptr as u64) {
-                    value
-                } else {
-                    AnyValue::heap_ptr(ptr, ValueKind::CLOSURE)
-                }
-            }
-
-            fn closure_bits(value: AnyValue) -> *mut u8 {
-                if value.kind() == ValueKind::NULL {
-                    null_mut()
-                } else {
-                    value.heap_addr().expect("scheduler closure root")
-                }
-            }
-
-            fn push_closure_root(roots: &mut Vec<AnyValue>, ptr: *mut u8) -> Option<usize> {
-                if ptr.is_null() {
-                    None
-                } else {
-                    let idx = roots.len();
-                    roots.push(closure_root(ptr));
-                    Some(idx)
-                }
-            }
-
-            let mut mailbox_roots: Vec<AnyValueRef> = process.mailbox.iter().copied().collect();
-
-            let parked_clause_start = 0usize;
-            let mut roots: Vec<AnyValue> = Vec::new();
-            let mut delivery = process.delivery.lock();
-            if let Some(park) = delivery.park() {
-                roots.extend(park.clause_bodies.iter().map(|&p| closure_root(p)));
-                roots.push(closure_root(park.after_cont));
-            }
-
-            let runnable_idx = push_closure_root(&mut roots, process.runnable_ptr());
-
-            let mut null_root = null_mut();
-            process
-                .heap
-                .gc_with_value_and_any_value_ref_roots(&mut null_root, &mut roots, &mut mailbox_roots);
-
-            process.mailbox.clear();
-            process.mailbox.extend(mailbox_roots);
-
-            if let Some(park) = delivery.park_mut() {
-                for (i, body) in park.clause_bodies.iter_mut().enumerate() {
-                    *body = closure_bits(roots[parked_clause_start + i]);
-                }
-                let after_idx = parked_clause_start + park.clause_bodies.len();
-                park.after_cont = closure_bits(roots[after_idx]);
-            }
-
-            drop(delivery);
-            if let Some(idx) = runnable_idx {
-                process.set_runnable_closure(closure_bits(roots[idx]));
-            }
-
-            process.clear_yield_reasons();
-        }
-
         fn run_scheduler_closure(resume_addr: *const u8, process: &mut Process, closure: *mut u8) {
             let closure = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure as *const u8)
                 .expect("scheduler closure ref")
@@ -159,7 +90,7 @@ impl CompiledModule {
             .expect("a dispatched process has a runnable closure");
         run_scheduler_closure(self.resume_addr, process, closure);
         process.next_frame = null_mut();
-        park_time_gc(process);
+        process.boundary_maintenance();
     }
 }
 

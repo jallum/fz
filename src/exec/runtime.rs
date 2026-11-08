@@ -353,15 +353,6 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             // Running with a continuation in `runnable` (a mid-flight
             // yield), Blocked on a receive that found nothing, or halted.
             if task.state == ProcessState::Running && task.runnable.is_some() {
-                // Closure-shaped mid-flight yield: the continuation closure
-                // captures live loop state and is the primary GC root.
-                task.boundary_maintenance::<()>(|p| {
-                    let mut root = p.runnable_ptr();
-                    p.heap.gc_process_roots(&mut root, &mut p.mailbox);
-                    p.set_runnable_closure(root);
-                    Ok(())
-                })
-                .expect("compiled boundary maintenance is infallible");
                 self.queue_task(pid, task);
                 continue;
             } else if task.state == ProcessState::Blocked {

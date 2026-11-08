@@ -1,0 +1,22 @@
+#---
+# purpose: "a process parked on a receive keeps everything the receive needs across a collection: the pinned list the matcher compares against, the clause body's captured values and the after body; a sender's matching message still wins afterwards"
+#---
+#
+# The parent builds a 2000-element list to pin, prints the size of 20000 more
+# cells of garbage so its heap is due for collection, and parks on `^key`. The
+# collection that follows the park moves the pinned list, the clause body
+# closure that captured `kept` and the after body closure. The child then sends
+# an equal list: its probe runs the matcher over the moved pinned list, wins,
+# and the parent resumes in the clause body.
+def main() do
+  parent = self()
+  key = Enum.to_list(1..2000)
+  kept = [:a, :b, :c]
+  dbg(Enum.count(Enum.to_list(1..20000)))
+  spawn(fn () -> send(parent, Enum.to_list(1..2000)) end)
+  receive do
+    ^key -> dbg(kept)
+  after
+    5000 -> dbg(:timeout)
+  end
+end
