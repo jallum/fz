@@ -3867,6 +3867,78 @@ mod brand_lattice_law {
         );
     }
 
+    /// The runtime reading is the type with every brand erased: `utf8` is a
+    /// `binary`, and a value that is not a brand reads as itself.
+    #[test]
+    fn the_runtime_reading_of_a_brand_is_its_inner() {
+        let mut t = Types::new();
+        let bin = t.str_t();
+        let int = t.int();
+        let utf8 = utf8(&mut t);
+        let utf8_or_int = t.union(utf8, int);
+        let bin_or_int = t.union(bin, int);
+
+        assert_eq!(t.runtime_reading(&utf8), bin);
+        assert_eq!(t.runtime_reading(&bin), bin);
+        assert_eq!(t.runtime_reading(&utf8_or_int), bin_or_int);
+    }
+
+    /// A clause's domain is the union over every instantiation of its free
+    /// variables: a variable under an arrow's parameter reads as `none`, so
+    /// `(t) -> nil` is the arrow every instantiation's callable fits.
+    #[test]
+    fn the_clause_domain_reads_a_free_variable_under_an_arrow_parameter_as_none() {
+        let mut t = Types::new();
+        let var = t.type_var(TypeVarId(0));
+        let nil = t.nil();
+        let int = t.int();
+        let none = t.none();
+        let domain = t.arrow(&[var], nil);
+        let expected = t.arrow(&[none], nil);
+
+        let read = t.clause_domain_envelope(domain, &HashMap::new());
+
+        assert_eq!(read, expected, "got {}", t.display(&read));
+        let int_to_nil = t.arrow(&[int], nil);
+        assert!(t.is_subtype(&int_to_nil, &read));
+        assert!(t.is_disjoint(&int, &read));
+        assert_eq!(t.narrow_to_clause_domain(int_to_nil, read), int_to_nil);
+    }
+
+    #[test]
+    fn the_clause_domain_reads_a_covariant_free_variable_as_any() {
+        let mut t = Types::new();
+        let var = t.type_var(TypeVarId(0));
+        let int = t.int();
+        let any = t.any();
+        let none = t.none();
+        let pair = t.tuple(&[int, var]);
+        let identity = t.arrow(&[var], var);
+
+        let pair_read = t.clause_domain_envelope(pair, &HashMap::new());
+        let identity_read = t.clause_domain_envelope(identity, &HashMap::new());
+
+        assert_eq!(pair_read, t.tuple(&[int, any]));
+        assert_eq!(identity_read, t.arrow(&[none], any));
+    }
+
+    /// A brand inside a structure is just as invisible to the running program
+    /// as one at the top.
+    #[test]
+    fn the_runtime_reading_erases_a_brand_inside_a_tuple_and_a_list() {
+        let mut t = Types::new();
+        let bin = t.str_t();
+        let int = t.int();
+        let utf8 = utf8(&mut t);
+        let branded_pair = t.tuple(&[utf8, int]);
+        let plain_pair = t.tuple(&[bin, int]);
+        let branded_list = t.list(utf8);
+        let plain_list = t.list(bin);
+
+        assert_eq!(t.runtime_reading(&branded_pair), plain_pair);
+        assert_eq!(t.runtime_reading(&branded_list), plain_list);
+    }
+
     /// fz-kdt.198 / fz-kdt.192 probe X5 — the arrow matcher at a branded
     /// argument.
     ///

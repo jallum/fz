@@ -309,13 +309,12 @@ own unbound variables back in: `(a, b) -> b` observing `(binary, int) -> int`
 comes back as `(a, int) -> int` and `binary` is unrecoverable by anything
 downstream. And it replaces whatever the argument said wherever the pattern is
 ground: `{int, a}` observing `{int | binary, binary}` comes back as
-`{int, binary}`, so the per-position check `witness ⊆ instantiate(pattern,
-closed)` compares `{int, binary}` against `{int, binary}` and accepts a call
-that must be rejected. The check means `W ⊆ σ(P)` only because `W` is the
-argument, so a witness is never narrowed toward its pattern, and a var-carrying
-argument cannot arm the check because the observation carries its variables
-honestly. Narrowing into a clause domain is a decision one level up, at
-`FunctionContract::apply`'s coverage fallback.
+`{int, binary}`, so the call is accepted whole when only its `int` member
+fits. A witness is never narrowed toward its pattern: the argument's own
+variables stay honest, and a var-carrying argument cannot arm an upper bound
+because its observation is still in flight. Narrowing into a clause domain is a
+decision one level up, at `ContractArrow::narrowed_row`, which intersects the
+argument with the clause's domain before `match_arrow` binds anything.
 
 ## The empty list is not a special case
 

@@ -1595,18 +1595,20 @@ mod pinned_verdicts {
     }
 
     // ---------------------------------------------------------------------
-    // fz-kdt.192's own gate: a witness is the OBSERVATION.
+    // A witness is the OBSERVATION. `match_arrow` binds the signature's
+    // variables from the row it is given and answers the result they
+    // determine; it does not judge whether a witness fits its parameter. A
+    // caller narrows the row to the clause's domain first
+    // (`FunctionContract::apply`), which is where a row outside the domain
+    // is refused.
     // ---------------------------------------------------------------------
 
-    /// A parameter position OBSERVES its argument. `{int, a}` applied to
-    /// `{int | binary, str}` is a violation — the pattern's ground `int` field
-    /// does not accept `binary` — and the only thing that can see it is the
-    /// argument itself. A pattern-derived witness narrows the observation to
-    /// the pattern's own ground content first (`{int, binary}`) and then
-    /// compares THAT against the instantiated pattern (`{int, binary}`), so
-    /// the check passes vacuously and the call is wrongly accepted.
+    /// `{int, a}` applied to `{int | binary, str}` binds `a := binary` from
+    /// the second field and answers `binary`. The first field's `binary`
+    /// member is outside the pattern's `int`; narrowing it away is the
+    /// caller's step, so the walk answers for the row as given.
     #[test]
-    fn a_ground_pattern_field_does_not_narrow_away_the_argument_it_rejects() {
+    fn a_ground_pattern_field_binds_from_the_row_it_is_given() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let int = t.int();
@@ -1615,12 +1617,12 @@ mod pinned_verdicts {
         let pat = t.tuple(&[int, a]);
         let arg = t.tuple(&[mixed, str_t]);
         let v = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
-        assert_eq!(render(&t, &v), "Invalid");
+        assert_eq!(render(&t, &v), "Known params=[{int, binary}] result=binary");
     }
 
-    /// The same erasure through a list element rather than a tuple field.
+    /// The same through a list element rather than a tuple field.
     #[test]
-    fn a_ground_pattern_element_does_not_narrow_away_the_argument_it_rejects() {
+    fn a_ground_pattern_element_binds_from_the_row_it_is_given() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let int = t.int();
@@ -1631,23 +1633,22 @@ mod pinned_verdicts {
         let arg_pair = t.tuple(&[mixed, str_t]);
         let arg = t.list(arg_pair);
         let v = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
-        assert_eq!(render(&t, &v), "Invalid");
+        assert_eq!(render(&t, &v), "Known params=[[{int, binary}]] result=binary");
     }
 
     // -----------------------------------------------------------------------
-    // The fz-kdt.192 cold review's own constructions (X1-X8), recorded the
-    // same way: each is the verdict the calculator gives an adversarial shape.
+    // Adversarial constructions (X1-X8), recorded as the verdict the walk
+    // gives the row it is handed. Whether a row fits its clause is
+    // `FunctionContract::apply`'s verdict, pinned in `contract_test`.
     // -----------------------------------------------------------------------
 
-    // X1. MOVED. A ground pattern field observing a STRICT SUPERTYPE:
-    // `({int, a}) :: a` at `{int | binary, int}`. The pattern-derived witness
-    // reported `{int, int}` here and the gate compared it against `{int, int}`
-    // and passed vacuously; the argument compares honestly and this clause
-    // rejects the row. Whether the CALL is legal is a question about the
-    // clause SET, one level up -- `contract_test`'s C1 is this shape at
-    // `FunctionContract::apply`, and it is satisfied.
+    // X1. A ground pattern field observing a STRICT SUPERTYPE:
+    // `({int, a}) :: a` at `{int | binary, int}` binds `a := int`. Narrowing
+    // the first field to the clause's `int` is the caller's step;
+    // `contract_test`'s C1 is this shape at `FunctionContract::apply`, and it
+    // is satisfied.
     #[test]
-    fn x1_ground_field_supertype_argument() {
+    fn x1_ground_field_supertype_argument_binds_from_the_row() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let int = t.int();
@@ -1656,7 +1657,7 @@ mod pinned_verdicts {
         let pat = t.tuple(&[int, a]);
         let arg = t.tuple(&[mixed, int]);
         let v = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
-        assert_eq!(render(&t, &v), "Invalid", "X1");
+        assert_eq!(render(&t, &v), "Known params=[{int, int}] result=int", "X1");
     }
 
     // X2. A union-of-arrows argument one of whose members still carries a FREE
@@ -1823,18 +1824,13 @@ mod pinned_verdicts {
         );
     }
 
-    // X5B. The other direction: a BARE int at a `Meters(int)` pattern field is
-    // REJECTED. Nothing about a plain `int` says which brand it carries, so it
-    // cannot satisfy a position that demands one -- `binary` accepts a `utf8`,
-    // `utf8` rejects a bare `binary`, and this is that law one structure down.
-    //
-    // This is the gate seeing the call for the first time. A pattern-derived
-    // witness restated the ground field as the PATTERN, so the gate compared
-    // `{Meters(int), binary}` with itself and answered `Known` -- it never
-    // examined the `int` the caller supplied. The witness is the argument now,
-    // so the mismatch is reachable and the row is Invalid.
+    // X5B. A BARE int at a `Meters(int)` pattern field binds `a := binary` like
+    // any other row: the walk does not judge fit. Nothing about a plain `int`
+    // says which brand it carries, so the refusal is `FunctionContract::apply`'s, through
+    // the runtime reading of the domain; see `contract_test`'s
+    // `a_bare_inner_is_refused_at_a_brand_inside_a_tuple_domain`.
     #[test]
-    fn x5b_bare_argument_at_a_branded_pattern_field() {
+    fn x5b_bare_argument_at_a_branded_pattern_field_binds_from_the_row() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let int = t.int();
@@ -1843,7 +1839,11 @@ mod pinned_verdicts {
         let pat = t.tuple(&[branded, a]);
         let arg = t.tuple(&[int, str_t]);
         let v = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
-        assert_eq!(render(&t, &v), "Invalid", "X5B");
+        assert_eq!(
+            render(&t, &v),
+            "Known params=[{Meters(int), binary}] result=binary",
+            "X5B"
+        );
     }
 
     // X6. ONE TUPLE PARAMETER carrying the same variable twice, one field
@@ -1915,9 +1915,9 @@ mod pinned_verdicts {
     }
 
     // X8. A map field observing a strict supertype under a ground sibling
-    // key -- the map form of X1.
+    // key -- the map form of X1: the walk binds `a := int` from the row.
     #[test]
-    fn x8_map_ground_field_supertype_argument() {
+    fn x8_map_ground_field_supertype_argument_binds_from_the_row() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let int = t.int();
@@ -1928,6 +1928,10 @@ mod pinned_verdicts {
         let pat = t.map(&[(k.clone(), int), (v_key.clone(), a)]);
         let arg = t.map(&[(k, mixed), (v_key, int)]);
         let verdict = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
-        assert_eq!(render(&t, &verdict), "Invalid", "X8");
+        assert_eq!(
+            render(&t, &verdict),
+            "Known params=[%{:k: int, :v: int}] result=int",
+            "X8"
+        );
     }
 }

@@ -1,0 +1,14 @@
+#---
+# purpose: "A union argument that overlaps a function's @spec domain is accepted at compile time; the member outside the domain meets the callee's arm of last resort and aborts with FunctionClauseError"
+# expect: abort
+# oracle: 00752_a_binary_arriving_through_a_union_raises_function_clause_error.oracle.exs
+#---
+defmodule M do
+  @spec f(integer) :: integer
+  def f(x :: integer), do: x + 1
+end
+
+def main() do
+  [v | _] = ["x", 1]
+  M.f(v)
+end

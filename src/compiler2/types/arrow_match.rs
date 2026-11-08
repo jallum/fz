@@ -211,18 +211,13 @@ impl Types {
     /// observed argument list, returning the trichotomy verdict and the
     /// instantiated arrow.
     ///
-    /// A column witnessed exactly `any` is imprecise, not a claim that the
-    /// argument really can be every value: it means the call site does not
-    /// know that argument's type, the way Elixir reads a `dynamic()` argument.
-    /// Such a column is narrowed to the clause's own declared domain before
-    /// the walk below ever sees it, and matched on that narrowed part, so the
-    /// verdict and the result answer for the part of the argument that can
-    /// return. The narrowing belongs to this answer alone: the caller still
-    /// keys its callee on the `any` it holds. A
-    /// witness that is merely partly imprecise, such as a union with one
-    /// member outside the domain, is not `any` and still needs the ordinary
-    /// subset gate to pass whole, so a genuinely wrong value is still
-    /// rejected.
+    /// The walk binds the signature's variables from the witnesses and
+    /// answers the result they determine. It does not decide whether a
+    /// witness fits its parameter: a caller that wants that verdict first
+    /// narrows each witness to the clause's domain
+    /// ([`Types::narrow_to_clause_domain`]), so the row reaching this walk
+    /// already lies inside the domain and the answer is for the part of the
+    /// argument that can return.
     pub fn match_arrow(
         &mut self,
         params: &[Ty],
@@ -233,15 +228,14 @@ impl Types {
         if params.len() != args.len() {
             return ArrowMatch::Invalid;
         }
-        let narrowed = self.narrow_any_witnesses(params, bounds, args);
-        self.instantiate_match(params, result, bounds, &narrowed)
+        self.instantiate_match(params, result, bounds, args)
     }
 
     /// A clause's own domain, one row: each parameter pattern closed from the
     /// clause's declared `bounds` alone (an empty seed), before any call's
     /// evidence. A clause variable still free after its bounds are closed has
-    /// nothing ground in it and stays var-carrying — the caller reads that as
-    /// "nothing to narrow to" via [`Types::narrow_to_clause_domain`].
+    /// nothing ground in it and stays var-carrying.
+    #[cfg(test)]
     pub(crate) fn clause_domain_row(&mut self, params: &[Ty], bounds: &HashMap<TypeVarId, Ty>) -> Vec<Ty> {
         let closed = self.close_bounds(bounds, &HashMap::new());
         params
@@ -250,38 +244,32 @@ impl Types {
             .collect()
     }
 
-    /// Narrow `witness` to one column's `domain` (a row entry from
-    /// [`Types::clause_domain_row`]): left alone when the domain still
-    /// carries a free variable — there is nothing ground to narrow to — else
-    /// the overlap of `witness` and `domain`.
-    pub(crate) fn narrow_to_clause_domain(&mut self, witness: Ty, domain: &Ty) -> Ty {
-        if self.has_vars(domain) {
-            witness
-        } else {
-            self.intersect(witness, *domain)
-        }
+    /// A clause's domain over every instantiation of its clause variables
+    /// ([`Types::clause_domain_envelope`]): a variable with a closed bound
+    /// reads as that bound where it occurs covariantly, an unbounded one as
+    /// `any`, and either as `none` under an arrow's parameter.
+    pub(crate) fn clause_domain_at_every_instantiation(
+        &mut self,
+        params: &[Ty],
+        bounds: &HashMap<TypeVarId, Ty>,
+    ) -> Vec<Ty> {
+        let closed = self.close_bounds(bounds, &HashMap::new());
+        params
+            .iter()
+            .map(|pattern| self.clause_domain_envelope(*pattern, &closed))
+            .collect()
     }
 
-    /// Replace each column witnessed exactly `any` with that column's own
-    /// clause domain, before this call's own evidence ever sees it: an `any`
-    /// argument and an omitted one narrow to the same place. A witness that
-    /// is not exactly `any` still needs the ordinary walk below, so a
-    /// genuinely wrong value is still rejected.
-    fn narrow_any_witnesses(&mut self, params: &[Ty], bounds: &HashMap<TypeVarId, Ty>, args: &[Ty]) -> Vec<Ty> {
-        let any = self.any();
-        if !args.contains(&any) {
-            return args.to_vec();
+    /// Narrow `witness` to one column of [`Types::clause_domain_at_every_instantiation`]: the
+    /// part of the witness the domain admits. A witness already inside the
+    /// domain, and a witness still carrying variables (evidence in flight),
+    /// are left as they are.
+    pub(crate) fn narrow_to_clause_domain(&mut self, witness: Ty, domain: Ty) -> Ty {
+        if self.has_vars(&witness) || self.is_subtype(&witness, &domain) {
+            witness
+        } else {
+            self.intersect(witness, domain)
         }
-        let domain = self.clause_domain_row(params, bounds);
-        args.iter()
-            .zip(domain)
-            .map(|(witness, domain)| {
-                if *witness != any {
-                    return *witness;
-                }
-                self.narrow_to_clause_domain(*witness, &domain)
-            })
-            .collect()
     }
 
     /// One walk over `(params, args)`: each position's witness is its argument.
@@ -297,8 +285,8 @@ impl Types {
         let mut solution = MatchBounds::default();
         for (pattern, witness) in params.iter().zip(args.iter()) {
             // An uninhabited argument is a position no call can supply, so the
-            // signature does not apply to this row. Ground disjointness is the
-            // structural gate's job, below.
+            // signature does not apply to this row. Disjointness from
+            // the clause's domain is the caller's, before this walk.
             if self.is_empty(witness) {
                 return ArrowMatch::Invalid;
             }
@@ -350,13 +338,6 @@ impl Types {
             };
             let bound = self.instantiate(&bounds[&var], &closed);
             if !self.is_subtype(actual, &bound) {
-                return ArrowMatch::Invalid;
-            }
-        }
-
-        for (pattern, witness) in params.iter().zip(args.iter()) {
-            let expected = self.instantiate(pattern, &closed);
-            if !self.has_vars(witness) && !self.has_vars(&expected) && !self.is_subtype(witness, &expected) {
                 return ArrowMatch::Invalid;
             }
         }

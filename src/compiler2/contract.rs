@@ -201,53 +201,36 @@ impl FunctionContract {
             let clause_enforceable = clause.protocol_domain_obligations.is_empty();
             enforceable |= clause_enforceable;
             let params = clause.matched_params(types, arg_tys.len());
+            let Some(row) = clause.narrowed_row(types, &params, arg_tys) else {
+                continue;
+            };
             let clause_result = types
                 .arrow_result(&clause.arrow)
                 .expect("a contract clause is an arrow with a result slot");
-            match types.match_arrow(&params, &clause_result, &clause.bounds, arg_tys) {
-                ArrowMatch::Known {
-                    params,
-                    result: matched,
-                } => {
-                    result = Some(match result {
-                        Some(current) => types.union(current, matched),
-                        None => matched,
-                    });
-                    matched_arrows.push(clause.structural_params(types, params, arg_tys));
-                    matched_any = true;
-                    enforceable_matched |= clause_enforceable;
-                }
-                ArrowMatch::Underconstrained { params, result: _ } => {
-                    matched_arrows.push(clause.structural_params(types, params, arg_tys));
-                    matched_any = true;
-                    enforceable_matched |= clause_enforceable;
-                }
-                ArrowMatch::Invalid => {}
-            }
-        }
-        if enforceable && !enforceable_matched && self.arrow_set_covers(types, arg_tys) {
-            enforceable_matched = true;
-            matched_any = true;
-            for clause in &self.arrows {
-                let Some(narrowed) = clause.narrow_args(types, arg_tys) else {
-                    continue;
+            let (matched_params, matched_result) =
+                match types.match_arrow(&params, &clause_result, &clause.bounds, &row) {
+                    ArrowMatch::Known { params, result } => (params, Some(result)),
+                    ArrowMatch::Underconstrained { params, result: _ } => (params, None),
+                    ArrowMatch::Invalid => continue,
                 };
-                let params = types.arrow_params(&clause.arrow);
-                let clause_result = types
-                    .arrow_result(&clause.arrow)
-                    .expect("a contract clause is an arrow with a result slot");
-                if let ArrowMatch::Known {
-                    params,
-                    result: matched,
-                } = types.match_arrow(&params, &clause_result, &clause.bounds, &narrowed)
-                {
-                    result = Some(match result {
-                        Some(current) => types.union(current, matched),
-                        None => matched,
-                    });
-                    matched_arrows.push(clause.structural_params(types, params, &narrowed));
-                }
+            if !Self::admits_instantiated_clause(types, arg_tys, &matched_params, self.extern_wire.is_some()) {
+                continue;
             }
+            if let Some(matched) = matched_result {
+                result = Some(match result {
+                    Some(current) => types.union(current, matched),
+                    None => matched,
+                });
+            }
+            matched_arrows.push(clause.structural_params(types, matched_params, &row));
+            matched_any = true;
+            enforceable_matched |= clause_enforceable;
+        }
+        // A column no value inhabits is a call that cannot be made: dead code
+        // is never refused, and answers nothing.
+        if arg_tys.iter().any(|ty| types.is_empty(ty)) {
+            matched_any = true;
+            enforceable_matched = true;
         }
         AppliedFunctionContract {
             matched_arrows,
@@ -268,48 +251,6 @@ impl FunctionContract {
             .iter()
             .map(|clause| clause.matched_domain_display(types, row_len))
             .collect()
-    }
-
-    /// Arrow-SET coverage of a ground argument row: no single arrow accepted
-    /// the arguments, but the arguments may still be covered member-by-member
-    /// by different arrows (e.g. `(int | float, int)` against `+/2`'s
-    /// `(int, int)` and `(float, int)` clauses). The argument product is a
-    /// tuple type and each enforceable ground clause domain is a tuple type,
-    /// so coverage is exactly tuple subsumption against the domain union —
-    /// the Types calculator decides it set-theoretically, decomposing unions
-    /// across positions. Non-ground arguments never reach a violation anyway.
-    ///
-    /// A clause variable still free after its bounds are closed accepts
-    /// anything, so the DOMAIN of a var-carrying clause is that row read at
-    /// `any`. Skipping such a row instead would report no coverage where
-    /// coverage holds: `pick({integer, a})` and `pick({binary, a})` together
-    /// accept every value of `{binary, int} | {int, int}`, member by member,
-    /// and a legal program would be diagnosed as a spec violation (fz-kdt.192).
-    fn arrow_set_covers(&self, types: &mut Types, arg_tys: &[Ty]) -> bool {
-        if arg_tys.iter().any(|ty| types.has_vars(ty)) {
-            return false;
-        }
-        let mut domain: Option<Ty> = None;
-        for clause in &self.arrows {
-            if !clause.protocol_domain_obligations.is_empty() {
-                continue;
-            }
-            let row = clause.input_domain_row(types);
-            if row.len() != arg_tys.len() {
-                continue;
-            }
-            let row = domain_row_at_any(types, row);
-            let row_tuple = types.tuple(&row);
-            domain = Some(match domain {
-                Some(current) => types.union(current, row_tuple),
-                None => row_tuple,
-            });
-        }
-        let Some(domain) = domain else {
-            return false;
-        };
-        let observed = types.tuple(arg_tys);
-        types.is_subtype(&observed, &domain)
     }
 }
 
@@ -353,6 +294,7 @@ impl ContractArrow {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn input_domain_row(&self, types: &mut Types) -> Vec<Ty> {
         let params = types.arrow_params(&self.arrow);
         types.clause_domain_row(&params, &self.bounds)
@@ -377,37 +319,69 @@ impl ContractArrow {
         parts.join(", ")
     }
 
-    /// This clause's own domain row, narrowed against `arg_tys` position by
-    /// position; `None` when the clause overlaps no member of the arguments.
-    fn narrow_args(&self, types: &mut Types, arg_tys: &[Ty]) -> Option<Vec<Ty>> {
-        let params = types.arrow_params(&self.arrow);
+    /// The row a call is answered on, or `None` when the call is refused for
+    /// this clause. This is the one place a witness is narrowed to a clause's
+    /// domain.
+    ///
+    /// Each column narrows to the clause's domain at every instantiation, so
+    /// the walk binds the overlap and judges bounds on it; a column disjoint
+    /// from the domain refuses the clause. Whether the part of the call
+    /// outside the instantiated clause is let through unnoticed is decided
+    /// afterwards, by [`FunctionContract::admits_instantiated_clause`].
+    fn narrowed_row(&self, types: &mut Types, params: &[Ty], arg_tys: &[Ty]) -> Option<Vec<Ty>> {
         if params.len() != arg_tys.len() {
             return None;
         }
-        let domain = types.clause_domain_row(&params, &self.bounds);
-        let mut narrowed = Vec::with_capacity(arg_tys.len());
-        for (arg, domain) in arg_tys.iter().zip(domain.iter()) {
-            let narrowed_col = types.narrow_to_clause_domain(*arg, domain);
-            if types.is_empty(&narrowed_col) {
+        let domain = types.clause_domain_at_every_instantiation(params, &self.bounds);
+        let mut row = Vec::with_capacity(arg_tys.len());
+        for (witness, domain) in arg_tys.iter().zip(domain) {
+            let narrowed = types.narrow_to_clause_domain(*witness, domain);
+            if types.is_empty(&narrowed) {
                 return None;
             }
-            narrowed.push(narrowed_col);
+            row.push(narrowed);
         }
-        Some(narrowed)
+        Some(row)
     }
 }
 
-/// One clause domain row read at `any`: a clause variable still free after its
-/// bounds are closed accepts anything, so that is what the position admits.
-fn domain_row_at_any(types: &mut Types, row: Vec<Ty>) -> Vec<Ty> {
-    let any = types.any();
-    row.into_iter()
-        .map(|param| {
-            let free_at_any: HashMap<TypeVarId, Ty> =
-                types.free_var_ids(&param).into_iter().map(|var| (var, any)).collect();
-            types.instantiate(&param, &free_at_any)
+impl FunctionContract {
+    /// Whether a value outside the instantiated clause could slip past
+    /// unnoticed. `params` are the clause's parameters after the walk bound
+    /// its variables, so the judgement is on the clause the call actually
+    /// meets.
+    ///
+    /// - An extern is a raw machine call with no clause tests, so a ground
+    ///   column other than `any` must fit its parameter whole. `any` is the
+    ///   one imprecise witness: the call site does not know the argument's
+    ///   type.
+    /// - A function tests its clauses at run time, so a value outside the
+    ///   parameter meets the callee's arm of last resort. The tests cannot see
+    ///   a brand, so the part of the witness the runtime would let in, its
+    ///   overlap with the parameter's runtime reading, must lie inside the
+    ///   parameter.
+    ///
+    /// A witness or parameter still carrying variables is evidence in flight
+    /// and passes.
+    fn admits_instantiated_clause(types: &mut Types, arg_tys: &[Ty], params: &[Ty], is_extern: bool) -> bool {
+        let any = types.any();
+        arg_tys.iter().zip(params).all(|(witness, param)| {
+            let ground = !types.has_vars(witness) && *witness != any && !types.has_vars(param);
+            !ground || Self::column_is_admitted(types, *witness, *param, is_extern)
         })
-        .collect()
+    }
+
+    fn column_is_admitted(types: &mut Types, witness: Ty, param: Ty, is_extern: bool) -> bool {
+        if is_extern {
+            return types.is_subtype(&witness, &param);
+        }
+        let runtime_param = types.runtime_reading(&param);
+        if runtime_param == param {
+            return true;
+        }
+        let let_in = types.intersect(witness, runtime_param);
+        types.is_subtype(&let_in, &param)
+    }
 }
 
 impl FunctionContractMap {
