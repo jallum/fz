@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-sc8.61"
+    "fz-sc8.61",
+    "fz-sc8.80"
   ],
   "blocks": [
     "fz-sc8.62"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Every decision's arm of last resort raises its Elixir exception, and = is a decision",
   "type": "feature",
-  "updated_at": "2026-11-03T13:40:18Z"
+  "updated_at": "2026-11-08T03:00:54Z"
 }
