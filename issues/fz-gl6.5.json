@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T22:51:54Z",
+  "description": "pick_block_capacity (runtime/src/heap/block_pool.rs) rounds every request up to SIZE_TABLE[0] = 1,024 bytes. A gift is measured first (fz-a9y.11), so a 16-byte message in fixture 00903 occupies a 1 KiB block, 64x its size, until the receiver collects. Above the table the same function already returns the request rounded to 16 and the block comes from the system allocator; BEAM allocates every message fragment exactly.\n\nDone when:\n- A request below the table returns the request rounded up to 16, exactly as above the table; such blocks are exact (not pooled), through the existing pooled_class None path. The tip's capacity still starts at and climbs the table (tips are unchanged).\n- A block_pool unit test pins pick_block_capacity(16) == 16 and pick_block_capacity(1000) == 1008 alongside the existing table cases.\n- Fixture 00903's gift blocks are shown exact through the pool census or the gc event (blocks released), recorded in the commit.\n- No fixture pin changes.\n- Documentation in the same commit: every .agent/docs page, guide (guides/*.html), README.md section and fixture README that describes a mechanism this ticket changes or removes is rewritten to the present fact in the same commit, and a grep for the old names and phrases over .agent, guides, README.md and fixtures returns nothing. Full gate green (--workspace --all-targets plus doc tests, fixture matrix with --test-threads=1). Commit in Why / What changed / Verification form. No co-author trailer, no attribution line.",
+  "id": "fz-gl6.5",
+  "labels": [],
+  "parent": "fz-gl6",
+  "priority": 2,
+  "status": "open",
+  "title": "A block below the size table is exact",
+  "type": "task",
+  "updated_at": "2026-11-08T22:51:54Z"
+}
