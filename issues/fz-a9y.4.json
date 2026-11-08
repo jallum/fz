@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-a9y.1",
     "fz-a9y.2",
@@ -16,8 +16,8 @@
   "labels": [],
   "parent": "fz-a9y",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "The probe matches on the sender and gifts its result through the receiver's in-queue",
   "type": "task",
-  "updated_at": "2026-11-07T23:30:23Z"
+  "updated_at": "2026-11-08T00:58:26Z"
 }
