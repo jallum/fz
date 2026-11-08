@@ -6,14 +6,15 @@
     "fz-a9y.6"
   ],
   "blocks": [],
+  "closed_at": "2026-11-08T04:35:46Z",
   "created": "2026-11-07T23:29:51Z",
   "description": "Close-out of the epic. Everything stated must be a present-tense fact grounded in the code as landed.\n\nDone when:\n- .agent/docs: the scheduler doc describes the send path (match on sender, gift, in-queue, graft, lock scope), the heap doc describes gift segments and the adopted list and the accounting rules, pattern-matching.md carries the identity-pinning rule, runtime-telemetry.md lists fz.runtime.send.probe and the GC event's adopted fields with their jsonl fields. .agent/docs.md index updated.\n- Guides/README: any user-facing description of message passing or process memory is checked and updated; a short section explains that messages are copied once, by the sender, into memory the receiver adopts.\n- Tickets fz-sc8.9 and fz-sc8.24 (guard purity) have their descriptions updated to state that gift-heap send depends on guard purity (a guard a sender runs must not fault, allocate without bound or observe the running process).\n- The PR description (ELI5 style: why, what changed, how it works, with the worked example) is written from the diff against the branch root.\n- Full gate green. Commit in Why / What changed / Verification form; no co-author trailer.",
   "id": "fz-a9y.7",
   "labels": [],
   "parent": "fz-a9y",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Agent docs, guides and dependent tickets describe gift-heap send",
   "type": "task",
-  "updated_at": "2026-11-08T04:09:44Z"
+  "updated_at": "2026-11-08T04:35:46Z"
 }
