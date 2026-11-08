@@ -10,14 +10,15 @@
     "fz-a9y.6",
     "fz-a9y.7"
   ],
+  "closed_at": "2026-11-08T02:40:38Z",
   "created": "2026-11-07T23:29:51Z",
   "description": "Today the send hook copies the whole message into the receiver's heap, then runs the receiver's matcher with the receiver as the allocating process (runtime/src/aot_shim.rs:512-535, runtime/src/sched.rs:95-122, src/exec/runtime.rs:186, src/ir_interp/backend.rs send path). ParkRecord::try_match (runtime/src/park.rs:73-88) already takes the allocating process and the message as arguments; the receiver's own scan at reach_receive (sched.rs:148) and the probe (sched.rs:98) share the one compiled matcher.\n\nChange: probe_sender runs try_match with the SENDER as the allocating process against the sender's own message. Hit: open a gift (ticket \"A heap can open, cut and graft a gift segment\"), deep-copy the bound values with one forwarding map into it as the captures of a partial closure that also carries the clause index, end the gift. Miss: open a gift, deep-copy the message into it, end the gift. The gift plus its payload is one in-queue entry on the receiver. On a hit the sender consumes the park record, cancels the after timer as today, and wakes the receiver through the core's one transition. The receiver, when dispatched, drains its in-queue: grafts each segment, pushes a miss onto its mailbox, and materializes the outcome closure from its template and a hit's partial closure (materialize_outcome_closure stays). Self-send never enters this path (prior ticket).\n\nRemovals in this ticket: deep_copy_send_ref_for_aot and the JIT/interpreter equivalents that write into a receiver's heap; the receiver-heap copy before the probe; the sentence at .agent/docs/pattern-matching.md:330-332 saying a winning probe copies projected arguments into the receiver heap is rewritten to the new fact.\n\nTelemetry: fz.runtime.send.probe with outcome (hit|miss), reductions charged to the sender, bytes gifted, blocks gifted; emitted on the JIT and interpreter paths and carried by the jsonl backend. The AOT scheduler has no telemetry bus (the same documented constraint as process_exited and scheduler_slept), so the AOT path is verified by output parity, not by the event.\n\nTests (fixtures, all three paths, same output):\n- The proposal's worked example: child sends {:log, 50_000-element list} then {:ok, [1,2,3]} to a parent parked on {:ok, xs}. Assert: probe telemetry shows one miss then one hit; the hit's gifted bytes equal three cons cells plus the partial closure; the receiver's heap receives zero bytes from the send path; the receiver is woken exactly once; output is identical on interp, run and build.\n- A miss path fixture where the receiver later receives the message from its mailbox.\n- Existing receive fixtures 00686-00693 and every receive-bearing fixture stay green.\n- A unit test proving a hit's bound values that share structure keep that sharing after the copy (one forwarding map).\n\nDone when the above pass, the full gate is green (fixture_matrix --test-threads=1), no golden/pin is edited (report any that would move), and the interpreter path is verified in this ticket, not deferred. Commit in Why / What changed / Verification form; no co-author trailer.",
   "id": "fz-a9y.4",
   "labels": [],
   "parent": "fz-a9y",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The probe matches on the sender and gifts its result through the receiver's in-queue",
   "type": "task",
-  "updated_at": "2026-11-08T02:12:27Z"
+  "updated_at": "2026-11-08T02:40:38Z"
 }
