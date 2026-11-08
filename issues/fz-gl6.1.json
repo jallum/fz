@@ -4,14 +4,15 @@
   "blocks": [
     "fz-gl6.2"
   ],
+  "closed_at": "2026-11-08T23:57:25Z",
   "created": "2026-11-08T22:51:53Z",
   "description": "GcStats is returned by Heap::collect and stored in Heap.last_gc_stats, read by one unit test; no telemetry event records a collection. fz-a9y.12 measured root_heap_edges with a temporary stderr print because of this. Every later ticket in this epic changes collection anatomy and must be measured on landing, so the event comes first.\n\nShape (follows every existing runtime event, see .agent/docs/runtime-telemetry.md): the runtime crate produces the data and the driver emits it. Process::collect already returns GcStats; the boundary code that calls it hands the stats to one emit function emit_gc in src/exec/runtime.rs (beside emit_send_probe and emit_run_ended), reached from the JIT Runtime and the interpreter's scheduler adapter the way Scheduler::about_to_sleep reaches them. The AOT scheduler carries no telemetry bus and emits nothing, as for every runtime event; fixture output covers build.\n\nDone when:\n- One event fz.runtime.gc (jsonl path [\"fz\",\"runtime\",\"gc\"]) with: pid; the boundary that asked (yield, park, exit, or a caller's explicit collect); copied_bytes; live_bytes; blocks released and blocks after; the count of from-space ranges the membership test walked. Field names follow the GcStats names already documented. One emit site; JsonlBackend renders it beside the other runtime events.\n- Heap.last_gc_stats and its test are deleted; the GcStats return value stays for the heap's unit tests.\n- Fixture 00901 gains a runtime test in tests/fixture_matrix.rs that reads the event stream and pins the number of collections and the bytes they copied on run, and pins zero collections on interp (the interpreter never collects today; fz-gl6.3 moves that pin). The pinned values are recorded in the commit with the explanation of each.\n- Documentation in the same commit: runtime-telemetry.md's \"Collection stats\" section becomes the fz.runtime.gc section; every .agent/docs page, guide (guides/*.html), README.md section and fixture README that describes a mechanism this ticket changes or removes is rewritten to the present fact, and a grep for last_gc_stats over .agent, guides, README.md and fixtures returns nothing. Full gate green (--workspace --all-targets plus doc tests, fixture matrix with --test-threads=1). Commit in Why / What changed / Verification form. No co-author trailer, no attribution line.",
   "id": "fz-gl6.1",
   "labels": [],
   "parent": "fz-gl6",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A collection is an event: fz.runtime.gc is emitted from Process::collect",
   "type": "task",
-  "updated_at": "2026-11-08T23:30:13Z"
+  "updated_at": "2026-11-08T23:57:25Z"
 }
