@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.17"
+  ],
   "blocks": [],
   "created": "2026-11-08T23:07:35Z",
   "description": "The for rewrite (fz-sc8.17, src/compiler2/source_sugar.rs) refuses a bitstring generator \u003c\u003cx \u003c- bin\u003e\u003e with a QuotedSourceError naming the form. Elixir iterates the binary by the pattern's segment sizes and skips a trailing remainder that does not match. Build it in the rewrite over the existing bitstring pattern support; oracle fixtures on three paths against elixir; the distiller does not use it.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "for comprehension bitstring generators",
   "type": "feature",
-  "updated_at": "2026-11-08T23:07:35Z"
+  "updated_at": "2026-11-08T23:07:55Z"
 }
