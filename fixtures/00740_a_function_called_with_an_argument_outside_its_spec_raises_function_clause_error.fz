@@ -1,0 +1,13 @@
+#---
+# purpose: "A call whose argument is any reaches the callee's arm of last resort: a string meets no clause of a function specced for integer and float, and aborts with FunctionClauseError"
+# expect: abort
+# oracle: 00740_a_function_called_with_an_argument_outside_its_spec_raises_function_clause_error.oracle.exs
+#---
+defmodule M do
+  @spec f(integer) :: integer
+  @spec f(float) :: integer
+  def f(x :: integer), do: x + 1
+  def f(x :: float), do: 0
+end
+
+def main(), do: M.f(JSON.decode!("\"s\""))

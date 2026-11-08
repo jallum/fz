@@ -1,0 +1,6 @@
+#---
+# purpose: "+ of a string and an integer aborts with ArithmeticError, not a native trap"
+# expect: abort
+# oracle: 00741_a_sum_with_a_non_number_raises_arithmetic_error.oracle.exs
+#---
+def main(), do: JSON.decode!("\"s\"") + 1

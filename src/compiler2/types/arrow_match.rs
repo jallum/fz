@@ -215,7 +215,10 @@ impl Types {
     /// argument really can be every value: it means the call site does not
     /// know that argument's type, the way Elixir reads a `dynamic()` argument.
     /// Such a column is narrowed to the clause's own declared domain before
-    /// the walk below ever sees it, and matched on that narrowed part. A
+    /// the walk below ever sees it, and matched on that narrowed part, so the
+    /// verdict and the result answer for the part of the argument that can
+    /// return. The narrowing belongs to this answer alone: the caller still
+    /// keys its callee on the `any` it holds. A
     /// witness that is merely partly imprecise, such as a union with one
     /// member outside the domain, is not `any` and still needs the ordinary
     /// subset gate to pass whole, so a genuinely wrong value is still

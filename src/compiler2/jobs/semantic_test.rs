@@ -726,3 +726,54 @@ def main(), do: first([Enum.at([1, 2], 0)])
     );
     assert!(!plan.can_fail());
 }
+
+const SPEC_NARROWS_NOTHING: &str = r#"
+@spec f(integer) :: integer
+@spec f(float) :: integer
+def f(x :: integer), do: x + 1
+def f(x :: float), do: 0
+"#;
+
+/// The one activation of `f/1` the program reached, as its input types.
+fn only_activation_inputs(world: &mut World, starts: &JobStarts) -> Vec<Ty> {
+    let function = world.reference_function(ModuleId::GLOBAL, "f", 1);
+    let activations = starts.activations(function);
+    assert_eq!(activations.len(), 1, "f/1 is analysed at one activation");
+    let activation = activations.into_iter().next().expect("one activation");
+    activation.inputs(world.types())
+}
+
+/// A spec describes what a callee accepts; it does not tell the callee what
+/// its caller holds. A caller that holds `any` keys the callee under `any`,
+/// so the callee keeps the arm of last resort that a value outside the spec
+/// reaches.
+#[test]
+fn a_spec_does_not_narrow_the_any_a_caller_holds_into_its_callees_key() {
+    let (mut world, starts) = driven_cases(&format!(
+        "{SPEC_NARROWS_NOTHING}\ndef main(), do: f(receive do m -> m end)\n"
+    ));
+    let any = world.types_mut().any();
+    let inputs = only_activation_inputs(&mut world, &starts);
+    assert!(
+        inputs.len() == 1 && world.types().is_equivalent(&inputs[0], &any),
+        "f/1 is keyed on what the caller holds (any), not on the spec's domain: {inputs:?}"
+    );
+    let plan = entry_plan_of(&mut world, &starts, "f", 1);
+    assert!(plan.can_fail(), "a callee keyed on any keeps its arm of last resort");
+}
+
+/// The arm of last resort is still trimmed where the caller's own types prove
+/// no clause is missed: the spec changed nothing for a caller that knows what
+/// it holds.
+#[test]
+fn a_caller_that_knows_its_argument_still_trims_the_callees_arm_of_last_resort() {
+    let (mut world, starts) = driven_cases(&format!("{SPEC_NARROWS_NOTHING}\ndef main(), do: f(length([1, 2]))\n"));
+    let int = world.types_mut().int();
+    let inputs = only_activation_inputs(&mut world, &starts);
+    assert!(
+        inputs.len() == 1 && world.types().is_equivalent(&inputs[0], &int),
+        "f/1 is keyed on the integer the caller holds: {inputs:?}"
+    );
+    let plan = entry_plan_of(&mut world, &starts, "f", 1);
+    assert!(!plan.can_fail(), "an integer argument cannot miss a clause");
+}

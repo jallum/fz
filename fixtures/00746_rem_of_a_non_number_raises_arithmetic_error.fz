@@ -1,0 +1,6 @@
+#---
+# purpose: "rem/2 of a string and an integer aborts with ArithmeticError"
+# expect: abort
+# oracle: 00746_rem_of_a_non_number_raises_arithmetic_error.oracle.exs
+#---
+def main(), do: rem(JSON.decode!("\"s\""), 2)
