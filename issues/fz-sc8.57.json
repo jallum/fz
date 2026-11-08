@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-sc8.62"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A spec refuses a call only when it is proven to fail",
   "type": "bug",
-  "updated_at": "2026-11-03T13:28:53Z"
+  "updated_at": "2026-11-08T08:43:02Z"
 }
