@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-03T12:49:38Z",
-  "description": "fz-sc8.16 builds OptionParser.parse/2 with strict: and aliases:. Not built, by agreement: switches: (non-strict, creates atoms), :regex, return_separator:, allow_nonexistent_atoms:, parse!/2, parse_head/2, parse_head!/2, next/2, to_argv/2, split/1 and error formatting. Each as in Elixir 1.19.4, checked with oracle fixtures.",
+  "description": "fz-sc8.16 builds OptionParser.parse/2 with strict: and aliases:. Not built, by agreement: switches: (non-strict, creates atoms), :regex, return_separator:, allow_nonexistent_atoms:, parse!/2, parse_head/2, parse_head!/2, next/2, to_argv/2, split/1 and error formatting. Each as in Elixir 1.19.4, checked with oracle fixtures.\n\nTwo differences .16 left, to close here: (1) an unknown one-letter alias consumes the next token in Elixir whatever the atom table holds ('-t 5' with no aliases: gives {[], [], [{\"-t\", nil}]}), while fz's text lookup leaves it ({[], [\"5\"], [{\"-t\", nil}]}); the strict-name rule (an unknown --name never consumes) stays. (2) a multi-letter alias key (aliases: [abc: :x], then -abc) works but prints none of Elixir's deprecation warning on stderr.",
   "id": "fz-sc8.58",
   "labels": [],
   "parent": "fz-sc8",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "OptionParser's remaining surface",
   "type": "feature",
-  "updated_at": "2026-11-03T12:49:38Z"
+  "updated_at": "2026-11-08T13:06:21Z"
 }
