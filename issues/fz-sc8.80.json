@@ -4,14 +4,15 @@
   "blocks": [
     "fz-sc8.63"
   ],
+  "closed_at": "2026-11-08T03:41:00Z",
   "created": "2026-11-08T03:00:53Z",
   "description": "Native lowers every backend entry as its own function, so a branch arm or a value-join entry reached by a single direct transfer costs a tail call. Inside a recursive executable the SCC pass marks that tail call a back edge, which charges a reduction, and a join with the continuation ABI also materializes a frame, calls the runtime and returns through call_indirect. fz-sc8.63 makes = a decision and so pays this twice per destructuring match: quicksort's {lo, hi} = partition(...) goes from two tuple projections in one function to three functions, 22 extra reductions over 11 executions (3906 -\u003e 3884 reductions_remaining on run and build).\n\nRule: an entry with exactly one incoming backend edge, where that edge is a direct transfer (an If arm, a dispatch outcome, a dispatch miss, or tail value -\u003e deliver), is lowered as a block of the native function that lowers its predecessor, with block params in place of function params and Goto with block args in place of Term::TailCall. A call return and a receive outcome are not direct transfers. Branch entries qualify by construction (one plan_block call per arm). Joins (DeliveredResume) need a sole-predecessor table derived once per executable at native lowering. It is blocks plus Goto, not textual inlining: the dispatch graph shares nodes, so one outcome entry may be reached from several leaves of one function. Sites: native.rs lower_entry_fn, lower_entry_tail (If arms), lower_control_dispatch_node (outcome and miss), lower_value_destination, annotate_back_edges; precedent lower_entry_from_id lowers clause entries inside their clause function and collapses into the same path.\n\nPredicted at this commit on 243d62f89: no fixture output, golden or walk count moves; every __branch_N function disappears (00420: 1067 -\u003e 927 native functions); reductions goldens unchanged because no behavior fixture has a direct-transfer tail on base. With fz-sc8.63 on top: quicksort back to 85 functions and 3906 reductions. Proof: a native test red on base asserting a program with an If arm or case arm produces no branch function, plus the quicksort prediction once .63 rebases. Removes: branch function shells, the TailCall encoding and prologue decoding for them, their back-edge checks, and for single-predecessor joins the frame materialization, runtime call and call_indirect. Lands before fz-sc8.63 in the stack.",
   "id": "fz-sc8.80",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "An entry with one predecessor is a block of the function that reaches it on native",
   "type": "task",
-  "updated_at": "2026-11-08T03:00:54Z"
+  "updated_at": "2026-11-08T03:41:00Z"
 }
