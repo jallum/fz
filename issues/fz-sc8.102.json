@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T23:07:35Z",
+  "description": "Elixir wraps the reduction inside Enum.into/2,3 and a for ... into: comprehension in try: if the reduction raises, the collector receives :halt before the exception is re-raised. fz-sc8.12 and fz-sc8.17 land without this because try/rescue is not on this stack (fz-3ul). Unobservable for List, Map and MapSet collectors, whose :halt arm returns :ok with no external effect; it matters for any collector with side effects (IO streams, files). Add the try around the reduction in Enum.into/2,3 and in the comprehension rewrite's into: finishing form once fz-3ul's try/rescue has landed; oracle fixture: a collector that records :halt, a reduction that raises, elixir agreement on three paths.",
+  "id": "fz-sc8.102",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "Enum.into and for into: tell the collector :halt when the reduction raises",
+  "type": "feature",
+  "updated_at": "2026-11-08T23:07:35Z"
+}
