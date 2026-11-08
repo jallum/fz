@@ -7787,10 +7787,92 @@ end
         member.target_return.layout.reprs.as_ref(),
         [AbiValueRepr::RawInt, AbiValueRepr::RawInt]
     );
-    assert_eq!(boundary.task_halt_repr, Some(AbiValueRepr::RawInt));
+    // The host binds the boundary's wrapper, which hands back one boxed word
+    // whatever lanes its member returns, so the halt kind follows the wrapper.
+    assert_eq!(boundary.task_halt_repr, Some(AbiValueRepr::ValueRef));
 
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(compiled.run(compiler.telemetry(), program.entry), 0);
+}
+
+/// Compiles `source` as a Value root and returns the program, its entry body's
+/// return reprs, and the compiled module's exit code.
+fn run_value_root(name: &str, source: &str) -> (Vec<AbiValueRepr>, i64) {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some(name.to_string()),
+        text: source.to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root_id);
+    assert_resolved(compiler.drive(), "the root should lower");
+    let program = native.last(root_id).program;
+    let entry = program
+        .bodies
+        .iter()
+        .find(|body| body.fn_id == program.entry)
+        .expect("the program entry has a native body");
+    let return_reprs = entry.return_reprs.clone();
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    let status = compiled.run(compiler.telemetry(), program.entry);
+    (return_reprs, status)
+}
+
+#[test]
+fn compiler2_value_root_returning_a_wide_tuple_delivers_one_boxed_word_to_the_host() {
+    let (return_reprs, _) = run_value_root(
+        "fixtures/compiler2_root_wide_tuple.fz",
+        "def main(), do: {1, 2, 3, 4, 5, 6}\n",
+    );
+    assert_eq!(return_reprs, vec![AbiValueRepr::ValueRef]);
+}
+
+#[test]
+fn compiler2_value_root_tail_calling_a_wide_tuple_function_delivers_one_boxed_word_to_the_host() {
+    let (return_reprs, _) = run_value_root(
+        "fixtures/compiler2_root_wide_tuple_tail.fz",
+        "def f(), do: {1, 2, 3, 4, 5, 6}\ndef main(), do: f()\n",
+    );
+    assert_eq!(return_reprs, vec![AbiValueRepr::ValueRef]);
+}
+
+#[test]
+fn compiler2_root_delivering_two_lanes_to_the_halt_continuation_is_refused() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_root_two_lanes.fz".to_string()),
+        text: "def main(), do: {1, 2}\n".to_string(),
+    });
+    // A TupleFields root keeps its tuple unboxed, so its entry returns two
+    // lanes where the halt continuation can take only one word.
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::TupleFields(2),
+    });
+    settle_native_product(&mut compiler, root_id);
+    assert_resolved(compiler.drive(), "the root should lower");
+    let program = native.last(root_id).program;
+    let error = compiler
+        .compile_native_program_jit_for_test(&program)
+        .err()
+        .expect("a root body with two return lanes must be refused");
+    assert!(
+        error.contains("a root body delivers one word to the halt continuation") && error.contains("main"),
+        "the error names the rule and the body: {error}"
+    );
 }
 
 #[test]

@@ -92,6 +92,19 @@ Fixtures already live in that comment-frontmatter form:
 #---
 ```
 
+### Reserved ranges
+
+Fixture numbers are allocated in blocks of 100 per stack. A new fixture takes
+the next free number inside its own block, and nobody takes a number outside
+their block. A new epic claims the next free block and adds a row here.
+
+| Block         | Owner   | State                   |
+| ------------- | ------- | ----------------------- |
+| `00600-00799` | fz-sc8  | in use through `00788`  |
+| `00800-00899` | fz-3ul  | reserved                |
+| `00900-00999` | fz-a9y  | reserved                |
+| `01000-01099` | -       | next free block         |
+
 Behavioural routing lives in the filename when a fixture is path-specific.
 Ordinary fixtures run on all three compiler2 paths by default. A prefix before
 the first `-` narrows that set: `j` means `run`, `i` means `interp`, and `a`

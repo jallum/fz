@@ -472,6 +472,30 @@ is the only witness it has for what it returns (see
 return"). `dbg(1)` therefore defines its return as `int` once, and every
 caller sees that value rather than the unconstrained `t`.
 
+## One-word boundaries
+
+A composite value crossing a place where the far side reads exactly one machine
+word travels as a single boxed `ValueRef` lane, not as its unboxed leaves. One
+predicate, `position_requires_value_ref` in `jobs/transport.rs`, names every
+such place, and `with_value_ref_carrier` gives the layout that lane while the
+layout keeps its structural shape. Two places qualify:
+
+- an `any`-typed extern parameter or return holding a tuple or callable;
+- the return of the root's entry executable (`World::root_entry_executable`)
+  when it asks for its value and returns a tuple. The driver ends a program by
+  tail-calling a halt continuation declared `(value, self)`, so the root hands
+  it one word; the host reads that word as the program's result.
+
+Scalars are already one word and stay raw at both. A root that asks for a tuple's
+fields (`ExecutableNeed::TupleFields`) is read structurally and is not a
+boundary. A root whose body tail-calls a function returning a wide tuple becomes
+a delivered call: the callee's lanes arrive in a continuation that boxes them.
+`native_return_halt_repr` (native_codegen/delivery.rs) enforces the invariant
+when the entry is bound: a root body returning anything but one lane is a
+`CodegenError`. A spawned zero-argument callable is bound through its wrapper,
+which returns one `ValueRef`, so its halt kind is `ValueRef` whatever lanes its
+member returns.
+
 ## Helpers that read the driver's context
 
 A helper may read what its driver put on the process's `ExecCtx` instead of

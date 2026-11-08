@@ -1,0 +1,10 @@
+#---
+# purpose: "A root main whose whole body is a tail call to a function returning six unboxed lanes still finishes: the root boxes what the callee returns"
+# oracle: 00788_a_main_tail_calling_a_six_lane_tuple_function_finishes.oracle.exs
+#---
+def f() do
+  dbg({1, 2, 3, 4, 5, 6})
+  {1, 2, 3, 4, 5, 6}
+end
+
+def main(), do: f()
