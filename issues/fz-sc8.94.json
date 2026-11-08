@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T13:06:21Z",
+  "description": "The spec/violation diagnostic prints every clause's domain in one parenthesis: 'the declared domain is (int, int | float, float | int, float | float, int)' for +/2's four clauses (int, int), (int, float), (float, int), (float, float). It reads as one flat tuple of eight columns. Print one clause per line (or separate the tuples), e.g. 'declared clauses: (int, int) | (int, float) | ...'. Source: FunctionContract::matched_domain_display and the diagnostic in src/compiler2 that formats it; contract_test.rs pins the current wording ('declared domain is (int)') and is restated.",
+  "id": "fz-sc8.94",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A spec violation lists the declared clauses one per clause",
+  "type": "task",
+  "updated_at": "2026-11-08T13:06:21Z"
+}
