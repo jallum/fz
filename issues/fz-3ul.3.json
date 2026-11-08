@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-3ul.2"
+    "fz-3ul.2",
+    "fz-3ul.6"
   ],
   "blocks": [
     "fz-3ul.5"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "throw, exit and catch are kinds on the same handler stack",
   "type": "feature",
-  "updated_at": "2026-11-08T00:15:25Z"
+  "updated_at": "2026-11-08T03:27:26Z"
 }
