@@ -4,14 +4,15 @@
     "fz-a9y.12"
   ],
   "blocks": [],
+  "closed_at": "2026-11-08T15:55:20Z",
   "created": "2026-11-08T11:18:08Z",
   "description": "Close-out of the heap fold. Everything stated must be a present-tense fact grounded in the code as landed.\n\nDone when:\n- .agent/docs: the heap doc describes one block list counted by fill, the collect-now predicate as a function of state, the to-space floor at copyable bytes with the bands as policy above it, the unbounded size table with exact blocks above the pooled classes, the measured one-block gift, and the single root set. Every sentence about the pressure flag, adopted blocks as a separate list, fragments, the 6 MiB limit, quiet quanta, or dtors in a gift is gone. runtime-telemetry.md lists the GcStats fields that remain and no others. .agent/docs.md index updated.\n- guides/memory.html and any other guide that describes process memory or message cost reflects the same facts in user terms: a message is measured, copied once by the sender into one block, and adopted by the receiver; a collection is sized to hold everything that could survive.\n- README.md checked and updated where it describes the heap or messaging.\n- The epic's proposal page (https://claude.ai/artifact/Wx4cwENxiEe7qPfqni84ZN) gains a section recording the BEAM comparison and the removal ledger as landed.\n- The PR #279 description is rewritten from the diff against the branch root to cover the fold (ELI5 style: why, what changed, how it works, with the probe as the worked example).\n- Full gate green. Commit in Why / What changed / Verification form. No co-author trailer.\n\nTests: none new. Each doc claim is checked against the code by the reviewer before close.",
   "id": "fz-a9y.13",
   "labels": [],
   "parent": "fz-a9y",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Agent docs, guides and the PR describe the folded heap",
   "type": "task",
-  "updated_at": "2026-11-08T15:26:54Z"
+  "updated_at": "2026-11-08T15:55:20Z"
 }
