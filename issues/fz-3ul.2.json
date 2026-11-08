@@ -11,9 +11,15 @@
   "id": "fz-3ul.2",
   "labels": [],
   "parent": "fz-3ul",
+  "comments": [
+    {
+      "text": "Landed as c462c5ecf on fz-3ul/exceptions (PR #280); A/B probed on interp, run and build against the .1 binary. Deviation: TryClauseError's line omits the inspected value because fz has no inspect primitive; fixture 00733 pins both lines.",
+      "timestamp": "2026-11-08T03:23:18Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "after and else are desugarings of try",
   "type": "feature",
-  "updated_at": "2026-11-08T02:45:52Z"
+  "updated_at": "2026-11-08T03:23:18Z"
 }
