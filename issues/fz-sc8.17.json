@@ -8,7 +8,7 @@
     "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:43Z",
-  "description": "No support. `\u003c-` is already an infix operator (frontdoor.rs:2007) used by `with`; special forms decode in src/compiler2/quoted_function.rs:470-486. Generators whose pattern does not match skip the element (Elixir). into: uses Collectable; reduce: threads an accumulator with `acc -\u003e ...` clauses. Used at distill lines 24, 35, 44, 84, 103, 108, 161, 180, 248, 277.\n\n## Design review (2026-10-17)\nFold: for is surface sugar, so it lives in src/compiler2/source_sugar.rs beside pipe, capture and lambda (rewrite_source_sugar :14), rewriting to Enum.reduce + Collectable calls with generated_variable hygiene (:450). No new Expr variant, no lowering arm, no free-name analysis change.; Proposal page /Users/j5n/Workspace/fz-sc8.17.html (2026-11-08, awaiting approval): one rewrite rule in source_sugar.rs; generators -\u003e Enum.reduce + case with a skip arm only for refutable patterns (an irrefutable pattern would raise type/redundant-clause); filters -\u003e if; plain -\u003e Enum.reverse; into: -\u003e Collectable.into + :done; reduce: -\u003e case acc do clauses end. uniq: and bitstring generators are loud errors (tickets proposed). Blocked by .20 (pattern both sides) and .12. Predicted frontier after landing: line 103 MapSet.new (.15).",
+  "description": "No support. `\u003c-` is already an infix operator (frontdoor.rs:2007) used by `with`; special forms decode in src/compiler2/quoted_function.rs:470-486. Generators whose pattern does not match skip the element (Elixir). into: uses Collectable; reduce: threads an accumulator with `acc -\u003e ...` clauses. Used at distill lines 24, 35, 44, 84, 103, 108, 161, 180, 248, 277.\n\n## Design review (2026-10-17)\nFold: for is surface sugar, so it lives in src/compiler2/source_sugar.rs beside pipe, capture and lambda (rewrite_source_sugar :14), rewriting to Enum.reduce + Collectable calls with generated_variable hygiene (:450). No new Expr variant, no lowering arm, no free-name analysis change.; Proposal page /Users/j5n/Workspace/fz-sc8.17.html (2026-11-08, APPROVED 2026-11-08 (user: Proceed)): one rewrite rule in source_sugar.rs; generators -\u003e Enum.reduce + case with a skip arm only for refutable patterns (an irrefutable pattern would raise type/redundant-clause); filters -\u003e if; plain -\u003e Enum.reverse; into: -\u003e Collectable.into + :done; reduce: -\u003e case acc do clauses end. uniq: and bitstring generators are loud errors (tickets proposed). Blocked by .20 (pattern both sides) and .12. Predicted frontier after landing: line 103 MapSet.new (.15).",
   "id": "fz-sc8.17",
   "labels": [],
   "parent": "fz-sc8",
@@ -16,5 +16,5 @@
   "status": "open",
   "title": "for comprehensions: pattern generators, filters, into:, reduce:",
   "type": "feature",
-  "updated_at": "2026-11-08T19:09:20Z"
+  "updated_at": "2026-11-08T23:06:28Z"
 }
