@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T03:00:54Z",
+  "description": "Elixir accepts fn -\u003e a; b end (and fn x -\u003e a; b end) with the semicolon separating two expressions of the body. fz refuses it with parse/expected-token ... Semi. Found while writing a spawned-process probe for fz-sc8.61; rewritten with newlines as a workaround in the probe only. Deviation from Elixir surface syntax; fix in the parser's block-body rule wherever ; is already accepted between expressions.",
+  "id": "fz-sc8.82",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "fn -\u003e a; b end parses: a semicolon separates expressions in a one-line anonymous function body",
+  "type": "bug",
+  "updated_at": "2026-11-08T03:00:54Z"
+}
