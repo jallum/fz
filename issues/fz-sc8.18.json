@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-sc8.1"
   ],
@@ -15,7 +15,7 @@
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Stream.map and File.stream!/1 read lines lazily",
   "type": "feature",
   "updated_at": "2026-11-08T13:07:33Z"
