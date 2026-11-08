@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T16:53:26Z",
+  "description": "Found while building fz-sc8.18 (the landed File.Stream uses Range's `b | c` two-variable idiom to avoid it). Reproduces on b870f5a87 on interp and run. With\n\n    @spec step([binary], {:cont, a} | {:halt, a} | {:suspend, a}, (binary, a) -\u003e {:cont, a} | {:halt, a} | {:suspend, a}) :: {:done, a} | {:halted, a} | {:suspended, a, () -\u003e any}\n    @spec line_step([{binary, [binary]}], a, (binary, a) -\u003e ...) :: {:done, a} | {:halted, a} | {:suspended, a, () -\u003e any}\n\non a step/line_step reducer loop behind Enumerable.reduce, `r = Enum.reverse(%FS{lines: [\"a\", \"b\"]})` prints `[\"b\", \"a\"]` and then `[h | t] = r` raises\n\n    ** (MatchError) no match of right hand side value:\n        [\"b\", \"a\"]\n\nA value that is a two-element list fails a cons pattern, so the value's static type under the single-variable spec is not a list the match can see (the match is compiled as failing before the value is looked at). Elixir gives \"b\" and [\"a\"]. Full repro: session scratchpad p18/repro_single_type_variable_spec_on_reducer_loop.fz. Start by dumping types (`fz2 run --dump types=p`) for main's r and the activation returns of step/line_step under the spec, and compare with the two-variable spelling.",
+  "id": "fz-sc8.101",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 1,
+  "status": "open",
+  "title": "A @spec with one type variable across a reducer loop makes a correct list fail a cons match",
+  "type": "bug",
+  "updated_at": "2026-11-08T16:53:26Z"
+}
