@@ -4,7 +4,8 @@
     "fz-gl6.1"
   ],
   "blocks": [
-    "fz-gl6.3"
+    "fz-gl6.3",
+    "fz-sc8.98"
   ],
   "created": "2026-11-08T22:51:53Z",
   "description": "Root cause of fz-sc8.98, confirmed 2026-11-08 on b7b792b01 with its repro and with a second probe (a resource made and dropped inside a function, then 20,000 list allocations): fz_make_resource installs fz_resource_destructor_noop as the C destructor and keeps the fz closure on the stub; mso_sweep (procbin.rs) releases every dead stub through fz_resource_release, which calls the noop, so the closure never runs. Only mso_drop_all_deferred, run once at exit by three separate drivers, queues closures onto pending_dtors. Result: the interpreter prints dtor:77 (it never collects), the JIT and the AOT build print nothing. The JIT also collects an Exited process (run_quantum calls boundary_maintenance before any state check) while the AOT dispatch does not, which is why fz-sc8.98 saw the loss at exit only on run.\n\nDone when:\n- One implementation decides what happens to a dead resource stub: it queues (closure, payload) onto pending_dtors. mso_sweep uses it; mso_drop_all_deferred is deleted because process exit is one more collection with an empty root set followed by the same drain.\n- The post-quantum step is one function on the scheduling core that takes the process after its quantum and returns its disposition (requeue, parked, exited). It collects when due, drains pending_dtors by dispatching each closure as fz code through the existing drain entry, and does so in every state including Exited. src/ir_codegen/compiled.rs run_quantum, runtime/src/aot_shim.rs and src/exec/runtime.rs call it; none of them calls boundary_maintenance, mso_drop_all_deferred or drains pending_dtors itself. boundary_maintenance is deleted or becomes private to the core.\n- The gc event from .1 carries the boundary kind, and a dtor dispatch is visible either on that event (dtors_dispatched) or on process_exited.\n- Fixture 00906 (fz-a9y block): a resource dropped mid-run followed by enough allocation to collect, then exit; expected output has the destructor line exactly once on interp, run and build. The fz-sc8.98 repro program is the second half of the same fixture or a second fixture 00907 if the two cannot share an expected output. These fail on the parent commit on run and build.\n- Existing resource fixtures 00248-00251 and 00354-00356 unchanged.\n- fz-sc8.98 is closed by this commit (its description already points here).\n- Documentation in the same commit: every .agent/docs page, guide (guides/*.html), README.md section and fixture README that describes a mechanism this ticket changes or removes is rewritten to the present fact in the same commit, and a grep for the old names and phrases over .agent, guides, README.md and fixtures returns nothing. Full gate green (--workspace --all-targets plus doc tests, fixture matrix with --test-threads=1). Commit in Why / What changed / Verification form. No co-author trailer, no attribution line.",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "A resource freed by a collection runs its fz destructor at the next boundary; the scheduling core owns the one post-quantum step",
   "type": "bug",
-  "updated_at": "2026-11-08T22:51:55Z"
+  "updated_at": "2026-11-08T22:51:56Z"
 }
