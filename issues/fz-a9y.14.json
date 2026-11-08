@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-08T16:40:03Z",
   "created": "2026-11-08T16:25:32Z",
   "description": "Fixtures 00694-00699 on PR #279 collide with fz-sc8.72's 00694-00699 (PR #277, directly above this branch's base); the fz-sc8 stack runs sequentially past 00777. Stacks own 100-number blocks: fz-sc8 00600-00799, fz-3ul 00800-00899, fz-a9y 00900-00999. A new fixture takes the next free number inside its stack's block; a new epic claims the next free block and adds a row. The 'Reserved ranges' table in .agent/docs/fixtures.md is written by the fz-sc8 stack (fz-sc8.97 or fz-sc8.8) and carried by this branch at its rebase; this branch does not add it.\n\nDone when: the six fixtures are 00900-00905 (git mv, history kept), every reference by number in tests/fixture_matrix.rs and .agent/docs is updated, the fixture matrix is green on all three paths, and the PR body names the new numbers. Decided with the user 2026-11-08: renumber in a further commit, no history rewrite.",
   "id": "fz-a9y.14",
   "labels": [],
   "parent": "fz-a9y",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Fixtures take numbers inside the fz-a9y reserved block 00900-00999",
   "type": "task",
-  "updated_at": "2026-11-08T16:31:52Z"
+  "updated_at": "2026-11-08T16:40:03Z"
 }
