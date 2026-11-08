@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-gl6.7"
+  ],
   "blocks": [],
   "created": "2026-11-08T22:51:54Z",
   "description": "Heap::collect allocates one to-space block sized by to_space_capacity (runtime/src/heap/imp.rs:992): floor pick_block_capacity(bytes_used), GROW when used*4 \u003e= block_size*3, SHRINK when prev_live*4 \u003c= block_size, KEEP otherwise. The size must be decided before the copy because to-space is one block. But the scan is already not an address: every copied object is pushed onto a Vec\u003cCopiedObject\u003e worklist and scanned by popping it, so to-space has no contiguity requirement.\n\nDone when:\n- Collection allocates each copy through the heap's ordinary bump path into a fresh tip; when that tip fills, overflow parks it and installs the next capacity, exactly as allocation does. The from-space blocks are released afterwards as today.\n- to_space_capacity, the GROW/SHRINK/KEEP bands, the floor, GcStats.to_space_capacity_bytes and the memory-guide sentence explaining why the floor is safe are deleted. to-space sized from dead bytes after a huge dead object dissolves with them (there is no to-space size).\n- The tip's capacity has one job (how far the bump pointer runs before a block is parked) and one rule (climb the table on overflow); this is written in the memory guide.\n- Pins that move: gc_sizes_to_fit_and_never_shrinks_below_live_as_load_grows becomes \"the heap's blocks hold the live bytes\"; gc_updates_last_gc_live_bytes is deleted with the two-times rule. should_gc's test keeps its numbers. Fixture runtime pins from .1/.7 are re-recorded with explanations.\n- Documentation in the same commit: every .agent/docs page, guide (guides/*.html), README.md section and fixture README that describes a mechanism this ticket changes or removes is rewritten to the present fact in the same commit, and a grep for the old names and phrases over .agent, guides, README.md and fixtures returns nothing. Full gate green (--workspace --all-targets plus doc tests, fixture matrix with --test-threads=1). Commit in Why / What changed / Verification form. No co-author trailer, no attribution line.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "To-space is a chain: copies allocate through the ordinary bump path and the sizing bands are deleted",
   "type": "task",
-  "updated_at": "2026-11-08T22:51:54Z"
+  "updated_at": "2026-11-08T22:51:56Z"
 }
