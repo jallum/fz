@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T22:51:53Z",
+  "description": "src/ir_interp/backend.rs owns a heap per process, allocates into it, grafts gifts into it and never collects: no path in the interpreter calls Process::collect, so an interpreted process's heap only grows. The post-quantum table in the proposal page has JIT and AOT rows and the interpreter is absent. This is a three-path parity gap; fz-wje (the interpreter charges no reductions, so it never yields) is the sibling gap and is not changed here.\n\nDone when:\n- The interpreter's scheduler loop calls the one post-quantum step from .2 after each resume returns (Done, Blocked), so an interpreted process collects when due and drains destructors through the same function as the compiled paths. The interpreter's own exit-time mso_drop_all_deferred and drain_pending_dtors_backend calls go away with it (they are the second and third copies of the exit path .2 folds).\n- Fixture 00905 (a receiver parked on a pinned list is collected and still matches) gains an interp runtime assertion from the gc event that at least one collection ran on interp, as it already does for run and build.\n- A probe program that allocates past the trigger shows gc events on interp with live_bytes equal to run's, recorded in the commit.\n- Documentation in the same commit: every .agent/docs page, guide (guides/*.html), README.md section and fixture README that describes a mechanism this ticket changes or removes is rewritten to the present fact in the same commit, and a grep for the old names and phrases over .agent, guides, README.md and fixtures returns nothing. Full gate green (--workspace --all-targets plus doc tests, fixture matrix with --test-threads=1). Commit in Why / What changed / Verification form. No co-author trailer, no attribution line.",
+  "id": "fz-gl6.3",
+  "labels": [],
+  "parent": "fz-gl6",
+  "priority": 2,
+  "status": "open",
+  "title": "The interpreter collects at its boundary",
+  "type": "task",
+  "updated_at": "2026-11-08T22:51:53Z"
+}
