@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T13:06:21Z",
+  "description": "Seen on fz-sc8.62: Kernel.+/2 ends in 'def _left + _right, do: arithmetic_error()', which accepts every pair, yet the plan for the +[any, any] activation still carries a fail node after it (visible in the quicksort stats and the static-reach census taken for .62). Nothing can reach that node. Dispatch planning (src/compiler2/dispatch.rs, dispatch_reachability.rs) should see that a clause whose head is total for the keyed row ends the plan, and build no arm of last resort behind it. Pin with a plan-shape test; expect the native function count and census of affected fixtures to fall, never rise.",
+  "id": "fz-sc8.92",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A dispatch plan builds no fail node after a clause that accepts every row",
+  "type": "bug",
+  "updated_at": "2026-11-08T13:06:21Z"
+}
