@@ -10,9 +10,15 @@
   "id": "fz-3ul.6",
   "labels": [],
   "parent": "fz-3ul",
+  "comments": [
+    {
+      "text": "Landed as 825dfcd75 on fz-3ul/exceptions (PR #280). Verified: raising loop runs under ulimit -s 256 on the new release binary (old aborts at 512); 00720 telemetry unchanged at 100000 raises / 150 yields; ten fixtures on interp, run, build.",
+      "timestamp": "2026-11-08T04:29:58Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "A handled raise unwinds the machine stack before its handler runs, within the same quantum",
   "type": "bug",
-  "updated_at": "2026-11-08T03:27:27Z"
+  "updated_at": "2026-11-08T04:29:58Z"
 }
