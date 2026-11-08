@@ -111,7 +111,7 @@ it returned every block it took. `JsonlBackend` renders
 all three as numbers. The AOT scheduler carries no telemetry bus and emits
 nothing, as for the other runtime events. `tests/fixture_matrix.rs`
 (`a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`) asserts the
-equality for fixture 00697 on the `run` and `interp` paths.
+equality for fixture 00903 on the `run` and `interp` paths.
 
 ## `fz.runtime.send.probe`
 
@@ -139,9 +139,9 @@ outcome as `"hit"` or `"miss"` and the rest as numbers. A self-send is a mailbox
 push and emits nothing. The AOT scheduler carries no telemetry bus and emits
 nothing, as for the other runtime events. `tests/fixture_matrix.rs`
 (`a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`)
-pins the event sequence of fixtures 00695 and 00696 on the `run` and `interp`
+pins the event sequence of fixtures 00901 and 00902 on the `run` and `interp`
 paths, and `a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
-pins each of fixture 00697's three gifts (`gift_bytes` 16032, 64 and 16, one
+pins each of fixture 00903's three gifts (`gift_bytes` 16032, 64 and 16, one
 block each).
 
 ## Collection stats

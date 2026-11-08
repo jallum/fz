@@ -372,7 +372,7 @@ arena being collected, not a root.
   with `^`-pinned matchers and an `after` timeout resumes through the closure entry
   across all four paths.
 - `cargo test --test fixture_matrix a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`
-  — fixtures 00695 and 00696 on the `run` and `interp` paths: a miss gifts the
+  — fixtures 00901 and 00902 on the `run` and `interp` paths: a miss gifts the
   whole message in one block (800032 bytes for the 50000-element log), a hit gifts exactly the bound cells (48 bytes for `[1, 2, 3]`),
   the receiver is woken once, and its own heap allocates no list cells for the
   delivery.
@@ -385,7 +385,7 @@ arena being collected, not a root.
   delivery cannot take the lock during the receive-entry walk and is probed
   against the installed park afterwards.
 - `cargo test --test fixture_matrix a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
-  — fixture 00697: three messages gifted to a receiver that stays parked, on
+  — fixture 00903: three messages gifted to a receiver that stays parked, on
   `run` and `interp`, each one block of exactly its measured bytes; the run ends with them still queued and `run_ended` shows
   the pool's outstanding count back at its starting value. The fixture runs on
   all three paths for output parity.

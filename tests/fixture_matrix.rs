@@ -2906,8 +2906,8 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
 
 fn self_send_pushes_the_senders_reference_and_the_send_site_publishes_it() {
     let fixture =
-        FixtureCase::new("fixtures/00694_a_self_sent_list_stays_intact_because_the_send_site_publishes_it.fz");
-    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00694 expected.txt");
+        FixtureCase::new("fixtures/00900_a_self_sent_list_stays_intact_because_the_send_site_publishes_it.fz");
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00900 expected.txt");
     assert_eq!(
         expected, "[1, 9]\n0\n[4, 5, 6]\n[4, 9]\n",
         "the control rewrite prints [1, 9]; the send allocates no list cells; the received message is intact; the refused rewrite still yields [4, 9]"
@@ -2978,14 +2978,14 @@ fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath,
 
 fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue() {
     let matched =
-        FixtureCase::new("fixtures/00695_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz");
-    let expected = fs::read_to_string(matched.sidecar_path("expected.txt")).expect("read 00695 expected.txt");
+        FixtureCase::new("fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz");
+    let expected = fs::read_to_string(matched.sidecar_path("expected.txt")).expect("read 00901 expected.txt");
     assert_eq!(
         expected, "[1, 2, 3]\n0\n50000\n",
         "the parent prints the matched reply, allocates no list cells across its receive, and finds the whole log in its mailbox"
     );
-    let unmatched = FixtureCase::new("fixtures/00696_an_unmatched_message_is_gifted_whole_and_waits_in_the_mailbox.fz");
-    let expected = fs::read_to_string(unmatched.sidecar_path("expected.txt")).expect("read 00696 expected.txt");
+    let unmatched = FixtureCase::new("fixtures/00902_an_unmatched_message_is_gifted_whole_and_waits_in_the_mailbox.fz");
+    let expected = fs::read_to_string(unmatched.sidecar_path("expected.txt")).expect("read 00902 expected.txt");
     assert_eq!(
         expected, ":go\n[7, 8]\n0\n",
         "the parent takes :go first, then the earlier unmatched tuple from its mailbox, and allocates no list cells for either"
@@ -3026,8 +3026,8 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
 
 fn a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe() {
     let fixture =
-        FixtureCase::new("fixtures/00698_a_receive_guard_reads_the_receivers_pid_even_when_a_sender_runs_the_probe.fz");
-    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00698 expected.txt");
+        FixtureCase::new("fixtures/00904_a_receive_guard_reads_the_receivers_pid_even_when_a_sender_runs_the_probe.fz");
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00904 expected.txt");
     assert_eq!(
         expected, ":carried_the_receivers_pid\n:carried_the_senders_pid\n",
         "the guard accepts the message carrying the receiver's pid; the one carrying the sender's pid waits in the mailbox"
@@ -3050,8 +3050,8 @@ fn a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_prob
 }
 
 fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
-    let fixture = FixtureCase::new("fixtures/00697_a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown.fz");
-    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00697 expected.txt");
+    let fixture = FixtureCase::new("fixtures/00903_a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown.fz");
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00903 expected.txt");
     assert_eq!(
         expected, ":child_is_parked\n:done\n",
         "the run prints both lines and ends with the child still parked"

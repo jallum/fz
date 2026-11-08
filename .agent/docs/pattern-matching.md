@@ -449,7 +449,7 @@ The exception-handling design (fz-sc8.9 and fz-sc8.24, PR #278) keeps guards
 non-faulting, and gift-heap send depends on that.
 
 `compiler2_receive_guard_zero_argument_calls_lower_to_pinned_values` pins the
-lowered shape, and fixture 00698 pins the behaviour: a message carrying the
+lowered shape, and fixture 00904 pins the behaviour: a message carrying the
 sender's pid misses and one carrying the receiver's pid hits.
 
 ## Diagnostics
