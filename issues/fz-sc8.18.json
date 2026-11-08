@@ -11,7 +11,7 @@
   ],
   "closed_at": "2026-11-08T14:06:08Z",
   "created": "2026-10-17T19:00:43Z",
-  "description": "Approved page /Users/j5n/Workspace/fz-sc8.18.html (2026-11-08). Two library structs with defimpl Enumerable: Stream (lib/stream.fz; map/2 prepends to funs; reduce composes funs onto the reducer and hands it to the source's reduce) and File.Stream (lib/file_stream.fz; File.stream!/1 in lib/file.fz fills every field explicitly). The handle held across reducer calls is the resource File.open returns; the impl reads its payload with .value and closes with File.close (a claim), so close is exactly once on :done, :halt, or by the destructor if a suspended continuation is dropped. Decided: lines are read by one runtime helper fz_file_read_line(c_pointer) :: any answering [] or [line] (fz_float_parse's shape); the missing-file fixture is an abort with fz's 'I/O error' text until the errno ticket binds it to the oracle; the rest of Stream and File.stream!/2,3 is its own ticket.\n\n## UNBLOCKS\n\n- ○ fz-sc8.19 P2 The distiller runs under fz2 and matches elixir on all three paths\n- ○ fz-sc8.87 P3 File's bang functions name the POSIX reason, as Elixir does\n- ○ fz-sc8.88 P3 The rest of Stream and File.stream! Landed: Elixir 1.19.4 line mode folds a trailing CRLF to LF (\"a\\r\\nb\\n\" streams as [\"a\\n\", \"b\\n\"]) and keeps any other CR; fz_file_read_line does the same, pinned by 00771 and a Rust unit test. The impl's step functions are public delegates on the struct module, the Range pattern.",
+  "description": "Approved page /Users/j5n/Workspace/fz-sc8.18.html (2026-11-08). Two library structs with defimpl Enumerable: Stream (lib/stream.fz; map/2 prepends to funs; reduce composes funs onto the reducer and hands it to the source's reduce) and File.Stream (lib/file_stream.fz; File.stream!/1 in lib/file.fz fills every field explicitly). The handle held across reducer calls is the resource File.open returns; the impl reads its payload with .value and closes with File.close (a claim), so close is exactly once on :done, :halt, or by the destructor if a suspended continuation is dropped. Decided: lines are read by one runtime helper fz_file_read_line(c_pointer) :: any answering [] or [line] (fz_float_parse's shape); the missing-file fixture is an abort with fz's 'I/O error' text until the errno ticket binds it to the oracle; the rest of Stream and File.stream!/2,3 is its own ticket. Landed as b870f5a87 (PR #287). Elixir 1.19.4 line mode folds a trailing CRLF to LF (\"a\\r\\nb\\n\" streams as [\"a\\n\", \"b\\n\"]) and keeps any other CR; fz_file_read_line does the same, pinned by 00771 and a Rust unit test. The impl's step functions are public delegates on the struct module, the Range pattern.",
   "id": "fz-sc8.18",
   "labels": [],
   "parent": "fz-sc8",
@@ -19,5 +19,5 @@
   "status": "closed",
   "title": "Stream.map and File.stream!/1 read lines lazily",
   "type": "feature",
-  "updated_at": "2026-11-08T14:06:08Z"
+  "updated_at": "2026-11-08T14:06:49Z"
 }
