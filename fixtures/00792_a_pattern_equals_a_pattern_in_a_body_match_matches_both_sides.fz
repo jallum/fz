@@ -1,0 +1,11 @@
+#---
+# purpose: "In a body match, p1 = p2 = expr binds the names of every side from the one value"
+# oracle: 00792_a_pattern_equals_a_pattern_in_a_body_match_matches_both_sides.oracle.exs
+#---
+def main() do
+  %{} = m = %{a: 1}
+  m2 = %{} = %{b: 2}
+  {a, _} = {_, b} = {10, 20}
+  [h | _] = [_, x | _] = l = [1, 2, 3]
+  dbg({Map.get(m, :a), Map.get(m2, :b), a, b, h, x, l})
+end

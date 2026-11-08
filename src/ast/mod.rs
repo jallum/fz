@@ -426,8 +426,8 @@ pub enum Pattern {
     /// scrutinee against the value bound to `name` in the enclosing
     /// scope (snapshotted at pattern-match time for `receive`).
     Pinned(Var),
-    /// As-pattern: name = pattern (Elixir lets you write it both ways)
-    As(Var, Box<Spanned<Pattern>>),
+    /// `p1 = p2`: both patterns match the same subject.
+    Both(Box<Spanned<Pattern>>, Box<Spanned<Pattern>>),
     /// Bitstring pattern: `<< field, field, ... >>`. Each field's `value` is a
     /// Pattern (binds variables or matches a literal); the spec governs how
     /// many bits to consume and how to interpret them.

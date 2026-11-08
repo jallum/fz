@@ -101,6 +101,19 @@ The graph carries one payload of its own: `input_demand`, a slot per declared
 input saying what the plan's questions read of it. `input_demand` and
 `required_input` on the plan are how every door asks.
 
+## Both Sides Of `=`
+
+`p1 = p2` in a pattern decodes to `Pattern::Both(p1, p2)`; each side is any
+pattern, so `%{} = m`, `m = %{}`, `{a, _} = {_, b}` and `[h | _] = [_, x | _] = l`
+all decode. Every consumer handles the two sides against the same subject:
+the planner (`append_pattern`) appends both sides' questions and bindings on
+one subject, the lowerings (`bind_pattern`) bind both from one source, and the
+collectors of bound names, pins and requirements recurse into both. Function
+heads, `case`, `fn`, `receive` and body matches share this path. Reachability
+and the interpreter, native and receive doors read only the compiled plan, so
+they see no `Both`. A variable that appears twice in one pattern is not tested
+for equality.
+
 ## Concatenation Patterns
 
 `src/compiler2/quoted_concat_pattern.rs` decodes `<>` and `++` in a pattern

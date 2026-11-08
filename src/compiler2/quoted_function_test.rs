@@ -424,6 +424,7 @@ fn shape(pattern: &Pattern) -> String {
         Pattern::Wildcard => "_".to_string(),
         Pattern::Var(var) => var.name.clone(),
         Pattern::Pinned(var) => format!("^{}", var.name),
+        Pattern::Both(left, right) => format!("{} = {}", shape(&left.node), shape(&right.node)),
         Pattern::Int(value) => value.to_string(),
         Pattern::Binary(bytes) => format!("{:?}", String::from_utf8_lossy(bytes)),
         Pattern::List(items, tail) => {
@@ -725,4 +726,21 @@ fn the_expanders_stamped_call_is_the_operator_it_was_made_from() {
     ] {
         assert_eq!(stamped_head_shape(stamped), head_shape(bare), "{stamped}");
     }
+}
+
+/// Intent: `=` in a pattern keeps both sides as patterns, in source order,
+/// whichever side is the variable.
+#[test]
+fn an_equals_in_a_head_pattern_decodes_both_sides_as_patterns() {
+    assert_eq!(head_shape("def f(m = [h | _]), do: m\n"), "m = [h | _]");
+    assert_eq!(head_shape("def f([h | _] = m), do: m\n"), "[h | _] = m");
+    assert_eq!(
+        head_shape("def f([h | _] = [_, x | _] = l), do: l\n"),
+        "[h | _] = [_, x | _] = l"
+    );
+}
+
+#[test]
+fn an_equals_in_a_case_pattern_decodes_both_sides_as_patterns() {
+    assert_eq!(case_shape("[h | _] = [_ | t]"), "[h | _] = [_ | t]");
 }
