@@ -1,0 +1,20 @@
+#---
+# purpose: "a spawned process whose = matches nothing raises MatchError and ends; main carries on and the program exits 0"
+# oracle: 00718_a_spawned_match_error_leaves_main_running.oracle.exs
+#---
+# The oracle silences the logger, so only the program's own output is
+# compared; the failure line is pinned as this program's diagnostics.
+defp fetch(), do: {:error, :closed}
+
+def main() do
+  parent = self()
+  spawn(fn () ->
+    send(parent, :child_started)
+    {:ok, value} = fetch()
+    send(parent, value)
+  end)
+  receive do
+    message -> dbg(message)
+  end
+  dbg(:main_carried_on)
+end

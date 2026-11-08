@@ -1081,17 +1081,11 @@ fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
             | LoweredStep::UnaryOp { .. }
             | LoweredStep::MapIndex { .. }
             | LoweredStep::FieldAccess { .. }
-            | LoweredStep::AssertLiteral { .. }
-            | LoweredStep::AssertStruct { .. }
             | LoweredStep::RequireMapValue { .. }
-            | LoweredStep::AssertTuple { .. }
             | LoweredStep::TupleField { .. }
-            | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. }
             | LoweredStep::SplitList { .. }
             | LoweredStep::BitstringInit { .. }
-            | LoweredStep::BitstringRead { .. }
-            | LoweredStep::AssertBitstringDone { .. } => {}
+            | LoweredStep::BitstringRead { .. } => {}
         }
     }
 }
@@ -1104,6 +1098,6 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
         | LoweredTail::If { .. }
         | LoweredTail::Dispatch { .. }
         | LoweredTail::Receive(_)
-        | LoweredTail::Halt { .. } => {}
+        | LoweredTail::Unreachable => {}
     }
 }

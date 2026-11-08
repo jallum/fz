@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::binop::{eval_binop, eval_unop, interp_value_eq, unpack_callable, unpack_closure};
-use super::dispatch_exec::{Dispatch, DispatchSource, TypeTest, dispatch_values};
+use super::binop::{eval_binop, eval_unop, unpack_callable, unpack_closure};
+use super::dispatch_exec::{Dispatch, DispatchSource, dispatch_values};
 use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
 use super::value::{
@@ -19,12 +19,10 @@ use crate::compiler2::{
 };
 use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
-use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate};
+use crate::runtime_type_predicate::CallableShape;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use crate::types::ClosureTarget;
-use fz_runtime::any_value::{
-    AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged, struct_schema_id,
-};
+use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged};
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule};
 use fz_runtime::heap::Schema;
 use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
@@ -803,7 +801,15 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                 Some(dispatch) => {
                     match select_clause(runtime, types, transport, program, module, dispatch, &semantic_inputs)? {
                         Some(index) => index,
-                        None => return fail_with_atom(runtime, "function_clause"),
+                        None => {
+                            let last_resort = dispatch.plan().last_resort.as_ref().ok_or_else(|| {
+                                format!(
+                                    "internal error: executable {:?} matched no clause and its clauses raise nothing",
+                                    executable.key
+                                )
+                            })?;
+                            return raise_last_resort(runtime, transport, last_resort, &semantic_inputs);
+                        }
                     }
                 }
             };
@@ -878,7 +884,13 @@ fn select_clause(
     // as lanes is questioned lane-wise, never rebuilt.
     let operands = values.over(transport, args);
     let decided = Dispatch::new(runtime, types, program, module, plan, operands).run()?;
-    Ok(decided.and_then(|decided| dispatch.clause_index(decided.outcome())))
+    decided
+        .map(|decided| {
+            dispatch
+                .clause_index(decided.outcome())
+                .ok_or_else(|| format!("internal error: entry outcome {:?} names no clause", decided.outcome()))
+        })
+        .transpose()
 }
 
 /// An input the plan reads has to have arrived. The demand lattice says which
@@ -984,37 +996,39 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             }
         }
     }
-    let transition = match &entry.tail {
-        BackendTail::Value { value, dest } => {
-            // Zero-lane return contracts need no environment read. This is ABI
-            // width, not semantic absence; decoding retains tuple/callable shape.
-            let returns_no_lanes =
-                matches!(dest, ControlDestination::Return) && executable.abi.return_layout.layout.publishes_no_lanes();
-            let result = if returns_no_lanes && !env.contains_key(value) {
-                decode_transport_layout(
-                    transport,
-                    &[],
-                    TransportLayout {
-                        structural: executable.abi.return_layout.layout.structural,
-                        carrier: executable.abi.return_layout.layout.carrier,
-                    },
-                    &mut 0,
-                )?
-            } else {
-                env_get_value(&env, *value)?
-            };
-            match dest {
-                ControlDestination::Return => {
-                    continue_backend_value(runtime, transport, program, result, continuations)
-                }
-                ControlDestination::Deliver(target) => Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
+    match &entry.tail {
+        BackendTail::Value { value, dest } => match dest {
+            ControlDestination::Return => {
+                // Zero-lane return contracts need no environment read. This is ABI
+                // width, not semantic absence; decoding retains tuple/callable shape.
+                let returns_no_lanes = executable.abi.return_layout.layout.publishes_no_lanes();
+                let result = if returns_no_lanes && !env.contains_key(value) {
+                    decode_transport_layout(
+                        transport,
+                        &[],
+                        TransportLayout {
+                            structural: executable.abi.return_layout.layout.structural,
+                            carrier: executable.abi.return_layout.layout.carrier,
+                        },
+                        &mut 0,
+                    )?
+                } else {
+                    env_get_value(&env, *value)?
+                };
+                continue_backend_value(runtime, transport, program, result, continuations)
+            }
+            // A resume that wants nothing never had the value delivered to this
+            // entry, so the read waits for a resume that asks for it.
+            ControlDestination::Deliver(target) => {
+                let delivered = env.get(value).cloned();
+                Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable.clone(),
                     entry: *target,
-                    env: delivered_env(runtime, transport, program, entries, &env, *target, Some(result), &[])?,
+                    env: delivered_env(runtime, transport, program, entries, &env, *target, delivered, &[])?,
                     continuations,
-                })),
+                }))
             }
-        }
+        },
         BackendTail::DirectCall { target, args, dest, .. } => {
             let (callee, extern_marshals) = match target {
                 CallEdge::Direct(direct) => (&direct.callee, direct.extern_marshals.as_deref()),
@@ -1239,10 +1253,9 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             bindings,
             dispatch,
         } => {
-            let input_values = env_values(transport, runtime.cur_proc(), &env, inputs)?
-                .into_iter()
-                .map(|value| Some(BackendBoundValue::Runtime(value)))
-                .collect::<Vec<_>>();
+            // A decision reads an input in whatever form it is bound in, and an
+            // input it never reads was never bound.
+            let input_values = inputs.iter().map(|input| env.get(input).cloned()).collect::<Vec<_>>();
             let pinned_values = dispatch_values(
                 runtime.cur_proc(),
                 transport,
@@ -1268,16 +1281,19 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         .collect::<Result<Vec<_>, String>>()?;
                     (edge.target, params)
                 }
-                None => {
-                    let miss_entry = dispatch.miss_entry.ok_or_else(|| {
-                        format!(
-                            "internal error: the case at entry {} of executable {:?} reached its fail, which type analysis proved unreachable",
+                None => match (dispatch.miss_entry, &dispatch.plan.last_resort) {
+                    (Some(miss_entry), _) => (miss_entry, Vec::new()),
+                    (None, Some(last_resort)) => {
+                        return raise_last_resort(runtime, transport, last_resort, &input_values);
+                    }
+                    (None, None) => {
+                        return Err(format!(
+                            "internal error: the decision at entry {} of executable {:?} reached its fail, which has no last resort",
                             entry_id.as_u32(),
                             executable.key
-                        )
-                    })?;
-                    (miss_entry, Vec::new())
-                }
+                        ));
+                    }
+                },
             };
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                 executable: executable.clone(),
@@ -1344,16 +1360,12 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             );
             Ok(BackendEvalTransition::Blocked)
         }
-        BackendTail::Halt { atom } => fail_with_atom(runtime, atom),
-    };
-    transition.map_err(|error| {
-        format!(
-            "backend executable {:?} function {} entry {} tail failed: {error}",
+        BackendTail::Unreachable => Err(format!(
+            "internal error: executable {:?} reached entry {}, which analysis proved unreachable",
             executable.key,
-            executable.key.activation.function.as_u32(),
             entry_id.as_u32()
-        )
-    })
+        )),
+    }
 }
 
 type OutcomeValues = (crate::compiler2::ControlEntryId, Vec<(ValueId, AnyValue)>);
@@ -1680,52 +1692,16 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 let result = interp_struct_field(runtime, module, base, field)?;
                 env.insert(*value, BackendBoundValue::Runtime(result));
             }
-            ProgramStep::AssertLiteral { source, literal } => {
-                let actual = env_get(transport, runtime.cur_proc(), env, *source)?;
-                let expected = literal_value(runtime, literal)?;
-                if !interp_value_eq(runtime.cur_proc(), actual, expected)? {
-                    return Err(format!(
-                        "match_error: literal assertion failed at value {}",
-                        source.as_u32()
-                    ));
-                }
-            }
-            ProgramStep::AssertStruct { source, module_name } => {
-                if !is_named_struct(
-                    runtime,
-                    module,
-                    env_get(transport, runtime.cur_proc(), env, *source)?,
-                    module_name,
-                )? {
-                    return Err(format!("match_error: expected struct {module_name}"));
-                }
-            }
             ProgramStep::RequireMapValue { value, source, key } => {
                 let key = literal_value(runtime, key)?;
                 let result = matcher_map_get(runtime, env_get(transport, runtime.cur_proc(), env, *source)?, key)?;
                 if matches!(result, AnyValue::Null) {
-                    return Err("match_error: expected map key to exist".to_string());
+                    return Err(
+                        "internal error: a map pattern's key is missing after its decision proved it present"
+                            .to_string(),
+                    );
                 }
                 env.insert(*value, BackendBoundValue::Runtime(result));
-            }
-            ProgramStep::AssertTuple { source, arity } => {
-                let source_value = env_get_value(env, *source)?;
-                let lane_form_arity = source_value
-                    .transport_shape()
-                    .and_then(|shape| transport.interners().tuple_arity(shape));
-                if lane_form_arity != Some(*arity) {
-                    let whole = materialize_backend_value(transport, runtime.cur_proc(), &source_value)?;
-                    let mut test = TypeTest {
-                        runtime,
-                        types: &*types,
-                        program,
-                        module,
-                        transport,
-                    };
-                    if !test.whole_value_matches(&RuntimeTypePredicate::tuple_arity(*arity), whole) {
-                        return Err(format!("match_error: expected tuple arity {}", arity));
-                    }
-                }
             }
             ProgramStep::TupleField { value, source, index } => {
                 let field = match env_get_value(env, *source)? {
@@ -1735,7 +1711,9 @@ fn eval_steps<T: Telemetry + ?Sized>(
                         transport_field_views(transport, shape, &lanes)?
                             .get(*index)
                             .cloned()
-                            .ok_or_else(|| format!("match_error: tuple-field index {} is out of bounds", index))?
+                            .ok_or_else(|| {
+                                format!("internal error: tuple-field index {index} is out of bounds after its decision proved the arity")
+                            })?
                     }
                     other => {
                         let source = materialize_backend_value(transport, runtime.cur_proc(), &other)?;
@@ -1748,20 +1726,6 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     }
                 };
                 env.insert(*value, field);
-            }
-            ProgramStep::AssertEmptyList { source } => {
-                if !env_get(transport, runtime.cur_proc(), env, *source)?.is_empty_list() {
-                    return Err("match_error: expected empty list".to_string());
-                }
-            }
-            ProgramStep::AssertSame { source, value } => {
-                if !interp_value_eq(
-                    runtime.cur_proc(),
-                    env_get(transport, runtime.cur_proc(), env, *source)?,
-                    env_get(transport, runtime.cur_proc(), env, *value)?,
-                )? {
-                    return Err("match_error: pinned value mismatch".to_string());
-                }
             }
             ProgramStep::SplitList { source, head, tail } => {
                 let source_value = env_get(transport, runtime.cur_proc(), env, *source)?;
@@ -1830,24 +1794,6 @@ fn eval_steps<T: Telemetry + ?Sized>(
                             "backend bitstring next reader",
                         )?),
                     );
-                }
-            }
-            ProgramStep::AssertBitstringDone { reader } => {
-                let reader = env_get(transport, runtime.cur_proc(), env, *reader)?;
-                let bit_len = interp_struct_field_from_tagged_bits(
-                    runtime.cur_proc(),
-                    reader.as_ref_word(runtime.cur_proc())?,
-                    8,
-                    "backend bitstring done bit_len",
-                )?;
-                let pos = interp_struct_field_from_tagged_bits(
-                    runtime.cur_proc(),
-                    reader.as_ref_word(runtime.cur_proc())?,
-                    16,
-                    "backend bitstring done pos",
-                )?;
-                if bit_len.as_i64() != pos.as_i64() {
-                    return Err("match_error: expected bitstring reader to be fully consumed".to_string());
                 }
             }
         }
@@ -2046,12 +1992,28 @@ fn continue_after_extern(
     continue_backend_value(runtime, transport, program, value, continuations)
 }
 
-/// Fail the current process with the atom `reason` through the one panic
-/// route, as compiled code does at the same point.
-fn fail_with_atom(runtime: &mut IrInterpRuntime, reason: &str) -> Result<BackendEvalTransition, String> {
+/// A decision's last resort: raise the plan's exception through the one
+/// panic route, as compiled code does at the same point. A message that shows
+/// the subject reads the plan's first input.
+fn raise_last_resort(
+    runtime: &mut IrInterpRuntime,
+    transport: &TransportStore,
+    last_resort: &crate::dispatch_matrix::pattern::LastResort,
+    inputs: &[Option<BackendBoundValue>],
+) -> Result<BackendEvalTransition, String> {
     let proc = runtime.cur_proc();
-    let reason = AnyValue::Atom(runtime.node.intern_atom(reason)).extern_arg_ref_word(proc)?;
-    fz_runtime::failure::fz_panic(proc, reason);
+    let message = if last_resort.shows_subject {
+        let subject = inputs
+            .first()
+            .and_then(Option::as_ref)
+            .ok_or("internal error: a last resort that shows its subject has no subject")?;
+        let subject = materialize_backend_value(transport, proc, subject)?.value(proc)?;
+        fz_runtime::failure::message_showing(proc, &last_resort.message, subject)
+    } else {
+        last_resort.message.clone()
+    };
+    let exception = fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(last_resort.exception));
+    fz_runtime::failure::raise(proc, exception, &message);
     match runtime.take_callback_error() {
         Some(error) => Err(error),
         None => Ok(BackendEvalTransition::Failed),
@@ -3420,29 +3382,6 @@ fn matcher_map_get(runtime: &mut IrInterpRuntime, map: AnyValue, key: AnyValue) 
         })
     })??;
     interp_value_from_ref_word(value, "MatcherMapGet")
-}
-
-fn is_named_struct(
-    runtime: &mut IrInterpRuntime,
-    module: &Module,
-    value: AnyValue,
-    name: &fz_runtime::module_name::ModuleName,
-) -> Result<bool, String> {
-    let slot = value.value(runtime.cur_proc())?;
-    if slot.kind() != ValueKind::STRUCT {
-        return Ok(false);
-    }
-    let Some(fields) = module.struct_schemas.get(name).cloned() else {
-        return Ok(false);
-    };
-    let Some(ptr) = slot.heap_addr() else {
-        return Ok(false);
-    };
-    let actual_schema = unsafe { struct_schema_id(ptr) };
-    let want_schema = unsafe { &mut *runtime.cur_proc() }
-        .heap
-        .register_schema(Schema::named_struct(name.clone(), fields));
-    Ok(actual_schema == want_schema)
 }
 
 fn backend_binop(op: crate::ast::BinOp) -> Result<IrBinOp, String> {

@@ -735,7 +735,8 @@ pub(super) fn ir_control_fn_ids(function: &IrFn) -> Vec<FnId> {
             | IrTerm::TailCallClosure { .. }
             | IrTerm::Return(_)
             | IrTerm::ReturnLanes(_)
-            | IrTerm::Halt(_) => {}
+            | IrTerm::Raise { .. }
+            | IrTerm::Unreachable => {}
         }
     }
     fn_ids
@@ -805,9 +806,19 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
                 other_uses.extend(continuation.captured.iter().copied());
             }
             IrTerm::TailCall { args, .. } => other_uses.extend(args.iter().copied()),
-            IrTerm::Return(var) | IrTerm::Halt(var) => {
+            IrTerm::Return(var) => {
                 other_uses.insert(*var);
             }
+            IrTerm::Raise {
+                exception,
+                message,
+                subject,
+            } => {
+                other_uses.insert(*exception);
+                other_uses.insert(*message);
+                other_uses.extend(*subject);
+            }
+            IrTerm::Unreachable => {}
             IrTerm::ReturnLanes(vars) => other_uses.extend(vars.iter().copied()),
             IrTerm::ReceiveMatched {
                 pinned,
@@ -862,7 +873,8 @@ fn visit_ir_control_fn_ids(function: &mut IrFn, mut visit: impl FnMut(&mut FnId)
             | IrTerm::TailCallClosure { .. }
             | IrTerm::Return(_)
             | IrTerm::ReturnLanes(_)
-            | IrTerm::Halt(_) => {}
+            | IrTerm::Raise { .. }
+            | IrTerm::Unreachable => {}
         }
     }
 }
@@ -1298,9 +1310,9 @@ pub enum BackendTail {
         dispatch: Box<ControlDispatch>,
     },
     Receive(Box<BackendReceive>),
-    Halt {
-        atom: String,
-    },
+    /// Control that analysis proved no execution reaches. Reaching it anyway
+    /// is a compiler fault, never a program's failure.
+    Unreachable,
 }
 
 /// How control reaches an entry from the tail that names it.
@@ -1346,7 +1358,7 @@ impl BackendTail {
                 .map(|entry| (entry, EntryTransfer::Runtime))
                 .chain(delivered(&receive.dest, EntryTransfer::Runtime))
                 .collect(),
-            Self::Halt { .. } => Vec::new(),
+            Self::Unreachable => Vec::new(),
         }
     }
 }
@@ -1421,34 +1433,15 @@ pub enum BackendStep {
         base: ValueId,
         field: String,
     },
-    AssertLiteral {
-        source: ValueId,
-        literal: GroundValue,
-    },
-    AssertStruct {
-        source: ValueId,
-        module_name: fz_runtime::module_name::ModuleName,
-    },
     RequireMapValue {
         value: ValueId,
         source: ValueId,
         key: GroundValue,
     },
-    AssertTuple {
-        source: ValueId,
-        arity: usize,
-    },
     TupleField {
         value: ValueId,
         source: ValueId,
         index: usize,
-    },
-    AssertEmptyList {
-        source: ValueId,
-    },
-    AssertSame {
-        source: ValueId,
-        value: ValueId,
     },
     SplitList {
         source: ValueId,
@@ -1466,9 +1459,6 @@ pub enum BackendStep {
         reader: ValueId,
         spec: LoweredBitFieldSpec,
         is_last: bool,
-    },
-    AssertBitstringDone {
-        reader: ValueId,
     },
 }
 
@@ -1706,9 +1696,9 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
                 && left_closure == right_closure
                 && left_args == right_args
         }
-        (IrTerm::Return(left_var), IrTerm::Return(right_var)) | (IrTerm::Halt(left_var), IrTerm::Halt(right_var)) => {
-            left_var == right_var
-        }
+        (IrTerm::Return(left_var), IrTerm::Return(right_var)) => left_var == right_var,
+        (left @ IrTerm::Raise { .. }, right @ IrTerm::Raise { .. }) => left == right,
+        (IrTerm::Unreachable, IrTerm::Unreachable) => true,
         (IrTerm::ReturnLanes(left_lanes), IrTerm::ReturnLanes(right_lanes)) => left_lanes == right_lanes,
         (
             IrTerm::ReceiveMatched {

@@ -79,9 +79,19 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
-        Term::Return(a) | Term::Halt(a) => {
+        Term::Return(a) => {
             used.insert(*a);
         }
+        Term::Raise {
+            exception,
+            message,
+            subject,
+        } => {
+            used.insert(*exception);
+            used.insert(*message);
+            used.extend(*subject);
+        }
+        Term::Unreachable => {}
         Term::ReturnLanes(lanes) => {
             for v in lanes {
                 used.insert(*v);

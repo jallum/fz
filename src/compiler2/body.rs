@@ -137,12 +137,6 @@ pub(crate) fn step_defined_values(step: &LoweredStep) -> impl Iterator<Item = Va
         LoweredStep::BitstringRead {
             ok, value, next_reader, ..
         } => [Some(*ok), Some(*value), Some(*next_reader)],
-        LoweredStep::AssertLiteral { .. }
-        | LoweredStep::AssertStruct { .. }
-        | LoweredStep::AssertTuple { .. }
-        | LoweredStep::AssertEmptyList { .. }
-        | LoweredStep::AssertSame { .. }
-        | LoweredStep::AssertBitstringDone { .. } => [None; 3],
     };
     values.into_iter().flatten()
 }
@@ -189,28 +183,13 @@ pub(crate) fn step_used_values(step: &LoweredStep, out: &mut Vec<ValueId>) {
             out.push(*base);
             out.push(key.value);
         }
-        LoweredStep::FieldAccess { base, .. } | LoweredStep::AssertStruct { source: base, .. } => {
+        LoweredStep::FieldAccess { base, .. } => {
             out.push(*base);
         }
-        LoweredStep::RequireMapValue { source, .. } => {
-            out.push(*source);
-        }
-        LoweredStep::AssertLiteral { source, .. }
-        | LoweredStep::AssertTuple { source, .. }
-        | LoweredStep::AssertEmptyList { source } => {
-            out.push(*source);
-        }
-        LoweredStep::TupleField { source, .. } => {
-            out.push(*source);
-        }
-        LoweredStep::AssertSame { source, value } => {
-            out.push(*source);
-            out.push(*value);
-        }
-        LoweredStep::SplitList { source, .. } => {
-            out.push(*source);
-        }
-        LoweredStep::BitstringInit { source, .. } | LoweredStep::AssertBitstringDone { reader: source } => {
+        LoweredStep::RequireMapValue { source, .. }
+        | LoweredStep::TupleField { source, .. }
+        | LoweredStep::SplitList { source, .. }
+        | LoweredStep::BitstringInit { source, .. } => {
             out.push(*source);
         }
         LoweredStep::BitstringRead { reader, spec, .. } => {
@@ -253,7 +232,7 @@ pub(crate) fn tail_used_values(tail: &LoweredTail, out: &mut Vec<ValueId>) {
                 out.push(after.timeout);
             }
         }
-        LoweredTail::Halt { .. } => {}
+        LoweredTail::Unreachable => {}
     }
 }
 
@@ -637,8 +616,9 @@ impl<V> Default for DispatchBindings<V> {
 pub struct ControlDispatch {
     pub(crate) plan: Rc<PatternDispatchPlan<Ty>>,
     pub(crate) outcomes: Vec<OutcomeEdge>,
-    /// Where a subject that no outcome claims goes. Present exactly when the
-    /// plan has a decision that ends with no outcome.
+    /// Where a subject that no outcome claims goes. Absent when the plan
+    /// raises its last resort instead, or has no decision that ends with no
+    /// outcome.
     pub(crate) miss_entry: Option<ControlEntryId>,
 }
 
@@ -671,17 +651,22 @@ impl ControlDispatch {
     pub(crate) fn new(
         plan: Rc<PatternDispatchPlan<Ty>>,
         outcomes: Vec<OutcomeEdge>,
-        miss_entry: ControlEntryId,
+        miss_entry: Option<ControlEntryId>,
     ) -> Self {
         assert_eq!(
             outcomes.len(),
             plan.outcomes.len(),
             "an inline dispatch owns one target slot per plan outcome"
         );
+        assert_ne!(
+            miss_entry.is_some(),
+            plan.last_resort.is_some(),
+            "a miss either raises the plan's last resort or goes to the dispatch's miss entry, never both"
+        );
         Self {
             plan,
             outcomes,
-            miss_entry: Some(miss_entry),
+            miss_entry,
         }
     }
 
@@ -819,9 +804,9 @@ pub enum LoweredTail {
         dispatch: Box<ControlDispatch>,
     },
     Receive(Box<LoweredReceive>),
-    Halt {
-        atom: String,
-    },
+    /// Control that analysis proved no execution reaches. Reaching it anyway
+    /// is a compiler fault, never a program's failure.
+    Unreachable,
 }
 
 /// How a callsite's positional args map onto its callee's semantic input
@@ -882,7 +867,7 @@ pub(crate) fn callsite_input_modes(body: &LoweredBody) -> HashMap<CallSiteId, Ca
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
-            | LoweredTail::Halt { .. } => {}
+            | LoweredTail::Unreachable => {}
         }
     }
     out
@@ -982,34 +967,15 @@ pub enum LoweredStep {
         base: ValueId,
         field: String,
     },
-    AssertLiteral {
-        source: ValueId,
-        literal: GroundValue,
-    },
-    AssertStruct {
-        source: ValueId,
-        module: ModuleId,
-    },
     RequireMapValue {
         value: ValueId,
         source: ValueId,
         key: GroundValue,
     },
-    AssertTuple {
-        source: ValueId,
-        arity: usize,
-    },
     TupleField {
         value: ValueId,
         source: ValueId,
         index: usize,
-    },
-    AssertEmptyList {
-        source: ValueId,
-    },
-    AssertSame {
-        source: ValueId,
-        value: ValueId,
     },
     SplitList {
         source: ValueId,
@@ -1027,9 +993,6 @@ pub enum LoweredStep {
         reader: ValueId,
         spec: LoweredBitFieldSpec,
         is_last: bool,
-    },
-    AssertBitstringDone {
-        reader: ValueId,
     },
 }
 

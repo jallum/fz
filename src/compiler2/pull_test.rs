@@ -2269,9 +2269,7 @@ fn fake_effect_materialized(
                 physical_captures: Vec::new(),
                 physical_params: Vec::new(),
                 steps: Vec::new(),
-                tail: LoweredTail::Halt {
-                    atom: "done".to_string(),
-                },
+                tail: LoweredTail::Unreachable,
             }],
             Vec::new(),
         ),

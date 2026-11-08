@@ -686,16 +686,10 @@ fn entry_dispatch_does_not_materialize_unneeded_structural_inputs() {
             captures: Vec::new(),
             physical_captures: Vec::new(),
             physical_params: Vec::new(),
-            steps: vec![
-                ProgramStep::AssertTuple {
-                    source: value,
-                    arity: 1,
-                },
-                ProgramStep::Const {
-                    value: result_value,
-                    literal: crate::ground_value::GroundValue::Int(42),
-                },
-            ],
+            steps: vec![ProgramStep::Const {
+                value: result_value,
+                literal: crate::ground_value::GroundValue::Int(42),
+            }],
             tail: BackendTail::Value {
                 value: result_value,
                 dest: ControlDestination::Return,

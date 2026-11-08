@@ -1,0 +1,10 @@
+#---
+# purpose: "= against a bitstring too short for its pattern raises MatchError showing the value"
+# expect: abort
+# oracle: 00712_a_bitstring_match_past_the_end_raises_match_error.oracle.exs
+#---
+def main() do
+  dbg(:before)
+  <<a::8>> = <<>>
+  dbg(a)
+end

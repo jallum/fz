@@ -1084,32 +1084,15 @@ impl ProgramCanon<'_> {
                 let base = self.names.value(*base);
                 format!("{name} = field {base}.{field}")
             }
-            BackendStep::AssertLiteral { source, literal } => {
-                format!("assert_literal {} {}", self.names.value(*source), ground(literal))
-            }
-            BackendStep::AssertStruct { source, module_name } => {
-                format!("assert_struct {} %{module_name}", self.names.value(*source))
-            }
             BackendStep::RequireMapValue { value, source, key } => {
                 let name = self.names.value(*value);
                 let source = self.names.value(*source);
                 format!("{name} = require_map_value {source}[{}]", ground(key))
             }
-            BackendStep::AssertTuple { source, arity } => {
-                format!("assert_tuple {} arity={arity}", self.names.value(*source))
-            }
             BackendStep::TupleField { value, source, index } => {
                 let name = self.names.value(*value);
                 let source = self.names.value(*source);
                 format!("{name} = tuple_field {source}.{index}")
-            }
-            BackendStep::AssertEmptyList { source } => {
-                format!("assert_empty_list {}", self.names.value(*source))
-            }
-            BackendStep::AssertSame { source, value } => {
-                let source = self.names.value(*source);
-                let value = self.names.value(*value);
-                format!("assert_same {source} {value}")
             }
             BackendStep::SplitList { source, head, tail } => {
                 let source = self.names.value(*source);
@@ -1136,9 +1119,6 @@ impl ProgramCanon<'_> {
                 let reader = self.names.value(*reader);
                 let spec = self.bit_spec(spec);
                 format!("{ok}, {value}, {next_reader} = bitstring_read {reader} {spec} last={is_last}")
-            }
-            BackendStep::AssertBitstringDone { reader } => {
-                format!("assert_bitstring_done {}", self.names.value(*reader))
             }
         }
     }
@@ -1275,7 +1255,7 @@ impl ProgramCanon<'_> {
                 self.receive(out, receive);
                 out.exit();
             }
-            BackendTail::Halt { atom } => out.put(&format!("tail halt :{atom}")),
+            BackendTail::Unreachable => out.put("tail unreachable"),
         }
     }
 
@@ -1518,6 +1498,17 @@ impl ProgramCanon<'_> {
             "prepared_keys",
             plan.prepared_keys.iter().map(ground).collect::<Vec<_>>(),
         );
+        if let Some(last_resort) = &plan.last_resort {
+            let showing = if last_resort.shows_subject {
+                " showing input 0"
+            } else {
+                ""
+            };
+            out.put(&format!(
+                "raises {} {:?}{showing}",
+                last_resort.exception, last_resort.message
+            ));
+        }
         lines(out)
     }
 

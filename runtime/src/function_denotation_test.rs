@@ -156,3 +156,33 @@ fn module_segment_boundaries_are_part_of_source_identity() {
         "source module segments retain the boundary"
     );
 }
+
+#[test]
+fn elixir_names_a_lambda_after_the_named_function_its_source_sits_in() {
+    let module = ModuleName::parse_dotted("M").expect("a module name");
+    let owner = Arc::new(FunctionDenotation::named(Some(module), "g".into(), 0));
+    let lambda = |owner, arity| {
+        Arc::new(FunctionDenotation {
+            origin: FunctionOrigin::Generated {
+                owner,
+                occurrence: LambdaOccurrence::from_u32(0),
+            },
+            arity,
+        })
+    };
+    let outer = lambda(Arc::clone(&owner), 1);
+    let inner = lambda(Arc::clone(&outer), 2);
+
+    assert_eq!(owner.elixir_name(), "M.g/0");
+    assert_eq!(outer.elixir_name(), "anonymous fn/1 in M.g/0");
+    assert_eq!(
+        inner.elixir_name(),
+        "anonymous fn/2 in M.g/0",
+        "a nested lambda is still named after the def around it"
+    );
+    assert_eq!(
+        named("main").elixir_name(),
+        "main/0",
+        "a function outside any module has no module to name"
+    );
+}

@@ -53,7 +53,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // fz-sc8.9: 614 -> 619. The list `count` reads Kernel's `length`,
         // whose proper-list check and abort path are bodies of their own.
         // fz-sc8.37: 619 -> 620. Kernel defines `&&`, `||` and `!` as macros.
-        runtime_demand_walks: 620,
+        // 620 -> 624: a tuple-field demand derived from an `=` arm settles one round after the floor it replaces, with the same final facts.
+        runtime_demand_walks: 624,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -1703,8 +1704,9 @@ fn build_executes_map_struct_bitstring_and_enum_halt_fixtures() {
 /// fz-bdk: a runtime fault must exit nonzero and name its reason on every
 /// native path. The dispatch miss is dynamically-arising (which atom `pick`
 /// returns depends on execution), so no compile-time diagnostic can close it;
-/// the compiled trap fires -- and the process-exit boundary must report it
-/// instead of unifying fault-halt with normal completion (exit 0, silent).
+/// the decision raises FunctionClauseError -- and the process-exit boundary
+/// must report it instead of unifying failure with normal completion (exit 0,
+/// silent).
 #[test]
 fn run_and_built_binary_report_runtime_dispatch_faults() {
     let source = "def pick(0), do: :first\n\
@@ -1727,7 +1729,7 @@ fn run_and_built_binary_report_runtime_dispatch_faults() {
         "side effects up to the trap survive, nothing after it: {run_stdout:?}"
     );
     assert!(
-        run_stderr.contains("function_clause"),
+        run_stderr.contains("** (FunctionClauseError) no function clause matching in handle/1"),
         "the fault reason must reach stderr: {run_stderr:?}"
     );
 
@@ -1755,7 +1757,7 @@ fn run_and_built_binary_report_runtime_dispatch_faults() {
         "side effects up to the trap survive, nothing after it: {built_stdout:?}"
     );
     assert!(
-        built_stderr.contains("function_clause"),
+        built_stderr.contains("** (FunctionClauseError) no function clause matching in handle/1"),
         "the fault reason must reach the built binary's stderr: {built_stderr:?}"
     );
     let _ = remove_file(&src_path);

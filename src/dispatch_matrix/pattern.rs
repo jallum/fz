@@ -15,7 +15,9 @@ use crate::source::Span;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub(crate) mod last_resort;
 pub(crate) mod source;
+pub(crate) use last_resort::LastResort;
 pub(crate) use source::{PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,9 +30,27 @@ pub(crate) struct PatternDispatchPlan<TypeHandle> {
     pub(crate) guards: Vec<PatternGuardExpr<TypeHandle>>,
     pub(crate) pinned: Vec<PatternPinnedInput>,
     pub(crate) prepared_keys: Vec<GroundValue>,
+    /// The exception a decision that ends with no outcome raises, or `None`
+    /// when the construct that owns the plan takes such a decision elsewhere:
+    /// a guard answers false, a `cond` tries its next condition, a `with`
+    /// takes its `else`, a `receive` waits.
+    pub(crate) last_resort: Option<LastResort>,
+    /// The tuple arity a winning decision proves of each input, read from the
+    /// graph as built. Narrowing may later drop the question that proved it,
+    /// because the input's type already answers it; the proof still holds.
+    proven_tuple_arities: Vec<Option<u32>>,
 }
 
 impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
+    /// The tuple arity every outcome of this plan proves `ordinal` to have.
+    pub(crate) fn proven_tuple_arity(&self, ordinal: usize) -> Option<usize> {
+        self.proven_tuple_arities
+            .get(ordinal)
+            .copied()
+            .flatten()
+            .map(|arity| arity as usize)
+    }
+
     pub(crate) fn outcome(&self, id: OutcomeId) -> Option<&PatternDispatchOutcome> {
         self.outcomes.get(id.0 as usize)
     }
@@ -116,6 +136,8 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
             guards: self.guards.clone(),
             pinned: self.pinned.clone(),
             prepared_keys: self.prepared_keys.clone(),
+            last_resort: self.last_resort.clone(),
+            proven_tuple_arities: self.proven_tuple_arities.clone(),
         })
     }
 
@@ -132,6 +154,8 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
             guards: self.guards.iter().map(|guard| guard.map_type_handle(map)).collect(),
             pinned: self.pinned.clone(),
             prepared_keys: self.prepared_keys.clone(),
+            last_resort: self.last_resort.clone(),
+            proven_tuple_arities: self.proven_tuple_arities.clone(),
         }
     }
 }
@@ -725,6 +749,7 @@ struct PatternDispatchProducer<TypeHandle> {
     outcomes: Vec<PatternDispatchOutcome>,
     guards: Vec<PatternGuardExpr<TypeHandle>>,
     projections: HashMap<(SubjectId, ProjectionKind), SubjectId>,
+    last_resort: Option<LastResort>,
 }
 
 impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
@@ -759,6 +784,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             outcomes: Vec::new(),
             guards: Vec::new(),
             projections: HashMap::new(),
+            last_resort: patterns.last_resort.clone(),
         })
     }
 
@@ -890,6 +916,9 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         let graph = compile_dispatch_matrix(matrix, inputs)
             .map_err(PatternDispatchError::Compile)?
             .graph;
+        let proven_tuple_arities = (0..self.input_count)
+            .map(|ordinal| graph.proven_input_arity(ordinal as u32))
+            .collect();
         Ok(PatternDispatchPlan {
             graph,
             #[cfg(test)]
@@ -899,6 +928,8 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             guards: self.guards,
             pinned: self.pinned,
             prepared_keys: self.prepared_keys,
+            last_resort: self.last_resort,
+            proven_tuple_arities,
         })
     }
 

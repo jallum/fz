@@ -84,24 +84,20 @@ value:
 
 ```text
 If              clone `values` into each branch, type both, union the results
-AssertLiteral   values[source] := source ∩ literal       (narrow on a match arm)
-AssertTuple     values[source] := source ∩ tuple(any×N)
-AssertEmptyList values[source] := source ∩ []
-AssertSame      values[source] = values[value] := source ∩ value
+Dispatch        each reachable outcome types its arm with the inputs the
+                plan's questions narrowed (calculate_dispatch_reachability)
 TupleField      values[value]  := tuple_field_type(source, index)
 SplitList       values[head] := elem(source); values[tail] := list(elem(source))
 ```
 
-An assertion on a `TupleField` also refines its owning tuple before a later
-sibling projection reads it. Thus `{:ok, handle} = result` filters `result` to
-its `:ok` tuple alternative before typing `handle`; the field proof is not
-discarded as a fact about a temporary projection.
+`=` is a decision like `case`, so `{:ok, handle} = result` narrows `result` to
+its `:ok` tuple alternative on the way into its one outcome, and `handle` is
+typed from that narrowed input.
 
 `If` clones the value map per branch so a narrowing in one arm does not leak into
 the other, then unions the arm results — the same shape `union` gives any branch.
 The clause-level dispatch already proved the head shape, so clause params bind
-without assertions; the `Assert*` steps narrow only where an inner `=` match or
-guard demands it.
+by projection alone.
 
 ### Cross-activation flow
 

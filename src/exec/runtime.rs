@@ -12,7 +12,7 @@
 //! pid. `run_until_idle()` drains the ready queue.
 //!
 //! Yield points in v1:
-//!   - HALT (entry fn returns / Term::Halt fires): trampoline returns
+//!   - HALT (entry fn returns, or the process fails): trampoline returns
 //!     null; worker transitions task to Exited.
 //!   - (post-.19.3) RECEIVE BLOCK: fz_receive sets state = Blocked and
 //!     returns a sentinel that breaks the trampoline. Worker stops; send

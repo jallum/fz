@@ -338,6 +338,7 @@ same DispatchGraph every time:</p>
   <tbody>
     <tr><td class="term">function clauses</td><td class="shape">the call args</td><td>DispatchGraph lowered inline into the function dispatch path</td></tr>
     <tr><td class="term">case</td><td class="shape">the case subject</td><td>DispatchGraph lowered inline into the current function</td></tr>
+    <tr><td class="term">pattern = value</td><td class="shape">the matched value</td><td>DispatchGraph lowered inline into the current function</td></tr>
     <tr><td class="term">with else</td><td class="shape">the failed <code>with</code> value</td><td>DispatchGraph lowered inline into the current function</td></tr>
     <tr><td class="term">receive</td><td class="shape">one mailbox message at a time</td><td>the same PatternDispatchPlan emitted as a small receive probe function</td></tr>
   </tbody>
@@ -346,9 +347,10 @@ same DispatchGraph every time:</p>
 <p>A missing clause is not a compile-time diagnostic, with or without a
 declared <code>@spec</code>. Function clauses, <code>case</code> arms, and
 <code>with else</code> arms are never checked against a domain for coverage.
-An input that reaches none of them halts at runtime with
-<code>:function_clause</code> or <code>:case_clause</code>, the same fault
-Elixir raises for the same program.</p>
+An input that reaches none of them raises <code>FunctionClauseError</code>
+or <code>CaseClauseError</code> at runtime, and a <code>=</code> that does not
+match raises <code>MatchError</code>, the same exceptions Elixir raises for the
+same program.</p>
 
 <p>What the compiler does flag at compile time is the opposite shape: a
 clause that can never run because an earlier clause already matches

@@ -408,7 +408,7 @@ fn complete_settled_call_result_types(
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
-            | LoweredTail::Halt { .. } => continue,
+            | LoweredTail::Unreachable => continue,
         };
         if callsites
             .get(&callsite)
@@ -777,9 +777,18 @@ fn collect_entry_callsite_needs(
             let _ = collect_entry_callsite_needs(entries, *then_entry, outgoing_need, out, walks);
             let _ = collect_entry_callsite_needs(entries, *else_entry, outgoing_need, out, walks);
         }
-        LoweredTail::Dispatch { dispatch, .. } => {
+        LoweredTail::Dispatch { inputs, dispatch, .. } => {
             for target in dispatch.successors() {
                 let _ = collect_entry_callsite_needs(entries, target, outgoing_need, out, walks);
+            }
+            // A decision that cannot fail, and whose every outcome proves its
+            // input to be an N-tuple, reads that input as N fields.
+            if !dispatch.plan.can_fail() {
+                for (ordinal, input) in inputs.iter().enumerate() {
+                    if let Some(arity) = dispatch.plan.proven_tuple_arity(ordinal) {
+                        tuple_demands.insert(*input, arity);
+                    }
+                }
             }
         }
         LoweredTail::Receive(receive) => {
@@ -790,13 +799,10 @@ fn collect_entry_callsite_needs(
                 let _ = collect_entry_callsite_needs(entries, after.entry, outgoing_need, out, walks);
             }
         }
-        LoweredTail::Halt { .. } => {}
+        LoweredTail::Unreachable => {}
     }
     for step in entry.steps.iter().rev() {
         match step {
-            LoweredStep::AssertTuple { source, arity } => {
-                tuple_demands.insert(*source, *arity);
-            }
             LoweredStep::Const { value, .. }
             | LoweredStep::Tuple { value, .. }
             | LoweredStep::List { value, .. }
@@ -828,11 +834,6 @@ fn collect_entry_callsite_needs(
                 tuple_demands.remove(value);
                 tuple_demands.remove(next_reader);
             }
-            LoweredStep::AssertLiteral { .. }
-            | LoweredStep::AssertStruct { .. }
-            | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. }
-            | LoweredStep::AssertBitstringDone { .. } => {}
         }
     }
     let answer = entry
@@ -1127,7 +1128,7 @@ fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
                     pending.push(target);
                 }
             }
-            LoweredTail::Halt { .. } => {}
+            LoweredTail::Unreachable => {}
         }
     }
     origins.into_boxed_slice()

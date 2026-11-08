@@ -1177,23 +1177,46 @@ carries the existing impl `CallTarget`, return flow, and extern marshal facts
 outside `DispatchMatrix`. The arm table is in dense `OutcomeId` order, so a
 winning outcome routes directly to its artifact-owned arm; it is not translated
 through a copied body-id table. Dispatch misses are unreachable for closed
-receiver unions and lower to an explicit halt/trap path; there is no residual
-protocol-stub outcome in the matrix.
+receiver unions and lower to `Term::Unreachable`, which traps; the interpreter
+reports them as internal errors. There is no residual protocol-stub outcome in
+the matrix.
 
-A fired trap fails the process through the one failure route, not unified with
-normal completion. Compiler2 lowering emits `Term::Halt` only for the fault
-traps (`function_clause`, `match_error`, unreachable-control); native codegen
-lowers it to `fz_panic` with the reason atom, and the interpreter's clause miss
-and `BackendTail::Halt` do the same through `fail_with_atom`. The process prints
-`** (ErlangError) Erlang error: :function_clause` and ends; drivers read
-`Process.failed`, never `halt_value` (a program may legitimately return a
-fault-shaped atom). See [process failure](process-failure.md).
+A decision that can end with no outcome names what it raises:
+`PatternDispatchPlan::last_resort` is a `LastResort` (exception module, message,
+and whether the message shows input 0), set when the rows are built through
+`SourcePatternRows::raising` and kept through narrowing and type mapping. A
+plan with no last resort belongs to a construct that handles the miss itself:
+a `with` binding (its `else` takes the value, or without one the `with` yields
+it), a guard, `receive`. Native lowering of a reached
+fail emits `Term::Raise`, which calls `fz_raise` or `fz_raise_showing`; the
+interpreter calls `failure::raise`. The process prints Elixir's line for that
+exception and ends; drivers read `Process.failed`, never `halt_value`. See
+[process failure](process-failure.md).
+
+A plan also records the tuple arity every outcome proves each input to have
+(`PatternDispatchPlan::proven_tuple_arity`), read from the graph as built so a
+later narrowing that drops the arity question keeps the proof. An inline
+decision that cannot fail and proves its input an N-tuple asks the call that
+produced the input for N fields, so `{a, b} = f()` receives `f`'s result as
+lanes.
+
+Runtime demand reads an inline decision's input as what its questions ask plus
+what its arms read of the subjects they are handed
+(`runtime_demand::inline_dispatch_input_demands`). The walk records each arm
+entry's parameter demand, and each is lifted back through the subject's
+projections: a tuple field becomes a field prefix, any other projection reads
+its source whole. An arm takes its parameters as whole values, so a handed
+subject is always read whole, and a callable handed to an arm is first-class
+(`escape`) while keeping the calls the arm makes on it. The callsite-return
+trace (`callsite_returns_feeding`) follows an arm parameter back to the input
+it was carved from, so a callable taken out of a call's result by `case` or
+`=` and captured across a later call keeps its boundary.
 
 `pattern_dispatch_from_source` is the source-pattern producer. It consumes the
 AST-facing `SourcePatternRows`, extracts positive proof paths into `Order::Source`
 arms, and keeps pattern-specific payloads as opaque outcome metadata: body id,
 leaf bindings, pinned inputs, prepared keys, and guard expressions.
-Inline lowering for function heads, `case`, and `with else`, plus interpreter
+Inline lowering for function heads, `case`, `=`, and `with else`, plus interpreter
 receive probes and native receive codegen, walk the resulting
 `PatternDispatchPlan` directly. Receive accept/reject policy is not encoded in
 `DispatchMatrix`; selective receive remains a producer/outcome policy layered

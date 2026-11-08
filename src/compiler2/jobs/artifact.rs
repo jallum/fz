@@ -44,8 +44,6 @@ use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::transport::{ClosureCallForm, closure_call_form};
 
-const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
-
 pub(crate) fn produce_materialized_executable_product(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -186,11 +184,8 @@ fn reachable_struct_modules(
         .chain(entries.iter().map(|entry| entry.steps.as_slice()))
     {
         for step in steps {
-            match step {
-                LoweredStep::Struct { module, .. } | LoweredStep::AssertStruct { module, .. } => {
-                    modules.insert(*module);
-                }
-                _ => {}
+            if let LoweredStep::Struct { module, .. } = step {
+                modules.insert(*module);
             }
         }
     }
@@ -579,7 +574,7 @@ fn required_resume_transport_positions(
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
-            | LoweredTail::Halt { .. } => None,
+            | LoweredTail::Unreachable => None,
         }) else {
             continue;
         };
@@ -658,7 +653,7 @@ fn required_local_backend_transport_positions(
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
-            | LoweredTail::Halt { .. } => continue,
+            | LoweredTail::Unreachable => continue,
         };
         let value_position = TransportPosition::Value {
             executable: symbol.clone(),
@@ -731,12 +726,6 @@ pub(crate) fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::
         LoweredStep::BitstringRead {
             ok, value, next_reader, ..
         } => vec![*ok, *value, *next_reader],
-        LoweredStep::AssertLiteral { .. }
-        | LoweredStep::AssertStruct { .. }
-        | LoweredStep::AssertTuple { .. }
-        | LoweredStep::AssertEmptyList { .. }
-        | LoweredStep::AssertSame { .. }
-        | LoweredStep::AssertBitstringDone { .. } => Vec::new(),
     }
 }
 
@@ -808,7 +797,7 @@ fn required_call_edge_transport_positions(
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
-            | LoweredTail::Halt { .. } => {}
+            | LoweredTail::Unreachable => {}
         }
     }
     positions.into_iter().collect()
@@ -944,7 +933,7 @@ fn materialize_call_edges(
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
-            | LoweredTail::Halt { .. } => {}
+            | LoweredTail::Unreachable => {}
         }
     }
     Ok(Some(call_edges))
@@ -1461,7 +1450,7 @@ fn collect_reachable_entries(
                 collect_reachable_entries(entries, after.entry, reachable_entries, order, out);
             }
         }
-        LoweredTail::Halt { .. } => {}
+        LoweredTail::Unreachable => {}
     }
 }
 
@@ -1470,9 +1459,7 @@ fn specialize_entry(mut entry: LoweredEntry, is_reachable: bool) -> LoweredEntry
         return entry;
     }
     entry.steps.clear();
-    entry.tail = LoweredTail::Halt {
-        atom: UNREACHABLE_CONTROL_ATOM.to_string(),
-    };
+    entry.tail = LoweredTail::Unreachable;
     entry
 }
 
@@ -1515,7 +1502,7 @@ fn reindex_entries(
                     after.entry = ids[&after.entry];
                 }
             }
-            LoweredTail::Halt { .. } => {}
+            LoweredTail::Unreachable => {}
         }
     }
 }
@@ -1707,7 +1694,7 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
         | LoweredTail::If { .. }
         | LoweredTail::Dispatch { .. }
         | LoweredTail::Receive(_)
-        | LoweredTail::Halt { .. } => {}
+        | LoweredTail::Unreachable => {}
     }
     effects
 }

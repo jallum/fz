@@ -1,0 +1,15 @@
+#---
+# purpose: "a call no clause of a module function matches raises FunctionClauseError naming the function"
+# expect: abort
+# oracle: 00709_a_function_with_no_matching_clause_raises_function_clause_error.oracle.exs
+#---
+defmodule Shapes do
+  def sides(:triangle), do: 3
+  def sides(:square), do: 4
+end
+
+def main() do
+  dbg(Shapes.sides(:square))
+  dbg(Shapes.sides(:circle))
+  dbg(:never_printed)
+end

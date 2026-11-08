@@ -536,6 +536,47 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
             .any(|id| matches!(self.node(id), Some(DispatchNode::Fail)))
     }
 
+    /// The tuple arity every winning decision proves input `ordinal` to have:
+    /// each path to an outcome passed a `TupleArity` question on that input.
+    /// `None` when some outcome is reached without that proof, or two outcomes
+    /// prove different arities.
+    pub(crate) fn proven_input_arity(&self, ordinal: u32) -> Option<u32> {
+        let mut proofs = std::collections::BTreeSet::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut pending = vec![(self.root, None)];
+        while let Some((id, proven)) = pending.pop() {
+            if !seen.insert((id, proven)) {
+                continue;
+            }
+            match self.node(id) {
+                Some(DispatchNode::Outcome { .. }) => {
+                    proofs.insert(proven);
+                }
+                Some(DispatchNode::Test {
+                    predicate,
+                    on_match,
+                    on_miss,
+                }) => {
+                    let asks_arity = match (&predicate.region, self.subject(predicate.subject).map(|s| &s.source)) {
+                        (Region::TupleArity(arity), Some(SubjectSource::Input { ordinal: input }))
+                            if *input == ordinal =>
+                        {
+                            Some(*arity)
+                        }
+                        _ => None,
+                    };
+                    pending.push((on_match.target, asks_arity.or(proven)));
+                    pending.push((on_miss.target, proven));
+                }
+                Some(DispatchNode::Fail) | None => {}
+            }
+        }
+        match proofs.into_iter().collect::<Vec<_>>().as_slice() {
+            [Some(arity)] => Some(*arity),
+            _ => None,
+        }
+    }
+
     /// Whether the first thing a decision does is win an outcome.
     pub(crate) fn is_outcome_at_root(&self) -> bool {
         matches!(self.node(self.root), Some(DispatchNode::Outcome { .. }))

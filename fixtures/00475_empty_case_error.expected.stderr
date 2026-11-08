@@ -1,1 +1,3 @@
-case_clause
+** (CaseClauseError) no case clause matching:
+
+    1

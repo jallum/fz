@@ -366,3 +366,37 @@ fn a_type_question_the_parameter_already_asks_is_asked_once() {
     assert_eq!(type_questions(&plan).len(), 1);
     assert!(plan.guards.is_empty());
 }
+
+#[test]
+fn a_plan_carries_the_exception_its_rows_raise_through_every_rebuild() {
+    let rows = vec![PatternRow {
+        patterns: vec![sp(Pattern::Int(1))],
+        preconditions: Vec::new(),
+        guard: None,
+        body_id: 0,
+    }];
+    let plan = pattern_dispatch_from_source::<Ty>(
+        SourcePatternRows::lexical(1, rows.clone()).raising(LastResort::case_clause()),
+    )
+    .expect("the row compiles");
+    assert_eq!(plan.last_resort, Some(LastResort::case_clause()));
+
+    let trimmed = plan
+        .trimmed(&|_| crate::dispatch_matrix::LiveEdges::Match)
+        .expect("a narrowed test trims the plan");
+    assert_eq!(
+        trimmed.last_resort, plan.last_resort,
+        "trimming keeps what the construct raises"
+    );
+    let mapped = plan.map_type_handle(&mut |ty| *ty);
+    assert_eq!(
+        mapped.last_resort, plan.last_resort,
+        "a plan read through another type handle raises the same exception"
+    );
+
+    let unraised = pattern_dispatch_from_source::<Ty>(SourcePatternRows::lexical(1, rows)).expect("the row compiles");
+    assert_eq!(
+        unraised.last_resort, None,
+        "rows that do not say what they raise leave the miss to their construct"
+    );
+}

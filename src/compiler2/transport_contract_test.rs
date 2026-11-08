@@ -1810,7 +1810,8 @@ fn assert_suspend_continuation_captures(world: &World, continuation: super::tran
 
 #[test]
 fn compiler2_transport_plan_publishes_tuple_returned_callable_captured_by_resume() {
-    let source = r#"
+    assert_tuple_returned_callable_resume_publishes_its_boundary(
+        r#"
 def make(a, b, c), do: {:ok, a + b + c, fn (x) -> a + b + c + x end}
 
 def main() do
@@ -1818,8 +1819,31 @@ def main() do
   dbg(n)
   f.(3)
 end
-"#;
+"#,
+    );
+}
 
+/// A `case` arm that takes the callable out of the tuple calls it just as a
+/// match does: the arm's call reaches back through the decision to the
+/// resumed tuple, so the callable keeps its call surface and its boundary.
+#[test]
+fn compiler2_transport_plan_publishes_tuple_returned_callable_a_case_arm_captures() {
+    assert_tuple_returned_callable_resume_publishes_its_boundary(
+        r#"
+def make(a, b, c), do: {:ok, a + b + c, fn (x) -> a + b + c + x end}
+
+def main() do
+  case make(1, 10, 2) do
+    {:ok, n, f} ->
+      dbg(n)
+      f.(3)
+  end
+end
+"#,
+    );
+}
+
+fn assert_tuple_returned_callable_resume_publishes_its_boundary(source: &str) {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -5791,7 +5815,7 @@ fn assert_backend_body_has_typed_targets(body: &super::artifact::BackendBody, ca
             | BackendTail::If { .. }
             | BackendTail::Dispatch { .. }
             | BackendTail::Receive(_)
-            | BackendTail::Halt { .. } => {}
+            | BackendTail::Unreachable => {}
         }
     }
 }

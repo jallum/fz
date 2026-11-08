@@ -43,8 +43,6 @@ use super::super::transport::{BoundValue, CallableId, ShapeDescr, ShapeId, Trans
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
 
-const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
-
 pub(crate) fn produce_native_program(
     world: &mut World,
     telemetry: &impl crate::telemetry::Telemetry,
@@ -100,12 +98,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let mut atom_ids = HashMap::new();
         for (index, atom) in program.atom_names.iter().enumerate() {
             atom_ids.insert(atom.as_ref().clone(), index as u32);
-        }
-        for atom in ["function_clause", "match_error"] {
-            if !atom_ids.contains_key(atom) {
-                let next = atom_ids.len() as u32;
-                atom_ids.insert(atom.to_string(), next);
-            }
         }
         let mut module = ModuleBuilder::new();
         let executable_fns = program
@@ -417,7 +409,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 self.lower_callable_construction_wrapper_member(&mut ctx, boundary, 0, &captures, &args)?;
             }
             None if boundary.members.is_empty() => {
-                ctx.halt_with_atom(self.atom_id("function_clause"));
+                ctx.set_term(Term::Unreachable);
             }
             None => {
                 return Err(incomplete_native_program(
@@ -458,7 +450,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         };
         match node {
             DispatchNode::Fail => {
-                ctx.halt_with_atom(self.atom_id("function_clause"));
+                ctx.set_term(Term::Unreachable);
                 Ok(())
             }
             DispatchNode::Outcome { outcome, .. } => {
@@ -1315,7 +1307,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 } => {
                     // A reference the transport plan settled to `Nothing` never
                     // reaches here: backend lowering already omits it
-                    // (`construction_step_or_omitted`), so every surviving
+                    // (`step_or_omitted_when_absent`), so every surviving
                     // `FunctionRef` carries lanes.
                     let shape = value_shape(executable, *value);
                     if let Some(identity) = construction {
@@ -1432,41 +1424,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let (var, _) = ctx.emit_let(Prim::StructField(base, field.clone()));
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
-                BackendStep::AssertLiteral { source, literal } => {
-                    let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let expected = lower_backend_literal(ctx, &self.atom_ids, self.world.types_mut(), literal)?;
-                    let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, source, expected));
-                    ctx.assert_truthy(matches, self.atom_id("match_error"));
-                }
-                BackendStep::AssertStruct { source, module_name } => {
-                    let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let predicate = RuntimeTypePredicate::named_struct(module_name.clone());
-                    let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTest(source, Box::new(predicate)));
-                    ctx.assert_truthy(matches, self.atom_id("match_error"));
-                }
                 BackendStep::RequireMapValue { value, source, key } => {
                     let source = self.env_runtime_var(ctx, executable, env, *source);
                     let key = lower_backend_literal(ctx, &self.atom_ids, self.world.types_mut(), key)?;
                     let (var, _) = ctx.emit_let(Prim::MatcherMapGet(source, key));
-                    let (is_miss, _) = ctx.emit_let(Prim::IsMatcherMapMiss(var));
-                    let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
-                    let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, is_miss, false_v));
-                    ctx.assert_truthy(matches, self.atom_id("match_error"));
                     self.bind_runtime_value(ctx, executable, env, *value, var);
-                }
-                BackendStep::AssertTuple { source, arity } => {
-                    let realized = env_local_value(env, *source)?;
-                    if realized
-                        .transport_shape()
-                        .and_then(|shape| self.world.tuple_arity(shape))
-                        == Some(*arity)
-                    {
-                        continue;
-                    }
-                    let source = self.materialize_native_value(ctx, None, &realized)?;
-                    let tuple_ty = RuntimeTypePredicate::tuple_arity(*arity);
-                    let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTest(source, Box::new(tuple_ty)));
-                    ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::TupleField { value, source, index } => {
                     let realized = env_local_value(env, *source)?;
@@ -1477,17 +1439,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         let (var, _) = ctx.emit_let(Prim::TupleField(tuple, *index as u32));
                         bind_local_value(ctx, executable, env, *value, NativeBoundValue::Runtime(var));
                     }
-                }
-                BackendStep::AssertEmptyList { source } => {
-                    let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let (matches, _) = ctx.emit_let(Prim::IsEmptyList(source));
-                    ctx.assert_truthy(matches, self.atom_id("match_error"));
-                }
-                BackendStep::AssertSame { source, value } => {
-                    let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let value = self.env_runtime_var(ctx, executable, env, *value);
-                    let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, source, value));
-                    ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::SplitList { source, head, tail } => {
                     let source = self.env_runtime_var(ctx, executable, env, *source);
@@ -1525,11 +1476,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     self.bind_runtime_value(ctx, executable, env, *value, value_var);
                     let (reader_var, _) = ctx.emit_let(Prim::TupleField(result, 2));
                     self.bind_runtime_value(ctx, executable, env, *next_reader, reader_var);
-                }
-                BackendStep::AssertBitstringDone { reader } => {
-                    let reader = self.env_runtime_var(ctx, executable, env, *reader);
-                    let (done, _) = ctx.emit_let(Prim::BitReaderDone(reader));
-                    ctx.assert_truthy(done, self.atom_id("match_error"));
                 }
             }
         }
@@ -1808,11 +1754,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 bindings,
                 dispatch,
             } => {
-                let input_vars = self.env_runtime_vars(ctx, executable, env, inputs);
+                // A decision reads an input in whatever form it is bound in: a
+                // tuple held as lanes is questioned lane-wise, and an input it
+                // never reads was never bound.
+                let input_values = inputs
+                    .iter()
+                    .map(|input| env.cloned_value(*input).unwrap_or(NativeBoundValue::Absent))
+                    .collect();
                 let pinned_vars = self.env_runtime_vars(ctx, executable, env, &bindings.pinned);
                 let prepared = self.env_runtime_vars(ctx, executable, env, &bindings.prepared);
-                let mut state = DispatchState::resolved(
-                    input_vars,
+                let mut state = DispatchState::new(
+                    input_values,
                     Vec::new(),
                     DispatchBindings {
                         pinned: pinned_vars,
@@ -1899,8 +1851,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 });
                 Ok(())
             }
-            BackendTail::Halt { atom } => {
-                ctx.halt_with_atom(self.atom_id(atom));
+            BackendTail::Unreachable => {
+                ctx.set_term(Term::Unreachable);
                 Ok(())
             }
         }
@@ -2000,12 +1952,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         };
         match node {
             DispatchNode::Fail => {
-                ctx.halt_with_atom(self.atom_id(UNREACHABLE_CONTROL_ATOM));
+                ctx.set_term(Term::Unreachable);
                 Ok(())
             }
             DispatchNode::Outcome { outcome, .. } => {
                 let Some(arm) = dispatch.arm(outcome) else {
-                    ctx.halt_with_atom(self.atom_id(UNREACHABLE_CONTROL_ATOM));
+                    ctx.set_term(Term::Unreachable);
                     return Ok(());
                 };
                 let (callee, call_args) =
@@ -2950,6 +2902,40 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }
     }
 
+    /// A decision's last resort: the plan's exception, raised through the one
+    /// panic route. A message that shows the subject reads the plan's first
+    /// input.
+    fn raise_last_resort(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &DispatchState,
+    ) -> Result<(), FatalError> {
+        let Some(last_resort) = &plan.last_resort else {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!("a dispatch with no last resort reached its fail in {:?}", ctx.origin),
+            ));
+        };
+        let subject = if last_resort.shows_subject {
+            let input = state.dispatch_inputs.first().ok_or(FatalError)?;
+            Some(self.materialize_native_value(ctx, None, input)?)
+        } else {
+            None
+        };
+        let (exception, _) = ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(last_resort.exception))));
+        let message = last_resort.message.as_bytes().to_vec();
+        let bit_len = 8 * message.len() as u64;
+        let (message, _) = ctx.emit_let(Prim::ConstBitstring(message, bit_len));
+        ctx.set_term(Term::Raise {
+            exception,
+            message,
+            subject,
+        });
+        Ok(())
+    }
+
     fn lower_dispatch_node(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -2966,13 +2952,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ));
         };
         match node {
-            DispatchNode::Fail => {
-                ctx.halt_with_atom(self.atom_id("function_clause"));
-                Ok(())
-            }
+            DispatchNode::Fail => self.raise_last_resort(ctx, dispatch.plan(), state),
             DispatchNode::Outcome { outcome, .. } => {
                 let Some(clause_index) = dispatch.clause_index(outcome) else {
-                    ctx.halt_with_atom(self.atom_id("function_clause"));
+                    ctx.set_term(Term::Unreachable);
                     return Ok(());
                 };
                 let args = state.forwarded_args.clone();
@@ -3027,11 +3010,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         match node {
             DispatchNode::Fail => {
                 let Some(miss_entry) = miss_entry else {
-                    return Err(incomplete_native_program(
-                        self.telemetry,
-                        self.root_id,
-                        format!("a dispatch with no miss entry reached its fail in {:?}", ctx.origin),
-                    ));
+                    return self.raise_last_resort(ctx, plan, state);
                 };
                 let args = self.entry_capture_args(ctx, executable, entries, miss_entry, env)?;
                 self.transfer_to_entry(ctx, executable, entries, entry_fns, miss_entry, args);
@@ -3597,9 +3576,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     /// dispatch's answer, and it is why `case <<len, rest :: binary>> -> ...`
     /// used to run on the interpreter and refuse to lower natively.
     ///
-    /// A region test yields a boolean, so unlike the irrefutable binding path —
-    /// which reads the same fields and calls `assert_truthy` on each — a failed
-    /// read has to fall through rather than abort. The reads cannot simply be
+    /// A region test yields a boolean, so unlike the binding path — which
+    /// reads fields the dispatch has already proven present — a failed read
+    /// has to fall through rather than abort. The reads cannot simply be
     /// chained and their `ok` flags combined either: `fz_bs_read_field`
     /// allocates a one-tuple `[false]` on failure, so projecting field 1 or 2
     /// out of a failed read is out of bounds. Hence short-circuit control flow,
@@ -4610,7 +4589,8 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
                 | Term::If { .. }
                 | Term::Return(_)
                 | Term::ReturnLanes(_)
-                | Term::Halt(_) => {}
+                | Term::Raise { .. }
+                | Term::Unreachable => {}
             }
         }
     }
@@ -4861,7 +4841,6 @@ struct NativeFnCtx {
     stmt_counts: HashMap<BlockId, usize>,
     value_types: HashMap<Var, Ty>,
     extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
-    failure_blocks: HashMap<u32, BlockId>,
     origin: NativeBodyOrigin,
     entry_abi: NativeEntryAbi,
     param_reprs: Vec<AbiValueRepr>,
@@ -4895,7 +4874,6 @@ impl NativeFnCtx {
             stmt_counts: HashMap::new(),
             value_types: HashMap::new(),
             extern_marshals: HashMap::new(),
-            failure_blocks: HashMap::new(),
             origin,
             entry_abi,
             param_reprs,
@@ -4962,34 +4940,6 @@ impl NativeFnCtx {
 
     fn set_term(&mut self, term: Term) {
         self.builder.set_terminator(self.current_block, term);
-    }
-
-    fn halt_with_atom(&mut self, atom: u32) {
-        let (reason, _) = self.emit_let(Prim::Const(Const::Atom(atom)));
-        self.set_term(Term::Halt(reason));
-    }
-
-    fn assert_truthy(&mut self, cond: Var, fail_atom: u32) {
-        let pass = self.builder.block(Vec::new());
-        let fail = if let Some(fail) = self.failure_blocks.get(&fail_atom).copied() {
-            fail
-        } else {
-            let saved = self.current_block;
-            let fail = self.builder.block(Vec::new());
-            self.current_block = fail;
-            let (reason, _) = self.emit_let(Prim::Const(Const::Atom(fail_atom)));
-            self.set_term(Term::Halt(reason));
-            self.current_block = saved;
-            self.failure_blocks.insert(fail_atom, fail);
-            fail
-        };
-        self.set_term(Term::If {
-            cond,
-            then_b: pass,
-            else_b: fail,
-            origin: BranchOrigin::PatternBind,
-        });
-        self.current_block = pass;
     }
 
     fn finish(self) -> (crate::fz_ir::FnIr, NativeBody) {
