@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T13:06:21Z",
+  "description": "lib/json.fz type_name/1 (used in the 'protocol JSON.Encoder not implemented for ...' and String.Chars refusals) names Tuple, PID, Reference and otherwise falls through to \"Function\", so a struct without a derive, a resource or any other value is reported as a Function. Elixir names the struct module (e.g. 'protocol JSON.Encoder not implemented for Outer.Inner (a struct)') and 'Function' only for a function. Make the fallback name the value's actual type for every value kind, with oracle fixtures for a struct and a function on all three paths.",
+  "id": "fz-sc8.93",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "JSON.Encoder's refusal names the value's type as Elixir does",
+  "type": "bug",
+  "updated_at": "2026-11-08T13:06:21Z"
+}
