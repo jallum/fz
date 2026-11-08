@@ -228,9 +228,10 @@ def main() do
 end
 ```
 
-When a value is sent across processes, it is deep-copied into the
-recipient's heap. There are no shared references because there are no
-references — only values.
+When a value is sent across processes, the sender copies it once, into
+memory the recipient then adopts. There are no shared references because
+there are no references — only values. A process that sends to itself copies
+nothing: the message goes straight onto its own mailbox.
 
 ### Selective receive, sharpened
 
@@ -292,27 +293,36 @@ the **sending** side.
 
 So when `send(...)` runs:
 
-- **If the message matches**, the matcher builds the resumption
-  closure on the sender's heap with the bound values baked in. That
-  closure — and *only* that closure — gets deep-copied into the
-  receiver's heap. The parts of the message the receiver didn't name
-  (the `:reply` tag, the matched ref, anything else) stay on the
-  cutting room floor in the sender's heap and get collected normally.
-  The receiver wakes up, the trampoline tail-calls the closure, and
-  the clause body runs with exactly the values it asked for already
-  in place — no rescan, no rebinding, no branch selection on the
-  receiver side.
+- **If the message matches**, the sender copies *only the values the
+  pattern bound* into a fresh segment of its own memory and queues that
+  segment for the receiver. The parts of the message the receiver didn't
+  name (the `:reply` tag, the matched ref, anything else) stay in the
+  sender's heap and get collected normally. The receiver wakes up,
+  adopts the segment, builds the resumption closure over the values it
+  asked for, and the clause body runs — no rescan, no rebinding, no
+  branch selection on the receiver side. A pattern that binds nothing
+  copies nothing.
 - **If the message doesn't match the parked receiver**, BEAM
   semantics still apply: the message gets enqueued at the end of the
   mailbox (a later `receive` might want it), and the parked receiver
   stays parked. What we *don't* do is wake the receiver up just to
-  look at a message we already know it would reject.
+  look at a message we already know it would reject. The sender copies
+  the whole message once, into a segment the receiver adopts the next
+  time it runs.
 
 That's the trick: compilation lets us turn "send the whole message,
 then match it on arrival" into "match first, then send only what was
 asked for" — while keeping BEAM mailbox semantics intact. The
 receiver told us, by writing a `receive`, exactly what it cared
 about; the sender does the work on its own time and its own heap.
+
+A message is copied once, by the sender, into memory the receiver
+adopts. No process ever writes into another process's heap: the receiver
+grafts the sender's segment onto its own heap with pointer moves, and its
+next garbage collection copies out whatever is still live. Because the
+receiver's matcher runs on the sender, a `when` guard in a `receive`
+runs there too, so it must be pure; a call such as `self()` in a guard
+names the receiver, because the receiver evaluates it before it parks.
 
 The receiver gets concierge treatment.
 

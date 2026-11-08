@@ -421,16 +421,20 @@ another.
 
 `send` is an `any` boundary. The caller boxes a known scalar only to send it as
 `any`, then calls `fz_send_ref(pid, msg_ref)`. The runtime
-(`src/exec/runtime.rs send_via`) copies the value into the receiver's world
-rather than sharing heap pointers across processes:
+(`src/exec/runtime.rs send_via`) never shares heap pointers across processes:
+the sender copies what the receiver will keep into a gift window on its own heap
+and queues the segment on the receiver's `in_queue`; the receiver grafts it at
+its next dispatch (see [scheduler](scheduler-zero-arg-closures.md)):
 
 ```text
 self-send:                push the sender's own ref onto its mailbox; nothing is copied
 cross-process, parked:    run the receiver's matcher on the sender's ref;
-                          on a hit, deep-copy the exact outcome arguments into the
-                          receiver heap and wake it; on a miss, deep-copy the
-                          whole message into the receiver mailbox
-cross-process, not waiting: deep-copy the whole message into the receiver mailbox
+                          on a hit, gift the bound values (nothing when the clause
+                          binds none) and wake the receiver; on a miss, gift the
+                          whole message, which joins the receiver's mailbox when
+                          it drains its in-queue
+cross-process, not waiting: gift the whole message; it joins the receiver's
+                          mailbox when it drains its in-queue
 ```
 
 There is no scalar side path inside send.

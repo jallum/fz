@@ -140,6 +140,15 @@ nothing, as for the other runtime events. `tests/fixture_matrix.rs`
 pins the event sequence of fixtures 00695 and 00696 on the `run` and `interp`
 paths.
 
+## Collection counts
+
+`GcStats::adopted_blocks` and `GcStats::adopted_bytes` (`runtime/src/heap/stats.rs`)
+count the grafted gift blocks, and their fill, that a Cheney pass consumed. They
+live in `Heap::last_gc_stats`, which each collection overwrites. No event
+carries them: they are not on the telemetry bus and `JsonlBackend` renders no
+field for them. The send-side cost of a gift is the `gift_bytes` and
+`gift_blocks` of `fz.runtime.send.probe`.
+
 ## Program Output
 
 `dbg`/print lines are semantic program output, not telemetry. `emit_print_line`

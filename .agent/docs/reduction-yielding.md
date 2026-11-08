@@ -126,7 +126,9 @@ Adopted blocks take no part in the grow/keep/shrink decision, which is made
 from the heap's own footprint; the adopted fill is added to the band's target,
 so to-space is the band's own target plus the adopted fill, and with nothing
 adopted the sizing is unchanged. `GcStats::adopted_blocks` and
-`GcStats::adopted_bytes` report what a pass consumed.
+`GcStats::adopted_bytes` report what a pass consumed; they stay in
+`Heap::last_gc_stats` and no telemetry event carries them
+([runtime telemetry](runtime-telemetry.md#collection-counts)).
 
 Compiled yield telemetry still samples the slow path that materializes a
 continuation closure:
