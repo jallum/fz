@@ -7,7 +7,7 @@
     "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:43Z",
-  "description": "No Collectable, no Enum.into. Needed by `for ... into:` and MapSet. Impls for List and Map, Elixir semantics.",
+  "description": "No Collectable, no Enum.into. Needed by `for ... into:` and MapSet. Impls for List and Map, Elixir semantics.; Proposal page /Users/j5n/Workspace/fz-sc8.12.html (2026-11-08, awaiting approval): lib/collectable.fz with into/1 and impls for List and Map in Elixir's shape; Enum.into/2,3 via the protocol; registered in src/modules/runtime_library.rs + lib/runtime.fz alias. Deviation to approve: no :halt on exception until try/rescue (fz-3ul) is on this stack.",
   "id": "fz-sc8.12",
   "labels": [],
   "parent": "fz-sc8",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Collectable protocol and Enum.into/2",
   "type": "feature",
-  "updated_at": "2026-10-17T19:00:45Z"
+  "updated_at": "2026-11-08T19:09:20Z"
 }
