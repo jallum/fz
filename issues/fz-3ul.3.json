@@ -7,14 +7,15 @@
   "blocks": [
     "fz-3ul.5"
   ],
+  "closed_at": "2026-11-08T06:14:32Z",
   "created": "2026-11-08T00:15:24Z",
   "description": "Plan: /Users/j5n/Workspace/fz-exceptions.html, decision 1 (kinds), ticket 3.\n\nBuild: delivery carries kind error | throw | exit. Kernel gains throw/1 and exit/1 (never), reraise/2 (re-raises an exception with a stacktrace argument that is accepted and ignored). catch heads: one head catches throws only; two heads catch kind, value with guards allowed; `catch :error, r` binds the raw value without wrapping. rescue never matches throw or exit. Uncaught throw prints `** (throw) \u003cvalue\u003e`; uncaught exit prints `** (exit) \u003creason\u003e`; both exit 1 from main, except exit(:normal), exit(:shutdown), exit({:shutdown, n}) which follow the Elixir CLI (status 0, 0, n) and print nothing.\n\nAcceptance (interp, run, build; elixir oracle):\n- throw caught by one-head catch; by `catch :throw, v`; guard on kind (`catch k, v when k == :throw`).\n- `catch :exit, r` catches exit/1; rescue alone lets a throw and an exit propagate to an outer catch.\n- uncaught throw and uncaught exit lines and status; exit({:shutdown, 7}) status 7 with nothing printed.\n- reraise/2 inside a rescue reaches the outer rescue with the same exception.\n- a throw in a spawned process prints its line and main continues.\n- unit tests for the kind tag in delivery and the status mapping.\n- exceptions doc gains kinds and the CLI status table; lib/kernel.fz docs for throw/exit/reraise.\n- gate green as in the epic.",
   "id": "fz-3ul.3",
   "labels": [],
   "parent": "fz-3ul",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "throw, exit and catch are kinds on the same handler stack",
   "type": "feature",
-  "updated_at": "2026-11-08T04:29:58Z"
+  "updated_at": "2026-11-08T06:14:32Z"
 }
