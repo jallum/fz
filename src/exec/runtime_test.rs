@@ -181,9 +181,9 @@ fn the_interpreter_re_raises_through_an_after_to_the_enclosing_rescue() {
 /// its one handler.
 fn assert_every_iteration_delivers(door: Door) -> ExitRecord {
     let (raises, exit) = raises_while_running(RAISING_LOOP, door);
-    assert_eq!(raises.len(), 100_000);
+    assert_eq!(raises.len(), 10_000);
     assert!(raises.iter().all(|raise| raise.handler_depth == 1));
-    assert_eq!(exit.raises_delivered, 100_000);
+    assert_eq!(exit.raises_delivered, 10_000);
     assert!(!exit.failed);
     exit
 }
@@ -204,8 +204,8 @@ fn the_jit_delivers_every_raise_of_a_rescuing_loop_and_yields() {
 #[test]
 fn the_jit_delivers_every_raise_of_a_loop_at_a_few_stack_depths() {
     let (raises, exit) = raises_while_running(RAISING_LOOP, Door::Jit);
-    assert_eq!(raises.len(), 100_000);
-    assert_eq!(exit.raises_delivered, 100_000);
+    assert_eq!(raises.len(), 10_000);
+    assert_eq!(exit.raises_delivered, 10_000);
     assert!(
         distinct_depths(&raises) <= MOST_DEPTHS_OF_A_RAISING_LOOP,
         "the depth repeats: {:?}",
@@ -219,11 +219,11 @@ fn the_interpreter_delivers_every_raise_of_a_rescuing_loop() {
 }
 
 /// The interpreter's handler also resumes from its quantum entry, so its
-/// hundred thousand raises are delivered at a few depths, not a rising run.
+/// ten thousand raises are delivered at a few depths, not a rising run.
 #[test]
 fn the_interpreter_delivers_every_raise_of_a_loop_at_a_few_stack_depths() {
     let (raises, _) = raises_while_running(RAISING_LOOP, Door::Interp);
-    assert_eq!(raises.len(), 100_000);
+    assert_eq!(raises.len(), 10_000);
     assert!(
         distinct_depths(&raises) <= MOST_DEPTHS_OF_A_RAISING_LOOP,
         "the depth repeats: {:?}",

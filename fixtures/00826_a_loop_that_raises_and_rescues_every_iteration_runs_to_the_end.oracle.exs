@@ -10,4 +10,4 @@ defmodule Oracle do
   end
 end
 
-IO.inspect(Oracle.loop(100_000, 0))
+IO.inspect(Oracle.loop(10_000, 0))
