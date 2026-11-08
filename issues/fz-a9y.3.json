@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-a9y.4"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-a9y",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A heap can open, cut and graft a gift segment",
   "type": "task",
-  "updated_at": "2026-11-07T23:30:22Z"
+  "updated_at": "2026-11-08T00:26:41Z"
 }
