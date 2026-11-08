@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T22:51:54Z",
+  "description": "No fixture sends more than six messages, so the two costs that grow with chain length (.4, .5) and the sizing behaviour (.7, .8) have no instrument. These fixtures are also the numbers the multicore lock-scope decision should be made from.\n\nDone when:\n- Fixture (next free in the fz-a9y block after .2's): many senders into one receiver whose receive has a guard (fan-in); and a second fixture: two processes passing a large list back and forth (large messages).\n- Each pins, through runtime tests over the telemetry stream: probe outcome counts, gift_bytes equality across interp, run and build, the pool census, and from the gc event the number of collections and the bytes they copied. No timing pins; the matrix's slow-fixture signal covers that.\n- The 64-byte JIT/interp gift_bytes difference noted during fz-a9y was not reproduced on any existing fixture; the fan-in fixture's equality pin is where a real difference will surface with a program attached.\n- Documentation in the same commit: every .agent/docs page, guide (guides/*.html), README.md section and fixture README that describes a mechanism this ticket changes or removes is rewritten to the present fact in the same commit, and a grep for the old names and phrases over .agent, guides, README.md and fixtures returns nothing. Full gate green (--workspace --all-targets plus doc tests, fixture matrix with --test-threads=1). Commit in Why / What changed / Verification form. No co-author trailer, no attribution line.",
+  "id": "fz-gl6.9",
+  "labels": [],
+  "parent": "fz-gl6",
+  "priority": 2,
+  "status": "open",
+  "title": "Fan-in and large-message fixtures pin collection anatomy and gift equality across paths",
+  "type": "task",
+  "updated_at": "2026-11-08T22:51:54Z"
+}
