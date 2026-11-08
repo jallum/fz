@@ -1079,6 +1079,68 @@ pub extern "C" fn fz_float_to_binary(process: *mut Process, value: f64) -> u64 {
     alloc_text(process, &crate::any_value::debug::float_to_string(value))
 }
 
+/// `Float.parse/1`: `[]` when the binary does not start with a float, else the
+/// two-element list `[float, rest]` that the `Float` module builds its tuple from.
+///
+/// The prefix rules and the rounding live in `float_prefix`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_float_parse(process: *mut Process, binary_ref: u64) -> u64 {
+    let (ptr, len) = byte_aligned_binary_slice(binary_ref, "fz_float_parse");
+    let bytes = unsafe { from_raw_parts(ptr, len) };
+    let Some((float, consumed)) = float_prefix(bytes) else {
+        return AnyValueRef::empty_list().raw_word();
+    };
+    let rest = &bytes[consumed..];
+    let heap = &mut unsafe { &mut *process }.heap;
+    let rest_ref = heap.alloc_bitstring(rest, (rest.len() * 8) as u64).ref_word();
+    let tail = heap
+        .alloc_list_cons_ref(rest_ref, AnyValueRef::empty_list())
+        .expect("fz_float_parse tail");
+    heap.alloc_list_cons_float(float, tail)
+        .expect("fz_float_parse list")
+        .raw_word()
+}
+
+/// The float at the start of `bytes` and how many bytes spell it, or `None`.
+///
+/// A float is an optional sign, one or more digits, an optional fraction (a
+/// `.` and one or more digits) and an optional exponent (`e` or `E`, an
+/// optional sign and one or more digits). A `.` or `e` that is not followed by
+/// its digits is not part of the number, so `"1."` is `1.0` with `"."` left
+/// over. A value too large for a float is `None`, as in Elixir. The text of
+/// the prefix is converted by Rust's `f64` parser, which rounds correctly.
+fn float_prefix(bytes: &[u8]) -> Option<(f64, usize)> {
+    fn digits_from(bytes: &[u8], start: usize) -> usize {
+        start
+            + bytes[start.min(bytes.len())..]
+                .iter()
+                .take_while(|b| b.is_ascii_digit())
+                .count()
+    }
+    let sign = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    let whole_end = digits_from(bytes, sign);
+    if whole_end == sign {
+        return None;
+    }
+    let mut end = whole_end;
+    if bytes.get(end) == Some(&b'.') {
+        let fraction_end = digits_from(bytes, end + 1);
+        if fraction_end > end + 1 {
+            end = fraction_end;
+        }
+    }
+    if matches!(bytes.get(end), Some(b'e' | b'E')) {
+        let exponent_sign = usize::from(matches!(bytes.get(end + 1), Some(b'+' | b'-')));
+        let exponent_end = digits_from(bytes, end + 1 + exponent_sign);
+        if exponent_end > end + 1 + exponent_sign {
+            end = exponent_end;
+        }
+    }
+    let text = std::str::from_utf8(&bytes[..end]).expect("ASCII prefix");
+    let float: f64 = text.parse().expect("a float prefix parses");
+    float.is_finite().then_some((float, end))
+}
+
 /// The text `dbg` prints for the value, as a binary.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_inspect(process: *mut Process, ref_word: u64) -> u64 {

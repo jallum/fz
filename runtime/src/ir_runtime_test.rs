@@ -759,3 +759,28 @@ fn a_module_name_atom_renders_as_its_alias_like_elixir_inspect() {
         assert_eq!(render("ok"), ":ok");
     });
 }
+
+#[test]
+fn float_prefix_reads_elixirs_prefix_and_reports_its_length() {
+    let cases: &[(&str, Option<(f64, usize)>)] = &[
+        ("1e3", Some((1000.0, 3))),
+        ("1.", Some((1.0, 1))),
+        ("1.e3", Some((1.0, 1))),
+        (".5", None),
+        ("1.5x", Some((1.5, 3))),
+        ("+1.5", Some((1.5, 4))),
+        ("-2.5e-3", Some((-0.0025, 7))),
+        ("1e", Some((1.0, 1))),
+        ("1e+", Some((1.0, 1))),
+        ("1e+2x", Some((100.0, 4))),
+        ("1_000.5", Some((1.0, 1))),
+        ("", None),
+        ("-", None),
+        ("1e400", None),
+        ("0.1", Some((0.1, 3))),
+        ("1.5.5", Some((1.5, 3))),
+    ];
+    for (text, expected) in cases {
+        assert_eq!(float_prefix(text.as_bytes()), *expected, "{text:?}");
+    }
+}

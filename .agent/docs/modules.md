@@ -175,6 +175,11 @@ registration happens before named-parent resolution, so a dotted runtime module
 such as `String.Chars` owns and indexes its own source instead of waiting for
 its ordinary `String` parent.
 
+A runtime module is registered in two places: its `RuntimeModuleSource` entry in
+`src/modules/runtime_library.rs`, which names the file under `lib/`, and an
+`alias` line in `lib/runtime.fz`. Without the alias a call such as
+`OptionParser.parse/2` from user code is an unresolved direct runtime callee.
+
 The one place the bootstrap is special is *reading*: `is_bootstrap(code)` (the
 prelude plus the runtime modules) is read canonically — definition heads are parsed as
 definitions rather than macro calls — because the macros that implement def-heads

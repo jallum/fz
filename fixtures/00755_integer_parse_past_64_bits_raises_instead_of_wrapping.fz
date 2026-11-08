@@ -1,0 +1,8 @@
+#---
+# purpose: "Integer.parse/1 refuses a number wider than 64 bits with ArgumentError; fz has no bignums, so it never wraps. Elixir returns the bignum, so this fixture has no oracle"
+# expect: abort
+#---
+def main() do
+  dbg(Integer.parse("9223372036854775807"))
+  dbg(Integer.parse("9223372036854775808"))
+end

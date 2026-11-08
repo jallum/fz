@@ -1,0 +1,15 @@
+{[max_top: 3], [], []}
+{[], ["3"], [{"--max_top", nil}]}
+{[top: 5], [], []}
+{[top: 5], [], []}
+{[top: 5], [], []}
+{[], [], [{"-t", nil}]}
+{[], [], [{"-t", "x"}]}
+{[alpha: true, beta: true, gamma: true], ["f"], []}
+{[alpha: true, gamma: true], [], []}
+{[alpha: true, top: 5], [], []}
+{[alpha: true, top: 5], [], []}
+{[alpha: true], ["5"], [{"-t", nil}]}
+{[top: 1, top: 2], [], []}
+{[], ["5"], [{"-x", nil}]}
+{[top: 5], [], []}

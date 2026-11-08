@@ -1,0 +1,14 @@
+#---
+# purpose: "OptionParser.parse/2 counts the occurrences of a :count switch, takes no value from the next token, and refuses =value"
+# oracle: 00763_a_count_switch_counts_its_occurrences.oracle.exs
+# args: -v -v --verbose f
+#---
+def main() do
+  dbg(OptionParser.parse(System.argv(), strict: [verbose: :count], aliases: [v: :verbose]))
+  dbg(OptionParser.parse(["--verbose"], strict: [verbose: :count]))
+  dbg(OptionParser.parse(["--verbose", "5"], strict: [verbose: :count]))
+  dbg(OptionParser.parse(["--verbose=3"], strict: [verbose: :count]))
+  dbg(OptionParser.parse(["-vvv"], strict: [verbose: :count], aliases: [v: :verbose]))
+  dbg(OptionParser.parse(["--verbose", "--top", "1", "--verbose"], strict: [verbose: :count, top: :integer]))
+  dbg(OptionParser.parse(["--top", "1", "--verbose", "--top", "2"], strict: [verbose: :count, top: :integer]))
+end

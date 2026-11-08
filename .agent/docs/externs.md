@@ -484,6 +484,17 @@ from its raw bytes. The JIT, the interpreter and the AOT scheduler each fill
 `ExecCtx.argv`; see [`runtime-telemetry`](runtime-telemetry.md), "Program
 Arguments".
 
+## A helper that may have no answer
+
+A helper cannot build a tuple or pick between a tuple and an atom, so one that
+may have no answer returns a list the wrapper takes apart. `Float.parse/1`
+wraps a private `extern "fz" defp fz_float_parse(binary) :: any`, which returns
+`[]` when the binary does not start with a float and `[float, rest]` when it
+does; the wrapper's clauses turn those into `:error` and `{float, rest}`. The
+prefix rules and the rounding live in the one Rust function behind it
+(`float_prefix` in `runtime/src/ir_runtime.rs`), so all three paths share
+them.
+
 ## Variadic calls
 
 A C variadic function has two argument lists at the machine level: the fixed

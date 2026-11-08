@@ -1,0 +1,26 @@
+#---
+# purpose: "Integer.parse/1 reads an optional sign and decimal digits and returns the remaining text untouched, or :error when no digit leads"
+# oracle: 00754_integer_parse_reads_a_signed_prefix_and_returns_the_rest.oracle.exs
+#---
+def main() do
+  dbg(Integer.parse("5"))
+  dbg(Integer.parse("-5"))
+  dbg(Integer.parse("+5"))
+  dbg(Integer.parse("5x"))
+  dbg(Integer.parse("1_000"))
+  dbg(Integer.parse("007"))
+  dbg(Integer.parse("-0"))
+  dbg(Integer.parse("1.5"))
+  dbg(Integer.parse("0x1f"))
+  dbg(Integer.parse("12 34"))
+  dbg(Integer.parse(" 5"))
+  dbg(Integer.parse(""))
+  dbg(Integer.parse("-"))
+  dbg(Integer.parse("+"))
+  dbg(Integer.parse("+-5"))
+  dbg(Integer.parse("--5"))
+  dbg(Integer.parse("x5"))
+  dbg(Integer.parse("9223372036854775807"))
+  dbg(Integer.parse("-9223372036854775808"))
+  dbg(Integer.parse("9223372036854775807x"))
+end

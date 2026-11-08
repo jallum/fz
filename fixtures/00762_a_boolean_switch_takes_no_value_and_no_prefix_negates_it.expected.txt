@@ -1,0 +1,12 @@
+{[verbose: true], ["f"], []}
+{[verbose: false], ["f"], []}
+{[verbose: true], [], []}
+{[verbose: false], [], []}
+{[], [], [{"--verbose", "x"}]}
+{[], [], [{"--no-verbose", "1"}]}
+{[verbose: true], [], []}
+{[verbose: false], [], []}
+{[dry_run: false], [], []}
+{[dry_run: false], [], []}
+{[], [], [{"--no-other", nil}]}
+{[verbose: true, verbose: false], [], []}

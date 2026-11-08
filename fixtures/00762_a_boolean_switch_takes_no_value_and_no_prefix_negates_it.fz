@@ -1,0 +1,19 @@
+#---
+# purpose: "OptionParser.parse/2 sets a boolean switch true without taking the next token, sets it false for --no-name, and accepts =true and =false"
+# oracle: 00762_a_boolean_switch_takes_no_value_and_no_prefix_negates_it.oracle.exs
+# args: --verbose f
+#---
+def main() do
+  dbg(OptionParser.parse(System.argv(), strict: [verbose: :boolean]))
+  dbg(OptionParser.parse(["--no-verbose", "f"], strict: [verbose: :boolean]))
+  dbg(OptionParser.parse(["--verbose=true"], strict: [verbose: :boolean]))
+  dbg(OptionParser.parse(["--verbose=false"], strict: [verbose: :boolean]))
+  dbg(OptionParser.parse(["--verbose=x"], strict: [verbose: :boolean]))
+  dbg(OptionParser.parse(["--no-verbose=1"], strict: [verbose: :boolean]))
+  dbg(OptionParser.parse(["--no-verbose", "--verbose"], strict: [verbose: :boolean]))
+  dbg(OptionParser.parse(["--verbose", "--no-verbose"], strict: [verbose: :boolean]))
+  dbg(OptionParser.parse(["--dry-run", "--no-dry-run"], strict: [dry_run: :boolean]))
+  dbg(OptionParser.parse(["--no-dry-run"], strict: [dry_run: :boolean]))
+  dbg(OptionParser.parse(["--no-other"], strict: [verbose: :boolean]))
+  dbg(OptionParser.parse(["--verbose", "--no-verbose"], strict: [verbose: [:boolean, :keep]]))
+end

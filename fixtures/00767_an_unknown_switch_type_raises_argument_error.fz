@@ -1,0 +1,8 @@
+#---
+# purpose: "A switch type that is not one of Elixir's raises ArgumentError naming it, before any argument is read"
+# expect: abort
+# oracle: 00767_an_unknown_switch_type_raises_argument_error.oracle.exs
+#---
+def main() do
+  OptionParser.parse(["--top", "5"], strict: [top: :bogus])
+end

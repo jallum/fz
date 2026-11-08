@@ -1,0 +1,7 @@
+#---
+# purpose: "OptionParser.parse/2 refuses the switches: option, which this runtime does not define, with ArgumentError rather than parsing as if it were strict. Elixir parses it, so this fixture has no oracle"
+# expect: abort
+#---
+def main() do
+  OptionParser.parse(["--top", "5"], switches: [top: :integer])
+end

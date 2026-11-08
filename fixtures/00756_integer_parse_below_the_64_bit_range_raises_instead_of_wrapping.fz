@@ -1,0 +1,8 @@
+#---
+# purpose: "Integer.parse/1 refuses a digit run that overflows 64 bits before the sign is applied, negative or positive, with ArgumentError. Elixir returns the bignum, so this fixture has no oracle"
+# expect: abort
+#---
+def main() do
+  dbg(Integer.parse("-9223372036854775808"))
+  dbg(Integer.parse("-9223372036854775809"))
+end

@@ -26,4 +26,39 @@ defmodule Float do
   def to_string(f), do: fz_float_to_binary(f)
 
   extern "fz" defp fz_float_to_binary(float) :: binary
+
+  @doc """
+  Parses the float at the start of a binary and returns it with the text that
+  follows, or `:error` when the binary does not start with one.
+
+  A float is an optional `+` or `-`, one or more digits, an optional fraction
+  (a `.` and one or more digits) and an optional exponent (`e` or `E`, an
+  optional sign and one or more digits). A `.` or `e` that lacks its digits is
+  left in the rest, so `"1."` gives `{1.0, "."}`, and `".5"` gives `:error`.
+  The result is the float nearest the text, and a value too large for a float
+  is `:error`.
+
+  Integers are floats here (`"3"` gives `{3.0, ""}`), and `String.to_float/1`
+  is a different, stricter function.
+
+  ## Examples
+
+      Float.parse("2.5kg")
+      #=> {2.5, "kg"}
+
+      Float.parse("1e3")
+      #=> {1000.0, ""}
+
+      Float.parse("abc")
+      #=> :error
+
+  """
+  @spec parse(binary) :: {float, binary} | :error
+  def parse(s), do: parsed(fz_float_parse(s))
+
+  @spec parsed(any) :: {float, binary} | :error
+  defp parsed([float, rest]), do: {float, rest}
+  defp parsed(_none), do: :error
+
+  extern "fz" defp fz_float_parse(binary) :: any
 end

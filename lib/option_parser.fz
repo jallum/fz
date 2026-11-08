@@ -1,0 +1,373 @@
+defmodule OptionParser do
+  @moduledoc """
+  Parses command-line arguments, as Elixir's `OptionParser.parse/2` does for
+  `strict:` switches.
+
+  `parse/2` takes an argv (a list of binaries) and the options `strict:`, a
+  keyword list of switch name to type, and `aliases:`, a keyword list of
+  one-letter alias to switch name. It returns `{parsed, rest, invalid}`, each
+  in the order its tokens were met:
+
+    * `parsed` holds `{switch, value}` entries;
+    * `rest` holds the positional arguments;
+    * `invalid` holds `{text, value}` for a switch whose value does not fit its
+      type, and `{text, nil}` for a switch that is not in `strict:`, with the
+      text as it was typed.
+
+  A switch type is `:boolean`, `:integer`, `:float`, `:string` or `:count`,
+  alone or in a list with `:keep`. A switch is written `--name value`,
+  `--name=value`, or `--no-name` for a boolean; `--max-top` is `:max_top`.
+  A one-letter alias is `-t 5`, `-t5` or `-t=5`, and `-abc` is `-a -b -c`.
+  A lone `-` and a token that starts with a digit after one `-` are
+  positional, and everything after a `--` is positional.
+
+  A switch name is looked up by its text in `strict:`; no atom is created for
+  an argument. A name that is not in `strict:` is invalid and never takes the
+  next token as its value.
+
+  The other options and functions of Elixir's `OptionParser` (`switches:`,
+  the `:regex` type, `parse!/2`, `parse_head/2` and the rest) are not
+  defined.
+  """
+
+  @doc """
+  Parses `argv` against the switches in `strict:`.
+
+  Returns `{parsed, rest, invalid}`. A repeated switch keeps its last value
+  unless its type includes `:keep`, which keeps every occurrence, and a
+  `:count` switch counts its occurrences.
+
+  ## Examples
+
+      OptionParser.parse(["--top", "5", "file"], strict: [top: :integer])
+      #=> {[top: 5], ["file"], []}
+
+      OptionParser.parse(["--top", "x", "--other"], strict: [top: :integer])
+      #=> {[], [], [{"--top", "x"}, {"--other", nil}]}
+
+      OptionParser.parse(["-v", "-v"], strict: [verbose: :count], aliases: [v: :verbose])
+      #=> {[verbose: 2], [], []}
+
+  """
+  @spec parse([binary], keyword) :: {keyword, [binary], [{binary, binary | nil}]}
+  def parse(argv, opts) when is_list(argv) and is_list(opts) do
+    do_parse(argv, build_config(opts), [], [], [])
+  end
+
+  @spec do_parse([binary], map, keyword, [binary], [{binary, binary | nil}]) :: {keyword, [binary], [{binary, binary | nil}]}
+  defp do_parse([], _config, opts, args, invalid) do
+    {Enum.reverse(opts), Enum.reverse(args), Enum.reverse(invalid)}
+  end
+
+  defp do_parse(argv, config, opts, args, invalid) do
+    case next_with_config(argv, config) do
+      {:ok, option, value, rest} ->
+        kinds = Keyword.get(config.switches, option)
+        do_parse(rest, config, store_option(opts, option, value, kinds), args, invalid)
+
+      {:invalid, option, value, rest} ->
+        do_parse(rest, config, opts, args, [{option, value} | invalid])
+
+      {:undefined, option, _value, rest} ->
+        do_parse(rest, config, opts, args, [{option, nil} | invalid])
+
+      {:error, ["--" | rest]} ->
+        {Enum.reverse(opts), Enum.reverse(args, rest), Enum.reverse(invalid)}
+
+      {:error, [arg | rest]} ->
+        do_parse(rest, config, opts, [arg | args], invalid)
+    end
+  end
+
+  # Reads one token, and the token after it when the switch takes a value.
+  @spec next_with_config([binary], map) :: tuple
+  defp next_with_config([], _config), do: {:error, []}
+  defp next_with_config(argv = ["--" | _], _config), do: {:error, argv}
+  defp next_with_config(argv = ["-" | _], _config), do: {:error, argv}
+  defp next_with_config(argv = ["- " <> _ | _], _config), do: {:error, argv}
+
+  defp next_with_config(["--" <> option | rest], config) do
+    {option, value} = split_option(option)
+
+    if String.contains?(option, "_") do
+      {:undefined, "--" <> option, value, rest}
+    else
+      next_tagged(tag_option(option, config), value, "--" <> option, rest, config)
+    end
+  end
+
+  defp next_with_config(argv = ["-" <> option | rest], config) do
+    {option, value} = split_option(option)
+    original = "-" <> option
+
+    cond do
+      is_nil(value) and starts_with_number?(option) ->
+        {:error, argv}
+
+      String.contains?(option, "-") or String.contains?(option, "_") ->
+        {:undefined, original, value, rest}
+
+      String.length(option) == 1 ->
+        next_tagged(tag_oneletter_alias(option, config), value, original, rest, config)
+
+      true ->
+        next_multiletter(option, value, original, rest, config)
+    end
+  end
+
+  defp next_with_config(argv, _config), do: {:error, argv}
+
+  # A name of several letters is an alias only if `aliases:` names it whole;
+  # otherwise it is a cluster of one-letter aliases.
+  @spec next_multiletter(binary, binary | nil, binary, [binary], map) :: tuple
+  defp next_multiletter(option, value, original, rest, config) do
+    case alias_target(config.aliases, option) do
+      nil -> next_with_config(expand_multiletter_alias(option, value) ++ rest, config)
+      switch -> next_tagged({:default, switch}, value, original, rest, config)
+    end
+  end
+
+  @spec next_tagged(:unknown | {:negated | :default, atom}, binary | nil, binary, [binary], map) :: tuple
+  defp next_tagged(:unknown, value, original, rest, _config), do: {:undefined, original, value, rest}
+
+  defp next_tagged({tag, option}, value, original, rest, config) do
+    if Keyword.has_key?(config.switches, option) do
+      {kinds, value} = normalize_tag(tag, option, value, config.switches)
+      {value, kinds, rest} = normalize_value(value, kinds, rest)
+
+      case validate_option(value, kinds) do
+        {:ok, new_value} -> {:ok, option, new_value, rest}
+        :invalid -> {:invalid, original, value, rest}
+      end
+    else
+      {:undefined, original, value, rest}
+    end
+  end
+
+  @spec tag_option(binary, map) :: :unknown | {:negated | :default, atom}
+  defp tag_option(original = "no-" <> option, config) do
+    negated = get_option_key(option, config)
+
+    if negated != nil and Enum.member?(Keyword.get(config.switches, negated), :boolean) do
+      {:negated, negated}
+    else
+      tag_default(get_option_key(original, config))
+    end
+  end
+
+  defp tag_option(option, config), do: tag_default(get_option_key(option, config))
+
+  @spec tag_default(atom | nil) :: :unknown | {:default, atom}
+  defp tag_default(nil), do: :unknown
+  defp tag_default(option_key), do: {:default, option_key}
+
+  @spec tag_oneletter_alias(binary, map) :: :unknown | {:default, atom}
+  defp tag_oneletter_alias(letter, config) do
+    case alias_target(config.aliases, letter) do
+      nil -> :unknown
+      option_key -> {:default, option_key}
+    end
+  end
+
+  # `-abc` is `-a -b -c`, and digits that follow the letters are the value of
+  # the last one: `-t5` is `-t=5`.
+  @spec expand_multiletter_alias(binary, binary | nil) :: [binary]
+  defp expand_multiletter_alias(option, value) do
+    digits_at = first_digit_at(option, 0)
+    letters = String.take_bytes(option, digits_at)
+    maybe_integer = String.drop_bytes(option, digits_at)
+    split_last(Enum.map(String.graphemes(letters), fn letter -> "-" <> letter end), maybe_integer, value)
+  end
+
+  @spec split_last([binary], binary, binary | nil) :: [binary]
+  defp split_last([], _maybe_integer, _value),
+    do: raise(ArgumentError, "expected binary argument in <> operator but got: nil")
+
+  defp split_last(dashed, maybe_integer, value) do
+    reversed = Enum.reverse(dashed)
+    [last | before_last] = reversed
+    Enum.reverse(before_last) ++ [last <> equals_part(maybe_integer) <> equals_part(value)]
+  end
+
+  @spec equals_part(binary | nil) :: binary
+  defp equals_part(nil), do: ""
+  defp equals_part(""), do: ""
+  defp equals_part(text), do: "=" <> text
+
+  @spec first_digit_at(binary, integer) :: integer
+  defp first_digit_at(<<c, _rest :: binary>>, at) when c >= 48 and c <= 57, do: at
+  defp first_digit_at(<<_c, rest :: binary>>, at), do: first_digit_at(rest, at + 1)
+  defp first_digit_at(<<>>, at), do: at
+
+  @spec normalize_tag(:negated | :default, atom, binary | nil, keyword) :: {[atom], binary | nil | boolean}
+  defp normalize_tag(:negated, option, value, switches) do
+    if value != nil do
+      {[:invalid], value}
+    else
+      {Keyword.get(switches, option), false}
+    end
+  end
+
+  defp normalize_tag(:default, option, value, switches), do: {Keyword.get(switches, option), value}
+
+  # Decides whether the switch takes the next token as its value.
+  @spec normalize_value(any, [atom], [binary]) :: {any, [atom], [binary]}
+  defp normalize_value(nil, kinds, tail) do
+    cond do
+      Enum.member?(kinds, :boolean) -> {true, kinds, tail}
+      Enum.member?(kinds, :count) -> {nil, kinds, tail}
+      value_in_tail?(tail) -> take_head(tail, kinds)
+      kinds == [] -> {true, kinds, tail}
+      true -> {nil, [:invalid], tail}
+    end
+  end
+
+  defp normalize_value(value, kinds, tail), do: {value, kinds, tail}
+
+  @spec take_head([binary], [atom]) :: {binary, [atom], [binary]}
+  defp take_head([head | tail], kinds), do: {head, kinds, tail}
+
+  @spec value_in_tail?([binary]) :: boolean
+  defp value_in_tail?(["-" | _]), do: true
+  defp value_in_tail?(["- " <> _ | _]), do: true
+  defp value_in_tail?(["-" <> arg | _]), do: starts_with_number?(arg)
+  defp value_in_tail?([]), do: false
+  defp value_in_tail?(_), do: true
+
+  @spec validate_option(any, [atom]) :: {:ok, any} | :invalid
+  defp validate_option(value, kinds) do
+    cond do
+      Enum.member?(kinds, :invalid) -> :invalid
+      Enum.member?(kinds, :boolean) -> validate_boolean(value)
+      Enum.member?(kinds, :count) -> validate_count(value)
+      Enum.member?(kinds, :integer) -> validate_integer(value)
+      Enum.member?(kinds, :float) -> validate_float(value)
+      true -> {:ok, value}
+    end
+  end
+
+  @spec validate_boolean(any) :: {:ok, boolean} | :invalid
+  defp validate_boolean(true), do: {:ok, true}
+  defp validate_boolean("true"), do: {:ok, true}
+  defp validate_boolean(false), do: {:ok, false}
+  defp validate_boolean("false"), do: {:ok, false}
+  defp validate_boolean(_other), do: :invalid
+
+  @spec validate_count(any) :: {:ok, integer} | :invalid
+  defp validate_count(nil), do: {:ok, 1}
+  defp validate_count(_other), do: :invalid
+
+  @spec validate_integer(any) :: {:ok, integer} | :invalid
+  defp validate_integer(text :: binary), do: whole(Integer.parse(text))
+  defp validate_integer(_other), do: :invalid
+
+  @spec validate_float(any) :: {:ok, float} | :invalid
+  defp validate_float(text :: binary), do: whole(Float.parse(text))
+  defp validate_float(_other), do: :invalid
+
+  # A value is valid only if the parse consumed all of it.
+  @spec whole({integer | float, binary} | :error) :: {:ok, integer | float} | :invalid
+  defp whole({number, ""}), do: {:ok, number}
+  defp whole(_partial), do: :invalid
+
+  @spec store_option(keyword, atom, any, [atom]) :: keyword
+  defp store_option(dict, option, value, kinds) do
+    cond do
+      Enum.member?(kinds, :count) -> Keyword.update(dict, option, value, fn count -> count + 1 end)
+      Enum.member?(kinds, :keep) -> [{option, value} | dict]
+      true -> [{option, value} | Keyword.delete(dict, option)]
+    end
+  end
+
+  # Splits at the first `=`.
+  @spec split_option(binary) :: {binary, binary | nil}
+  defp split_option(option), do: split_option_at(option, String.index_of(option, "="))
+
+  @spec split_option_at(binary, integer) :: {binary, binary | nil}
+  defp split_option_at(option, -1), do: {option, nil}
+
+  defp split_option_at(option, at),
+    do: {String.take_bytes(option, at), String.drop_bytes(option, at + 1)}
+
+  @spec starts_with_number?(binary) :: boolean
+  defp starts_with_number?(<<c, _rest :: binary>>) when c >= 48 and c <= 57, do: true
+  defp starts_with_number?(_other), do: false
+
+  # `--max-top` names the switch `:max_top`. The switch is found by comparing
+  # its text with the names in `strict:`, so no atom is made for a name that
+  # is not there.
+  @spec get_option_key(binary, map) :: atom | nil
+  defp get_option_key(option, config), do: key_named(config.switches, String.replace(option, "-", "_"))
+
+  @spec key_named([{atom, any}], binary) :: atom | nil
+  defp key_named([], _name), do: nil
+
+  defp key_named([{key, _} | rest], name) do
+    if Atom.to_string(key) === name, do: key, else: key_named(rest, name)
+  end
+
+  # The switch an alias names, found by the alias's text.
+  @spec alias_target([{atom, atom}], binary) :: atom | nil
+  defp alias_target([], _name), do: nil
+
+  defp alias_target([{alias_key, switch} | rest], name) do
+    if Atom.to_string(alias_key) === name, do: switch, else: alias_target(rest, name)
+  end
+
+  @spec wrap(any) :: list
+  defp wrap(nil), do: []
+  defp wrap(list) when is_list(list), do: list
+  defp wrap(other), do: [other]
+
+  @spec build_config(keyword) :: map
+  defp build_config(opts) do
+    reject_undefined_options(opts)
+    switches = kinds_by_switch(strict_switches(Keyword.get(opts, :strict)))
+    %{aliases: aliases_of(Keyword.get(opts, :aliases)), switches: switches}
+  end
+
+  # Only `strict:` and `aliases:` are defined; any other option would change
+  # the answer, so it is refused rather than ignored.
+  @spec reject_undefined_options(keyword) :: :ok
+  defp reject_undefined_options([]), do: :ok
+  defp reject_undefined_options([{:strict, _} | rest]), do: reject_undefined_options(rest)
+  defp reject_undefined_options([{:aliases, _} | rest]), do: reject_undefined_options(rest)
+
+  defp reject_undefined_options([{key, _} | _rest]),
+    do: raise(ArgumentError, "OptionParser.parse/2 does not define the #{Kernel.inspect(key)} option")
+
+  @spec strict_switches(keyword | nil) :: keyword
+  defp strict_switches(nil),
+    do: raise(ArgumentError, "OptionParser.parse/2 requires the :strict option: parsing without it is not defined")
+
+  defp strict_switches(switches), do: switches
+
+  @spec aliases_of(keyword | nil) :: keyword
+  defp aliases_of(nil), do: []
+  defp aliases_of(aliases), do: aliases
+
+  # A switch's type is a type or a list of a type and modifiers. The parse
+  # works on the list, so it is made once, here, along with the check that every
+  # kind is one the parser defines.
+  @spec kinds_by_switch(keyword) :: [{atom, [atom]}]
+  defp kinds_by_switch([]), do: []
+
+  defp kinds_by_switch([{name, type_or_type_and_modifiers} | rest]) do
+    [{name, validated_kinds(wrap(type_or_type_and_modifiers))} | kinds_by_switch(rest)]
+  end
+
+  @spec switch_types() :: [atom]
+  defp switch_types(), do: [:boolean, :count, :integer, :float, :string, :keep]
+
+  @spec validated_kinds([atom]) :: [atom]
+  defp validated_kinds(kinds) do
+    if Enum.member?(kinds, :regex) do
+      raise(ArgumentError, "the :regex switch type is not defined")
+    end
+
+    case kinds -- switch_types() do
+      [] -> kinds
+      invalid -> raise(ArgumentError, "invalid switch types/modifiers: " <> Enum.map_join(invalid, ", ", fn kind -> Kernel.inspect(kind) end))
+    end
+  end
+end
