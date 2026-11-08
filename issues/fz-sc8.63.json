@@ -5,7 +5,8 @@
     "fz-sc8.80"
   ],
   "blocks": [
-    "fz-sc8.62"
+    "fz-sc8.62",
+    "fz-sc8.85"
   ],
   "created": "2026-11-03T13:40:17Z",
   "description": "Plan: /Users/j5n/Workspace/fz-sc8.57.html, ticket 2. The dispatch Fail raises FunctionClauseError naming M.f/arity; case/cond/with and boolean halts raise CaseClauseError, CondClauseError, WithClauseError, BadBooleanError, ArgumentError with Elixir's messages (value via the dbg rendering until fz-sc8.10), each with its source location, through the fz-sc8.61 route. = becomes a one-row dispatch plan whose Fail raises MatchError: today it lowers to seven Assert* steps plus an unchecked SplitList, so [a, b] = [1] segfaults on run and build (exit 139) and a short bitstring match aborts in runtime/src/heap/schema.rs:132. Deleted: Term::Halt and halt_with_atom as a failure mechanism, the halt atoms (function_clause, match_error, case_clause, cond_clause, with_clause), native.rs:104 forced interning, the interpreter's private strings (ir_interp/backend.rs:663, 1539-1701; prim.rs:53,62) and its 'tail failed' wrapper. compiler2_unreachable_control stays a loud internal error, never FunctionClauseError. Restates the abort fixtures and Rust tests that pin today's text (inventory lists them).",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Every decision's arm of last resort raises its Elixir exception, and = is a decision",
   "type": "feature",
-  "updated_at": "2026-11-08T03:00:54Z"
+  "updated_at": "2026-11-08T03:20:31Z"
 }

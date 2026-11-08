@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.63"
+  ],
   "blocks": [],
   "created": "2026-11-08T03:20:31Z",
   "description": "In emit_terminator's scalar Return lowering (terminator.rs, the branches after the multi-lane panic: cont_ptr_known_null -\u003e emit_halt_and_return_null, else emit_return with a dynamic continuation-pointer check), the two tails belong to the uniform calling tier. Found while reviewing fz-sc8.61: the planned ABI is the only tier native lowering emits for compiler2 functions, and these branches looked unreachable. Establish it with a census (count the terminators that take each branch over 00420 and the behaviour fixtures, or a debug assertion that fails the gate if either is reached), then delete the branches and the helpers emit_halt_and_return_null and emit_return together with any tests that only exist to exercise them. If a planned function does reach them, write down why in the native lowering doc instead. After fz-sc8.63, which rewrites the same file's failure terminators.",
