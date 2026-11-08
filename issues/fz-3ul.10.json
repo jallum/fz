@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-3ul.5"
+  ],
   "created": "2026-11-08T07:13:38Z",
   "description": "## Problem\nCI run 42456349533 (ubuntu x86_64, debug, four trials in parallel) fails exactly one trial: fixture_matrix 00720 on the interp door exceeds the 20 s hang guard (DEFAULT_FIXTURE_HANG_TIMEOUT in tests/fixture_matrix.rs). Locally (macOS arm64, debug, alone) the interpreter takes 4.8 s on it and 2.3 s on a plain 100_000-iteration loop, so the cost is the debug interpreter's per-iteration price, not the raise path. No other fixture runs 100_000 iterations.\n\n## Change\n- fixtures/00720_*.fz: loop(10_000, 0); purpose line says ten thousand. The oracle .exs is updated the same way and .expected.txt is regenerated FROM the oracle with elixir (not typed by hand): it reads 10000.\n- src/exec/runtime_test.rs: every assertion that counts the fixture's raises or iterations (100_000) becomes 10_000; the depth test's bound is unchanged. .agent/docs/exceptions.md and any doc that says a hundred thousand for this loop say ten thousand.\n- The claims still hold with 10_000: each iteration spends several reductions, so the loop crosses the 4000-reduction quantum many times (the JIT test asserts reduction_yields \u003e= 1 and the depth test needs post-yield deliveries); a handler running in place would still show thousands of distinct depths.\n\n## Acceptance\n- Debug interpreter on the fixture well under a second locally (report the time).\n- Full gate: RUST_TEST_THREADS=1 cargo test --workspace --all-targets (the fixture matrix runs 00720 on interp, run and build against the regenerated expected.txt), cargo test --workspace --doc, cargo clippy --workspace --all-targets -- -D warnings, cargo fmt --all -- --check.\n- Only 00720's three files change among fixtures; no other golden or census pin changes.\n- CI green on ubuntu (coordinator).",
   "id": "fz-3ul.10",
