@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.97"
+  ],
   "blocks": [
     "fz-sc8.19"
   ],
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "IO.puts/1 writes a string to stdout",
   "type": "feature",
-  "updated_at": "2026-11-08T14:45:45Z"
+  "updated_at": "2026-11-08T16:12:31Z"
 }
