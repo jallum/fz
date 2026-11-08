@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.17"
+  ],
   "blocks": [],
   "created": "2026-11-08T23:07:35Z",
   "description": "The for rewrite (fz-sc8.17, src/compiler2/source_sugar.rs) refuses uniq: true with a QuotedSourceError naming the form. Elixir's uniq: drops elements already emitted (a set of seen values threaded with the accumulator). Build it in the rewrite with the same hygiene as the other generated variables; oracle fixtures on three paths against elixir; the distiller does not use it.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "for comprehension uniq: option",
   "type": "feature",
-  "updated_at": "2026-11-08T23:07:35Z"
+  "updated_at": "2026-11-08T23:07:55Z"
 }

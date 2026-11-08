@@ -5,6 +5,7 @@
     "fz-sc8.20"
   ],
   "blocks": [
+    "fz-sc8.103",
     "fz-sc8.19"
   ],
   "created": "2026-10-17T19:00:43Z",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "for comprehensions: pattern generators, filters, into:, reduce:",
   "type": "feature",
-  "updated_at": "2026-11-08T23:06:28Z"
+  "updated_at": "2026-11-08T23:07:55Z"
 }
