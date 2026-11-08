@@ -6,14 +6,15 @@
   "blocks": [
     "fz-sc8.19"
   ],
+  "closed_at": "2026-11-08T18:59:28Z",
   "created": "2026-10-17T19:00:42Z",
   "description": "Approved page /Users/j5n/Workspace/fz-sc8.8.html (2026-11-08), following Elixir's own path (../elixir: IO.write is the one write over :io.put_chars; IO.puts = write + newline; IO.inspect = puts(inspect(item)) returning item; Kernel.dbg is library code over inspect and IO.write). fz mirrors it piece for piece: StdoutOutput::emit writes bytes and stops appending a newline; one extern fz_io_write(binary) hands bytes to the output hook (write_output replaces emit_print_line); lib/io.fz defines write/1, puts/1, inspect/1 with Elixir's bodies over String.Chars (a list argument raises ArgumentError until chardata is built; a map or tuple is refused at compile time naming String.Chars); Kernel.dbg(x) becomes IO.inspect(x), deleting fz_dbg_value and fz_dbg_value_ref. dbg prints what our IO.inspect prints; any difference from Elixir's text is a renderer fix in fz-sc8.10, never an adapter. DbgCapture splits bytes on newline; drive_test's fz_dbg_value-keyed tests and fixture 00606 move to send/fz_send; fz-sc8.55 folds in as the top-level IO.puts fixture (00783). No longer depends on fz-sc8.10.\n\nDecisions taken 2026-11-08 after the first build (WIP commit 79d97ed97 on fz-sc8.8/io):\n- fz_io_write is declared `:: unit`, not `:: :ok`: an atom return lands on the any lane and boxes 16 bytes per print, which moved every heap golden; the wrappers answer :ok themselves, as every helper returns a machine value and its wrapper builds the fz value.\n- String.Chars.Binary.to_string's error branch builds its message with `\u003c\u003e` over Kernel.inspect(s) instead of interpolation: interpolation calls to_string on that binary and dispatches back to the same impl, a runtime-unreachable direct cycle that the reach pin on closure_threaded_recursion (0 direct cycles) would otherwise count.\n- The renamed float twin of compiler2_extern_send_return_is_its_contract_applied_to_the_row is deleted; 00606 already pins int and float rows.\n- Census pins rise by one measured mechanism, the dbg cone (IO.inspect, puts, to_chardata, Kernel.to_string, \u003c\u003e, Binary.to_string, raise branch): 10 lib pins, 3 fz2_cli pins, 7 heap-stat goldens. Authorized once re-measured after the `\u003c\u003e` change.\n- Blocked by fz-sc8.97 (root return of a six-lane tuple), which fixtures2/behavior/anonymous_fn_bare_params hits once dbg returns through typed code. fz-sc8.98 (JIT skips resource destructors after enough allocation) is latent and not blocking.",
   "id": "fz-sc8.8",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "IO.puts/1 writes a string to stdout",
   "type": "feature",
-  "updated_at": "2026-11-08T16:13:35Z"
+  "updated_at": "2026-11-08T18:59:28Z"
 }
