@@ -1,0 +1,7 @@
+#---
+# purpose: "Enum.into a list collects a map as key-value pairs"
+# oracle: 00799_enum_into_a_list_collects_a_map_as_pairs.oracle.exs
+#---
+def main() do
+  dbg(Enum.sort(Enum.into(%{1 => 10, 2 => 20}, [])))
+end

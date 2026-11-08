@@ -1,0 +1,59 @@
+defprotocol Collectable do
+  @moduledoc """
+  The protocol behind `Enum.into/2,3`: the mirror of `Enumerable`. Where
+  `Enumerable` gives a value's elements out one at a time, `Collectable` takes
+  elements in.
+
+  A type becomes collectable by implementing `into/1` with `defimpl
+  Collectable, for: SomeType`. The callback returns a pair: the initial
+  accumulator, and a collector function called as `collector.(acc, command)`.
+  The command is `{:cont, element}` for each element, then `:done` once the
+  elements are exhausted, which returns the finished collection. `:halt` asks
+  the collector to abandon the accumulator; it returns `:ok`.
+  """
+
+  @doc """
+  Returns the initial accumulator and the collector function for
+  `collectable`.
+
+  ## Examples
+
+      {acc, collector} = Collectable.into([1, 2])
+      acc = collector.(acc, {:cont, 3})
+      collector.(acc, :done)
+      #=> [1, 2, 3]
+
+  """
+  @spec into(t) :: {term, (term, {:cont, term} | :done | :halt -> t | term)}
+  def into(collectable)
+end
+
+# Built-in implementations live with their protocol: a protocol call always
+# names the protocol, so referencing it pulls these impls. Each `defimpl` is
+# hoisted to its own `Collectable.<Type>` module and demanded directly by a
+# matching receiver.
+defimpl Collectable, for: List do
+  # Elements accumulate in reverse and are appended to the original list on
+  # `:done`, so the original elements stay first and arrival order is kept.
+  def into(list) do
+    {[], fn acc, cmd ->
+      case cmd do
+        {:cont, x} -> [x | acc]
+        :done -> list ++ Enum.reverse(acc)
+        :halt -> :ok
+      end
+    end}
+  end
+end
+
+defimpl Collectable, for: Map do
+  def into(map) do
+    {map, fn acc, cmd ->
+      case cmd do
+        {:cont, {k, v}} -> Map.put(acc, k, v)
+        :done -> acc
+        :halt -> :ok
+      end
+    end}
+  end
+end

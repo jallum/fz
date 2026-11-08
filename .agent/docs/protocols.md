@@ -63,6 +63,12 @@ is the convenience module users call. Low-level control tuples
 (`{:cont|:halt|:suspend, acc}`) stay on `Enumerable.reduce/3`; `Enum.reduce/2,3`
 returns plain accumulator values.
 
+`Collectable` is the mirror protocol, in `lib/collectable.fz`, with impls for
+`List` and `Map`. Its one callback `into/1` returns `{initial, collector}`;
+`Enum.into/2,3` calls `collector.(acc, {:cont, x})` per element and then
+`collector.(acc, :done)`. The collector sends no `:halt` on a raised
+exception, because there is no `try`.
+
 ## The owned facts
 
 `World` carries these protocol facts:

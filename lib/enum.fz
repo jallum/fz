@@ -1643,6 +1643,41 @@ defmodule Enum do
   def group_by(enumerable, fun), do: group_by(enumerable, fun, fn (entry) -> entry end)
 
   @doc """
+  Inserts the elements of `enumerable` into `collectable`, which may be any
+  type implementing `Collectable`.
+
+  ## Examples
+
+      Enum.into([{1, :a}, {2, :b}], %{})
+      #=> %{1 => :a, 2 => :b}
+
+      Enum.into(3..4, [1, 2])
+      #=> [1, 2, 3, 4]
+
+  """
+  @spec into(Enumerable.t(a), Collectable.t) :: any
+  def into(enumerable, collectable) do
+    {initial, collector} = Collectable.into(collectable)
+    collector.(reduce(enumerable, initial, fn (entry, acc) -> collector.(acc, {:cont, entry}) end), :done)
+  end
+
+  @doc """
+  Inserts `transform.(element)` for each element of `enumerable` into
+  `collectable`.
+
+  ## Examples
+
+      Enum.into([1, 2], %{}, fn x -> {x, x * 10} end)
+      #=> %{1 => 10, 2 => 20}
+
+  """
+  @spec into(Enumerable.t(a), Collectable.t, (a) -> any) :: any
+  def into(enumerable, collectable, transform) do
+    {initial, collector} = Collectable.into(collectable)
+    collector.(reduce(enumerable, initial, fn (entry, acc) -> collector.(acc, {:cont, transform.(entry)}) end), :done)
+  end
+
+  @doc """
   Returns a map from each distinct value of `key_fun.(element)` to the
   list of `value_fun.(element)` results for the elements that produced
   it, in encounter order.

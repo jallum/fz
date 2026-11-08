@@ -2,6 +2,7 @@
 @type keyword(t) :: [{atom, t}]
 
 alias Atom
+alias Collectable
 alias Enum
 alias Enumerable
 alias File

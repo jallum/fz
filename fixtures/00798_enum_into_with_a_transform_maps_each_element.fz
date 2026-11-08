@@ -1,0 +1,8 @@
+#---
+# purpose: "Enum.into/3 applies the transform to each element before collecting"
+# oracle: 00798_enum_into_with_a_transform_maps_each_element.oracle.exs
+#---
+def main() do
+  m = Enum.into([1, 2, 3], %{}, fn x -> {x, x * 10} end)
+  dbg(Enum.sort(Map.to_list(m)))
+end
