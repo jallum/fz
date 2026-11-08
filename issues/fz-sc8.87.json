@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T13:06:20Z",
+  "description": "Every failed C call in lib/file.fz is {:error, :io} and every bang raises '... : I/O error' (reason_text/1). Elixir raises the errno reason: File.read!(\"nope\") says 'could not read file \"nope\": no such file or directory', File.stream!(\"nope\") |\u003e Enum.to_list() says 'could not stream \"nope\": no such file or directory'. Add one runtime helper that reads errno after a failed call and returns Elixir's POSIX atom (:enoent, :eacces, :eisdir, :enotdir, :eexist, :enotempty, ...; see :file.format_error), return it as the {:error, reason}, and spell it in reason_text/1 with Elixir's text. Oracle fixtures for the common reasons on all three paths. Then bind fz-sc8.18's missing-file abort fixture to its elixir oracle (it carries fz's 'I/O error' text until then).",
+  "id": "fz-sc8.87",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "File's bang functions name the POSIX reason, as Elixir does",
+  "type": "feature",
+  "updated_at": "2026-11-08T13:06:20Z"
+}
