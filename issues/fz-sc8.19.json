@@ -24,7 +24,8 @@
     "fz-sc8.7",
     "fz-sc8.8",
     "fz-sc8.86",
-    "fz-sc8.9"
+    "fz-sc8.9",
+    "fz-sc8.99"
   ],
   "blocks": [],
   "created": "2026-10-17T19:00:43Z",
@@ -36,5 +37,5 @@
   "status": "open",
   "title": "The distiller runs under fz2 and matches elixir on all three paths",
   "type": "task",
-  "updated_at": "2026-11-08T13:07:33Z"
+  "updated_at": "2026-11-08T16:53:26Z"
 }
