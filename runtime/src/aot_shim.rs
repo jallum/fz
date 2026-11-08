@@ -31,7 +31,7 @@ use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{AddressMap, Schema, SchemaRegistry, deep_copy_any_value_ref};
 use crate::pinned_abi::{call1, call2};
 use crate::procbin::mso_drop_all_deferred;
-use crate::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
+use crate::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, GcBoundary, Node, Process, ProcessState};
 use crate::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
 };
@@ -661,12 +661,12 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
     let has_runnable = unsafe { (*proc_ptr).runnable.is_some() };
     if state == ProcessState::Running && has_runnable {
         let process = unsafe { &mut *proc_ptr };
-        process.boundary_maintenance();
+        process.boundary_maintenance(GcBoundary::Yield);
         unsafe { (*sched).core.make_runnable(pid, &mut process.state) };
     } else if state == ProcessState::Blocked {
         // Parked on a receive: the park record's closures and pinned values
         // are roots, so the heap is trimmed while the process waits.
-        unsafe { (*proc_ptr).boundary_maintenance() };
+        unsafe { (*proc_ptr).boundary_maintenance(GcBoundary::Park) };
     } else if state == ProcessState::Running {
         // fz-4mk.3b — task halted; flush MSO resources through the dtor
         // drain shim before the heap drops.

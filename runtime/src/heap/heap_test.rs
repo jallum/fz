@@ -1101,7 +1101,6 @@ fn gc_stats_prove_scalar_list_head_is_copied_but_not_traced() {
     assert_eq!(stats.live_objects, 1);
     assert_eq!(stats.list_head_scalar_slots, 1);
     assert_eq!(stats.list_head_heap_edges, 0);
-    assert_eq!(h.last_gc_stats, stats);
     let moved = list_addr_from_tagged(ref_bits(roots[0])).expect("moved live list");
     let moved_head = unsafe { (*(moved as *const ListCons)).head_value() };
     assert_eq!(moved_head.kind(), ValueKind::INT);

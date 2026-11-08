@@ -80,10 +80,6 @@ pub struct Heap {
     /// Used by proactive shrinkage to size the to-space and detect low-live
     /// quiet periods.
     pub last_gc_live_bytes: usize,
-    /// Telemetry from the most recent GC. Tests and runtime hosts can inspect
-    /// this without coupling the `fz-runtime` crate to the compiler telemetry
-    /// bus.
-    pub last_gc_stats: GcStats,
     /// Blocks the heap has stopped bumping into: old tips abandoned by `grow`
     /// and blocks grafted from other heaps' gift segments. Each records its
     /// fill and capacity, so `Drop` / gc() can return it to the pool (§6.6)

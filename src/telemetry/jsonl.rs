@@ -781,6 +781,27 @@ impl JsonlBackend {
                 );
             },
         );
+        let gc_backend = Rc::clone(backend);
+        telemetry.attach_raw_event1::<fz_runtime::process::Collection, _>(
+            &crate::exec::runtime::GC,
+            move |name, span_id, parent_span_id, collection| {
+                let stats = &collection.stats;
+                gc_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    Metadata::from_pairs([
+                        ("pid", Value::U64(u64::from(collection.pid))),
+                        ("boundary", Value::Str(collection.boundary.as_str().into())),
+                        ("copied_bytes", Value::U64(stats.copied_bytes)),
+                        ("live_bytes", Value::U64(stats.live_bytes)),
+                        ("blocks_released", Value::U64(stats.blocks_released)),
+                        ("blocks_after", Value::U64(stats.blocks_after)),
+                        ("from_ranges_walked", Value::U64(stats.from_ranges_walked)),
+                    ]),
+                );
+            },
+        );
         let probe_backend = Rc::clone(backend);
         telemetry.attach_raw_event1::<fz_runtime::sched::SendProbe, _>(
             &crate::exec::runtime::SEND_PROBE,

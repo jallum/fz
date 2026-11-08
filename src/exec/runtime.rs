@@ -36,6 +36,7 @@ use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
 use fz_runtime::pinned_abi::call2;
 use fz_runtime::procbin::mso_drop_all_deferred;
+use fz_runtime::process::Collection;
 use fz_runtime::sched::{
     ProbeOutcome, SendProbe, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender,
     self_send,
@@ -127,6 +128,15 @@ pub const SEND_PROBE: [&str; 4] = ["fz", "runtime", "send", "probe"];
 /// Report one send's probe on the telemetry bus.
 pub fn emit_send_probe<T: Telemetry + ?Sized>(tel: &T, probe: &SendProbe) {
     tel.raw_event1(&SEND_PROBE, probe);
+}
+
+/// Emitted once per heap collection a scheduler boundary performs on the JIT
+/// path; carries the `Collection` the process reported.
+pub const GC: [&str; 3] = ["fz", "runtime", "gc"];
+
+/// Report one collection on the telemetry bus.
+pub fn emit_gc<T: Telemetry + ?Sized>(tel: &T, collection: &Collection) {
+    tel.raw_event1(&GC, collection);
 }
 
 /// fz-ul4.23.10 scheduler-hook thunks. These are the extern "C" fns the
@@ -348,7 +358,9 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             // Gifts queued by senders become this heap's before any code
             // runs; a matched receive becomes the runnable closure here.
             deliver_in_queue(&mut task);
-            self.compiled.run_quantum(&mut task);
+            if let Some(collection) = self.compiled.run_quantum(&mut task) {
+                emit_gc(self.tel, &collection);
+            }
             // After a quantum the task is in one of three states: still
             // Running with a continuation in `runnable` (a mid-flight
             // yield), Blocked on a receive that found nothing, or halted.

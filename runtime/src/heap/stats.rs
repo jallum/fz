@@ -1,4 +1,4 @@
-//! GC telemetry — facts captured from the most recent Cheney pass.
+//! GC telemetry — facts captured from one Cheney pass.
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AllocStat {
@@ -82,6 +82,13 @@ pub struct GcStats {
     pub live_bytes: u64,
     pub from_space_capacity_bytes: u64,
     pub to_space_capacity_bytes: u64,
+    /// Blocks of the from-space the collection released.
+    pub blocks_released: u64,
+    /// Blocks the heap holds once the collection installs its to-space.
+    pub blocks_after: u64,
+    /// Length of the from-space range list the membership test
+    /// (`ptr_in_ranges`) scans for every edge the collection follows.
+    pub from_ranges_walked: u64,
     pub root_heap_edges: u64,
     pub root_scalar_slots: u64,
     pub list_head_heap_edges: u64,

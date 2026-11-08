@@ -98,7 +98,6 @@ impl Heap {
             block_end,
             block_size,
             last_gc_live_bytes: 0,
-            last_gc_stats: GcStats::default(),
             blocks: Vec::new(),
             gift: None,
             node,
@@ -1051,6 +1050,8 @@ impl Heap {
         let mut copied_objects: Vec<CopiedObject> = Vec::new();
         let mut stats = GcStats {
             from_space_capacity_bytes: from_space_capacity_bytes as u64,
+            from_ranges_walked: from_ranges.len() as u64,
+            blocks_released: from_ranges.len() as u64,
             to_space_capacity_bytes: to_size as u64,
             ..GcStats::default()
         };
@@ -1150,7 +1151,7 @@ impl Heap {
         self.last_gc_live_bytes = unsafe { free.offset_from(to_start) } as usize;
         stats.live_objects = live_count;
         stats.live_bytes = self.last_gc_live_bytes as u64;
-        self.last_gc_stats = stats;
+        stats.blocks_after = 1 + self.blocks.len() as u64;
         stats
     }
 }

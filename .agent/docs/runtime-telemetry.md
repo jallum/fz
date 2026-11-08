@@ -13,7 +13,7 @@ route through the same typed raw emit site, so `NullTelemetry` remains
 monomorphizable and configured handlers behave identically across interpreter,
 JIT, and AOT.
 
-Five events matter:
+Six events matter:
 
 - `fz.runtime.execution_ready` — the boundary between compiling a program and
   running it, emitted by `run_root_jit` and `run_root_interp`.
@@ -23,6 +23,8 @@ Five events matter:
   pending receive-after timer because nothing is runnable.
 - `fz.runtime.send.probe` — one per cross-process send, carrying what the
   sender's probe decided and what it cost.
+- `fz.runtime.gc` — one per heap collection a scheduler boundary performs,
+  carrying the collection's stats.
 - `fz.runtime.run_ended` — one per run, after every process has been torn down,
   carrying the block pool's census.
 
@@ -144,21 +146,41 @@ paths, and `a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
 pins each of fixture 00903's three gifts (`gift_bytes` 16032, 64 and 16, one
 block each).
 
-## Collection stats
+## `fz.runtime.gc`
 
-`Heap::collect` returns a `GcStats` and keeps the latest in
-`Heap.last_gc_stats` (`runtime/src/heap/stats.rs`). It is not emitted as a
-telemetry event; the caller of `Heap::collect` or `Process::collect` receives
-it as the return value. The fields are:
+`Process::boundary_maintenance(boundary)` (`runtime/src/process.rs`) collects
+the process's heap when `Heap::should_gc` holds and returns the
+`Collection` it performed, or `None`. The JIT `CompiledModule::run_quantum`
+returns that value to `Runtime::run_until_idle`, which hands it to `emit_gc`
+(`exec/runtime.rs`), the single emit site. The boundary is read off the process
+after the quantum (`Process::quantum_boundary`):
 
-- sizes: `copied_objects`, `copied_bytes`, `live_objects`, `live_bytes`,
-  `from_space_capacity_bytes`, `to_space_capacity_bytes`;
-- root edges: `root_heap_edges`, `root_scalar_slots`;
-- edges followed while scanning, as heap-edge and scalar-slot counts per
-  container: `list_head_heap_edges`, `list_head_scalar_slots`,
-  `list_tail_edges`, `struct_heap_edges`, `struct_scalar_slots`,
-  `map_heap_edges`, `map_scalar_slots`, `closure_heap_edges`,
-  `closure_scalar_slots`, `resource_heap_edges`, `resource_scalar_slots`.
+```text
+raw event:    fz.runtime.gc
+signature:    (&Collection)
+```
+
+`Collection` is `{ pid, boundary: Yield | Park | Exit, stats: GcStats }`.
+`JsonlBackend` renders `pid` and the `boundary` as `"yield"`, `"park"` or
+`"exit"`, then these `GcStats` fields as numbers:
+
+- `copied_bytes`: bytes the pass copied into to-space;
+- `live_bytes`: bytes in use once the pass installed its to-space;
+- `blocks_released`: from-space blocks the pass released;
+- `blocks_after`: blocks the heap holds once the to-space is installed;
+- `from_ranges_walked`: length of the from-space range list `ptr_in_ranges`
+  scans for every edge the pass follows.
+
+`GcStats` carries more (object counts, capacities, root and per-container edge
+counts); `Heap::collect` and `Process::collect` return all of it to their
+callers and the heap's unit tests read it there. The interpreter never
+collects, so it emits no `fz.runtime.gc`. The AOT scheduler collects but
+carries no telemetry bus and emits nothing, as for the other runtime events.
+`tests/fixture_matrix.rs`
+(`a_matched_reply_fixture_collects_on_run_and_never_on_interp_until_the_interpreter_collects`)
+pins fixture 00901: 75 collections on `run` (73 child yields, one parent park,
+one parent exit) copying 33019136 bytes in all, and none on `interp`.
+`process_test.rs` pins the `Collection` that `boundary_maintenance` returns.
 
 ## Program Output
 

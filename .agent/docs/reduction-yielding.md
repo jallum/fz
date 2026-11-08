@@ -162,8 +162,9 @@ roots: their blocks join the heap only when grafted, and every reference in a
 gift points into its own segment.
 
 `Process::boundary_maintenance` packages this decision (collect if needed,
-then clear the reason bits). The JIT calls it after every quantum, whatever
-state the process is in. The AOT shim calls it after a quantum that leaves the
+then clear the reason bits) and returns the `Collection` it performed, which
+the JIT reports as `fz.runtime.gc` (see [runtime telemetry](runtime-telemetry.md)).
+The JIT calls it after every quantum, whatever state the process is in. The AOT shim calls it after a quantum that leaves the
 process runnable or parked on a receive. The interpreter keeps its resume args
 and parked receives in its own structures and never collects.
 

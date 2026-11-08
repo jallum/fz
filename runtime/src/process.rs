@@ -58,6 +58,35 @@ impl Drop for AlignedClosureStorage {
     }
 }
 
+/// The scheduler boundary that asked for a collection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GcBoundary {
+    /// The process ran out of budget and is still runnable.
+    Yield,
+    /// The process parked on a receive that found nothing.
+    Park,
+    /// The process halted.
+    Exit,
+}
+
+impl GcBoundary {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GcBoundary::Yield => "yield",
+            GcBoundary::Park => "park",
+            GcBoundary::Exit => "exit",
+        }
+    }
+}
+
+/// One heap collection a scheduler boundary performed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Collection {
+    pub pid: PidId,
+    pub boundary: GcBoundary,
+    pub stats: GcStats,
+}
+
 /// Per-task runtime state. One Process per fz-level task; the scheduler hands
 /// each running task's `*mut Process` to FFI fns explicitly — compiled code via
 /// the pinned register, the interpreter as a threaded parameter — so there is
@@ -587,14 +616,28 @@ impl Process {
         self.yield_reasons = 0;
     }
 
+    /// The boundary a process is at after running a quantum: still runnable
+    /// (yield), waiting on a receive (park), or halted (exit).
+    pub fn quantum_boundary(&self) -> GcBoundary {
+        match self.state {
+            ProcessState::Running if self.runnable.is_some() => GcBoundary::Yield,
+            ProcessState::Blocked => GcBoundary::Park,
+            _ => GcBoundary::Exit,
+        }
+    }
+
     /// Scheduler-boundary maintenance shared by every execution path: collect
     /// when the heap is due, and clear the yield-reason signals so the next
-    /// quantum starts clean.
-    pub fn boundary_maintenance(&mut self) {
-        if self.needs_boundary_gc() {
-            self.collect(&mut []);
-        }
+    /// quantum starts clean. The returned `Collection` is the one record of a
+    /// collection the runtime hands its driver to report.
+    pub fn boundary_maintenance(&mut self, boundary: GcBoundary) -> Option<Collection> {
+        let collection = self.needs_boundary_gc().then(|| Collection {
+            pid: self.pid,
+            boundary,
+            stats: self.collect(&mut []),
+        });
         self.clear_yield_reasons();
+        collection
     }
 
     /// Collect this process's heap. The roots are everything the process

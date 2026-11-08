@@ -236,6 +236,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue,
         ),
         (
+            "a_matched_reply_fixture_collects_on_run_and_never_on_interp_until_the_interpreter_collects",
+            a_matched_reply_fixture_collects_on_run_and_never_on_interp_until_the_interpreter_collects,
+        ),
+        (
             "a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe",
             a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe,
         ),
@@ -2953,8 +2957,8 @@ fn json_str_field(line: &str, key: &str) -> Option<String> {
     Some(line[start..start + end].to_string())
 }
 
-/// Every send probe the fixture emits on `path`, in emission order.
-fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<SendProbeEvent> {
+/// The telemetry log of one `--log-telemetry` run of the fixture on `path`.
+fn telemetry_log_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> String {
     let header = parse_header(fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
     let (out, log) =
         run_path_logged(fixture, &header, path).unwrap_or_else(|e| panic!("fz2 {label} --log-telemetry: {}", e));
@@ -2965,13 +2969,37 @@ fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath,
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    log.lines()
+    log
+}
+
+/// Every send probe the fixture emits on `path`, in emission order.
+fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<SendProbeEvent> {
+    telemetry_log_for_fixture(fixture, path, label)
+        .lines()
         .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"send\",\"probe\"]"))
         .map(|line| SendProbeEvent {
             outcome: json_str_field(line, "outcome").unwrap_or_else(|| panic!("send probe missing outcome")),
             receiver: required_json_u64_field(line, "receiver", "send probe"),
             gift_bytes: required_json_u64_field(line, "gift_bytes", "send probe"),
             gift_blocks: required_json_u64_field(line, "gift_blocks", "send probe"),
+        })
+        .collect()
+}
+
+/// One `fz.runtime.gc` event as the jsonl log renders it.
+struct GcEvent {
+    boundary: String,
+    copied_bytes: usize,
+}
+
+/// Every collection the fixture reports on `path`, in emission order.
+fn gc_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<GcEvent> {
+    telemetry_log_for_fixture(fixture, path, label)
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"gc\"]"))
+        .map(|line| GcEvent {
+            boundary: json_str_field(line, "boundary").unwrap_or_else(|| panic!("gc event missing boundary")),
+            copied_bytes: required_json_u64_field(line, "copied_bytes", "gc event"),
         })
         .collect()
 }
@@ -3022,6 +3050,39 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
             "{label}: the unmatched tuple is gifted whole; the matching atom gifts nothing"
         );
     }
+}
+
+/// The interpreter never collects, so its zero is the parity gap the
+/// interpreter's boundary collection closes; the `run` pins move with it.
+fn a_matched_reply_fixture_collects_on_run_and_never_on_interp_until_the_interpreter_collects() {
+    let fixture =
+        FixtureCase::new("fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz");
+
+    // The child yields on its reduction budget while it builds and sends the
+    // 50000-element log, and every yield finds its heap due a collection that
+    // copies all of the log built so far, up to 800208 bytes once the log is
+    // complete. The parent is collected once as it parks on its receive (640
+    // bytes, the closures its park record holds) and once as it exits, when
+    // nothing is live.
+    let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
+    let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
+    assert_eq!(
+        (count("yield"), count("park"), count("exit")),
+        (73, 1, 1),
+        "run: the child's reduction yields, the parent's park, the parent's exit"
+    );
+    assert_eq!(events.len(), 75, "run: one gc event per collection");
+    assert_eq!(
+        events.iter().map(|e| e.copied_bytes).sum::<usize>(),
+        33_019_136,
+        "run: the bytes every collection copied"
+    );
+
+    assert_eq!(
+        gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp").len(),
+        0,
+        "interp: the interpreter does not collect at scheduler boundaries"
+    );
 }
 
 fn a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe() {

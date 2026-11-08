@@ -652,9 +652,9 @@ stub still on the chain.</p>
 
 <pre>
   1. resume the runnable closure
-  2. process.boundary_maintenance():
+  2. process.boundary_maintenance(boundary):
        if heap.should_gc:
-         process.collect()
+         process.collect()          (the JIT emits fz.runtime.gc)
        clear yield reasons
   3. runnable: re-enqueue.  blocked on a receive: wait for a send or the timer.
 
