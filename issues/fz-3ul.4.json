@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [
     "fz-3ul.1",
+    "fz-3ul.6",
     "fz-sc8.77"
   ],
   "blocks": [
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "defexception, raise Mod, attrs and Exception.message/1",
   "type": "feature",
-  "updated_at": "2026-11-08T00:15:25Z"
+  "updated_at": "2026-11-08T03:27:27Z"
 }
