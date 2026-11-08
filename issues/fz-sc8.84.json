@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-sc8.64"
-  ],
+  "blocks": [],
   "created": "2026-11-08T03:20:31Z",
   "description": "For an expect: abort oracle fixture, expected.txt is Elixir's combined output (the oracle rescues and prints Exception.format_banner), and the fz paths prove their rejection through expected.stderr, which the matrix only checks as a substring of fz's stderr. Nothing ties the two files together: a hand-written expected.stderr that Elixir never printed passes. Close the loop in tests/fixture_matrix.rs: when an abort fixture has an oracle, expected.stderr must be a substring of expected.txt, so the pinned fz failure line is provably Elixir's text. Applies to 00702-00718 today and to every lib panic site fz-sc8.64 renames (00617-00639 and new fixtures). Red first: a fixture whose expected.stderr is not in its expected.txt fails with a message naming both files.",
   "id": "fz-sc8.84",
@@ -13,5 +11,5 @@
   "status": "open",
   "title": "An abort fixture's stderr golden is a substring of its oracle's expected.txt",
   "type": "task",
-  "updated_at": "2026-11-08T03:20:31Z"
+  "updated_at": "2026-11-08T05:01:11Z"
 }
