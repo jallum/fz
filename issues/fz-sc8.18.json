@@ -5,7 +5,8 @@
   ],
   "blocks": [
     "fz-sc8.19",
-    "fz-sc8.87"
+    "fz-sc8.87",
+    "fz-sc8.88"
   ],
   "created": "2026-10-17T19:00:43Z",
   "description": "No Stream. Enumerable.reduce already carries :cont/:halt/:suspend (lib/enumerable.fz). Distill line 16: path |\u003e File.stream!() |\u003e Stream.map(\u0026JSON.decode!/1) |\u003e Enum.to_list().\n\nApproved page /Users/j5n/Workspace/fz-sc8.18.html (2026-11-08). Two library structs with defimpl Enumerable: Stream (lib/stream.fz; map/2 prepends to funs; reduce composes funs onto the reducer and hands it to the source's reduce) and File.Stream (lib/file_stream.fz; File.stream!/1 in lib/file.fz fills every field explicitly). The handle held across reducer calls is the resource File.open returns; the impl reads its payload with .value and closes with File.close (a claim), so close is exactly once on :done, :halt, or by the destructor if a suspended continuation is dropped. Decided: lines are read by one runtime helper fz_file_read_line(c_pointer) :: any answering [] or [line] (fz_float_parse's shape); the missing-file fixture is an abort with fz's 'I/O error' text until the errno ticket binds it to the oracle; the rest of Stream and File.stream!/2,3 is its own ticket.",
