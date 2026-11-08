@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T13:06:20Z",
+  "description": "fz-sc8.18 builds Stream.map/2 and File.stream!/1 in line mode, each a struct with a defimpl Enumerable. Not built, by agreement: File.stream!/2,3 (modes, byte chunks, :utf8, BOM skipping, :trim_bom), Enumerable.File.Stream.count by reading, and the rest of Stream (filter, take, drop, flat_map, resource, unfold, iterate, concat, zip, chunk_*, into, run, each, ...). Each as in Elixir 1.19.4 with oracle fixtures on all three paths. Calling any of them today is an unresolved callee, never a silent wrong answer.",
+  "id": "fz-sc8.88",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "The rest of Stream and File.stream!",
+  "type": "feature",
+  "updated_at": "2026-11-08T13:06:20Z"
+}
