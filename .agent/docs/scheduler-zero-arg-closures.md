@@ -101,7 +101,9 @@ template into a runnable zero-arg closure. The template env is
 after the outer continuation: `[outer_cont, bound0, …, cap0, …]`. A scan hit
 returns that closure to the receive that is running. A sender-side hit is
 delivered in two halves: the sender runs the matcher (`ParkRecord::try_match`
-with the sender as the allocating process), cancels the after-timer and calls
+with the sender as the allocating process, which the matcher uses for allocation
+only: a guard's `self()` is a pinned value the receiver took at park time, see
+[pattern-matching](pattern-matching.md#receive-guards-run-on-the-sender)), cancels the after-timer and calls
 `sched::gift_match`, which copies the bound values with one forwarding map into
 a gift on the sender's heap (`sched::gift_copy`) and queues a `Gift { segment,
 payload: GiftPayload::Match { clause_idx, bound_vals } }` on the receiver's

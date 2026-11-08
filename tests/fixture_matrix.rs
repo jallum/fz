@@ -236,6 +236,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue,
         ),
         (
+            "a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe",
+            a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe,
+        ),
+        (
             "a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown",
             a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown,
         ),
@@ -3020,6 +3024,27 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
                 SendProbeEvent::new("hit", 1, 0, 0)
             ],
             "{label}: the unmatched tuple is gifted whole; the matching atom gifts nothing"
+        );
+    }
+}
+
+fn a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_probe() {
+    let fixture =
+        FixtureCase::new("fixtures/00698_a_receive_guard_reads_the_receivers_pid_even_when_a_sender_runs_the_probe.fz");
+    let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00698 expected.txt");
+    assert_eq!(
+        expected, ":carried_the_receivers_pid\n:carried_the_senders_pid\n",
+        "the guard accepts the message carrying the receiver's pid; the one carrying the sender's pid waits in the mailbox"
+    );
+    for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Interp, "interp")] {
+        // The child runs the probe, so a guard that asked the matcher's
+        // process for `self()` would hit on the first message.
+        let events = send_probe_events_for_fixture(&fixture, path, label);
+        let outcomes: Vec<_> = events.iter().map(|e| e.outcome.as_str()).collect();
+        assert_eq!(
+            outcomes,
+            vec!["miss", "hit"],
+            "{label}: the sender's own pid misses; the receiver's pid hits"
         );
     }
 }
