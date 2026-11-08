@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-a9y.11"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-a9y",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "One root set, one collect entry, shared by JIT, AOT and interpreter",
   "type": "task",
-  "updated_at": "2026-11-08T11:24:58Z"
+  "updated_at": "2026-11-08T14:50:08Z"
 }
