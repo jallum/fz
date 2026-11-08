@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-08T13:06:20Z",
+  "description": "Seen building fz-sc8.62: 'def _ + _, do: arithmetic_error()' does not parse as a definition head, while 'def _left + _right, do: ...' does. Elixir accepts both (a bare _ is a valid parameter pattern). Fix in the parser's def-head reading so an operator head with _ operands is a definition, with a parser test and a fixture on all three paths.",
+  "id": "fz-sc8.91",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A def head whose operands are both underscores parses",
+  "type": "bug",
+  "updated_at": "2026-11-08T13:06:20Z"
+}
